@@ -54,6 +54,7 @@ sys.path.insert(0, str(HOOK.parent))
 
 import check_shared_branch  # noqa: E402
 from check_shared_branch import (  # noqa: E402
+    chdir_target,
     decide,
     failing_checks,
     inline_config,
@@ -267,6 +268,66 @@ def test_every_heredoc_spelling_is_stripped(opener: str) -> None:
 
 @pytest.mark.unit
 @pytest.mark.parametrize(
+    "first",
+    [
+        'echo "shift <<Foo left"',
+        "echo 'a <<EOF b'",
+        'git commit -m "shift <<Foo left"',
+        'git log --grep="<<HEREDOC"',
+    ],
+)
+def test_a_quoted_redirection_does_not_start_a_heredoc(first: str) -> None:
+    """The mirror image of the finding that made ``segments`` quote-aware.
+
+    A ``<<`` inside quotes opens nothing. Treating it as a heredoc swallows every
+    following line as body text — so the ``git push origin develop`` after it is
+    never examined, and the guard's most important refusal is skipped by a command
+    that merely mentions ``<<`` in a string.
+    """
+    command = f"{first}\ngit push origin develop"
+    assert "git push origin develop" in strip_heredocs(command)
+    assert ["git", "push", "origin", "develop"] in segments(command)
+
+
+@pytest.mark.unit
+def test_a_real_heredoc_after_a_quoted_one_still_strips() -> None:
+    command = (
+        'echo "mentions <<Foo"\n'
+        "cat > f <<'EOF'\n"
+        "git push origin develop\n"
+        "EOF\n"
+        "git push origin main"
+    )
+    stripped = strip_heredocs(command)
+    assert "git push origin develop" not in stripped
+    assert "git push origin main" in stripped
+
+
+@pytest.mark.unit
+def test_a_here_string_is_not_a_heredoc() -> None:
+    """`<<<` takes its data inline, so no following line is body text."""
+    command = "cat <<<word\ngit push origin develop"
+    assert "git push origin develop" in strip_heredocs(command)
+
+
+@pytest.mark.unit
+def test_an_escaped_quote_does_not_end_a_double_quoted_string() -> None:
+    r"""``\"`` keeps the string open, so a ``<<`` after it is still quoted.
+
+    Reading the escape as a closing quote puts the scanner outside the string and
+    the ``<<Foo`` back in play as a heredoc opener, which swallows the push on the
+    next line. Single quotes have no escapes, so ``'a \'`` genuinely does end
+    there and a ``<<`` after it genuinely does open one.
+    """
+    quoted = 'echo "a \\" b <<Foo"\ngit push origin develop'
+    assert "git push origin develop" in strip_heredocs(quoted)
+
+    literal = "echo 'a \\'\ncat <<Foo\ngit push origin develop\nFoo"
+    assert "git push origin develop" not in strip_heredocs(literal)
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
     ("command", "expected"),
     [
         ("git push origin develop", ["push", "origin", "develop"]),
@@ -327,6 +388,27 @@ def test_split_assignments_tolerates_an_empty_segment() -> None:
         (["checkout", "-b", "fix/x"], (True, "fix/x")),
         (["checkout", "-b", "fix/x", "origin/develop"], (True, "fix/x")),
         (["checkout", "develop"], (True, "develop")),
+        # `--track`/`-t` names no new branch: git takes the remote ref's leaf, so
+        # HEAD lands on local `develop`. Reading the positional as-is misses it.
+        (["switch", "--track", "origin/develop"], (True, "develop")),
+        (["checkout", "-t", "origin/develop"], (True, "develop")),
+        (["switch", "--track=direct", "origin/main"], (True, "main")),
+        (["switch", "--track", "origin/feature/thing"], (True, "feature/thing")),
+        # With an explicit new name the option's value is the branch, not the leaf.
+        (["checkout", "-b", "new", "-t", "origin/develop"], (True, "new")),
+        # The new name is read from the create option wherever it sits. Taking the
+        # first positional instead answers `origin/x` here and lets a commit onto
+        # the new `develop` through.
+        (["checkout", "-t", "origin/x", "-b", "develop"], (True, "develop")),
+        (["switch", "-t", "origin/x", "-c", "main"], (True, "main")),
+        (["switch", "--create=develop"], (True, "develop")),
+        (["switch", "--orphan", "develop"], (True, "develop")),
+        (["checkout", "-B", "main", "origin/main"], (True, "main")),
+        # A create flag with no value is a malformed command, and naming no branch
+        # is what leaves the following segments unjudged rather than misjudged.
+        (["switch", "-c"], (True, None)),
+        # Without --track this detaches at the remote ref rather than switching.
+        (["checkout", "origin/develop"], (True, "origin/develop")),
         # Moves HEAD somewhere this cannot name: later segments are unjudgeable.
         (["switch", "-"], (True, None)),
         (["checkout", "--detach"], (True, None)),
@@ -340,16 +422,149 @@ def test_switch_target(args: list[str], expected: tuple[bool, str | None]) -> No
 
 @pytest.mark.unit
 @pytest.mark.parametrize(
-    ("args", "expected"),
+    ("argv", "expected"),
     [
-        (["merge", "1050"], "1050"),
-        (["merge", "--squash", "1050"], "1050"),
-        (["merge", "--admin"], None),
-        (["merge"], None),
+        (["cd", "/tmp/elsewhere"], Path("/tmp/elsewhere")),
+        (["pushd", "/tmp/elsewhere"], Path("/tmp/elsewhere")),
+        (["cd", "sub/dir"], Path("/base/sub/dir")),
+        (["pushd", "sub"], Path("/base/sub")),
+        (["cd"], Path.home()),
+        # No directory stack is kept, so these are not followed at all.
+        (["cd", "-"], None),
+        (["pushd"], None),
+        (["popd"], None),
+        # Not a directory change.
+        (["git", "push", "origin", "develop"], None),
+        (["cdx", "/tmp"], None),
     ],
 )
-def test_merge_target(args: list[str], expected: str | None) -> None:
+def test_chdir_target(argv: list[str], expected: Path | None) -> None:
+    """Which directory a later segment is judged against.
+
+    ``cd <repo> && git commit`` has to be judged against ``<repo>``: the payload's
+    ``cwd`` is where the command starts, not where the git command runs.
+    """
+    assert chdir_target(argv, Path("/base")) == expected
+
+
+@pytest.mark.unit
+def test_chdir_target_expands_a_home_relative_path() -> None:
+    assert chdir_target(["cd", "~/work"], Path("/base")) == Path.home() / "work"
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("args", "expected"),
+    [
+        (["merge", "1050"], ("1050", None)),
+        (["merge", "--squash", "1050"], ("1050", None)),
+        (["merge", "--admin"], (None, None)),
+        (["merge"], (None, None)),
+        (["merge", "--repo", "owner/name", "1050"], ("1050", "owner/name")),
+        (["merge", "--repo=owner/name", "1050"], ("1050", "owner/name")),
+    ],
+)
+def test_merge_target(args: list[str], expected: tuple[str | None, str | None]) -> None:
     assert merge_target(args) == expected
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "flag",
+    [
+        "-b",
+        "--body",
+        "-F",
+        "--body-file",
+        "-t",
+        "--subject",
+        "--match-head-commit",
+        "-A",
+        "--author-email",
+    ],
+)
+def test_a_merge_flags_value_is_not_read_as_the_pull_request(flag: str) -> None:
+    """Reading it as the pull request disables the check *silently*.
+
+    ``gh pr checks <that value>`` errors, the error reads as "cannot tell", and the
+    merge is allowed with nothing printed. Parametrising over the flags is the
+    point: the earlier two cases were ``--squash`` and ``--admin``, neither of
+    which takes a value, so the suite could not see this.
+    """
+    assert merge_target(["merge", flag, "some value", "1050"]) == ("1050", None)
+    assert merge_target(["merge", "--squash", flag, "some value", "1050"]) == (
+        "1050",
+        None,
+    )
+
+
+#: A line in ``gh``'s help listing one option. ``gh`` pads the description to a
+#: column, so the placeholder that marks an option as value-taking is the token
+#: separated from the option by exactly one space -- ``-b, --body text`` takes a
+#: value and ``--admin    Use administrator...`` does not.
+GH_FLAG_LINE = re.compile(r"^\s+(?:(-\w), )?(--[\w-]+)(?: (?!\s)(\S+))?\s{2,}\S")
+
+
+def _gh_flags_taking_a_value() -> set[str] | None:
+    """Value-taking ``gh pr merge`` options, read from ``gh``'s own help.
+
+    ``None`` when ``gh`` is not installed. The parse is asserted non-vacuous by
+    the caller: silently matching nothing would make the comparison below pass for
+    every possible value of the constant, which is the failure mode of a derived
+    universe that nobody checks.
+    """
+    completed = subprocess.run(  # noqa: S603 - fixed argv, no shell
+        ["gh", "pr", "merge", "--help"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if completed.returncode != 0:
+        return None
+    flags: set[str] = set()
+    seen = 0
+    for line in completed.stdout.splitlines():
+        match = GH_FLAG_LINE.match(line)
+        if not match:
+            continue
+        seen += 1
+        if match.group(3) is None:
+            continue
+        if match.group(1):
+            flags.add(match.group(1))
+        flags.add(match.group(2))
+    assert seen >= 8, (
+        f"only {seen} option lines were recognised in `gh pr merge --help`, so "
+        "its format has changed and this test can no longer see which options "
+        f"take a value. Re-read the help and update GH_FLAG_LINE.\n"
+        f"{completed.stdout}"
+    )
+    return flags
+
+
+@pytest.mark.unit
+def test_every_value_taking_merge_flag_is_listed() -> None:
+    """The set has to match ``gh pr merge`` itself, so derive it from the help.
+
+    Both directions fail. An option ``gh`` takes a value for and the constant does
+    not list is a **silent** hole: its value is read as the pull request number,
+    ``gh pr checks <that value>`` errors, the error reads as "cannot tell", and the
+    red merge is allowed with nothing printed. An entry ``gh`` no longer takes a
+    value for is stale, and swallowing the following token could equally swallow
+    the pull request number.
+
+    Skipped when ``gh`` is absent, which is the only reason this is not a hard
+    gate on every machine.
+    """
+    derived = _gh_flags_taking_a_value()
+    if derived is None:
+        pytest.skip("gh is not installed")
+    listed = set(check_shared_branch.GH_MERGE_FLAGS_WITH_VALUE)
+    assert derived == listed, (
+        "GH_MERGE_FLAGS_WITH_VALUE does not match `gh pr merge --help`.\n"
+        f"  gh takes a value for, not listed: {sorted(derived - listed)}\n"
+        f"  listed, gh takes no value for:    {sorted(listed - derived)}"
+    )
 
 
 # --------------------------------------------------------------------------- #
@@ -438,6 +653,52 @@ def test_push_default_simple_does_not_enumerate(repo: Path) -> None:
     assert push_destinations([], repo, inline={"push.default": "simple"}) == {
         "feature/thing"
     }
+
+
+@pytest.mark.unit
+def test_push_default_current_ignores_a_differently_named_upstream(repo: Path) -> None:
+    """Measured: on `fix/x` tracking `origin/develop`, `push.default=current`
+    pushes `fix/x -> fix/x` and leaves develop alone. Reading the upstream too is
+    a false refusal, and this is the setting where it bites -- under `simple` git
+    itself refuses a mismatched-name push, so over-approximating is free there.
+    """
+    _checkout(repo, "feature/thing", "origin/develop")
+    assert push_destinations([], repo, inline={"push.default": "current"}) == {
+        "feature/thing"
+    }
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("setting", ["upstream", "tracking"])
+def test_push_default_upstream_ignores_the_branch_name(
+    repo: Path, setting: str
+) -> None:
+    """The mirror image: these two push to the upstream, whatever HEAD is called."""
+    _checkout(repo, "feature/thing", "origin/develop")
+    assert push_destinations([], repo, inline={"push.default": setting}) == {"develop"}
+
+
+@pytest.mark.unit
+def test_push_default_simple_still_reads_both(repo: Path) -> None:
+    """`simple` requires the two to agree, so the union is the safe reading."""
+    _checkout(repo, "feature/thing", "origin/develop")
+    assert push_destinations([], repo) == {"feature/thing", "develop"}
+
+
+@pytest.mark.unit
+def test_tags_only_pushes_have_no_branch_destination(repo: Path) -> None:
+    """Measured: `git push origin --tags` sends refs/tags and no branch.
+
+    Refusing it while HEAD sits on develop is a false refusal on an ordinary
+    machine, so it is not the documented managed-machine cost either.
+    """
+    _checkout(repo, "develop", "origin/develop")
+    assert push_destinations(["origin", "--tags"], repo) == set()
+    assert push_destinations(["--tags"], repo) == set()
+    # An explicit refspec alongside --tags is still a branch destination, and
+    # --follow-tags sends the branch as well as the tags.
+    assert push_destinations(["--tags", "origin", "develop"], repo) == {"develop"}
+    assert push_destinations(["--follow-tags", "origin"], repo) == {"develop"}
 
 
 @pytest.mark.unit
@@ -596,6 +857,82 @@ def test_restoring_a_file_from_a_shared_branch_does_not_move_head(repo: Path) ->
 
 
 @pytest.mark.unit
+@pytest.mark.parametrize(
+    "command",
+    [
+        "git switch --track origin/develop && git commit -m x",
+        "git checkout -t origin/develop && git commit -m x",
+        "git switch --track origin/main && git commit -m x",
+        "git checkout --track origin/develop && git push",
+    ],
+)
+def test_tracking_a_shared_branch_then_committing_is_blocked(
+    repo: Path, command: str
+) -> None:
+    """``--track``/``-t`` with no new name lands HEAD on the remote ref's leaf.
+
+    This is how a fresh clone gets a local ``develop``, and reading the positional
+    as the branch answers ``origin/develop`` — which is in no shared set, so the
+    commit that follows was allowed.
+    """
+    _checkout(repo, "feature/thing", "origin/feature/thing")
+    result = _run_hook(_bash(command, cwd=repo))
+    assert result.returncode == 2, result.stderr
+
+
+@pytest.mark.unit
+def test_a_tags_only_push_from_a_shared_branch_is_allowed(repo: Path) -> None:
+    """``git push origin --tags`` sends refs/tags and writes no branch.
+
+    Refusing it is a false refusal on an ordinary machine, where the guard has the
+    ref list and has no reason to fall back to HEAD.
+    """
+    _checkout(repo, "develop", "origin/develop")
+    assert _run_hook(_bash("git push origin --tags", cwd=repo)).returncode == 0
+    # `--follow-tags` sends the branch as well as the tags, so it is still refused.
+    assert _run_hook(_bash("git push --follow-tags origin", cwd=repo)).returncode == 2
+
+
+@pytest.mark.unit
+def test_a_cd_earlier_in_the_command_decides_which_repository(
+    repo: Path, tmp_path: Path
+) -> None:
+    """The payload's ``cwd`` is where the command starts, not where git runs."""
+    _checkout(repo, "develop", "origin/develop")
+    outside = tmp_path / "outside"
+    outside.mkdir()
+
+    # From a directory that is not a repository there is nothing to judge.
+    assert _run_hook(_bash("git commit -m x", cwd=outside)).returncode == 0
+    for command in (
+        f"cd {repo} && git commit -m x",
+        f"pushd {repo} && git commit -m x",
+        "cd ../work && git commit -m x",
+    ):
+        assert _run_hook(_bash(command, cwd=outside)).returncode == 2, command
+
+
+@pytest.mark.unit
+def test_a_directory_stack_is_not_guessed_at(repo: Path, tmp_path: Path) -> None:
+    """``cd -`` and ``popd`` are not followed, and that over-refuses.
+
+    The judgement stays with the directory in force before them — here the
+    shared-branch repository — so the commit is refused even though the command
+    had returned to a directory where it would have been fine. Over-refusal is the
+    safe direction and is overridable; guessing at a stack this does not keep
+    would not be.
+    """
+    _checkout(repo, "develop", "origin/develop")
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    for command in (
+        f"cd {repo} && cd - && git commit -m x",
+        f"pushd {repo} && popd && git commit -m x",
+    ):
+        assert _run_hook(_bash(command, cwd=outside)).returncode == 2, command
+
+
+@pytest.mark.unit
 def test_the_commands_own_repository_option_decides_which_repo(
     repo: Path, tmp_path: Path
 ) -> None:
@@ -664,6 +1001,56 @@ def test_environment_override_allows_the_command(repo: Path) -> None:
 
 @pytest.mark.unit
 @pytest.mark.parametrize(
+    ("command", "env", "expected"),
+    [
+        (
+            "ALLOW_SHARED_BRANCH=1 git push origin develop",
+            {},
+            "this push's destination",
+        ),
+        ("git push origin develop", {"ALLOW_SHARED_BRANCH": "1"}, "this push's"),
+        ("git commit -m x", {"ALLOW_SHARED_BRANCH": "1"}, "the branch this commits"),
+        ("ALLOW_RED_MERGE=1 gh pr merge 1050", {}, "this pull request's checks"),
+        ("gh pr merge 1050", {"ALLOW_RED_MERGE": "1"}, "this pull request's checks"),
+    ],
+)
+def test_an_honoured_override_says_which_check_it_turned_off(
+    repo: Path, command: str, env: dict[str, str], expected: str
+) -> None:
+    """An override in the *environment* applies to every command in it.
+
+    A shell profile, an IDE or a CI runner can export one, and then the guard is
+    believed on and is off — which is the failure this whole guard exists to avoid,
+    reintroduced one level up. It costs a line on stderr to say so, and the command
+    still runs.
+    """
+    _checkout(repo, "develop", "origin/develop")
+    result = _run_hook(_bash(command, cwd=repo), env=env)
+    assert result.returncode == 0, result.stderr
+    assert expected in result.stderr
+    assert "is set" in result.stderr
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "command",
+    ["git push origin feature/thing", "git commit -m x", "git status"],
+)
+def test_an_allowed_command_with_no_override_is_silent(
+    repo: Path, command: str
+) -> None:
+    """The waiver line must mark an override, not every allowed command."""
+    _checkout(repo, "feature/thing", "origin/feature/thing")
+    result = _run_hook(
+        _bash(command, cwd=repo),
+        env={"ALLOW_SHARED_BRANCH": "", "ALLOW_RED_MERGE": ""},
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stderr == ""
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
     "payload",
     [
         {"tool_name": "Read", "tool_input": {"file_path": "x"}},
@@ -713,7 +1100,7 @@ def checks(monkeypatch: pytest.MonkeyPatch) -> list[list[str]]:
     """Substitute the check reader; the list is what it will report as failing."""
     holder: list[list[str]] = [[]]
     monkeypatch.setattr(
-        check_shared_branch, "failing_checks", lambda pr, repo: holder[0]
+        check_shared_branch, "failing_checks", lambda pr, repo, selector=None: holder[0]
     )
     return holder
 
@@ -756,7 +1143,9 @@ def test_unreadable_checks_do_not_block_a_merge(
     request whose checks never ran would block every fork contribution, which
     gets no GitHub CI here.
     """
-    monkeypatch.setattr(check_shared_branch, "failing_checks", lambda pr, repo: None)
+    monkeypatch.setattr(
+        check_shared_branch, "failing_checks", lambda pr, repo, selector=None: None
+    )
     assert decide(_bash("gh pr merge 1050", cwd=repo)) is None
 
 
@@ -766,7 +1155,7 @@ def test_other_gh_pr_commands_do_not_read_checks(
 ) -> None:
     """Only `gh pr merge` should pay for a network call."""
 
-    def _fail(_pr: str | None, _repo: Path) -> list[str]:
+    def _fail(_pr: str | None, _repo: Path, _selector: str | None = None) -> list[str]:
         raise AssertionError("failing_checks called for a non-merge command")
 
     monkeypatch.setattr(check_shared_branch, "failing_checks", _fail)
@@ -996,6 +1385,57 @@ def test_pre_push_ignores_a_negative_override(value: str) -> None:
 
 
 @pytest.mark.unit
+def test_pre_push_says_when_the_override_turned_it_off() -> None:
+    """The same reasoning as the PreToolUse half's waiver line.
+
+    ``ALLOW_SHARED_BRANCH`` exported by a shell profile, an IDE or a CI runner
+    disables this hook for every push in that environment, and nothing else would
+    reveal it.
+    """
+    result = _run_pre_push(
+        f"refs/heads/x {ONE} refs/heads/develop {ZERO}\n",
+        env={"ALLOW_SHARED_BRANCH": "1"},
+    )
+    assert result.returncode == 0, result.stderr
+    assert "ALLOW_SHARED_BRANCH is set" in result.stderr
+
+
+@pytest.mark.unit
+def test_pre_push_names_each_branch_once(repo: Path) -> None:
+    """HEAD on develop *tracking* origin/develop is one branch named twice.
+
+    The fallback reads HEAD and its upstream, so this is the reachable duplicate
+    and it read "Refusing to push directly to: develop develop".
+    """
+    _checkout(repo, "develop", "origin/develop")
+    result = _run_pre_push("", cwd=repo)
+    assert result.returncode == 1, result.stdout
+    refusal = next(
+        line for line in result.stderr.splitlines() if "Refusing to push" in line
+    )
+    assert refusal.count("develop") == 1, refusal
+
+
+@pytest.mark.unit
+def test_pre_push_names_each_branch_once_when_the_refs_repeat() -> None:
+    """Belt and braces, as with the missing trailing newline: git sends one line
+    per destination ref and so does not repeat one, but the ref list is input and
+    the message should not degrade if it ever does."""
+    refs = (
+        f"refs/heads/develop {ONE} refs/heads/develop {ZERO}\n"
+        f"refs/heads/x {ONE} refs/heads/develop {ZERO}\n"
+        f"refs/heads/y {ONE} refs/heads/main {ZERO}\n"
+    )
+    result = _run_pre_push(refs)
+    assert result.returncode == 1, result.stdout
+    refusal = next(
+        line for line in result.stderr.splitlines() if "Refusing to push" in line
+    )
+    assert refusal.count("develop") == 1, refusal
+    assert refusal.count("main") == 1, refusal
+
+
+@pytest.mark.unit
 def test_pre_push_refuses_a_real_push_when_installed(
     tmp_path: Path, repo: Path
 ) -> None:
@@ -1039,6 +1479,38 @@ def _install_hook_into(repo: Path) -> Path:
     return hook_dir
 
 
+def _install_runner_that_drops_stdin(repo: Path, tmp_path: Path) -> Path:
+    """Put ``repo`` behind a hook runner that forwards argv but not stdin.
+
+    The shape a managed developer machine produces: ``core.hooksPath`` points at a
+    directory of hook runners belonging to a security tool, which chain to the
+    repository's own hook. Returns the local bare repository ``origin`` now points
+    at, so a caller can check whether the remote moved.
+    """
+    bare = tmp_path / "remote.git"
+    if not bare.exists():
+        subprocess.run(  # noqa: S603 - fixed argv, no shell
+            ["git", "init", "-q", "--bare", str(bare)], check=True, capture_output=True
+        )
+    _git_in(repo, "remote", "set-url", "origin", str(bare))
+    hook_dir = _install_hook_into(repo)
+
+    runners = tmp_path / "runners"
+    runners.mkdir(exist_ok=True)
+    runner = runners / "pre-push"
+    runner.write_text(
+        "#!/bin/sh\n"
+        "# Stands in for a managed hook runner: its own checks, then the\n"
+        "# repository's hook with the arguments but WITHOUT stdin.\n"
+        f'"{hook_dir}/pre-push" "$@" < /dev/null\n'
+        "exit $?\n",
+        encoding="utf-8",
+    )
+    runner.chmod(0o755)
+    _git_in(repo, "config", "core.hooksPath", str(runners))
+    return bare
+
+
 @pytest.mark.unit
 def test_pre_push_still_refuses_through_a_runner_that_drops_stdin(
     tmp_path: Path, repo: Path
@@ -1052,26 +1524,7 @@ def test_pre_push_still_refuses_through_a_runner_that_drops_stdin(
     exit 0 and let a direct push to develop through, with ``make
     install-git-hooks`` reporting success.
     """
-    bare = tmp_path / "remote.git"
-    subprocess.run(  # noqa: S603 - fixed argv, no shell
-        ["git", "init", "-q", "--bare", str(bare)], check=True, capture_output=True
-    )
-    _git_in(repo, "remote", "set-url", "origin", str(bare))
-    hook_dir = _install_hook_into(repo)
-
-    runners = tmp_path / "runners"
-    runners.mkdir()
-    runner = runners / "pre-push"
-    runner.write_text(
-        "#!/bin/sh\n"
-        "# Stands in for a managed hook runner: its own checks, then the\n"
-        "# repository's hook with the arguments but WITHOUT stdin.\n"
-        f'"{hook_dir}/pre-push" "$@" < /dev/null\n'
-        "exit $?\n",
-        encoding="utf-8",
-    )
-    runner.chmod(0o755)
-    _git_in(repo, "config", "core.hooksPath", str(runners))
+    bare = _install_runner_that_drops_stdin(repo, tmp_path)
 
     _checkout(repo, "develop", "origin/develop")
     (repo / "b.txt").write_text("b\n", encoding="utf-8")
@@ -1097,6 +1550,47 @@ def test_pre_push_still_refuses_through_a_runner_that_drops_stdin(
         env={**os.environ, "ALLOW_SHARED_BRANCH": "1"},
     )
     assert allowed.returncode == 0, allowed.stderr
+
+
+@pytest.mark.unit
+def test_the_head_fallback_is_wrong_in_both_directions(
+    tmp_path: Path, repo: Path
+) -> None:
+    """What the ``HEAD`` fallback costs, measured rather than asserted in prose.
+
+    With no ref list the hook substitutes a different question, and substituting a
+    question is wrong in both directions. The header of ``scripts/hooks/pre-push``
+    states both; this is what keeps that statement true, since the under-refusal is
+    the half a reader would not think to look for.
+
+    The under-refusal is why the ``PreToolUse`` half matters on such a machine: it
+    resolves the destination from the command line and refuses the same command, so
+    the residual gap is a push from a plain shell.
+    """
+    bare = _install_runner_that_drops_stdin(repo, tmp_path)
+
+    # Over-refusal: nothing shared is being written, and it is refused anyway.
+    _checkout(repo, "develop", "origin/develop")
+    over = _git_in(repo, "push", "origin", "feature/thing")
+    assert over.returncode != 0, over.stdout
+    assert "the ref list was not supplied" in over.stderr
+
+    # Under-refusal: develop IS the destination, and the push goes through.
+    _checkout(repo, "feature/thing", "origin/feature/thing")
+    under = _git_in(repo, "push", "origin", "HEAD:refs/heads/develop")
+    assert under.returncode == 0, under.stderr
+    assert (
+        "develop" in _git_in(bare, "for-each-ref", "--format=%(refname:short)").stdout
+    ), "the push was allowed but the remote did not move; the premise has changed"
+
+    # The PreToolUse half is what refuses that command, and the other three forms.
+    for command in (
+        "git push origin HEAD:refs/heads/develop",
+        "git push origin HEAD:develop",
+        "git push origin develop",
+        "git push --all origin",
+    ):
+        assert _run_hook(_bash(command, cwd=repo)).returncode == 2, command
 
 
 @pytest.mark.unit

@@ -28,10 +28,28 @@
 # install-git-hooks` reports success either way.
 #
 # So when there are no ref lines, this judges by HEAD and its upstream instead.
-# That is deliberately imprecise in one direction: pushing a feature branch
-# while HEAD happens to be on develop is refused even though the push was fine.
-# That false refusal is overridable in one keystroke; a guard that does nothing
-# is not detectable at all. The message says which basis it used.
+# ⚠️ That substitutes a different question, and it is wrong in BOTH directions:
+#
+#   * Over-refusal: pushing a feature branch, or making a no-op push, while HEAD
+#     happens to sit on develop is refused even though nothing shared was being
+#     written.
+#   * Under-refusal: the destination stops being checked, so a push that DOES
+#     write to a shared branch goes through whenever HEAD is not on one.
+#     `git push origin HEAD:refs/heads/develop` from a feature branch is allowed
+#     here, and so are the `HEAD:develop`, `develop` and `--all` forms. All four
+#     are refused on the normal path.
+#
+# The destination is genuinely unknowable in this state: with no ref list, a
+# pre-push hook is given only the remote's name and URL, never the refspec. The
+# alternative — refusing every push on such a machine — would make the hook
+# unusable. So the fallback is the weaker question asked honestly, and the message
+# names the basis it used.
+#
+# What covers the under-refusal, for commands the coding assistant runs, is the
+# PreToolUse half: it resolves destinations from the command line and refuses all
+# four forms above. What is left genuinely uncovered on such a machine is a direct
+# push from a plain shell whose destination names a shared branch while HEAD does
+# not.
 #
 # A genuinely empty push — nothing to send, HEAD not on a shared branch — still
 # passes.
@@ -53,8 +71,13 @@ set -u
 
 # Only an affirmative value overrides, so ALLOW_SHARED_BRANCH=0 leaves the guard
 # on rather than reading as permission.
+#
+# Saying so matters: exported by a shell profile, an IDE or a CI runner, this
+# disables the hook for every push in that environment, and a guard believed on
+# and actually off is the failure this file exists to avoid.
 case "${ALLOW_SHARED_BRANCH:-}" in
 	1 | true | TRUE | True | yes | YES | Yes | y | Y | on | ON | On)
+		printf 'shared-branch guard: ALLOW_SHARED_BRANCH is set, so this push is not checked.\n' >&2
 		exit 0
 		;;
 esac
@@ -78,7 +101,11 @@ while read -r _local_ref _local_sha remote_ref _remote_sha || [ -n "$_local_ref"
 	remote_ref=${remote_ref%"$CR"}
 	case "$remote_ref" in
 		refs/heads/develop | refs/heads/main)
-			blocked="$blocked ${remote_ref#refs/heads/}"
+			name=${remote_ref#refs/heads/}
+			case " $blocked " in
+				*" $name "*) ;;
+				*) blocked="$blocked $name" ;;
+			esac
 			;;
 	esac
 	_local_ref=''

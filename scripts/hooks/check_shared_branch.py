@@ -11,20 +11,27 @@ refuses three commands:
 * ``git commit`` while the branch the commit would land on is a shared branch.
   That branch is tracked across the segments of one command, so ``git switch -c
   fix/x && git commit`` is allowed and ``git switch develop && git commit`` is
-  refused.
+  refused -- as is ``git switch --track origin/develop && git commit``, where git
+  names the new local branch after the remote ref's leaf.
 * ``git push`` whose destination ref resolves to a shared branch, including the
   forms that do not name it (``git push`` with an upstream, ``git push origin
   HEAD``, ``git push origin @``), the delete form (``git push origin
   :develop``), ``--all`` / ``--mirror``, and a bare push under
-  ``push.default=matching``, which pushes every same-named branch.
+  ``push.default=matching``, which pushes every same-named branch. The reading of
+  a bare push follows ``push.default``, so the two settings that pick one of the
+  branch name and the upstream do not also get the other; and ``--tags`` with no
+  refspec has no branch destination at all.
 * ``gh pr merge`` for a pull request that has a **failing** check.
 
 Overrides, because each refusal has a legitimate case: set
 ``ALLOW_SHARED_BRANCH=1`` for the first two and ``ALLOW_RED_MERGE=1`` for the
 third. Both are read from an inline assignment on the command itself
-(``ALLOW_SHARED_BRANCH=1 git push origin develop``) and from the environment;
-inline is the form to reach for, because a variable exported in one tool call is
-gone by the next.
+(``ALLOW_SHARED_BRANCH=1 git push origin develop``) and from the environment.
+Inline is the form to reach for, because it applies to one command: a variable
+exported in the assistant's Bash tool is gone by the next call, but one exported
+by a shell profile, an IDE or a CI runner persists and turns the check off for
+**every** command in that environment. Because that is invisible by construction,
+an honoured override prints a line to stderr saying which check it disabled.
 
 **What this does not cover.** Branch protection is a repository setting, and
 enabling it needs repository admin that no token here has (issue #933). Nothing
@@ -37,9 +44,16 @@ required status checks, and these are the routes it does not see:
 * A pull request whose checks never ran at all (a fork PR gets no GitHub CI
   here, and refusing those would block the only route they have).
 * ``git push --no-verify``, which also skips the companion ``pre-push`` hook.
-* Commands inside a script file or ``bash -c``: the hook inspects the command
-  text it is given, and ``sh deploy.sh`` reveals nothing about what the script
-  does. The ``pre-push`` hook is what covers those.
+* Anything that reaches ``git`` other than as the first word of a segment: a
+  script file (``sh deploy.sh``), ``bash -c``, ``eval``, ``xargs``, a wrapper
+  such as ``env``/``nice``/``time``/``command``/``sudo``, an absolute path
+  (``/usr/bin/git``), or a shell function shadowing ``git``. This reads the
+  command text it is given, and none of those spell out what will run. They are
+  not shapes anyone types by accident; the ``pre-push`` hook is what covers them.
+* ``cd -``, bare ``pushd`` and ``popd``. A plain ``cd <path>`` or ``pushd <path>``
+  earlier in the same command *is* followed, but those three depend on a directory
+  stack this does not keep, so a segment after one of them is judged against the
+  directory in force before it.
 * History written onto a shared branch by anything other than ``git commit`` --
   ``merge``, ``cherry-pick``, ``revert``, ``rebase``, ``am``. Those are local
   until pushed, and the push is what this refuses.
@@ -54,13 +68,31 @@ Two behaviours that are deliberate rather than oversights:
   repository whose working branch is ``main``, a commit there is refused. The
   override is the answer for that.
 
+The two override variables are not registered in
+``scripts/tests/gate_exemptions.json``, and that is a decision rather than an
+omission. That registry governs places where a **gate** is turned off for a file,
+a line or a rule, and it exists because such a reason is written once and then
+outlives the thing it described. These are per-invocation switches on a local
+convention, decided by whoever runs the command and recorded nowhere: registering
+them would put an entry in the registry that no ratchet can test and no audit can
+act on, which is the opposite of what that file is for. What they *can* do
+quietly -- being exported once and disabling everything afterwards -- is handled
+where it happens: both halves say on stderr when an override turns a check off.
+
 The companion ``scripts/hooks/pre-push`` is a real git ``pre-push`` hook covering
-pushes this hook never sees. Install it with ``make install-git-hooks``.
+pushes this hook never sees. Install it with ``make install-git-hooks``. ⚠️ On a
+machine with a system-wide ``core.hooksPath`` that hook cannot resolve a
+destination at all and judges by ``HEAD`` instead, so **this** half is the only
+one checking destinations there; its header says what that costs in both
+directions.
 
 Exit codes: 0 to allow, 2 to block with the reason on stderr. Anything
 unexpected -- a malformed payload, a command this cannot parse, git or ``gh``
 failing -- allows the command, because a guard that wedges the session is worse
 than one that misses a case. ``check_commit_text.py`` documents the same choice.
+Failing open is about what cannot be *read*, not about where the command runs: an
+explicit refspec names its destination on the command line, so ``git push origin
+develop`` is refused even in a directory that is not a repository.
 """
 
 from __future__ import annotations
@@ -116,6 +148,26 @@ PUSH_FLAGS_WITH_VALUE = frozenset(
     {"-o", "--push-option", "--receive-pack", "--exec", "--repo"}
 )
 
+#: ``gh pr merge`` options that take a separate value, so the value is not
+#: mistaken for the pull request number. Getting this wrong is silent: ``gh pr
+#: checks <some flag's value>`` errors, which reads as "cannot tell" and allows
+#: the merge with nothing printed.
+GH_MERGE_FLAGS_WITH_VALUE = frozenset(
+    {
+        "-b",
+        "--body",
+        "-F",
+        "--body-file",
+        "-t",
+        "--subject",
+        "--match-head-commit",
+        "-A",
+        "--author-email",
+        "-R",
+        "--repo",
+    }
+)
+
 #: A bare ``VAR=value`` prefix, which shells apply to the command that follows.
 ASSIGNMENT = re.compile(r"^([A-Za-z_][A-Za-z0-9_]*)=(.*)$")
 
@@ -125,6 +177,12 @@ HEREDOC_START = re.compile(r"<<-?\s*(['\"]?)([A-Za-z_][A-Za-z0-9_]*)\1")
 
 #: Subcommands that move ``HEAD`` to another branch.
 SWITCH_SUBCOMMANDS = frozenset({"switch", "checkout"})
+
+#: ``switch`` / ``checkout`` options whose value is the name of the branch being
+#: created, and so the branch HEAD ends up on.
+CREATE_FLAGS = frozenset(
+    {"-c", "-C", "--create", "--force-create", "-b", "-B", "--orphan"}
+)
 
 _TIMEOUT_SECONDS = 8
 
@@ -183,6 +241,49 @@ def local_shared_branches(repo: Path) -> set[str] | None:
     return {b for b in listed.split() if b in SHARED_BRANCHES}
 
 
+def _heredoc_delimiters(line: str, quote: str | None) -> tuple[list[str], str | None]:
+    """Delimiters ``line`` opens a heredoc with, and the quote state it ends in.
+
+    Only an **unquoted** ``<<`` opens one. ``git commit -m "shift <<Foo left"``
+    contains no heredoc, and reading it as one swallows the rest of the command --
+    which is how a quote-blind stripper turns a following ``git push origin
+    develop`` into text that is never examined. The quote state is threaded from
+    line to line because a quoted string may span them.
+    """
+    delimiters: list[str] = []
+    index = 0
+    while index < len(line):
+        character = line[index]
+        if quote:
+            if quote == '"' and character == "\\":
+                # Inside double quotes a backslash escapes the next character, so
+                # an escaped quote does not end the string. Single quotes have no
+                # escapes at all, which is why this is conditional on which.
+                index += 2
+                continue
+            if character == quote:
+                quote = None
+            index += 1
+            continue
+        if character in ("'", '"'):
+            quote = character
+            index += 1
+            continue
+        if character == "\\":
+            index += 2
+            continue
+        if line.startswith("<<", index):
+            match = HEREDOC_START.match(line, index)
+            if match:
+                delimiters.append(match.group(2))
+                index = match.end()
+                continue
+            index += 2  # `<<<` is a here-string: no body follows
+            continue
+        index += 1
+    return delimiters, quote
+
+
 def strip_heredocs(command: str) -> str:
     """Drop heredoc bodies, keeping the line that introduces them.
 
@@ -192,17 +293,22 @@ def strip_heredocs(command: str) -> str:
     """
     lines = command.splitlines()
     kept: list[str] = []
+    quote: str | None = None
     index = 0
     while index < len(lines):
         line = lines[index]
         kept.append(line)
         index += 1
-        for match in HEREDOC_START.finditer(line):
-            terminator = match.group(2)
+        delimiters, quote = _heredoc_delimiters(line, quote)
+        for terminator in delimiters:
             while index < len(lines) and lines[index].strip() != terminator:
                 index += 1
             if index < len(lines):  # drop the terminator line as well
                 index += 1
+        if delimiters:
+            # The body was data, so whatever quoting it contained does not carry
+            # into the commands that follow it.
+            quote = None
     return "\n".join(kept)
 
 
@@ -357,12 +463,30 @@ def switch_target(args: list[str]) -> tuple[bool, str | None]:
     """
     rest = args[1:]  # args[0] is "switch" or "checkout"
     if "--" in rest:
+        # A pathspec follows, so this is a file restore. `git checkout develop --`
+        # with nothing after it does switch branches, and is read here as a
+        # restore; a bare trailing `--` is not a shape anyone types by accident.
         return False, None
+    tracks = any(arg == "-t" or arg.startswith("--track") for arg in rest)
+    # A create option's *value* is the branch, so it is read from the option
+    # wherever the option sits -- and the whole argument list is searched before
+    # any positional is considered, because in `git checkout -t origin/x -b
+    # develop` the start point comes first. A value-less create flag is a
+    # malformed command; naming no branch leaves the following segments unjudged
+    # rather than judged against the wrong one.
+    for index, arg in enumerate(rest):
+        if arg in CREATE_FLAGS:
+            return True, rest[index + 1] if index + 1 < len(rest) else None
+        flag, separator, attached = arg.partition("=")
+        if separator and flag in CREATE_FLAGS:
+            return True, attached or None
     for arg in rest:
         if not arg.startswith("-"):
-            # The first positional is the branch in every form that moves HEAD,
-            # including `switch -c <new>` and `checkout -b <new> <start-point>`,
-            # because the new name is that option's value.
+            if tracks:
+                # `git switch --track origin/develop` and `git checkout -t
+                # origin/develop` name no new branch: git takes the remote ref's
+                # leaf, so HEAD lands on local `develop`.
+                return True, _branch_part(arg)
             return True, arg
     return True, None
 
@@ -389,6 +513,7 @@ def push_destinations(
     """
     positionals: list[str] = []
     pushes_everything = False
+    tags_only = False
     rest = list(args)
     while rest:
         arg = rest[0]
@@ -398,6 +523,8 @@ def push_destinations(
         if arg.startswith("-"):
             if arg in ("--all", "--mirror"):
                 pushes_everything = True
+            if arg == "--tags":
+                tags_only = True
             rest = rest[2:] if arg in PUSH_FLAGS_WITH_VALUE else rest[1:]
             continue
         positionals.append(arg)
@@ -410,22 +537,32 @@ def push_destinations(
 
     refspecs = positionals[1:]  # positionals[0], if present, is the remote
     if not refspecs:
+        if tags_only:
+            # `--tags` with no refspec sends refs/tags and no branch at all, so
+            # there is no destination to judge. `--follow-tags` is different: it
+            # sends the branch as well, so it is deliberately not in this test.
+            return set()
         if not head_known:
             return None
-        if effective_push_default(repo, inline or {}) == "matching":
+        default = effective_push_default(repo, inline or {})
+        if default == "matching":
             # `matching` pushes every local branch that already exists on the
             # remote under the same name. Enumerating the local ones over-counts
             # a shared branch the remote does not have, which is the safe
             # direction for a guard.
             return local_shared_branches(repo)
-        # No refspec: git pushes HEAD to its upstream, or to the same-named
-        # branch on the remote. Both readings matter, so take both.
+        # With no refspec the destination depends on push.default. Reading both
+        # the branch name and the upstream is right only for `simple`, where git
+        # requires them to agree; for the two settings that pick one reading, the
+        # other is a false refusal. `current` is the one that bites, because
+        # `simple` makes git itself refuse a mismatched-name push.
         branch = head if head is not None else current_branch(repo)
-        names = {branch} if branch else set()
         upstream = upstream_branch(repo, head)
-        if upstream:
-            names.add(upstream)
-        return names
+        if default == "current":
+            return {branch} if branch else set()
+        if default in ("upstream", "tracking"):
+            return {upstream} if upstream else set()
+        return {name for name in (branch, upstream) if name}
 
     destinations: set[str] = set()
     for refspec in refspecs:
@@ -444,7 +581,9 @@ def push_destinations(
     return destinations
 
 
-def failing_checks(pr: str | None, repo: Path) -> list[str] | None:
+def failing_checks(
+    pr: str | None, repo: Path, selector: str | None = None
+) -> list[str] | None:
     """Names of failing checks on ``pr``, or ``None`` if they cannot be read.
 
     ``gh pr checks`` exits non-zero when anything is pending or failing and still
@@ -452,10 +591,16 @@ def failing_checks(pr: str | None, repo: Path) -> list[str] | None:
     ``bucket`` field. Only ``fail`` counts: ``pending`` is the steady state for
     this repository's path-filtered workflows and its one conditional check, so
     refusing on pending would refuse every merge.
+
+    ``selector`` is the ``--repo`` the merge named, forwarded so that the checks
+    read belong to the pull request being merged rather than to whatever
+    repository ``repo`` happens to be.
     """
     argv = ["gh", "pr", "checks"]
     if pr:
         argv.append(pr)
+    if selector:
+        argv += ["--repo", selector]
     argv += ["--json", "bucket,name"]
     try:
         result = subprocess.run(  # noqa: S603 - fixed argv, no shell
@@ -481,12 +626,41 @@ def failing_checks(pr: str | None, repo: Path) -> list[str] | None:
     ]
 
 
-def merge_target(args: list[str]) -> str | None:
-    """The PR a ``gh pr merge`` names, or ``None`` for "the current branch's"."""
-    for token in args[1:]:  # args[0] is "merge"
-        if not token.startswith("-"):
-            return token
-    return None
+def merge_target(args: list[str]) -> tuple[str | None, str | None]:
+    """``(pull request, repository selector)`` for a ``gh pr merge``.
+
+    Either may be ``None``: no pull request means "the current branch's", and no
+    selector means "the repository we are in".
+
+    A flag's *value* must not be read as the pull request. ``gh pr merge --subject
+    "chore: x" 1055`` would otherwise be checked as pull request ``chore: x``,
+    and since ``gh pr checks`` errors on that, the failure reads as "cannot tell"
+    and the merge is allowed with nothing printed. Same class as
+    ``PUSH_FLAGS_WITH_VALUE``.
+    """
+    pull_request: str | None = None
+    selector: str | None = None
+    rest = list(args[1:])  # args[0] is "merge"
+    while rest:
+        arg = rest[0]
+        if arg.startswith("-"):
+            flag, sep, attached = arg.partition("=")
+            if sep:
+                if flag in ("-R", "--repo"):
+                    selector = attached
+                rest = rest[1:]
+                continue
+            if arg in GH_MERGE_FLAGS_WITH_VALUE and len(rest) > 1:
+                if arg in ("-R", "--repo"):
+                    selector = rest[1]
+                rest = rest[2:]
+                continue
+            rest = rest[1:]
+            continue
+        if pull_request is None:
+            pull_request = arg
+        rest = rest[1:]
+    return pull_request, selector
 
 
 def repo_root(payload: dict[str, object]) -> Path:
@@ -524,16 +698,53 @@ def _shared_branch_remedy(action: str) -> str:
         f"or re-run the command with the override in front of it, to {action} "
         "here deliberately:\n"
         f"  {ALLOW_SHARED_BRANCH}=1 <your command>\n"
-        "The inline form is the one to use: a variable exported in one tool call "
-        "is gone by the next.\n"
+        "Reach for the inline form: a variable exported in the assistant's Bash "
+        "tool is gone by the next call (one exported by a shell profile, an IDE or "
+        "a CI runner is not, and disables this for every command in that "
+        "environment).\n"
         "Note this guard is a local convention, not an enforced one: branch "
         "protection on this repository is off and enabling it needs repository "
         "admin (issue #933)."
     )
 
 
-def decide(payload: dict[str, object]) -> str | None:
-    """The reason to block ``payload``'s command, or ``None`` to allow it."""
+def _waived(name: str, what: str) -> str:
+    """The line printed when an override turns a check off.
+
+    An override exported by a shell profile, an IDE or a CI runner applies to
+    every command in that environment, and a guard that is believed on and is
+    actually off is the failure this whole file exists to avoid. So saying so
+    costs one line and is worth it.
+    """
+    return f"shared-branch guard: {name} is set, so {what} is not checked here."
+
+
+def chdir_target(argv: list[str], base: Path) -> Path | None:
+    """Where a ``cd`` / ``pushd`` segment moves to, or ``None`` if not one.
+
+    Only ``cd``/``pushd`` with an explicit path, and bare ``cd``, are read.
+    ``cd -``, bare ``pushd`` and ``popd`` depend on a directory stack this does
+    not keep, so they are left untracked rather than guessed at: a later segment
+    is then judged against the directory in force before them, which over-refuses
+    rather than under-refuses when that directory is the shared-branch one.
+    """
+    if argv[0] not in ("cd", "pushd"):
+        return None
+    if len(argv) == 1:
+        return Path.home() if argv[0] == "cd" else None
+    path = argv[1]
+    if path.startswith("-"):
+        return None
+    candidate = Path(path).expanduser()
+    return candidate if candidate.is_absolute() else base / candidate
+
+
+def decide(payload: dict[str, object], notices: list[str] | None = None) -> str | None:
+    """The reason to block ``payload``'s command, or ``None`` to allow it.
+
+    ``notices`` collects lines to print alongside an allowed command -- currently
+    only that an override turned a check off.
+    """
     tool_input = payload.get("tool_input")
     command = tool_input.get("command", "") if isinstance(tool_input, dict) else ""
     if not isinstance(command, str) or not command.strip():
@@ -547,9 +758,18 @@ def decide(payload: dict[str, object]) -> str | None:
     head: str | None = None
     head_known = True
 
+    def note(line: str) -> None:
+        if notices is not None and line not in notices:
+            notices.append(line)
+
     for tokens in segments(command):
         inline, argv = split_assignments(tokens)
         if not argv:
+            continue
+
+        moved = chdir_target(argv, base)
+        if moved is not None:
+            base = moved
             continue
 
         git_args = subcommand(argv, "git")
@@ -564,7 +784,10 @@ def decide(payload: dict[str, object]) -> str | None:
                 continue
 
             if git_args[0] == "commit":
-                if _allowed(ALLOW_SHARED_BRANCH, inline) or not head_known:
+                if _allowed(ALLOW_SHARED_BRANCH, inline):
+                    note(_waived(ALLOW_SHARED_BRANCH, "the branch this commits onto"))
+                    continue
+                if not head_known:
                     continue
                 branch = head if head is not None else current_branch(repo)
                 if branch in SHARED_BRANCHES:
@@ -576,6 +799,7 @@ def decide(payload: dict[str, object]) -> str | None:
 
             if git_args[0] == "push":
                 if _allowed(ALLOW_SHARED_BRANCH, inline):
+                    note(_waived(ALLOW_SHARED_BRANCH, "this push's destination"))
                     continue
                 destinations = push_destinations(
                     git_args[1:],
@@ -597,8 +821,10 @@ def decide(payload: dict[str, object]) -> str | None:
         gh_args = subcommand(argv, "gh")
         if gh_args and gh_args[:2] == ["pr", "merge"]:
             if _allowed(ALLOW_RED_MERGE, inline):
+                note(_waived(ALLOW_RED_MERGE, "this pull request's checks"))
                 continue
-            failures = failing_checks(merge_target(gh_args[1:]), base)
+            pull_request, selector = merge_target(gh_args[1:])
+            failures = failing_checks(pull_request, base, selector)
             if not failures:
                 continue
             return (
@@ -628,12 +854,15 @@ def main() -> int:
     if not isinstance(payload, dict) or payload.get("tool_name") != "Bash":
         return 0
 
+    notices: list[str] = []
     try:
-        reason = decide(payload)
+        reason = decide(payload, notices)
     except Exception:  # noqa: BLE001 - a guard must not wedge the session
         return 0
 
     if reason is None:
+        for line in notices:
+            print(line, file=sys.stderr)
         return 0
 
     print(reason, file=sys.stderr)
