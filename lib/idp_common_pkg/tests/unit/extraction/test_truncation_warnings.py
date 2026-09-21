@@ -1013,6 +1013,16 @@ class TestMinItemsIsVisibilityNotAHardConstraint:
         the two words and a whitespace-only flatten misses it (measured: the
         wrapped form evaded the scan in ``service.py`` and
         ``patterns/unified/template.yaml`` until ``#`` joined the class).
+
+        ⚠️ Flattening ``#`` deletes a **structural** boundary, not decoration: in
+        Markdown it is a heading marker, so text either side of it can be joined
+        into a phrase that appears nowhere in the rendered page (a paragraph ending
+        in "hard" immediately above a ``## Constraints`` heading reads as "hard
+        constraints"). No such join exists in these files today and the trade is
+        worth it — a comment leader hid a real recurrence — but if a spurious match
+        does appear, fix it by anchoring the scan per line (flatten within a line,
+        join only continuation lines) rather than by dropping ``#`` from the class,
+        which would reopen the wrapped-comment hole this closed.
         """
         text = re.sub(
             r"[*`#\s]+", " ", (_repo_root() / path).read_text(encoding="utf-8")
@@ -1246,6 +1256,102 @@ class TestMinItemsIsAHardFloorInAdvancedMode:
             "transport model — if this changes to a per-shard model, the per-shard "
             "floor warning in both doc tiers is no longer true and should go"
         )
+
+    def test_the_shipped_default_makes_the_per_shard_floor_the_default_case(self):
+        """Choosing Advanced mode IS the opt-in; sharding needs no second one.
+
+        ``max_concurrent_batches`` ships as ``10`` in ``base-extraction.yaml`` and in
+        the Advanced extraction settings the Configuration editor renders from
+        ``patterns/unified/template.yaml``, so the ``default=1`` on the Pydantic
+        field is the fallback for an ABSENT key and a deployed stack never reads it.
+        Both doc tiers state the per-shard floor as the ordinary case on that basis,
+        which is only true while all three sources agree — so they are pinned
+        together here rather than in prose. The neighbouring
+        ``test_the_shipped_default_clamps_only_on_very_long_sections`` exists because
+        three drafts printed the fallback as "the default"; this one covers the same
+        mistake at the place it changes a reader's decision.
+
+        The engagement condition is read off the real planner too: at the shipped
+        ``max_pages_per_shard: 5`` a section of ordinary pages runs single-pass up to
+        five pages and shards above that, so the 17-page worked example both tiers
+        use really does shard, into four. Asserted under the module token budget and
+        under a large auto-sized one, because the page cap is what binds for ordinary
+        pages and the docs say so.
+        """
+        import yaml
+
+        from idp_common.extraction.sharding import (
+            DEFAULT_SHARD_TOKEN_BUDGET,
+            plan_shards,
+        )
+
+        root = _repo_root()
+        shipped = yaml.safe_load(
+            (
+                root
+                / "lib/idp_common_pkg/idp_common/config/system_defaults"
+                / "base-extraction.yaml"
+            ).read_text(encoding="utf-8")
+        )["extraction"]["agentic"]
+        assert shipped["max_concurrent_batches"] == 10
+        assert shipped["max_pages_per_shard"] == 5
+
+        # The copy a user reads while choosing the value. Matched as text because the
+        # template is CloudFormation and not loadable as plain YAML.
+        block = re.search(
+            r"\n( +)max_concurrent_batches:\n(?:\1 .*\n)+",
+            (root / "patterns/unified/template.yaml").read_text(encoding="utf-8"),
+        )
+        assert block is not None and re.search(
+            r"^\s*default: 10$", block.group(0), re.M
+        ), (
+            "the Configuration editor must offer the same default as "
+            "base-extraction.yaml, or a user reads one number and gets another"
+        )
+
+        # Different on purpose, and why the docs must not quote it: this value is
+        # reached only when the key is absent, which no deployed stack does.
+        assert IDPConfig().extraction.agentic.max_concurrent_batches == 1
+
+        def sparse(n: int) -> list[str]:
+            return ["word " * 50] * n
+
+        for budget in (DEFAULT_SHARD_TOKEN_BUDGET, 200_000):
+            counts = {
+                pages: len(
+                    plan_shards(
+                        sparse(pages),
+                        token_budget=budget,
+                        max_shards=shipped["max_concurrent_batches"],
+                        max_pages_per_shard=shipped["max_pages_per_shard"],
+                    )
+                )
+                for pages in (5, 6, 17)
+            }
+            assert counts == {5: 1, 6: 2, 17: 4}, (budget, counts)
+
+    def test_no_document_frames_sharding_as_a_second_opt_in(self):
+        """The wording the shipped default makes false, banned where it shipped.
+
+        A reader told sharding is opt-in concludes the per-shard floor is an edge
+        case and sets `minItems` anyway; at `max_concurrent_batches: 10` it applies
+        to every multi-page Advanced section. Literal, like ``_BANNED_PATTERNS``: a
+        paraphrase gets past it, so this is a recurrence ratchet and not a proof
+        that no document frames it that way.
+        """
+        for path in (
+            "docs/extraction-and-confidence.md",
+            "lib/idp_common_pkg/idp_common/extraction/README.md",
+            "src/ui/src/components/json-schema-builder/constraints/ArrayConstraints.tsx",
+        ):
+            text = re.sub(
+                r"[*`#\s]+", " ", (_repo_root() / path).read_text(encoding="utf-8")
+            ).lower()
+            assert "sharding is opt-in" not in text, (
+                f"{path} calls sharding opt-in; max_concurrent_batches ships at 10, "
+                "so any Advanced-mode section over max_pages_per_shard pages shards "
+                "and the per-shard minItems floor is the default case"
+            )
 
     def test_the_relaxed_shard_schema_does_not_reach_the_tool_boundary(self):
         """The two shard-scoped boundaries disagree, and only one is relaxed.

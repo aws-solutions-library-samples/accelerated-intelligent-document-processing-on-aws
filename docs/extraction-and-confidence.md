@@ -2270,7 +2270,13 @@ No shipped preset sets `minItems`; it is something you add.
 ```yaml
 Transactions:
   type: array
-  minItems: 1        # read the Advanced-mode note below before choosing this
+  # A floor declares that a document under it is a FAILURE, so pick one no
+  # legitimate document of the class falls below — for a statement corpus whose
+  # shortest month still carries dozens of rows, a floor well under that count.
+  # `minItems: 1` is the value to think twice about: it fails every document
+  # whose list is legitimately empty. Read the Advanced-mode note below before
+  # setting any floor there.
+  minItems: 20
   items: { … }
 ```
 
@@ -2315,16 +2321,19 @@ So, in Advanced mode:
 - **If what you want is a signal rather than a failure, use
   `extraction.row_shortfall_action`** — it keeps the data and the explanation.
 
-⚠️ **With sharding on, a whole-section floor cannot be satisfied by any shard.**
-This is the case to know about, because it is the configuration this page
-recommends for exactly the documents someone would put a floor on. Sharding is
-opt-in (`extraction.agentic.max_concurrent_batches > 1`; the default of `1` runs one
-agent over the whole section), but once it is on, each shard agent gets **the whole
-section's** Pydantic model as its extraction tool — the floor is enforced *per
-shard*, not at the merge. A shard sees only its page range (`max_pages_per_shard`
-defaults to 5), so a `minItems: 100` floor on a 17-page section rejects every shard
-that holds fewer than 100 rows, and a shard over a cover page holds none at all.
-The document fails even though it genuinely contains 800 rows.
+⚠️ **A whole-section floor cannot be satisfied by any shard, and Advanced mode
+shards on the shipped defaults.** This is the ordinary case rather than an edge
+case: `max_concurrent_batches` ships at **10** — in `base-extraction.yaml` and in
+the Advanced extraction settings the Configuration editor renders — so choosing
+Advanced mode is the whole of the opt-in. Sharding then engages whenever the
+section exceeds one shard's budget, which at the shipped `max_pages_per_shard: 5`
+means any section over **five** pages of ordinary text, and fewer pages when they
+are dense enough to fill the shard token budget. Each shard agent gets **the whole
+section's** Pydantic model as its extraction tool, so the floor is enforced *per
+shard*, not at the merge. A shard sees only its page range, so a `minItems: 100`
+floor on a 17-page section — four shards at the shipped defaults — rejects every
+shard that holds fewer than 100 rows, and a shard over a cover page holds none at
+all. The document fails even though it genuinely contains 800 rows.
 
 There is no floor that is both useful and safe here: the only value every shard can
 satisfy is no floor. The relaxed per-shard *feedback* validator — which drops

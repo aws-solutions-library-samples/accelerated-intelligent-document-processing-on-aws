@@ -49,9 +49,10 @@ const ArrayConstraints = ({ attribute, onUpdate, availableClasses = [] }: ArrayC
         label="Min Items"
         description={
           'Minimum number of items required in the array. Leave empty for no floor. In Advanced extraction this is a hard floor enforced ' +
-          'while the agent works — and per shard when the section is sharded — so a floor a document (or one shard) cannot reach fails ' +
-          'extraction and keeps no rows. Set only a floor you are willing to fail on; to be warned instead, leave this empty and use ' +
-          'Row Shortfall Action.'
+          'while the agent works — and per shard when the section is sharded, which it is on the shipped defaults — so a floor a ' +
+          'document (or one shard) cannot reach fails extraction and keeps no rows. Set only a floor you are willing to fail on; to ' +
+          'be warned instead, leave this empty and rely on the extraction setting "Truncated list outcome" (default: warn), which is ' +
+          'evaluated once on the merged section and keeps the rows it did extract.'
         }
       >
         <Input

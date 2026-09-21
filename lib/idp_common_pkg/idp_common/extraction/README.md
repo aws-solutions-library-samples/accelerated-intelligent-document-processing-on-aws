@@ -2209,9 +2209,14 @@ signals make both loud without changing what is extracted:
     by driving `_run_shard_agent` with a spy on the tool builder: the tool is built from
     the same object the shard plan returned, a 17-row shard is rejected `too_short` at that
     boundary, and the shard feedback validator reports the same 17 rows as satisfying every
-    constraint. Sharding is opt-in
-    (`extraction.agentic.max_concurrent_batches > 1`, default `1`), and the only floor
-    every shard can satisfy is none — so on a sharding config, use
+    constraint. **This is the default Advanced-mode configuration, not a tuned one:**
+    `max_concurrent_batches` ships at `10` in `base-extraction.yaml` and in the UI schema
+    in `patterns/unified/template.yaml`, so the `default=1` on the Pydantic field in
+    `config/models.py` is only the fallback for an absent key and a deployed stack does not
+    read it. Sharding engages once the section exceeds one shard's budget — over
+    `max_pages_per_shard` (shipped `5`) pages of ordinary text, fewer when the pages are
+    dense enough to fill the shard token budget — so a 17-page section plans four shards at
+    the shipped defaults. The only floor every shard can satisfy is none, so use
     `extraction.row_shortfall_action`, which is evaluated once on the merged section.
   - ⚠️ **Reachability: treat this as a Simple-mode signal.** A short non-empty list does not
     survive the tool boundary in Advanced mode, so the section fails instead of reporting
