@@ -1145,3 +1145,182 @@ def test_the_retired_model_registry_is_shared_with_the_other_eol_gate():
         "`idp-cli config-validate` would accept a configuration pinning a dead "
         "model — which is what #708 asked it not to do"
     )
+
+
+# ---------------------------------------------------------------------------
+# Surface 8: model ids written as LITERALS in production Python.
+#
+# The seven surfaces above are the ones a model id is *declared* on. This one is
+# where it gets written a second time, and it is the surface that let seven
+# end-of-life defaults survive every check here: `code_defaults` reads the
+# Pydantic declared and resolved defaults out of `idp_common.config.models`, so a
+# model id spelled into an `except` handler in `idp_common/agents/**` was a model
+# default in every sense that matters at runtime and in none that the fixture
+# could see. The configured path had been repointed to a live model; the fallback
+# path still named Claude 3.7 Sonnet, which Bedrock answers for with
+# `ResourceNotFoundException`. So an agent that could not read its configuration
+# reported the wrong failure.
+#
+# This is a DENYLIST, not a closure: it does not care which models are written
+# here, only that none of them is retired. The set of legitimate literals is
+# large and grows normally (aliases, probe lists, docstring examples), so
+# requiring each to be registered would be noise. Being retired is the property
+# that matters.
+# ---------------------------------------------------------------------------
+
+#: Per-LINE exemptions, `<path>:<substring of the line>` — the shape
+#: `ARN_PARTITION_EXEMPT` and `scripts/sdlc/retired_services.json` use. A file-wide
+#: or directory-wide entry is not available on purpose: each of these lines names a
+#: dead model for its own reason, and one shared reason covering a file would be
+#: the exact defect this repo has shipped four times.
+RETIRED_LITERAL_EXEMPT = {
+    # The registry itself. Its keys ARE the retired ids.
+    "lib/idp_common_pkg/idp_common/config/retired_models.py": "*",
+    # The end-of-life -> live rewrite map, applied to a stored configuration when a
+    # stack is deployed or updated. Its KEYS must be the dead ids or the rewrite
+    # cannot match the config it exists to repair.
+    "src/lambda/update_configuration/index.py": '": "',
+    # A doctest example of parsing a model id, not a model anything selects.
+    "lib/idp_common_pkg/idp_common/bedrock/model_utils.py": ">>> get_model_max_output_tokens(",
+    # Developer tooling, not shipped and not customer-reachable: a limits-discovery
+    # probe list (asking Bedrock about a retired model is a valid probe) and a
+    # benchmark alias. Both fail loudly at the API if run, for the caller only.
+    "scripts/discover_model_limits.py": "*",
+    "benchmarks/harness/run_classification_bench.py": '"haiku3":',
+}
+
+_MODEL_LITERAL = re.compile(
+    r"[\"']((?:us|eu|apac|global)\.(?:anthropic|amazon|meta|mistral|deepseek|writer)"
+    r"\.[A-Za-z0-9.\-]+(?::[0-9]+)?)[\"']"
+)
+_LITERAL_SKIP = re.compile(r"(^|/)(tests?|notebooks|scratch)/|(^|/)test_|conftest")
+
+
+def _retired_literals() -> dict[str, list[tuple[int, str, str]]]:
+    """Every retired model id written as a string literal in production Python."""
+    found: dict[str, list[tuple[int, str, str]]] = {}
+    for rel in _tracked_files():
+        if not rel.endswith(".py") or _LITERAL_SKIP.search(rel):
+            continue
+        exempt = RETIRED_LITERAL_EXEMPT.get(rel)
+        text = (REPO_ROOT / rel).read_text(errors="ignore")
+        for lineno, line in enumerate(text.splitlines(), 1):
+            for model in _MODEL_LITERAL.findall(line):
+                if _base_model(model) not in EOL_BASE_MODELS:
+                    continue
+                if exempt == "*" or (exempt and exempt in line):
+                    continue
+                found.setdefault(rel, []).append((lineno, model, line.strip()[:100]))
+    return found
+
+
+@pytest.mark.unit
+def test_no_retired_model_is_written_as_a_literal_in_production_python():
+    offenders = _retired_literals()
+    assert not offenders, (
+        "these production Python lines name an end-of-life model that Bedrock "
+        "answers for with ResourceNotFoundException. A literal on an error path is "
+        "still a default: it decides what runs when the configured model cannot be "
+        "read, and no other check here sees it.\n"
+        + json.dumps(offenders, indent=2, sort_keys=True)
+    )
+
+
+@pytest.mark.unit
+def test_the_literal_scan_reads_something():
+    """Non-vacuity: the scan must actually find model literals to filter."""
+    seen = 0
+    for rel in _tracked_files():
+        if not rel.endswith(".py") or _LITERAL_SKIP.search(rel):
+            continue
+        seen += len(
+            _MODEL_LITERAL.findall((REPO_ROOT / rel).read_text(errors="ignore"))
+        )
+    assert seen >= 40, (
+        f"the literal scan found only {seen} model ids across production Python. "
+        "It found 79 when written. A collapse means the regex or the file filter "
+        "stopped matching, and this gate is reporting clean because it is blind."
+    )
+
+
+#: How many retired literals each exemption shielded when it was written. Pinned
+#: because non-vacuity alone does not constrain an exemption's WIDTH: widening an
+#: entry to "*" keeps it shielding something while silently pre-exempting every new
+#: retired literal the file gains. Measured, not chosen — see the test below.
+RETIRED_LITERAL_EXEMPT_COUNTS = {
+    "benchmarks/harness/run_classification_bench.py": 1,
+    "lib/idp_common_pkg/idp_common/bedrock/model_utils.py": 1,
+    "lib/idp_common_pkg/idp_common/config/retired_models.py": 7,
+    "scripts/discover_model_limits.py": 3,
+    "src/lambda/update_configuration/index.py": 5,
+}
+
+
+def _shield_counts() -> dict[str, int]:
+    counts: dict[str, int] = {}
+    for rel, pattern in RETIRED_LITERAL_EXEMPT.items():
+        path = REPO_ROOT / rel
+        if not path.exists():
+            continue
+        n = 0
+        for line in path.read_text(errors="ignore").splitlines():
+            for model in _MODEL_LITERAL.findall(line):
+                if _base_model(model) in EOL_BASE_MODELS and (
+                    pattern == "*" or pattern in line
+                ):
+                    n += 1
+        counts[rel] = n
+    return counts
+
+
+@pytest.mark.unit
+def test_every_literal_exemption_still_shields_something():
+    """Non-vacuity per entry: a dead exemption pre-exempts whatever lands next."""
+    dead = []
+    for rel, pattern in sorted(RETIRED_LITERAL_EXEMPT.items()):
+        if not (REPO_ROOT / rel).exists():
+            dead.append(f"{rel} (file is gone)")
+            continue
+        if not _shield_counts().get(rel):
+            dead.append(f"{rel}:{pattern} (shields no retired literal)")
+    assert not dead, (
+        "these entries in RETIRED_LITERAL_EXEMPT no longer shield anything, so "
+        f"they only pre-exempt whatever next occupies the path: {dead}"
+    )
+
+
+@pytest.mark.unit
+def test_literal_exemptions_do_not_shield_more_than_when_they_were_written():
+    """Count pinning: a NEW retired literal inside an exempt file still fails.
+
+    Without this, the honest way to silence the denylist is to widen an existing
+    entry, which leaves every other ratchet here green. A count that has grown
+    means a retired model id was added to a file whose exemption was justified for
+    the ids already in it — which is a different claim, and needs its own.
+    """
+    counts = _shield_counts()
+    assert set(counts) == set(RETIRED_LITERAL_EXEMPT_COUNTS), (
+        "RETIRED_LITERAL_EXEMPT and RETIRED_LITERAL_EXEMPT_COUNTS name different "
+        f"files: only-in-exempt={sorted(set(counts) - set(RETIRED_LITERAL_EXEMPT_COUNTS))}, "
+        f"only-in-counts={sorted(set(RETIRED_LITERAL_EXEMPT_COUNTS) - set(counts))}"
+    )
+    grown = {
+        rel: {"pinned": RETIRED_LITERAL_EXEMPT_COUNTS[rel], "now": n}
+        for rel, n in sorted(counts.items())
+        if n > RETIRED_LITERAL_EXEMPT_COUNTS[rel]
+    }
+    assert not grown, (
+        "these exempt files now name MORE retired models than when the exemption "
+        "was written, so a new dead model id has been added behind an exemption "
+        f"that was not justified for it: {json.dumps(grown, indent=2, sort_keys=True)}"
+    )
+    shrunk = {
+        rel: {"pinned": RETIRED_LITERAL_EXEMPT_COUNTS[rel], "now": n}
+        for rel, n in sorted(counts.items())
+        if n < RETIRED_LITERAL_EXEMPT_COUNTS[rel]
+    }
+    assert not shrunk, (
+        "these counts are stale — the files shield FEWER retired literals than "
+        "pinned, so the pin has stopped constraining the difference. Re-pin: "
+        f"{json.dumps(shrunk, indent=2, sort_keys=True)}"
+    )

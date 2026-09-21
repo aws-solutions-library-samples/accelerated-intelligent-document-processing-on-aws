@@ -12,6 +12,37 @@ from typing import Any, Dict, Optional
 logger = logging.getLogger(__name__)
 
 
+def _default_agent_model_id() -> str:
+    """The model an agent falls back to when its configured model cannot be read.
+
+    Read out of ``ChatCompanionConfig.model_id``'s declared default rather than
+    written here, because this value has to stay alive and a second copy of a
+    model id is a second thing to retire. Seven agent modules each held their own
+    literal, and every one of them still named a model Bedrock had already
+    end-of-lifed: the configured path had been repointed, the fallback path had
+    not, so the fallback turned a recoverable configuration error into a
+    ``ResourceNotFoundException`` that names the wrong problem.
+
+    The import is local and guarded. This runs on an error path — often *because*
+    configuration could not be loaded — and it must not be the thing that raises.
+    The literal below is the last resort and is covered by the same gate that
+    covers every other model surface, so it cannot silently go stale either.
+    """
+    try:
+        from idp_common.config.models import ChatCompanionConfig
+
+        default = ChatCompanionConfig.model_fields["model_id"].default
+        if isinstance(default, str) and default:
+            return default
+    except Exception:  # pragma: no cover - defensive, see docstring
+        pass
+    return "global.anthropic.claude-sonnet-4-6"
+
+
+#: Fallback model for agents whose configured model id cannot be resolved.
+DEFAULT_AGENT_MODEL_ID = _default_agent_model_id()
+
+
 def get_environment_config(required_keys: Optional[list] = None) -> Dict[str, Any]:
     """
     Get configuration from environment variables with validation.
