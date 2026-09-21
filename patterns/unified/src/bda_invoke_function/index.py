@@ -30,7 +30,7 @@ dynamodb = boto3.resource('dynamodb')
 tracking_table = dynamodb.Table(os.environ['TRACKING_TABLE'])
 
 # def invoke_data_automation(payload: Dict[str, Any]) -> Dict[str, Any]:
-def invoke_data_automation(data_project_arn: str, input_s3_uri: str, output_s3_uri: str) -> Dict[str, Any]:
+def invoke_data_automation(data_project_arn: str, input_s3_uri: str, output_s3_uri: str) -> Dict[str, Any]:  # pyright: ignore[reportReturnType] - every loop exit returns or re-raises; the implicit fall-through is unreachable
     retry_count = 0
     last_exception = None
     request_start_time = time.time()

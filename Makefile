@@ -485,22 +485,43 @@ cfn-lint-warnings: ## Same as cfn-lint but lists every advisory warning (W*/I*) 
 
 # Deliberately NOT part of `lint`, `fastlint` or `lint-cicd`, and deliberately NOT
 # in test_ci_gate_parity.py's SHARED_GATES. It needs network access and a token
-# with administration:read, and it reports "not protected" until issue #933 is
-# closed — enabling branch protection needs repository ADMIN, which no contributor
-# and no CI token here has. Wiring it into a blocking gate today would red-line
-# every branch for a condition nobody working in the tree can fix.
+# with administration:read, and on this repository it reports "not protected" on
+# BOTH long-lived branches: `develop`, which pull requests target, and `main`,
+# which is the default branch and the one releases are cut from. Wiring it into a
+# blocking gate would red-line every branch for a condition nobody working in the
+# tree can fix. test_check_branch_protection.py fails if it is added to a lint
+# target, to SHARED_GATES, or to either CI configuration.
 #
-# TODO(#933): once protection is enabled, make this a required, blocking check —
-# add it to lint-cicd and pass --fail-on-skip so a missing token is an error
-# rather than a silent pass.
-check-branch-protection: ## Report whether branch protection actually requires the CI checks (opt-in, needs a GitHub token; see issue #933)
+# That is an accepted residual, not pending work: enabling classic protection
+# needs repository ADMIN, which no contributor and no CI token here has, and the
+# decision to stop pursuing it from the tree is recorded in closed issue #933.
+# Nothing here can substitute -- enforcement is server-side, so a merge taken
+# through GitHub's Merge button runs no code from this tree.
+#
+# It becomes a required, blocking check when a repository SETTING changes — either
+# somebody with repository admin enables protection, or an organization/enterprise
+# owner publishes a branch ruleset targeting these branches (that second route
+# needs no repository admin). At that point add it to lint-cicd and pass
+# --fail-on-skip so a missing token is an error rather than a silent pass.
+#
+# Run it twice: one invocation reads one branch.
+#   make check-branch-protection
+#   make check-branch-protection BRANCH_PROTECTION_ARGS=--branch=main
+check-branch-protection: ## Report whether branch protection actually requires the CI checks (opt-in, needs a GitHub token; reads one branch per run)
 	@$(PYTHON) scripts/sdlc/check_branch_protection.py $(BRANCH_PROTECTION_ARGS)
 
 check-retired-models: ## Ask Bedrock whether any model this repo offers has been retired (opt-in, needs AWS credentials; NOT a CI gate)
 	@$(PYTHON) scripts/sdlc/check_retired_models.py $(RETIRED_MODELS_ARGS)
 
 ##@ Type Checking
-typecheck: ## Run type checks with basedpyright
+# `typecheck` is THE type gate, and it is what both CIs run. It reads
+# pyrightconfig.json's 12-entry `include`, whose closure over every tracked .py
+# file scripts/tests/test_pyright_config.py derives from `git ls-files` — so the
+# set it covers cannot silently shrink. A full run is ~1 minute through make
+# (48-60s measured; the bare binary is ~47s) over 1273 files, which is why there
+# is no cheaper CI variant: the PR-scoped form below narrows the file set and
+# therefore cannot see a break your change caused in a file it did not select.
+typecheck: ## Run type checks with basedpyright over the whole tree (the CI gate)
 	@echo "Running type checks..."
 	basedpyright
 
@@ -509,8 +530,13 @@ typecheck-stats: ## Type checks with detailed statistics
 	basedpyright --stats
 
 # Usage: make typecheck-pr [TARGET_BRANCH=branch_name]
+#
+# A DEVELOPER CONVENIENCE, NOT A GATE. It narrows basedpyright to the files you
+# changed for fast local feedback; it is deliberately in neither CI, because a
+# file-scoped check passes on a signature change whose broken caller lives in a
+# file the diff did not touch. Run `make typecheck` before you push.
 TARGET_BRANCH ?= develop
-typecheck-pr: ## Type check only files changed vs TARGET_BRANCH (default: main)
+typecheck-pr: ## Fast local type check of only the files changed vs TARGET_BRANCH (default: develop) — not a gate
 	@echo "Type checking changed files against $(TARGET_BRANCH)..."
 	$(PYTHON) scripts/sdlc/typecheck_pr_changes.py $(TARGET_BRANCH)
 
@@ -946,6 +972,19 @@ endif
 # no-op; unset (local) installs as before.
 NPM_CI := $(if $(SKIP_NPM_CI),true,npm ci --prefer-offline --no-audit)
 
+# THE GATE CHECKS; THE FIXER FIXES. Never the same invocation.
+#
+# This recipe used to run `npm run lint -- --fix`, and it is reached from both
+# `make lint` and `make lint-cicd` — so in CI it repaired the ephemeral checkout
+# and then reported it clean. `prettier/prettier` is configured 'error' in
+# src/ui/eslint.config.js and is entirely auto-fixable, which left the UI
+# formatting gate with no failure mode at all. `npm run lint` also carried no
+# --max-warnings 0, so five warn-level rules (no-unused-vars, no-explicit-any,
+# no-shadow, react/no-array-index-key, react/jsx-filename-extension) were
+# advisory forever.
+#
+# `npm run lint` now spells out `--max-warnings 0` and does not fix. Use
+# `make ui-lint-fix` to apply what is auto-fixable.
 ui-lint: ## Run UI linting with checksum caching (skips if unchanged). Use FORCE=1 to force re-run.
 	@echo "Checking if UI lint is needed..."
 	@CURRENT_HASH=$$($(PYTHON) -c "from publish import IDPPublisher; p = IDPPublisher(); print(p.get_directory_checksum('src/ui'))"); \
@@ -956,12 +995,24 @@ ui-lint: ## Run UI linting with checksum caching (skips if unchanged). Use FORCE
 		else \
 			echo "UI code checksum changed - running lint..."; \
 		fi; \
-		cd src/ui && $(NPM_CI) && npm run lint -- --fix && npm run typecheck || exit 1; \
+		cd src/ui && $(NPM_CI) && npm run lint && npm run typecheck || exit 1; \
 		echo "$$CURRENT_HASH" > .checksum; \
 		echo -e "$(GREEN)✅ UI lint and typecheck completed and checksum updated$(NC)"; \
 	else \
 		echo -e "$(GREEN)✅ UI code checksum unchanged - skipping lint (use FORCE=1 to force re-run)$(NC)"; \
 	fi
+
+ui-lint-fix: ## Auto-fix what eslint can fix in src/ui, then re-run the strict gate
+	@echo "Applying eslint --fix to src/ui..."
+	@# The `-` prefix is load-bearing. `eslint --fix` exits non-zero when anything
+	@# it could NOT fix remains, which is the common case — so without it make
+	@# aborts here and the re-check below never runs, leaving the operator with the
+	@# fixer's output instead of the gate's. Ignoring this line's status is safe:
+	@# the gate runs next and decides the target's exit status.
+	-@cd src/ui && $(NPM_CI) && npm run lint:fix
+	@# Deliberately re-runs the CHECKING form, so the exit status reflects what is
+	@# left rather than what was repaired.
+	@$(MAKE) --no-print-directory ui-lint FORCE=1
 
 ui-build: ## Build UI for production (runs lint + typecheck + vite build)
 	@echo "Checking UI build"

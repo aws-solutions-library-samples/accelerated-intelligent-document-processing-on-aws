@@ -157,6 +157,7 @@ that exists and never runs is otherwise indistinguishable from one that passes:
 | `nested/bedrockkb/src/s3_vectors_manager/tests` | Named separately now that an exclusion no longer covers what is nested under it. Not skipped in practice — `make test-packages-cicd` runs it directly, in both CI systems, so CI runs more than `make test` does |
 | `samples/lambda-hook-inference/GENAIIDP-chandra-ocr-hook` | `test_local.py` is a manual local-run script and collects zero pytest tests (measured) |
 | `lib/idp_sdk/idp_sdk/_core` | source, not tests: `test_studio_processor.py` is the Test Studio processor module, which the `test_` prefix makes look like a suite |
+| `lib/idp_common_pkg/manual_tests/agents` | operator-run scripts, not a suite: each one drives real Bedrock, Athena or DynamoDB against a deployed stack and bills model calls. Run by hand (`python manual_tests/agents/test_analytics.py -q "…"`); `norecursedirs` in `lib/idp_common_pkg/pytest.ini` keeps a bare `pytest` from collecting them |
 
 Adding an exclusion, or lifting one of these, fails that guard until this table and
 the registry agree — it is checked in both directions, so a row that outlives the
@@ -202,10 +203,11 @@ through the gap.
 ### Whether any of this actually blocks a merge
 
 Parity means both CIs *run* a gate. Whether a red gate can *stop* a merge is a
-repository setting, and today it does not: `develop` has no branch protection, so
-every gate in this table is advisory — a pull request can be merged with all checks
-red, and because the GitHub workflows are `pull_request`-only, a direct push to
-`develop` runs none of them.
+repository setting, and today it does not: **neither `develop` nor `main` has any
+branch protection** — and `main` is the default branch and the one releases are cut
+from — so every gate in this table is advisory. A pull request can be merged with
+all checks red, and because the gate workflows are `pull_request`-only, a direct
+push to either branch runs none of them.
 
 ```bash
 make check-branch-protection    # reads the live setting via the GitHub API
@@ -241,13 +243,25 @@ compare the required-check list, because `GET /repos/{slug}/branches/{branch}`
 carries a nested `protection.required_status_checks` object at that scope;
 `administration:read` is what the other five assertions — approvals, stale-review
 dismissal, force-push and deletion blocks, `enforce_admins` — need, and a run
-without it reports those five as **unread**, not as satisfied), and it reports "not
-protected" until
-[issue #933](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/933)
-is closed, since enabling protection needs repository **admin**. With no token or no
-network it exits 0 with an explanation. Once #933 closes it should become a required,
-blocking check, run with `--fail-on-skip`. Its own parsing and assertion logic is
-covered offline by `scripts/tests/test_check_branch_protection.py`.
+without it reports those five as **unread**, not as satisfied). One invocation reads
+one branch, so answering the question for this repository takes two — add
+`BRANCH_PROTECTION_ARGS=--branch=main` for the second. With no token or no network it
+exits 0 with an explanation; otherwise its steady-state result here is exit 1 with a
+single `not_protected` finding on each branch, which is the expected answer rather
+than a regression.
+
+The absence of protection is a **known, accepted residual**, not an open task, and
+the decision is recorded in closed
+[issue #933](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/933):
+enabling classic protection needs repository **admin**, which no contributor and no
+CI token here has. Nothing in the repository can substitute, because enforcement is
+server-side — a merge taken through GitHub's own Merge button runs no code from this
+tree. So the condition for making this a required, blocking check, run with
+`--fail-on-skip`, is a repository **setting** changing: either somebody with
+repository admin enables protection, or an organization or enterprise owner
+publishes a **branch ruleset** targeting these branches, which needs no repository
+admin at all. Its own parsing and assertion logic is covered offline by
+`scripts/tests/test_check_branch_protection.py`.
 
 ## 3. Web UI unit tests
 

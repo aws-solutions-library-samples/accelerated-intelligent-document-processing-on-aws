@@ -420,7 +420,8 @@
       "crossReferences": [
         "ruff.toml::exclude",
         "ruff.toml::lint.per-file-ignores",
-        "scripts/lint_debt.json::lint_debt.json"
+        "scripts/lint_debt.json::lint_debt.json",
+        "scripts/tests/test_pyright_config.py::VENDORED_SEVERITY_EXEMPTIONS"
       ],
       "issues": [
         "975",
@@ -676,6 +677,7 @@
       "ratchet": "universe-closure",
       "reason": "Roots known not to run in the shared gate. Each member carries its own reason in the constant, which is the authority -- this field records the judgement the reasons need rather than re-listing them, because an enumeration here goes stale the moment a member is added or paid off. Two members need that judgement recorded. `scripts` is the member whose reason is narrowest relative to the path it names: it is a mis-collection of ONE file, the live RBAC harness's test_email helper, so both consuming gates match it exactly rather than as a prefix -- inherited, it would exempt the four gate suites beneath it. `nested/bedrockkb/src/s3_vectors_manager` names one failing test, which is the most perishable kind of reason there is, so test_run_all_tests_registry.py computes it three ways: the node must still resolve to exactly one collected test, it must still fail, and its file must still pass without it, so fixing, renaming or deleting that test all invalidate the entry rather than leaving it standing. The remaining reasons are dependency availability, an absence of collectable tests, a source tree whose modules are named test_*, operator-run scripts, and one asymmetry in the safe direction (excluded from `make test` while both CIs run it directly). No single predicate is the premise for a set that heterogeneous.",
       "crossReferences": [
+        "lib/idp_common_pkg/pytest.ini::norecursedirs",
         "scripts/run_all_tests.py::RUN_ROOTS"
       ],
       "predicateConsidered": {
@@ -1195,6 +1197,63 @@
         "933"
       ]
     },
+    "scripts/tests/test_ci_gate_parity.py::GATE_SECTION_PREFIXES": {
+      "kind": "enforced-universe",
+      "memberKind": "Makefile ##@ section heading",
+      "turnsOff": "nothing on its own; it names the 5 of 16 Makefile sections scanned wholesale, so a section absent from it contributes targets to the universe only if their NAME is check-shaped",
+      "premise": [
+        "JUDGEMENT"
+      ],
+      "ratchet": "universe-closure",
+      "reason": "Whether every target in a section is a check is a property of the section, readable from its heading, and true of these five. It is NOT true in reverse: UI Development holds `ui-lint` and `ui-test`, and Code Generation holds `codegen-check`, so a rule that the other eleven sections hold no checks would be false for the two sections nearest this module's own subject. That is why section scope is not the only route into the universe -- CHECK_SHAPED_NAME_PREFIXES adds a check-shaped target from any unscanned section, and a non-vacuity test names those three so the second route cannot quietly stop matching.",
+      "ratchetGap": "A check in an unscanned, non-live-stack section whose NAME is not check-shaped -- neither `check-`/`validate-`/`lint`/`typecheck`-prefixed nor `-check`/`-checks`/`-lint`/`-test`/`-tests`-suffixed -- is in neither route and would not be classified. Naming is the only signal used, deliberately: deciding from a recipe whether it checks something is a guess, and a wrong guess produces a green gate.",
+      "crossReferences": [
+        "scripts/tests/test_ci_gate_parity.py::LIVE_STACK_SECTION_PREFIXES",
+        "scripts/tests/test_ci_gate_parity.py::GATES_DELIBERATELY_OUT_OF_CI"
+      ],
+      "ratchetEvidence": "scripts/tests/test_ci_gate_parity.py"
+    },
+    "scripts/tests/test_ci_gate_parity.py::LIVE_STACK_SECTION_PREFIXES": {
+      "kind": "exemption",
+      "memberKind": "Makefile ##@ section heading",
+      "turnsOff": "universe closure for every target in the Stack tests section, including check-shaped ones the name route would otherwise pull in",
+      "premise": [
+        "JUDGEMENT"
+      ],
+      "ratchet": "count-pinned",
+      "reason": "This is the one section where a single justification is genuinely a property of every member: each target deploys or drives a live IDP stack, which its own heading states, and no pull-request gate can do that. Which targets those are is recorded in docs/testing.md, and that each appears there is enforced by scripts/tests/test_testing_doc.py rather than asserted here.",
+      "ratchetGap": "The premise is not computed per member -- nothing reads a recipe to confirm it needs a stack. What is mechanical is the member COUNT: a target added to this section fails until someone confirms the premise holds for it and updates the pinned number.",
+      "crossReferences": [
+        "scripts/tests/test_ci_gate_parity.py::GATE_SECTION_PREFIXES"
+      ],
+      "ratchetEvidence": "scripts/tests/test_ci_gate_parity.py"
+    },
+    "scripts/tests/test_ci_gate_parity.py::GATES_DELIBERATELY_OUT_OF_CI": {
+      "kind": "exemption",
+      "turnsOff": "the 'every check-shaped Makefile target runs in both CIs' assertion, for one named target",
+      "premise": [
+        "JUDGEMENT"
+      ],
+      "ratchet": "universe-closure",
+      "reason": "Whether a target CAN be a CI gate is a property of what it does — mutates the tree, prompts a human, needs AWS credentials, needs a deployed stack, reports rather than asserts — and none of that is readable from the Makefile. So one sentence per target, naming that target's own obstacle.",
+      "ratchetGap": "The reasons themselves are unchecked prose. What is mechanical: no target IN THE UNIVERSE may be absent from both this list and CI; a listed target CI has since started running fails; a listed target that no longer exists fails. Read 'in the universe' precisely -- it is every target in the 5 sections GATE_SECTION_PREFIXES names, plus any check-shaped-by-name target in any other section except Stack tests. It is NOT every Makefile target, and the residual is stated on the GATE_SECTION_PREFIXES entry.",
+      "memberKind": "make target",
+      "crossReferences": [
+        "scripts/tests/test_ci_gate_parity.py::GATE_SECTION_PREFIXES"
+      ],
+      "ratchetEvidence": "scripts/tests/test_ci_gate_parity.py"
+    },
+    "scripts/tests/test_ci_gate_parity.py::CHECK_ONLY_EQUIVALENTS": {
+      "kind": "exemption",
+      "turnsOff": "the 'lint-cicd invokes make <target>' form of the lint-parity assertion, for one prerequisite of `lint`",
+      "premise": [
+        "JUDGEMENT"
+      ],
+      "ratchet": "staleness",
+      "reason": "Two of `make lint`'s prerequisites auto-fix, so `lint-cicd` cannot invoke them — it runs the check-only command instead, and that command's spelling is not derivable from the target's name. The substituted command must still be present in the recipe, so this relaxes how the gate is spelled and not whether it runs.",
+      "memberKind": "make target",
+      "ratchetEvidence": "scripts/tests/test_ci_gate_parity.py"
+    },
     "scripts/tests/test_classification_prompt_copies_in_sync.py::EXEMPT": {
       "kind": "exemption",
       "turnsOff": "the 'every committed copy carries the #653 rules' check for four files",
@@ -1538,6 +1597,38 @@
       "memberKind": "path",
       "ratchetEvidence": "scripts/tests/test_pyright_config.py"
     },
+    "scripts/tests/test_pyright_config.py::DISABLED_RULE_EXEMPTIONS": {
+      "kind": "exemption",
+      "turnsOff": "basedpyright's reporting of the named diagnostic rule, repo-wide and for every file the gate covers. A rule at 'none' produces no diagnostic at all, so unlike a path exclusion there is no warning left behind to count. Three sibling pins bound the list itself: typeCheckingMode is fixed (it is the only setting governing the ~100 rules the config never names), a boolean in place of a severity is rejected (basedpyright accepts `false` and it silences the rule), and every rule the config names must appear in one of the three authored lists so a deletion is caught as well as a downgrade",
+      "premise": [
+        "JUDGEMENT"
+      ],
+      "reason": "The 14 rules pinned to 'none' in pyrightconfig.json. Eleven of them are one root cause: boto3's client() and resource() are untyped factories, so every AWS call in this tree yields Unknown members, Unknown arguments and Optional response subscripts, and those rules fire on correct code at a rate that buries the rules that find defects. Three are duplicates of a ruff rule that already covers the finding with an autofix. The entry per rule says what that rule specifically stops catching here, because the shared root cause is a fact about the tree and not a reason for any individual rule -- one justification attached to a set is the defect this registry exists to catch. Paying one down means fixing its findings and deleting its entry, in that order.",
+      "memberKind": "basedpyright diagnostic rule id",
+      "ratchet": "universe-closure",
+      "ratchetEvidence": [
+        "scripts/tests/test_pyright_config.py"
+      ],
+      "issues": [
+        "975"
+      ]
+    },
+    "scripts/tests/test_pyright_config.py::VENDORED_SEVERITY_EXEMPTIONS": {
+      "kind": "exemption",
+      "turnsOff": "the 'error' severity of the named rules for files under the named root. The files stay in filesAnalyzed and the diagnostics are still printed, at 'warning' -- so this softens the gate's exit code for that root rather than removing it from the gate. Bounded two ways: the root must be a strict descendant of a pyrightconfig `include` entry, because a root of '.' would relax the rule for the whole tree, and the rules it may relax are pinned per root so a third one is a new decision rather than an extension of this one",
+      "premise": [
+        "JUDGEMENT"
+      ],
+      "reason": "One root: the vendored copy of awslabs/pii-anonymizer under feature-platform/pii-anonymizer/hook/vendor, relaxing exactly reportCallIssue and reportReturnType. Its files are re-copied byte-for-byte from upstream by the tree's own resync script, against the commit pinned in PROVENANCE.md, so an inline '# pyright: ignore' written into one is dropped by the next resync and an annotation corrected in the copy puts this repo in conflict with upstream on the next diff. The 5 diagnostics (4 reportReturnType, 1 reportCallIssue) are upstream's to fix. ruff.toml carves the same tree out of lint and format for the same reason, which is why the two are cross-referenced here: auditing the scope of one has to reach the other.",
+      "memberKind": "path",
+      "ratchet": "count-pinned",
+      "ratchetEvidence": [
+        "scripts/tests/test_pyright_config.py"
+      ],
+      "crossReferences": [
+        "ruff.toml::extend-exclude"
+      ]
+    },
     "scripts/tests/test_repo_quality_review_skill.py::CLINE_EXEMPT": {
       "kind": "exemption",
       "turnsOff": "the 'every .claude skill has a .cline symlink' check",
@@ -1803,6 +1894,24 @@
       "ratchet": "none",
       "reason": "Enforced vocabulary.",
       "ratchetGap": "An unrecognised status would be silently uncounted."
+    },
+    "lib/idp_common_pkg/pytest.ini::norecursedirs": {
+      "kind": "exemption",
+      "memberKind": "path",
+      "turnsOff": "pytest collection entirely, for the directories named, in every invocation rooted at lib/idp_common_pkg",
+      "premise": [
+        "JUDGEMENT"
+      ],
+      "ratchet": "non-vacuity",
+      "reason": "One added entry, `manual_tests`, holding operator-run scripts that drive real Bedrock, Athena and DynamoDB against a deployed stack and bill model calls. It is JUDGEMENT because 'these scripts must not run unattended' is a fact about what they do at runtime, not about the tree. What IS computable is checked: the entry shields at least one test_*.py (so it is not dead and pre-exempting), the restated pytest default is complete (setting norecursedirs replaces the default rather than extending it, so dropping `build` or `node_modules` would start walking them), and every directory it hides is also registered in scripts/run_all_tests.py -- without which the exclusion would be recorded in one file and invisible to the test-root guard and docs/testing.md.",
+      "predicateConsidered": {
+        "collects_zero_tests": "Does not apply, and its inverse is what matters here. That predicate justifies excluding a directory because pytest finds nothing in it; this exclusion exists because pytest finds five test_*.py modules and must not run them. Asserting zero collection would fail, and asserting non-zero is the non-vacuity ratchet above."
+      },
+      "crossReferences": [
+        "scripts/run_all_tests.py::QUARANTINE"
+      ],
+      "ratchetEvidence": "scripts/tests/test_pytest_norecursedirs_registry.py",
+      "ratchetGap": "A new test_*.py added DIRECTLY into an already-registered excluded directory is absorbed silently: the non-vacuity ratchet is already satisfied and the directory is already in QUARANTINE, so nothing fires. A new SUBdirectory does fail, because nesting under a QUARANTINE entry does not inherit the exclusion. Count-pinning would close the residual and is deliberately not used: it would fire on the intended case, an operator adding a sixth script to a directory whose whole purpose is operator scripts."
     }
   }
 }

@@ -23,6 +23,7 @@ from .models import (
     OCRConfig,
     AgenticConfig,
     ImageConfig,
+    ModelConfigLimitsConfig,
     PricingConfig,
 )
 from .constants import (
@@ -65,7 +66,15 @@ class ConfigurationReader:
 
     def get_configuration(
         self, config_type: str, *, as_dict: bool = True, as_model: bool = False, version: Optional[str] = None
-    ) -> Optional[Union[Dict[str, Any], IDPConfig, SchemaConfig, PricingConfig]]:
+    ) -> Optional[
+        Union[
+            Dict[str, Any],
+            IDPConfig,
+            SchemaConfig,
+            PricingConfig,
+            ModelConfigLimitsConfig,
+        ]
+    ]:
         """
         Retrieve a configuration item from DynamoDB with automatic migration
 

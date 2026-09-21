@@ -39,6 +39,8 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import re
+import subprocess  # nosec B404 - `make -n` only; -n never executes a recipe
 import sys
 from pathlib import Path
 from textwrap import dedent
@@ -716,10 +718,25 @@ def test_action_created_check_run_is_derived_from_check_name() -> None:
 
 @pytest.mark.unit
 def test_unprotected_branch_is_a_finding_that_names_the_issue() -> None:
-    """The 404 case: what this repo looks like today."""
+    """The 404 case: what this repo looks like today.
+
+    The remedy has to cite the decision record (#933, closed as not-planned) and
+    name **both** routes to protection. "Needs repository admin" alone is
+    incomplete: an organization or enterprise branch ruleset reaches the same
+    outcome at a different permission, and this repository demonstrably inherits
+    enterprise rulesets already, so a reader told only about admin would conclude
+    the situation is more closed than it is.
+    """
     findings = mod.evaluate(None, EXPECTED, "develop", status=404)
     assert [f.key for f in findings] == ["not_protected"]
-    assert "#933" in findings[0].remedy
+    remedy = findings[0].remedy
+    assert "#933" in remedy
+    assert "ADMIN" in remedy or "admin" in remedy
+    assert "ruleset" in remedy, (
+        "the remedy must name the ruleset route as well as repository admin; they "
+        "are different permissions and only one of them is out of reach for an "
+        "organization owner"
+    )
     for name in EXPECTED:
         assert name in findings[0].message, (
             "the finding must name the checks that should be required, so the "
@@ -832,8 +849,9 @@ def test_verified_absent_is_distinguished_from_unverifiable() -> None:
         # `protected: true` with an `enabled: false` protection block is the
         # ruleset-only shape, which must not be read as classic protection.
         (404, True, {"enabled": False}, [], "unverifiable"),
-        # The post-#933 non-admin path: the nested `protection` object carries the
-        # required-check list, so the state is protected-and-partly-checkable.
+        # The non-admin path on a branch that IS protected: the nested
+        # `protection` object carries the required-check list, so the state is
+        # protected-and-partly-checkable.
         (
             404,
             True,
@@ -1380,9 +1398,32 @@ def test_main_exit_codes_and_json_report(
     assert report["protected"] is False
     assert report["protection_state"] == "verified_absent"
     assert report["protection_reads"]["branch_protected_flag"] is False
-    assert report["issue"] == 933
     assert report["expected_required_checks"] == real_expected
     assert "Test Results" in report["action_created_contexts"]
+
+    # The issue is a decision record, and the JSON has to say so rather than
+    # emitting a bare number a consumer would read as an open tracking issue.
+    # #933 is closed as not-planned, and what would make this check blocking is a
+    # repository *setting* changing — so the trigger is stated as its own field.
+    record = report["decision_record"]
+    assert record["issue"] == 933
+    assert record["state"] == "closed"
+    assert record["state_reason"] == "not_planned"
+    assert "933" in record["url"]
+    trigger = record["blocking_gate_trigger"]
+    assert "admin" in trigger and "ruleset" in trigger, (
+        "the trigger must name both routes to protection, and must not be phrased "
+        f"as an issue closing: {trigger!r}"
+    )
+    assert "issue" not in trigger.lower(), (
+        "the trigger for making this blocking is a repository setting changing, "
+        "not an issue state; #933 is already closed"
+    )
+    # A run reads one branch, and the JSON names the ones it did not read. `main`
+    # is the default branch and is equally unprotected; it went unexamined for
+    # months because only `develop` was ever checked.
+    assert report["shared_branches"] == ["develop", "main"]
+    assert report["branches_not_read_by_this_run"] == ["main"]
 
     monkeypatch.setattr(
         mod,
@@ -1436,52 +1477,319 @@ def test_empty_expectation_refuses_to_report_a_pass(
     assert "refusing to report a pass" in capsys.readouterr().out
 
 
-def _recipe(makefile: str, target: str) -> str:
-    """The prerequisites plus recipe body of one make target.
+#: Targets that must never reach this check. Everything ``lint-cicd`` runs is
+#: reached transitively from it, so naming these three is naming the whole gate set.
+_LINT_ENTRY_POINTS = ("lint", "fastlint", "lint-cicd")
 
-    Sliced precisely — recipe lines are the TAB-indented ones directly after the
-    target line. Slicing to the next ``##@`` section header (as
-    ``test_ci_gate_parity.py`` does) would swallow every following target in the
-    section, so an assertion about ``lint-cicd`` would match text belonging to a
-    neighbouring target instead.
+_MAKE_TARGET_RE = re.compile(r"^([a-zA-Z0-9_.-]+):", re.MULTILINE)
+#: ``make`` / ``$(MAKE)`` in COMMAND position — at the start of a line, or after a
+#: shell operator, ``if`` or ``!``. Matching a bare ``make`` anywhere would follow
+#: target names out of English prose ("run `make ruff-lint` locally") and out of
+#: help strings, which is how a mention would become a false failure.
+_SUBMAKE_RE = re.compile(
+    r"(?:^|[;&|(]|\bif\s+|!\s+)\s*(?:\$\(MAKE\)|make)((?:\s+[^;&|)]+)?)"
+)
+_MAKE_WORD_RE = re.compile(r"[a-zA-Z0-9_.-]+")
+
+
+def _make_dry_run(target: str) -> str:
+    """``make -n <target>`` output. Non-zero exit is tolerated, stdout is the datum.
+
+    ``-n`` prints the recipe without running it, and crucially **expands the
+    prerequisite closure** — which is the whole reason this replaces a text read of
+    the three lint recipes.
     """
-    lines = makefile.splitlines()
-    start = next(i for i, line in enumerate(lines) if line.startswith(f"{target}:"))
-    body = [lines[start]]
-    for line in lines[start + 1 :]:
-        if line.startswith("\t") or not line.strip():
-            body.append(line)
-        else:
-            break
-    return "\n".join(body)
+    return subprocess.run(  # noqa: S603
+        ["make", "-n", target],  # noqa: S607
+        cwd=REPO_ROOT,
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=120,
+    ).stdout
+
+
+def _targets_reaching_this_check() -> tuple[set[str], list[str]]:
+    """Walk out from the lint entry points, returning (visited, offending sites)."""
+    declared = set(
+        _MAKE_TARGET_RE.findall((REPO_ROOT / "Makefile").read_text(encoding="utf-8"))
+    )
+    visited: set[str] = set()
+    frontier = list(_LINT_ENTRY_POINTS)
+    offenders: list[str] = []
+
+    while frontier:
+        target = frontier.pop()
+        if target in visited:
+            continue
+        visited.add(target)
+        for line in _make_dry_run(target).splitlines():
+            stripped = line.strip()
+            if stripped.startswith("#"):
+                continue
+            if SCRIPT.name in stripped:
+                offenders.append(f"`make {target}` runs the script: {stripped[:100]}")
+            # `make -n` does NOT recurse into a sub-make written as a literal
+            # `make <target>` inside a recipe, so those are followed by hand.
+            for match in _SUBMAKE_RE.finditer(stripped):
+                named = [
+                    word
+                    for word in _MAKE_WORD_RE.findall(match.group(1) or "")
+                    if word in declared
+                ]
+                if "check-branch-protection" in named:
+                    offenders.append(
+                        f"`make {target}` invokes `make check-branch-protection`: "
+                        f"{stripped[:100]}"
+                    )
+                frontier.extend(word for word in named if word not in visited)
+
+    return visited, offenders
 
 
 @pytest.mark.unit
 def test_the_script_is_wired_into_the_makefile_but_not_into_lint() -> None:
-    """It must be runnable, and must NOT be a blocking gate until #933 closes.
+    """It must be runnable, and no lint target may reach it.
 
-    Both halves matter. Without the target nobody can run it; inside ``lint-cicd``
-    it would fail every branch for a condition no contributor can fix.
+    Both halves matter. Without the target nobody can run it; reached from
+    ``lint-cicd`` it would fail every branch for a condition no contributor can fix,
+    because neither ``develop`` nor ``main`` is protected and enabling protection
+    needs a permission nobody working in this tree has.
+
+    The condition for lifting this is a repository **setting** changing — somebody
+    with repository admin enabling protection, or an organization or enterprise
+    owner publishing a branch ruleset that targets these branches. It is
+    deliberately not "an issue closing": issue #933 is already closed, as a record
+    of the decision that this is out of the repository's reach, and a gate wired up
+    on the strength of that closure would red-line every branch forever.
+
+    **Reachability is computed, not pattern-matched.** Reading the three lint
+    recipes' own text is not enough and used to be all this did: adding
+    ``check-branch-protection`` as a prerequisite of ``check-arn-partitions`` — one
+    word, on a target ``lint``, ``fastlint`` **and** ``lint-cicd`` all run — makes the
+    check blocking in all three at once, and a text read of the three recipes cannot
+    see it. ``make -n`` computes that closure, so the property is computable and is
+    now computed. Verified by mutation: five routes (prerequisite of
+    ``check-arn-partitions``, of ``lint-cicd`` itself, of ``check-lint-debt`` two hops
+    out, a sub-make inside a recipe, and the script invoked directly) all fail here
+    and none of them failed the text read.
     """
     makefile = (REPO_ROOT / "Makefile").read_text(encoding="utf-8")
     assert "\ncheck-branch-protection:" in makefile
     assert "scripts/sdlc/check_branch_protection.py" in makefile
 
-    for target in ("lint", "fastlint"):
-        assert "check-branch-protection" not in _recipe(makefile, target), (
-            f"check-branch-protection must not be a prerequisite of `{target}`"
-        )
-
-    assert "check-branch-protection" not in _recipe(makefile, "lint-cicd"), (
-        "check-branch-protection needs network + a token and reports 'not "
-        "protected' until issue #933 is closed; in lint-cicd it would red-line "
-        "every branch. Re-enable it there only once #933 is closed."
+    visited, offenders = _targets_reaching_this_check()
+    # Non-vacuity: the walk has to have actually expanded past its three seeds, or a
+    # `make` that printed nothing would pass this silently.
+    assert len(visited) > len(_LINT_ENTRY_POINTS) + 5, (
+        f"the reachability walk only reached {sorted(visited)} — it is not "
+        "expanding, so a pass here proves nothing. Is `make` available?"
+    )
+    assert "check-arn-partitions" in visited, (
+        "check-arn-partitions is run by all three lint targets, so the walk must "
+        f"reach it; it reached {sorted(visited)}"
+    )
+    assert not offenders, (
+        "a lint target reaches check-branch-protection. It needs network and a "
+        "token and reports 'not protected' on develop and main alike, so in a lint "
+        "gate it red-lines every branch. Add it only once protection has actually "
+        "been enabled — not because an issue closed:\n  " + "\n  ".join(offenders)
     )
 
-    parity = (REPO_ROOT / "scripts" / "tests" / "test_ci_gate_parity.py").read_text(
-        encoding="utf-8"
+
+@pytest.mark.unit
+def test_neither_ci_configuration_nor_shared_gates_reaches_this_check() -> None:
+    """The other two routes to blocking, neither visible from the Makefile.
+
+    Adding it to ``SHARED_GATES`` would require it in *both* CIs; naming it directly
+    in a CI configuration bypasses the Makefile walk above entirely.
+
+    ⚠️ **What this does not cover**, so the residual is declared rather than implied.
+    Each of these still passes: a wrapper script in ``scripts/`` that both CIs call;
+    ``python -m check_branch_protection``; a spelling assembled through a shell or
+    YAML variable; a GitHub composite action that runs it; and a GitLab
+    ``include: local:`` pulling in a file this test does not read. The two arms below
+    are a literal-text read of the CI configurations, not a reachability computation
+    like the Makefile one — there is no ``make -n`` equivalent for a CI pipeline.
+    """
+    # Read the LIST, not the file. The claim is "it is not a gate CI must run",
+    # and `check-branch-protection` appearing anywhere in the parity module is a
+    # much broader condition than that — the module now registers it by name as
+    # deliberately out of CI, with the #933 reason, which is the correct state and
+    # the opposite of what this asserts against.
+    parity_module = (
+        REPO_ROOT / "scripts" / "tests" / "test_ci_gate_parity.py"
+    ).read_text(encoding="utf-8")
+    shared_gates = re.search(
+        r"^SHARED_GATES = \[(.*?)^\]", parity_module, re.MULTILINE | re.DOTALL
     )
-    assert "check-branch-protection" not in parity, (
+    assert shared_gates, "SHARED_GATES is no longer a literal list in the parity module"
+    assert "check-branch-protection" not in shared_gates.group(1), (
         "adding this to SHARED_GATES would require it in both CIs, which is "
-        "exactly what it must not be yet"
+        "exactly what it must not be"
+    )
+
+    gitlab = REPO_ROOT / ".gitlab-ci.yml"
+    workflows = sorted(mod.WORKFLOWS_DIR.glob("*.y*ml"))
+    # Vacuity is guarded per CI, not over the union: `len(configs) >= 2` was
+    # satisfied by the GitHub workflows alone, leaving the GitLab arm unprotected.
+    assert gitlab.is_file(), f"{gitlab} is missing — the GitLab arm would be vacuous"
+    assert workflows, (
+        f"no workflows under {mod.WORKFLOWS_DIR} — the GitHub arm would be vacuous"
+    )
+
+    for path in [gitlab, *workflows]:
+        text = path.read_text(encoding="utf-8")
+        for spelling in ("check-branch-protection", SCRIPT.name):
+            assert spelling not in text, (
+                f"{path.relative_to(REPO_ROOT)} names {spelling}: this check is "
+                "opt-in and must not run in either CI while protection is off, or "
+                "every pipeline goes red for a condition nobody here can fix"
+            )
+
+
+# --------------------------------------------------------------------------- #
+# The two properties a future edit is most likely to quietly remove
+# --------------------------------------------------------------------------- #
+
+
+@pytest.mark.unit
+def test_the_branch_summary_cross_check_read_is_actually_made(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The read that tells "not protected" apart from "cannot see" must happen.
+
+    The classic-protection endpoint needs repository admin and answers **404**, not
+    403, when admin is absent — deliberately, so as not to disclose whether
+    protection exists. A 404 is therefore equally consistent with "not protected"
+    and with "protected, invisible to this token", and a tool that read only that
+    endpoint would print a clean "still unprotected, nothing changed" in precisely
+    the case where something changed.
+
+    ``resolve_protection_state`` resolves it by also reading
+    ``GET .../branches/<branch>``, which carries a ``protected`` boolean at plain
+    ``pull`` scope. The state-classification test above pins what the tool *does*
+    with that flag; this one pins that the request is issued at all, because
+    dropping the call is how the distinction would be lost while every
+    classification assertion stayed green.
+    """
+    requested: list[str] = []
+
+    def _record(path: str, _token: str):
+        requested.append(path)
+        if path.endswith("/protection"):
+            return None, 404
+        if "/rules/branches/" in path:
+            return [], 200
+        if "/branches/" in path:
+            return {"protected": False}, 200
+        return {"permissions": {"admin": False}}, 200
+
+    monkeypatch.setattr(mod, "_api_get", _record)
+    state = mod.resolve_protection_state(mod.DEFAULT_REPO, "develop", "t")  # noqa: S106
+
+    summary_read = f"repos/{mod.DEFAULT_REPO}/branches/develop"
+    assert summary_read in requested, (
+        "the branch-summary cross-check read was not issued; without it a 404 from "
+        f"the classic endpoint cannot be disambiguated. Requested: {requested}"
+    )
+    assert state.state == mod.PROTECTION_VERIFIED_ABSENT
+    assert state.protected_flag is False
+
+    # And the mirror image: with that read unavailable, the answer must degrade to
+    # `unverifiable` rather than to `verified_absent`.
+    def _no_summary(path: str, _token: str):
+        if path.endswith("/protection"):
+            return None, 404
+        if "/rules/branches/" in path:
+            return [], 200
+        if "/branches/" in path:
+            return None, 404
+        return {"permissions": {"admin": False}}, 200
+
+    monkeypatch.setattr(mod, "_api_get", _no_summary)
+    blind = mod.resolve_protection_state(mod.DEFAULT_REPO, "develop", "t")  # noqa: S106
+
+    assert blind.state == mod.PROTECTION_UNVERIFIABLE
+    assert blind.protected is None, (
+        "with the cross-check read unavailable the tri-state must report null, not "
+        "false — false would be a false all-clear"
+    )
+
+
+@pytest.mark.unit
+def test_the_decision_record_is_never_written_as_pending_work() -> None:
+    """#933 may be cited as a decision record, never as an open tracking issue.
+
+    The issue is closed as not-planned: enabling branch protection needs a
+    permission nobody working in this tree has. Text of the form "once #933
+    closes" or "until #933 is closed" describes a trigger that has **already
+    fired**, and firing it means making a gate blocking that reports "not
+    protected" forever — red-lining every branch for a condition no contributor
+    can fix. That is the opposite of what the wording intended, which is why it is
+    asserted against rather than left to review.
+
+    Matched with a regex rather than a fixed phrase list, because a list of exact
+    strings is trivially paraphrased around — ``TODO #933:`` without parentheses,
+    ``FIXME(#933)``, "pending #933" and "when #933 is resolved" all read as pending
+    and none of them contains any of the literal phrasings a phrase list would
+    hold. The pattern is a **pending marker** within one clause of the issue
+    reference, in either order, which covers those four and ten more without
+    enumerating them.
+
+    ⚠️ **What it does not cover**, stated rather than implied. Coverage is by file:
+    it reads the four documents that describe this control, so prose elsewhere in
+    the repository is outside it. And it keys on a marker word, so a paraphrase
+    using none of them — "the check will be enabled in due course, see #933" — still
+    passes. It is a ratchet against the constructions that actually occurred here,
+    not a proof that the wording is right.
+    """
+    # Two halves, either order, within a short window: a pending marker, and the
+    # issue reference. `[^\n]{0,40}` keeps it to one clause, so "…closed issue #933.
+    # Once protection is enabled…" — which is correct text — does not match.
+    # `closes` / `is closed` are deliberately NOT in the trailing half: "#933 is
+    # closed as not-planned" is the correct statement of fact, while the pending
+    # forms of it ("until #933 is closed", "once #933 closes") all carry a leading
+    # marker and so are caught by the first alternative anyway.
+    pending = re.compile(
+        r"(?:"
+        r"(?:once|until|when|after|pending|todo|fixme|tbd|blocked\s+on|awaiting|"
+        r"tracked\s+(?:by|in)|post)\b[^\n]{0,40}#\s?933"
+        r"|#\s?933[^\n]{0,40}\b(?:tracks|is\s+resolved|is\s+fixed|lands|pending)\b"
+        r")",
+        re.IGNORECASE,
+    )
+    # Reported as a list of `<file>:<line>` rather than by asserting on the file
+    # text, so a failure names the offending line instead of dumping the whole file
+    # into pytest's assertion output.
+    covered = (
+        SCRIPT,
+        REPO_ROOT / "Makefile",
+        REPO_ROOT / "docs" / "testing.md",
+        REPO_ROOT / "scripts" / "sdlc" / "docs" / "CI_TEST_COVERAGE.md",
+    )
+    offenders: list[str] = []
+    saw_a_reference = False
+    for path in covered:
+        assert path.is_file(), f"{path} is missing — this arm would be vacuous"
+        for lineno, line in enumerate(
+            path.read_text(encoding="utf-8").splitlines(), start=1
+        ):
+            if "933" in line:
+                saw_a_reference = True
+            match = pending.search(line)
+            if match:
+                rel = path.relative_to(REPO_ROOT)
+                offenders.append(f"{rel}:{lineno}: matched {match.group(0)!r}")
+
+    # Non-vacuity: every one of these files is supposed to cite the issue as a
+    # decision record, so a run that saw no reference at all is not measuring.
+    assert saw_a_reference, (
+        "none of the covered files mentions issue 933 — either the citation was "
+        "dropped from all four, or this test is reading the wrong paths"
+    )
+    assert not offenders, (
+        "issue #933 is described as pending at these sites. It is closed as "
+        "not-planned; cite it as the decision record and state the real trigger — a "
+        "repository setting changing — instead:\n  " + "\n  ".join(offenders)
     )
