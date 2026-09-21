@@ -34,13 +34,10 @@ _clients = {}
 def client(name):
     """One cached client per service.
 
-    Cached for two reasons. It is faster — ``Session.client()`` parses the service
-    model on every call, and the S3 client was being rebuilt once per
-    ``get_json``, which on a release-wide re-score is tens of thousands of times.
-    And it is what makes concurrent use safe: botocore clients are safe to CALL
-    from several threads but ``Session.client()`` is not safe to invoke from
-    several threads, so a caller that wants a thread pool warms the cache first
-    and every thread then shares one client.
+    ``Session.client()`` parses the service model on every call, and the S3 client
+    was being rebuilt once per ``get_json`` — tens of thousands of times on a
+    release-wide calibration pass over stored runs. Everything here is sequential;
+    the cache is a latency fix and nothing more.
     """
     if name not in _clients:
         _clients[name] = session().client(name)

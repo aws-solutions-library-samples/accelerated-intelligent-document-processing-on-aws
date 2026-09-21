@@ -124,7 +124,16 @@ not comparable.
   strips `managed`, and uploads as `Config#bench-<cell>-<class>` via `idp-cli config-upload`.
 - NEVER mutate `Config#default`. Always run against a named `--config-profile`.
 - PYTHONPATH is pinned to the repo's `idp_common` to avoid a stale sibling checkout
-  silently stripping v0.6 fields on upload.
+  silently stripping v0.6 fields on upload. ⚠️ `PYTHONPATH` puts the source tree on the
+  path but **not** its dependencies, so `pip install -e "lib/idp_common_pkg[core]"` is a
+  prerequisite for scoring as well as for upload: `analyze.py` imports
+  `idp_common.assessment.batching` for the coverage figure and
+  `idp_common.evaluation` for the calibration figures, and a missing dependency there
+  surfaces part-way through a grid rather than at the start. Neither import needs the
+  `[evaluation]` extra — `confidence_curve` and `curve_store` are standard-library-only
+  by design, and the unbinned AUROC is derived from the stored value tally rather than
+  by calling Stickler. `matplotlib` is needed only for figures and is skipped with a
+  message when absent.
 
 ## 3. Execution
 - `run_matrix.py` launches each (config-cell × doc) via the stack TestRunner
@@ -182,13 +191,22 @@ blind spot before it was closed.
 - Per-cell calibration is compared on the **pooled** curve rather than on a mean of
   per-document figures, because a 5-row form and a 400-row statement must not carry
   equal weight and a single document's AUROC is usually undefined outright. Flagged:
-  pooled ECE +0.03, pooled AUROC −0.05, or — at any size of step — a cell crossing
-  `ECE_UNRELIABLE_THRESHOLD` or `AUROC_UNRELIABLE_THRESHOLD`, past which the shipped
-  review-effort estimator stops recommending a review subset at all.
+  pooled `ece_mean_conf` +0.01, pooled binned AUROC −0.05, or — at any size of step — a
+  cell crossing `ECE_UNRELIABLE_THRESHOLD` or `AUROC_UNRELIABLE_THRESHOLD`, past which
+  the shipped review-effort estimator stops recommending a review subset at all. The
+  magnitude and crossing checks deliberately read **different** ECE estimators: the
+  midpoint-based `ece` barely moves (0.0013 of range against 0.0239 for
+  `ece_mean_conf`), but it is the value the product applies its threshold to.
 - `--calibration` pools the same figures per **configuration arm** across a whole
-  grid, and prints the count of WRONG cells beside the AUROC columns, because
-  ranking power is estimated over wrong × correct pairs — an arm with 70,000 cells
-  and 55 errors is a 55-observation measurement of discrimination.
+  grid, prints each arm's own run / document / excluded-run counts (the arms are not
+  equally powered), and prints the count of WRONG cells beside the AUROC columns,
+  because ranking power is estimated over wrong × correct pairs — an arm with 70,000
+  cells and 55 errors is a 55-observation measurement of discrimination.
+- The `calibration_curve` stored per row is an **exact sufficient statistic** for every
+  pooled figure, so `--calibration` reads the committed artifact and needs no AWS;
+  `--calibration-from-s3` forces the re-read that verifies it, and `--augment`
+  backfills it into a grid scored before it existed. This is what keeps a published
+  measurement checkable after its stack is deleted.
 - Emits the paper's tables + figures (matplotlib) into `paper/figures/`, including a
   per-arm reliability diagram plotted against each bin's mean confidence.
 

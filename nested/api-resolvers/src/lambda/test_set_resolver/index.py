@@ -2241,8 +2241,16 @@ def _absent_field_paths(inference_result):
 
     Paths, not bare leaf names: one empty ``Description`` cell would otherwise
     exclude *every* Description score in a 200-row transaction table, understating
-    review need on exactly the table-heavy documents this feature targets. The path
-    shape matches :func:`_walk_confidence_named` and ``curve_store.flatten_values``.
+    review need on exactly the table-heavy documents this feature targets.
+
+    ⚠️ The path shape matches :func:`_walk_confidence_named`, which is what matters
+    here — the two are compared only against each other, within one request. It does
+    **not** match ``curve_store.flatten_values``: :func:`_list_item_path` keys a list
+    index off list *length*, so a one-row table keys ``Transactions.Date`` where
+    ``curve_store`` keys ``Transactions[0].Date``. No caller crosses the two, so there
+    is no user-visible defect, but a future one must not assume they interchange.
+    Unifying them by delegating to the now-public ``flatten_values`` is
+    [#1066](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/1066).
     """
     absent = set()
 

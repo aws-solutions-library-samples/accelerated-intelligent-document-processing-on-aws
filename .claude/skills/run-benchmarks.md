@@ -155,32 +155,50 @@ let the data go (git history is the archive — cite the commit, not a path).
 
 ## Confidence calibration (`aggregate.py --calibration`)
 
-Scoring is retroactive, so this re-reads a completed grid's extraction output from S3
-and costs no inference. It joins each confidence leaf to the cell it scores (by
-`flatten_confidences` field path + the corpus's `SEQ` row tag) and pools true
-`(confidence, correct)` pairs per configuration arm through the shipped
-`ConfidenceCurve`, so the numbers are about the bars the product acts on:
+It joins each confidence leaf to the cell it scores (by `flatten_confidences` field path
++ the corpus's `SEQ` row tag) and pools true `(confidence, correct)` pairs per
+configuration arm through the shipped `ConfidenceCurve`, so the numbers are about the
+bars the product acts on:
 
 ```bash
-PYTHONPATH=<repo>/lib/idp_common_pkg AWS_PROFILE=default python3 benchmarks/harness/aggregate.py \
+# Reads the stored calibration_curve from the committed summaries — NO AWS needed.
+PYTHONPATH=<repo>/lib/idp_common_pkg python3 benchmarks/harness/aggregate.py \
   --calibration benchmarks/results/<release>/<suite>/summary.json [more summaries...] \
   --calibration-group assessment,confidence_model,extraction_model \
   --calibration-out /tmp/calibration.json
+
+# Backfill the metric into a grid scored before it existed (needs S3 + truth files).
+AWS_PROFILE=default PYTHONPATH=<repo>/lib/idp_common_pkg python3 benchmarks/harness/aggregate.py \
+  --augment benchmarks/results/<release>/<suite>/summary.json --corpus <dir with *.truth.json>
 ```
+
+**The committed `calibration_curve` is an exact sufficient statistic**, so a grid stays
+reproducible after its stack is deleted — which has already happened to three v0.6.x
+release stacks. `--calibration` prefers it and falls back to S3 only for a row that has
+none; `--calibration-from-s3` forces the re-read, which a freshly-scored grid wants and
+which verifies the stored statistic. `--augment` adds the metric (and #997's coverage
+figure) to an older summary without re-scoring anything priced from DynamoDB metering.
 
 Read the output in this order. **`bins`** first: fewer than 3 populated bins is
 `degenerate` — a structural fact, not an estimate, and it means worst-first ordering is
 arbitrary regardless of every other column. **`errs`** next: AUROC is estimated over
 wrong × correct pairs, so an arm with 70,000 cells and 55 errors is a 55-observation
-measurement of discrimination. Only then the statistics. `ECE` is the gate's
-midpoint-based estimator and floors at 0.05 on an all-1.00 all-correct curve; `ECEmc`
-is the mean-confidence estimator and is the one to quote. `AUROC` is the gate's binned
-value (biased low by design); `AUROCu` is Stickler's and is the one to quote.
+measurement of discrimination. **`runs` / `docs` / `excl` third** — the arms are not
+equally powered (112, 102 and 58 runs in the published grid) and a high `excl` means the
+surviving runs are conditioned on success. Only then the statistics. `ECE` is the gate's
+midpoint-based estimator and floors at 0.05 on an all-1.00 all-correct curve; `ECEmc` is
+the mean-confidence estimator and is the one to quote. `AUROC` is the gate's binned value
+(biased low by design); `AUROCu` is the unbinned one and is the one to quote.
+
+⚠️ A non-zero third bucket on the `skipped:` line is normally benign: a cell with
+`confidence.mode: off` has no confidence leaves and lands there. Chase it only when it
+exceeds the number of off-cells in the grid.
 
 ⚠️ Group by **extraction model as well as** the grader and the mode. The grader's
 calibration depends on the extraction it is grading, so pooling a 50%-wrong arm with a
-99.9%-correct one reports neither. Requires the corpus truth files — pass `--corpus`
-if `benchmarks/corpus/docs` is not populated in the tree you are running from.
+99.9%-correct one reports neither. `--augment` and `--calibration-from-s3` need the
+corpus truth files — pass `--corpus` if `benchmarks/corpus/docs` is not populated, and
+note `gen_corpus.py` rewrites the tracked `corpus/manifest.yaml` with absolute paths.
 
 Measured for v0.6.8/v0.6.9 in
 [docs/benchmarking/studies/confidence-calibration.md](../../docs/benchmarking/studies/confidence-calibration.md):
@@ -192,12 +210,22 @@ re-derive that claim from memory — re-run the command.
 accuracy −0.02, cost +15%, any new failure, calibration separation −0.03 → flagged
 as regressions. Improvements ≥ +0.02 accuracy are also reported.
 
-`compare_cells` additionally gates the **pooled** per-cell calibration: ECE +0.03,
-AUROC −0.05, or a cell crossing `ECE_UNRELIABLE_THRESHOLD` / `AUROC_UNRELIABLE_THRESHOLD`
-at any step size. ⚠️ It is **inert** against a `baseline.json` scored before this
-existed — a baseline with no `calibration` block is skipped rather than reported as a
-change from nothing, so re-promote the baseline from a grid scored with current code
-before relying on it.
+`compare_cells` additionally gates the **pooled** per-cell calibration: `ece_mean_conf`
++0.01, binned AUROC −0.05, or a cell crossing `ECE_UNRELIABLE_THRESHOLD` /
+`AUROC_UNRELIABLE_THRESHOLD` at any step size.
+
+⚠️ **The magnitude check reads `ece_mean_conf` and the crossing check reads `ece`, and
+that is not interchangeable.** `ece` compares each bin to its MIDPOINT, so confidence
+moving within a bin is invisible to it — it spans 0.0013 across the published grid where
+`ece_mean_conf` spans 0.0239. A magnitude gate on `ece` is blind to a real +0.025
+worsening and reports a real +0.041 worsening as an *improvement*. The crossing check
+must nonetheless read `ece`, because that is the value the shipped product applies
+`ECE_UNRELIABLE_THRESHOLD` to.
+
+⚠️ The gate is **inert** against a baseline scored before the metric existed.
+`compare_cells` now prints a `NOT COMPARED — baseline predates the metric` block naming
+the metric and cells rather than printing nothing, so check for it; `--augment` the
+baseline (or re-promote one) to make the gate live.
 
 Two calibration separations are tracked, on the same −0.03 threshold:
 `calibration_separation` (extracted FIELDS) and `class_calibration_separation`

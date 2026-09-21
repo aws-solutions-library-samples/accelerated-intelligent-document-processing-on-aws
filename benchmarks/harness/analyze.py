@@ -220,6 +220,59 @@ def score_cells(sections, rows_typed, list_key):
     return hits, total, len(by_seq)
 
 
+def _assessed_rows(explainability_info, prefix, field):
+    """The assessment's row list for one data field, or None if it has none.
+
+    Navigates ``explainability_info`` by the same prefix ``records_with_path``
+    produced, so a multi-instance section resolves to the right record.
+    """
+    node = explainability_info
+    if isinstance(node, list):
+        node = node[0] if len(node) == 1 else None
+    if not isinstance(node, dict):
+        return None
+    if prefix:
+        # The only prefix shape this harness produces is ``instances[j]``.
+        instances = node.get("instances")
+        try:
+            index = int(prefix[prefix.index("[") + 1 : prefix.index("]")])
+        except (ValueError, IndexError):
+            return None
+        if not isinstance(instances, list) or index >= len(instances):
+            return None
+        node = instances[index]
+        if not isinstance(node, dict):
+            return None
+    value = node.get(field)
+    return value if isinstance(value, list) else None
+
+
+def _assert_row_alignment(section, prefix, field, data_rows):
+    """Fail loudly if the assessment's row list is not the same length as the data's.
+
+    This is the one condition under which the confidence join mispairs rather than
+    under-reports, so it is checked rather than assumed — see
+    ``confidence_observations``. ``reconcile_assessment_to_data`` guarantees it in
+    the pipeline; if that guarantee is ever removed, every calibration number in
+    this harness silently becomes a statement about the wrong rows.
+
+    Deliberately an exception and not a recorded ``None``: a scoring run that stops
+    is recoverable, and a published reliability diagram built from mispaired cells
+    is not.
+    """
+    assessed = _assessed_rows(section.get("explainability_info"), prefix, field)
+    if assessed is None or len(assessed) == len(data_rows):
+        return
+    where = f"{prefix + '.' if prefix else ''}{field}"
+    raise AssertionError(
+        f"confidence/data row misalignment on {where}: {len(assessed)} assessment "
+        f"rows vs {len(data_rows)} extracted rows. The confidence join is positional, "
+        "so this would attribute each confidence to the wrong row. "
+        "reconcile_assessment_to_data is supposed to make these equal — check it "
+        "before trusting any calibration figure from this grid."
+    )
+
+
 def confidence_observations(sections, rows_typed, list_key):
     """``(confidence, correct)`` per list CELL, joined to exact truth by SEQ tag.
 
@@ -241,6 +294,27 @@ def confidence_observations(sections, rows_typed, list_key):
     not declare (``Description``, which carries the tag) and cells with no
     confidence leaf are skipped — a missing confidence is ``score_confidence_coverage``'s
     subject, not evidence about calibration.
+
+    ⚠️ **The invariant this join rests on is index alignment**, and the failure mode
+    if it breaks is silent MISPAIRING rather than a missing observation. The row's
+    truth is found by SEQ tag, but its confidence is found by POSITION: path
+    ``F[i].Cell`` is the i-th element of ``explainability_info[0][F]``, and the join
+    assumes that element describes the i-th element of ``inference_result[F]``. That
+    holds because ``idp_common.assessment.batching.reconcile_assessment_to_data``
+    truncates an over-long assessment list and pads a short one so the two lengths
+    are equal — an assessment that returned 44 rows for a 120-row table would
+    otherwise attribute row 44's confidence to row 44 of the data, which is some
+    other transaction. That function's docstring names the same hazard for HITL and
+    the UI, which index the pair the same way. ``_assert_row_alignment`` below
+    re-checks it per section, so a change to reconciliation fails here loudly
+    instead of quietly producing plausible calibration numbers.
+
+    Two residuals are known and not reachable on this corpus. A top-level
+    ``explainability_info`` list with more than one element collapses every element
+    onto the same (empty) path prefix, last-write-wins — the wrapper is written with
+    exactly one element and all sampled sections have one. And a nested group that
+    carries a group-level ``confidence`` alongside its per-field leaves would
+    contribute one spurious observation per group; no class in this corpus does.
     """
     if not rows_typed:
         return []
@@ -263,6 +337,7 @@ def confidence_observations(sections, rows_typed, list_key):
                     continue
                 if not isinstance(value, list):
                     continue
+                _assert_row_alignment(sec, prefix, field, value)
                 for index, row in enumerate(value):
                     seq = _seq_of(row)
                     cells = truth.get(seq) if seq is not None else None
@@ -311,8 +386,9 @@ def score_calibration(sections, rows_typed, list_key, observations=None):
 
     ``calibration_auroc`` is the curve's binned estimate, which is what the gate
     reads and is biased LOW by design (it can call a good ranker mediocre; it will
-    not call a chance-level ranker good). ``calibration_auroc_unbinned`` is
-    Stickler's, the value to quote as a metric.
+    not call a chance-level ranker good). ``calibration_auroc_unbinned`` is the value
+    to quote as a metric, computed from the value tally by ``unbinned_auroc`` and
+    asserted equal to Stickler's ``AUROCMetric`` over the raw pairs.
 
     ``calibration_ece`` is likewise the gate's: it compares each bin's accuracy to
     the bin MIDPOINT, because the curve stores counts and not the confidences
@@ -329,11 +405,14 @@ def score_calibration(sections, rows_typed, list_key, observations=None):
     ``calibration_curve`` carries the raw bin counts, which is what makes a
     per-cell or per-release roll-up EXACT: the curve composes additively, so
     pooling documents is adding two ten-element arrays rather than re-reading S3.
-    ``brierSse`` and ``confSum`` ride along for the same reason — Brier is a mean of
-    squared errors and the mean-confidence ECE needs a per-bin mean, so the SUMS
-    pool exactly where the means would not. The one statistic that cannot be pooled
-    from this payload is the unbinned AUROC, which needs the raw pairs; the
-    release-level pass re-derives it (``aggregate.py --calibration``).
+    ``brierSse``, ``confSum`` and ``valueTally`` ride along for the same reason —
+    Brier is a mean of squared errors, the mean-confidence ECE needs a per-bin mean,
+    and the unbinned AUROC needs the score ORDER, none of which a mean preserves but
+    all of which a sum or a tally does. Together they are an exact sufficient
+    statistic for every figure this study publishes, which is why they are committed
+    into `summary.json`: the S3 artifacts they were derived from outlive their stack
+    by exactly as long as nobody deletes it, and three release stacks are already
+    gone.
 
     Everything is ``None`` with ``calibration_observations: 0`` when the document
     has no joinable cell, which is the honest reading for a reference-corpus run or
@@ -379,6 +458,8 @@ def score_calibration(sections, rows_typed, list_key, observations=None):
     for score, _ok in observations:
         conf_sum[bin_index(score)] += score
     ece_mean_conf = mean_conf_ece(curve.correct, curve.total, conf_sum)
+    tally = value_tally(observations)
+    unbinned = unbinned_auroc(tally)
     return {
         "calibration_observations": total,
         "calibration_correct": correct,
@@ -389,12 +470,90 @@ def score_calibration(sections, rows_typed, list_key, observations=None):
         "calibration_auroc": (
             round(health.auroc, 4) if health.auroc is not None else None
         ),
-        "calibration_auroc_unbinned": _unbinned_auroc(observations),
+        "calibration_auroc_unbinned": (
+            round(unbinned, 4) if unbinned is not None else None
+        ),
         "calibration_brier": round(sse / total, 4),
         "calibration_bin_coverage": health.bin_coverage,
         "calibration_reliable": health.reliable,
-        "calibration_curve": {**curve.to_dict(), "brierSse": sse, "confSum": conf_sum},
+        "calibration_curve": {
+            **curve.to_dict(),
+            "brierSse": sse,
+            "confSum": conf_sum,
+            "valueTally": tally,
+        },
     }
+
+
+# A confidence grader emits few distinct values — measured 2 to 10 per document on
+# this corpus, because `_expand_row_to_per_column` fans ONE per-row score across the
+# row's columns — so a tally keyed on the value itself is a handful of entries and is
+# an exact sufficient statistic for the unbinned AUROC. A grader that emitted a
+# distinct value per cell would make it as large as the document, so it is capped:
+# past the cap the tally is dropped rather than truncated, because half a tally would
+# yield a confidently wrong AUROC where an absent one yields None.
+MAX_TALLY_VALUES = 256
+
+
+def value_tally(observations):
+    """``{confidence: [n, n_correct]}`` — the sufficient statistic for exact AUROC.
+
+    The bin counts in ``calibration_curve`` pool exactly for ECE, Brier and the
+    BINNED AUROC, but they discard within-bin ordering and so cannot recover the
+    unbinned AUROC — which is the value worth quoting as the grader's ranking power.
+    This tally can, because AUROC depends on the scores only through their order and
+    their ties. Keys are strings because JSON has no float keys.
+
+    ``None`` past ``MAX_TALLY_VALUES`` distinct values.
+    """
+    tally = {}
+    for score, ok in observations:
+        key = repr(float(score))
+        entry = tally.get(key)
+        if entry is None:
+            if len(tally) >= MAX_TALLY_VALUES:
+                return None
+            entry = tally[key] = [0, 0]
+        entry[0] += 1
+        if ok:
+            entry[1] += 1
+    return tally
+
+
+def unbinned_auroc(tally):
+    """AUROC over the raw confidence values, from a ``value_tally``.
+
+    ``P(a wrong cell scores lower than a correct one)``, with ties counted as half —
+    the Mann-Whitney U statistic with mid-ranks, which is what Stickler's
+    ``AUROCMetric`` computes over raw pairs and what
+    ``tests/test_confidence_calibration.py`` asserts equality against.
+
+    Computed here rather than by calling Stickler so that the benchmark harness keeps
+    no dependency on the ``[evaluation]`` extra: it is on the default scoring path for
+    every synthetic run, and a scoring run that dies mid-grid because a metric library
+    is missing is a worse outcome than computing 15 lines of arithmetic.
+
+    ``ConfidenceCurve.auroc`` remains the value the reliability GATE reads; that one
+    is deliberately biased low by binning. Returns ``None`` when one class is absent,
+    since ranking is then undefined rather than perfect, and when the tally was
+    dropped for having too many distinct values.
+    """
+    if not tally:
+        return None
+    graded = sorted((float(value), n, k) for value, (n, k) in tally.items())
+    n_correct = sum(k for _v, _n, k in graded)
+    n_wrong = sum(n - k for _v, n, k in graded)
+    if not n_correct or not n_wrong:
+        return None
+    concordant = 0.0
+    wrong_below = 0
+    for _value, n, k in graded:
+        wrong_here = n - k
+        # Correct cells at this value beat every wrong cell strictly below, and tie
+        # with the wrong cells sharing the value.
+        concordant += k * (wrong_below + 0.5 * wrong_here)
+        wrong_below += wrong_here
+    return concordant / (n_correct * n_wrong)
 
 
 def mean_conf_ece(correct, total, conf_sum):
@@ -416,7 +575,7 @@ def mean_conf_ece(correct, total, conf_sum):
     return error
 
 
-def pool_calibration(payloads, unbinned_auroc=None):
+def pool_calibration(payloads):
     """Fold per-document ``calibration_curve`` payloads into ONE curve.
 
     Pooling is what makes these numbers readable at all on this corpus. A single
@@ -426,14 +585,17 @@ def pool_calibration(payloads, unbinned_auroc=None):
     so explicitly: ``MIN_OBSERVATIONS_FOR_MEASURED`` is 30 and
     ``MIN_OBSERVATIONS_FOR_AUROC`` is 100.
 
-    Exact, not an average of averages: the curve composes additively, and the two
-    non-additive statistics travel as SUMS (``brierSse``, ``confSum``) for that
+    Exact, not an average of averages, on **every** statistic including the unbinned
+    AUROC. The curve composes additively; the non-additive ones travel as sums
+    (``brierSse``, ``confSum``) or as a tally (``valueTally``) for exactly that
     reason. Averaging per-document ECEs would weight a 5-row form the same as a
-    400-row statement.
+    400-row statement, and there is no per-document AUROC worth averaging at all.
 
-    ``unbinned_auroc`` is accepted rather than computed because it cannot be
-    recovered from bin counts — the caller that still holds the raw pairs passes it
-    in, and a caller pooling stored summaries honestly leaves it None.
+    A payload whose ``valueTally`` is absent — a summary scored before it existed, or
+    a grader that emitted more than ``MAX_TALLY_VALUES`` distinct values — makes the
+    pooled unbinned AUROC ``None`` rather than a figure computed from the rest. A
+    partial pool would be a real number over the wrong population, which is worse
+    than an absent one.
     """
     from idp_common.evaluation import ConfidenceCurve, wilson_interval
     from idp_common.evaluation.confidence_curve import BIN_COUNT
@@ -441,6 +603,8 @@ def pool_calibration(payloads, unbinned_auroc=None):
     pooled = ConfidenceCurve()
     conf_sum = [0.0] * BIN_COUNT
     sse = 0.0
+    tally = {}
+    tally_complete = True
     for payload in payloads:
         if not isinstance(payload, dict):
             continue
@@ -452,6 +616,14 @@ def pool_calibration(payloads, unbinned_auroc=None):
         sse += float(payload.get("brierSse") or 0.0)
         for index, value in enumerate((payload.get("confSum") or [])[:BIN_COUNT]):
             conf_sum[index] += float(value)
+        part_tally = payload.get("valueTally")
+        if not isinstance(part_tally, dict):
+            tally_complete = False
+            continue
+        for key, (n, k) in part_tally.items():
+            entry = tally.setdefault(key, [0, 0])
+            entry[0] += int(n)
+            entry[1] += int(k)
 
     total = int(pooled.total_observations)
     if not total:
@@ -479,6 +651,7 @@ def pool_calibration(payloads, unbinned_auroc=None):
             }
         )
     pooled_ece_mean_conf = mean_conf_ece(pooled.correct, pooled.total, conf_sum)
+    pooled_unbinned = unbinned_auroc(tally) if tally_complete else None
     return {
         "observations": total,
         "correct": correct,
@@ -490,7 +663,9 @@ def pool_calibration(payloads, unbinned_auroc=None):
             round(pooled_ece_mean_conf, 4) if pooled_ece_mean_conf is not None else None
         ),
         "auroc": round(health.auroc, 4) if health.auroc is not None else None,
-        "auroc_unbinned": unbinned_auroc,
+        "auroc_unbinned": (
+            round(pooled_unbinned, 4) if pooled_unbinned is not None else None
+        ),
         "brier": round(sse / total, 4),
         "bin_coverage": health.bin_coverage,
         # The three ways the shipped estimator refuses to recommend worst-first
@@ -503,31 +678,6 @@ def pool_calibration(payloads, unbinned_auroc=None):
         "estimate_confidence": pooled.assess_estimate_confidence().value,
         "bins": table,
     }
-
-
-def _unbinned_auroc(observations):
-    """Stickler's AUROC over the raw pairs, or None when one class is absent.
-
-    ``ConfidenceCurve.auroc`` reads bin counts and therefore discards within-bin
-    ordering; its own docstring directs callers to this one when reporting AUROC as
-    a metric rather than using it as a gate. On a corpus where most cells are
-    correct the two differ substantially, so quoting the gate's value as the
-    grader's ranking power would understate it.
-    """
-    from stickler.structured_object_evaluator.models.confidence import ConfidencePair
-
-    from idp_common.evaluation.stickler_backend.confidence import AUROCMetric
-
-    pairs = [
-        # ``similarity`` is required by the model and unread by this metric; the
-        # verdict is an exact typed match, so it is 1 or 0 rather than a distance.
-        ConfidencePair(
-            is_match=bool(ok), confidence=float(score), similarity=1.0 if ok else 0.0
-        )
-        for score, ok in observations
-    ]
-    value = AUROCMetric().compute(pairs).get("value")
-    return round(value, 4) if isinstance(value, (int, float)) else None
 
 
 def score_audit_metadata(sections):

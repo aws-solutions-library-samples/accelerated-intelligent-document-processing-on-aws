@@ -47,6 +47,7 @@ true of the other suites here too.
 
 from __future__ import annotations
 
+import json
 import sys
 
 import pytest
@@ -219,6 +220,38 @@ def test_a_row_recovered_in_two_sections_contributes_once():
     assert len(observations) == 3
 
 
+def test_a_length_mismatch_between_assessment_and_data_rows_fails_loudly():
+    """The one condition under which the join MISPAIRS instead of under-reporting.
+
+    The confidence for row i is the i-th element of the assessment's row list, so if
+    that list were shorter than the data's, row i's confidence would describe some
+    other transaction and every calibration number would be a plausible-looking
+    statement about the wrong rows. ``reconcile_assessment_to_data`` guarantees equal
+    lengths in the pipeline; this asserts the harness notices if that guarantee is ever
+    removed, rather than scoring the mispaired data.
+    """
+    section = _section(_rows(10))
+    del section["explainability_info"][0][LIST_KEY][4]
+    with pytest.raises(AssertionError, match="misalignment"):
+        analyze.confidence_observations(
+            [section], _truth(range(10))["rows_typed"], LIST_KEY
+        )
+
+
+def test_an_equal_length_assessment_list_passes_the_alignment_check():
+    """The control: reconciliation's actual output, including rows padded with a null
+    confidence, must not trip the assertion."""
+    section = _section(_rows(10))
+    section["explainability_info"][0][LIST_KEY][4] = {
+        "Description": _leaf(None),
+        "Amount": _leaf(None),
+    }
+    observations = analyze.confidence_observations(
+        [section], _truth(range(10))["rows_typed"], LIST_KEY
+    )
+    assert len(observations) == 9
+
+
 def test_no_rows_typed_means_no_observations():
     """A reference corpus has no per-cell truth, so there is nothing to join. Zero
     observations, not zero error."""
@@ -294,7 +327,10 @@ def test_the_mean_confidence_ece_agrees_with_sticklers_estimator():
     n = 300
 
     def confidence(seq):
-        return [0.15, 0.45, 0.75, 1.0][seq % 4]
+        # Deliberately UNEQUAL per-bin counts. With 75 observations in each of four
+        # bins, a mutant computing an unweighted average of the per-bin gaps returns
+        # the identical number and the test passes while the weighting is wrong.
+        return [0.15, 0.45, 0.45, 0.75, 0.75, 0.75, 1.0, 1.0, 1.0, 1.0][seq % 10]
 
     wrong = set(range(0, n, 3))
     rows = _rows(n, confidence=confidence, wrong=wrong)
@@ -303,6 +339,10 @@ def test_the_mean_confidence_ece_agrees_with_sticklers_estimator():
     observations = analyze.confidence_observations(
         [section], truth["rows_typed"], LIST_KEY
     )
+    counts = {}
+    for c, _ok in observations:
+        counts[c] = counts.get(c, 0) + 1
+    assert len(set(counts.values())) > 1, "per-bin counts must differ, see above"
     stickler = ECEMetric(n_bins=10).compute(
         [
             ConfidencePair(
@@ -422,20 +462,111 @@ def test_pooling_is_exact_and_not_an_average_of_averages():
     assert pooled["ece_mean_conf"] == union["calibration_ece_mean_conf"]
     assert pooled["brier"] == union["calibration_brier"]
     assert pooled["auroc"] == union["calibration_auroc"]
+    # The unbinned AUROC too, which bin counts alone cannot recover — the value tally
+    # is what makes it exact rather than absent.
+    assert pooled["auroc_unbinned"] == union["calibration_auroc_unbinned"]
 
 
-def test_pooling_reports_the_unbinned_auroc_only_when_given_it():
-    """It cannot be recovered from bin counts. A pooled report that invented one from
-    the binned value would be quoting the gate's low-biased estimate as the metric."""
-    part = analyze.score_calibration(
-        [_section(_rows(50, confidence=0.75, wrong={1, 2}))],
-        _truth(range(50))["rows_typed"],
+def test_the_stored_payload_is_a_sufficient_statistic_for_every_published_figure():
+    """The committed summary has to be enough on its own.
+
+    The S3 artifacts these figures come from live exactly as long as nobody deletes
+    the stack, and three release stacks are already gone. So every number the study
+    page quotes must be recoverable from `calibration_curve` with no bucket — which is
+    the same property that lets `--calibration` read a committed summary offline.
+    """
+    scored = analyze.score_calibration(
+        [
+            _section(
+                _rows(
+                    160,
+                    confidence=lambda s: 0.15 + 0.2 * (s % 5),
+                    wrong=set(range(0, 160, 7)),
+                )
+            )
+        ],
+        _truth(range(160))["rows_typed"],
         LIST_KEY,
-    )["calibration_curve"]
-    assert analyze.pool_calibration([part])["auroc_unbinned"] is None
-    assert (
-        analyze.pool_calibration([part], unbinned_auroc=0.61)["auroc_unbinned"] == 0.61
     )
+    from_payload = analyze.pool_calibration([scored["calibration_curve"]])
+    for pooled_key, scored_key in (
+        ("observations", "calibration_observations"),
+        ("correct", "calibration_correct"),
+        ("ece", "calibration_ece"),
+        ("ece_mean_conf", "calibration_ece_mean_conf"),
+        ("auroc", "calibration_auroc"),
+        ("auroc_unbinned", "calibration_auroc_unbinned"),
+        ("brier", "calibration_brier"),
+        ("bin_coverage", "calibration_bin_coverage"),
+    ):
+        assert from_payload[pooled_key] == scored[scored_key], pooled_key
+
+
+def test_a_payload_without_a_value_tally_makes_the_pooled_unbinned_auroc_none():
+    """Every summary scored before the tally existed is in this state. A pooled figure
+    computed from the payloads that DO have one would be a real number over the wrong
+    population, which is worse than an absent one."""
+    scored = analyze.score_calibration(
+        [_section(_rows(120, confidence=0.75, wrong={1, 2}))],
+        _truth(range(120))["rows_typed"],
+        LIST_KEY,
+    )
+    with_tally = scored["calibration_curve"]
+    without = {k: v for k, v in with_tally.items() if k != "valueTally"}
+    assert analyze.pool_calibration([with_tally])["auroc_unbinned"] is not None
+    assert analyze.pool_calibration([with_tally, without])["auroc_unbinned"] is None
+    # Everything the bin counts DO support is still reported.
+    assert analyze.pool_calibration([with_tally, without])["ece"] is not None
+
+
+def test_the_unbinned_auroc_matches_sticklers_over_raw_pairs():
+    """The tally-based computation replaced a call into Stickler, which removed the
+    harness's only dependency on the ``[evaluation]`` extra from the default scoring
+    path. The equivalence is the reason that was safe, so it is asserted rather than
+    assumed — on ties, on a single class, and on a spread of values.
+    """
+    pytest.importorskip("stickler")
+    from stickler.structured_object_evaluator.models.confidence import ConfidencePair
+
+    from idp_common.evaluation.stickler_backend.confidence import AUROCMetric
+
+    def stickler_auroc(observations):
+        pairs = [
+            ConfidencePair(
+                is_match=bool(ok), confidence=float(c), similarity=1.0 if ok else 0.0
+            )
+            for c, ok in observations
+        ]
+        return AUROCMetric().compute(pairs).get("value")
+
+    cases = [
+        # Heavy ties at one value — the shipped default's actual shape.
+        [(1.0, i % 20 != 0) for i in range(400)],
+        # Wrong cells at the bottom: a perfect ranker.
+        [(0.2 if i % 10 == 0 else 0.9, i % 10 != 0) for i in range(300)],
+        # Wrong cells at the TOP: worse than chance, and the sign must survive.
+        [(0.95 if i % 10 == 0 else 0.3, i % 10 != 0) for i in range(300)],
+        # Many distinct values with ties inside some of them.
+        [(round(0.05 * (i % 19), 4), (i * 7) % 11 != 0) for i in range(500)],
+    ]
+    for observations in cases:
+        mine = analyze.unbinned_auroc(analyze.value_tally(observations))
+        theirs = stickler_auroc(observations)
+        assert mine is not None and theirs is not None
+        assert abs(mine - theirs) < 1e-12, (mine, theirs)
+
+
+def test_the_unbinned_auroc_is_none_when_a_class_is_absent_or_the_tally_is_dropped():
+    assert analyze.unbinned_auroc(analyze.value_tally([(0.9, True)] * 50)) is None
+    assert analyze.unbinned_auroc(analyze.value_tally([(0.9, False)] * 50)) is None
+    assert analyze.unbinned_auroc(None) is None
+    # Past the cap the tally is dropped whole rather than truncated: half a tally
+    # would yield a confident AUROC over part of the data.
+    many = [
+        (i / (analyze.MAX_TALLY_VALUES * 2), i % 3 != 0)
+        for i in range(analyze.MAX_TALLY_VALUES * 2)
+    ]
+    assert analyze.value_tally(many) is None
 
 
 def test_pooling_nothing_is_none():
@@ -462,8 +593,22 @@ def test_the_cell_rollup_pools_rather_than_averaging():
 # ---------------------------------------------------------------------- the gate
 
 
-def _cell(observations, ece, auroc):
-    return {"calibration": {"observations": observations, "ece": ece, "auroc": auroc}}
+def _cell(observations, ece, auroc, ece_mean_conf=None):
+    """A minimal pooled-calibration block.
+
+    ``ece_mean_conf`` defaults to ``ece`` so the older cases below still describe a
+    cell whose two estimators agree. The cases that matter are the ones where they do
+    NOT, because that is the whole reason the gate reads different ones for the
+    magnitude and the crossing.
+    """
+    return {
+        "calibration": {
+            "observations": observations,
+            "ece": ece,
+            "ece_mean_conf": ece if ece_mean_conf is None else ece_mean_conf,
+            "auroc": auroc,
+        }
+    }
 
 
 def test_the_gate_flags_a_calibration_error_that_grows():
@@ -472,6 +617,49 @@ def test_the_gate_flags_a_calibration_error_that_grows():
     )
     assert len(findings) == 1
     assert "calibration ECE +0.070" in findings[0]
+
+
+def test_the_magnitude_check_reads_the_estimator_that_can_actually_move():
+    """The midpoint ECE is nearly immobile, so a magnitude gate reading it is blind.
+
+    Confidence drifts 0.97 -> 0.995 with accuracy held at 0.97 and all mass in the
+    top bin — the exact shape the study shows the shipped default produces. Real
+    calibration error worsens by 0.025; the midpoint estimator does not move at all,
+    because both confidences are in the same bin and it compares against that bin's
+    MIDPOINT. The accuracy gate is silent too, since accuracy did not change.
+    """
+    base = _cell(500, 0.02, 0.80, ece_mean_conf=0.000)
+    cur = _cell(500, 0.02, 0.80, ece_mean_conf=0.025)
+    # The midpoint estimator is identical on both sides: a gate reading it sees zero.
+    assert base["calibration"]["ece"] == cur["calibration"]["ece"]
+    findings = aggregate.calibration_findings(cur, base, regression=True)
+    assert len(findings) == 1
+    assert "calibration ECE +0.025" in findings[0]
+
+
+def test_a_worsening_calibration_error_is_never_reported_as_an_improvement():
+    """The inverted case. Confidence is held at 0.995 and accuracy falls 0.999 ->
+    0.95, so the real error worsens by 0.041 while the midpoint estimator moves
+    -0.049 — which a gate reading it calls an improvement, in the direction that
+    flatters the release."""
+    base = _cell(500, 0.049, 0.80, ece_mean_conf=0.004)
+    cur = _cell(500, 0.000, 0.80, ece_mean_conf=0.045)
+    regressions = aggregate.calibration_findings(cur, base, regression=True)
+    improvements = aggregate.calibration_findings(cur, base, regression=False)
+    assert len(regressions) == 1
+    assert "calibration ECE +0.041" in regressions[0]
+    assert improvements == []
+
+
+def test_a_genuine_calibration_improvement_is_still_reported():
+    """The control for the test above — the direction has to survive both ways."""
+    improvements = aggregate.calibration_findings(
+        _cell(500, 0.02, 0.80, ece_mean_conf=0.004),
+        _cell(500, 0.02, 0.80, ece_mean_conf=0.045),
+        regression=False,
+    )
+    assert len(improvements) == 1
+    assert "calibration ECE -0.041" in improvements[0]
 
 
 def test_the_gate_flags_ranking_power_that_falls():
@@ -498,15 +686,55 @@ def test_a_tiny_move_that_crosses_a_shipped_bar_is_still_a_regression():
 
 
 def test_a_tiny_ece_move_across_the_unreliable_bar_is_a_regression():
+    """And the crossing check reads the GATE's estimator, not the mean-confidence one.
+
+    ``ECE_UNRELIABLE_THRESHOLD`` is applied by the shipped product to
+    ``CalibrationHealth.ece``, so a crossing computed from any other estimator would
+    not predict what the review-effort estimator does. Here the mean-confidence value
+    is held constant on both sides, so the magnitude check contributes nothing and the
+    finding can only have come from the crossing.
+    """
     from idp_common.evaluation.confidence_curve import ECE_UNRELIABLE_THRESHOLD
 
     findings = aggregate.calibration_findings(
-        _cell(500, ECE_UNRELIABLE_THRESHOLD + 0.001, 0.80),
-        _cell(500, ECE_UNRELIABLE_THRESHOLD, 0.80),
+        _cell(500, ECE_UNRELIABLE_THRESHOLD + 0.001, 0.80, ece_mean_conf=0.01),
+        _cell(500, ECE_UNRELIABLE_THRESHOLD, 0.80, ece_mean_conf=0.01),
         regression=True,
     )
     assert len(findings) == 1
     assert "CROSSED" in findings[0]
+    assert f"{ECE_UNRELIABLE_THRESHOLD}" in findings[0]
+
+
+def test_the_crossing_check_fires_on_a_grossly_overconfident_cell():
+    """The end-to-end case: a cell whose accuracy collapses to 0.70 while confidence
+    stays near 1.0 crosses the unreliable bar on the gate's own estimator, and the
+    magnitude check agrees. Built from real observations rather than hand-written
+    numbers, so it exercises the whole path from the join to the report line."""
+    from idp_common.evaluation.confidence_curve import ECE_UNRELIABLE_THRESHOLD
+
+    n = 400
+    healthy = analyze.score_calibration(
+        [_section(_rows(n, confidence=1.0))], _truth(range(n))["rows_typed"], LIST_KEY
+    )
+    broken = analyze.score_calibration(
+        [
+            _section(
+                _rows(
+                    n, confidence=1.0, wrong=set(range(0, n, 10)) | set(range(1, n, 5))
+                )
+            )
+        ],
+        _truth(range(n))["rows_typed"],
+        LIST_KEY,
+    )
+    base = {"calibration": analyze.pool_calibration([healthy["calibration_curve"]])}
+    cur = {"calibration": analyze.pool_calibration([broken["calibration_curve"]])}
+    assert cur["calibration"]["accuracy"] < 0.75
+    assert cur["calibration"]["ece"] > ECE_UNRELIABLE_THRESHOLD
+    assert base["calibration"]["ece"] <= ECE_UNRELIABLE_THRESHOLD
+    findings = aggregate.calibration_findings(cur, base, regression=True)
+    assert any("CROSSED" in f for f in findings)
 
 
 def test_a_sample_too_thin_to_read_is_not_reported_in_either_direction():
@@ -558,6 +786,68 @@ def test_improvements_are_reported_too():
 
 
 # ------------------------------------------------------------------------ plumbing
+
+
+def test_a_baseline_that_predates_the_metric_is_reported_as_unread_not_as_silence(
+    capsys, tmp_path
+):
+    """Skipping is right; being indistinguishable from a passing gate is not.
+
+    A baseline with no `calibration` block makes every comparison vacuous, and with no
+    output at all a reader sees the same empty regression list they would see from a
+    clean run. That is the "control that exists but is never consulted" defect, so
+    `compare_cells` names the metric, the count of affected cells, and the remedy.
+    Covers `conf_coverage` (#997) in the same state for the same reason.
+    """
+    scored = analyze.score_calibration(
+        [_section(_rows(60, confidence=0.85, wrong={0, 1}))],
+        _truth(range(60))["rows_typed"],
+        LIST_KEY,
+    )
+    coverage = analyze.score_confidence_coverage([_section(_rows(60))])
+    row = {
+        "cell": "c",
+        "doc": "d.pdf",
+        "sub_doc": None,
+        "repeat": 0,
+        "success": True,
+        "cost": 0.01,
+        "scalar_accuracy": 1.0,
+        **coverage,
+        **scored,
+    }
+    baseline_row = {
+        k: v
+        for k, v in row.items()
+        if not k.startswith("calibration") and not k.startswith("conf_")
+    }
+    cur_path = tmp_path / "cur.json"
+    base_path = tmp_path / "base.json"
+    cur_path.write_text(json.dumps({"meta": {}, "rows": [row]}))
+    base_path.write_text(json.dumps({"meta": {}, "rows": [baseline_row]}))
+
+    aggregate.compare_cells(str(cur_path), str(base_path))
+    out = capsys.readouterr().out
+    assert "NOT COMPARED" in out
+    assert "#935" in out and "#997" in out
+    assert "INERT" in out
+
+
+def test_nothing_is_reported_as_unread_when_both_sides_have_the_metric():
+    """The control. A metric present on both sides is compared, so naming it as unread
+    would be noise on every future run."""
+    scored = analyze.score_calibration(
+        [_section(_rows(60, confidence=0.85, wrong={0, 1}))],
+        _truth(range(60))["rows_typed"],
+        LIST_KEY,
+    )
+    cell = {
+        "calibration": analyze.pool_calibration([scored["calibration_curve"]]),
+        "conf_coverage": aggregate._stats([1.0, 0.98]),
+    }
+    assert aggregate._missing_metric_notes(cell, cell) == []
+    # And absent on BOTH sides is not a baseline problem either.
+    assert aggregate._missing_metric_notes({}, {}) == []
 
 
 def test_the_calibration_keys_reach_the_csv():
