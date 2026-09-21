@@ -85,7 +85,7 @@ class BdaBlueprintService:
         """
         return sanitize_class_name(name)
 
-    def get_or_create_project_for_version(self, version_name: str) -> str:
+    def get_or_create_project_for_version(self, version_name: str) -> Optional[str]:
         """Get or create a BDA project for a specific config version.
 
         Each config version gets its own BDA project to enable isolated

@@ -311,14 +311,24 @@ List processed documents with pagination support.
 - `next_token` (str, optional): Pagination token from previous request
 - `stack_name` (str, optional): Stack name override
 
-**Returns:** `DocumentListResult` with `documents` (list of DocumentInfo), `count`, and optional `next_token`
+**Returns:** `DocumentListResult` with `documents` (list of `DocumentInfo`), `count`, and optional `next_token`
+
+`count` is the number of documents **in this page**. The tracking table is paged
+with a DynamoDB scan, which reports no table-wide total, so there is no grand
+total to read here — walk `next_token` if you need one.
+
+Each `DocumentInfo` carries `document_id`, `status`, `timestamp` and `batch_id`
+(`None` for a document submitted outside a batch). Page counts and the classified
+document type are not part of a listing; use `document.get_status()` or
+`document.get_metadata()`, which read the full record.
 
 ```python
 # List documents
 result = client.document.list(limit=50)
+print(f"{result.count} documents in this page")
 
 for doc in result.documents:
-    print(f"{doc.document_id}: {doc.status}")
+    print(f"{doc.document_id}: {doc.status} (batch: {doc.batch_id})")
 
 # Pagination
 if result.next_token:
@@ -731,18 +741,41 @@ Get evaluation report comparing extraction results to baseline.
 - `section_id` (int, optional): Section number (default: 1)
 - `stack_name` (str, optional): Stack name override
 
-**Returns:** `EvaluationReport` with `document_id`, `section_id`, `accuracy`, `field_results`, and `summary`
+**Returns:** `EvaluationReport` with `document_id`, `section_id`, `document_class`,
+the section's `accuracy` / `precision` / `recall` / `f1_score`, a list of
+`field_comparisons`, and the document-level `overall_metrics`
+
+The report is read from the evaluation artifact the pipeline writes at
+`<document key>/evaluation/results.json` in the output bucket, so the document
+must have been evaluated against a baseline first — see
+[evaluation.use_as_baseline()](#evaluationuse_as_baseline). If it has not, or if
+the results contain no such section, the call raises
+`IDPResourceNotFoundError`.
+
+Every score is `Optional[float]`: a section whose evaluation failed records no
+metrics rather than a zero.
+
+Each entry in `field_comparisons` is a `FieldComparison` with `attribute`,
+`expected`, `actual`, `matched`, `score`, `method` (the comparator that produced
+the score — `EXACT`, `FUZZY`, `LLM`, …) and `reason`. `expected` and `actual` hold
+whatever the schema declared for the attribute, so they may be scalars, lists or
+nested objects.
 
 ```python
 report = client.evaluation.get_report(document_id="test-invoice-001.pdf")
 
-print(f"Accuracy: {report.accuracy:.1%}")
+print(f"Section {report.section_id} ({report.document_class})")
+print(f"Accuracy: {report.accuracy:.1%}  F1: {report.f1_score:.1%}")
+print(f"Document overall accuracy: {report.overall_metrics['accuracy']:.1%}")
 
-for field, result in report.field_results.items():
-    if result['match']:
-        print(f"✓ {field}: {result['extracted']}")
+for field in report.field_comparisons:
+    if field.matched:
+        print(f"✓ {field.attribute}: {field.actual}")
     else:
-        print(f"✗ {field}: expected '{result['expected']}', got '{result['extracted']}'")
+        print(
+            f"✗ {field.attribute}: expected {field.expected!r}, "
+            f"got {field.actual!r} ({field.reason})"
+        )
 ```
 
 ### evaluation.get_metrics()
@@ -756,7 +789,19 @@ Get aggregated evaluation metrics across multiple documents.
 - `batch_id` (str, optional): Filter by batch identifier
 - `stack_name` (str, optional): Stack name override
 
-**Returns:** `EvaluationMetrics` with `total_evaluations`, `average_accuracy`, and `by_document_class`
+**Returns:** `EvaluationMetrics` with `total_documents`, `avg_accuracy`,
+`avg_precision`, `avg_recall`, `avg_f1_score`, `by_document_class`, and the
+`start_date` / `end_date` filters echoed back
+
+The four averages aggregate **documents** — one `overall_metrics` block each.
+`by_document_class` aggregates **sections**, because a document class is a
+property of a section rather than of the whole document, and it maps each class to
+`{"count": int, "avg_accuracy": float}`. A document with an invoice section and a
+receipt section therefore contributes one document to `total_documents` and one
+section to each class.
+
+Passing `document_class` keeps only documents that contain a section of that class
+and narrows the breakdown to those sections.
 
 ```python
 metrics = client.evaluation.get_metrics(
@@ -764,11 +809,12 @@ metrics = client.evaluation.get_metrics(
     end_date="2024-01-31"
 )
 
-print(f"Total evaluations: {metrics.total_evaluations}")
-print(f"Average accuracy: {metrics.average_accuracy:.1%}")
+print(f"Documents evaluated: {metrics.total_documents}")
+print(f"Average accuracy: {metrics.avg_accuracy:.1%}")
+print(f"Average F1: {metrics.avg_f1_score:.1%}")
 
-for doc_class, accuracy in metrics.by_document_class.items():
-    print(f"{doc_class}: {accuracy:.1%}")
+for doc_class, stats in metrics.by_document_class.items():
+    print(f"{doc_class}: {stats['count']} sections, {stats['avg_accuracy']:.1%}")
 ```
 
 ### evaluation.list_baselines()
@@ -780,13 +826,19 @@ List evaluation baselines with pagination support.
 - `next_token` (str, optional): Pagination token from previous request
 - `stack_name` (str, optional): Stack name override
 
-**Returns:** `EvaluationBaselineListResult` with `baselines`, `count`, and optional `next_token`
+**Returns:** `EvaluationBaselineListResult` with `baselines` (list of
+`BaselineInfo`), `count`, and optional `next_token`
+
+`count` is the number of baselines in this page; an S3 prefix listing reports no
+bucket-wide total. Each `BaselineInfo` carries `document_id` and `s3_location`;
+`created_date` and `size_bytes` stay `None` here, because a prefix listing returns
+neither — stat the objects yourself if you need them.
 
 ```python
 result = client.evaluation.list_baselines(limit=50)
 
 for baseline in result.baselines:
-    print(f"{baseline['document_id']}: {baseline['created_at']}")
+    print(f"{baseline.document_id} -> {baseline.s3_location}")
 
 if result.next_token:
     next_page = client.evaluation.list_baselines(limit=50, next_token=result.next_token)
@@ -922,7 +974,17 @@ Query knowledge base with natural language questions.
 - `next_token` (str, optional): Pagination token from previous request
 - `stack_name` (str, optional): Stack name override
 
-**Returns:** `SearchResult` with `answer`, `confidence`, `citations`, and optional `next_token`
+**Returns:** `SearchResult` with `answer`, `citations`, `confidence`, and optional `next_token`
+
+When the knowledge base matches nothing, `answer` is `""`, `citations` is empty and
+`confidence` is `None` — so "no answer" stays distinguishable from "an answer the
+model scored at zero". Guard on `result.answer` before formatting `confidence`.
+
+Each entry in `citations` is a `SearchCitation` with `text`, its own retrieval
+`confidence`, and a `document` (`SearchDocumentReference`) carrying `document_id`
+plus `section_id` and `page` where the knowledge base could localise the passage.
+Those two are `Optional[int]`: a citation the knowledge base did not localise
+leaves them unset.
 
 ```python
 # Ask a question
@@ -930,8 +992,11 @@ result = client.search.query(
     question="What is the total amount on invoice INV-12345?"
 )
 
-print(f"Answer: {result.answer}")
-print(f"Confidence: {result.confidence:.1%}")
+if not result.answer:
+    print("No answer found")
+else:
+    print(f"Answer: {result.answer}")
+    print(f"Confidence: {result.confidence:.1%}")
 
 for citation in result.citations:
     print(f"Source: {citation.document.document_id}")
@@ -1995,7 +2060,10 @@ for test_run_id, metrics in result.metrics.items():
 
 ## Response Models
 
-All operations return typed Pydantic models. Import them from the top-level `idp_sdk` package:
+All operations return typed result objects — Pydantic models for the document,
+batch, stack and config surfaces, and dataclasses for the evaluation and search
+ones. Either way the fields are the same to read. Import them from the top-level
+`idp_sdk` package:
 
 ```python
 from idp_sdk import (

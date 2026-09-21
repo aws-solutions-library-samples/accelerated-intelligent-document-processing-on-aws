@@ -1336,7 +1336,7 @@ def process_message(record: Dict[str, Any]) -> Tuple[bool, str]:
         return False, message_id
 
 
-@xray_recorder.capture("queue_processor")
+@xray_recorder.capture("queue_processor")  # pyright: ignore[reportCallIssue] - aws-xray-sdk types capture() as the wrapped function, not the decorator factory
 def handler(event, context):
     logger.info(f"Processing event: {json.dumps(sanitize_event_for_logging(event))}")
     logger.info(f"Processing batch of {len(event['Records'])} messages")

@@ -125,6 +125,44 @@ The SDK organizes functionality into 9 operation namespaces:
 - **search**: Query processed documents with natural language
 - **testing**: Performance and load testing
 
+## Result models
+
+Every operation returns a typed result object: a Pydantic model for the document,
+batch, stack and config surfaces, and a dataclass for the evaluation and search
+ones. They live in `idp_sdk/models/` and are re-exported from the top-level
+package. `docs/idp-sdk.md` documents the fields per operation; two properties of
+the set are worth knowing before you add or change one.
+
+**A result model's fields are exactly what its operation can supply.** A field the
+operation never populates reads as a measured `None` to a caller, which is worse
+than its absence — a `total_count` that was always `None` is indistinguishable
+from an empty table. So `DocumentListResult.count` is the size of the page it
+carries and there is no total (a DynamoDB scan reports none), and `BaselineInfo`
+leaves `created_date` unset from `list_baselines` because an S3 prefix listing
+does not return one. If a field cannot be filled from the processor's response,
+either extend the processor to supply it or leave the field out.
+
+**A mismatch between a model and its call site is a type error, not a test
+failure.** For the dataclasses it raises `TypeError` at construction; for the
+Pydantic models an unknown keyword is *silently ignored*, which is how
+`DocumentInfo(batch_id=...)` dropped every document's batch id without anything
+failing. Both shapes are caught statically: `reportCallIssue` is an **error** in
+`pyrightconfig.json`, so `make typecheck` fails on a constructor call that does
+not match its model. Run it after changing either side — a unit test that asserts
+on the mock's call arguments cannot see this class of defect, so the tests in
+`tests/unit/test_search_operations.py`,
+`tests/unit/test_document_list_operation.py` and
+`tests/unit/test_evaluation_operations.py` build the real result object from a
+stubbed processor response instead.
+
+Two things follow for the evaluation surface specifically. `get_report` reads
+`<document key>/evaluation/results.json` from the output bucket — the artifact
+`idp_common.evaluation.contract.evaluation_results_key` names — so its field
+vocabulary (`accuracy`, `precision`, `recall`, `f1_score`, per-attribute
+comparisons) tracks that file. And `get_metrics` averages **documents** for its
+four top-level scores while `by_document_class` aggregates **sections**, because a
+document class is a property of a section.
+
 ## Buckets the CLI creates
 
 Two S3 buckets are created imperatively (outside CloudFormation) and are

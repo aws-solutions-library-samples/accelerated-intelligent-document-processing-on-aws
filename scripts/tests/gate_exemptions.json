@@ -420,7 +420,8 @@
       "crossReferences": [
         "ruff.toml::exclude",
         "ruff.toml::lint.per-file-ignores",
-        "scripts/lint_debt.json::lint_debt.json"
+        "scripts/lint_debt.json::lint_debt.json",
+        "scripts/tests/test_pyright_config.py::VENDORED_SEVERITY_EXEMPTIONS"
       ],
       "issues": [
         "975",
@@ -1536,6 +1537,38 @@
       ],
       "memberKind": "path",
       "ratchetEvidence": "scripts/tests/test_pyright_config.py"
+    },
+    "scripts/tests/test_pyright_config.py::DISABLED_RULE_EXEMPTIONS": {
+      "kind": "exemption",
+      "turnsOff": "basedpyright's reporting of the named diagnostic rule, repo-wide and for every file the gate covers. A rule at 'none' produces no diagnostic at all, so unlike a path exclusion there is no warning left behind to count",
+      "premise": [
+        "JUDGEMENT"
+      ],
+      "reason": "The 14 rules pinned to 'none' in pyrightconfig.json. Eleven of them are one root cause: boto3's client() and resource() are untyped factories, so every AWS call in this tree yields Unknown members, Unknown arguments and Optional response subscripts, and those rules fire on correct code at a rate that buries the rules that find defects. Three are duplicates of a ruff rule that already covers the finding with an autofix. The entry per rule says what that rule specifically stops catching here, because the shared root cause is a fact about the tree and not a reason for any individual rule -- one justification attached to a set is the defect this registry exists to catch. Paying one down means fixing its findings and deleting its entry, in that order.",
+      "memberKind": "basedpyright diagnostic rule id",
+      "ratchet": "universe-closure",
+      "ratchetEvidence": [
+        "scripts/tests/test_pyright_config.py"
+      ],
+      "issues": [
+        "975"
+      ]
+    },
+    "scripts/tests/test_pyright_config.py::VENDORED_SEVERITY_EXEMPTIONS": {
+      "kind": "exemption",
+      "turnsOff": "the 'error' severity of reportCallIssue and reportReturnType for files under the named root. The files stay in filesAnalyzed and the diagnostics are still printed, at 'warning' -- so this softens the gate's exit code for that root rather than removing it from the gate",
+      "premise": [
+        "JUDGEMENT"
+      ],
+      "reason": "One root: the vendored copy of awslabs/pii-anonymizer under feature-platform/pii-anonymizer/hook/vendor. Its files are re-copied byte-for-byte from upstream by the tree's own resync script, against the commit pinned in PROVENANCE.md, so an inline '# pyright: ignore' written into one is dropped by the next resync and an annotation corrected in the copy puts this repo in conflict with upstream on the next diff. The 5 diagnostics (4 reportReturnType, 1 reportCallIssue) are upstream's to fix. ruff.toml carves the same tree out of lint and format for the same reason, which is why the two are cross-referenced here: auditing the scope of one has to reach the other.",
+      "memberKind": "path",
+      "ratchet": "non-vacuity",
+      "ratchetEvidence": [
+        "scripts/tests/test_pyright_config.py"
+      ],
+      "crossReferences": [
+        "ruff.toml::extend-exclude"
+      ]
     },
     "scripts/tests/test_repo_quality_review_skill.py::CLINE_EXEMPT": {
       "kind": "exemption",

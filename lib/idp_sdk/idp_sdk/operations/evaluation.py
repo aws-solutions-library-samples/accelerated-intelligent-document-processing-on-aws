@@ -7,9 +7,11 @@ from typing import Dict, Optional
 
 from idp_sdk.exceptions import IDPProcessingError, IDPResourceNotFoundError
 from idp_sdk.models import (
+    BaselineInfo,
     EvaluationBaselineListResult,
     EvaluationMetrics,
     EvaluationReport,
+    FieldComparison,
     UseAsBaselineResult,
 )
 
@@ -117,7 +119,13 @@ class EvaluationOperation:
             **kwargs: Additional parameters
 
         Returns:
-            EvaluationReport with accuracy and field results
+            EvaluationReport with the section's scores and its per-attribute
+            comparisons
+
+        Raises:
+            IDPResourceNotFoundError: If the document has not been evaluated, or
+                its results contain no such section
+            IDPProcessingError: If the report cannot be read
         """
         from idp_sdk._core.evaluation_processor import EvaluationProcessor
 
@@ -134,9 +142,24 @@ class EvaluationOperation:
             return EvaluationReport(
                 document_id=result["document_id"],
                 section_id=result["section_id"],
-                accuracy=result["accuracy"],
-                field_results=result["field_results"],
-                summary=result.get("summary"),
+                field_comparisons=[
+                    FieldComparison(
+                        attribute=comparison["attribute"],
+                        expected=comparison.get("expected"),
+                        actual=comparison.get("actual"),
+                        matched=bool(comparison.get("matched")),
+                        score=comparison.get("score"),
+                        method=comparison.get("method"),
+                        reason=comparison.get("reason"),
+                    )
+                    for comparison in result.get("field_comparisons", [])
+                ],
+                document_class=result.get("document_class"),
+                accuracy=result.get("accuracy"),
+                precision=result.get("precision"),
+                recall=result.get("recall"),
+                f1_score=result.get("f1_score"),
+                overall_metrics=result.get("overall_metrics", {}),
             )
         except FileNotFoundError as e:
             raise IDPResourceNotFoundError(str(e)) from e
@@ -181,9 +204,14 @@ class EvaluationOperation:
             )
 
             return EvaluationMetrics(
-                total_evaluations=result["total_evaluations"],
-                average_accuracy=result["average_accuracy"],
+                total_documents=result["total_documents"],
+                avg_accuracy=result["avg_accuracy"],
+                avg_precision=result["avg_precision"],
+                avg_recall=result["avg_recall"],
+                avg_f1_score=result["avg_f1_score"],
                 by_document_class=result["by_document_class"],
+                start_date=start_date,
+                end_date=end_date,
             )
         except Exception as e:
             raise IDPProcessingError(f"Failed to get evaluation metrics: {e}") from e
@@ -217,7 +245,13 @@ class EvaluationOperation:
             result = processor.list_baselines(limit=limit, next_token=next_token)
 
             return EvaluationBaselineListResult(
-                baselines=result["baselines"],
+                baselines=[
+                    BaselineInfo(
+                        document_id=baseline["document_id"],
+                        s3_location=baseline["s3_location"],
+                    )
+                    for baseline in result["baselines"]
+                ],
                 count=result["count"],
                 next_token=result.get("next_token"),
             )

@@ -31,6 +31,7 @@ import sys
 import tempfile
 import zipfile
 from pathlib import Path
+from typing import Optional
 
 # Constants
 LAMBDA_FUNCTION_NAME = "idp-sdk-example"
@@ -71,7 +72,7 @@ def aws_partition() -> str:
     return "aws"
 
 
-def create_layer(sdk_dir: Path) -> str:
+def create_layer(sdk_dir: Path) -> Optional[str]:
     """Create Lambda layer with IDP SDK and return layer ARN."""
     print("\n📦 Creating Lambda layer with IDP SDK...")
 
@@ -208,7 +209,7 @@ def create_layer(sdk_dir: Path) -> str:
         return layer_arn
 
 
-def get_latest_layer_arn() -> str:
+def get_latest_layer_arn() -> Optional[str]:
     """Get the latest layer ARN."""
     success, stdout, stderr = run_command(
         [
@@ -229,7 +230,7 @@ def get_latest_layer_arn() -> str:
     return None
 
 
-def create_iam_role() -> str:
+def create_iam_role() -> Optional[str]:
     """Create or get IAM role for Lambda function."""
     role_name = f"{LAMBDA_FUNCTION_NAME}-role"
 

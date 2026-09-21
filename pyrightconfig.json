@@ -48,6 +48,15 @@
   "reportUnknownVariableType": "none",
   "reportArgumentType": "none",
   "reportAttributeAccessIssue": "none",
-  "reportReturnType": "warning",
-  "reportCallIssue": "warning"
+
+  "reportReturnType": "error",
+  "reportCallIssue": "error",
+
+  "executionEnvironments": [
+    {
+      "root": "feature-platform/pii-anonymizer/hook/vendor",
+      "reportReturnType": "warning",
+      "reportCallIssue": "warning"
+    }
+  ]
 }
