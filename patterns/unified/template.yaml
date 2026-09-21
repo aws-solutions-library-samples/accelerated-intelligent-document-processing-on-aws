@@ -1324,6 +1324,13 @@ Resources:
                 default: "auto"
                 order: 1.05
                 description: "'auto' (default): every <<CACHEPOINT>> marker in the extraction prompts becomes a Bedrock cache point on models that support it. 'off': send no cache points. A cache write is billed at 1.25x input price and pays back only when a second request with the same prefix arrives inside the 5-minute TTL, so a low-volume deployment that processes one document of a class per TTL pays about +25% on the prefix for nothing — choose 'off' there. Each model also has a minimum cacheable prefix (512 to 4,096 tokens); below it a cache point silently does nothing, which 'idp-cli config validate' warns about per class. Applies to extraction only."
+              row_shortfall_action:
+                type: string
+                title: Truncated list outcome
+                enum: ["warn", "fail"]
+                default: "warn"
+                order: 1.06
+                description: "What the outcome MEANS when extraction returns fewer than half the table rows the section's own OCR text evidences for a list field. 'warn' (default): record the issue and report success. 'fail': the rows that were extracted and the diagnosis are saved, then the section is marked failed - so a document carrying a fraction of a long table cannot be reported as COMPLETED, which is the only signal most consumers read. This does not change WHEN the shortfall is detected, only what it costs, and it applies to both Simple and Advanced extraction. IMPORTANT before choosing 'fail': the check's evidence is OCR tables whose column count equals the list item's property count, summed over the whole section, and a 2- or 3-property array that models an entity GROUP rather than table rows looks identical to one that models rows. A statement's 31-row two-column Daily Balance table is therefore counted as evidence about a 5-row 2-property account summary, and a fully correct extraction scores 0.13. Choose 'fail' for a corpus whose narrow arrays really are table rows - long transaction lists are the case it was built for - after checking your classes for group-shaped arrays."
               agentic:
                 type: object
                 sectionLabel: Advanced extraction settings

@@ -1264,6 +1264,38 @@ See `notebooks/examples/demo-lambda/` for:
 
 For more details, see [Extraction & Confidence](extraction-and-confidence.md).
 
+### Making a truncated list fail the section (`extraction.row_shortfall_action`)
+
+Extraction compares the rows it returned for a list field with the rows in the section's own
+OCR tables *of the same width*. When those tables hold at least 30 rows and fewer than half
+came back, that is recorded as `extraction_rows_below_ocr_estimate`. Like every other
+processing issue it does not change the document's status, so a document carrying 3% of a
+long table reports `COMPLETED` — and a truncated run is *cheaper* than a complete one, so
+neither status nor cost flags it. This setting is how a deployment changes that:
+
+```yaml
+extraction:
+  row_shortfall_action: warn     # warn (default) | fail
+```
+
+Under `fail`, the partial rows, the issue and the processing report are written to the
+section's `result.json` first and the section then fails, so the failure costs the claim of
+success and not the data. It changes only what the shortfall costs, never when it is
+detected, and it applies to both Simple and Advanced extraction.
+
+⚠️ **`fail` is opt-in for a reason and needs a check first.** Matching is on width alone and
+matched tables are summed over the whole section, so a 2- or 3-property array that models an
+entity *group* rather than table rows collects evidence that has nothing to do with it —
+and the two shapes are structurally identical. In the default preset a fully correct
+extraction of `Bank-Statement.account_summary` (2 properties, 5 rows) scores 0.13, because a
+monthly statement's 31-row two-column Daily Balance table is summed into its evidence. Nine
+such fields ship in the config library. Before turning `fail` on, confirm every
+array-of-object field in your classes models table rows and that no unrelated table in the
+same section shares a width with one. It is the right setting for a corpus of long
+transaction lists, which is what it was built for. Editable in the Web UI under
+**Configuration → Extraction → Truncated list outcome**; the shapes to check are listed in
+[Extraction & Confidence](extraction-and-confidence.md#why-fail-is-opt-in-and-what-to-check-before-turning-it-on).
+
 ### Tiered Models (Validation + Escalation)
 
 Extraction supports a **cost-tiered** strategy: extract with a fast/cheap model, then automatically re-extract only the fields that fail schema validation with a stronger model. This is configured under `extraction.validation`:

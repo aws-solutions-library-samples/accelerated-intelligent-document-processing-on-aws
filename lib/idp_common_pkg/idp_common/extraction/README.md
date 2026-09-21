@@ -2094,7 +2094,8 @@ consequence is an 800-row / 17-page statement returning 43 rows with `COMPLETED`
 processing issue, and 25+ pages failing with Bedrock's bare *Input is too long*. Two things
 make both loud without changing what is extracted:
 
-- `extraction_rows_below_ocr_estimate` (warning, both modes) — rows extracted for the lists of
+- `extraction_rows_below_ocr_estimate` (warning; **error** under
+  `extraction.row_shortfall_action: fail`, which also fails the section; both modes) — rows extracted for the lists of
   objects of one shape vs the rows in the section's OCR tables **of that shape** (`_ocr_tables`
   counts only Markdown tables: lines that START with a pipe, in a run that holds a `|---|`
   separator row; a separator starts a new table, a non-empty line without a leading pipe
@@ -2109,11 +2110,50 @@ make both loud without changing what is extracted:
   never warn against their shared evidence. Fires when the matched tables hold at least 30
   rows and the group extracted fewer than half of them (`_OCR_ROW_ESTIMATE_MIN`,
   `_OCR_ROW_SHORTFALL_RATIO`). It needs OCR that emits Markdown tables — Textract with the
-  `TABLES` feature (textractor always writes the separator row) or BDA; with the default
-  `ocr.features: []` there are no pipe tables and the check is inert by construction, the
-  same precondition as the table-parsing tool. The exact-width rule is a trade: an item schema with a
-  derived property the table lacks is not compared at all, and a two-property list next to a
-  real two-column table (a form rendered as a Textract TABLE) is.
+  `TABLES` feature (textractor always writes the separator row) or BDA — which is the SHIPPED
+  DEFAULT (`ocr.features: [TABLES, LAYOUT, SIGNATURES]`), so the check is live on every shipped
+  preset but the two `ocr-benchmark` ones; a config that drops `TABLES` has no pipe tables and
+  the check is inert by construction, the same precondition as the table-parsing tool.
+  ⚠️ **The exact-width rule is a trade, and `_expected_rows_for_width` sums matching tables
+  over the WHOLE section**, so the evidence is "every same-width table anywhere in this
+  section", not "the table this list came from". An item schema with a derived property the
+  table lacks is not compared at all; a two-property list beside a real two-column table
+  (a form rendered as a Textract TABLE, or a statement's Daily Balance table beside a
+  two-property `account_summary`) is compared against it. That trade is why
+  `row_shortfall_action` defaults to `warn`: a 2- or 3-property array modelling an entity
+  GROUP is structurally identical to one modelling table ROWS, and on the default preset a
+  fully correct extraction of `account_summary` scores 5/38 = 0.13. Five attribution shapes
+  are known to over-count — the section-wide sum, sibling lists whose property counts differ
+  (the same-width grouping keys on equality), a nested sub-list replacing its parent as the
+  compared target, `maxItems` not bounding `expected`, and a list under a plain object
+  property never being compared — and narrowing them is what would let `fail` be a default
+  (GitHub issue #1046). Note one narrowing is already ruled out by measurement: replacing the
+  sum with the LARGEST matching table neither fixes `account_summary` (the Daily Balance table
+  alone is 32 rows against 5 extracted) nor survives the true-positive case, because a table
+  reprinted per page is N tables of the same width and the sum is what lets the check see 800
+  rows at all. `tests/unit/extraction/test_truncation_warnings.py::TestWhyFailIsOptIn` pins the
+  misattribution against the real shipped schema and fails if the default is flipped first.
+- `ExtractionOutputIncomplete` — the section's list came back under half the rows its own
+  OCR text evidences, and `extraction.row_shortfall_action` is `fail` (opt-in; see the trade
+  above). Raised by `_fail_on_row_shortfall`, which is the **last statement of
+  `_save_results`** — so the partial `inference_result`, the error-severity
+  `extraction_rows_below_ocr_estimate` issue and the processing report are already durable
+  in the section's `result.json`, and only the section's *outcome* changes. That ordering
+  is the point: the failure costs visibility, not data. It reads the persisted issue's
+  severity back rather than re-testing the config, so the issue a consumer can see and the
+  decision to fail are one decision and cannot disagree. `_save_results` is the single tail
+  shared by the in-process `process_document_section` path and the Step Functions
+  shard-merge entry point, which is why this lives there and not in either caller: the two
+  modes cannot drift apart on it. The class name is in no `Retry.ErrorEquals` in
+  `workflow.asl.json` and `is_transient_error` returns `False` for it, so a request that
+  would stop early again is not sent again.
+  Distinct from `ExtractionInputTooLarge` in cause and in remedy: that one is Bedrock
+  refusing a request that never ran, this one is the model accepting a request that
+  **fits** the window and then stopping. On the 25-page case in #1032 the request was
+  ~146K estimated input tokens against a 200K window, so no input-size gate could have
+  seen it. `process_document_section` re-raises it before the two Bedrock-error matchers
+  run, so a wording change can never reclassify a row shortfall as an overflow or an image
+  rejection and attach a remedy that does not apply.
 - `ExtractionInputTooLarge` — the "Input is too long" failure re-raised `from` Bedrock's
   `ValidationException` (in the shard path, `from` the agentic `ValueError` whose cause is
   that `ValidationException`; the transient check follows the whole chain) with the section size (from the logged pre-flight estimate,
