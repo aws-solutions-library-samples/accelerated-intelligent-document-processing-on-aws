@@ -310,10 +310,13 @@ description rather than a value, because those compose into one chain that was m
 running end to end for a groupless caller. ⚠️ That is a check on the **API**.
 `CognitoIdentityPoolSetRole` attaches one `authenticated` role with no `RoleMappings`,
 and it grants `s3:GetObject` and `s3:ListBucket` on the document buckets to every
-authenticated user irrespective of group, so the object bytes are not behind this
-distribution (see UI.T06 and AUTH.T03).
+authenticated user irrespective of group, so the **document** bytes are not behind this
+distribution (see UI.T06 and AUTH.T03). The two buckets partitioned per user —
+Configuration and Test Set — are deliberately not on that role, so the
+configuration-revision store and the test-set documents are reachable only through a
+resolver that applies the caller's scope to the key.
 
-Beyond the group check, **13** operations verify config-version scope, **4** filter
+Beyond the group check, **15** operations verify config-version scope, **4** filter
 their result rows by it, and **9** verify per-object ownership.
 [`scripts/api_rbac_expectations.yaml`](../../../scripts/api_rbac_expectations.yaml)
 is the manifest of record for all of this and is asserted by

@@ -724,5 +724,6 @@ sequenceDiagram
 | KB retrieval | TB3 | TB4→TB5 | Medium (reference doc chunks) | IAM, encryption |
 | SDK/CLI auth | TB1 | TB2 | High (credentials) | SRP protocol, short-lived tokens |
 | Configuration | TB1 | TB3 | Medium (prompts, schemas) | Auth, schema validation, config-version scope |
-| **Presigned object reads** | TB3 | TB1 | High (any object in stack buckets) | Bucket allow-list only — **no key-level scoping** (UI.T06) |
+| **Presigned object reads** | TB3 | TB1 | High (any document object) | Bucket allow-list, plus key scoping for the two per-user-partitioned buckets (`allowedConfigVersions` on `config_revisions/`, `allowedTestSets` on the Test Set bucket). **No per-document scoping** on the Input/Output buckets (UI.T06) |
+| **Configuration revision bodies** | TB3 | TB1 | High (prompts, few-shot examples, every profile's history) | `config_revisions/<profile>/<nnnnnn>.json.gz` in the Configuration bucket. Read only through `getConfigProfileRevision` or `getFileContents`/`getFilePresignedUrl`, both of which match the profile against the caller's `allowedConfigVersions` and fail closed; the bucket is not on the browser's Identity Pool role, so there is no direct-S3 path |
 | **Test-set ground truth writes** | TB1 | TB3 | Medium (evaluation baselines) | Admin/Author group; `_editHistory` provenance (RPT.T07) |

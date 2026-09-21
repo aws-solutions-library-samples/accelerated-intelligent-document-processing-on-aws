@@ -62,9 +62,13 @@ There is no `RoleMappings` key. Cognito therefore has nothing to map a
 `cognito:groups` claim onto: every successfully authenticated identity assumes
 `CognitoAuthorizedRole`, and an empty groups claim is as good as any other. That
 role's `S3` policy grants `s3:GetObject`, `s3:GetObjectVersion` and `s3:ListBucket`
-on the Input, Output and Configuration buckets and their contents, plus five KMS
-actions (`Encrypt`, `Decrypt`, `ReEncrypt*`, `GenerateDataKey*`, `DescribeKey`) on
-the customer-managed key.
+on the Input and Output buckets and their contents, plus five KMS actions
+(`Encrypt`, `Decrypt`, `ReEncrypt*`, `GenerateDataKey*`, `DescribeKey`) on the
+customer-managed key. Neither of the two buckets the per-user scope axes partition
+is on it: the Configuration bucket was removed so `allowedConfigVersions` could not
+be read around, and the Test Set bucket was never there.
+`scripts/tests/test_browser_s3_grants.py` pins that set, so this paragraph and the
+policy cannot drift apart silently.
 
 So the API floor and the bucket grant are two independent paths to the same bytes,
 and the floor is on the one the UI does **not** use by default. This is not a

@@ -55,9 +55,10 @@ machine, and only if that developer happened to run ``make test``.
 
 Scope note, so the boundary is not mistaken for coverage: a new test module added
 *inside* an already-registered directory is not caught here, by design. Whether every
-registered root is actually *run by CI* is a different question, guarded for
-``src/lambda`` by ``test_src_lambda_tests_in_ci.py`` and tracked for the rest by
-issue #1080.
+registered root is actually *run by CI* is a different question, and
+``test_src_lambda_tests_in_ci.py`` answers it over the whole tree: its universe is
+derived from ``git ls-files`` and its excluded set from ``run_all_tests.QUARANTINE``,
+so a registered root that no CI-invoked recipe reaches fails there rather than here.
 """
 
 from __future__ import annotations
@@ -95,6 +96,11 @@ LAYER_ENTRY_POINTS = [
     "make test",
     "make test-list",
     "make lint-cicd",
+    # `make typecheck` is the CI type gate; `make typecheck-pr` is the local
+    # file-scoped convenience. BOTH are listed because the page names both, and
+    # because listing only the narrow one made a passing test require the page to
+    # keep describing it as what CI runs.
+    "make typecheck",
     "make typecheck-pr",
     "make ui-test",
     "make srt-scan",

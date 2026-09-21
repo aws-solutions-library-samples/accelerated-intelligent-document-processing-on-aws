@@ -438,7 +438,8 @@
       "crossReferences": [
         "ruff.toml::exclude",
         "ruff.toml::lint.per-file-ignores",
-        "scripts/lint_debt.json::lint_debt.json"
+        "scripts/lint_debt.json::lint_debt.json",
+        "scripts/tests/test_pyright_config.py::VENDORED_SEVERITY_EXEMPTIONS"
       ],
       "issues": [
         "975",
@@ -699,23 +700,24 @@
     },
     "scripts/run_all_tests.py::QUARANTINE": {
       "kind": "exemption",
-      "turnsOff": "`make test` entirely, for the listed directories",
+      "turnsOff": "TWO gates, for the listed directories: `make test` entirely, and -- since test_src_lambda_tests_in_ci.py was widened past src/lambda -- the requirement that a directory holding tests be reachable from a CI-invoked target. The second consumer is why membership is matched EXACTLY on the quarantine side of that gate: `scripts` is excluded for one file, and as a prefix that one sentence would also exempt scripts/tests, scripts/sdlc/tests, scripts/srt/tests and scripts/security/tests, i.e. this repository's entire gate layer, from running on a pull request.",
       "premise": [
         "JUDGEMENT"
       ],
       "ratchet": "universe-closure",
-      "reason": "Roots known not to run in the shared gate, each with a reason. Two reasons are dependency-availability facts (huggingface_hub, cfnresponse) that an import could check; one is 'collects zero pytest tests', which the RUN_ROOTS comment records as having been false for a sibling entry.",
+      "reason": "Roots known not to run in the shared gate. Each member carries its own reason in the constant, which is the authority -- this field records the judgement the reasons need rather than re-listing them, because an enumeration here goes stale the moment a member is added or paid off. Two members need that judgement recorded. `scripts` is the member whose reason is narrowest relative to the path it names: it is a mis-collection of ONE file, the live RBAC harness's test_email helper, so both consuming gates match it exactly rather than as a prefix -- inherited, it would exempt the four gate suites beneath it. `nested/bedrockkb/src/s3_vectors_manager` names one failing test, which is the most perishable kind of reason there is, so test_run_all_tests_registry.py computes it three ways: the node must still resolve to exactly one collected test, it must still fail, and its file must still pass without it, so fixing, renaming or deleting that test all invalidate the entry rather than leaving it standing. The remaining reasons are dependency availability, an absence of collectable tests, a source tree whose modules are named test_*, operator-run scripts, and one asymmetry in the safe direction (excluded from `make test` while both CIs run it directly). No single predicate is the premise for a set that heterogeneous.",
       "crossReferences": [
         "lib/idp_common_pkg/pytest.ini::norecursedirs",
         "scripts/run_all_tests.py::RUN_ROOTS"
       ],
       "predicateConsidered": {
-        "collects_zero_tests": "It DOES apply to the subset whose reason makes that claim, and it is now applied: test_run_all_tests_registry.py runs the collector per member for every QUARANTINE reason matching that wording. It is recorded here rather than as this entry's premise because the constant's members are heterogeneous -- an unavailable dependency, a mis-collection, a source tree, an absence of tests -- so no single predicate is the premise for the constant."
+        "collects_zero_tests": "It DOES apply to the subset whose reason makes that claim, and it is now applied: test_run_all_tests_registry.py runs the collector per member for every QUARANTINE reason matching that wording. It is recorded here rather than as this entry's premise because the constant's members are heterogeneous -- an unavailable dependency, a mis-collection, a source tree, an absence of tests, one failing test -- so no single predicate is the premise for the constant."
       },
       "memberKind": "path",
       "ratchetEvidence": [
         "scripts/run_all_tests.py",
-        "scripts/tests/test_run_all_tests_registry.py"
+        "scripts/tests/test_run_all_tests_registry.py",
+        "scripts/tests/test_src_lambda_tests_in_ci.py"
       ]
     },
     "scripts/run_all_tests.py::RUN_ROOTS": {
@@ -1233,6 +1235,25 @@
       "memberKind": "path",
       "ratchetEvidence": "scripts/tests/test_asl_placeholder_substitution.py"
     },
+    "scripts/tests/test_browser_s3_grants.py::PINNED_BROWSER_READABLE_BUCKETS": {
+      "kind": "exemption",
+      "turnsOff": "the rule the rest of the file enforces -- that a bucket must not be readable with the browser's own Cognito credentials -- for these two buckets only",
+      "premise": [
+        "JUDGEMENT"
+      ],
+      "memberKind": "CloudFormation bucket logical id",
+      "ratchet": "universe-closure",
+      "ratchetEvidence": [
+        "scripts/tests/test_browser_s3_grants.py"
+      ],
+      "reason": "Not computable: whether the web UI still needs a client-signed S3 GET on a bucket is a property of the browser code, not of the template, and the evidence is a code survey (no S3 API client in the bundle; four S3RequestPresigner call sites resolving to Input/Output; presignForExport hard-refusing any other bucket). Both members are there because the UI genuinely signs those GETs today -- page thumbnails and the page-image viewer read page.ImageUri from Output, FileViewer defaults to client signing against Input. Removing them is a redesign of the document read path, tracked as issue 1033, not a policy trim. Exempt per BUCKET rather than for the role as a whole, so the two buckets that ARE partitioned per user stay enforced. Ratchet: test_the_set_of_browser_readable_buckets_has_not_grown compares the set derived from template.yaml against this one, so a bucket in neither the enforced nor the exempt set is unregistered drift and fails; test_no_s3_grant_on_this_role_uses_a_wildcard_resource covers the one Resource shape that names no logical id and would otherwise satisfy the equality while granting every bucket in the account.",
+      "crossReferences": [
+        "scripts/tests/test_iam_prose_consistency.py::EXPECTED_CLAIM_COUNTS"
+      ],
+      "issues": [
+        "1033"
+      ]
+    },
     "scripts/tests/test_cfn_export_ownership.py::EXPECTED_EXTENSION_SOURCES": {
       "kind": "enforced-universe",
       "turnsOff": "nothing; the expected producing stacks",
@@ -1285,6 +1306,63 @@
       "issues": [
         "933"
       ]
+    },
+    "scripts/tests/test_ci_gate_parity.py::GATE_SECTION_PREFIXES": {
+      "kind": "enforced-universe",
+      "memberKind": "Makefile ##@ section heading",
+      "turnsOff": "nothing on its own; it names the 5 of 16 Makefile sections scanned wholesale, so a section absent from it contributes targets to the universe only if their NAME is check-shaped",
+      "premise": [
+        "JUDGEMENT"
+      ],
+      "ratchet": "universe-closure",
+      "reason": "Whether every target in a section is a check is a property of the section, readable from its heading, and true of these five. It is NOT true in reverse: UI Development holds `ui-lint` and `ui-test`, and Code Generation holds `codegen-check`, so a rule that the other eleven sections hold no checks would be false for the two sections nearest this module's own subject. That is why section scope is not the only route into the universe -- CHECK_SHAPED_NAME_PREFIXES adds a check-shaped target from any unscanned section, and a non-vacuity test names those three so the second route cannot quietly stop matching.",
+      "ratchetGap": "A check in an unscanned, non-live-stack section whose NAME is not check-shaped -- neither `check-`/`validate-`/`lint`/`typecheck`-prefixed nor `-check`/`-checks`/`-lint`/`-test`/`-tests`-suffixed -- is in neither route and would not be classified. Naming is the only signal used, deliberately: deciding from a recipe whether it checks something is a guess, and a wrong guess produces a green gate.",
+      "crossReferences": [
+        "scripts/tests/test_ci_gate_parity.py::LIVE_STACK_SECTION_PREFIXES",
+        "scripts/tests/test_ci_gate_parity.py::GATES_DELIBERATELY_OUT_OF_CI"
+      ],
+      "ratchetEvidence": "scripts/tests/test_ci_gate_parity.py"
+    },
+    "scripts/tests/test_ci_gate_parity.py::LIVE_STACK_SECTION_PREFIXES": {
+      "kind": "exemption",
+      "memberKind": "Makefile ##@ section heading",
+      "turnsOff": "universe closure for every target in the Stack tests section, including check-shaped ones the name route would otherwise pull in",
+      "premise": [
+        "JUDGEMENT"
+      ],
+      "ratchet": "count-pinned",
+      "reason": "This is the one section where a single justification is genuinely a property of every member: each target deploys or drives a live IDP stack, which its own heading states, and no pull-request gate can do that. Which targets those are is recorded in docs/testing.md, and that each appears there is enforced by scripts/tests/test_testing_doc.py rather than asserted here.",
+      "ratchetGap": "The premise is not computed per member -- nothing reads a recipe to confirm it needs a stack. What is mechanical is the member COUNT: a target added to this section fails until someone confirms the premise holds for it and updates the pinned number.",
+      "crossReferences": [
+        "scripts/tests/test_ci_gate_parity.py::GATE_SECTION_PREFIXES"
+      ],
+      "ratchetEvidence": "scripts/tests/test_ci_gate_parity.py"
+    },
+    "scripts/tests/test_ci_gate_parity.py::GATES_DELIBERATELY_OUT_OF_CI": {
+      "kind": "exemption",
+      "turnsOff": "the 'every check-shaped Makefile target runs in both CIs' assertion, for one named target",
+      "premise": [
+        "JUDGEMENT"
+      ],
+      "ratchet": "universe-closure",
+      "reason": "Whether a target CAN be a CI gate is a property of what it does — mutates the tree, prompts a human, needs AWS credentials, needs a deployed stack, reports rather than asserts — and none of that is readable from the Makefile. So one sentence per target, naming that target's own obstacle.",
+      "ratchetGap": "The reasons themselves are unchecked prose. What is mechanical: no target IN THE UNIVERSE may be absent from both this list and CI; a listed target CI has since started running fails; a listed target that no longer exists fails. Read 'in the universe' precisely -- it is every target in the 5 sections GATE_SECTION_PREFIXES names, plus any check-shaped-by-name target in any other section except Stack tests. It is NOT every Makefile target, and the residual is stated on the GATE_SECTION_PREFIXES entry.",
+      "memberKind": "make target",
+      "crossReferences": [
+        "scripts/tests/test_ci_gate_parity.py::GATE_SECTION_PREFIXES"
+      ],
+      "ratchetEvidence": "scripts/tests/test_ci_gate_parity.py"
+    },
+    "scripts/tests/test_ci_gate_parity.py::CHECK_ONLY_EQUIVALENTS": {
+      "kind": "exemption",
+      "turnsOff": "the 'lint-cicd invokes make <target>' form of the lint-parity assertion, for one prerequisite of `lint`",
+      "premise": [
+        "JUDGEMENT"
+      ],
+      "ratchet": "staleness",
+      "reason": "Two of `make lint`'s prerequisites auto-fix, so `lint-cicd` cannot invoke them — it runs the check-only command instead, and that command's spelling is not derivable from the target's name. The substituted command must still be present in the recipe, so this relaxes how the gate is spelled and not whether it runs.",
+      "memberKind": "make target",
+      "ratchetEvidence": "scripts/tests/test_ci_gate_parity.py"
     },
     "scripts/tests/test_classification_prompt_copies_in_sync.py::EXEMPT": {
       "kind": "exemption",
@@ -1368,6 +1446,17 @@
       "memberKind": "CloudFormation logical id",
       "ratchetEvidence": "scripts/tests/test_data_plane_component_labels.py"
     },
+    "scripts/tests/test_doc_install_commands.py::_VALUE_OPTIONS": {
+      "kind": "fixture",
+      "memberKind": "pip option",
+      "turnsOff": "nothing; the pip flags whose NEXT token is a value rather than a requirement",
+      "premise": [
+        "JUDGEMENT"
+      ],
+      "ratchet": "none",
+      "reason": "Not a carve-out, and the one omission its comment argues for widens the gate rather than narrowing it. Membership makes the parser SKIP the following token, so `-e` being deliberately absent is what makes `-e <path>` read as a requirement and get checked -- the behaviour the comment records an early draft of the gate getting wrong. Discovered through the prose phrase \"deliberately absent\", which reads as an exclusion argument and here is an argument for the opposite.",
+      "ratchetGap": "Not an exemption, so no ratchet applies. The failure this table could cause is an option wrongly ADDED to it, which would skip a requirement token; that is a defect in the gate's own parser and is covered by its acceptance tests, not by this registry."
+    },
     "scripts/tests/test_discover_templates.py::_ARN_GATE_CHECKS": {
       "kind": "enforced-universe",
       "memberKind": "detection pattern",
@@ -1446,6 +1535,48 @@
       "reason": "Build output and local work.",
       "memberKind": "path",
       "ratchetEvidence": "scripts/tests/test_iam_privilege_escalation.py"
+    },
+    "scripts/tests/test_iam_prose_consistency.py::DOCUMENTS_WITH_HISTORICAL_CLAIMS_ONLY": {
+      "kind": "exemption",
+      "turnsOff": "the requirement that a registered document carry at least one CURRENT grant claim (test_every_registered_document_states_the_grant); the prose-vs-policy comparison itself still applies to these paths",
+      "premise": [
+        "JUDGEMENT"
+      ],
+      "memberKind": "document path",
+      "ratchet": "count-pinned",
+      "ratchetEvidence": [
+        "scripts/tests/test_iam_prose_consistency.py"
+      ],
+      "reason": "Not computable, and deliberately an exemption from the POSITIVE direction only. The threat-model README's single enumeration of this grant lives in its historical ledger, so requiring a current claim of it would force a present-tense restatement into an audit artifact whose purpose is to record the past. Listed rather than omitted so that the comparison still reads the rest of the file, and so that universe closure counts it as classified: test_no_document_states_the_grant_outside_the_registered_set derives the candidate set from `git ls-files '*.md'` and fails on any claim-bearing document in neither list, which is what makes this list's membership meaningful rather than whatever someone remembered to write down. Ratchet: this member is pinned at (0, 0) claims in EXPECTED_CLAIM_COUNTS, so a current claim appearing in it fails."
+    },
+    "scripts/tests/test_iam_prose_consistency.py::EXCLUDED_HISTORICAL_LEDGER_SECTIONS": {
+      "kind": "exemption",
+      "turnsOff": "the prose-vs-policy comparison, for one named markdown section of one named document",
+      "premise": [
+        "JUDGEMENT"
+      ],
+      "memberKind": "document path + markdown heading",
+      "ratchet": "non-vacuity",
+      "ratchetEvidence": [
+        "scripts/tests/test_iam_prose_consistency.py"
+      ],
+      "reason": "Not computable: whether a sentence describes the past or the present is a reading of prose. The threat model's Version History is one of this repository's two sanctioned historical ledgers (see the no-doc-about-doc rule in CLAUDE.md), and its rows state grants AS THEY WERE -- the v3.7 row records that the Configuration bucket used to be on this role, which is true and would be a false positive. Bounded to one SECTION and not the rest of the file: the region runs from the heading to the next '## ' heading, and that bound is asserted rather than assumed -- test_the_excluded_region_is_one_section_and_not_the_rest_of_the_file recomputes it against text with a section appended and requires the end to move to the new heading, and test_a_claim_after_the_excluded_section_would_still_be_read confirms a claim below the heading is still compared. Both exist because the first implementation truncated at the heading, which is indistinguishable from bounding while the excluded section happens to be last. Ratchet: test_the_historical_ledger_exclusion_is_still_load_bearing fails when the section shields nothing, or when everything it shields now agrees with the template."
+    },
+    "scripts/tests/test_iam_prose_consistency.py::EXPECTED_CLAIM_COUNTS": {
+      "kind": "fixture",
+      "turnsOff": "nothing -- this is the ratchet itself, not a carve-out: it pins how many grant claims the reader finds per document, in both directions",
+      "premise": [
+        "JUDGEMENT"
+      ],
+      "memberKind": "document path -> (total claims, exhaustive claims)",
+      "ratchet": "count-pinned",
+      "ratchetEvidence": [
+        "scripts/tests/test_iam_prose_consistency.py"
+      ],
+      "reason": "Registered as a fixture rather than an exemption: it removes no assertion. It exists because the claim reader is a heuristic over prose -- an enumeration of declared bucket names, one of the role's DERIVED granted actions in the same sentence, no negation in the span immediately before the phrase, and the role named within 600 characters -- and a heuristic whose reach is not pinned can silently stop reaching the thing it was written for. Pinned per claim KIND as well as per document, because the exhaustive/narrow split decides whether the missing-bucket direction applies at all: a complete enumeration that started reading as a narrow one would drop that half of the check with every test green. Ratchet: the inventory is compared both ways.",
+      "crossReferences": [
+        "scripts/tests/test_browser_s3_grants.py::PINNED_BROWSER_READABLE_BUCKETS"
+      ]
     },
     "scripts/tests/test_lambda_log_groups.py::CUSTOM_RESOURCE_ONLY": {
       "kind": "exemption",
@@ -1628,6 +1759,38 @@
       ],
       "memberKind": "path",
       "ratchetEvidence": "scripts/tests/test_pyright_config.py"
+    },
+    "scripts/tests/test_pyright_config.py::DISABLED_RULE_EXEMPTIONS": {
+      "kind": "exemption",
+      "turnsOff": "basedpyright's reporting of the named diagnostic rule, repo-wide and for every file the gate covers. A rule at 'none' produces no diagnostic at all, so unlike a path exclusion there is no warning left behind to count. Three sibling pins bound the list itself: typeCheckingMode is fixed (it is the only setting governing the ~100 rules the config never names), a boolean in place of a severity is rejected (basedpyright accepts `false` and it silences the rule), and every rule the config names must appear in one of the three authored lists so a deletion is caught as well as a downgrade",
+      "premise": [
+        "JUDGEMENT"
+      ],
+      "reason": "The 14 rules pinned to 'none' in pyrightconfig.json. Eleven of them are one root cause: boto3's client() and resource() are untyped factories, so every AWS call in this tree yields Unknown members, Unknown arguments and Optional response subscripts, and those rules fire on correct code at a rate that buries the rules that find defects. Three are duplicates of a ruff rule that already covers the finding with an autofix. The entry per rule says what that rule specifically stops catching here, because the shared root cause is a fact about the tree and not a reason for any individual rule -- one justification attached to a set is the defect this registry exists to catch. Paying one down means fixing its findings and deleting its entry, in that order.",
+      "memberKind": "basedpyright diagnostic rule id",
+      "ratchet": "universe-closure",
+      "ratchetEvidence": [
+        "scripts/tests/test_pyright_config.py"
+      ],
+      "issues": [
+        "975"
+      ]
+    },
+    "scripts/tests/test_pyright_config.py::VENDORED_SEVERITY_EXEMPTIONS": {
+      "kind": "exemption",
+      "turnsOff": "the 'error' severity of the named rules for files under the named root. The files stay in filesAnalyzed and the diagnostics are still printed, at 'warning' -- so this softens the gate's exit code for that root rather than removing it from the gate. Bounded two ways: the root must be a strict descendant of a pyrightconfig `include` entry, because a root of '.' would relax the rule for the whole tree, and the rules it may relax are pinned per root so a third one is a new decision rather than an extension of this one",
+      "premise": [
+        "JUDGEMENT"
+      ],
+      "reason": "One root: the vendored copy of awslabs/pii-anonymizer under feature-platform/pii-anonymizer/hook/vendor, relaxing exactly reportCallIssue and reportReturnType. Its files are re-copied byte-for-byte from upstream by the tree's own resync script, against the commit pinned in PROVENANCE.md, so an inline '# pyright: ignore' written into one is dropped by the next resync and an annotation corrected in the copy puts this repo in conflict with upstream on the next diff. The 5 diagnostics (4 reportReturnType, 1 reportCallIssue) are upstream's to fix. ruff.toml carves the same tree out of lint and format for the same reason, which is why the two are cross-referenced here: auditing the scope of one has to reach the other.",
+      "memberKind": "path",
+      "ratchet": "count-pinned",
+      "ratchetEvidence": [
+        "scripts/tests/test_pyright_config.py"
+      ],
+      "crossReferences": [
+        "ruff.toml::extend-exclude"
+      ]
     },
     "scripts/tests/test_repo_quality_review_skill.py::CLINE_EXEMPT": {
       "kind": "exemption",

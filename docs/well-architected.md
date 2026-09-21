@@ -284,17 +284,22 @@ And **the declarations above govern the API, not the buckets.**
 `CognitoIdentityPoolSetRole` attaches a single `authenticated` role and declares no role
 mappings, so group membership plays no part in which role a signed-in user assumes,
 and that role — `CognitoAuthorizedRole` — grants `s3:GetObject`, `s3:GetObjectVersion` and
-`s3:ListBucket` on the Input, Output and Configuration buckets plus `kms:Decrypt` on the
+`s3:ListBucket` on the Input and Output buckets plus `kms:Decrypt` on the
 customer-managed key to every authenticated user, group or no group. The web UI uses that
 path deliberately: the file viewer defaults to signing in the browser, as do the page
 thumbnails, the page-image viewer and the document export. So a caller who is refused
-`getFileContents` can still read the object. No `ANY` operation hands over an object key any
-more, but that is not what bounds the role: `s3:ListBucket` on it enumerates the buckets
-directly, with no API call at all. Narrowing this is a change to the document-viewing data
-path — group-scoped identity pool role mappings, or a resolver-only read path — and it has
-not been made; the two candidate shapes and their obstacles are set out in
-[Identity Pool group scoping](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/blob/develop/docs/planning/identity-pool-group-scoping-plan.md). Decide whether
-the current posture is acceptable for your data classification, and see [RBAC](./rbac.md).
+`getFileContents` can still read a **document** object. No `ANY` operation hands over an
+object key any more, but that is not what bounds the role: `s3:ListBucket` on it enumerates
+the buckets directly, with no API call at all. Narrowing this is a change to the
+document-viewing data path — group-scoped identity pool role mappings, or a resolver-only
+read path — and it has not been made; the two candidate shapes and their obstacles are set
+out in
+[Identity Pool group scoping](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/blob/develop/docs/planning/identity-pool-group-scoping-plan.md).
+The buckets the per-user scope axes partition — Configuration and Test Set — are
+deliberately **not** on that role, so `allowedConfigVersions` and `allowedTestSets` are not
+reachable around; those objects are served only by resolvers that check the key against the
+caller's scope. Decide whether the current posture is acceptable for your data
+classification, and see [RBAC](./rbac.md).
 
 The API Gateway REST transport replaced AWS AppSync entirely — there are no
 `AWS::AppSync` resources in any template — see

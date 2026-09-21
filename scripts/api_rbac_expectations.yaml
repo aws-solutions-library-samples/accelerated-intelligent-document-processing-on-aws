@@ -177,33 +177,76 @@ operations:
   getFileContents:
     groups: ANY_GROUP
     kind: read
+    scope_checked: true
+    # `_parse_and_validate_uri` is the one function BOTH fields call before touching
+    # S3, and it is where both authorization checks live. Named explicitly because
+    # this module dispatches on `getFilePresignedUrl` only — `getFileContents` is the
+    # default branch, so S4 can find no `if` test on its name and would otherwise
+    # fall back to module scope, which is what it stopped doing on purpose.
+    scope_enforced_in: _parse_and_validate_uri
     enforced_in: nested/api-resolvers/src/lambda/get_file_contents_resolver/index.py
     args: { s3Uri: "s3://__resolved-at-runtime__/__sectest-nonexistent-key__.json" }
     note: >-
-      bucket allow-list enforced in the resolver, not groups — so before
-      ANY_GROUP the allow-list was the only thing between an authenticated
-      caller and any object in a permitted bucket. It still is, for a caller who
-      holds a group; the group floor removes the groupless caller only.
+      Two controls, both in the resolver rather than in groups. The BUCKET
+      allow-list stops the operation being a generic S3-read gadget; before
+      ANY_GROUP it was the only thing between an authenticated caller and any
+      object in a permitted bucket, and the group floor removed the groupless
+      caller only. The KEY scope is the per-user half: two allow-listed buckets
+      are partitioned per user — the Configuration bucket by configuration
+      profile (`config_revisions/<profile>/`) and the Test Set bucket by test set
+      (`<test_set_id>/`) — so `key_scope` applies the caller's
+      allowedConfigVersions / allowedTestSets to the key, fail-closed, before any
+      S3 call. A bucket-only check was the negation of both axes for exactly the
+      callers they restrict. What remains open is per-DOCUMENT scope on the Input
+      and Output buckets, which no per-user axis in this deployment records
+      (UI.T06, #1033).
       The `args` bucket is REPLACED by apply_dynamic_args() with this
       deployment's own input bucket, because the matrix measures the GROUP floor
       and an out-of-allow-list bucket is refused to every caller by the
       allow-list instead — which the matrix would read as the allowed roles
       being wrongly denied. An in-allow-list bucket with a key that does not
       exist gives an allowed role a clean 400 (auth passed, argument bogus) and
-      a disallowed role the dispatcher's 403. The allow-list refusal itself is a
-      403 and is asserted offline, where the list's contents are knowable:
-      get_file_contents_resolver/test_index.py.
+      a disallowed role the dispatcher's 403. The input bucket is also
+      deliberately NOT one of the two scoped buckets, so the substitution does
+      not turn a group-floor measurement into a scope measurement. Both the
+      allow-list refusal and the out-of-scope-key refusal are 403s asserted
+      offline, where the buckets and keys are knowable:
+      get_file_contents_resolver/test_index.py and
+      get_file_contents_resolver/test_key_scope.py.
+      ⚠️ `groups: ANY_GROUP` UNDERSTATES what this operation refuses for
+      Test-Set-bucket keys. The test-set axis is enforced with the canonical
+      `assert_can_access_test_set`, whose rule is Admin/Author unscoped, an
+      Annotator restricted to their `allowedTestSets`, and **every other role
+      refused outright** — so a Viewer or Reviewer is denied any
+      `<test_set_id>/…` key even though they hold a group. That is deliberate and
+      consistent rather than stricter than the rest: `getTestSetDocuments` is
+      `[Admin, Author, Annotator]`, so no other role has a route to discover such
+      a key, and serving the bytes to them would be the only one they had. It is
+      recorded here because the declared policy is a per-FIELD group floor and
+      cannot express a per-key role rule, so the manifest is not the place a
+      reader would learn it. The live matrix does not exercise it either: its
+      `args` bucket is substituted with the input bucket, which no axis
+      partitions.
   getFilePresignedUrl:
     groups: ANY_GROUP
     kind: read
     alias_of: getFileContents
+    scope_checked: true
+    # Same choke point as getFileContents, and named for the same reason: this
+    # field DOES have a dispatch branch, but pinning the entry point makes the two
+    # aliases verifiably identical rather than identical by coincidence of call
+    # graph.
+    scope_enforced_in: _parse_and_validate_uri
     enforced_in: nested/api-resolvers/src/lambda/get_file_contents_resolver/index.py
     args: { s3Uri: "s3://__resolved-at-runtime__/__sectest-nonexistent-key__.json" }
     note: >-
       capability-issuing: the returned URL carries its own authorization for the
       lifetime of the signature, so it is the operation least able to rely on a
-      later check. Key-level scoping remains open (UI.T06). Same runtime
-      bucket substitution as getFileContents — see its note.
+      later check. That is why the key-scope check is in the shared
+      `_parse_and_validate_uri` rather than in either handler — a check this field
+      could be added without is one that will eventually be missing from it. Same
+      runtime bucket substitution as getFileContents, and the same open
+      per-document residual — see its note.
   getStepFunctionExecution:
     groups: ANY_GROUP
     kind: read

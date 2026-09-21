@@ -197,6 +197,109 @@ class EvaluationProcessor:
                 f"Failed to set EvaluationStatus={status} for {document_id}: {e}"
             )
 
+    #: The scores ``idp_common.evaluation``'s derived-metrics helper writes into
+    #: every ``metrics`` and ``overall_metrics`` block. It also writes
+    #: ``false_alarm_rate`` and ``false_discovery_rate``, which are passed through
+    #: in ``overall_metrics`` rather than averaged.
+    METRIC_NAMES = ("accuracy", "precision", "recall", "f1_score")
+
+    @staticmethod
+    def _evaluation_results_key(document_id: str) -> str:
+        """Where the pipeline writes a document's evaluation results.
+
+        Delegates to ``idp_common`` rather than restating the template. The
+        producer (``idp_common.evaluation.service``) and the aggregation Lambda
+        both import this helper, so a copy here would let the key be changed in
+        one place and leave this reader silently looking for an object nothing
+        writes — which is the defect this method exists to fix. Imported inside
+        the function, the pattern the rest of the SDK uses for ``idp_common``, so
+        an operation that never touches evaluation never pays for the import.
+        """
+        from idp_common.evaluation.contract import evaluation_results_key
+
+        return evaluation_results_key(document_id)
+
+    @classmethod
+    def _evaluation_results_suffix(cls) -> str:
+        """The trailing part of that key, for filtering a bucket listing.
+
+        ``get_metrics`` has no document id to work from — it sifts every object
+        under a prefix — so it needs the template's tail rather than a concrete
+        key, and derives it from the same helper by passing an empty id.
+
+        Three properties this relies on, all asserted in
+        ``tests/unit/test_evaluation_operations.py`` because each fails *silently*
+        rather than loudly:
+
+        * the document id must sit at the **front** of the template, or no real key
+          ends with this string and the scan reports zero evaluations;
+        * the suffix must contain a ``/``, or it is too unspecific to identify an
+          evaluation artifact — a template of ``{id}.json`` yields ``.json``, which
+          front-anchors fine and would have ``get_metrics`` fetch and parse every
+          JSON object in the output bucket;
+        * and it must be non-empty, which is the degenerate case of the above.
+
+        Non-emptiness alone is a floor, not a specificity check, which is why the
+        separator is asserted separately.
+        """
+        return cls._evaluation_results_key("")
+
+    @classmethod
+    def _new_score_accumulator(cls) -> Dict[str, list]:
+        """A running ``[total, n]`` per metric.
+
+        ``n`` is per metric rather than shared, because a section the pipeline
+        excluded or failed to evaluate carries a ``metrics`` block with none of
+        the four scores in it. Counting those in one shared denominator would
+        pull every average toward zero without anything saying so.
+        """
+        return {name: [0.0, 0] for name in cls.METRIC_NAMES}
+
+    @classmethod
+    def _accumulate_scores(cls, accumulator: Dict[str, list], metrics: Dict) -> None:
+        for name in cls.METRIC_NAMES:
+            value = metrics.get(name)
+            # `bool` is an `int`; a `True` here would mean the artifact put a flag
+            # where a score belongs, so it is not silently averaged as 1.0.
+            if isinstance(value, (int, float)) and not isinstance(value, bool):
+                accumulator[name][0] += float(value)
+                accumulator[name][1] += 1
+
+    @classmethod
+    def _averages(cls, accumulator: Dict[str, list]) -> Dict[str, Optional[float]]:
+        """``{"avg_<metric>": mean or None}``, ``None`` when nothing reported it."""
+        return {
+            f"avg_{name}": (total / n if n else None)
+            for name, (total, n) in accumulator.items()
+        }
+
+    @staticmethod
+    def _section_metrics(section: Dict) -> Dict:
+        metrics = section.get("metrics")
+        return metrics if isinstance(metrics, dict) else {}
+
+    @staticmethod
+    def _field_comparisons(section: Dict) -> list:
+        """Flatten a section's ``attributes`` into comparison dicts.
+
+        The attribute keys are the evaluation service's own
+        (``name``/``evaluation_method``); they are renamed here so the SDK's
+        ``FieldComparison`` vocabulary does not have to track them.
+        """
+        return [
+            {
+                "attribute": attr.get("name", ""),
+                "expected": attr.get("expected"),
+                "actual": attr.get("actual"),
+                "matched": bool(attr.get("matched")),
+                "score": attr.get("score"),
+                "method": attr.get("evaluation_method"),
+                "reason": attr.get("reason"),
+            }
+            for attr in section.get("attributes", [])
+            if isinstance(attr, dict)
+        ]
+
     def get_report(self, document_id: str, section_id: int = 1) -> Dict:
         """
         Get evaluation report for a document section
@@ -206,30 +309,63 @@ class EvaluationProcessor:
             section_id: Section number (default: 1)
 
         Returns:
-            Dictionary with evaluation report
+            Dictionary with the section's metrics, its per-attribute comparisons,
+            and the document-level ``overall_metrics`` for context.
+
+        Raises:
+            FileNotFoundError: If the document has no evaluation results, or has
+                results that do not include the requested section.
         """
         output_bucket = self.resources["OutputBucket"]
+        eval_key = self._evaluation_results_key(document_id)
 
         try:
-            # Download evaluation report
-            eval_key = f"{document_id}/sections/{section_id}/evaluation.json"
             response = self.s3.get_object(Bucket=output_bucket, Key=eval_key)
-            eval_data = json.loads(response["Body"].read())
-
-            return {
-                "document_id": document_id,
-                "section_id": section_id,
-                "accuracy": eval_data.get("accuracy"),
-                "field_results": eval_data.get("field_results", {}),
-                "summary": eval_data.get("summary", {}),
-            }
-
         except ClientError as e:
-            if e.response["Error"]["Code"] == "NoSuchKey":
+            if e.response["Error"]["Code"] in ("NoSuchKey", "404"):
                 raise FileNotFoundError(
-                    f"Evaluation report not found for document: {document_id}, section: {section_id}"
-                )
+                    f"No evaluation results at s3://{output_bucket}/{eval_key}. "
+                    "Has the document been evaluated against a baseline?"
+                ) from e
             raise
+
+        eval_data = json.loads(response["Body"].read())
+
+        # section_id is a string in the artifact and an int on this API.
+        wanted = str(section_id)
+        section = next(
+            (
+                s
+                for s in eval_data.get("section_results", [])
+                if isinstance(s, dict) and str(s.get("section_id")) == wanted
+            ),
+            None,
+        )
+        if section is None:
+            available = [
+                str(s.get("section_id"))
+                for s in eval_data.get("section_results", [])
+                if isinstance(s, dict)
+            ]
+            raise FileNotFoundError(
+                f"Evaluation results for '{document_id}' contain no section "
+                f"{section_id}. Sections present: {available or 'none'}."
+            )
+
+        metrics = self._section_metrics(section)
+        overall = eval_data.get("overall_metrics")
+
+        return {
+            "document_id": eval_data.get("document_id") or document_id,
+            "section_id": section_id,
+            "document_class": section.get("document_class"),
+            "accuracy": metrics.get("accuracy"),
+            "precision": metrics.get("precision"),
+            "recall": metrics.get("recall"),
+            "f1_score": metrics.get("f1_score"),
+            "field_comparisons": self._field_comparisons(section),
+            "overall_metrics": overall if isinstance(overall, dict) else {},
+        }
 
     def get_metrics(
         self,
@@ -248,29 +384,36 @@ class EvaluationProcessor:
             batch_id: Batch ID filter
 
         Returns:
-            Dictionary with aggregated metrics
+            Dictionary with ``total_documents``, the four ``avg_*`` scores
+            averaged over documents, and ``by_document_class`` giving the same
+            four averaged over that class's *sections* plus a section ``count``.
+
+            A document class is a property of a **section**, and the document
+            level has only whole-document ``overall_metrics`` — so when
+            ``document_class`` is set the four top-level averages are ``None``
+            rather than a whole-document figure that reads as a class-scoped one.
+            The class-scoped answer is in ``by_document_class[document_class]``.
+
+            Any average is ``None`` when nothing in scope reported that metric: a
+            section the pipeline excluded or failed to evaluate carries no scores,
+            and counting it in the denominator would drag the average toward zero.
         """
         output_bucket = self.resources["OutputBucket"]
 
         try:
-            # List evaluation files based on filters
             prefix = f"{batch_id}/" if batch_id else ""
+            results_suffix = self._evaluation_results_suffix()
             paginator = self.s3.get_paginator("list_objects_v2")
             pages = paginator.paginate(Bucket=output_bucket, Prefix=prefix)
 
-            metrics = {
-                "total_evaluations": 0,
-                "average_accuracy": 0.0,
-                "by_document_class": {},
-            }
-
-            total_accuracy = 0.0
+            document_scores = self._new_score_accumulator()
+            by_class: Dict[str, Dict] = {}
             count = 0
 
             for page in pages:
                 for obj in page.get("Contents", []):
                     key = obj["Key"]
-                    if not key.endswith("/evaluation.json"):
+                    if not key.endswith(results_suffix):
                         continue
 
                     # Apply date filter
@@ -281,45 +424,65 @@ class EvaluationProcessor:
                         if end_date and obj_date > end_date:
                             continue
 
-                    # Download and aggregate
                     response = self.s3.get_object(Bucket=output_bucket, Key=key)
                     eval_data = json.loads(response["Body"].read())
 
-                    accuracy = eval_data.get("accuracy", 0.0)
-                    doc_class = eval_data.get("document_class", "unknown")
+                    sections = [
+                        s
+                        for s in eval_data.get("section_results", [])
+                        if isinstance(s, dict)
+                    ]
 
-                    # Apply document class filter
-                    if document_class and doc_class != document_class:
-                        continue
+                    # A class filter keeps documents that contain a section of
+                    # that class, and narrows the breakdown to those sections.
+                    if document_class:
+                        sections = [
+                            s
+                            for s in sections
+                            if s.get("document_class") == document_class
+                        ]
+                        if not sections:
+                            continue
 
-                    total_accuracy += accuracy
+                    # Skipped entirely under a class filter: the document-level
+                    # averages are reported as None in that case, so accumulating
+                    # them would be per-object work on a bucket-wide scan for a
+                    # value nothing can read.
+                    if not document_class:
+                        overall = eval_data.get("overall_metrics")
+                        self._accumulate_scores(
+                            document_scores,
+                            overall if isinstance(overall, dict) else {},
+                        )
                     count += 1
 
-                    # Aggregate by class
-                    if doc_class not in metrics["by_document_class"]:
-                        metrics["by_document_class"][doc_class] = {
-                            "count": 0,
-                            "total_accuracy": 0.0,
-                        }
-                    metrics["by_document_class"][doc_class]["count"] += 1
-                    metrics["by_document_class"][doc_class]["total_accuracy"] += (
-                        accuracy
-                    )
+                    for section in sections:
+                        doc_class = section.get("document_class") or "unknown"
+                        bucket_for_class = by_class.setdefault(
+                            doc_class,
+                            {"count": 0, "_scores": self._new_score_accumulator()},
+                        )
+                        bucket_for_class["count"] += 1
+                        self._accumulate_scores(
+                            bucket_for_class["_scores"], self._section_metrics(section)
+                        )
 
-            metrics["total_evaluations"] = count
-            metrics["average_accuracy"] = total_accuracy / count if count > 0 else 0.0
+            for class_data in by_class.values():
+                class_data.update(self._averages(class_data.pop("_scores")))
 
-            # Calculate averages by class
-            for doc_class in metrics["by_document_class"]:
-                class_data = metrics["by_document_class"][doc_class]
-                class_data["average_accuracy"] = (
-                    class_data["total_accuracy"] / class_data["count"]
-                    if class_data["count"] > 0
-                    else 0.0
-                )
-                del class_data["total_accuracy"]
+            # A class-scoped question cannot be answered from whole-document
+            # metrics, so it is not answered with them.
+            averages = (
+                dict.fromkeys(f"avg_{name}" for name in self.METRIC_NAMES)
+                if document_class
+                else self._averages(document_scores)
+            )
 
-            return metrics
+            return {
+                "total_documents": count,
+                **averages,
+                "by_document_class": by_class,
+            }
 
         except Exception as e:
             logger.error(f"Error getting metrics: {e}")
@@ -362,7 +525,12 @@ class EvaluationProcessor:
             baselines = []
             for prefix in response.get("CommonPrefixes", []):
                 doc_id = prefix["Prefix"].rstrip("/")
-                baselines.append({"document_id": doc_id})
+                baselines.append(
+                    {
+                        "document_id": doc_id,
+                        "s3_location": f"s3://{baseline_bucket}/{prefix['Prefix']}",
+                    }
+                )
 
             result = {"baselines": baselines, "count": len(baselines)}
 

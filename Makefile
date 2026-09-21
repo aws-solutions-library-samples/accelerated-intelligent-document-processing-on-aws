@@ -485,22 +485,43 @@ cfn-lint-warnings: ## Same as cfn-lint but lists every advisory warning (W*/I*) 
 
 # Deliberately NOT part of `lint`, `fastlint` or `lint-cicd`, and deliberately NOT
 # in test_ci_gate_parity.py's SHARED_GATES. It needs network access and a token
-# with administration:read, and it reports "not protected" until issue #933 is
-# closed — enabling branch protection needs repository ADMIN, which no contributor
-# and no CI token here has. Wiring it into a blocking gate today would red-line
-# every branch for a condition nobody working in the tree can fix.
+# with administration:read, and on this repository it reports "not protected" on
+# BOTH long-lived branches: `develop`, which pull requests target, and `main`,
+# which is the default branch and the one releases are cut from. Wiring it into a
+# blocking gate would red-line every branch for a condition nobody working in the
+# tree can fix. test_check_branch_protection.py fails if it is added to a lint
+# target, to SHARED_GATES, or to either CI configuration.
 #
-# TODO(#933): once protection is enabled, make this a required, blocking check —
-# add it to lint-cicd and pass --fail-on-skip so a missing token is an error
-# rather than a silent pass.
-check-branch-protection: ## Report whether branch protection actually requires the CI checks (opt-in, needs a GitHub token; see issue #933)
+# That is an accepted residual, not pending work: enabling classic protection
+# needs repository ADMIN, which no contributor and no CI token here has, and the
+# decision to stop pursuing it from the tree is recorded in closed issue #933.
+# Nothing here can substitute -- enforcement is server-side, so a merge taken
+# through GitHub's Merge button runs no code from this tree.
+#
+# It becomes a required, blocking check when a repository SETTING changes — either
+# somebody with repository admin enables protection, or an organization/enterprise
+# owner publishes a branch ruleset targeting these branches (that second route
+# needs no repository admin). At that point add it to lint-cicd and pass
+# --fail-on-skip so a missing token is an error rather than a silent pass.
+#
+# Run it twice: one invocation reads one branch.
+#   make check-branch-protection
+#   make check-branch-protection BRANCH_PROTECTION_ARGS=--branch=main
+check-branch-protection: ## Report whether branch protection actually requires the CI checks (opt-in, needs a GitHub token; reads one branch per run)
 	@$(PYTHON) scripts/sdlc/check_branch_protection.py $(BRANCH_PROTECTION_ARGS)
 
 check-retired-models: ## Ask Bedrock whether any model this repo offers has been retired (opt-in, needs AWS credentials; NOT a CI gate)
 	@$(PYTHON) scripts/sdlc/check_retired_models.py $(RETIRED_MODELS_ARGS)
 
 ##@ Type Checking
-typecheck: ## Run type checks with basedpyright
+# `typecheck` is THE type gate, and it is what both CIs run. It reads
+# pyrightconfig.json's 12-entry `include`, whose closure over every tracked .py
+# file scripts/tests/test_pyright_config.py derives from `git ls-files` — so the
+# set it covers cannot silently shrink. A full run is ~1 minute through make
+# (48-60s measured; the bare binary is ~47s) over 1273 files, which is why there
+# is no cheaper CI variant: the PR-scoped form below narrows the file set and
+# therefore cannot see a break your change caused in a file it did not select.
+typecheck: ## Run type checks with basedpyright over the whole tree (the CI gate)
 	@echo "Running type checks..."
 	basedpyright
 
@@ -509,8 +530,13 @@ typecheck-stats: ## Type checks with detailed statistics
 	basedpyright --stats
 
 # Usage: make typecheck-pr [TARGET_BRANCH=branch_name]
+#
+# A DEVELOPER CONVENIENCE, NOT A GATE. It narrows basedpyright to the files you
+# changed for fast local feedback; it is deliberately in neither CI, because a
+# file-scoped check passes on a signature change whose broken caller lives in a
+# file the diff did not touch. Run `make typecheck` before you push.
 TARGET_BRANCH ?= develop
-typecheck-pr: ## Type check only files changed vs TARGET_BRANCH (default: main)
+typecheck-pr: ## Fast local type check of only the files changed vs TARGET_BRANCH (default: develop) — not a gate
 	@echo "Type checking changed files against $(TARGET_BRANCH)..."
 	$(PYTHON) scripts/sdlc/typecheck_pr_changes.py $(TARGET_BRANCH)
 
@@ -531,6 +557,12 @@ typecheck-pr: ## Type check only files changed vs TARGET_BRANCH (default: main)
 # isolated pytest invocation. It also fails if it finds a test dir that isn't
 # registered (RUN or QUARANTINE), so new tests can never be silently skipped —
 # the gap that let the old hand-maintained list here miss ~200 Lambda tests.
+#
+# `test` itself is NOT a CI target: neither .gitlab-ci.yml nor any workflow in
+# .github/workflows/ invokes it. CI runs `test-packages-cicd` below and
+# `test-cicd -C lib/idp_common_pkg`, and registering a root above buys nothing on
+# a pull request until it is named in one of those two. That is what
+# scripts/tests/test_src_lambda_tests_in_ci.py enforces, over the whole tree.
 test: ## Run every non-integration test suite (auto-discovered; see scripts/run_all_tests.py)
 	$(PYTHON) scripts/run_all_tests.py
 
@@ -577,9 +609,10 @@ test-packages-cicd: ## CI-safe: run the package/Lambda suites NOT covered by idp
 	@# file — a named file covers only itself, which is how a second test module
 	@# added beside it would silently reach no CI.
 	@echo "Running the remaining src/lambda Lambda suites (157 tests that reached NEITHER CI)..."
-	@# Every src/lambda dir holding a test_*.py must appear in this recipe —
-	@# asserted by scripts/tests/test_src_lambda_tests_in_ci.py, which derives
-	@# both sides (filesystem walk vs this recipe) rather than listing them.
+	@# Every directory in the repository holding a test_*.py must appear in this
+	@# recipe or in lib/idp_common_pkg's test-unit-cicd — asserted by
+	@# scripts/tests/test_src_lambda_tests_in_ci.py, which derives both sides
+	@# (git ls-files vs these two recipes) rather than listing them.
 	@# Each gets its own invocation for the same reason as queue_sender above:
 	@# they all define a module named ``index``, so a combined pytest run fails
 	@# collection on the basename collision.
@@ -610,9 +643,9 @@ test-packages-cicd: ## CI-safe: run the package/Lambda suites NOT covered by idp
 	@# Query must DENY, an empty page must stay unrestricted. Each resolver gets its
 	@# own invocation because they all define a module named ``index``, so a combined
 	@# pytest run fails collection on the basename collision (same reason as
-	@# queue_sender above). Four of these directories reached NEITHER CI before —
-	@# issue #1080 tracks generalising scripts/tests/test_src_lambda_tests_in_ci.py
-	@# beyond src/lambda so that omission is detected rather than found by hand.
+	@# queue_sender above). Four of these directories reached NEITHER CI before,
+	@# which is the omission scripts/tests/test_src_lambda_tests_in_ci.py now detects
+	@# over the whole tree rather than just src/lambda (#980).
 	cd nested/api-resolvers/src/lambda/configuration_resolver && $(PYTEST_HERMETIC) -q -p no:cacheprovider
 	cd nested/api-resolvers/src/lambda/get_stepfunction_execution_resolver && $(PYTEST_HERMETIC) -q -p no:cacheprovider
 	cd nested/api-resolvers/src/lambda/list_documents_gsi_resolver && $(PYTEST_HERMETIC) -q -p no:cacheprovider
@@ -631,6 +664,56 @@ test-packages-cicd: ## CI-safe: run the package/Lambda suites NOT covered by idp
 	cd nested/bedrockkb/src/s3_vectors_manager && $(PYTEST_HERMETIC) tests -q -p no:cacheprovider
 	@echo "Running fine-tuning job creator tests (ARN partition passthrough)..."
 	cd src/lambda/finetuning_job_creator && $(PYTEST_HERMETIC) tests -q -p no:cacheprovider
+	@echo "Running the remaining API resolver suites (download allow-list, upload target, filtered scans)..."
+	@# These eight directories held 105 tests that reached NEITHER CI. The recipe
+	@# below and scripts/run_all_tests.py were diffed to find them, and
+	@# scripts/tests/test_src_lambda_tests_in_ci.py now derives that diff on every
+	@# run over the WHOLE tree rather than just src/lambda/, which is what #980
+	@# asked for and what kept these eight invisible.
+	@#
+	@# Each gets its own invocation because they all define a module named ``index``,
+	@# so a combined pytest run fails collection on the basename collision.
+	cd nested/api-resolvers/src/lambda/get_file_contents_resolver && $(PYTEST_HERMETIC) -q -p no:cacheprovider
+	cd nested/api-resolvers/src/lambda/upload_resolver && $(PYTEST_HERMETIC) -q -p no:cacheprovider
+	cd nested/api-resolvers/src/lambda/finetuning_jobs_resolver && $(PYTEST_HERMETIC) -q -p no:cacheprovider
+	cd nested/api-resolvers/src/lambda/test_set_resolver && $(PYTEST_HERMETIC) -q -p no:cacheprovider
+	cd nested/api-resolvers/src/lambda/get_sample_document_resolver && $(PYTEST_HERMETIC) -q -p no:cacheprovider
+	cd nested/api-resolvers/src/lambda/discovery_upload_resolver && $(PYTEST_HERMETIC) -q -p no:cacheprovider
+	cd nested/api-resolvers/src/lambda/get_agent_chat_messages_resolver && $(PYTEST_HERMETIC) -q -p no:cacheprovider
+	cd nested/api-resolvers/src/lambda/list_agent_chat_sessions_resolver && $(PYTEST_HERMETIC) tests -q -p no:cacheprovider
+	@echo "Running the KB-ingestion and docker-build custom-resource suites..."
+	@# Both built a boto3 client at import time with no region, so both errored at
+	@# COLLECTION under $(PYTEST_HERMETIC) while passing on a developer machine.
+	@# Each now supplies its own region from its own conftest.py, which is what makes
+	@# running them through the wrapper meaningful -- the wrapper takes the region
+	@# away rather than handing one over. See #988.
+	cd nested/bedrockkb/src/start_ingestion_job_custom_resource && $(PYTEST_HERMETIC) -q -p no:cacheprovider
+	cd nested/multi-doc-discovery/docker_build_lambda && $(PYTEST_HERMETIC) tests -q -p no:cacheprovider
+	@echo "Running the feature-platform extension suites that reached neither CI..."
+	@# The three pii-anonymizer suites above were added by #974; these eight are the
+	@# rest of the same tree -- the ConfBench test-set extension, the data generator's
+	@# feature API, the two sample features, the health-insurance-review sample and the
+	@# feature template's UI deployer. confbench-testset's test_planner.py
+	@# self-skips unless huggingface_hub + pyarrow are installed, which they are not in
+	@# CI; the other modules in it run unconditionally.
+	cd feature-platform/confbench-testset && $(PYTEST_HERMETIC) tests -q -p no:cacheprovider
+	cd feature-platform/idp-data-generator/feature-api && $(PYTEST_HERMETIC) tests -q -p no:cacheprovider
+	cd feature-platform/feature-template/ui-deployer && $(PYTEST_HERMETIC) tests -q -p no:cacheprovider
+	cd feature-platform/sample-feature/feature-api && $(PYTEST_HERMETIC) tests -q -p no:cacheprovider
+	cd feature-platform/sample-feature/ui-deployer && $(PYTEST_HERMETIC) tests -q -p no:cacheprovider
+	cd feature-platform/sample-health-insurance-review/feature-api && $(PYTEST_HERMETIC) tests -q -p no:cacheprovider
+	cd feature-platform/sample-health-insurance-review/hook && $(PYTEST_HERMETIC) tests -q -p no:cacheprovider
+	cd feature-platform/sample-health-insurance-review/ui-deployer && $(PYTEST_HERMETIC) tests -q -p no:cacheprovider
+	@echo "Running the Lambda hook-inference sample suites..."
+	@# Own invocation each: all three define a module named ``index``.
+	cd samples/lambda-hook-inference/GENAIIDP-cohere-parse-hook && $(PYTEST_HERMETIC) -q -p no:cacheprovider
+	cd samples/lambda-hook-inference/GENAIIDP-mistral-ocr-hook && $(PYTEST_HERMETIC) -q -p no:cacheprovider
+	cd samples/lambda-hook-inference/GENAIIDP-w2-copy-consistency && $(PYTEST_HERMETIC) -q -p no:cacheprovider
+	@echo "Running benchmark harness tests (what a release report claims, and which config a run executes)..."
+	@# A bug in this tree becomes a wrong published number rather than a visible
+	@# failure, which is what happened at v0.6.5. Pure dict/YAML logic, no AWS, and
+	@# the largest of the suites added here at a couple of seconds.
+	$(PYTEST_HERMETIC) benchmarks/tests -q -p no:cacheprovider
 	@echo "Running unified state-machine structure tests (hook fail-closed ordering, retry/timeout shape)..."
 	@# These parse patterns/unified/statemachine/workflow.asl.json only — no AWS.
 	@# They were registered in scripts/run_all_tests.py but in NEITHER CI, so the
@@ -889,6 +972,19 @@ endif
 # no-op; unset (local) installs as before.
 NPM_CI := $(if $(SKIP_NPM_CI),true,npm ci --prefer-offline --no-audit)
 
+# THE GATE CHECKS; THE FIXER FIXES. Never the same invocation.
+#
+# This recipe used to run `npm run lint -- --fix`, and it is reached from both
+# `make lint` and `make lint-cicd` — so in CI it repaired the ephemeral checkout
+# and then reported it clean. `prettier/prettier` is configured 'error' in
+# src/ui/eslint.config.js and is entirely auto-fixable, which left the UI
+# formatting gate with no failure mode at all. `npm run lint` also carried no
+# --max-warnings 0, so five warn-level rules (no-unused-vars, no-explicit-any,
+# no-shadow, react/no-array-index-key, react/jsx-filename-extension) were
+# advisory forever.
+#
+# `npm run lint` now spells out `--max-warnings 0` and does not fix. Use
+# `make ui-lint-fix` to apply what is auto-fixable.
 ui-lint: ## Run UI linting with checksum caching (skips if unchanged). Use FORCE=1 to force re-run.
 	@echo "Checking if UI lint is needed..."
 	@CURRENT_HASH=$$($(PYTHON) -c "from publish import IDPPublisher; p = IDPPublisher(); print(p.get_directory_checksum('src/ui'))"); \
@@ -899,12 +995,24 @@ ui-lint: ## Run UI linting with checksum caching (skips if unchanged). Use FORCE
 		else \
 			echo "UI code checksum changed - running lint..."; \
 		fi; \
-		cd src/ui && $(NPM_CI) && npm run lint -- --fix && npm run typecheck || exit 1; \
+		cd src/ui && $(NPM_CI) && npm run lint && npm run typecheck || exit 1; \
 		echo "$$CURRENT_HASH" > .checksum; \
 		echo -e "$(GREEN)✅ UI lint and typecheck completed and checksum updated$(NC)"; \
 	else \
 		echo -e "$(GREEN)✅ UI code checksum unchanged - skipping lint (use FORCE=1 to force re-run)$(NC)"; \
 	fi
+
+ui-lint-fix: ## Auto-fix what eslint can fix in src/ui, then re-run the strict gate
+	@echo "Applying eslint --fix to src/ui..."
+	@# The `-` prefix is load-bearing. `eslint --fix` exits non-zero when anything
+	@# it could NOT fix remains, which is the common case — so without it make
+	@# aborts here and the re-check below never runs, leaving the operator with the
+	@# fixer's output instead of the gate's. Ignoring this line's status is safe:
+	@# the gate runs next and decides the target's exit status.
+	-@cd src/ui && $(NPM_CI) && npm run lint:fix
+	@# Deliberately re-runs the CHECKING form, so the exit status reflects what is
+	@# left rather than what was repaired.
+	@$(MAKE) --no-print-directory ui-lint FORCE=1
 
 ui-build: ## Build UI for production (runs lint + typecheck + vite build)
 	@echo "Checking UI build"

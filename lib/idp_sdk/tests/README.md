@@ -177,5 +177,10 @@ class TestStackResources:
 - Verify environment variables are set
 
 ### Import Errors
-- Install SDK: `pip install -e .`
-- Install test dependencies: `pip install -e ".[dev]"`
+Reinstall from the repository root, with `idp_common` on the same command line —
+the SDK requires it by name, and a one-at-a-time install can resolve that name
+from a public index instead of from `lib/`:
+
+```bash
+pip install -e lib/idp_common_pkg -e "lib/idp_sdk[dev]"
+```
