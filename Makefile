@@ -485,15 +485,29 @@ cfn-lint-warnings: ## Same as cfn-lint but lists every advisory warning (W*/I*) 
 
 # Deliberately NOT part of `lint`, `fastlint` or `lint-cicd`, and deliberately NOT
 # in test_ci_gate_parity.py's SHARED_GATES. It needs network access and a token
-# with administration:read, and it reports "not protected" until issue #933 is
-# closed — enabling branch protection needs repository ADMIN, which no contributor
-# and no CI token here has. Wiring it into a blocking gate today would red-line
-# every branch for a condition nobody working in the tree can fix.
+# with administration:read, and on this repository it reports "not protected" on
+# BOTH long-lived branches: `develop`, which pull requests target, and `main`,
+# which is the default branch and the one releases are cut from. Wiring it into a
+# blocking gate would red-line every branch for a condition nobody working in the
+# tree can fix. test_check_branch_protection.py fails if it is added to a lint
+# target, to SHARED_GATES, or to either CI configuration.
 #
-# TODO(#933): once protection is enabled, make this a required, blocking check —
-# add it to lint-cicd and pass --fail-on-skip so a missing token is an error
-# rather than a silent pass.
-check-branch-protection: ## Report whether branch protection actually requires the CI checks (opt-in, needs a GitHub token; see issue #933)
+# That is an accepted residual, not pending work: enabling classic protection
+# needs repository ADMIN, which no contributor and no CI token here has, and the
+# decision to stop pursuing it from the tree is recorded in closed issue #933. The
+# tree's own mitigation is client-side, and a client-side guard cannot make a red
+# check block a merge taken through GitHub's Merge button.
+#
+# It becomes a required, blocking check when a repository SETTING changes — either
+# somebody with repository admin enables protection, or an organization/enterprise
+# owner publishes a branch ruleset targeting these branches (that second route
+# needs no repository admin). At that point add it to lint-cicd and pass
+# --fail-on-skip so a missing token is an error rather than a silent pass.
+#
+# Run it twice: one invocation reads one branch.
+#   make check-branch-protection
+#   make check-branch-protection BRANCH_PROTECTION_ARGS=--branch=main
+check-branch-protection: ## Report whether branch protection actually requires the CI checks (opt-in, needs a GitHub token; reads one branch per run)
 	@$(PYTHON) scripts/sdlc/check_branch_protection.py $(BRANCH_PROTECTION_ARGS)
 
 check-retired-models: ## Ask Bedrock whether any model this repo offers has been retired (opt-in, needs AWS credentials; NOT a CI gate)

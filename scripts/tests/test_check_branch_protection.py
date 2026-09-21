@@ -716,10 +716,25 @@ def test_action_created_check_run_is_derived_from_check_name() -> None:
 
 @pytest.mark.unit
 def test_unprotected_branch_is_a_finding_that_names_the_issue() -> None:
-    """The 404 case: what this repo looks like today."""
+    """The 404 case: what this repo looks like today.
+
+    The remedy has to cite the decision record (#933, closed as not-planned) and
+    name **both** routes to protection. "Needs repository admin" alone is
+    incomplete: an organization or enterprise branch ruleset reaches the same
+    outcome at a different permission, and this repository demonstrably inherits
+    enterprise rulesets already, so a reader told only about admin would conclude
+    the situation is more closed than it is.
+    """
     findings = mod.evaluate(None, EXPECTED, "develop", status=404)
     assert [f.key for f in findings] == ["not_protected"]
-    assert "#933" in findings[0].remedy
+    remedy = findings[0].remedy
+    assert "#933" in remedy
+    assert "ADMIN" in remedy or "admin" in remedy
+    assert "ruleset" in remedy, (
+        "the remedy must name the ruleset route as well as repository admin; they "
+        "are different permissions and only one of them is out of reach for an "
+        "organization owner"
+    )
     for name in EXPECTED:
         assert name in findings[0].message, (
             "the finding must name the checks that should be required, so the "
@@ -832,8 +847,9 @@ def test_verified_absent_is_distinguished_from_unverifiable() -> None:
         # `protected: true` with an `enabled: false` protection block is the
         # ruleset-only shape, which must not be read as classic protection.
         (404, True, {"enabled": False}, [], "unverifiable"),
-        # The post-#933 non-admin path: the nested `protection` object carries the
-        # required-check list, so the state is protected-and-partly-checkable.
+        # The non-admin path on a branch that IS protected: the nested
+        # `protection` object carries the required-check list, so the state is
+        # protected-and-partly-checkable.
         (
             404,
             True,
@@ -1380,9 +1396,32 @@ def test_main_exit_codes_and_json_report(
     assert report["protected"] is False
     assert report["protection_state"] == "verified_absent"
     assert report["protection_reads"]["branch_protected_flag"] is False
-    assert report["issue"] == 933
     assert report["expected_required_checks"] == real_expected
     assert "Test Results" in report["action_created_contexts"]
+
+    # The issue is a decision record, and the JSON has to say so rather than
+    # emitting a bare number a consumer would read as an open tracking issue.
+    # #933 is closed as not-planned, and what would make this check blocking is a
+    # repository *setting* changing — so the trigger is stated as its own field.
+    record = report["decision_record"]
+    assert record["issue"] == 933
+    assert record["state"] == "closed"
+    assert record["state_reason"] == "not_planned"
+    assert "933" in record["url"]
+    trigger = record["blocking_gate_trigger"]
+    assert "admin" in trigger and "ruleset" in trigger, (
+        "the trigger must name both routes to protection, and must not be phrased "
+        f"as an issue closing: {trigger!r}"
+    )
+    assert "issue" not in trigger.lower(), (
+        "the trigger for making this blocking is a repository setting changing, "
+        "not an issue state; #933 is already closed"
+    )
+    # A run reads one branch, and the JSON names the ones it did not read. `main`
+    # is the default branch and is equally unprotected; it went unexamined for
+    # months because only `develop` was ever checked.
+    assert report["shared_branches"] == ["develop", "main"]
+    assert report["branches_not_read_by_this_run"] == ["main"]
 
     monkeypatch.setattr(
         mod,
@@ -1458,10 +1497,19 @@ def _recipe(makefile: str, target: str) -> str:
 
 @pytest.mark.unit
 def test_the_script_is_wired_into_the_makefile_but_not_into_lint() -> None:
-    """It must be runnable, and must NOT be a blocking gate until #933 closes.
+    """It must be runnable, and must NOT be a blocking gate.
 
     Both halves matter. Without the target nobody can run it; inside ``lint-cicd``
-    it would fail every branch for a condition no contributor can fix.
+    it would fail every branch for a condition no contributor can fix, because
+    neither ``develop`` nor ``main`` is protected and enabling protection needs a
+    permission nobody working in this tree has.
+
+    The condition for lifting this is a repository **setting** changing — somebody
+    with repository admin enabling protection, or an organization or enterprise
+    owner publishing a branch ruleset that targets these branches. It is
+    deliberately not "an issue closing": issue #933 is already closed, as a record
+    of the decision that this is out of the repository's reach, and a gate wired up
+    on the strength of that closure would red-line every branch forever.
     """
     makefile = (REPO_ROOT / "Makefile").read_text(encoding="utf-8")
     assert "\ncheck-branch-protection:" in makefile
@@ -1474,8 +1522,9 @@ def test_the_script_is_wired_into_the_makefile_but_not_into_lint() -> None:
 
     assert "check-branch-protection" not in _recipe(makefile, "lint-cicd"), (
         "check-branch-protection needs network + a token and reports 'not "
-        "protected' until issue #933 is closed; in lint-cicd it would red-line "
-        "every branch. Re-enable it there only once #933 is closed."
+        "protected' on develop and main alike; in lint-cicd it would red-line "
+        "every branch. Add it there only once protection has actually been "
+        "enabled — not because an issue closed."
     )
 
     parity = (REPO_ROOT / "scripts" / "tests" / "test_ci_gate_parity.py").read_text(
@@ -1484,4 +1533,142 @@ def test_the_script_is_wired_into_the_makefile_but_not_into_lint() -> None:
     assert "check-branch-protection" not in parity, (
         "adding this to SHARED_GATES would require it in both CIs, which is "
         "exactly what it must not be yet"
+    )
+
+    # The Makefile and SHARED_GATES are two of the three ways this could become
+    # blocking; the third is invoking it straight from a CI configuration, which
+    # neither of the assertions above can see. Enumerated from the directory, so a
+    # workflow added later is covered without this file being edited.
+    ci_configs = [
+        REPO_ROOT / ".gitlab-ci.yml",
+        *sorted(mod.WORKFLOWS_DIR.glob("*.y*ml")),
+    ]
+    present = [path for path in ci_configs if path.is_file()]
+    assert len(present) >= 2, (
+        f"expected to find CI configurations to check, found {present} — a "
+        "vacuous pass here is the failure mode this assertion exists to avoid"
+    )
+    for path in present:
+        text = path.read_text(encoding="utf-8")
+        for spelling in ("check-branch-protection", "check_branch_protection.py"):
+            assert spelling not in text, (
+                f"{path.relative_to(REPO_ROOT)} invokes {spelling}: this check is "
+                "opt-in and must not run in either CI while protection is off, or "
+                "every pipeline goes red for a condition nobody here can fix"
+            )
+
+
+# --------------------------------------------------------------------------- #
+# The two properties a future edit is most likely to quietly remove
+# --------------------------------------------------------------------------- #
+
+
+@pytest.mark.unit
+def test_the_branch_summary_cross_check_read_is_actually_made(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The read that tells "not protected" apart from "cannot see" must happen.
+
+    The classic-protection endpoint needs repository admin and answers **404**, not
+    403, when admin is absent — deliberately, so as not to disclose whether
+    protection exists. A 404 is therefore equally consistent with "not protected"
+    and with "protected, invisible to this token", and a tool that read only that
+    endpoint would print a clean "still unprotected, nothing changed" in precisely
+    the case where something changed.
+
+    ``resolve_protection_state`` resolves it by also reading
+    ``GET .../branches/<branch>``, which carries a ``protected`` boolean at plain
+    ``pull`` scope. The state-classification test above pins what the tool *does*
+    with that flag; this one pins that the request is issued at all, because
+    dropping the call is how the distinction would be lost while every
+    classification assertion stayed green.
+    """
+    requested: list[str] = []
+
+    def _record(path: str, _token: str):
+        requested.append(path)
+        if path.endswith("/protection"):
+            return None, 404
+        if "/rules/branches/" in path:
+            return [], 200
+        if "/branches/" in path:
+            return {"protected": False}, 200
+        return {"permissions": {"admin": False}}, 200
+
+    monkeypatch.setattr(mod, "_api_get", _record)
+    state = mod.resolve_protection_state(mod.DEFAULT_REPO, "develop", "t")  # noqa: S106
+
+    summary_read = f"repos/{mod.DEFAULT_REPO}/branches/develop"
+    assert summary_read in requested, (
+        "the branch-summary cross-check read was not issued; without it a 404 from "
+        f"the classic endpoint cannot be disambiguated. Requested: {requested}"
+    )
+    assert state.state == mod.PROTECTION_VERIFIED_ABSENT
+    assert state.protected_flag is False
+
+    # And the mirror image: with that read unavailable, the answer must degrade to
+    # `unverifiable` rather than to `verified_absent`.
+    def _no_summary(path: str, _token: str):
+        if path.endswith("/protection"):
+            return None, 404
+        if "/rules/branches/" in path:
+            return [], 200
+        if "/branches/" in path:
+            return None, 404
+        return {"permissions": {"admin": False}}, 200
+
+    monkeypatch.setattr(mod, "_api_get", _no_summary)
+    blind = mod.resolve_protection_state(mod.DEFAULT_REPO, "develop", "t")  # noqa: S106
+
+    assert blind.state == mod.PROTECTION_UNVERIFIABLE
+    assert blind.protected is None, (
+        "with the cross-check read unavailable the tri-state must report null, not "
+        "false — false would be a false all-clear"
+    )
+
+
+@pytest.mark.unit
+def test_the_decision_record_is_never_written_as_pending_work() -> None:
+    """#933 may be cited as a decision record, never as an open tracking issue.
+
+    The issue is closed as not-planned: enabling branch protection needs a
+    permission nobody working in this tree has. Text of the form "once #933
+    closes" or "until #933 is closed" describes a trigger that has **already
+    fired**, and firing it means making a gate blocking that reports "not
+    protected" forever — red-lining every branch for a condition no contributor
+    can fix. That is the opposite of what the wording intended, which is why it is
+    asserted against rather than left to review.
+
+    Scoped to the two files this module already reads for other reasons, and
+    matched case-insensitively on the constructions rather than on whole
+    sentences, so a paraphrase does not slip through.
+    """
+    pending = (
+        "once #933",
+        "until #933",
+        "once issue #933",
+        "until issue #933",
+        "tracked by issue #933",
+        "#933 tracks",
+        "todo(#933)",
+        "post-#933",
+    )
+    # Reported as a list of `<file>:<line>: <phrase>` rather than by asserting on the
+    # file text, so a failure names the offending line instead of dumping the whole
+    # file into pytest's assertion output.
+    offenders = []
+    for path in (SCRIPT, REPO_ROOT / "Makefile"):
+        for lineno, line in enumerate(
+            path.read_text(encoding="utf-8").splitlines(), start=1
+        ):
+            lowered = line.lower()
+            for phrase in pending:
+                if phrase in lowered:
+                    rel = path.relative_to(REPO_ROOT)
+                    offenders.append(f"{rel}:{lineno}: {phrase!r} in {line.strip()!r}")
+
+    assert not offenders, (
+        "issue #933 is described as pending at these sites. It is closed as "
+        "not-planned; cite it as the decision record and state the real trigger — a "
+        "repository setting changing — instead:\n  " + "\n  ".join(offenders)
     )

@@ -82,7 +82,8 @@ request; GitHub reports a conditionally skipped job as *successful* rather than
 leaving it pending, so requiring that context fails quietly in the other
 direction — the gate passes without its work having run. None of these four
 shapes other than ``paths:`` exists in this repository today, and the point of
-checking them is that #933 is when somebody acts on this tool's output.
+checking them is that this tool's output is what somebody acts on if protection
+is ever turned on — by which time the workflows will have moved on.
 
 Two mechanisms, and telling "cannot see" from "not protected"
 ------------------------------------------------------------
@@ -100,9 +101,9 @@ nothing at all. So three reads are made, not one:
 * ``GET /repos/{slug}/branches/{branch}`` — carries a ``protected`` boolean and
   is readable with plain ``pull`` access. This is what settles the question at
   the permission level this tool actually runs at. It also nests a ``protection``
-  object carrying ``required_status_checks``, which is read too: once #933 closes
-  with classic protection, a non-admin run can compare the required-check list
-  from this response instead of reporting ``unverifiable`` while holding the
+  object carrying ``required_status_checks``, which is read too: if classic
+  protection is ever enabled here, a non-admin run can compare the required-check
+  list from this response instead of reporting ``unverifiable`` while holding the
   comparison data. That is a partial answer — the object says nothing about
   reviews, force-pushes, deletion or ``enforce_admins`` — so the other five
   questions are reported as **unread**, never as satisfied, and such a run still
@@ -112,31 +113,60 @@ nothing at all. So three reads are made, not one:
   rulesets**, and also readable without admin. That makes it strictly more
   useful than the classic read here.
 
-Measured on this repository (2026-09, token with ``admin: false, maintain:
-true``): the classic read returns 404; ``branches/develop`` returns
-``"protected": false``; and ``rules/branches/develop`` returns four rules, all
-inherited from the ``amazon`` enterprise and all *repository*-scoped
-(``repository_visibility`` ×2, ``repository_delete``, ``repository_transfer``).
-Of the repository's five active rulesets, four have ``target=repository`` and one
-``target=tag`` — none targets a branch. So "no ruleset protects this branch" is a
-measurement here, not an error, and the tool reaches a **verified** conclusion
-that ``develop`` is unprotected rather than an ambiguous one. The ambiguous
-``unverifiable`` state is reserved for when even the ``branches/{branch}`` read
-fails.
+Measured on this repository (2026-09-21, token with ``admin: false, maintain:
+true``): the classic read returns 404; ``branches/develop`` and ``branches/main``
+both return ``"protected": false`` with ``required_status_checks`` of
+``{checks: [], contexts: [], enforcement_level: "off"}``; and
+``rules/branches/{branch}`` returns four rules, all inherited from the ``amazon``
+enterprise and all *repository*-scoped (``repository_visibility`` ×2,
+``repository_delete``, ``repository_transfer``). Of the repository's five active
+rulesets, four have ``target=repository`` and one ``target=tag`` — none targets a
+branch. So "no ruleset protects this branch" is a measurement here, not an error,
+and the tool reaches a **verified** conclusion that the branch is unprotected
+rather than an ambiguous one. The ambiguous ``unverifiable`` state is reserved for
+when even the ``branches/{branch}`` read fails.
+
+**Run it against both long-lived branches.** ``develop`` is what pull requests
+target and is this script's default, but ``main`` is the repository's *default*
+branch and the one releases are cut from, and it is equally unprotected. A single
+run answers the question for one branch only.
 
 Why this is opt-in and non-blocking
 -----------------------------------
-It needs network access and a token, and it reports "not protected" until
-GitHub issue #933 is closed — enabling branch protection needs repository
-**admin**, which no contributor and no CI token here has. Wiring it into ``make
-lint-cicd`` today would red-line every branch for a condition nobody working in
-the tree can fix. So it is not in ``lint-cicd`` and not in ``SHARED_GATES``.
+It needs network access and a token, and on this repository it reports "not
+protected" on both of those branches. Wiring it into ``make lint-cicd`` would
+red-line every branch for a condition nobody working in the tree can fix. So it
+is not in ``lint-cicd`` and not in ``SHARED_GATES``, and
+``scripts/tests/test_check_branch_protection.py`` fails if it is added to either,
+or invoked from either CI configuration.
 
-TODO(#933): once branch protection is enabled, this SHOULD become a required,
-blocking check — add it to ``lint-cicd`` (or a small scheduled workflow) and run
-it with ``--fail-on-skip`` so a missing token becomes an error instead of a
-silent pass. Until then, drift in the required-check list is invisible again the
-moment somebody renames a job.
+That absence of protection is a **known, accepted residual**, not an open task.
+Enabling classic branch protection needs repository **admin**, which no
+contributor and no CI token here has, so it cannot be done from the tree or from
+tooling; the decision to stop pursuing it from inside the repository is recorded
+in closed issue #933:
+https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/933
+What the tree carries instead is a **client-side** guard against a direct write to
+a shared branch. That guard cannot make a red check block a merge, because a merge
+performed through GitHub's own Merge button runs no code on a contributor's
+machine.
+
+So the condition for making this a required, blocking check is a **repository
+setting changing**, by one of two routes — and it is worth separating them,
+because they are not the same permission:
+
+1. somebody with repository **admin** enables classic branch protection; or
+2. an organization or enterprise owner publishes a **branch ruleset** targeting
+   these branches. This repository already inherits five enterprise rulesets, so
+   the mechanism is demonstrably available here; none of the five targets a
+   branch. This route needs no repository admin at all, which is why "needs repo
+   admin" is not the whole story.
+
+Neither is actionable from this tree, and neither announces itself — running this
+script is how either would be noticed. When one of them happens, add it to
+``lint-cicd`` (or a small scheduled workflow) and pass ``--fail-on-skip`` so a
+missing token becomes an error instead of a silent pass. Until then, drift in the
+required-check list is invisible the moment somebody renames a job.
 
 All GitHub calls are **read-only** (``GET``). This script never writes
 repository settings.
@@ -158,6 +188,10 @@ Exit codes:
         required-check list has drifted
     2 - the check could not run (no token / no network) and --fail-on-skip was given
     3 - usage or parsing error
+
+On this repository the steady-state result today is **exit 1** with a single
+``not_protected`` finding, on ``develop`` and on ``main`` alike. That is the
+expected answer, not a regression, and it is the reason this is not a gate.
 """
 
 from __future__ import annotations
@@ -191,7 +225,12 @@ WORKFLOWS_DIR = REPO_ROOT / ".github" / "workflows"
 DEFAULT_REPO = (
     "aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws"
 )
+# `develop` is what pull requests target, so it is the default here. It is NOT the
+# repository's default branch — `main` is, and `main` is where releases are cut
+# from — so answering the question for this repository takes two runs. Both are
+# unprotected today; see the module docstring.
 DEFAULT_BRANCH = "develop"
+SHARED_BRANCHES = ("develop", "main")
 
 API_ROOT = "https://api.github.com"
 REQUEST_TIMEOUT = 20
@@ -271,7 +310,7 @@ PROTECTION_CLASSIC = "protected_classic"
 PROTECTION_RULESET = "protected_by_ruleset"
 # Protected, and the required-check list is readable from the branch *summary*
 # even though the classic endpoint 404s for want of admin. This is the state a
-# non-admin run lands in once issue #933 is closed with classic protection, and
+# non-admin run lands in if classic protection is ever enabled here, and
 # it exists so that such a run reports a verified answer to the question it can
 # answer instead of collapsing to `unverifiable` — the comparison data is in a
 # response the tool already made.
@@ -1098,7 +1137,8 @@ def _evaluate_branch_summary(
 ) -> List[Finding]:
     """Assert what the branch *summary* can settle, and say what it cannot.
 
-    This is the post-#933 non-admin path. The summary's nested ``protection``
+    This is the non-admin path on a branch that *is* protected. The summary's
+    nested ``protection``
     object carries the required-check list and nothing else, so exactly one of the
     six questions is answerable here — and answering it is the point, because the
     alternative this replaces was reporting ``protection_unverifiable`` while
@@ -1267,8 +1307,12 @@ def evaluate(
                     + _expected_list(expected)
                 ),
                 remedy=(
-                    "Needs repository admin — tracked by issue #933. Enabling it "
-                    "via a ruleset works too; this check reads both mechanisms."
+                    "Not actionable from this repository, and recorded as an "
+                    "accepted residual in closed issue #933: enabling classic "
+                    "protection needs repository ADMIN, which no contributor and "
+                    "no CI token here has. A branch ruleset published by an "
+                    "organization or enterprise owner is a second route and needs "
+                    "no repository admin; this check reads both mechanisms."
                 ),
             )
         ]
@@ -1515,6 +1559,19 @@ def print_report(
         "`classic_protection.restrictions`."
     )
 
+    # One run answers for one branch. Both long-lived branches matter here and
+    # only one of them is this script's default, which is how `main` — the
+    # repository's default branch, and the one releases are cut from — went
+    # unexamined while `develop` was being measured.
+    unread = [name for name in SHARED_BRANCHES if name != branch]
+    if unread:
+        print(
+            "\nNot read by this run: "
+            + ", ".join(unread)
+            + ". Each long-lived branch carries its own\nprotection setting, so re-run "
+            "with --branch <name> for the rest."
+        )
+
     print("\n" + "-" * 78)
     if not findings:
         print(f"\n✅ {branch} is protected and requires every pull-request check.")
@@ -1525,12 +1582,17 @@ def print_report(
         print(f"  {i}. [{finding.key}] {finding.message}")
         print(f"     → {finding.remedy}\n")
     print(
-        "Enabling branch protection requires repository ADMIN, which contributor\n"
-        "and CI tokens here do not have. GitHub issue #933 tracks enabling it:\n"
+        "These findings are NOT actionable from inside this repository, and that\n"
+        "is a known, accepted residual rather than an open task. Enabling classic\n"
+        "branch protection needs repository ADMIN, which no contributor and no CI\n"
+        "token here has; the decision is recorded in closed issue #933:\n"
         "  https://github.com/aws-solutions-library-samples/"
         "accelerated-intelligent-document-processing-on-aws/issues/933\n"
-        "This check is opt-in and gates nothing today; it should become a\n"
-        "required, blocking check once #933 is closed."
+        "A branch ruleset published by an organization or enterprise owner reaches\n"
+        "the same outcome and needs no repository admin — this check reads both\n"
+        "mechanisms, so either would show up here.\n"
+        "This check is opt-in and gates nothing. The condition for making it a\n"
+        "required, blocking check is one of those two settings actually changing."
     )
 
 
@@ -1545,8 +1607,10 @@ def _skip(reason: str, detail: str, fail_on_skip: bool) -> int:
         "  administration:read is what the other five assertions need; without it\n"
         "  they are reported as unread, not as satisfied.\n"
         "  It is opt-in by design and gates nothing, so a skip is not a failure.\n"
-        "  Pass --fail-on-skip to make an unrunnable check an error instead "
-        "(do that\n  once issue #933 is closed and this becomes a blocking gate)."
+        "  Pass --fail-on-skip to make an unrunnable check an error instead — do\n"
+        "  that once protection has actually been enabled and this is a blocking\n"
+        "  gate, where a silent pass from a missing token is the worst answer of\n"
+        "  the three."
     )
     return 2 if fail_on_skip else 0
 
@@ -1658,7 +1722,36 @@ def main(argv: Optional[List[str]] = None) -> int:
                         {"key": f.key, "message": f.message, "remedy": f.remedy}
                         for f in findings
                     ],
-                    "issue": 933,
+                    # The issue is cited as a DECISION RECORD, not as open work:
+                    # it is closed as not-planned because enabling protection is
+                    # out of this repository's reach. What would make this check
+                    # blocking is a repository *setting* changing, which is a
+                    # different thing from an issue state — so that condition is
+                    # stated here rather than left implied by the issue number.
+                    "decision_record": {
+                        "issue": 933,
+                        "state": "closed",
+                        "state_reason": "not_planned",
+                        "url": (
+                            "https://github.com/aws-solutions-library-samples/"
+                            "accelerated-intelligent-document-processing-on-aws"
+                            "/issues/933"
+                        ),
+                        "blocking_gate_trigger": (
+                            "somebody with repository admin enables branch "
+                            "protection, or an organization or enterprise owner "
+                            "publishes a branch ruleset targeting this branch"
+                        ),
+                        "in_tree_mitigation": (
+                            "client-side only: a guard against a direct write to "
+                            "a shared branch, which cannot make a red check block "
+                            "a merge performed through GitHub's Merge button"
+                        ),
+                    },
+                    "shared_branches": list(SHARED_BRANCHES),
+                    "branches_not_read_by_this_run": [
+                        name for name in SHARED_BRANCHES if name != args.branch
+                    ],
                 },
                 indent=2,
             )
