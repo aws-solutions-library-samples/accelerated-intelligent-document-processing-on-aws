@@ -207,9 +207,6 @@ RUNTIME_TEMPLATE_DEPLOYERS = [
     ),
 ]
 
-REGISTERED_FILES = {p.values[0] for p in DEPLOYERS} | {
-    p.values[0] for p in RUNTIME_TEMPLATE_DEPLOYERS
-}
 
 # The call shapes that mean "this module deploys a CloudFormation template".
 #
@@ -234,6 +231,44 @@ DEPLOY_CALL_MARKERS = (
 # mismatches sat in it while the walk covered ``scripts/`` alone — see the module
 # docstring.
 DEPLOYER_SEARCH_ROOTS = ("scripts", "lib", "feature-platform")
+
+# The same completeness property for SHELL deployers. Two already existed and were
+# invisible to the walk purely because it filtered on ``.py`` — the identical shape to
+# the roots being too narrow, one extension over. Both of these *print* an `aws
+# cloudformation` command for an operator to paste rather than running it, so a wrong
+# parameter set fails loudly in that operator's terminal; extending the walk is still
+# what stops the next one going unregistered.
+#
+# Only the REVERSE direction is checked for these (every required template parameter
+# must appear in the script). The forward direction needs the exact override list, and
+# harvesting that from shell is not reliable — a `NAME=$VAR` regex over
+# check-vpc-endpoints.sh also picks up `Values`, `count` and a JMESPath fragment, and
+# a gate with false positives fails for the wrong reason. Both scripts' override lists
+# were read by hand against their templates and match.
+SHELL_DEPLOY_MARKERS = (
+    "aws cloudformation deploy",
+    "aws cloudformation create-stack",
+    "aws cloudformation update-stack",
+)
+
+SHELL_DEPLOYERS = [
+    pytest.param(
+        "scripts/check-vpc-endpoints.sh",
+        "scripts/vpc-endpoints.yaml",
+        id="check-vpc-endpoints→vpc-endpoints",
+    ),
+    pytest.param(
+        "feature-platform/idp-data-generator/publish.sh",
+        "feature-platform/idp-data-generator/template.yaml",
+        id="idp-data-generator-publish→its-template",
+    ),
+]
+
+REGISTERED_FILES = (
+    {p.values[0] for p in DEPLOYERS}
+    | {p.values[0] for p in RUNTIME_TEMPLATE_DEPLOYERS}
+    | {p.values[0] for p in SHELL_DEPLOYERS}
+)
 
 # A feature-platform directory is installable by `idp-feature-cli deploy` exactly
 # when it carries a manifest; that is what makes it a publishable extension, so it
@@ -328,12 +363,16 @@ def test_supplied_parameters_exist_in_template(
     )
 
 
-def _tracked_python_files() -> list[str]:
-    """Git-tracked ``*.py`` paths under the search roots.
+def _tracked_files(suffix: str) -> list[str]:
+    """Git-tracked paths with ``suffix`` under the search roots.
 
     ``git ls-files`` rather than ``rglob``: an untracked scratch script, a stale
     build artifact or a vendored copy in a working tree must not be able to fail
     this gate, and — more importantly — must not be able to *satisfy* it.
+
+    Parametrised by suffix rather than hardcoding ``.py``, because filtering on the
+    extension is itself a way for the walk to go blind: two SHELL deployers existed
+    and were unreachable for no reason other than that.
     """
     result = subprocess.run(  # noqa: S603 - fixed argv, no shell
         ["git", "-C", str(REPO_ROOT), "ls-files", "--", *DEPLOYER_SEARCH_ROOTS],
@@ -345,7 +384,12 @@ def _tracked_python_files() -> list[str]:
         f"git ls-files failed under {REPO_ROOT}, so this gate cannot enumerate the "
         f"modules it is supposed to check: {result.stderr.strip()}"
     )
-    return [p for p in result.stdout.splitlines() if p.endswith(".py")]
+    return [p for p in result.stdout.splitlines() if p.endswith(suffix)]
+
+
+def _markers_for(rel_path: str) -> tuple[str, ...]:
+    """The deploy-call shapes that apply to a file, chosen by its language."""
+    return SHELL_DEPLOY_MARKERS if rel_path.endswith(".sh") else DEPLOY_CALL_MARKERS
 
 
 @pytest.mark.unit
@@ -361,21 +405,21 @@ def test_the_walk_finds_every_deployer_it_is_supposed_to_police():
 
     So a root removed, or a call shape dropped from the markers, fails here by name.
     """
-    reachable = set(_tracked_python_files())
+    reachable = set(_tracked_files(".py")) | set(_tracked_files(".sh"))
     for module in sorted(REGISTERED_FILES):
         assert module in reachable, (
             f"{module} is registered as a deployer but the walk cannot reach it: it "
-            f"is not a git-tracked .py file under {DEPLOYER_SEARCH_ROOTS}. Widen "
-            "DEPLOYER_SEARCH_ROOTS, or the walk polices a set that excludes a "
-            "deployer this file already knows about."
+            f"is not a git-tracked .py or .sh file under {DEPLOYER_SEARCH_ROOTS}. "
+            "Widen DEPLOYER_SEARCH_ROOTS or the extensions walked, or the walk "
+            "polices a set that excludes a deployer this file already knows about."
         )
         source = (REPO_ROOT / module).read_text()
-        matched = [m for m in DEPLOY_CALL_MARKERS if m in source]
+        markers = _markers_for(module)
+        matched = [m for m in markers if m in source]
         assert matched, (
-            f"{module} is registered as a deployer but none of "
-            f"{list(DEPLOY_CALL_MARKERS)} appears in it, so the detector would not "
-            "recognise a NEW module deploying a template the same way. Add that "
-            "call shape to DEPLOY_CALL_MARKERS."
+            f"{module} is registered as a deployer but none of {list(markers)} "
+            "appears in it, so the detector would not recognise a NEW module "
+            "deploying a template the same way. Add that call shape."
         )
 
 
@@ -387,23 +431,30 @@ def test_registry_is_complete():
     parameter-name check — the way create_iam_resources did, and the way
     build_parameters and seller_service did for longer (see the module docstring).
     """
-    tracked = _tracked_python_files()
-    # Non-vacuity: a broken enumeration would make "nothing unregistered" trivially
-    # true, which is the failure mode this whole module exists to catch.
-    assert len(tracked) > 100, (
-        f"only {len(tracked)} tracked .py files found under "
+    python_files = _tracked_files(".py")
+    shell_files = _tracked_files(".sh")
+    # Non-vacuity, per language: a broken enumeration would make "nothing
+    # unregistered" trivially true, which is the failure mode this whole module exists
+    # to catch. Shell is checked separately because it is the smaller set and would
+    # vanish unnoticed inside a combined count.
+    assert len(python_files) > 100, (
+        f"only {len(python_files)} tracked .py files found under "
         f"{DEPLOYER_SEARCH_ROOTS}; the enumeration is broken, and an empty walk "
         "would pass this gate while checking nothing"
     )
+    assert len(shell_files) > 10, (
+        f"only {len(shell_files)} tracked .sh files found under "
+        f"{DEPLOYER_SEARCH_ROOTS}; shell deployers would then be invisible again"
+    )
 
     unregistered = []
-    for rel in sorted(tracked):
+    for rel in sorted(python_files + shell_files):
         if "/tests/" in rel or Path(rel).name.startswith("test_"):
             continue
         if rel in REGISTERED_FILES:
             continue
         source = (REPO_ROOT / rel).read_text()
-        if any(marker in source for marker in DEPLOY_CALL_MARKERS):
+        if any(marker in source for marker in _markers_for(rel)):
             unregistered.append(rel)
 
     assert not unregistered, (
@@ -604,3 +655,35 @@ def test_no_substitute_reasons_matches_the_registry():
     )
     for script, reason in NO_SUBSTITUTE_REASONS.items():
         assert len(reason) > 40, f"{script}'s reason is too short to be one: {reason!r}"
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(("script", "template"), SHELL_DEPLOYERS)
+def test_shell_deployers_name_every_required_parameter(script: str, template: str):
+    """A printed `aws cloudformation` command must not omit a required parameter.
+
+    These two scripts print a command for an operator to paste. A required parameter
+    left out of it is rejected with ``Parameters: [X] must have values`` and creates
+    nothing — loud, but only after the operator has run it, and the remedy is not
+    obvious from a script that looked authoritative.
+
+    Both were missing one when this check was added: ``check-vpc-endpoints.sh`` omitted
+    ``VpcCidr`` (which feeds the endpoint security group's rules) and
+    ``idp-data-generator/publish.sh`` omitted ``FeatureBucket``.
+
+    By-name only, in the same sense as the ``static=False`` Python entries: a reliable
+    forward check needs the exact override list, and harvesting that from shell
+    produces false positives (see the note on SHELL_DEPLOYERS).
+    """
+    required = _required_parameters(template)
+    assert required, (
+        f"{template} declares no parameter without a Default, so this check is "
+        "vacuous — verify the template still has the shape this test assumes"
+    )
+    source = (REPO_ROOT / script).read_text()
+    missing = sorted(name for name in required if name not in source)
+    assert not missing, (
+        f"{script} prints a deploy command for {template} but never mentions "
+        f"{missing}, which {template} requires. CloudFormation rejects the pasted "
+        f'command with "Parameters: {missing} must have values" and creates nothing.'
+    )

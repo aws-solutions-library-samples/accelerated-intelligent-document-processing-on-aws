@@ -43,6 +43,7 @@ and true of the other six suites here too.
 from __future__ import annotations
 
 import sys
+from pathlib import Path
 
 import pytest
 
@@ -171,21 +172,47 @@ def test_every_coverage_key_reaches_the_csv(column):
     assert column in aggregate.CSV_COLS
 
 
-def test_both_scorers_emit_the_coverage_keys():
+@pytest.mark.parametrize("scorer", ["score_synthetic", "score_reference"])
+def test_both_scorers_emit_the_coverage_keys(scorer):
     """Synthetic and reference documents both have to carry the figure.
 
-    Derived by calling the scorers' shared helper and checking its keys against what
-    each return dict must contain, rather than restating the key list — the
-    reference path is the one an earlier metric (``rows_extracted``) was added to
-    only the synthetic side of, which is why reference-corpus coverage cannot be
-    computed from any stored artifact today.
+    The reference path is the one an earlier metric (``rows_extracted``) was added to
+    only the synthetic side of — which is exactly why reference-corpus coverage
+    cannot be computed from any stored artifact today. Checking only one scorer would
+    repeat that.
+
+    Checked by AST rather than by counting a substring in the source: a source-text
+    count breaks on a reformat, which is a failure for the wrong reason, and it cannot
+    tell which function the call sits in. Calling the scorers for real would need S3
+    and DynamoDB.
     """
-    emitted = set(analyze.score_confidence_coverage([_section(3, 3)]))
-    source = (analyze.__file__ or "").replace(".pyc", ".py")
-    with open(source, encoding="utf-8") as handle:
-        text = handle.read()
-    assert text.count("**score_confidence_coverage(sections),") == 2, (
-        "score_synthetic and score_reference must BOTH splice the coverage keys "
-        "into their return dict; found a different number of call sites"
+    import ast
+
+    source = Path(analyze.__file__).with_suffix(".py")
+    tree = ast.parse(source.read_text(encoding="utf-8"))
+    function = next(
+        (
+            node
+            for node in ast.walk(tree)
+            if isinstance(node, ast.FunctionDef) and node.name == scorer
+        ),
+        None,
     )
-    assert "conf_coverage" in emitted
+    assert function is not None, f"{scorer} is gone from {source}"
+
+    splices = [
+        node
+        for node in ast.walk(function)
+        if isinstance(node, ast.Dict)
+        # A `**call(...)` entry in a dict literal has None as its key.
+        for key, value in zip(node.keys, node.values)
+        if key is None
+        and isinstance(value, ast.Call)
+        and getattr(value.func, "id", None) == "score_confidence_coverage"
+    ]
+    assert splices, (
+        f"{scorer} does not splice score_confidence_coverage(...) into a returned "
+        "dict, so documents scored by that path carry no coverage figure at all — "
+        "and a corpus mean over the rest would silently be a mean over a subset."
+    )
+    assert "conf_coverage" in set(analyze.score_confidence_coverage([_section(3, 3)]))

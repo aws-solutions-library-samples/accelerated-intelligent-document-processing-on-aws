@@ -935,7 +935,9 @@ def deploy(
                 admin_email=admin_email,
                 max_concurrent=max_concurrent if max_concurrent != 100 else None,
                 log_level=log_level,
-                enable_hitl=enable_hitl == "true" if enable_hitl != "false" else None,
+                # No enable_hitl: "true" exits above, so this could only ever pass
+                # None. The kwarg still exists on client.stack.deploy for callers
+                # outside this CLI, where it raises with the same explanation.
                 custom_config=custom_config,
                 parameters=additional_params,
                 tags=tags_dict or None,
