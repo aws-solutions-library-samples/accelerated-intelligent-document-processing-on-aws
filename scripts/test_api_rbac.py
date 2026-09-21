@@ -35,7 +35,13 @@ WHAT IT CHECKS
 SAFETY
 ------
 * Read ops use harmless args. Mutation ops use nonexistent ids so an *allowed*
-  caller fails benign validation instead of mutating real data.
+  caller fails benign validation instead of mutating real data — with ONE
+  exception, stated here because it is the kind of thing a blanket assurance
+  hides: createUser[Admin] is authorized with valid arguments, so it really
+  creates a Cognito user. It targets test_email(CREATED), which is deleted
+  before the matrix runs and again in teardown, so the cell asserts "an allowed
+  role creates" on every run rather than "created" once and "already exists"
+  thereafter.
 * Ops flagged skip_allowed in the YAML (live-agent / KB / chat starts) are
   exercised ONLY for their denied cells; the allowed-role call is skipped.
 * Test users (test-rbac-<role>@example.invalid) are created in setup with a
@@ -97,6 +103,11 @@ ROLES = ["Admin", "Author", "Viewer", "Reviewer"]
 # authenticated user).
 USER_B = "UserB"
 SCOPED = "ScopedAuthor"  # an Author with a restrictive allowedConfigVersions
+#: The account createUser[Admin] actually creates. It is a REAL mutation with a
+#: persistent side effect, so it is torn down with the rest — see the note in
+#: apply_dynamic_args for why a fixed address that is always removed is what
+#: keeps that cell asserting one property instead of two.
+CREATED = "CreateUserTarget"
 # Random per-run password (one test user is an Admin — a static password in a
 # public repo would be a standing credential if teardown is ever skipped/killed).
 # The "Aa1!" prefix guarantees the Cognito policy classes regardless of what
@@ -336,7 +347,7 @@ def _recover_scoped_user_keys(ctx):
 
 
 def teardown_users(ctx):
-    for role in [*ROLES, SCOPED, USER_B]:
+    for role in [*ROLES, SCOPED, USER_B, CREATED]:
         delete_cognito_user(ctx, test_email(role))
     # Both items the seeding wrote: the USER# row and its SUB# pointer. Deleting
     # only the row would leave a pointer in the live stack's UsersTable naming a row
@@ -783,6 +794,26 @@ def apply_dynamic_args(ops, ctx, tokens):
     misleading failure.
     """
     skip = set()
+
+    # createUser: the only op in this file whose allowed-role call is a real
+    # mutation with a PERSISTENT side effect, so a fixed address makes its PASS
+    # order-dependent. On a pool where it does not exist the call succeeds and
+    # leaves a live Cognito user behind (teardown removes only this harness's own
+    # `test-rbac-*` users); on every run after, the same address returns 400
+    # "already exists". Both score PASS, so one green mark stood for two different
+    # properties — the same defect class as the 43 cells that read `500 ✅` in the
+    # 0.6.9 snapshot while the gate reported a pass.
+    #
+    # A per-run address makes the assertion the same one every time: an allowed
+    # role creates, a disallowed role gets the dispatcher's 403. The user is then
+    # torn down with the harness's own, because it now carries its prefix.
+    if "createUser" in ops:
+        args = dict(ops["createUser"].get("args") or {})
+        args["email"] = test_email(CREATED)
+        ops["createUser"]["args"] = args
+        # Delete it first, so a run that crashed before teardown cannot make the
+        # NEXT run pass on "already exists" instead of on "created".
+        delete_cognito_user(ctx, test_email(CREATED))
 
     # getFileContents / getFilePresignedUrl: the bucket allow-list is a DIFFERENT
     # control from the group floor, and the matrix can only exercise one at a time.
