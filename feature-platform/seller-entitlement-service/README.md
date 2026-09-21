@@ -62,10 +62,23 @@ returns an empty list rather than an error, so every activation would be refused
 and every customer locked out with nothing in the logs explaining why.
 
 Useful options: `--seller-account-id` to assert the expected account,
-`--stack-name`, `--region` (default `us-east-1`), `--allowed-accounts`,
-`--token-ttl-seconds`, `--yes` to skip the confirmation, and
-`--skip-ownership-check` for the rare case where the deploying role lacks
-`aws-marketplace:ListEntities`.
+`--stack-name`, `--region` (default `us-east-1`), `--agreement-region` (default
+`us-east-1`), `--allowed-accounts`, `--token-ttl-seconds`, `--yes` to skip the
+confirmation, and `--skip-ownership-check` for the rare case where the deploying
+role lacks `aws-marketplace:ListEntities`.
+
+> **`--region` and `--agreement-region` are two different things, on purpose.**
+> `--region` is where the stack goes. `--agreement-region` becomes
+> `AGREEMENT_REGION` on the activation function — the Region it calls
+> `SearchAgreements` in — and `us-east-1` is the only value that works:
+> `agreement-marketplace.us-east-1.amazonaws.com` and
+> `catalog.marketplace.us-east-1.amazonaws.com` resolve, and no other Region's form
+> of either does. You can deploy the stack wherever you like; the agreement Region
+> should be left alone unless AWS adds the API somewhere else. They are separate
+> flags because deriving the second from the first makes moving the stack break
+> every activation — and it breaks it *at activation*, in a buyer's account, after a
+> deploy that reported success and a registry read-back that passed. The deploy
+> prints a warning if you set `--agreement-region` to anything else.
 
 Requires the AWS SAM CLI and a checkout of this repository (the template and
 Lambda source live here) — the same prerequisites as `idp-feature-cli publish`

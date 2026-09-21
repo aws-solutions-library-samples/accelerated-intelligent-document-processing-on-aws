@@ -1368,9 +1368,13 @@ def coverage_from_gaps(
     number a benchmark records and the number a test asserts are one computation
     rather than three — see :func:`confidence_coverage`.
 
-    ``unscored_fraction`` is the quantity the ``_COVERAGE_SHORTFALL_*`` thresholds
-    are compared against, and it is rounded to 4 places **after** the comparison,
-    never before.
+    ``unscored_fraction`` and ``scored_fraction`` are **reporting** values, rounded
+    to 4 places so a processing issue's ``details`` reads cleanly. They are not what
+    the ``_COVERAGE_SHORTFALL_*`` thresholds are compared against:
+    :func:`audit_explainability` divides the two exact integers itself, because
+    comparing a rounded ratio moves each rung by up to half a rounding step. At the
+    shipped 0.05, 100 unscored rows out of 2001 is 0.04997501…, which rounds to
+    exactly 0.05 and would fire a warning the unrounded value does not.
     """
     expected_rows = sum(
         len(v) for v in (extraction_results or {}).values() if isinstance(v, list)
@@ -1565,7 +1569,12 @@ def audit_explainability(
     total_list_rows = coverage["expected_rows"]
     unscored_list_rows = coverage["unscored_rows"]
     if total_list_rows and not _ladder_reported_error(ladder_issues):
-        shortfall = coverage["unscored_fraction"]
+        # The EXACT ratio, not coverage["unscored_fraction"] — that one is rounded to
+        # 4 places for reporting, and comparing the rounded value moves every rung by
+        # up to half a rounding step. 100 unscored of 2001 is 0.04997501…, which
+        # rounds to exactly 0.05 and would fire a warning that the threshold does not
+        # actually call for.
+        shortfall = unscored_list_rows / total_list_rows
         if shortfall >= _COVERAGE_SHORTFALL_WARNING_FRACTION:
             scored = coverage["scored_rows"]
             # Error severity needs BOTH a large proportion and a large absolute

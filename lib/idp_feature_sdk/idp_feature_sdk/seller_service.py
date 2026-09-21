@@ -325,6 +325,7 @@ def build_sam_deploy_command(
     product_registry_json: str,
     allowed_accounts: str = "",
     token_ttl_seconds: Optional[int] = None,
+    agreement_region: str = DEFAULT_MARKETPLACE_REGION,
     guided: bool = False,
     extra_args: Optional[list[str]] = None,
 ) -> list[str]:
@@ -333,6 +334,15 @@ def build_sam_deploy_command(
     Every override built here is checked against the parameters
     ``service_dir/template.yaml`` declares — see
     :func:`validate_parameter_overrides` for why that cannot be left to the deploy.
+
+    ``region`` is where the STACK goes. ``agreement_region`` is where the deployed
+    function calls the AWS Marketplace Agreement API, and it is deliberately a
+    separate argument rather than being derived from ``region``: those are
+    independent choices, and only one of them has a correct value today. Both
+    ``agreement-marketplace`` and ``catalog.marketplace`` resolve in ``us-east-1``
+    and nowhere else, so an agreement region copied from a stack deployed elsewhere
+    names a host that does not exist — and the resulting failure is at *activation*,
+    in a customer's account, long after a deploy that reported success.
     """
     # Compact the registry before quoting it. Two reasons: SAM's override parser
     # splits on whitespace, so a pretty-printed / multi-line JSON blob (an obvious
@@ -356,7 +366,15 @@ def build_sam_deploy_command(
     # `AgreementRegion`, matching the template. `MarketplaceAgreementRegion` is the
     # name in feature-platform/main-stack-extensions/template.yaml — a different
     # template — and passing it here set nothing at all.
-    overrides.append(_sam_override("AgreementRegion", region))
+    #
+    # From `agreement_region`, NEVER from `region`. It used to be passed the deploy
+    # region, which was harmless only because the override was being discarded: the
+    # moment the name was corrected, `--region us-west-2` would have started setting
+    # AGREEMENT_REGION=us-west-2, and `agreement-marketplace.us-west-2.amazonaws.com`
+    # does not resolve, so every activation would fail. That invocation is reachable
+    # — `--skip-ownership-check` returns from `preflight` before the Catalog client is
+    # touched, so nothing else objects to a non-us-east-1 region.
+    overrides.append(_sam_override("AgreementRegion", agreement_region))
 
     validate_parameter_overrides(overrides, service_dir / "template.yaml")
 

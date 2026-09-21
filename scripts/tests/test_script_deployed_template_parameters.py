@@ -98,13 +98,29 @@ _CfnLoader.add_multi_constructor("!", _tag_to_python)
 # required parameter name at least appears somewhere in the file, which still
 # catches "template grew a required parameter and its caller never heard".
 #
+# ``static=False`` makes ``test_supplied_parameters_exist_in_template`` SKIP, and a
+# skipped guard reads as a pass on the summary line. So each such entry carries a
+# fourth field naming the test that checks it instead — a
+# ``"<path>::<test_name>"`` node id — and
+# ``test_every_substitute_check_still_exists`` asserts that test is really there.
+# Without it, deleting the substitute leaves the whole site unguarded in silence,
+# which is the same shape as the walk-can-only-get-quieter hole above, one level up.
+#
+# ``None`` means there is no substitute: the by-name check on required parameters is
+# all this site gets. That is not free either — the path must be listed in
+# ``NO_SUBSTITUTE_REASONS`` below, and the two sets are asserted to match, so a new
+# entry cannot quietly opt out.
+#
 # Adding a script that deploys a template? Add it here. test_registry_is_complete
 # fails until you do.
+_SELLER_TESTS = "lib/idp_feature_sdk/tests/test_seller_service.py"
+
 DEPLOYERS = [
     pytest.param(
         "scripts/sdlc/codebuild_deployment.py",
         "iam-roles/cloudformation-management/IDP-Cloudformation-Service-Role.yaml",
         True,
+        None,  # static=True: the exact-set comparison here IS the check.
         id="codebuild_deployment→cfn-service-role",
     ),
     pytest.param(
@@ -112,6 +128,7 @@ DEPLOYERS = [
         "scripts/vpc-endpoints.yaml",
         # skip_params is looped over to add CreateXxx entries at runtime.
         False,
+        None,
         id="deploy-vpc-endpoints→vpc-endpoints",
     ),
     pytest.param(
@@ -119,6 +136,7 @@ DEPLOYERS = [
         "scripts/security/live_checks/oidc_provider/template.yaml",
         # Parameters come from a comprehension over rsa_parameters().
         False,
+        None,
         id="oidc_provider→oidc-template",
     ),
     pytest.param(
@@ -126,10 +144,11 @@ DEPLOYERS = [
         "template.yaml",
         # build_parameters assigns into a plain dict rather than emitting
         # ParameterKey literals, so _literal_parameter_keys finds nothing here and
-        # the exact-set comparison would be vacuous. The real check for this file is
-        # test_build_parameters_emits_only_declared_parameters below, which calls the
-        # function and reads its output.
+        # the exact-set comparison would be vacuous. The real check CALLS the
+        # function and diffs its output against the template.
         False,
+        "scripts/tests/test_script_deployed_template_parameters.py"
+        "::test_build_parameters_emits_only_declared_parameters",
         id="idp_sdk.build_parameters→root-template",
     ),
     pytest.param(
@@ -139,9 +158,30 @@ DEPLOYERS = [
         # function validates them against this template at build time
         # (validate_parameter_overrides) and its own suite asserts that.
         False,
+        f"{_SELLER_TESTS}::test_every_override_names_a_parameter_the_template_declares",
         id="seller_service→seller-template",
     ),
 ]
+
+# Sites whose only check is the by-name one, with the reason. Asserted to be exactly
+# the set of entries passing ``None``, so opting out stays a visible decision.
+NO_SUBSTITUTE_REASONS = {
+    "scripts/sdlc/codebuild_deployment.py": (
+        "static=True — the exact-set comparison is not skipped for this entry, so "
+        "there is nothing to substitute for."
+    ),
+    "scripts/deploy-vpc-endpoints.py": (
+        "Pre-existing. Parameter names are generated per endpoint in a loop over "
+        "ENDPOINTS, so there is no call whose output could be diffed without "
+        "executing the script. The by-name required-parameter check still catches a "
+        "template growing a required parameter."
+    ),
+    "scripts/security/live_checks/oidc_provider/deploy.py": (
+        "Pre-existing. Throwaway test-fixture stack built from a comprehension over "
+        "rsa_parameters(); a wrong name fails the live check that creates it, loudly "
+        "and immediately, and nothing customer-facing depends on it."
+    ),
+}
 
 # Deployers whose target template does not exist in this tree at all: it is
 # published to S3 or generated at deploy time, so there is nothing to diff against.
@@ -234,8 +274,10 @@ def _literal_parameter_keys(rel_path: str) -> set[str]:
 
 
 @pytest.mark.unit
-@pytest.mark.parametrize(("script", "template", "static"), DEPLOYERS)
-def test_required_parameters_are_supplied(script: str, template: str, static: bool):
+@pytest.mark.parametrize(("script", "template", "static", "substitute"), DEPLOYERS)
+def test_required_parameters_are_supplied(
+    script: str, template: str, static: bool, substitute: str | None
+):
     """Each required template parameter is supplied by the script that deploys it."""
     required = _required_parameters(template)
     if not required:
@@ -262,13 +304,20 @@ def test_required_parameters_are_supplied(script: str, template: str, static: bo
 
 
 @pytest.mark.unit
-@pytest.mark.parametrize(("script", "template", "static"), DEPLOYERS)
+@pytest.mark.parametrize(("script", "template", "static", "substitute"), DEPLOYERS)
 def test_supplied_parameters_exist_in_template(
-    script: str, template: str, static: bool
+    script: str, template: str, static: bool, substitute: str | None
 ):
     """No script passes a parameter the template does not declare."""
     if not static:
-        pytest.skip(f"{script} builds its parameter list at runtime")
+        # Skipped, not weakened — and ``substitute`` records what checks it instead,
+        # asserted to exist by test_every_substitute_check_still_exists. Read the skip
+        # reason as "checked elsewhere, named", not as "checked".
+        pytest.skip(
+            f"{script} builds its parameter list at runtime; checked by "
+            f"{substitute or 'nothing but the by-name test above (see '
+            'NO_SUBSTITUTE_REASONS)'}"
+        )
 
     declared = set(_template_parameters(template))
     unknown = _literal_parameter_keys(script) - declared
@@ -474,3 +523,84 @@ def test_feature_templates_declare_the_unconditional_parameters():
         'CloudFormation would reject the deploy with "Parameters: [...] do not '
         'exist in the template".'
     )
+
+
+def _test_functions_in(rel_path: str) -> set[str]:
+    """Names of test functions defined in a module, by AST.
+
+    Parsed rather than imported: the substitutes live in packages with their own
+    conftest and fixtures, and importing one from here would couple this gate to
+    another suite's setup for no gain — the question is only whether the function is
+    still defined.
+    """
+    tree = ast.parse((REPO_ROOT / rel_path).read_text())
+    return {
+        node.name
+        for node in ast.walk(tree)
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+        and node.name.startswith("test_")
+    }
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(("script", "template", "static", "substitute"), DEPLOYERS)
+def test_every_substitute_check_still_exists(
+    script: str, template: str, static: bool, substitute: str | None
+):
+    """A named substitute must resolve to a test that is actually defined.
+
+    ``static=False`` makes ``test_supplied_parameters_exist_in_template`` skip, so for
+    those entries the substitute is the ONLY thing checking that the site's parameter
+    names match its template. Nothing asserted the substitute existed, which means
+    deleting it left the site unguarded and every suite still green — the same hole as
+    a walk that can only get quieter, one level up.
+
+    Proven by chained mutation: removing
+    ``test_build_parameters_emits_only_declared_parameters`` and reintroducing an
+    undeclared name in ``build_parameters`` produced no failure anywhere.
+    """
+    if substitute is None:
+        assert script in NO_SUBSTITUTE_REASONS, (
+            f"{script} is registered with no substitute check, so the only thing "
+            "guarding its parameter names is the by-name required-parameter test. "
+            "That may be acceptable, but it has to be a stated decision: add an "
+            "entry to NO_SUBSTITUTE_REASONS saying why, or name a substitute."
+        )
+        return
+
+    path, _, name = substitute.partition("::")
+    assert path and name, f"substitute for {script} is not a node id: {substitute!r}"
+    module = REPO_ROOT / path
+    assert module.is_file(), (
+        f"{script}'s substitute check names {path}, which does not exist. Its "
+        "parameter names are otherwise unchecked."
+    )
+    defined = _test_functions_in(path)
+    assert defined, f"no test functions found in {path}; the parse is broken"
+    assert name in defined, (
+        f"{script}'s substitute check {substitute} is gone. Because this entry is "
+        f"static=False, test_supplied_parameters_exist_in_template SKIPS for it, so "
+        f"nothing now checks that its parameter names match {template}. Restore the "
+        "test, point this entry at its replacement, or move the entry to "
+        "NO_SUBSTITUTE_REASONS with a reason."
+    )
+
+
+@pytest.mark.unit
+def test_no_substitute_reasons_matches_the_registry():
+    """Universe closure over the substitute field, in both directions.
+
+    Without the reverse direction a reason could be left behind after its entry grew a
+    real substitute, and the dict would drift into a list of stale excuses that reads
+    as though someone had considered each one.
+    """
+    declared_none = {p.values[0] for p in DEPLOYERS if p.values[3] is None}
+    assert declared_none == set(NO_SUBSTITUTE_REASONS), (
+        "NO_SUBSTITUTE_REASONS must name exactly the DEPLOYERS entries with no "
+        f"substitute.\n  registered with None but unexplained: "
+        f"{sorted(declared_none - set(NO_SUBSTITUTE_REASONS))}\n"
+        f"  explained but no longer needs it: "
+        f"{sorted(set(NO_SUBSTITUTE_REASONS) - declared_none)}"
+    )
+    for script, reason in NO_SUBSTITUTE_REASONS.items():
+        assert len(reason) > 40, f"{script}'s reason is too short to be one: {reason!r}"

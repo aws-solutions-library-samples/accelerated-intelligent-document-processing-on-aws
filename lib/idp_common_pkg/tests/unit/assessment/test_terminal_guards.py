@@ -660,11 +660,44 @@ def test_coverage_counts_every_list_field_not_just_the_largest():
     assert coverage["unscored_rows_by_field"] == {"fees": 4}
 
 
-def test_coverage_from_gaps_rounds_only_for_reporting():
-    """The thresholds are compared against the exact ratio; the rounding is
-    presentation. A 1/3 shortfall must report 0.3333 and still be the same number
-    the guard compared."""
+def test_coverage_from_gaps_rounds_for_reporting_only():
+    """The reported fractions are rounded to 4 places for readability."""
     coverage = coverage_from_gaps({"rows": [0]}, {"rows": [1, 2, 3]})
     assert coverage["unscored_fraction"] == 0.3333
     assert coverage["scored_fraction"] == 0.6667
     assert coverage["scored_rows"] == 2
+
+
+def test_the_rungs_compare_the_exact_ratio_not_the_rounded_one():
+    """A rung must not be moved by the rounding applied for display.
+
+    ``coverage_from_gaps`` rounds ``unscored_fraction`` to 4 places, so reusing that
+    value as the comparand shifts every rung by up to half a rounding step. The case
+    below is inside that band and on the wrong side of it: 100 unscored rows out of
+    2001 is 0.04997501…, which is BELOW the 0.05 warning fraction, but rounds to
+    exactly 0.05 and would fire.
+
+    The band is only ~5e-5 wide, so nothing here is about magnitude — it is about the
+    comparand being the quantity the threshold is expressed in. The assertions
+    surrounding this one all use round numbers, which is precisely why none of them
+    could see the substitution.
+    """
+    below = _coverage_case(2001, 1901)  # 100 unscored -> 0.0499750…
+    exact_ratio = 100 / 2001
+    assert exact_ratio < _COVERAGE_SHORTFALL_WARNING_FRACTION
+    assert round(exact_ratio, 4) == _COVERAGE_SHORTFALL_WARNING_FRACTION, (
+        "this case no longer straddles the rounding boundary, so it no longer "
+        "distinguishes the exact ratio from the reported one — pick a new one"
+    )
+    _gaps, issues = audit_explainability(*below, geometry_mode="off", section_id="1")
+    assert [i for i in issues if i.code == "assessment_coverage_incomplete"] == [], (
+        f"{100 / 2001:.8f} is below the {_COVERAGE_SHORTFALL_WARNING_FRACTION} "
+        "warning fraction; firing here means the rung is comparing the rounded "
+        "reporting value rather than the exact ratio"
+    )
+
+    # One row further and it is genuinely past the line, so the guard still works.
+    _gaps, issues = audit_explainability(
+        *_coverage_case(2001, 1900), geometry_mode="off", section_id="1"
+    )
+    assert [i.code for i in issues] == ["assessment_coverage_incomplete"]

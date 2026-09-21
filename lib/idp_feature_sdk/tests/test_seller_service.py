@@ -19,6 +19,7 @@ from pathlib import Path
 import pytest
 
 from idp_feature_sdk.seller_service import (
+    DEFAULT_MARKETPLACE_REGION,
     SellerServiceError,
     activation_pointer_key,
     build_activation_pointer,
@@ -409,6 +410,50 @@ def test_deploy_command_includes_optional_overrides(service_dir):
 # is no downstream signal at all. These tests are the only place the mismatch can
 # surface, so they derive the expectation from the template rather than restating
 # a list of names.
+
+
+def test_the_deploy_region_never_becomes_the_agreement_region(service_dir):
+    """`--region` chooses where the STACK goes; it must not set AGREEMENT_REGION.
+
+    The two are independent, and only one has a correct value: both
+    ``agreement-marketplace`` and ``catalog.marketplace`` resolve in ``us-east-1``
+    and nowhere else. Deriving the agreement region from the deploy region was
+    harmless only while the override was being silently discarded — correcting the
+    name would have turned `--region us-west-2` into
+    ``AGREEMENT_REGION=us-west-2``, a host that does not exist, and the failure
+    surfaces at activation in a buyer's account rather than at deploy.
+
+    That invocation is reachable, which is why this is a test and not a comment:
+    ``--skip-ownership-check`` returns from ``preflight`` before the Catalog client
+    is touched, so nothing else in the path objects to a non-us-east-1 region.
+    """
+    cmd = build_sam_deploy_command(
+        service_dir=service_dir,
+        stack_name="s",
+        region="us-west-2",
+        product_registry_json=_REGISTRY,
+    )
+    overrides = cmd[cmd.index("--parameter-overrides") + 1 :]
+    assert f"AgreementRegion='{DEFAULT_MARKETPLACE_REGION}'" in overrides, (
+        f"the agreement region followed the deploy region: {overrides}"
+    )
+    # The stack itself still goes where it was asked to go.
+    assert cmd[cmd.index("--region") + 1] == "us-west-2"
+
+
+def test_the_agreement_region_is_settable_on_its_own(service_dir):
+    """Separate knob, so an operator is never forced to move the stack to move the
+    API region (or vice versa) — and so the value can change if AWS adds a region."""
+    cmd = build_sam_deploy_command(
+        service_dir=service_dir,
+        stack_name="s",
+        region="us-west-2",
+        product_registry_json=_REGISTRY,
+        agreement_region="eu-west-1",
+    )
+    overrides = cmd[cmd.index("--parameter-overrides") + 1 :]
+    assert "AgreementRegion='eu-west-1'" in overrides
+    assert cmd[cmd.index("--region") + 1] == "us-west-2"
 
 
 def test_template_parameter_names_reads_the_real_template(service_dir):
