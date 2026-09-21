@@ -95,6 +95,11 @@ LAYER_ENTRY_POINTS = [
     "make test",
     "make test-list",
     "make lint-cicd",
+    # `make typecheck` is the CI type gate; `make typecheck-pr` is the local
+    # file-scoped convenience. BOTH are listed because the page names both, and
+    # because listing only the narrow one made a passing test require the page to
+    # keep describing it as what CI runs.
+    "make typecheck",
     "make typecheck-pr",
     "make ui-test",
     "make srt-scan",

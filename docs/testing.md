@@ -27,7 +27,7 @@ record of its last run.
 
 | Layer | Needs AWS? | Runs in CI? | Entry point |
 |---|---|---|---|
-| [1. Offline test suites](#1-offline-test-suites) | no | ✅ both CIs | `make test` |
+| [1. Offline test suites](#1-offline-test-suites) | no | ✅ both CIs, but through two other targets — see below | `make test` |
 | [2. Static gates](#2-static-gates-lint-types-and-hand-written-scanners) | no | ✅ both CIs | `make lint-cicd` · `make typecheck-pr` |
 | [3. Web UI unit tests](#3-web-ui-unit-tests) | no | ✅ both CIs | `make ui-test` |
 | [4. Security scanning](#4-security-scanning-sast-and-sca) | no | ✅ both CIs | `make srt-scan` · `make dep-audit` |
@@ -54,9 +54,18 @@ cd lib/idp_common_pkg && make test-unit     # one root, isolated
 make test-integration-all                   # only the integration-marked tests (needs AWS)
 ```
 
-CI runs the same suites split across two targets — `make test-cicd -C
-lib/idp_common_pkg` and `make test-packages-cicd` — so a suite that exists but is
-wired into neither is invisible to CI even though `make test` runs it locally.
+**`make test` itself runs in neither CI.** CI runs the same suites through two other
+targets — `make test-cicd -C lib/idp_common_pkg` and `make test-packages-cicd` — and
+the second of those is a hand-enumerated recipe, so a suite that `make test`
+discovers but nobody adds to it runs locally and on no pull request. 22 registered
+roots holding 506 tests were in exactly that state, including the resolver suites
+covering the download allow-list and the discovery upload target.
+`scripts/tests/test_src_lambda_tests_in_ci.py` now closes that by deriving both
+sides — every directory holding a tracked `test_*.py`, against the paths the two
+recipes actually run pytest against — so a root that is in neither is a test failure
+rather than a gap somebody finds by hand months later. A suite that genuinely cannot
+run in the shared gate goes in the excluded registry [below](#suites-make-test-does-not-run)
+with a reason.
 
 Both of those targets run every suite with the AWS environment **removed** — no
 region, no credentials, no profile, the shared AWS config file neutralised and the
@@ -144,10 +153,11 @@ that exists and never runs is otherwise indistinguishable from one that passes:
 |---|---|
 | `scripts` | `scripts/test_api_rbac.py` is the live RBAC harness driven by `make api-test` against a deployed stack (layer 6), not a pytest suite; collecting it picks up its `test_email()` helper as a test |
 | `src/lambda/ocr_benchmark_deployer` | `test_local.py` needs `huggingface_hub`, which is not a test dependency |
-| `nested/bedrockkb/src/s3_vectors_manager` | `test_handler.py` imports `cfnresponse`, which exists only in the Lambda runtime |
+| `nested/bedrockkb/src/s3_vectors_manager` | One stale assertion, not an environment problem. `conftest.py` in that directory stubs `cfnresponse` (a Lambda-runtime-only module) and supplies a region and placeholder credentials, so `handler.py` imports and four of `test_handler.py`'s five tests pass. The fifth mocks `get_index` and asserts `Status == 'Existing'`; `get_s3_vector_info` no longer consults `get_index` — it always attempts `create_index` and reports `Existing` only on `ConflictException` — so it reports `IndexCreated` and the assertion fails. `scripts/tests/test_run_all_tests_registry.py` computes both halves of that claim, so fixing the test fails the guard and asks for the root to be moved into `RUN_ROOTS` |
 | `nested/bedrockkb/src/s3_vectors_manager/tests` | Named separately now that an exclusion no longer covers what is nested under it. Not skipped in practice — `make test-packages-cicd` runs it directly, in both CI systems, so CI runs more than `make test` does |
 | `samples/lambda-hook-inference/GENAIIDP-chandra-ocr-hook` | `test_local.py` is a manual local-run script and collects zero pytest tests (measured) |
 | `lib/idp_sdk/idp_sdk/_core` | source, not tests: `test_studio_processor.py` is the Test Studio processor module, which the `test_` prefix makes look like a suite |
+| `lib/idp_common_pkg/manual_tests/agents` | operator-run scripts, not a suite: each one drives real Bedrock, Athena or DynamoDB against a deployed stack and bills model calls. Run by hand (`python manual_tests/agents/test_analytics.py -q "…"`); `norecursedirs` in `lib/idp_common_pkg/pytest.ini` keeps a bare `pytest` from collecting them |
 
 Adding an exclusion, or lifting one of these, fails that guard until this table and
 the registry agree — it is checked in both directions, so a row that outlives the
@@ -193,10 +203,11 @@ through the gap.
 ### Whether any of this actually blocks a merge
 
 Parity means both CIs *run* a gate. Whether a red gate can *stop* a merge is a
-repository setting, and today it does not: `develop` has no branch protection, so
-every gate in this table is advisory — a pull request can be merged with all checks
-red, and because the GitHub workflows are `pull_request`-only, a direct push to
-`develop` runs none of them.
+repository setting, and today it does not: **neither `develop` nor `main` has any
+branch protection** — and `main` is the default branch and the one releases are cut
+from — so every gate in this table is advisory. A pull request can be merged with
+all checks red, and because the gate workflows are `pull_request`-only, a direct
+push to either branch runs none of them.
 
 ```bash
 make check-branch-protection    # reads the live setting via the GitHub API
@@ -232,13 +243,25 @@ compare the required-check list, because `GET /repos/{slug}/branches/{branch}`
 carries a nested `protection.required_status_checks` object at that scope;
 `administration:read` is what the other five assertions — approvals, stale-review
 dismissal, force-push and deletion blocks, `enforce_admins` — need, and a run
-without it reports those five as **unread**, not as satisfied), and it reports "not
-protected" until
-[issue #933](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/933)
-is closed, since enabling protection needs repository **admin**. With no token or no
-network it exits 0 with an explanation. Once #933 closes it should become a required,
-blocking check, run with `--fail-on-skip`. Its own parsing and assertion logic is
-covered offline by `scripts/tests/test_check_branch_protection.py`.
+without it reports those five as **unread**, not as satisfied). One invocation reads
+one branch, so answering the question for this repository takes two — add
+`BRANCH_PROTECTION_ARGS=--branch=main` for the second. With no token or no network it
+exits 0 with an explanation; otherwise its steady-state result here is exit 1 with a
+single `not_protected` finding on each branch, which is the expected answer rather
+than a regression.
+
+The absence of protection is a **known, accepted residual**, not an open task, and
+the decision is recorded in closed
+[issue #933](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/933):
+enabling classic protection needs repository **admin**, which no contributor and no
+CI token here has. Nothing in the repository can substitute, because enforcement is
+server-side — a merge taken through GitHub's own Merge button runs no code from this
+tree. So the condition for making this a required, blocking check, run with
+`--fail-on-skip`, is a repository **setting** changing: either somebody with
+repository admin enables protection, or an organization or enterprise owner
+publishes a **branch ruleset** targeting these branches, which needs no repository
+admin at all. Its own parsing and assertion logic is covered offline by
+`scripts/tests/test_check_branch_protection.py`.
 
 ## 3. Web UI unit tests
 
@@ -286,12 +309,20 @@ are in [`scripts/sdlc/docs/CI_TEST_COVERAGE.md`](https://github.com/aws-solution
 
 ## 6. Live-stack tiers (manual)
 
-None of these run in CI. Each needs a deployed stack (or deploys its own), each has
-a written procedure, and each is mandatory for a release.
+Each of these needs a deployed stack (or deploys its own), each has a written
+procedure, and each is mandatory for a release. One of them also runs in CI: the
+dynamic API RBAC matrix is step 12 of the GitLab `integration_tests` deployment
+(`scripts/sdlc/codebuild_deployment.py` shells out to `make api-test` against the
+stack that job deploys), so it is the one row below that a GitLab pipeline covers —
+and, being GitLab-only, the one row a GitHub pull request does not. Note when that
+job runs automatically: pushes to `develop` and non-Draft merge requests targeting
+it, and in both cases only when the change touches a deploy-affecting path, so a
+documentation or `CHANGELOG` change does not exercise it. On any other branch it is
+manual. The rest of the rows run only when a person asks.
 
 | Tier | What only a live stack can prove | Command | Procedure |
 |---|---|---|---|
-| API RBAC — dynamic | that the **deployed** resolver enforces authorization per Cognito group and configuration-profile scope, not just that the code looks right | `make api-test STACK_NAME=…` | [`api-rbac-test`](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/blob/develop/.claude/skills/api-rbac-test.md) |
+| API RBAC — dynamic (also runs in the GitLab `integration_tests` job) | that the **deployed** resolver enforces authorization per Cognito group and configuration-profile scope, not just that the code looks right | `make api-test STACK_NAME=…` | [`api-rbac-test`](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/blob/develop/.claude/skills/api-rbac-test.md) |
 | Cognito authorization behaviour | that the pre-token group-mapping trigger and client attribute permissions behave as the docs claim — they do not always | `make live-auth-checks` · `make verify-idp-federation` | [`live-auth-checks`](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/blob/develop/.claude/skills/live-auth-checks.md) |
 | **UX review (browser)** | that a person can actually complete each flow in the web UI, and how it feels doing so — functional pass/fail **plus** usability findings. The only tier here that opens a browser | `make ux-test STACK_NAME=…` | [`ux-test`](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/blob/develop/.claude/skills/ux-test.md) |
 | ZAP DAST | that the deployed HTTP surface has no exploitable finding | `make stacktest-zap STACK_NAME=…` | [`run-stack-tests`](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/blob/develop/.claude/skills/run-stack-tests.md) |

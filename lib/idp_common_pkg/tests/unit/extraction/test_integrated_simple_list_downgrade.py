@@ -133,7 +133,7 @@ def test_the_decision_is_per_section_and_resets():
 
 @pytest.mark.unit
 def test_downgrade_is_recorded_in_metadata_and_NOT_as_a_processing_issue():
-    """The document-level HasProcessingIssues flag and the list-view badge are
+    """The list view's badge counts `ProcessingIssueCount` and is therefore
     severity-blind, so even an `info` issue would badge every document of a
     Simple + integrated deployment for a routing decision. Metadata + flow only."""
     svc = _svc(mode="simple", confidence="integrated", schema=LIST_SCHEMA)

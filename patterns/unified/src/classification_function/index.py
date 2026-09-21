@@ -28,7 +28,7 @@ logger = logging.getLogger()
 logger.setLevel(os.environ.get("LOG_LEVEL", "INFO"))
 logging.getLogger('idp_common.bedrock.client').setLevel(os.environ.get("BEDROCK_LOG_LEVEL", "INFO"))
 
-@xray_recorder.capture('classification_function')
+@xray_recorder.capture('classification_function')  # pyright: ignore[reportCallIssue] - aws-xray-sdk types capture() as the wrapped function, not the decorator factory
 def handler(event, context):
     """
     Lambda handler for document classification.

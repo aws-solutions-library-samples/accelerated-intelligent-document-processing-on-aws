@@ -17,14 +17,14 @@ Prerequisites:
 - Set environment variables or use command line arguments for S3 configuration
 
 Example usage:
-    python prepare_nova_finetuning_data.py \
+    python scripts/model_finetuning/prepare_nova_finetuning_data.py \
         --bucket-name my-finetuning-bucket \
         --directory rvl-cdip-sampled \
         --samples-per-label 100 \
         --dataset chainyo/rvl-cdip \
         --split train
 
-    python prepare_nova_finetuning_data.py \
+    python scripts/model_finetuning/prepare_nova_finetuning_data.py \
         --bucket-name my-finetuning-bucket \
         --directory custom-data \
         --samples-per-label 50 \
@@ -176,7 +176,9 @@ class NovaDataPreparationService:
             raise ValueError("Either dataset_name or local_path must be provided")
 
         logger.info(f"Dataset loaded with {len(ds)} samples")
-        return ds
+        # datasets' stub types load_dataset() as a four-way union; passing
+        # `split=` narrows it to a Dataset, which the stub cannot express.
+        return ds  # pyright: ignore[reportReturnType]
 
     def sample_data_by_label(
         self,
@@ -492,13 +494,13 @@ def main():
         epilog="""
 Examples:
   # Prepare RVL-CDIP dataset with 100 samples per label
-  python prepare_nova_finetuning_data.py --bucket-name my-bucket --samples-per-label 100
+  python scripts/model_finetuning/prepare_nova_finetuning_data.py --bucket-name my-bucket --samples-per-label 100
   
   # Use custom dataset from Hugging Face
-  python prepare_nova_finetuning_data.py --bucket-name my-bucket --dataset custom/dataset --samples-per-label 50
+  python scripts/model_finetuning/prepare_nova_finetuning_data.py --bucket-name my-bucket --dataset custom/dataset --samples-per-label 50
   
   # Use local dataset
-  python prepare_nova_finetuning_data.py --bucket-name my-bucket --local-dataset /path/to/data --samples-per-label 75
+  python scripts/model_finetuning/prepare_nova_finetuning_data.py --bucket-name my-bucket --local-dataset /path/to/data --samples-per-label 75
         """,
     )
 

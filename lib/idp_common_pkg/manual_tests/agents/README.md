@@ -42,37 +42,37 @@ export STRANDS_LOG_LEVEL="INFO"  # optional, Strands framework logging level
 **Option B: Use a .env file**
 ```bash
 # Copy the example file
-cp idp_common/agents/testing/.env.example idp_common/agents/testing/.env
+cp manual_tests/agents/.env.example manual_tests/agents/.env
 
 # Edit .env with your actual values
-nano idp_common/agents/testing/.env
+nano manual_tests/agents/.env
 ```
 
 ### 3. Run tests
 
 **Basic usage (equivalent to your `python main.py -q "question"`):**
 ```bash
-python idp_common/agents/testing/test_analytics.py -q "How many documents have I processed each day of the last week?"
+python manual_tests/agents/test_analytics.py -q "How many documents have I processed each day of the last week?"
 ```
 
 **With verbose application logging:**
 ```bash
-python idp_common/agents/testing/test_analytics.py -q "Show me the top 10 documents by accuracy" --verbose
+python manual_tests/agents/test_analytics.py -q "Show me the top 10 documents by accuracy" --verbose
 ```
 
 **With Strands framework debug logging (shows LLM prompts and responses):**
 ```bash
-python idp_common/agents/testing/test_analytics.py -q "Create a chart of document types" --strands-debug
+python manual_tests/agents/test_analytics.py -q "Create a chart of document types" --strands-debug
 ```
 
 **With specific logging levels:**
 ```bash
-python idp_common/agents/testing/test_analytics.py -q "What's the average accuracy?" --log-level INFO --strands-log-level DEBUG
+python manual_tests/agents/test_analytics.py -q "What's the average accuracy?" --log-level INFO --strands-log-level DEBUG
 ```
 
 **Using the .env wrapper:**
 ```bash
-python idp_common/agents/testing/run_analytics_test.py -q "What is the average processing time by document type?"
+python manual_tests/agents/run_analytics_test.py -q "What is the average processing time by document type?"
 ```
 
 ## Analytics Agent Testing
@@ -81,17 +81,17 @@ The analytics agent converts natural language questions into SQL queries and vis
 
 ### Text Responses
 ```bash
-python idp_common/agents/testing/test_analytics.py -q "How many total documents are there?"
+python manual_tests/agents/test_analytics.py -q "How many total documents are there?"
 ```
 
 ### Table Responses
 ```bash
-python idp_common/agents/testing/test_analytics.py -q "List the top 5 documents with accuracy scores"
+python manual_tests/agents/test_analytics.py -q "List the top 5 documents with accuracy scores"
 ```
 
 ### Plot Responses
 ```bash
-python idp_common/agents/testing/test_analytics.py -q "Create a bar chart of document types"
+python manual_tests/agents/test_analytics.py -q "Create a bar chart of document types"
 ```
 
 ## Logging Configuration
@@ -125,12 +125,12 @@ Both application and Strands logging support these levels:
 
 **To see detailed Strands interactions but minimal application logs:**
 ```bash
-python idp_common/agents/testing/test_analytics.py -q "Your question" --log-level WARNING --strands-log-level DEBUG
+python manual_tests/agents/test_analytics.py -q "Your question" --log-level WARNING --strands-log-level DEBUG
 ```
 
 **To see detailed application logs but minimal Strands logs:**
 ```bash
-python idp_common/agents/testing/test_analytics.py -q "Your question" --log-level DEBUG --strands-log-level WARNING
+python manual_tests/agents/test_analytics.py -q "Your question" --log-level DEBUG --strands-log-level WARNING
 ```
 
 ## Environment Configuration
@@ -236,7 +236,7 @@ ERROR - Access denied to database
 Use `--verbose` flag for detailed debugging:
 
 ```bash
-python idp_common/agents/testing/test_analytics.py -q "question" --verbose
+python manual_tests/agents/test_analytics.py -q "question" --verbose
 ```
 
 This shows:
@@ -274,10 +274,10 @@ As new agent types are added, similar testing scripts can be created following t
 
 ```bash
 # Future document analysis agent
-python idp_common/agents/testing/test_document_analysis.py -q "Analyze this document structure"
+python manual_tests/agents/test_document_analysis.py -q "Analyze this document structure"
 
 # Future workflow agent
-python idp_common/agents/testing/test_workflow.py -q "Automate document approval process"
+python manual_tests/agents/test_workflow.py -q "Automate document approval process"
 ```
 
 ## Agent Chat Integration Testing
@@ -296,10 +296,10 @@ The `test_agent_chat_integration.py` script tests the complete conversational ag
 
 ```bash
 # Test with default stack name and region
-python idp_common/agents/testing/test_agent_chat_integration.py
+python manual_tests/agents/test_agent_chat_integration.py
 
 # Test with custom stack and region
-python idp_common/agents/testing/test_agent_chat_integration.py --stack-name MyStack --region us-west-2
+python manual_tests/agents/test_agent_chat_integration.py --stack-name MyStack --region us-west-2
 ```
 
 ### Requirements

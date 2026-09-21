@@ -21,7 +21,7 @@ from aws_xray_sdk.core import xray_recorder
 logger = logging.getLogger()
 logger.setLevel(os.environ.get("LOG_LEVEL", "INFO"))
 
-@xray_recorder.capture("rule_validation_orchestrator_handler")
+@xray_recorder.capture("rule_validation_orchestrator_handler")  # pyright: ignore[reportCallIssue] - aws-xray-sdk types capture() as the wrapped function, not the decorator factory
 def handler(event, context):
     """
     Lambda handler for rule validation consolidation.

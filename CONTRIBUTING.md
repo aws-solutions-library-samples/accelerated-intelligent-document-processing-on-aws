@@ -34,8 +34,9 @@ checkout by path**, never by bare name. Both are explained below.
   - [Before opening a pull request](#before-opening-a-pull-request)
   - [Tests](#tests)
   - [Security gates](#security-gates)
-  - [Type checking, and a caveat](#type-checking-and-a-caveat)
+  - [Type checking](#type-checking)
 - [What CI runs on your pull request](#what-ci-runs-on-your-pull-request)
+  - [Coverage is reported, not enforced](#coverage-is-reported-not-enforced)
 - [Pull request process](#pull-request-process)
 - [Make target reference](#make-target-reference)
 - [Coding standards](#coding-standards)
@@ -368,7 +369,7 @@ now a **named list of individual files** rather than a directory. Any file you
 add, anywhere in the repository, is linted and format-checked from the moment it
 exists. The files that are skipped are the ones that already carried findings
 when the exclusions were narrowed: `ruff.toml`'s `[lint] exclude` names 85 files
-holding 196 pre-existing findings, and `[format] exclude` names 184 files that
+holding 196 pre-existing findings, and `[format] exclude` names 183 files that
 `ruff format` has never been run over. Two further entries in the top-level
 `extend-exclude` are scope decisions rather than debt — the vendored
 `pii-anonymizer` tree, and `**/*.ipynb`, because `E402`/`F811`/`I001` describe a
@@ -412,19 +413,41 @@ Two practical consequences:
   `--allow-new-debt "<reason>"`, which records the reason in the baseline;
   `--summary` prints the current per-tree counts.
 
-The formatting debt is deliberately unpaid. Running `ruff format` over those 184
+The formatting debt is deliberately unpaid. Running `ruff format` over those 183
 files is a large, mechanical, conflict-generating diff, so it belongs in its own
 change rather than riding along with the one that narrowed the exclusions
 ([issue #975](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/975)).
 
-Note that `make ruff-lint`, `make format` and `make ui-lint` all **modify your
-files** — they auto-fix rather than only report. `make lint-cicd`, which is what
-CI runs, uses the check-only equivalents for the *Python* half (`ruff check`,
-`ruff format --check`), so a formatting change that `make lint` silently fixed
-for you locally still needs committing or CI will fail on it. Its UI half is
-**not** check-only: `lint-cicd` calls `make ui-lint`, which runs
-`npm run lint -- --fix` and rewrites `src/ui/.checksum`. That is harmless in CI,
-which runs in a throwaway checkout, but locally it will edit your UI sources.
+Note that `make ruff-lint` and `make format` **modify your files** — they auto-fix
+rather than only report. `make lint-cicd`, which is what CI runs, uses their
+check-only equivalents (`ruff check`, `ruff format --check`), so a formatting
+change that `make lint` silently fixed for you locally still needs committing or
+CI will fail on it.
+
+`make lint` is therefore a mixture, and worth knowing as one: its Python half fixes
+(`ruff-lint`, `format`) while its UI half only reports (`ui-lint`). A `make lint` that
+comes back clean may have edited your Python and will not have edited your
+TypeScript. If you want the UI's auto-fixable findings applied, that is a separate
+command, `make ui-lint-fix`.
+
+**UI lint** is check-only on both paths. `make ui-lint` — reached from `make lint`
+and `make lint-cicd` alike — runs `npm run lint` and `npm run typecheck` without
+fixing anything, and `npm run lint` carries `--max-warnings 0`, so a `warn`-level
+rule fails it too. `make ui-lint-fix` is the auto-fixing entry point: it applies
+`eslint --fix` and then always re-runs the strict check, so its exit status and its
+last block of output are the gate's verdict on what is left rather than the fixer's
+on what it repaired. The one thing `ui-lint` itself writes is `src/ui/.checksum`,
+which is how it skips itself when `src/ui` has not changed.
+
+⚠️ **`make lint-cicd` is not check-only, and you should expect it to modify tracked
+files.** It invokes `make codegen-check`, whose recipe runs `npm run codegen`
+*before* comparing the result — so it regenerates everything under
+`src/ui/src/graphql/generated/`. Outside CI it leaves those regenerated files in
+place and prints "Generated GraphQL files were out of date — auto-updated. Please
+commit the changes above"; inside CI (it branches on `$CI`/`$GITHUB_ACTIONS`) the
+same difference is an error telling you to run `make codegen` and commit. It also
+runs `ui-build-only`, i.e. a full `vite build`. So after a local `make lint-cicd`,
+check `git status` before assuming your tree is unchanged.
 
 ### Before opening a pull request
 
@@ -436,9 +459,9 @@ make test            # every offline test suite
 or, matching CI more exactly:
 
 ```bash
-make lint-cicd                                 # the target both CIs run; note it auto-fixes UI
-                                               # lint and rewrites src/ui/.checksum locally
-make typecheck-pr                              # basedpyright on files you changed
+make lint-cicd                                 # the target both CIs run — but see the
+                                               # note below: it writes tracked files locally
+make typecheck                                  # ~58s  basedpyright over the whole tree
 make api-test-static                            # ~0s   authorization scan of every API operation
 python3 scripts/check_first_party_deps.py       # ~0s   dependency-confusion check
 python3 scripts/sdlc/validate_service_role_permissions.py   # ~5s  static IAM check, no AWS needed
@@ -457,9 +480,12 @@ Worth knowing about the slower members of `make lint`:
   fails if they drift.
 - **`make ui-lint`** runs ESLint plus `tsc --noEmit` over `src/ui`
   (configuration in `src/ui/eslint.config.js`, not an `.eslintrc*` file). It
-  caches on a checksum and skips itself when `src/ui` has not changed; use
-  `FORCE=1` to make it run anyway. The first run in a fresh clone includes
-  `npm ci`, which takes minutes.
+  reports and does not fix, and it runs ESLint with `--max-warnings 0`, so
+  anything ESLint has an opinion about fails it. It caches on a checksum and
+  skips itself when `src/ui` has not changed; use `FORCE=1` to make it run
+  anyway. The first run in a fresh clone includes `npm ci`, which takes minutes.
+  When it reports something mechanical, `make ui-lint-fix` applies the
+  auto-fixable part and re-runs the check.
 - **`make codegen-check`** verifies the generated GraphQL types still match the
   schema. `make codegen` regenerates them.
 
@@ -544,29 +570,42 @@ security-matrix or Checkov finding goes in `scripts/srt/issues.json`. Adding a
 suppression without a stated reason will be asked about in review. The procedure
 is in `.claude/skills/srt-security-scan.md`.
 
-### Type checking, and a caveat
+### Type checking
 
 ```bash
-make typecheck-pr    # basedpyright on files changed vs TARGET_BRANCH (default: develop)
-make typecheck       # basedpyright over the whole repository
+make typecheck       # basedpyright over the whole repository — the gate, ~1 min
 make typecheck-stats # the same, with per-file statistics
+make typecheck-pr    # fast local check of only the files changed vs TARGET_BRANCH
 ```
 
-`make typecheck-pr` is the gate — it is what both CI systems run, and it is what
-you should run. It defaults to comparing against `develop`; override with
-`make typecheck-pr TARGET_BRANCH=<branch>`.
+`make typecheck` is the gate. It is what both CI systems run, and it reads
+`pyrightconfig.json`'s 12-entry `include` — whose closure over every tracked
+`.py` file `scripts/tests/test_pyright_config.py` derives from `git ls-files`. It
+analyses **1273** files, which is exactly `git ls-files '*.py' | wc -l` and exactly
+the `filesAnalyzed` it reports, and takes **about a minute** through `make` (48–60 s
+measured across several trees; the bare `basedpyright` binary is ~47 s, but the
+`make` figure is the one CI pays).
+
+Errors fail it and warnings do not. There are **91** warnings today, and they are
+not one thing: `reportCallIssue` 34, `reportUnsupportedDunderAll` 26,
+`reportReturnType` 19, `reportImportCycles` 11, `reportDuplicateImport` 1. So
+clearing the two return/call rules — the pair most often discussed — takes the tree
+to 38 warnings, not to zero.
+
+`make typecheck-pr` is a **convenience, not a gate**. It narrows `basedpyright`
+to the files you are editing so the answer comes back in a second or two, which
+is worth having in an inner loop. What it cannot do is see a break your change
+caused in a file it did not select — change a signature and the error appears at
+the callers, which are usually outside the diff — so a green `typecheck-pr` is
+not a substitute for `make typecheck` before you push. It defaults to comparing
+against `develop`; override with `make typecheck-pr TARGET_BRANCH=<branch>`.
 
 All three targets need `basedpyright` on `PATH`, and neither `make setup` nor
 `make setup-venv` installs it; `npm install -g basedpyright`, which is what both
 CI systems do, is the command that supplies it. Note that `make typecheck-pr`
 exits 0 without `basedpyright` present when your branch changes no Python files
 at all, so a documentation-only branch will not tell you the tool is missing.
-
-⚠️ **`make typecheck` over the whole repository currently exits non-zero on a
-clean `develop`** — as of this writing, 2 errors and 47 warnings, with both
-errors in `src/lambda/calculate_capacity/index.py`. That is why CI checks only
-the files a PR touches. If you run whole-repo `typecheck` and see failures,
-check whether they are in files you touched before assuming you caused them.
+`make typecheck` always tries to run it and so always says.
 
 ## What CI runs on your pull request
 
@@ -579,7 +618,7 @@ the `cfn-lint` pin drifts between the `Makefile` and either config.
 
 | Workflow | Job | What it runs |
 |---|---|---|
-| `developer-tests.yml` | `developer_tests` | `make lint-cicd`, `scripts/check_first_party_deps.py`, `make api-test-static`, `scripts/sdlc/validate_service_role_permissions.py`, `make typecheck-pr`, `make test-cicd -C lib/idp_common_pkg`, `make test-packages-cicd`, and the UI `npx vitest run` |
+| `developer-tests.yml` | `developer_tests` | `make lint-cicd`, `scripts/check_first_party_deps.py`, `make api-test-static`, `scripts/sdlc/validate_service_role_permissions.py`, `make typecheck`, `make test-cicd -C lib/idp_common_pkg`, `make test-packages-cicd`, and the UI `npx vitest run` |
 | `security-checks.yml` | `srt_security_review` | `make srt-setup` then `make srt-scan` |
 | `security-checks.yml` | `dep_audit` | `scripts/security/dep_audit.py` |
 | `build-docs.yml` | `build` | Builds the Starlight site — only when the PR touches `docs/**`, `docs-site/**` or `images/**` |
@@ -606,6 +645,24 @@ skipped in the past:
 - **A check being visible is not the same as it being blocking.** Whether each
   of these is a *required* status check on `develop` is a branch-protection
   setting, not something this repository can assert.
+
+### Coverage is reported, not enforced
+
+Both CIs publish a coverage report — GitHub as a job-summary table and a badge,
+GitLab as a Cobertura artifact — and **neither fails a build on it.** GitHub's
+step sets `fail_below_min: false` deliberately; the `thresholds: "60 80"` beside
+it colours the badge and gates nothing.
+
+That is a considered position rather than an oversight, and the reason is scope:
+coverage is measured for `lib/idp_common_pkg` alone, which is one of the ~64 test
+roots `scripts/run_all_tests.py` discovers. A repository-wide minimum computed
+from it would be a number about one package presented as a number about the
+repository — and it would move whenever that package's share of the code changed,
+with no relation to whether a pull request was tested. So there is no percentage
+to satisfy here: what review asks for is a test that would have caught the bug,
+which is a question about your change and not about a ratio.
+
+Widening the measurement is the prerequisite for making it a gate, in that order.
 
 ## Pull request process
 
@@ -657,7 +714,7 @@ documented in [docs/deployment.md](docs/deployment.md) and
 | `make lint` | Everything: ruff, format, ARN partitions, filtered scans, data-plane tags, buildspec, `cfn-lint`, UI lint, codegen check |
 | `make fastlint` | `lint` without `cfn-lint`, UI lint, or codegen check |
 | `make check-lint-debt` | Re-measure `ruff.toml`'s per-file exclusions against the tree (part of `lint`, `fastlint` and `lint-cicd`) |
-| `make lint-cicd` | `lint`'s set plus `ui-build-only`, which `lint` does not run — what both CIs run. Check-only for Python, but it auto-fixes UI lint and rewrites `src/ui/.checksum` |
+| `make lint-cicd` | `lint`'s set plus `ui-build-only`, which `lint` does not run — what both CIs run. Check-only for Python and the UI linter, but `codegen-check` regenerates `src/ui/src/graphql/generated/` and leaves it regenerated outside CI |
 | `make ruff-lint` | Ruff lint with auto-fix |
 | `make format` | Ruff formatter |
 | `make cfn-lint` | Validate every CloudFormation template (fails on errors) |
@@ -670,8 +727,8 @@ documented in [docs/deployment.md](docs/deployment.md) and
 
 | Command | Description |
 |---|---|
-| `make typecheck-pr` | basedpyright on files changed vs `TARGET_BRANCH` (default `develop`) |
-| `make typecheck` | basedpyright over the whole repository (see the caveat above) |
+| `make typecheck` | basedpyright over the whole repository — the CI gate |
+| `make typecheck-pr` | basedpyright on files changed vs `TARGET_BRANCH` (default `develop`) — fast local feedback, not a gate |
 | `make test` | Every offline test suite, auto-discovered |
 | `make test-list` | List the discovered and quarantined test roots |
 | `make test-integration-all` | Integration-marked tests only (**requires AWS**) |
@@ -693,7 +750,8 @@ documented in [docs/deployment.md](docs/deployment.md) and
 | Command | Description |
 |---|---|
 | `make ui-start STACK_NAME=<name>` | Run the UI dev server against a deployed stack |
-| `make ui-lint` | ESLint + `tsc --noEmit` (checksum-cached; `FORCE=1` to override) |
+| `make ui-lint` | ESLint (`--max-warnings 0`) + `tsc --noEmit`, check-only (checksum-cached; `FORCE=1` to override) |
+| `make ui-lint-fix` | `eslint --fix` over `src/ui`, then re-runs `ui-lint` |
 | `make ui-build` | Lint, typecheck, and production Vite build |
 | `make docs-setup` | One-time docs site setup |
 | `make docs` | Build and serve the docs site locally |
@@ -703,7 +761,7 @@ documented in [docs/deployment.md](docs/deployment.md) and
 **Python.** PEP 8, checked by `ruff` (`ruff.toml`), target Python 3.12. Write to
 88 columns, but be aware that 88 is the *formatter's* wrapping preference and not
 an enforced rule — `E501` is not among the selected lint rules, and `ruff.toml`
-still excludes a named list of 85 files from the linter and 184 from the
+still excludes a named list of 85 files from the linter and 183 from the
 formatter. Both caveats are explained under
 [the local gate set](#before-every-commit), along with how to pay one of those
 files off. Types are checked
