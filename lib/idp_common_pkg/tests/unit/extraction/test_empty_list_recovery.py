@@ -282,9 +282,13 @@ class TestCompletenessReportStopsContradictingItself:
         assert "103" in check["summary"]
         assert "did not use the table parsing tool" in check["summary"]
         assert "minItems" in check["summary"], (
-            "the summary should tell the operator how to make this a hard "
-            "constraint next time"
+            "the summary should tell the operator how to get an unambiguous "
+            "signal for this next time"
         )
+        # …and must not promise that minItems would have failed the section: it
+        # raises a warning, and no ProcessingIssue changes a document's status
+        # (#1048).
+        assert "hard constraint" not in check["summary"].lower()
 
     def test_tool_ran_but_produced_nothing_says_so(self):
         check = self._service()._check_completeness_detailed(
