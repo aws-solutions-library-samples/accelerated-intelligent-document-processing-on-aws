@@ -1199,8 +1199,37 @@ def test_install_target_never_overwrites_an_existing_backup(installable: Path) -
 
 
 @pytest.mark.unit
-def test_install_target_fails_loudly_when_the_copy_fails(installable: Path) -> None:
-    """Printing success after three permission errors is what shaped this recipe."""
+def test_install_target_fails_loudly_when_the_hooks_path_is_unusable(
+    installable: Path,
+) -> None:
+    """Printing success after a failed copy is what shaped this recipe.
+
+    The obstruction is a ``hooks`` path that is a regular file, so ``mkdir -p``
+    cannot proceed. That fails for **root** as well, which a read-only directory
+    does not — and CI runs as root, so a permissions-only version of this test
+    would pass locally and prove nothing where it matters.
+    """
+    git_dir = installable / ".git"
+    hooks = git_dir / "hooks"
+    if hooks.is_dir():
+        for child in hooks.iterdir():
+            child.unlink()
+        hooks.rmdir()
+    hooks.write_text("not a directory\n", encoding="utf-8")
+
+    result = _make(installable)
+    assert result.returncode != 0, result.stdout
+    assert "Installed" not in result.stdout
+
+
+@pytest.mark.unit
+@pytest.mark.skipif(
+    os.geteuid() == 0, reason="root ignores the read-only bit, so cp would succeed"
+)
+def test_install_target_fails_loudly_on_a_read_only_hooks_directory(
+    installable: Path,
+) -> None:
+    """The original shape of the defect: three permission errors, then success."""
     hooks = installable / ".git" / "hooks"
     hooks.mkdir(parents=True, exist_ok=True)
     hooks.chmod(0o500)
