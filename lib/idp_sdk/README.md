@@ -4,13 +4,21 @@ Python SDK for programmatic access to IDP Accelerator capabilities.
 
 ## Installation
 
+Run from the repository root. The SDK requires `idp_common` by name, and that name
+on public PyPI belongs to an unrelated party, so both packages go in a single
+command and both come from a path:
+
 ```bash
 # From local development
-pip install -e ./lib/idp_sdk
+pip install -e ./lib/idp_common_pkg -e ./lib/idp_sdk
 
 # Or with uv
-uv pip install -e ./lib/idp_sdk
+uv pip install -e ./lib/idp_common_pkg -e ./lib/idp_sdk
 ```
+
+`make setup` (or `make setup-venv`) installs the SDK together with every other
+first-party package in one pass. See
+[Installing First-Party Packages Safely](../../docs/dependency-confusion.md).
 
 ## Quick Start
 

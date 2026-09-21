@@ -169,20 +169,17 @@ which is enough for `npx basedpyright` or `npm run typecheck` but not for
 > mismatch usually surfaces much later as a confusing, unrelated error. Always
 > install from a path.
 
+A second rule follows from the first, and is less obvious: install the first-party
+packages **together, in a single `pip install` invocation**. They depend on each
+other by name, so installing them one at a time lets pip go looking for a sibling
+that is not on disk yet and fall back to the index. `make setup` deliberately does
+it in one pass for this reason. Both rules together give one command — every
+requirement a path, every sibling present:
+
 ```bash
-# Correct — a path from the repository root
-pip install -e "lib/idp_common_pkg[extraction]"
-pip install -e lib/idp_sdk
-
-# Wrong — resolves from public PyPI
-pip install idp_common
+# Run from the repository root
+pip install -e "lib/idp_common_pkg[extraction]" -e lib/idp_sdk -e lib/idp_cli_pkg
 ```
-
-A second, less obvious rule: install the first-party packages **together, in a
-single `pip install` invocation**. They depend on each other by name, so
-installing them one at a time lets pip go looking for a sibling that is not on
-disk yet and fall back to the index. `make setup` deliberately does it in one
-pass for this reason.
 
 You can check any environment at any time:
 
