@@ -292,9 +292,9 @@ union is 118, which is exactly the number of entries in
 |---|---|
 | Admin + Author | 40 |
 | Admin only | 21 |
-| Any assigned group, whichever one (`ANY_GROUP`) | 17 |
+| Any assigned group, whichever one (`ANY_GROUP`) | 18 |
 | Admin + Author + Viewer | 15 |
-| Any authenticated user, group or no group (`ANY`) | 9 |
+| Any authenticated user, group or no group (`ANY`) | 8 |
 | Admin + Annotator + Author | 7 |
 | Admin + Annotator + Reviewer | 4 |
 | Admin + Reviewer | 2 |
@@ -302,7 +302,7 @@ union is 118, which is exactly the number of entries in
 | IAM/backend only (Cognito callers rejected) | 2 |
 
 `ANY_GROUP` is resolved at build time into every group `template.yaml` creates, so a
-group added there joins those 17 without an edit per operation; what they refuse is a
+group added there joins those 18 without an edit per operation; what they refuse is a
 caller an administrator has not placed in any group, which domain-scoped self-signup
 produces. Every document read is in that set, including the ones that return an object
 key, an `s3://` URI, a list of extracted attribute names or a model-written page

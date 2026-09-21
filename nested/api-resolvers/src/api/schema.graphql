@@ -1416,11 +1416,19 @@ type CircuitBreakerStatus @aws_cognito_user_pools @aws_iam {
 # =============================================================================
 # RBAC: Role-Based Access Control via @aws_cognito_user_pools(cognito_groups: [...])
 #
-# Roles (Cognito Groups):
+# Roles (Cognito Groups) — five, and the five `AWS::Cognito::UserPoolGroup`
+# resources in template.yaml are the vocabulary of record:
 #   - Admin: Full access to all operations
 #   - Author: Can create/modify configurations, upload documents, run tests
 #   - Reviewer: Can review documents and perform HITL operations
-#   - Viewer: Read-only access (default for authenticated users)
+#   - Annotator: Annotates ground truth for its assigned test sets only, and
+#     nothing else — the one role scoped per object (allowedTestSets)
+#   - Viewer: Read-only access to documents, configuration and agent chat
+#
+# A caller in NO group is not a Viewer. Self-service sign-up (when
+# AllowedSignUpEmailDomain is set) produces a valid token with an empty
+# cognito:groups claim, and the operations that must refuse that caller name all
+# five groups here.
 #
 # Note: @aws_cognito_user_pools (no args) allows any authenticated user
 #       @aws_cognito_user_pools(cognito_groups: [...]) restricts to specific groups
@@ -2130,8 +2138,13 @@ type Query @aws_cognito_user_pools @aws_iam {
   validateTestSetForFinetuning(testSetId: ID!): TestSetValidationResult @aws_cognito_user_pools
   listAvailableModels: AvailableModelsResult @aws_cognito_user_pools
 
-  # Circuit Breaker status — any authenticated user can read.
+  # Circuit Breaker status. An assigned group is required: `lastError` carries
+  # `Manual pause by <administrator email>: <reason>` after a manual pause. The
+  # badge itself is UI chrome and every UI user holds a group, so the floor is free.
   getCircuitBreakerStatus: CircuitBreakerStatus
+    @aws_cognito_user_pools(
+      cognito_groups: ["Admin", "Annotator", "Author", "Reviewer", "Viewer"]
+    )
 
   # === Feature Platform (optional) — queries =============================
   # These fields are only wired up server-side when EnableFeaturePlatform=true

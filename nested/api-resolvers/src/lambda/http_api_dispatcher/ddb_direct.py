@@ -156,7 +156,8 @@ _REQUIRED_GROUPS: Dict[str, Any] = {
     "updateAgentJobStatus": _IAM_ONLY,
     # a mutation; further scoped to the caller's own PK inside the handler
     "deleteAgentJob": _ANY_GROUP,
-    "getCircuitBreakerStatus": _ANY_AUTHENTICATED,
+    # `lastError` carries the pausing administrator's email after a manual pause
+    "getCircuitBreakerStatus": _ANY_GROUP,
 }
 
 

@@ -61,8 +61,9 @@ Notes:
   ARN, which the harness resolves via `listDocuments` -> `getDocument` — the list
   projection does not carry `WorkflowExecutionArn`. `apply_dynamic_args` also
   substitutes that ARN into `getStepFunctionExecution`'s matrix args, because the
-  placeholder ARN in the expectations file is (correctly) refused now, and for an
-  ANY-auth op the matrix reads any refusal as a failure.
+  placeholder ARN in the expectations file is (correctly) refused now, and every one
+  of the four roles the matrix drives is an allowed role for that op (it is
+  `ANY_GROUP`), so the matrix reads any refusal as a failure.
 - The Cognito pre-token IdP group-mapping trigger is NOT covered here — it is not
   an API operation. See `.claude/skills/live-auth-checks.md`.
 
@@ -93,9 +94,16 @@ Notes:
   vocabulary lives — `generate_api_rbac_manifest.py` reads it to resolve
   `ANY_GROUP` and to reject a group name no `AWS::Cognito::UserPoolGroup` creates.
   ⚠️ `make api-test`'s live matrix drives four of them (`ROLES` in
-  `scripts/test_api_rbac.py`); it creates **no groupless user**, so
-  "denied to a caller in no group" is asserted offline only, in
-  `test_http_api_dispatcher_authz.py`.
+  `scripts/test_api_rbac.py`) — **`Annotator` is not one** — and it creates **no
+  groupless user**. 18 operations are declared `ANY_GROUP` today, and "denied to a
+  caller in no group" — the whole point of that policy — is asserted offline only, in
+  `test_http_api_dispatcher_authz.py`. The *mechanism* is live-proven: step 4 of the
+  chain measured in
+  [#1033](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/1033)
+  saw a real groupless token get 403 with the group-floor message from
+  `getFileContents` and `getFilePresignedUrl`. What is missing is that assertion as a
+  repeatable gate over every operation — tracked in
+  [#1065](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/1065).
 - **`@aws_auth(cognito_groups)` is SILENTLY IGNORED** on this multi-auth API
   (it also allows AWS_IAM). Only `@aws_cognito_user_pools(...)` directives and
   server-side checks are real. Server-side enforcement is the source of truth;
@@ -330,9 +338,11 @@ on an operation, so it declares `assigned_by:` in the register; the static scann
 > widening this warns against: `ANY` means the dispatcher checks authentication
 > only, so a forgotten resolver check on an `ANY` operation is still reachable by
 > any authenticated caller — including one in no group, which self-signup produces.
-> 9 of the 118 operations are `ANY`, each with a note in the expectations file
+> 8 of the 118 operations are `ANY`, each with a note in the expectations file
 > saying why that is the intended answer for **that operation**, not for the section
-> it sits in; they are platform, profile and feature-catalog reads.
+> it sits in. In full: `getMyProfile`, `listChatSessions`,
+> `getLatestPublishedVersion`, `listFinetuningJobs`, `getFinetuningJob`,
+> `listInstalledFeatures`, `listCatalogFeatures`, `checkFeatureEntitlement`.
 
 ### The four policies — pick the weakest one that is still correct
 
@@ -340,17 +350,36 @@ on an operation, so it declares `assigned_by:` in the register; the static scann
 |---|---|---|
 | `[Admin, Author, ...]` | one of those groups | anything only a subset of roles should do |
 | `ANY_GROUP` | **any** group `template.yaml` creates; a caller in no group is refused | operations every onboarded role legitimately needs, where "onboarded at all" is the real requirement — document content, anything that leads to it, and mutations |
-| `ANY` | authentication only | the caller's own profile, public metadata, platform state |
+| `ANY` | authentication only | the caller's own profile or own records, public metadata, whole-deployment platform state |
 | `IAM_ONLY` | no Cognito caller at all | backend-written status updates |
 
-⚠️ **"Enumeration, so it discloses no content" is not a reason.** It was the
-recorded reason for five operations, and issue #1033 measured a caller in no group
-composing them into a chain that ended in extracted personal data: an object key from
-an index listing, then a run's section and page URIs plus a model-written description
-of the contents, then the execution input. Ask what the payload *leads to*, not only
-what it literally contains. Ask it about **one** operation at a time, too: four of
-those five carried a reason written for the set ("same enumeration, same decision"),
-which is how a false premise about one member survived review.
+⚠️ **"Enumeration, so it discloses no content" is not a reason.** It was the recorded
+reason for `listDocumentsDateHour`, `listDocumentsDateShard` and
+`listDocumentVersions`, and issue #1033 measured a caller in no group composing them
+into a chain that ended in extracted personal data: an object key from an index
+listing, then a run's section and page URIs plus a model-written description of the
+contents, then the execution input. **Ask what the payload leads to, not only what it
+literally contains.**
+
+Three more things that pass as reasons and are not:
+
+- **A reason written for the set.** `listDocumentsDateShard` recorded only "see
+  `listDocumentsDateHour` — same index-partition enumeration, same decision", and
+  `getChatMessages` only "see `listChatSessions` — own-sessions-only ownership scope,
+  same decision". Read for whether they hold broadly, both pass; read against the one
+  operation carrying them, the second names a different mechanism (`listChatSessions`
+  uses a DynamoDB key condition on the caller's partition; `getChatMessages` layers a
+  separate ownership check that returns **true** when its table is unset). Write one
+  member's worth of reason, every time.
+- **A narrowing that stands down for exactly the caller in question.** Two of the
+  three per-object narrowings are inert for a self-registered account:
+  `resolve_allowed_config_versions` returns `None` — deliberately unrestricted — for a
+  caller no UsersTable row matches, and a caller in no group is not a `Reviewer`. So
+  "this op is scope-filtered" was never an argument about the groupless caller.
+- **A reason about the wrong dict.** `listFinetuningJobs` is `ANY` because its
+  *projection* carries no document location, while the DynamoDB row it reads does. If
+  the premise is computable, compute it: `finetuning_jobs_resolver/test_projected_keys.py`
+  pins the key set, so adding one line cannot quietly change the policy's meaning.
 
 ⚠️ **Do not spell `ANY_GROUP` out as the five group names.** The sentinel is
 resolved against the `AWS::Cognito::UserPoolGroup` resources in `template.yaml` by

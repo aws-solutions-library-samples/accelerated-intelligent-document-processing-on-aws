@@ -394,6 +394,9 @@ TIGHTENED_TO_ANY_GROUP = (
     "getStepFunctionExecution",
     "getDocumentCount",
     "getChatMessages",
+    # ...and this one for one field: `lastError` carries the pausing
+    # administrator's email after a manual pause.
+    "getCircuitBreakerStatus",
 )
 
 

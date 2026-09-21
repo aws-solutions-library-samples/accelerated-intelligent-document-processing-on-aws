@@ -20,7 +20,7 @@ https://github.com/user-attachments/assets/a1e9ce1a-1b2e-4e98-a387-d2e48d7e557d
 
 ## Roles
 
-Four roles are defined as Cognito User Pool groups:
+Five roles are defined as Cognito User Pool groups:
 
 | Role | Cognito Group | Description |
 |------|--------------|-------------|
@@ -450,8 +450,8 @@ operation declares one of:
 | Policy | The dispatcher requires | Count |
 |---|---|---|
 | a group list, e.g. `[Admin, Author]` | one of those groups | 90 |
-| `ANY_GROUP` | **any** group the stack creates — so a caller in *no* group is refused | 17 |
-| `ANY` | authentication only; group membership is not consulted | 9 |
+| `ANY_GROUP` | **any** group the stack creates — so a caller in *no* group is refused | 18 |
+| `ANY` | authentication only; group membership is not consulted | 8 |
 | `IAM_ONLY` | rejects every Cognito caller (backend/IAM principals only) | 2 |
 
 `ANY` means authenticated, not vetted, and that is weaker than it reads. When you
@@ -465,7 +465,8 @@ whichever role they were given". Every document read carries it (`getDocument`,
 `listDocumentsDateHour`, `listDocumentsDateShard`, `listDocumentVersions`,
 `getDocumentVersion`, `compareDocumentVersions`, `getStepFunctionExecution`,
 `getFileContents`, `getFilePresignedUrl`, `queryKnowledgeBase`), as do the chat
-transcript read `getChatMessages` and three mutations (`deleteAgentJob`,
+transcript read `getChatMessages`, the processing-breaker badge
+`getCircuitBreakerStatus`, and three mutations (`deleteAgentJob`,
 `deleteChatSession`, `sendChatDocumentMessage`).
 
 That list includes the reads that return no extracted value themselves, because an
@@ -489,14 +490,14 @@ keeps one comparison, and an unexpanded `ANY_GROUP` in the manifest means a brok
 build and is rejected as one (deny-all) rather than guessed at.
 
 ⚠️ **The `ANY` operations are still only authenticated.** The dispatcher enforces
-authentication but *not* group membership for those 9, so a forgotten resolver
+authentication but *not* group membership for those 8, so a forgotten resolver
 check on one of them is reachable by any authenticated caller, including a caller
-in no group. They are platform, profile and feature-catalog reads — the caller's own
-profile, their own chat session list, the published release number, breaker status,
-the two fine-tuning job reads and the three feature-platform reads — and each entry
-in `scripts/api_rbac_expectations.yaml` carries a note saying why `ANY` is the
-intended answer for that operation specifically, rather than for the group it sits
-in. One of the 9, `listChatSessions`, is narrowed further by record ownership: its
+in no group. They are, in full: `getMyProfile`, `listChatSessions`,
+`getLatestPublishedVersion`, `listFinetuningJobs`, `getFinetuningJob`,
+`listInstalledFeatures`, `listCatalogFeatures` and `checkFeatureEntitlement` — and
+each entry in `scripts/api_rbac_expectations.yaml` carries a note saying why `ANY` is
+the intended answer for that operation specifically, rather than for the group it sits
+in. One of the 8, `listChatSessions`, is narrowed further by record ownership: its
 DynamoDB read is a key condition on the caller's own `userId`, so a groupless caller
 can only ever address an empty partition.
 
@@ -521,7 +522,7 @@ but that is not what bounds the role: `s3:ListBucket` on it enumerates the bucke
 directly, so key discovery is self-contained on the S3 side and needs no API call at
 all.
 
-So the accurate statement of what `ANY_GROUP` buys is: **those seventeen API
+So the accurate statement of what `ANY_GROUP` buys is: **those eighteen API
 operations** now refuse a caller in no group. The document bytes are not yet behind
 a group check, and putting them there means either group-scoped Identity Pool
 `RoleMappings` or narrowing that role and routing every read through a resolver —
@@ -529,7 +530,7 @@ a change to the document-viewing data path. The two shapes, and the obstacles ea
 runs into (the Annotator's `allowedTestSets` scope cannot be expressed as an IAM
 role; the four UI call sites that sign in the browser; Lambda's 6 MB response cap,
 which is why `getFilePresignedUrl` exists alongside `getFileContents`), are set out in
-[Identity Pool group scoping](./planning/identity-pool-group-scoping-plan.md).
+[Identity Pool group scoping](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/blob/develop/docs/planning/identity-pool-group-scoping-plan.md).
 `UI.T06` in the threat model covers the key-scoping half of this; the part that needs
 no resolver at all, and that "any authenticated user" includes a user in **none**, is
 recorded here.
@@ -641,8 +642,7 @@ enforcement itself is Layer 2.
 | `processChanges`, `completeSectionReview`, `claimReview`, `releaseReview`, `skipAllSectionsReview` | Admin, Reviewer |
 | `sendAgentChatMessage` | Admin, Author, Viewer (Reviewer excluded; also IAM for backend) |
 | `deleteChatSession`, `deleteAgentJob` | Any assigned group (`ANY_GROUP`), further session-scoped; see note below |
-| `updateChatSessionTitle` | All authenticated users (session-scoped) |
-| `updateAgentChatMessage` | All authenticated users (also IAM for backend) |
+| `updateChatSessionTitle`, `updateAgentChatMessage` | **Not reachable.** Both are declared in `schema.graphql` and in none of the four places the dispatcher routes from, so default-deny refuses them to every caller including Admin. The backend writes DynamoDB directly and does not need them |
 
 > **Agent Chat authorization**: `sendAgentChatMessage` and `listAvailableAgents` restrict Agent Chat to **Admin, Author, Viewer** (Reviewer excluded). The restriction is declared in `schema.graphql` **and** enforced server-side in each resolver via a `_caller_in_groups` check — the single REST route's Cognito authorizer only authenticates, so the group gate lives in the resolver. The IAM backend publish path has no Cognito identity and bypasses the check. `listChatSessions` remains open to any authenticated user, bounded by a DynamoDB key condition on the caller's own partition; `getChatMessages` and the session-scoped **mutations** (`deleteChatSession`, `deleteAgentJob`) additionally require an assigned group.
 >
@@ -660,7 +660,8 @@ enforcement itself is Layer 2.
 | `listConfigProfileRevisions`, `getConfigProfileRevision` | Admin, Author, Viewer |
 | `listAvailableAgents` | Admin, Author, Viewer (Reviewer excluded; enforced server-side — see Agent Chat note above) |
 | `listChatSessions` | All authenticated, session-scoped by a DynamoDB key condition on the caller's own `userId` |
-| `getChatMessages`, `getAgentChatMessages` | Any assigned group (`ANY_GROUP`), plus the session-ownership check. The message read is keyed on `sessionId` alone, so ownership is a separate verification rather than a key condition, and it stands down when an operator sets `ENFORCE_CHAT_SESSION_OWNERSHIP=false` or when `CHAT_SESSIONS_TABLE` is unwired. Transcripts can quote document content, so the group floor sits under that check |
+| `getChatMessages` | Any assigned group (`ANY_GROUP`), plus the session-ownership check. The message read is keyed on `sessionId` alone, so ownership is a separate verification rather than a key condition, and it **fails open** — it returns true when `CHAT_SESSIONS_TABLE` is unset, and an operator can turn it off with `ENFORCE_CHAT_SESSION_OWNERSHIP=false`. Transcripts can quote document content, so the group floor sits under a check that can stand down |
+| `getAgentChatMessages` | **Not reachable.** It is declared in `schema.graphql` but in neither `scripts/api_rbac_expectations.yaml`, the dispatcher manifest, `FIELD_FUNCTION_MAP` nor `ddb_direct._HANDLED`, and the dispatcher denies by default — so it returns 403 to every caller including Admin. Schema-only surface; use `getChatMessages` |
 | `submitAgentQuery`, `getAgentJobStatus`, `listAgentJobs` | Admin, Author, Viewer |
 | `listConfigurationLibrary`, `getConfigurationLibraryFile` | Admin, Author, Viewer |
 | `listDiscoveryJobs` | Admin, Author |
@@ -668,7 +669,7 @@ enforcement itself is Layer 2.
 | `listFinetuningJobs`, `getFinetuningJob`, `validateTestSetForFinetuning`, `listAvailableModels` | All authenticated (UI limited to Admin, Author) |
 | `queryKnowledgeBase` | Any assigned group (`ANY_GROUP`); the resolver itself has no group check (GAP-02), so the dispatcher's floor is the only one |
 | `sendChatDocumentMessage` (mutation), `onChatDocumentMessageUpdate` (subscription) | Any assigned group (`ANY_GROUP`) **on the REST route only** — the chat Function URL reaches the same processor with no group claim (GAP-07). The resolver enforces per-session ownership and forwards the caller's verified claims, from which the processor enforces `allowedConfigVersions` scope on the target document; a scope it cannot evaluate denies the turn. That scope check stands down on the streaming route, which forwards no verified caller — see [Known Limitations](#known-limitations) |
-| `listUsers` | All authenticated (non-admin sees only self in resolver) |
+| `listUsers` | **Admin** — it returns every user's email and role. A non-admin reads their own record through `getMyProfile` instead |
 | `getMyProfile` | All authenticated |
 
 **Note**: The `updateConfiguration` mutation is schema-level restricted to Admin+Author, but the resolver additionally enforces that `saveAsVersion` and `saveAsDefault` operations within that mutation are **Admin-only**.
@@ -738,7 +739,7 @@ filtering based on the caller's identity:
 - `listConfigProfileRevisions` / `getConfigProfileRevision` / `restoreConfigProfileRevision` / `labelConfigProfileRevision` / `deleteConfigProfileRevision`: Reject the request if the *profile* is not in user's scope
 
 **User Management Filtering:**
-- `listUsers`: Admin sees all users; non-admin sees only their own profile
+- `listUsers`: Admin only — a non-admin is refused it at the dispatcher, not filtered inside it
 - `getMyProfile`: Returns the calling user's own profile (including `allowedConfigVersions`)
 
 ### Layer 3: UI Adaptation (UX Convenience)
@@ -800,7 +801,7 @@ Admins can create users with any of the four roles via the User Management page.
 │  • getConfigVersions: scope     │  ← Filters profile list
 │  • getConfigVersion: scope      │  ← Rejects out-of-scope access
 │  • *ConfigProfileRevision*      │  ← Scope checked at the profile
-│  • listUsers: self-only         │  ← Non-admin sees only own profile
+│  • getMyProfile: own record     │  ← Keyed off token claims; listUsers is Admin-only
 └────────────┬────────────────────┘
              │
 ┌────────────▼────────────────────┐

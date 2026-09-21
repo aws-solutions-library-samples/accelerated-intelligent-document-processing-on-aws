@@ -235,8 +235,11 @@ operations:
     args: { objectKey: "__nonexistent__.pdf" }
     note: >-
       ANY_GROUP. It shapes every run of one object key through the same
-      _shape_version helper as getDocumentVersion (ANY_GROUP), so the two return
-      the same fields and differ only in how many runs: Sections[].OutputJSONUri,
+      _shape_version helper as getDocumentVersion (ANY_GROUP), so for EVERY run it
+      returns what getDocumentVersion returns for one, less a single field:
+      getDocumentVersion adds the run manifest's file list (version["Files"]).
+      The asymmetry therefore runs in the direction that argues for the floor —
+      more runs, one fewer field. The shared fields are Sections[].OutputJSONUri,
       Pages[].ImageUri / TextUri / OcrPageDataUri, the whole
       ConfidenceThresholdAlerts list — which names every extracted attribute — and
       Pages[].ClassReason, model-generated prose about what the document contains.
@@ -791,17 +794,21 @@ operations:
     enforced_in: nested/api-resolvers/src/lambda/get_agent_chat_messages_resolver/index.py
     args: { sessionId: "__nope__" }
     note: >-
-      ANY_GROUP. The message read itself is `PK = sessionId` with no caller term;
-      what bounds it to the caller is _verify_session_ownership, a separate check
-      that stands down in two recorded cases — an operator setting
-      ENFORCE_CHAT_SESSION_OWNERSHIP=false for legacy sessions, and an unset
-      CHAT_SESSIONS_TABLE, which returns True to preserve function. On either branch
-      a session id is the whole credential, and the resolver's own comment says the
-      messages can hold "user queries, document content quoted by the LLM". The
-      floor costs a groupless caller nothing, because neither operation that creates
-      a session admits one, so it is free defence in depth over a check that can be
-      turned off. The ownership verification stays: it is what stops one GROUPED
-      caller reading another's session.
+      ANY_GROUP, and of every operation tightened for #1033 this is the one with the
+      least to argue about, because it is the only one whose existing control fails
+      OPEN. The message read itself is `PK = sessionId` with no caller term; what
+      bounds it to the caller is _verify_session_ownership, which `return`s **True**
+      when CHAT_SESSIONS_TABLE is unset — "allowing access ... to preserve
+      functionality", in its own words — and which an operator can switch off
+      wholesale with ENFORCE_CHAT_SESSION_OWNERSHIP=false. On either branch a
+      session id is the whole credential, and the resolver's own comment says the
+      messages can hold "user queries, document content quoted by the LLM". So the
+      group floor is not redundant with the ownership check; it is the layer that
+      holds when that check does not. Its cost is provably nil: neither operation
+      that creates a session admits a groupless caller (sendAgentChatMessage is
+      Admin/Author/Viewer, sendChatDocumentMessage is ANY_GROUP), so no reachable
+      record is lost. The ownership verification stays — it is what stops one
+      GROUPED caller reading another's session, which the floor does not.
   deleteChatSession:
     groups: ANY_GROUP
     kind: mutation
@@ -925,13 +932,19 @@ operations:
       platform state — job and test-set names, base and custom model ids and ARNs,
       status, hyperparameters, training metrics, deployment endpoint — and no
       document content or document location. Creating and deleting jobs is
-      [Admin, Author]. Two conditions this rests on, both worth rechecking if
-      either changes: `errorMessage` relays a caught exception string, whose
-      contents are not bounded by anything here, and the projection's
-      trainingDataConfig / validationDataConfig / outputDataConfig fields are
-      always null because nothing writes those attribute names — the real
-      `trainingDataUri` sits unprojected on the same row, so projecting it would
-      put a dataset S3 location in this response and this answer would change.
+      [Admin, Author]. The whole of this reason is a property of ONE dict literal,
+      _format_job_for_graphql, and the row it reads from does carry a dataset
+      location: `trainingDataUri` and `validationDataUri` are written onto it by the
+      data generator and the merge step and are simply not projected, while the
+      projection's trainingDataConfig / validationDataConfig / outputDataConfig keys
+      are Bedrock request parameter names nothing ever writes to DynamoDB, so they
+      resolve to null. That premise is computable, so it is computed:
+      finetuning_jobs_resolver/test_projected_keys.py pins the returned key set,
+      fails if any projected value carries an `s3://` URI, and fails if the policy
+      here stops being ANY — because one added line in that dict would otherwise turn
+      an unvetted read into a dataset-location disclosure with nothing to notice. The
+      one residual it cannot pin: `errorMessage` relays a caught exception string,
+      whose contents are not bounded by anything here.
   getFinetuningJob:
     groups: ANY
     kind: read
@@ -940,8 +953,9 @@ operations:
     note: >-
       ANY is deliberate. One job by jobId, projected through the same
       _format_job_for_graphql as listFinetuningJobs, so the same platform-state
-      fields and the same two conditions on that entry apply to it — and it has no
-      owner check either, because the rows record no owner.
+      fields, the same pinned key set (test_projected_keys.py covers both operations
+      through the one projection) and the same `errorMessage` residual apply to it —
+      and it has no owner check either, because the rows record no owner.
 
   # ==========================================================================
   # Capacity / version metadata / knowledge
@@ -978,18 +992,22 @@ operations:
   # Circuit breaker (conditional on CircuitBreakerEnabled)
   # ==========================================================================
   getCircuitBreakerStatus:
-    groups: ANY
+    groups: ANY_GROUP
     kind: read
     enforced_in: *ddb
     args: {}
     note: >-
       served by ddb_direct when the breaker is disabled, resolver when enabled.
-      ANY is deliberate: a paused/open breaker is why the whole UI looks stalled,
-      so every authenticated user needs the badge to read it. The three controls
-      that change it are Admin-only. One global singleton row, so there is nothing
-      per-caller to scope; the payload is enabled/state/timestamps/counters plus
-      `lastError`, the throttling or service failure string the breaker manager last
-      recorded, which names no document by intent.
+      ANY_GROUP because of `lastError`. One global singleton row, so there is
+      nothing per-caller to scope, and the rest of the payload — enabled, state,
+      timestamps, counters — is genuinely just the badge. But `lastError` has two
+      writers, and the second is `f"Manual pause by {user}: {reason}"` in
+      circuit_breaker_manager, where `user` is the pausing administrator's EMAIL
+      (circuit_breaker_resolver sends `caller["email"]`). So after any manual pause
+      this operation serves an administrator's address and an operator's free-text
+      note. The floor costs nothing: the badge is UI chrome, and every user who
+      reaches the UI holds a group. The three controls that change the breaker stay
+      Admin-only.
   pauseCircuitBreaker:
     groups: [Admin]
     kind: mutation
@@ -1013,10 +1031,16 @@ operations:
   # Feature platform (conditional on EnableFeaturePlatform)
   # ==========================================================================
   # ANY is deliberate for all three, but they return three different things and the
-  # note on each says what its own payload is. What they share is that the UI
-  # consults them on every page load to decide what to render at all, for every
-  # role, none of them reads cognito:groups, and none returns document data.
+  # note on each says what its own payload is. What they share is that none reads
+  # cognito:groups, none scopes per caller, and none returns document data.
   # Installing, subscribing and launching a feature are Admin-only.
+  #
+  # Note what is NOT the reason: "the UI needs these before it knows the caller's
+  # role" does not hold. use-user-role.ts reads cognito:groups straight off the ID
+  # token with no API call, so the role is known first in every ordinary sign-in.
+  # The only window where it is not is a federated user's first login, where the
+  # claim can be absent until one forced token refresh picks up what the
+  # pre-token-generation trigger assigned.
   listInstalledFeatures:
     groups: ANY
     kind: read
@@ -1026,11 +1050,12 @@ operations:
     note: >-
       ANY is deliberate: the install inventory — feature id, display name,
       installed and latest version, whether an update is available, and where the
-      feature's own UI bundle and API live. Nothing document-derived. It does
+      feature's own UI bundle and API live. Nothing document-derived, nothing
+      per-caller, and every role needs it to render the nav at all. It does
       disclose deployment topology (stack id, stack name, the feature API endpoint,
       a generation queue ARN) to any authenticated caller, which is reconnaissance
-      value rather than data, and is the cost of the UI being able to render a
-      feature's nav entry before it knows the caller's role.
+      value rather than data; that is the accepted cost, and it is the one thing on
+      this entry a future reviewer might weigh differently.
   listCatalogFeatures:
     groups: ANY
     kind: read
@@ -1054,9 +1079,8 @@ operations:
       THIS DEPLOYMENT is entitled to one feature, and the answer carries the
       deployment's own AWS Marketplace customer identifier, product code and
       license mode. Those are per-deployment billing identifiers, not per-caller
-      and not document-derived, and the UI needs the entitlement state to decide
-      whether to offer the feature at all — which it must do before it knows the
-      caller's role.
+      and not document-derived: the answer is the same whoever asks, and the UI
+      needs it for every role to decide whether to offer the feature at all.
   getFeatureLaunchUrl:
     groups: [Admin]
     kind: read

@@ -38,9 +38,9 @@ body began `{"inference_result":{"CurrentNetPay":291.9,"EmployeeName":{"LastName
 "EmployeeAddress":{"Line1":"…"},…}}`.
 
 Steps 1, 2 and 3 are closed: every operation in the "Documents — read" section of
-`scripts/api_rbac_expectations.yaml` now requires an assigned group, and so does
-`getChatMessages`. Step 4 was already closed, by #1023. **Step 5 is open and is
-not affected by any of that.**
+`scripts/api_rbac_expectations.yaml` now requires an assigned group, and so do
+`getChatMessages` and `getCircuitBreakerStatus`. Step 4 was already closed, by #1023.
+**Step 5 is open and is not affected by any of that.**
 
 ---
 
@@ -196,14 +196,15 @@ browser sessions are already using.
 
 This is the part most likely to be misread, so it is stated flatly.
 
-**Does:** seventeen API operations refuse a caller in no group — the eleven from
+**Does:** eighteen API operations refuse a caller in no group — the eleven from
 #1023 plus `getDocumentCount`, `listDocumentsDateHour`, `listDocumentsDateShard`,
-`listDocumentVersions`, `getStepFunctionExecution` and `getChatMessages`. A
-self-registered account can no longer use the API to find out that a document
-exists, what it is called, how many there are, which processing runs it has, where
-its section output and page images live, what attributes were extracted from it,
-what the model said its pages contain, how its workflow ran, or what a chat session
-said about it.
+`listDocumentVersions`, `getStepFunctionExecution`, `getChatMessages` and
+`getCircuitBreakerStatus`. A self-registered account can no longer use the API to
+find out that a document exists, what it is called, how many there are, which
+processing runs it has, where its section output and page images live, what
+attributes were extracted from it, what the model said its pages contain, how its
+workflow ran, or what a chat session said about it — nor read an administrator's
+email address out of the processing breaker's last-error field.
 
 **Does not:** stop that account reading the document bytes out of S3. Steps 1–4 of
 §1 are closed and step 5 is unchanged. The bytes are behind an S3 bucket policy and

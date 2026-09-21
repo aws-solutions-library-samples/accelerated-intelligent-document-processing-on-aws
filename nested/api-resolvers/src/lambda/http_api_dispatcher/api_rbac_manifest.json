@@ -150,7 +150,13 @@
       "Reviewer",
       "Viewer"
     ],
-    "getCircuitBreakerStatus": "ANY",
+    "getCircuitBreakerStatus": [
+      "Admin",
+      "Annotator",
+      "Author",
+      "Reviewer",
+      "Viewer"
+    ],
     "getConfigProfileRevision": [
       "Admin",
       "Author",

@@ -728,10 +728,11 @@ def run_caller_supplied_ref_suite(
     """An operation handed a resource id by the caller must bound what it accepts.
 
     ``getStepFunctionExecution`` takes an ``executionArn`` straight from the
-    request. The group matrix proves an authenticated caller of any role CAN read
+    request. The group matrix proves a caller holding any assigned group CAN read
     an execution of this deployment; it cannot prove the resolver refuses one it
-    should not serve, because for an ANY-auth op the matrix reads every denial as
-    a failure. This suite asserts the two denials:
+    should not serve, because the op is ``ANY_GROUP`` and every role the matrix
+    drives is an allowed one, so the matrix reads every denial as a failure. This
+    suite asserts the two denials:
 
       * an ARN naming a DIFFERENT state machine — the resolver's IAM grant is a
         ``<stack-name>-*`` prefix, which also covers a sibling deployment whose
