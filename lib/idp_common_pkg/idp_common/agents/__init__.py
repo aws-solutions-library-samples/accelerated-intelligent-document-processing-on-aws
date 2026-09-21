@@ -19,7 +19,6 @@ def __getattr__(name):
     if name in [
         "analytics",
         "common",
-        "testing",
         "factory",
         "orchestrator",
         "external_mcp",
@@ -34,7 +33,6 @@ def __getattr__(name):
 __all__ = [
     "analytics",
     "common",
-    "testing",
     "factory",
     "orchestrator",
     "external_mcp",

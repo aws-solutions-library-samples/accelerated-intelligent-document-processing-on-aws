@@ -46,8 +46,16 @@ PRUNE_DIR_MARKERS = (
     # scratch/ is gitignored (local benchmarks, cloned tools, throwaway work);
     # never part of the gate. CI never sees it, so prune it locally too.
     "/scratch/",
-    # idp_common ships fixture-style helper "tests" that are not a suite.
-    "/idp_common/agents/testing/",
+    # Two gitignored, locally-staged copies of lib/idp_common_pkg that the
+    # idp-data-generator feature's build drops next to its Lambda sources. They
+    # hold library code only (no tests/ dir), so every test_*.py they contain is
+    # a duplicate of one in lib/idp_common_pkg. CI never sees them; a developer
+    # machine that has built that feature does. They cannot be matched by a
+    # shared substring -- `/idp-data-generator/` would also prune
+    # feature-platform/idp-data-generator/feature-api/tests, which is a real
+    # registered suite -- so each copy root is named.
+    "/idp-data-generator/idp_common_pkg/",
+    "/idp-data-generator/bootstrap-processor/idp_common_pkg/",
     # Agent worktrees: `git worktree` checkouts of this same repo, created under
     # .claude/worktrees/ when work is delegated to a subagent. Every test file in
     # the repo therefore appears once per live worktree, so without this the guard
@@ -224,6 +232,20 @@ QUARANTINE = {
     # Vendored/internal helper trees that contain test_*.py but are not suites.
     "lib/idp_sdk/idp_sdk/_core": (
         "Source tree, not a test root (contains helper modules named test_*)."
+    ),
+    # Operator-run agent scripts. Every one drives real Bedrock, Athena or
+    # DynamoDB against a deployed stack, so they are run by hand, never in a gate,
+    # and `norecursedirs` in lib/idp_common_pkg/pytest.ini keeps pytest from
+    # collecting them. Registered here rather than pruned above so that the
+    # exclusion carries the registry's ratchets: the directory appears in
+    # `--list`, it has to be named in docs/testing.md, and -- because nesting
+    # under a QUARANTINE entry deliberately does not inherit the exclusion -- a
+    # NEW subdirectory of manual_tests/ fails this guard instead of being
+    # silently accepted, which a substring prune marker would have allowed.
+    "lib/idp_common_pkg/manual_tests/agents": (
+        "Operator-run scripts that call real Bedrock/Athena against a deployed "
+        "stack; run by hand, excluded from pytest collection by "
+        "lib/idp_common_pkg/pytest.ini's norecursedirs."
     ),
 }
 
