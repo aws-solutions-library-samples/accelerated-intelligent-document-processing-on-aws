@@ -153,9 +153,51 @@ variant (`v0.6.5-fixed2-…`, `v0.6.6-advverify-post668`): either replace the se
 the first attempt was invalid, or write the finding into the `docs/benchmarking/` page and
 let the data go (git history is the archive — cite the commit, not a path).
 
+## Confidence calibration (`aggregate.py --calibration`)
+
+Scoring is retroactive, so this re-reads a completed grid's extraction output from S3
+and costs no inference. It joins each confidence leaf to the cell it scores (by
+`flatten_confidences` field path + the corpus's `SEQ` row tag) and pools true
+`(confidence, correct)` pairs per configuration arm through the shipped
+`ConfidenceCurve`, so the numbers are about the bars the product acts on:
+
+```bash
+PYTHONPATH=<repo>/lib/idp_common_pkg AWS_PROFILE=default python3 benchmarks/harness/aggregate.py \
+  --calibration benchmarks/results/<release>/<suite>/summary.json [more summaries...] \
+  --calibration-group assessment,confidence_model,extraction_model \
+  --calibration-out /tmp/calibration.json
+```
+
+Read the output in this order. **`bins`** first: fewer than 3 populated bins is
+`degenerate` — a structural fact, not an estimate, and it means worst-first ordering is
+arbitrary regardless of every other column. **`errs`** next: AUROC is estimated over
+wrong × correct pairs, so an arm with 70,000 cells and 55 errors is a 55-observation
+measurement of discrimination. Only then the statistics. `ECE` is the gate's
+midpoint-based estimator and floors at 0.05 on an all-1.00 all-correct curve; `ECEmc`
+is the mean-confidence estimator and is the one to quote. `AUROC` is the gate's binned
+value (biased low by design); `AUROCu` is Stickler's and is the one to quote.
+
+⚠️ Group by **extraction model as well as** the grader and the mode. The grader's
+calibration depends on the extraction it is grading, so pooling a 50%-wrong arm with a
+99.9%-correct one reports neither. Requires the corpus truth files — pass `--corpus`
+if `benchmarks/corpus/docs` is not populated in the tree you are running from.
+
+Measured for v0.6.8/v0.6.9 in
+[docs/benchmarking/studies/confidence-calibration.md](../../docs/benchmarking/studies/confidence-calibration.md):
+the default Nova Lite grader is well calibrated and **undiscriminating** (one bin,
+AUROC 0.417), Sonnet 5 as grader reaches AUROC 0.859 on the same extraction. Do not
+re-derive that claim from memory — re-run the command.
+
 ## Regression thresholds (in aggregate.py --compare)
 accuracy −0.02, cost +15%, any new failure, calibration separation −0.03 → flagged
 as regressions. Improvements ≥ +0.02 accuracy are also reported.
+
+`compare_cells` additionally gates the **pooled** per-cell calibration: ECE +0.03,
+AUROC −0.05, or a cell crossing `ECE_UNRELIABLE_THRESHOLD` / `AUROC_UNRELIABLE_THRESHOLD`
+at any step size. ⚠️ It is **inert** against a `baseline.json` scored before this
+existed — a baseline with no `calibration` block is skipped rather than reported as a
+change from nothing, so re-promote the baseline from a grid scored with current code
+before relying on it.
 
 Two calibration separations are tracked, on the same −0.03 threshold:
 `calibration_separation` (extracted FIELDS) and `class_calibration_separation`

@@ -5,13 +5,20 @@ Usage:
   AWS_PROFILE=default python3 aggregate.py --run results/run-XXXX --out results/<release>/<suite>
   python3 aggregate.py --compare results/<release>/<suite>/summary.json --baseline results/baseline.json
   python3 aggregate.py --figures results/<release>/<suite>/summary.json   # emit charts
+  AWS_PROFILE=default python3 aggregate.py --calibration results/<release>/*/summary.json \
+      --calibration-group assessment,confidence_model   # ECE/Brier/AUROC per arm
 
 Scored output goes in a <suite>/ subdirectory of the release dir; results/ keeps one
 complete set per release (see results/RETENTION.md).
 
 Writes summary.json (per (cell,doc) full scores) + summary.csv (+ meta.json).
-Regression thresholds: accuracy -0.02, cost +15%, any new failure, calibration -0.03
-(field-level and class-level alike).
+Regression thresholds: accuracy -0.02, cost +15%, any new failure, calibration
+separation -0.03 (field-level and class-level alike), pooled calibration ECE +0.03,
+pooled confidence AUROC -0.05, or either crossing its shipped unreliable bar.
+
+--calibration re-reads a completed grid's extraction output from S3 and pools
+confidence against the synthetic corpus's exact per-cell truth. Scoring is
+retroactive, so it costs S3 GETs and no inference (#935).
 """
 
 # ruff: noqa: E402  (local sibling imports require the sys.path bootstrap first)
@@ -37,6 +44,20 @@ BENCH = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 # inconclusive rather than a finding. Chosen because quality metrics on
 # non-deterministic cells were observed swinging 0.10 <-> 1.00 on one document.
 QUALITY_SPREAD_FLOOR = 0.02
+
+# How far a cell's POOLED calibration may move between releases before it is a
+# regression (#935). Deliberately the same magnitude as the long-standing
+# `calibration_separation` threshold for the calibration error, and larger for
+# AUROC, whose binned estimator moves in coarser steps.
+#
+# Neither of these is the real guard. The one that matters is the threshold CROSSING
+# below: the product refuses to recommend a worst-first review subset once ECE
+# exceeds `ECE_UNRELIABLE_THRESHOLD` or AUROC drops to `AUROC_UNRELIABLE_THRESHOLD`,
+# and a release that pushes a cell over one of those bars has changed what the
+# product will do, however small the step was. A magnitude-only gate would let a
+# cell sitting at 0.149 ECE cross to 0.151 unreported.
+CALIBRATION_ECE_REGRESSION = 0.03
+CALIBRATION_AUROC_REGRESSION = 0.05
 
 
 def score_all(run_dir):
@@ -173,6 +194,20 @@ CSV_COLS = [
     "conf_rows_scored",
     "conf_rows_unscored",
     "conf_coverage",
+    # Calibration against exact per-cell truth (#935). `calibration_separation`
+    # below is a different and much weaker instrument — a difference of two means,
+    # available only on the reference path — and it cannot distinguish a grader that
+    # is well calibrated from one that ranks errors usefully. These can:
+    # `calibration_ece` is the gate's calibration error, `calibration_auroc` its
+    # ranking power, and `calibration_observations` is what says whether either is
+    # thick enough to read (30 / 100 are the shipped floors).
+    "calibration_observations",
+    "calibration_ece",
+    "calibration_ece_mean_conf",
+    "calibration_auroc",
+    "calibration_auroc_unbinned",
+    "calibration_brier",
+    "calibration_bin_coverage",
     "calibration_separation",
     "class_accuracy",
     "class_mean_confidence",
@@ -252,6 +287,15 @@ def cell_stats(rows):
             # drops Nones — so documents with no list attribute (coverage
             # undefined) are excluded rather than counted as perfect.
             "conf_coverage": _stats([r.get("conf_coverage") for r in succ]),
+            # Calibration is POOLED over the cell's documents and repeats rather
+            # than averaged (#935). Averaging per-document ECEs would weight a
+            # 5-row form like a 400-row statement, and per-document AUROC is
+            # usually undefined outright because a single document rarely contains
+            # both a wrong cell and a right one at different confidences. Pooling
+            # the stored bin counts is exact and needs no second pass over S3.
+            "calibration": analyze.pool_calibration(
+                [r.get("calibration_curve") for r in succ]
+            ),
         }
     return out
 
@@ -477,6 +521,93 @@ def _delta_spread(deltas):
     return max(sd, QUALITY_SPREAD_FLOOR)
 
 
+def calibration_findings(cur, base, regression=True):
+    """Calibration movements between two cells' POOLED curves, as report lines.
+
+    Answers two different questions, and the second is the one that matters:
+
+    1. Did the number move more than ``CALIBRATION_ECE_REGRESSION`` /
+       ``CALIBRATION_AUROC_REGRESSION``?
+    2. Did the cell CROSS one of the bars the shipped estimator acts on —
+       ``ECE_UNRELIABLE_THRESHOLD`` or ``AUROC_UNRELIABLE_THRESHOLD``? A crossing is
+       reported whatever its size, because on the far side of it the product stops
+       recommending a worst-first review subset at all. That is a product behaviour
+       change, not a metric wobble.
+
+    Both sides must carry enough observations for the statistic to mean anything —
+    the shipped floors, ``MIN_OBSERVATIONS_FOR_MEASURED`` for calibration error and
+    ``MIN_OBSERVATIONS_FOR_AUROC`` for ranking power. Below them nothing is reported
+    in either direction, because a thin sample moving is not a finding and a thin
+    sample holding still is not reassurance.
+
+    A baseline scored before #935 has no ``calibration`` block at all, so every
+    comparison is silently skipped rather than reported as a change from nothing.
+    That is correct and it is also a trap: until the baseline is re-promoted from a
+    grid scored with this code, this gate is inert. ``--calibration`` on the current
+    summary is what tells you the numbers exist.
+    """
+    from idp_common.evaluation.confidence_curve import (
+        AUROC_UNRELIABLE_THRESHOLD,
+        ECE_UNRELIABLE_THRESHOLD,
+        MIN_OBSERVATIONS_FOR_AUROC,
+        MIN_OBSERVATIONS_FOR_MEASURED,
+    )
+
+    cc, bc = cur.get("calibration"), base.get("calibration")
+    if not cc or not bc:
+        return []
+    findings = []
+
+    def enough(floor):
+        return cc["observations"] >= floor and bc["observations"] >= floor
+
+    def note(cur_v, base_v):
+        return (
+            f"(n {bc['observations']}->{cc['observations']}, {base_v:.3f}->{cur_v:.3f})"
+        )
+
+    # Calibration error: HIGHER is worse, so the sign convention is inverted
+    # relative to every other metric in this comparison.
+    if enough(MIN_OBSERVATIONS_FOR_MEASURED) and None not in (cc["ece"], bc["ece"]):
+        delta = cc["ece"] - bc["ece"]
+        crossed = cc["ece"] > ECE_UNRELIABLE_THRESHOLD >= bc["ece"]
+        healed = bc["ece"] > ECE_UNRELIABLE_THRESHOLD >= cc["ece"]
+        if regression and (delta >= CALIBRATION_ECE_REGRESSION or crossed):
+            tag = f"calibration ECE {delta:+.3f} {note(cc['ece'], bc['ece'])}"
+            if crossed:
+                tag += (
+                    f"  [CROSSED the {ECE_UNRELIABLE_THRESHOLD} unreliable bar — the "
+                    "estimator will now recommend reviewing everything]"
+                )
+            findings.append(tag)
+        elif not regression and (delta <= -CALIBRATION_ECE_REGRESSION or healed):
+            findings.append(
+                f"calibration ECE {delta:+.3f} {note(cc['ece'], bc['ece'])}"
+            )
+
+    # Ranking power: higher is better, and it is the only property worst-first
+    # review depends on. An AUROC that goes undefined on one side is not compared —
+    # "no wrong cells to rank" is not a change in ranking power.
+    if enough(MIN_OBSERVATIONS_FOR_AUROC) and None not in (cc["auroc"], bc["auroc"]):
+        delta = cc["auroc"] - bc["auroc"]
+        crossed = cc["auroc"] <= AUROC_UNRELIABLE_THRESHOLD < bc["auroc"]
+        healed = bc["auroc"] <= AUROC_UNRELIABLE_THRESHOLD < cc["auroc"]
+        if regression and (delta <= -CALIBRATION_AUROC_REGRESSION or crossed):
+            tag = f"confidence AUROC {delta:+.3f} {note(cc['auroc'], bc['auroc'])}"
+            if crossed:
+                tag += (
+                    f"  [CROSSED the {AUROC_UNRELIABLE_THRESHOLD} chance bar — "
+                    "confidence no longer ranks errors, so worst-first review is "
+                    "not justified]"
+                )
+            findings.append(tag)
+        elif not regression and (delta >= CALIBRATION_AUROC_REGRESSION or healed):
+            findings.append(
+                f"confidence AUROC {delta:+.3f} {note(cc['auroc'], bc['auroc'])}"
+            )
+    return findings
+
+
 def compare_cells(summary_path, baseline_path):
     """Variance-aware CELL-level comparison — the reliable way to detect a real
     cost/accuracy DIFFERENCE between releases (or, reused, between configs). A cost
@@ -564,6 +695,9 @@ def compare_cells(summary_path, baseline_path):
                 reg.append((cell, tag))
             else:
                 imp.append((cell, tag))
+        # Calibration, pooled over the cell's documents and repeats (#935).
+        reg.extend((cell, t) for t in calibration_findings(c, b, regression=True))
+        imp.extend((cell, t) for t in calibration_findings(c, b, regression=False))
         # new systematic failures
         if b["n_fail"] == 0 and c["n_fail"] > 0:
             reg.append((cell, f"NEW FAILURES {c['n_fail']}/{c['n_runs']}"))
@@ -745,6 +879,247 @@ def compare(summary_path, baseline_path):
     return regressions, improvements
 
 
+CALIBRATION_GROUP_DEFAULT = ("assessment", "confidence_model")
+
+
+def _resolve_output_bucket(stack):
+    """The stack's output bucket, by name prefix, as ``run_matrix.resolve_stack`` does.
+
+    Imported here rather than at module scope: ``run_matrix`` pulls the launch path
+    in with it, and scoring must not depend on being able to launch.
+    """
+    import run_matrix
+
+    return run_matrix.resolve_stack(stack)["output_bucket"]
+
+
+def _truth_for(corpus_dir, doc):
+    path = os.path.join(corpus_dir, f"{doc}.truth.json")
+    return json.load(open(path)) if os.path.exists(path) else None
+
+
+def calibration_study(summary_paths, corpus_dir, group_by=None, out_path=None):
+    """Pool confidence calibration across a scored grid, per configuration arm (#935).
+
+    The release-level counterpart to the per-document figures ``score_synthetic``
+    records. It exists because the question "can this confidence configuration
+    support worst-first human review?" is not answerable per document: one document
+    contributes a few hundred cells of which nearly all are correct, so its AUROC is
+    usually undefined and its ECE is mostly a statement about that document's
+    accuracy. Pooled across an arm there are tens of thousands of cells and the
+    shipped observation floors (30 for calibration error, 100 for ranking power) are
+    comfortably cleared.
+
+    It re-reads the extraction output from S3 rather than reading the summary,
+    because scoring is retroactive: the confidence values and the extracted cells
+    are both already in the output bucket from the original run, so this costs S3
+    GETs and no inference. That is why a calibration study can be run over a grid
+    that completed months ago.
+
+    ``group_by`` names keys of a row's ``resolved`` config, defaulting to the
+    confidence mode and the grader model — the two axes that decide what confidence
+    MEANS. Rows are pooled within an arm across documents and repeats, and the raw
+    pairs are retained per arm so the unbinned AUROC (the one to quote as a metric)
+    can be computed alongside the curve's binned one (the one the gate reads).
+    """
+    group_by = list(group_by or CALIBRATION_GROUP_DEFAULT)
+    lib.s3()  # warm the client cache before any concurrency
+    arms: dict[tuple, dict] = {}
+    skipped = {"no_truth": 0, "no_observations": 0, "not_success": 0}
+    for path in summary_paths:
+        summary = json.load(open(path))
+        stack = (summary.get("meta") or {}).get("stack")
+        bucket = _resolve_output_bucket(stack)
+        if not bucket:
+            print(
+                f"⚠ {path}: no output bucket resolves for stack {stack!r} — the "
+                "artifacts for this grid are gone, so it contributes nothing"
+            )
+            continue
+        label = os.path.basename(os.path.dirname(path))
+        for row in summary.get("rows") or []:
+            if not row.get("success") or not row.get("run_id"):
+                skipped["not_success"] += 1
+                continue
+            truth = _truth_for(corpus_dir, row.get("doc") or "")
+            if not truth or not truth.get("rows_typed"):
+                skipped["no_truth"] += 1
+                continue
+            resolved = row.get("resolved") or {}
+            key = tuple(str(resolved.get(k)) for k in group_by)
+            arm = arms.setdefault(
+                key,
+                {
+                    "group": dict(zip(group_by, key)),
+                    "payloads": [],
+                    "pairs": [],
+                    "docs": set(),
+                    "runs": 0,
+                    "suites": set(),
+                    "stacks": set(),
+                },
+            )
+            sections = list(
+                lib.iter_section_results(bucket, f"{row['run_id']}/{row['doc']}/")
+            )
+            observations = analyze.confidence_observations(
+                sections, truth.get("rows_typed"), truth.get("list_key")
+            )
+            if not observations:
+                skipped["no_observations"] += 1
+                continue
+            scored = analyze.score_calibration(
+                sections,
+                truth.get("rows_typed"),
+                truth.get("list_key"),
+                observations=observations,
+            )
+            arm["payloads"].append(scored["calibration_curve"])
+            arm["pairs"].extend(observations)
+            arm["docs"].add(row["doc"])
+            arm["suites"].add(label)
+            arm["stacks"].add(stack)
+            arm["runs"] += 1
+
+    report = {"group_by": group_by, "skipped": skipped, "arms": []}
+    for key, arm in sorted(arms.items()):
+        pooled = analyze.pool_calibration(
+            arm["payloads"], unbinned_auroc=analyze._unbinned_auroc(arm["pairs"])
+        )
+        if not pooled:
+            continue
+        report["arms"].append(
+            {
+                **arm["group"],
+                "runs": arm["runs"],
+                "documents": sorted(arm["docs"]),
+                "suites": sorted(arm["suites"]),
+                "stacks": sorted(arm["stacks"]),
+                **pooled,
+            }
+        )
+    _print_calibration(report)
+    if out_path:
+        json.dump(report, open(out_path, "w"), indent=2)
+        print(f"\ncalibration report -> {out_path}")
+    return report
+
+
+def _print_calibration(report):
+    cols = " / ".join(report["group_by"])
+    print(f"\n=== CONFIDENCE CALIBRATION ({cols}) ===")
+    # `errs` is the count of WRONG cells, and it is the column that bounds how
+    # precisely AUROC can be known: ranking power is estimated over
+    # errs x correct pairs, so an arm with 70,000 cells and 40 errors is a
+    # 40-observation measurement of discrimination however large the cell count
+    # looks. Printed next to AUROC for that reason.
+    header = (
+        f"{'arm':34s} {'runs':>5s} {'cells':>7s} {'errs':>5s} {'acc':>6s} {'ECE':>6s} "
+        f"{'ECEmc':>6s} {'AUROC':>6s} {'AUROCu':>7s} {'Brier':>6s} {'bins':>4s} verdict"
+    )
+    print(header)
+
+    def fmt(value, width=6):
+        # A dash, not 0.000: an AUROC is None when one class is absent, and printing
+        # a zero there would read as "ranks perfectly badly" rather than "unmeasured".
+        return (
+            f"{value:>{width}.3f}" if isinstance(value, float) else f"{'-':>{width}s}"
+        )
+
+    for arm in report["arms"]:
+        name = "|".join(str(arm[k]) for k in report["group_by"])
+        verdict = []
+        if arm["degenerate"]:
+            verdict.append("DEGENERATE")
+        if arm["overconfident"]:
+            verdict.append("OVERCONFIDENT")
+        if arm["undiscriminating"]:
+            verdict.append("UNDISCRIMINATING")
+        print(
+            f"{name:34s} {arm['runs']:>5d} {arm['observations']:>7d} "
+            f"{arm['observations'] - arm['correct']:>5d} "
+            f"{fmt(arm['accuracy'])} {fmt(arm['ece'])} {fmt(arm['ece_mean_conf'])} "
+            f"{fmt(arm['auroc'])} {fmt(arm['auroc_unbinned'], 7)} {fmt(arm['brier'])} "
+            f"{arm['bin_coverage']:>4d} {','.join(verdict) or 'reliable'}"
+        )
+    s = report["skipped"]
+    print(
+        f"skipped: {s['not_success']} unsuccessful, {s['no_truth']} without exact "
+        f"per-cell truth, {s['no_observations']} with no joinable confidence"
+    )
+
+
+def reliability_figure(report, out_dir=None):
+    """Reliability diagram per arm: observed accuracy against mean confidence.
+
+    Plotted against each bin's MEAN CONFIDENCE, not the bin midpoint, so the
+    diagonal is the real "perfectly calibrated" line for these observations. Bin
+    markers are sized by how many cells they hold, because on this corpus the mass
+    is overwhelmingly in the top bin and an unweighted diagram invites reading a
+    3-cell bin as a finding. The Wilson bounds on each bin's accuracy are drawn for
+    the same reason.
+    """
+    try:
+        import matplotlib
+
+        matplotlib.use("Agg")
+        import matplotlib.pyplot as plt
+    except ImportError:
+        print("(matplotlib not installed — skipping the reliability diagram)")
+        return None
+    arms = [a for a in report.get("arms") or [] if a.get("bins")]
+    if not arms:
+        return None
+    out_dir = out_dir or os.path.join(BENCH, "paper", "figures")
+    os.makedirs(out_dir, exist_ok=True)
+    fig, ax = plt.subplots(figsize=(7, 6))
+    ax.plot(
+        [0, 1], [0, 1], "--", color="#888", linewidth=1, label="perfect calibration"
+    )
+    for arm in arms:
+        xs, ys, sizes, lows, highs = [], [], [], [], []
+        for b in arm["bins"]:
+            if not b["observations"] or b["meanConfidence"] is None:
+                continue
+            xs.append(b["meanConfidence"])
+            ys.append(b["observedAccuracy"])
+            sizes.append(b["observations"])
+            # Clamped at 0: a Wilson interval is centred on a shrunk estimate, not
+            # on p, so at p=1.0 the upper bound sits BELOW the point and a raw
+            # subtraction goes negative. The bounds are authoritative; the error bar
+            # is a drawing of them.
+            lows.append(
+                max(0.0, b["observedAccuracy"] - (b["observedAccuracyLow"] or 0))
+            )
+            highs.append(
+                max(0.0, (b["observedAccuracyHigh"] or 0) - b["observedAccuracy"])
+            )
+        if not xs:
+            continue
+        name = "|".join(str(arm[k]) for k in report["group_by"])
+        biggest = max(sizes)
+        ax.errorbar(xs, ys, yerr=[lows, highs], fmt="none", ecolor="#bbb", elinewidth=1)
+        ax.scatter(
+            xs,
+            ys,
+            s=[30 + 220 * (n / biggest) for n in sizes],
+            alpha=0.7,
+            label=f"{name} (n={arm['observations']})",
+        )
+    ax.set_xlabel("mean confidence in bin")
+    ax.set_ylabel("observed cell accuracy")
+    ax.set_title("Confidence reliability, per configuration arm")
+    ax.set_xlim(0, 1.02)
+    ax.set_ylim(0, 1.02)
+    ax.legend(fontsize=8, loc="lower right")
+    path = os.path.join(out_dir, "reliability-diagram.png")
+    fig.tight_layout()
+    fig.savefig(path, dpi=140)
+    plt.close(fig)
+    print(f"reliability diagram -> {path}")
+    return path
+
+
 def figures(summary_path):
     """Emit charts if matplotlib available; else skip gracefully."""
     try:
@@ -891,6 +1266,25 @@ def main():
     ap.add_argument(
         "--cost-var", help="summary.json: print per-cell cost mean±stdev+CV"
     )
+    ap.add_argument(
+        "--calibration",
+        nargs="+",
+        metavar="SUMMARY",
+        help="pool confidence calibration (ECE/Brier/AUROC vs exact per-cell truth) "
+        "across one or more scored summary.json files, per configuration arm",
+    )
+    ap.add_argument(
+        "--calibration-group",
+        default=",".join(CALIBRATION_GROUP_DEFAULT),
+        help="comma-separated `resolved` config keys to pool by "
+        f"(default: {','.join(CALIBRATION_GROUP_DEFAULT)})",
+    )
+    ap.add_argument(
+        "--corpus",
+        default=os.path.join(BENCH, "corpus", "docs"),
+        help="directory holding <doc>.truth.json (default: benchmarks/corpus/docs)",
+    )
+    ap.add_argument("--calibration-out", help="write the calibration report JSON here")
     a = ap.parse_args()
     if a.run:
         rm, rows = score_all(a.run)
@@ -898,6 +1292,14 @@ def main():
     if a.compare and a.baseline:
         compare(a.compare, a.baseline)  # per-(cell,doc) rows
         compare_cells(a.compare, a.baseline)  # variance-aware cell level
+    if a.calibration:
+        report = calibration_study(
+            a.calibration,
+            a.corpus,
+            group_by=[k for k in a.calibration_group.split(",") if k],
+            out_path=a.calibration_out,
+        )
+        reliability_figure(report)
     if a.figures:
         figures(a.figures)
     if a.figures_compare:

@@ -67,11 +67,11 @@ def score_confidence_coverage(sections):
     }
 
 
-def scalar_bearing_records(ir):
-    """The dicts a truth file's flat ``fields`` should be compared against.
+def records_with_path(ir):
+    """``(field-path prefix, record)`` for each dict a truth file compares against.
 
-    Normally just the ``inference_result`` itself. For a class flagged
-    ``x-aws-idp-multi-instance`` (GitHub #715) the result is
+    Normally just the ``inference_result`` itself, at the empty prefix. For a class
+    flagged ``x-aws-idp-multi-instance`` (GitHub #715) the result is
     ``{"instances": [ …record… ]}``, and every user property lives one level down —
     so reading only top-level keys finds NOTHING and scores every scalar field
     wrong. Measured: the `mi-wrapped` cell reported ``scalar_accuracy = 0.0`` on all
@@ -81,15 +81,42 @@ def scalar_bearing_records(ir):
     The generator's ``fields`` records the FIRST document's identity block, and the
     caller uses first-wins merging, so yielding instances in order compares against
     the right record.
+
+    The prefix is the piece ``scalar_bearing_records`` does not need and the
+    confidence join cannot do without: it has to name a cell the same way
+    ``idp_common.evaluation.flatten_confidences`` does, and that walk indexes every
+    list by its position in the RAW list. So the index here is the raw one — a
+    non-dict entry ahead of a record shifts the path but not this enumeration.
     """
     if not isinstance(ir, dict):
         return []
     instances = ir.get("instances")
     if isinstance(instances, list):
-        records = [r for r in instances if isinstance(r, dict)]
+        records = [
+            (f"instances[{i}]", r)
+            for i, r in enumerate(instances)
+            if isinstance(r, dict)
+        ]
         if records:
             return records
-    return [ir]
+    return [("", ir)]
+
+
+def scalar_bearing_records(ir):
+    """The dicts a truth file's flat ``fields`` should be compared against."""
+    return [record for _prefix, record in records_with_path(ir)]
+
+
+def _cell_path(prefix, field, index, cell):
+    """Name one list cell the way ``flatten_confidences`` names it.
+
+    ``flatten_values`` and ``flatten_confidences`` build the identical key for the
+    identical position, which is what makes the join exact rather than
+    by-field-name: one empty ``Description`` cell in a 400-row table must not be
+    confused with any other row's.
+    """
+    root = f"{prefix}.{field}" if prefix else field
+    return f"{root}[{index}].{cell}"
 
 
 def _wall(row):
@@ -193,6 +220,316 @@ def score_cells(sections, rows_typed, list_key):
     return hits, total, len(by_seq)
 
 
+def confidence_observations(sections, rows_typed, list_key):
+    """``(confidence, correct)`` per list CELL, joined to exact truth by SEQ tag.
+
+    This is the join #935 is about. A confidence score is only a calibration
+    observation once it is paired with whether the value it scores was right, and
+    the two halves live in different places: the score in ``explainability_info``,
+    the value in ``inference_result``, the answer in the truth file. The corpus's
+    unique ``SEQnnnnn`` row tag is what makes the pairing exact rather than
+    positional — the row the model returned third may be the truth's fifth.
+
+    Both sides are keyed by ``flatten_*`` field path, so a cell is identified by
+    position within its own row and nothing is matched by bare field name. The
+    correctness verdict is ``typed_match``, the SAME predicate ``cell_accuracy``
+    uses, so a cell cannot be correct for one metric and wrong for the other.
+
+    A row recovered in two sections contributes once (first section wins),
+    matching ``score_cells``; counting it twice would inflate the observation count
+    that every downstream reliability gate is thresholded on. Cells the truth does
+    not declare (``Description``, which carries the tag) and cells with no
+    confidence leaf are skipped — a missing confidence is ``score_confidence_coverage``'s
+    subject, not evidence about calibration.
+    """
+    if not rows_typed:
+        return []
+    truth = {}
+    for tag, cells in rows_typed.items():
+        text = str(tag)
+        seq = int(text[3:]) if text.startswith("SEQ") else int(text)
+        truth[seq] = {str(c).lower(): e for c, e in (cells or {}).items()}
+
+    observations = []
+    seen = set()
+    for sec in sections:
+        ir = sec.get("inference_result") or {}
+        confidences = lib.walk_confidence(sec.get("explainability_info"))
+        if not confidences:
+            continue
+        for prefix, record in records_with_path(ir):
+            for field, value in record.items():
+                if list_key and field.lower() != str(list_key).lower():
+                    continue
+                if not isinstance(value, list):
+                    continue
+                for index, row in enumerate(value):
+                    seq = _seq_of(row)
+                    cells = truth.get(seq) if seq is not None else None
+                    if not cells or seq in seen:
+                        continue
+                    seen.add(seq)
+                    for cell, got in row.items():
+                        key = str(cell).lower()
+                        if key not in cells:
+                            continue
+                        score = confidences.get(_cell_path(prefix, field, index, cell))
+                        if not isinstance(score, (int, float)) or isinstance(
+                            score, bool
+                        ):
+                            continue
+                        observations.append(
+                            (float(score), typed_match(cells[key], got))
+                        )
+    return observations
+
+
+def score_calibration(sections, rows_typed, list_key, observations=None):
+    """Is this run's confidence CALIBRATED, and does it RANK errors? (#935)
+
+    ``mean_confidence`` and ``pct_conf_below_0.9`` next door describe the shape of
+    the confidence distribution and say nothing about whether it is true. Two
+    separate questions have to be answered before a confidence score can route
+    human review, and they are independent:
+
+    * **Calibration** — when the grader says 0.9, is it right 90% of the time?
+      Expected Calibration Error.
+    * **Discrimination** — are the wrong cells the low-scoring ones? AUROC. This is
+      the only property worst-first review actually needs.
+
+    A run can pass the first and fail the second completely, and the repository has
+    already measured exactly that once: ECE 0.032 over 7 bins with AUROC 0.480, all
+    77 errors in the top bin, so a worst-first queue reached none of them.
+
+    Neither statistic is implemented here. ``ConfidenceCurve`` is the engine behind
+    the shipped review-effort estimator, and its ``ECE_UNRELIABLE_THRESHOLD`` /
+    ``AUROC_UNRELIABLE_THRESHOLD`` are the bars the product itself refuses to
+    recommend a review subset under — so measuring through it makes the benchmark a
+    statement about the thresholds that ship rather than about a lookalike.
+
+    Two of each statistic are reported deliberately, and the pairs do not agree.
+
+    ``calibration_auroc`` is the curve's binned estimate, which is what the gate
+    reads and is biased LOW by design (it can call a good ranker mediocre; it will
+    not call a chance-level ranker good). ``calibration_auroc_unbinned`` is
+    Stickler's, the value to quote as a metric.
+
+    ``calibration_ece`` is likewise the gate's: it compares each bin's accuracy to
+    the bin MIDPOINT, because the curve stores counts and not the confidences
+    themselves. That puts a floor under it — a set of cells all scored 1.00 and all
+    correct is perfectly calibrated and still reports 0.05, the distance from 1.00
+    to the top bin's midpoint of 0.95. Well inside the 0.15 gate, so the gate does
+    not misfire, but it is not a number to quote as the grader's calibration error.
+    ``calibration_ece_mean_conf`` compares against the mean confidence observed in
+    each bin, which is the standard estimator and what a reliability diagram plots.
+
+    Reporting only one of each would either understate the grader or describe a
+    gate nobody runs.
+
+    ``calibration_curve`` carries the raw bin counts, which is what makes a
+    per-cell or per-release roll-up EXACT: the curve composes additively, so
+    pooling documents is adding two ten-element arrays rather than re-reading S3.
+    ``brierSse`` and ``confSum`` ride along for the same reason — Brier is a mean of
+    squared errors and the mean-confidence ECE needs a per-bin mean, so the SUMS
+    pool exactly where the means would not. The one statistic that cannot be pooled
+    from this payload is the unbinned AUROC, which needs the raw pairs; the
+    release-level pass re-derives it (``aggregate.py --calibration``).
+
+    Everything is ``None`` with ``calibration_observations: 0`` when the document
+    has no joinable cell, which is the honest reading for a reference-corpus run or
+    a class with no list attribute. It is not 1.0 and it is not a failure.
+
+    ``observations`` lets a caller that already holds the pairs — the release-level
+    pass, which retains them to compute the unbinned AUROC over a whole arm — pass
+    them in rather than have the join run twice over the same sections.
+    """
+    if observations is None:
+        observations = confidence_observations(sections, rows_typed, list_key)
+    if not observations:
+        return {
+            "calibration_observations": 0,
+            "calibration_correct": None,
+            "calibration_ece": None,
+            "calibration_ece_mean_conf": None,
+            "calibration_auroc": None,
+            "calibration_auroc_unbinned": None,
+            "calibration_brier": None,
+            "calibration_bin_coverage": None,
+            "calibration_reliable": None,
+            "calibration_curve": None,
+        }
+
+    from idp_common.evaluation import ConfidenceCurve
+
+    curve = ConfidenceCurve()
+    # ``source="scoring"``, not the default "review": a benchmark run measures the
+    # WHOLE confidence range, including the high-confidence zone worst-first review
+    # never reaches. That is the distinction that lets the shipped estimator call a
+    # curve MEASURED rather than PARTIALLY_MEASURED, so recording it wrongly here
+    # would understate a curve this corpus genuinely does measure.
+    curve.add_observations(observations, source="scoring")
+    health = curve.calibration_health()
+
+    from idp_common.evaluation.confidence_curve import BIN_COUNT, bin_index
+
+    total = len(observations)
+    correct = sum(1 for _score, ok in observations if ok)
+    sse = sum((score - (1.0 if ok else 0.0)) ** 2 for score, ok in observations)
+    conf_sum = [0.0] * BIN_COUNT
+    for score, _ok in observations:
+        conf_sum[bin_index(score)] += score
+    ece_mean_conf = mean_conf_ece(curve.correct, curve.total, conf_sum)
+    return {
+        "calibration_observations": total,
+        "calibration_correct": correct,
+        "calibration_ece": round(health.ece, 4) if health.ece is not None else None,
+        "calibration_ece_mean_conf": (
+            round(ece_mean_conf, 4) if ece_mean_conf is not None else None
+        ),
+        "calibration_auroc": (
+            round(health.auroc, 4) if health.auroc is not None else None
+        ),
+        "calibration_auroc_unbinned": _unbinned_auroc(observations),
+        "calibration_brier": round(sse / total, 4),
+        "calibration_bin_coverage": health.bin_coverage,
+        "calibration_reliable": health.reliable,
+        "calibration_curve": {**curve.to_dict(), "brierSse": sse, "confSum": conf_sum},
+    }
+
+
+def mean_conf_ece(correct, total, conf_sum):
+    """ECE against each bin's MEAN CONFIDENCE rather than its midpoint.
+
+    The estimator Stickler's ``ECEMetric`` uses, and the one a reliability diagram
+    plots. Computed here from the same three per-bin sums the summary stores, so a
+    pooled release figure is exact rather than an average of per-document ECEs
+    (which would weight a 5-row document like a 400-row one).
+    """
+    n = sum(total)
+    if not n:
+        return None
+    error = 0.0
+    for index, count in enumerate(total):
+        if count <= 0:
+            continue
+        error += (count / n) * abs(correct[index] / count - conf_sum[index] / count)
+    return error
+
+
+def pool_calibration(payloads, unbinned_auroc=None):
+    """Fold per-document ``calibration_curve`` payloads into ONE curve.
+
+    Pooling is what makes these numbers readable at all on this corpus. A single
+    document contributes a few hundred cells of which nearly all are correct, so its
+    own AUROC is usually undefined (one class absent) and its ECE is dominated by
+    how accurate that one document happened to be. The shipped reliability gates say
+    so explicitly: ``MIN_OBSERVATIONS_FOR_MEASURED`` is 30 and
+    ``MIN_OBSERVATIONS_FOR_AUROC`` is 100.
+
+    Exact, not an average of averages: the curve composes additively, and the two
+    non-additive statistics travel as SUMS (``brierSse``, ``confSum``) for that
+    reason. Averaging per-document ECEs would weight a 5-row form the same as a
+    400-row statement.
+
+    ``unbinned_auroc`` is accepted rather than computed because it cannot be
+    recovered from bin counts — the caller that still holds the raw pairs passes it
+    in, and a caller pooling stored summaries honestly leaves it None.
+    """
+    from idp_common.evaluation import ConfidenceCurve, wilson_interval
+    from idp_common.evaluation.confidence_curve import BIN_COUNT
+
+    pooled = ConfidenceCurve()
+    conf_sum = [0.0] * BIN_COUNT
+    sse = 0.0
+    for payload in payloads:
+        if not isinstance(payload, dict):
+            continue
+        part = ConfidenceCurve.from_dict(payload)
+        for index in range(BIN_COUNT):
+            pooled.correct[index] += part.correct[index]
+            pooled.total[index] += part.total[index]
+        pooled.scoring_observations += part.scoring_observations
+        sse += float(payload.get("brierSse") or 0.0)
+        for index, value in enumerate((payload.get("confSum") or [])[:BIN_COUNT]):
+            conf_sum[index] += float(value)
+
+    total = int(pooled.total_observations)
+    if not total:
+        return None
+    correct = int(sum(pooled.correct))
+    health = pooled.calibration_health()
+    low, high = wilson_interval(correct, total)
+    table = []
+    for row, bin_total, bin_conf in zip(
+        pooled.reliability_table(), pooled.total, conf_sum
+    ):
+        n = int(bin_total)
+        acc_low, acc_high = (
+            wilson_interval(int(round(row["observedAccuracy"] * n)), n)
+            if n
+            else (None, None)
+        )
+        table.append(
+            {
+                **{k: row[k] for k in ("binStart", "binEnd", "observations")},
+                "observedAccuracy": row["observedAccuracy"],
+                "observedAccuracyLow": acc_low,
+                "observedAccuracyHigh": acc_high,
+                "meanConfidence": (bin_conf / n) if n else None,
+            }
+        )
+    pooled_ece_mean_conf = mean_conf_ece(pooled.correct, pooled.total, conf_sum)
+    return {
+        "observations": total,
+        "correct": correct,
+        "accuracy": round(correct / total, 4),
+        "accuracy_low": round(low, 4),
+        "accuracy_high": round(high, 4),
+        "ece": round(health.ece, 4) if health.ece is not None else None,
+        "ece_mean_conf": (
+            round(pooled_ece_mean_conf, 4) if pooled_ece_mean_conf is not None else None
+        ),
+        "auroc": round(health.auroc, 4) if health.auroc is not None else None,
+        "auroc_unbinned": unbinned_auroc,
+        "brier": round(sse / total, 4),
+        "bin_coverage": health.bin_coverage,
+        # The three ways the shipped estimator refuses to recommend worst-first
+        # review, kept apart because they mean different things and only one of them
+        # is about the grader being wrong.
+        "degenerate": health.degenerate,
+        "overconfident": health.overconfident,
+        "undiscriminating": health.undiscriminating,
+        "reliable": health.reliable,
+        "estimate_confidence": pooled.assess_estimate_confidence().value,
+        "bins": table,
+    }
+
+
+def _unbinned_auroc(observations):
+    """Stickler's AUROC over the raw pairs, or None when one class is absent.
+
+    ``ConfidenceCurve.auroc`` reads bin counts and therefore discards within-bin
+    ordering; its own docstring directs callers to this one when reporting AUROC as
+    a metric rather than using it as a gate. On a corpus where most cells are
+    correct the two differ substantially, so quoting the gate's value as the
+    grader's ranking power would understate it.
+    """
+    from stickler.structured_object_evaluator.models.confidence import ConfidencePair
+
+    from idp_common.evaluation.stickler_backend.confidence import AUROCMetric
+
+    pairs = [
+        # ``similarity`` is required by the model and unread by this metric; the
+        # verdict is an exact typed match, so it is 1 or 0 rather than a distance.
+        ConfidencePair(
+            is_match=bool(ok), confidence=float(score), similarity=1.0 if ok else 0.0
+        )
+        for score, ok in observations
+    ]
+    value = AUROCMetric().compute(pairs).get("value")
+    return round(value, 4) if isinstance(value, (int, float)) else None
+
+
 def score_audit_metadata(sections):
     """What the extraction stage RECORDED about itself, aggregated per document.
 
@@ -278,7 +615,7 @@ def score_synthetic(bucket, doc_prefix, truth):
         ir = sec.get("inference_result", {}) or {}
         blob = json.dumps(ir)
         seqs += [int(m) for m in lib.SEQ.findall(blob)]
-        lib.walk_confidence(sec.get("explainability_info"), confs)
+        confs += lib.confidence_values(sec.get("explainability_info"))
         # capture scalar fields (top-level, case-insensitive)
         # Unwrap a multi-instance result so its records' fields are visible; a
         # single-record result yields itself, so nothing changes for it.
@@ -349,6 +686,11 @@ def score_synthetic(bucket, doc_prefix, truth):
         else None,
         "n_conf_leaves": len(confs),
         **score_confidence_coverage(sections),
+        # Calibration and discrimination against the exact per-cell truth (#935).
+        # Only the synthetic corpus can carry these: a reference corpus is scored by
+        # the stack's own evaluation, which does not expose a per-cell verdict to
+        # join a per-cell confidence to.
+        **score_calibration(sections, truth.get("rows_typed"), truth.get("list_key")),
     }
 
 
@@ -425,7 +767,7 @@ def score_reference(bucket, doc_prefix):
     confs = []
     sections = list(lib.iter_section_results(bucket, doc_prefix))
     for sec in sections:
-        lib.walk_confidence(sec.get("explainability_info"), confs)
+        confs += lib.confidence_values(sec.get("explainability_info"))
     return {
         **score_audit_metadata(sections),
         "weighted_accuracy": acc,

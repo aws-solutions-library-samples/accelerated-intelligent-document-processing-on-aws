@@ -2242,7 +2242,7 @@ def _absent_field_paths(inference_result):
     Paths, not bare leaf names: one empty ``Description`` cell would otherwise
     exclude *every* Description score in a 200-row transaction table, understating
     review need on exactly the table-heavy documents this feature targets. The path
-    shape matches :func:`_walk_confidence_named` and ``curve_store._flatten_values``.
+    shape matches :func:`_walk_confidence_named` and ``curve_store.flatten_values``.
     """
     absent = set()
 

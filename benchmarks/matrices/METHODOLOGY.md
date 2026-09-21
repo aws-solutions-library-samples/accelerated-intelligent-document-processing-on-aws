@@ -143,7 +143,8 @@ Every run is scored on SEVEN dimensions:
 | **success/fail** | ObjectStatus COMPLETED vs FAILED; failure phase + Bedrock error class captured (e.g. `ValidationException: Input too long`). |
 | **completeness** | Synthetic: distinct `SEQ` recovered ÷ GT count (recall); truncation point = longest contiguous prefix; dup/gap counts. Reference: parse-failure rate. |
 | **accuracy** | Synthetic: field-exact match rate on scalar fields + per-row cell match on list fields (keyed by SEQ). Reference: stack `evaluation/results.json` `weighted_overall_score`. |
-| **confidence calibration** | From `explainability_info` leaves: mean confidence; %below-threshold (alert rate); and, where a match flag exists, separation = mean(conf\|correct) − mean(conf\|incorrect). Over-confidence on wrong values is a calibration regression even if accuracy holds. |
+| **confidence calibration** | Two instruments, and the second answers the question the first cannot. Distributional: mean confidence, %below-threshold (alert rate), and — where a match flag exists — separation = mean(conf\|correct) − mean(conf\|incorrect). Per-cell, on the synthetic corpus only: each confidence leaf is joined to the cell it scores through `flatten_confidences`' field path and the row's `SEQ` tag, giving true `(confidence, correct)` pairs from which `idp_common.evaluation.ConfidenceCurve` computes **ECE** (calibration) and **AUROC** (discrimination), alongside Stickler's unbinned AUROC and Brier score. Over-confidence on wrong values is a calibration regression even if accuracy holds — and a score that is well calibrated can still rank at chance, which only AUROC sees. |
+| **confidence coverage** | `scored_rows / expected_rows` per document and per field, computed by the same `audit_explainability` rule the `assessment_coverage_incomplete` guard fires on. Distinct from the row above: it counts rows with NO confidence, where the row above describes the scores that exist. Undefined (`None`), not 1.0, for a document with no list attribute. |
 | **latency** | Wall-clock from doc WorkflowStartTime→CompletionTime; also per-phase where available. |
 | **token use** | Per-phase, per-model, per-unit (input/output/cacheRead/cacheWrite/requests) from the doc `Metering` map. |
 | **cost** | Metering priced with `config_library/pricing.yaml` (longest-suffix key match), broken out by phase (OCR/Extraction/Assessment/Summarization/Lambda). |
@@ -178,7 +179,18 @@ blind spot before it was closed.
 - Cross-release comparison: diff a release's `summary.json` against `baseline.json`
   on matched (cell, doc) keys; flag deltas beyond thresholds (accuracy −>2%, cost
   +>15%, any new failure, calibration separation drop) as **regressions**.
-- Emits the paper's tables + figures (matplotlib) into `paper/figures/`.
+- Per-cell calibration is compared on the **pooled** curve rather than on a mean of
+  per-document figures, because a 5-row form and a 400-row statement must not carry
+  equal weight and a single document's AUROC is usually undefined outright. Flagged:
+  pooled ECE +0.03, pooled AUROC −0.05, or — at any size of step — a cell crossing
+  `ECE_UNRELIABLE_THRESHOLD` or `AUROC_UNRELIABLE_THRESHOLD`, past which the shipped
+  review-effort estimator stops recommending a review subset at all.
+- `--calibration` pools the same figures per **configuration arm** across a whole
+  grid, and prints the count of WRONG cells beside the AUROC columns, because
+  ranking power is estimated over wrong × correct pairs — an arm with 70,000 cells
+  and 55 errors is a 55-observation measurement of discrimination.
+- Emits the paper's tables + figures (matplotlib) into `paper/figures/`, including a
+  per-arm reliability diagram plotted against each bin's mean confidence.
 
 ## 6. Reproducibility & honesty rules
 - Record the exact commit, stack, model IDs, pricing.yaml hash, and date in each
