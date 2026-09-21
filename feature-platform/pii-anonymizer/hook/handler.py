@@ -483,8 +483,10 @@ def _store_mapping(
     SECURITY: the mapping is a re-identification key (contains REAL PII). It is
     stored in a feature-owned table — NOT the host Output/Working buckets —
     precisely because the host's getFileContents resolver will proxy any
-    Output-bucket key to any authenticated user (no config-version scoping),
-    which would bypass the RBAC gate. Kept out of any host-proxyable location,
+    Output-bucket key to any caller holding one of the five Cognito groups, with
+    no key-level or config-version scoping, and because the browser's own Identity
+    Pool role reads that bucket directly whatever group the caller is in. Either
+    path would bypass the RBAC gate. Kept out of any host-proxyable location,
     the mapping is reachable ONLY via the feature API's RBAC-gated
     /report/{docId}/mapping route (feature-api/handler.py), which checks the
     caller's allowedConfigVersions against original_config_version."""

@@ -611,7 +611,7 @@ test-packages-cicd: ## CI-safe: run the package/Lambda suites NOT covered by idp
 	@# own invocation because they all define a module named ``index``, so a combined
 	@# pytest run fails collection on the basename collision (same reason as
 	@# queue_sender above). Four of these directories reached NEITHER CI before —
-	@# issue #980 tracks generalising scripts/tests/test_src_lambda_tests_in_ci.py
+	@# issue #1080 tracks generalising scripts/tests/test_src_lambda_tests_in_ci.py
 	@# beyond src/lambda so that omission is detected rather than found by hand.
 	cd nested/api-resolvers/src/lambda/configuration_resolver && $(PYTEST_HERMETIC) -q -p no:cacheprovider
 	cd nested/api-resolvers/src/lambda/get_stepfunction_execution_resolver && $(PYTEST_HERMETIC) -q -p no:cacheprovider

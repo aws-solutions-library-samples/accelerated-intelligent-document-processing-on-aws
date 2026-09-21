@@ -40,13 +40,29 @@ an enumerated one would not be caught here. That directory currently holds only
 the file it names, so there is no live gap; closing the file-level case would mean
 requiring bare-directory invocations throughout, which is a larger change.
 
-Only ``src/lambda/`` is asserted. The same argument applies to
-``patterns/unified/tests`` and the ``nested/api-resolvers`` Lambdas, and issue
-#980 tracks exactly that generalisation — this file is the ``src/lambda``-scoped
-instance of the check #980 asks for. It is deliberately not generalised here
-because PR #953 is concurrently editing this recipe; widening the subtree would
-collide. The generalised version belongs with whichever of the two lands second.
-Issues #974 and #980 are two further known instances of the same shape.
+Only ``src/lambda/`` is asserted, and that is the live limitation of this file rather
+than a property of the argument: the same reasoning applies to every other test root,
+and a substantial number of them — across ``nested/api-resolvers``,
+``feature-platform/`` and elsewhere — are run by neither CI with nothing reporting it.
+
+**No figure is stated here on purpose.** Any count is a function of how generously the
+recipe is parsed, and this module deliberately parses it narrowly (see
+``_enumerated_paths``, which extracts only ``src/lambda``-shaped paths), so a number
+written in this docstring would be a count nothing in this module derives — the defect
+class that motivated the RBAC-distribution gate next door. Run the measurement instead:
+the covered set comes from ``_recipe_body`` and the universe from
+``discover_test_roots``, and **issue #1080** records both the method and the figure it
+produced, with the enumeration and the caveat that it is a lower bound.
+
+#1080 also records why widening cannot be a one-line change — it fails with dozens of
+findings on day one, so it needs a ratcheted baseline or a staged widening — and that
+``SUBTREE`` is itself an unregistered narrowing of a gate's scope, which
+``exemption_discovery`` cannot see because the narrowing is a bare string and its
+justification lives in this docstring rather than in a comment attached to the
+assignment.
+
+``patterns/unified/tests`` was one instance of this and has been fixed; #974 is another
+of the same shape.
 """
 
 from __future__ import annotations

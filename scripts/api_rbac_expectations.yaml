@@ -897,6 +897,7 @@ operations:
   getMyProfile:
     groups: ANY
     kind: read
+    ownership: true
     enforced_in: src/lambda/user_management/index.py
     args: {}
     note: >-
@@ -904,7 +905,11 @@ operations:
       own record and nothing else, so it is exactly what a user with no group
       assigned must still be able to read — the UI calls it to discover the
       caller's scope, and denying it would make a groupless account
-      indistinguishable from a broken deployment.
+      indistinguishable from a broken deployment. `ownership: true` because
+      own-record-only IS record ownership: the schema declares no arguments and the
+      handler resolves the row from the verified `sub` and `email` claims, so there
+      is no arbitrary-user read path. It was previously unflagged, which understated
+      by one the count of ANY operations carrying a per-caller narrowing.
 
   # ==========================================================================
   # Fine-tuning
@@ -1005,9 +1010,12 @@ operations:
       circuit_breaker_manager, where `user` is the pausing administrator's EMAIL
       (circuit_breaker_resolver sends `caller["email"]`). So after any manual pause
       this operation serves an administrator's address and an operator's free-text
-      note. The floor costs nothing: the badge is UI chrome, and every user who
-      reaches the UI holds a group. The three controls that change the breaker stay
-      Admin-only.
+      note. The floor costs nothing, and the reason is structural rather than a claim
+      about who signs in: the badge has exactly one render site, the documents table
+      header, and AuthRoutes returns the no-role notice IN PLACE OF the router for a
+      session in no group, so no route mounts and the badge is never requested. A
+      groupless user can still sign in; they just cannot reach it. The three controls
+      that change the breaker stay Admin-only.
   pauseCircuitBreaker:
     groups: [Admin]
     kind: mutation
@@ -1036,11 +1044,12 @@ operations:
   # Installing, subscribing and launching a feature are Admin-only.
   #
   # Note what is NOT the reason: "the UI needs these before it knows the caller's
-  # role" does not hold. use-user-role.ts reads cognito:groups straight off the ID
-  # token with no API call, so the role is known first in every ordinary sign-in.
-  # The only window where it is not is a federated user's first login, where the
-  # claim can be absent until one forced token refresh picks up what the
-  # pre-token-generation trigger assigned.
+  # role" does not hold at all. use-user-role.ts reads cognito:groups straight off
+  # the ID token with no API call, and the pre-token-generation trigger injects the
+  # groups into the FIRST token rather than only the second, so the role is known
+  # before any of these three is called. (The forced token refresh in that hook is a
+  # fallback for a token that arrives without the claim anyway, not a window in which
+  # the role is unknowable.) The reason is the payloads, per operation, below.
   listInstalledFeatures:
     groups: ANY
     kind: read

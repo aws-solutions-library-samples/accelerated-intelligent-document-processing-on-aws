@@ -83,7 +83,7 @@ Authorization is enforced at multiple layers:
 > group `template.yaml` creates); and **8 require only
 > authentication**, which includes a caller in no group at all.
 > 13 additionally enforce config-version scope, 4 filter
-> list rows by it, and 8 enforce per-object ownership. `scripts/api_rbac_expectations.yaml`
+> list rows by it, and 9 enforce per-object ownership. `scripts/api_rbac_expectations.yaml`
 > is the manifest of record for all of this, and records two accepted open gaps:
 > **GAP-02**, the `queryKnowledgeBase` *resolver* carries no group check of its own
 > (the operation is `ANY_GROUP`, so the dispatcher's floor is now the only group

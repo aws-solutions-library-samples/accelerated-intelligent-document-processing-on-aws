@@ -2139,8 +2139,11 @@ type Query @aws_cognito_user_pools @aws_iam {
   listAvailableModels: AvailableModelsResult @aws_cognito_user_pools
 
   # Circuit Breaker status. An assigned group is required: `lastError` carries
-  # `Manual pause by <administrator email>: <reason>` after a manual pause. The
-  # badge itself is UI chrome and every UI user holds a group, so the floor is free.
+  # `Manual pause by <administrator email>: <reason>` after a manual pause. The floor
+  # costs nothing because the badge's only render site is the documents table header,
+  # which a groupless session never reaches — AuthRoutes returns the no-role notice
+  # in place of the router, so no route mounts at all. Such a session can still sign
+  # in; it just cannot get to the badge.
   getCircuitBreakerStatus: CircuitBreakerStatus
     @aws_cognito_user_pools(
       cognito_groups: ["Admin", "Annotator", "Author", "Reviewer", "Viewer"]

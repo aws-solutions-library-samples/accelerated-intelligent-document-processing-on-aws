@@ -314,7 +314,7 @@ authenticated user irrespective of group, so the object bytes are not behind thi
 distribution (see UI.T06 and AUTH.T03).
 
 Beyond the group check, **13** operations verify config-version scope, **4** filter
-their result rows by it, and **8** verify per-object ownership.
+their result rows by it, and **9** verify per-object ownership.
 [`scripts/api_rbac_expectations.yaml`](../../../scripts/api_rbac_expectations.yaml)
 is the manifest of record for all of this and is asserted by
 `make api-test-static` in both CI systems and by the live matrix in

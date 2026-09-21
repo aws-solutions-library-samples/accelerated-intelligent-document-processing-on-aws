@@ -259,15 +259,15 @@ group.
 
 The remaining 8 are declared `groups: ANY`, which that file defines as any authenticated
 Cognito user — including one in no group, which self-service sign-up produces when you set
-`AllowedSignUpEmailDomain`. One of those 8 narrowed further, by record ownership
-(`listChatSessions`, which can only address the caller's own DynamoDB partition); the other
-7 are not, so a valid session is the whole check. They are, in full: `getMyProfile` (the
-caller's own record), `listChatSessions` (the caller's own chat sessions),
-`getLatestPublishedVersion` (the published release number, which is public), the two
-fine-tuning job reads and the three feature-platform reads (`listInstalledFeatures`,
-`listCatalogFeatures`, `checkFeatureEntitlement`) — so they disclose the caller's own
-record, a public version number, what models this deployment has trained and what optional
-features it has installed or is entitled to, rather than anything derived from a document.
+`AllowedSignUpEmailDomain`. Two of those 8 narrowed further, by record ownership —
+`getMyProfile` returns only the caller's own row, resolved from their token claims with no
+argument, and `listChatSessions` can only address the caller's own DynamoDB partition. The
+other 6 are not, so a valid session is the whole check: `getLatestPublishedVersion` (the
+published release number, which is public), the two fine-tuning job reads and the three
+feature-platform reads (`listInstalledFeatures`, `listCatalogFeatures`,
+`checkFeatureEntitlement`) — so they disclose a public version number, what models this
+deployment has trained and what optional features it has installed or is entitled to,
+rather than anything derived from a document.
 
 Three caveats on what the group floor does and does not buy you, and the third is the one
 that bounds the other two. It is a check on *who may ask*, not on *which document they may
@@ -356,7 +356,7 @@ justification in `scripts/security/dep_audit_allowlist.json`.
 |---|---|---|---|
 | Who is allowed to create an account? Is `AllowedSignUpEmailDomain` still empty, keeping sign-up administrator-only, and if you have set it, do you control every domain listed? A self-registered user is in no group, so the API refuses them the document-content operations — but `CognitoAuthorizedRole` still grants them `s3:GetObject`/`ListBucket` on the document buckets directly | | | |
 | Is MFA enabled on the Cognito user pool? The pool sets no `MfaConfiguration`, so a default deployment has it off | | | |
-| Do you accept that the 7 `groups: ANY` operations carrying no ownership or scope check are reachable by any authenticated user, including one in no group? They are the caller's own profile, a public version number, the two fine-tuning job reads and the three feature-platform reads — nothing derived from a document. Separately, and not fixed by any of these declarations: `CognitoAuthorizedRole` grants every authenticated user `s3:GetObject`/`ListBucket` on the document buckets, so a direct S3 read reaches document bytes with no API call and no key from an API. Does that meet your data classification? | | | |
+| Do you accept that the 6 `groups: ANY` operations carrying no ownership or scope check are reachable by any authenticated user, including one in no group? They are a public version number, the two fine-tuning job reads and the three feature-platform reads — nothing derived from a document. Separately, and not fixed by any of these declarations: `CognitoAuthorizedRole` grants every authenticated user `s3:GetObject`/`ListBucket` on the document buckets, so a direct S3 read reaches document bytes with no API call and no key from an API. Does that meet your data classification? | | | |
 | Have you restricted `WAFAllowedIPv4Ranges`, and if the API is reachable from the internet, have you added AWS Managed Rules and a rate-based rule beyond the IP allow-list? | | | |
 | Have you supplied a `PermissionsBoundaryArn`, and does your organization require one? | | | |
 | Is the 123-statement `Resource: "*"` surface acceptable under your service control policies, and have you reviewed the statements that are not forced by an account-scoped API? | | | |

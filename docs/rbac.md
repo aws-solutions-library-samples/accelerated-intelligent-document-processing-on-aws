@@ -497,9 +497,10 @@ in no group. They are, in full: `getMyProfile`, `listChatSessions`,
 `listInstalledFeatures`, `listCatalogFeatures` and `checkFeatureEntitlement` — and
 each entry in `scripts/api_rbac_expectations.yaml` carries a note saying why `ANY` is
 the intended answer for that operation specifically, rather than for the group it sits
-in. One of the 8, `listChatSessions`, is narrowed further by record ownership: its
-DynamoDB read is a key condition on the caller's own `userId`, so a groupless caller
-can only ever address an empty partition.
+in. Two of the 8 are narrowed further by record ownership: `getMyProfile` returns only
+the caller's own row, resolved from their token claims with no argument, and
+`listChatSessions`' DynamoDB read is a key condition on the caller's own `userId`, so a
+groupless caller can only ever address an empty partition.
 
 ⚠️ **A group check is not a per-document check.** `ANY_GROUP` establishes that the
 caller was onboarded; it does not establish that this document is theirs. A Viewer
@@ -642,7 +643,7 @@ enforcement itself is Layer 2.
 | `processChanges`, `completeSectionReview`, `claimReview`, `releaseReview`, `skipAllSectionsReview` | Admin, Reviewer |
 | `sendAgentChatMessage` | Admin, Author, Viewer (Reviewer excluded; also IAM for backend) |
 | `deleteChatSession`, `deleteAgentJob` | Any assigned group (`ANY_GROUP`), further session-scoped; see note below |
-| `updateChatSessionTitle`, `updateAgentChatMessage` | **Not reachable.** Both are declared in `schema.graphql` and in none of the four places the dispatcher routes from, so default-deny refuses them to every caller including Admin. The backend writes DynamoDB directly and does not need them |
+| `updateChatSessionTitle`, `updateAgentChatMessage` | **Not reachable.** Both are declared in `schema.graphql` and in neither routing surface (`FIELD_FUNCTION_MAP`/`FIELD_ALIASES` and `ddb_direct._HANDLED`), so default-deny refuses them to every caller including Admin. The backend writes DynamoDB directly and does not need them |
 
 > **Agent Chat authorization**: `sendAgentChatMessage` and `listAvailableAgents` restrict Agent Chat to **Admin, Author, Viewer** (Reviewer excluded). The restriction is declared in `schema.graphql` **and** enforced server-side in each resolver via a `_caller_in_groups` check — the single REST route's Cognito authorizer only authenticates, so the group gate lives in the resolver. The IAM backend publish path has no Cognito identity and bypasses the check. `listChatSessions` remains open to any authenticated user, bounded by a DynamoDB key condition on the caller's own partition; `getChatMessages` and the session-scoped **mutations** (`deleteChatSession`, `deleteAgentJob`) additionally require an assigned group.
 >
@@ -661,12 +662,13 @@ enforcement itself is Layer 2.
 | `listAvailableAgents` | Admin, Author, Viewer (Reviewer excluded; enforced server-side — see Agent Chat note above) |
 | `listChatSessions` | All authenticated, session-scoped by a DynamoDB key condition on the caller's own `userId` |
 | `getChatMessages` | Any assigned group (`ANY_GROUP`), plus the session-ownership check. The message read is keyed on `sessionId` alone, so ownership is a separate verification rather than a key condition, and it **fails open** — it returns true when `CHAT_SESSIONS_TABLE` is unset, and an operator can turn it off with `ENFORCE_CHAT_SESSION_OWNERSHIP=false`. Transcripts can quote document content, so the group floor sits under a check that can stand down |
-| `getAgentChatMessages` | **Not reachable.** It is declared in `schema.graphql` but in neither `scripts/api_rbac_expectations.yaml`, the dispatcher manifest, `FIELD_FUNCTION_MAP` nor `ddb_direct._HANDLED`, and the dispatcher denies by default — so it returns 403 to every caller including Admin. Schema-only surface; use `getChatMessages` |
+| `getAgentChatMessages` | **Not reachable.** It is declared in `schema.graphql` and in neither of the two surfaces the dispatcher routes from — `FIELD_FUNCTION_MAP`/`FIELD_ALIASES` and `ddb_direct._HANDLED` — and it has no entry in the manifest the dispatcher authorizes against, which denies by default. So it returns 403 to every caller including Admin. Schema-only surface; use `getChatMessages` |
 | `submitAgentQuery`, `getAgentJobStatus`, `listAgentJobs` | Admin, Author, Viewer |
 | `listConfigurationLibrary`, `getConfigurationLibraryFile` | Admin, Author, Viewer |
 | `listDiscoveryJobs` | Admin, Author |
 | `getTestRun`, `getTestRuns`, `getTestRunStatus`, `compareTestRuns`, `getTestSets`, `validateTestFileName` | Admin, Author |
-| `listFinetuningJobs`, `getFinetuningJob`, `validateTestSetForFinetuning`, `listAvailableModels` | All authenticated (UI limited to Admin, Author) |
+| `listFinetuningJobs`, `getFinetuningJob` | All authenticated — whole-deployment job, model and deployment state, with no per-caller scope (the rows record no owner). The UI surfaces them to Admin and Author only. The projection deliberately carries no dataset location, and `finetuning_jobs_resolver/test_projected_keys.py` pins its key set so that cannot change silently |
+| `validateTestSetForFinetuning`, `listAvailableModels` | **Not reachable.** Declared in `schema.graphql` and routed from nowhere, so default-deny refuses them to every caller including Admin |
 | `queryKnowledgeBase` | Any assigned group (`ANY_GROUP`); the resolver itself has no group check (GAP-02), so the dispatcher's floor is the only one |
 | `sendChatDocumentMessage` (mutation), `onChatDocumentMessageUpdate` (subscription) | Any assigned group (`ANY_GROUP`) **on the REST route only** — the chat Function URL reaches the same processor with no group claim (GAP-07). The resolver enforces per-session ownership and forwards the caller's verified claims, from which the processor enforces `allowedConfigVersions` scope on the target document; a scope it cannot evaluate denies the turn. That scope check stands down on the streaming route, which forwards no verified caller — see [Known Limitations](#known-limitations) |
 | `listUsers` | **Admin** — it returns every user's email and role. A non-admin reads their own record through `getMyProfile` instead |
