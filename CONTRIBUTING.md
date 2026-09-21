@@ -282,10 +282,12 @@ It is a convention, not a control, and it is worth knowing where it stops.
 GitHub's web interface. And if your machine sets `core.hooksPath` system-wide — some
 managed developer machines point it at a directory of hook runners — git runs those
 instead, and this hook is reached only because they chain to it. They do not forward
-the ref list, so it falls back to judging by `HEAD`: a push made while `HEAD` is on
-`develop` or `main` is then refused whatever its destination was. `make
-install-git-hooks` tells you when it detects that, and the refusal says which basis
-it used.
+the ref list, so it falls back to judging by `HEAD`, and that cuts both ways: a push
+made while `HEAD` is on `develop` or `main` is refused whatever its destination was,
+and a push whose destination *is* `develop` or `main` while `HEAD` is on your feature
+branch is allowed through. On such a machine, treat the hook as a reminder rather
+than a guard. `make install-git-hooks` tells you when it detects the redirect, and
+every refusal says which basis it used.
 
 ### Where the domain conventions live
 

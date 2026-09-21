@@ -988,7 +988,9 @@ install-git-hooks: ## Install the shared-branch pre-push guard into this checkou
 		echo -e "$(YELLOW)⚠️  core.hooksPath is set to $$HOOKS_PATH, outside this repository.$(NC)"; \
 		echo -e "$(YELLOW)   git runs that directory's hooks, so this one is reached only if they chain to it.$(NC)"; \
 		echo -e "$(YELLOW)   A chaining runner may not forward the ref list; the hook then judges by HEAD,$(NC)"; \
-		echo -e "$(YELLOW)   which refuses any push while HEAD is on develop or main. Override: ALLOW_SHARED_BRANCH=1$(NC)"; \
+		echo -e "$(YELLOW)   which cuts both ways: it refuses any push made while HEAD is on develop or main,$(NC)"; \
+		echo -e "$(YELLOW)   AND allows one whose destination IS develop or main while HEAD is not. Treat it$(NC)"; \
+		echo -e "$(YELLOW)   as a reminder rather than a guard here. Override a refusal: ALLOW_SHARED_BRANCH=1$(NC)"; \
 	else \
 		echo -e "$(GREEN)✅ Installed $$HOOK_DIR/pre-push (override a refusal with ALLOW_SHARED_BRANCH=1)$(NC)"; \
 	fi
