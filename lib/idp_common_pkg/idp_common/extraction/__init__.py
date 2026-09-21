@@ -8,6 +8,11 @@ This module provides services and models for extracting structured information
 from documents using LLMs.
 """
 
+from idp_common.extraction.failure import (
+    EXTRACTION_FAILED_CODE,
+    persist_section_after_extraction_failure,
+    record_section_extraction_failure,
+)
 from idp_common.extraction.models import ExtractedAttribute, ExtractionResult, PageInfo
 from idp_common.extraction.page_type_resolver import (
     PageTypePresence,
@@ -54,4 +59,8 @@ __all__ = [
     # 1S-TopK candidate resolution
     "is_topk_response",
     "resolve_candidates",
+    # Making a failed section visible in DynamoDB (#1049)
+    "EXTRACTION_FAILED_CODE",
+    "record_section_extraction_failure",
+    "persist_section_after_extraction_failure",
 ]

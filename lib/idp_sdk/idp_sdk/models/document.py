@@ -93,24 +93,33 @@ class DocumentMetadata(BaseModel):
 
 
 class DocumentInfo(BaseModel):
-    """Basic document information for listing."""
+    """Basic document information for listing.
+
+    Exactly the attributes ``DocumentProcessor.list_documents`` reads off each
+    tracking-table item. Richer per-document detail (page counts, classified
+    type) comes from ``document.get_status()`` and ``document.get_metadata()``,
+    which read the full record.
+    """
 
     document_id: str = Field(description="Document identifier")
     status: DocumentState = Field(description="Processing status")
     timestamp: Optional[datetime] = Field(default=None, description="Upload timestamp")
-    num_pages: Optional[int] = Field(default=None, description="Number of pages")
-    document_class: Optional[str] = Field(
-        default=None, description="Classified document type"
+    batch_id: Optional[str] = Field(
+        default=None, description="Batch this document was submitted with, if any"
     )
 
 
 class DocumentListResult(BaseModel):
-    """Paginated list of documents."""
+    """One page of documents."""
 
     documents: List[DocumentInfo] = Field(description="List of documents")
+    count: int = Field(
+        description=(
+            "Number of documents in this page. The tracking table is paginated "
+            "with a DynamoDB scan, which reports no table-wide total, so this is "
+            "a page size rather than a grand total."
+        )
+    )
     next_token: Optional[str] = Field(
         default=None, description="Continuation token for next page"
-    )
-    total_count: Optional[int] = Field(
-        default=None, description="Total count if available"
     )

@@ -86,7 +86,7 @@ def resolve_active_config_version(config_table):
         scan_kwargs["ExclusiveStartKey"] = last_key
 
 
-@xray_recorder.capture("queue_sender")
+@xray_recorder.capture("queue_sender")  # pyright: ignore[reportCallIssue] - aws-xray-sdk types capture() as the wrapped function, not the decorator factory
 def handler(event, context):
     logger.info(f"Processing event: {json.dumps(sanitize_event_for_logging(event))}")
 

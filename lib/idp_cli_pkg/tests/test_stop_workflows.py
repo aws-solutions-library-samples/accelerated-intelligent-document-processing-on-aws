@@ -8,6 +8,32 @@ Tests for stop_workflows module
 from unittest.mock import Mock, patch
 
 import pytest
+from botocore.exceptions import ClientError
+
+
+def _real_sfn_exceptions():
+    """Step Functions' generated exception classes, from the real service model.
+
+    Built through botocore rather than `boto3.client`, because `boto3.client`
+    resolves a default session and these tests patch `boto3.Session` — so
+    `boto3.client("stepfunctions")` would hand back a `Mock` whose every
+    attribute exists, which is precisely the illusion these tests exist to
+    avoid. Region and credentials are passed explicitly so this works under the
+    hermetic CI environment, which strips both; `create_client` makes no
+    network call.
+    """
+    import botocore.session
+
+    return (
+        botocore.session.get_session()
+        .create_client(
+            "stepfunctions",
+            region_name="us-east-1",
+            aws_access_key_id="testing",  # nosec B106 - not a real credential
+            aws_secret_access_key="testing",  # nosec B106 - not a real credential
+        )
+        .exceptions
+    )
 
 
 class TestWorkflowStopper:
@@ -160,8 +186,6 @@ class TestWorkflowStopper:
         mock_paginator.paginate.side_effect = mock_paginate
         mock_boto_clients["sfn"].get_paginator.return_value = mock_paginator
         mock_boto_clients["sfn"].stop_execution = Mock()
-        mock_boto_clients["sfn"].exceptions = Mock()
-        mock_boto_clients["sfn"].exceptions.ExecutionNotFound = Exception
 
         stopper = WorkflowStopper("test-stack")
         result = stopper.stop_executions()
@@ -346,3 +370,120 @@ class TestAbortQueuedDocuments:
             assert result["success"] is True
             assert result["documents_aborted"] == 1
             assert result["documents_failed"] == 1
+
+
+class TestStopSingleExecutionErrorHandling:
+    """What `stop_executions` does when `stop_execution` fails.
+
+    Every error here is a **real** botocore error rather than an attribute
+    invented on a mock. The bug this covers was
+    ``except self.sfn.exceptions.ExecutionNotFound:`` — a name that is not in the
+    Step Functions service model (``ExecutionDoesNotExist`` is). An ``except``
+    clause evaluates its expression when an error is raised, so that lookup
+    raised ``AttributeError`` from inside the handler and propagated *past* the
+    ``except Exception`` below it, crashing the whole stop instead of counting one
+    failure. A test that set ``mock.exceptions.ExecutionNotFound = Exception``
+    passed against it and pinned the impossible shape in place.
+    """
+
+    @pytest.fixture
+    def stopper(self):
+        with patch("idp_sdk._core.stop_workflows.StackInfo") as mock_si:
+            mock_si.return_value.get_resources.return_value = {
+                "DocumentQueueUrl": "https://sqs.example.com/queue",
+                "StateMachineArn": "arn:aws:states:us-east-1:123:stateMachine:sm",
+                "DocumentsTable": "test-table",
+            }
+            with patch("idp_sdk._core.stop_workflows.boto3.Session"):
+                from idp_sdk._core.stop_workflows import WorkflowStopper
+
+                yield WorkflowStopper("test-stack")
+
+    @staticmethod
+    def _one_execution(stopper):
+        """Wire the paginator so exactly one execution is found, then stopped."""
+        calls = {"n": 0}
+
+        def paginate(*_args, **_kwargs):
+            calls["n"] += 1
+            if calls["n"] <= 2:  # counting pass, then stopping pass
+                return [{"executions": [{"executionArn": "arn:1"}]}]
+            return [{"executions": []}]  # final verification pass
+
+        paginator = Mock()
+        paginator.paginate.side_effect = paginate
+        stopper.sfn.get_paginator.return_value = paginator
+
+    def test_an_already_gone_execution_counts_as_stopped(self, stopper):
+        """ExecutionDoesNotExist means there is nothing left to stop."""
+        self._one_execution(stopper)
+        stopper.sfn.stop_execution.side_effect = ClientError(
+            {
+                "Error": {
+                    "Code": "ExecutionDoesNotExist",
+                    "Message": "Execution Does Not Exist",
+                }
+            },
+            "StopExecution",
+        )
+
+        result = stopper.stop_executions()
+
+        assert result["total_stopped"] == 1
+        assert result["total_failed"] == 0
+
+    def test_step_functions_has_no_execution_not_found_exception(self):
+        """The fact the old handler assumed, checked against the service model.
+
+        If botocore ever does add an `ExecutionNotFound`, this fails and the
+        handler in `stop_single_execution` should be revisited — the code matched
+        there would then be ambiguous.
+        """
+        exceptions = _real_sfn_exceptions()
+        assert not hasattr(exceptions, "ExecutionNotFound")
+        assert hasattr(exceptions, "ExecutionDoesNotExist")
+
+    def test_the_real_service_exception_class_is_also_handled(self, stopper):
+        """The generated class from the real service model, not a mock attribute.
+
+        `ExecutionDoesNotExist` subclasses `ClientError`, so raising the class
+        botocore actually builds proves the handler catches the thing the service
+        raises — the check an invented `mock.exceptions.X = Exception` cannot make.
+        """
+        gone = _real_sfn_exceptions().ExecutionDoesNotExist(
+            {"Error": {"Code": "ExecutionDoesNotExist", "Message": "gone"}},
+            "StopExecution",
+        )
+
+        self._one_execution(stopper)
+        stopper.sfn.stop_execution.side_effect = gone
+
+        result = stopper.stop_executions()
+
+        assert result["total_stopped"] == 1
+        assert result["total_failed"] == 0
+
+    def test_any_other_client_error_is_reported_as_a_failure(self, stopper):
+        """The function returns a failure count; it does not crash."""
+        self._one_execution(stopper)
+        stopper.sfn.stop_execution.side_effect = ClientError(
+            {"Error": {"Code": "AccessDeniedException", "Message": "nope"}},
+            "StopExecution",
+        )
+
+        result = stopper.stop_executions()
+
+        assert result["total_stopped"] == 0
+        assert result["total_failed"] == 1
+        # `success` is "nothing is left running", not "every call succeeded", so a
+        # counted failure does not make it False on its own.
+        assert result["remaining"] == 0
+
+    def test_a_non_botocore_error_is_also_reported_rather_than_raised(self, stopper):
+        self._one_execution(stopper)
+        stopper.sfn.stop_execution.side_effect = RuntimeError("socket closed")
+
+        result = stopper.stop_executions()
+
+        assert result["total_stopped"] == 0
+        assert result["total_failed"] == 1

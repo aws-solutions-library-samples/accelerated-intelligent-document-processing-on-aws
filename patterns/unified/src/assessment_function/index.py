@@ -113,7 +113,7 @@ def check_document_for_throttling_errors(document):
     return False, None
 
 
-@xray_recorder.capture("assessment_function")
+@xray_recorder.capture("assessment_function")  # pyright: ignore[reportCallIssue] - aws-xray-sdk types capture() as the wrapped function, not the decorator factory
 def handler(event, context):
     """Assess one section. See ``_handle``.
 

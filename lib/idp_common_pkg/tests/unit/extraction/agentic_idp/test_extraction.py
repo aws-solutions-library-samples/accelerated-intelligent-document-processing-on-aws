@@ -107,7 +107,6 @@ def test_structured_output_call_license(execution_number):
     result, _ = structured_output(
         model_id="us.anthropic.claude-sonnet-4-20250514-v1:0",
         data_format=License,
-        enable_image_tools=True,
         prompt=Image.open(Path(__file__).parent / "old_cal_license.png"),
     )
 
