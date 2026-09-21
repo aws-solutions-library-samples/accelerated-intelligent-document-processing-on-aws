@@ -5,7 +5,8 @@
 """Type check only the Python files changed on this branch — a DEVELOPER command.
 
 **This is not a CI gate.** The gate is ``make typecheck``, which runs
-``basedpyright`` over the whole tree (~47s) in both CI systems. This script exists
+``basedpyright`` over the whole tree (~1 minute, 1273 files) in both CI systems.
+This script exists
 for local latency: it narrows the check to the files you are editing so the answer
 comes back in a second or two.
 

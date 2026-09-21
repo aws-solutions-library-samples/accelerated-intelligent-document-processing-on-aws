@@ -424,13 +424,30 @@ check-only equivalents (`ruff check`, `ruff format --check`), so a formatting
 change that `make lint` silently fixed for you locally still needs committing or
 CI will fail on it.
 
-The UI half is check-only on both paths. `make ui-lint` — reached from `make lint`
+`make lint` is therefore a mixture, and worth knowing as one: its Python half fixes
+(`ruff-lint`, `format`) while its UI half only reports (`ui-lint`). A `make lint` that
+comes back clean may have edited your Python and will not have edited your
+TypeScript. If you want the UI's auto-fixable findings applied, that is a separate
+command, `make ui-lint-fix`.
+
+**UI lint** is check-only on both paths. `make ui-lint` — reached from `make lint`
 and `make lint-cicd` alike — runs `npm run lint` and `npm run typecheck` without
 fixing anything, and `npm run lint` carries `--max-warnings 0`, so a `warn`-level
 rule fails it too. `make ui-lint-fix` is the auto-fixing entry point: it applies
-`eslint --fix` and then re-runs the strict check, so its exit status tells you
-what is left rather than what it repaired. The one thing `ui-lint` still writes is
-`src/ui/.checksum`, which is how it skips itself when `src/ui` has not changed.
+`eslint --fix` and then always re-runs the strict check, so its exit status and its
+last block of output are the gate's verdict on what is left rather than the fixer's
+on what it repaired. The one thing `ui-lint` itself writes is `src/ui/.checksum`,
+which is how it skips itself when `src/ui` has not changed.
+
+⚠️ **`make lint-cicd` is not check-only, and you should expect it to modify tracked
+files.** It invokes `make codegen-check`, whose recipe runs `npm run codegen`
+*before* comparing the result — so it regenerates everything under
+`src/ui/src/graphql/generated/`. Outside CI it leaves those regenerated files in
+place and prints "Generated GraphQL files were out of date — auto-updated. Please
+commit the changes above"; inside CI (it branches on `$CI`/`$GITHUB_ACTIONS`) the
+same difference is an error telling you to run `make codegen` and commit. It also
+runs `ui-build-only`, i.e. a full `vite build`. So after a local `make lint-cicd`,
+check `git status` before assuming your tree is unchanged.
 
 ### Before opening a pull request
 
@@ -442,9 +459,9 @@ make test            # every offline test suite
 or, matching CI more exactly:
 
 ```bash
-make lint-cicd                                 # the target both CIs run; it rewrites
-                                               # src/ui/.checksum locally but changes nothing else
-make typecheck                                  # ~47s  basedpyright over the whole tree
+make lint-cicd                                 # the target both CIs run — but see the
+                                               # note below: it writes tracked files locally
+make typecheck                                  # ~58s  basedpyright over the whole tree
 make api-test-static                            # ~0s   authorization scan of every API operation
 python3 scripts/check_first_party_deps.py       # ~0s   dependency-confusion check
 python3 scripts/sdlc/validate_service_role_permissions.py   # ~5s  static IAM check, no AWS needed
@@ -556,16 +573,24 @@ is in `.claude/skills/srt-security-scan.md`.
 ### Type checking
 
 ```bash
-make typecheck       # basedpyright over the whole repository — the gate, ~47s
+make typecheck       # basedpyright over the whole repository — the gate, ~1 min
 make typecheck-stats # the same, with per-file statistics
 make typecheck-pr    # fast local check of only the files changed vs TARGET_BRANCH
 ```
 
-`make typecheck` is the gate. It is what both CI systems run, it reads
+`make typecheck` is the gate. It is what both CI systems run, and it reads
 `pyrightconfig.json`'s 12-entry `include` — whose closure over every tracked
-`.py` file `scripts/tests/test_pyright_config.py` derives from `git ls-files` —
-and it takes about 47 seconds over roughly 1,700 files. Errors fail it; the
-tree's ~91 `reportCallIssue`/`reportReturnType` warnings are advisory.
+`.py` file `scripts/tests/test_pyright_config.py` derives from `git ls-files`. It
+analyses **1273** files, which is exactly `git ls-files '*.py' | wc -l` and exactly
+the `filesAnalyzed` it reports, and takes **about a minute** through `make` (48–60 s
+measured across several trees; the bare `basedpyright` binary is ~47 s, but the
+`make` figure is the one CI pays).
+
+Errors fail it and warnings do not. There are **91** warnings today, and they are
+not one thing: `reportCallIssue` 34, `reportUnsupportedDunderAll` 26,
+`reportReturnType` 19, `reportImportCycles` 11, `reportDuplicateImport` 1. So
+clearing the two return/call rules — the pair most often discussed — takes the tree
+to 38 warnings, not to zero.
 
 `make typecheck-pr` is a **convenience, not a gate**. It narrows `basedpyright`
 to the files you are editing so the answer comes back in a second or two, which
@@ -689,7 +714,7 @@ documented in [docs/deployment.md](docs/deployment.md) and
 | `make lint` | Everything: ruff, format, ARN partitions, filtered scans, data-plane tags, buildspec, `cfn-lint`, UI lint, codegen check |
 | `make fastlint` | `lint` without `cfn-lint`, UI lint, or codegen check |
 | `make check-lint-debt` | Re-measure `ruff.toml`'s per-file exclusions against the tree (part of `lint`, `fastlint` and `lint-cicd`) |
-| `make lint-cicd` | `lint`'s set plus `ui-build-only`, which `lint` does not run — what both CIs run. Check-only; the one file it writes is `src/ui/.checksum` |
+| `make lint-cicd` | `lint`'s set plus `ui-build-only`, which `lint` does not run — what both CIs run. Check-only for Python and the UI linter, but `codegen-check` regenerates `src/ui/src/graphql/generated/` and leaves it regenerated outside CI |
 | `make ruff-lint` | Ruff lint with auto-fix |
 | `make format` | Ruff formatter |
 | `make cfn-lint` | Validate every CloudFormation template (fails on errors) |

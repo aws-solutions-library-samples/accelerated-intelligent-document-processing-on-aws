@@ -40,6 +40,16 @@ So membership in two directions is now derived rather than listed:
   which lines in a CI config are gate invocations. It is ratcheted instead: every
   entry must be found in both CIs, every ``make`` entry must name a target that
   still exists, and the list may not be empty.
+
+**What this module reads is text, and cannot tell a running gate from a present
+one.** Every assertion here is a search over the ``Makefile`` and the two CI configs
+with comments and ``echo`` lines removed. It therefore still passes if a gate is
+*present but neutered* — ``make srt-scan || true`` swallows the failure, and a step
+behind an ``if:`` that is never true never runs, and both read here as the gate
+running in both CIs. Deciding whether a YAML condition can ever be true, or whether a
+shell line's status reaches the job, is evaluation rather than reading; nothing in
+this file attempts it. Reviewing a change to either CI config means looking at the
+conditions, not just at whether the gate's name is present.
 """
 
 from __future__ import annotations
@@ -82,18 +92,20 @@ SHARED_GATES = [
     "scripts/security/dep_audit.py",
 ]
 
-#: ``Makefile`` section headings whose targets are candidate CI gates: they run a
-#: check, offline, against the checkout. The prefixes are matched against the ``##@``
-#: heading text.
+#: ``Makefile`` section headings every one of whose targets is scanned, because the
+#: whole section is checks: they run a check, offline, against the checkout. Matched
+#: as prefixes of the ``##@`` heading text.
 #:
-#: The "Stack tests" section is out by a property of the whole section rather than a
-#: judgement about its members — every target in it deploys or talks to a live IDP
-#: stack, which no PR gate can do. Those are mapped in ``docs/testing.md`` and their
-#: presence there is enforced by ``scripts/tests/test_testing_doc.py``. Likewise the
-#: Setup, Deploy, Docs, UI Development, Version Management, Git Workflow,
-#: Marketplace, Benchmarking, Code Generation and General sections hold no checks —
-#: with one exception, ``codegen-check``, which is reached from ``lint-cicd`` and
-#: therefore from both CIs anyway.
+#: ⚠️ **This tuple alone is not the universe, and must not be read as one.** It names
+#: 5 of the ``Makefile``'s 16 sections, and a section-scoped rule stating that the
+#: other eleven "hold no checks" would be false for the section this module's own
+#: subject lives in: **UI Development holds ``ui-lint``** — reached from
+#: ``lint-cicd``, and the gate the ``--max-warnings 0`` change is about — and
+#: ``ui-test``, whose ``npx vitest run`` form is in :data:`SHARED_GATES`. One
+#: sentence covering eleven sections is exactly the shape of defect
+#: ``scripts/tests/gate_exemptions.json`` exists to stop, so the scan does not rely
+#: on it: :func:`gate_universe` adds any **check-shaped** target from an unscanned
+#: section, by name (:data:`CHECK_SHAPED_NAME_PREFIXES`).
 GATE_SECTION_PREFIXES = (
     "Code Quality",
     "Type Checking",
@@ -101,6 +113,33 @@ GATE_SECTION_PREFIXES = (
     "Security (SRT)",
     "Dependencies",
 )
+
+#: The one section this module excludes *wholesale*, and the only one where a single
+#: justification really is a property of every member: every target in "Stack tests"
+#: deploys or talks to a live IDP stack, which its own heading says and which no
+#: pull-request gate can do. They are mapped in ``docs/testing.md``, and that each one
+#: appears there is enforced by ``scripts/tests/test_testing_doc.py``.
+#:
+#: Count-pinned by :func:`test_the_live_stack_section_exclusion_is_count_pinned`, so a
+#: target added inside this excluded section is a deliberate edit here rather than a
+#: silent extra member of a blanket exclusion.
+LIVE_STACK_SECTION_PREFIXES = ("Stack tests",)
+
+#: How many targets that wholesale exclusion covers today, audited when written.
+LIVE_STACK_SECTION_TARGET_COUNT = 19
+
+#: Name shapes that make a target a check wherever it lives. This is what stops
+#: :data:`GATE_SECTION_PREFIXES` from being a section-scoped hole: a ``check-*`` or
+#: ``validate-*`` target added to Deploy, or a ``*-lint`` added to UI Development, is
+#: in the universe and must be classified like any other.
+#:
+#: Deliberately name-shaped rather than recipe-shaped. Reading a recipe to decide
+#: whether it "checks something" is a guess about semantics, and a wrong guess here
+#: produces a green gate; a name convention is crude but it is the convention this
+#: ``Makefile`` actually follows, and the three targets it currently finds outside the
+#: scanned sections are the proof it is not matching nothing.
+CHECK_SHAPED_NAME_PREFIXES = ("check-", "validate-", "lint", "typecheck")
+CHECK_SHAPED_NAME_SUFFIXES = ("-check", "-checks", "-lint", "-test", "-tests")
 
 #: Targets in a gate section that are deliberately NOT reached by CI. One entry, one
 #: target, one reason — never a shared justification, which is the defect class
@@ -153,6 +192,12 @@ GATES_DELIBERATELY_OUT_OF_CI = {
         "Asserted absent from both CIs by "
         "scripts/sdlc/tests/test_typecheck_pr_changes.py."
     ),
+    "ui-test": (
+        "Runs the UI's Vitest suite, which both CIs DO run — as a bare "
+        "`npx vitest run` (it is in SHARED_GATES) rather than through this target, "
+        "because each CI installs the UI dependencies itself. So the suite is "
+        "gated; this Makefile wrapper is the local spelling of it."
+    ),
     "test-cli": (
         "`lib/idp_cli_pkg` alone, verbosely. The same suite runs in both CIs as the "
         "first step of `test-packages-cicd`."
@@ -203,9 +248,9 @@ GATES_DELIBERATELY_OUT_OF_CI = {
     "check-branch-protection": (
         "Reads the live GitHub branch-protection setting. Needs a token with "
         "administration:read, which no CI token here has, and it reports `develop` "
-        "unprotected until issue #933 is closed — a condition nobody working in "
-        "the tree can fix. The Makefile comment on the target carries the TODO to "
-        "wire it in once #933 closes."
+        "unprotected for as long as that is the repository's actual setting — "
+        "which it is, and which nobody working in the tree can change. What would "
+        "make it gateable is the SETTING changing, not any work in this repo."
     ),
     "srt-fix": (
         "SRT's INTERACTIVE fix mode: it prompts, and edits files. Neither is "
@@ -305,27 +350,57 @@ def _makefile_targets() -> set[str]:
     }
 
 
+def _is_check_shaped(target: str) -> bool:
+    return target.startswith(CHECK_SHAPED_NAME_PREFIXES) or target.endswith(
+        CHECK_SHAPED_NAME_SUFFIXES
+    )
+
+
+def _makefile_sections() -> dict[str, str]:
+    """Every ``Makefile`` target mapped to the ``##@`` section it is defined under."""
+    sections: dict[str, str] = {}
+    section = ""
+    for line in MAKEFILE.read_text().splitlines():
+        if line.startswith("##@"):
+            section = line[3:].strip()
+            continue
+        if line.startswith((".", "\t", " ", "#")):
+            continue
+        match = re.match(r"^([A-Za-z][A-Za-z0-9_.-]*):(?!=)", line)
+        if match:
+            sections[match.group(1)] = section
+    return sections
+
+
 def gate_universe() -> dict[str, str]:
     """Every check-shaped ``Makefile`` target, mapped to the section it sits in.
 
     Derived rather than listed, because the case a list cannot express is a gate
     that is in the ``Makefile`` and in **neither** CI: it has no foothold in either
-    config for a parity comparison to find. Membership here is by section heading
-    (:data:`GATE_SECTION_PREFIXES`), which is the coarsest signal that is also
-    stable — a target's name says nothing about whether it checks anything.
+    config for a parity comparison to find.
+
+    Two routes in, because neither alone is sufficient:
+
+    1. **Any** target in a section that is entirely checks
+       (:data:`GATE_SECTION_PREFIXES`) — this catches a check whose name says
+       nothing, such as ``cfn-lint-warnings`` or ``api-test-static``.
+    2. A **check-shaped** target anywhere else (:func:`_is_check_shaped`), except in
+       the live-stack section — this catches a check in a section that is mostly not
+       checks, which route 1 structurally cannot see. ``ui-lint`` is the case that
+       matters: it is the gate this module's ``--max-warnings 0`` assertion is about
+       and it lives under "UI Development".
+
+    The live-stack section is excluded by :data:`LIVE_STACK_SECTION_PREFIXES`, whose
+    premise holds for every member and which is count-pinned rather than trusted.
     """
     universe: dict[str, str] = {}
-    section: str | None = None
-    for line in MAKEFILE.read_text().splitlines():
-        if line.startswith("##@"):
-            heading = line[3:].strip()
-            section = heading if heading.startswith(GATE_SECTION_PREFIXES) else None
+    for target, section in _makefile_sections().items():
+        if section.startswith(GATE_SECTION_PREFIXES):
+            universe[target] = section
+        elif section.startswith(LIVE_STACK_SECTION_PREFIXES):
             continue
-        if section is None or line.startswith((".", "\t", " ", "#")):
-            continue
-        match = re.match(r"^([A-Za-z][A-Za-z0-9_.-]*):(?!=)", line)
-        if match:
-            universe[match.group(1)] = section
+        elif _is_check_shaped(target):
+            universe[target] = section
     return universe
 
 
@@ -495,6 +570,63 @@ def test_every_gate_shaped_target_is_in_both_cis_or_registered() -> None:
         "GATES_DELIBERATELY_OUT_OF_CI saying — for that one target — why not. A "
         "gate in neither CI is invisible to the parity comparison, which is why it "
         "has to be named here."
+    )
+
+
+@pytest.mark.unit
+def test_the_name_shape_route_into_the_universe_matches_something() -> None:
+    """Non-vacuity for :data:`CHECK_SHAPED_NAME_PREFIXES`.
+
+    If the name-shape route ever matched nothing, ``GATE_SECTION_PREFIXES`` would
+    silently become the whole universe again and a check outside the five scanned
+    sections would be invisible — with every test here still green. So assert it is
+    load-bearing, and name the three targets it currently carries.
+    """
+    scanned_sections = {
+        target
+        for target, section in _makefile_sections().items()
+        if section.startswith(GATE_SECTION_PREFIXES)
+    }
+    by_name_shape = set(gate_universe()) - scanned_sections
+
+    assert by_name_shape, (
+        "no target reaches the universe by name shape, so gate_universe() is now "
+        "just the five scanned sections. A check added to any other section would "
+        "not be seen. Check CHECK_SHAPED_NAME_PREFIXES/SUFFIXES."
+    )
+    for expected in ("ui-lint", "ui-test", "codegen-check"):
+        assert expected in by_name_shape, (
+            f"{expected!r} no longer reaches the universe by name shape. It is a "
+            f"check outside the scanned sections, so losing it means losing the "
+            f"guarantee that it is classified at all."
+        )
+
+
+@pytest.mark.unit
+def test_the_live_stack_section_exclusion_is_count_pinned() -> None:
+    """Count-pinning for the one section excluded wholesale.
+
+    Its premise — every member needs a live deployed stack — holds for every target
+    there today, and the section heading says so. What a blanket exclusion cannot do
+    is notice a *new* member that does not share the premise, so the count is pinned:
+    adding a target to "Stack tests" is a deliberate edit here, which is the moment
+    to check the premise still holds for it.
+    """
+    members = sorted(
+        target
+        for target, section in _makefile_sections().items()
+        if section.startswith(LIVE_STACK_SECTION_PREFIXES)
+    )
+    assert members, (
+        f"no Makefile section starts with {LIVE_STACK_SECTION_PREFIXES!r}, so this "
+        "exclusion now covers nothing and the count below is meaningless."
+    )
+    assert len(members) == LIVE_STACK_SECTION_TARGET_COUNT, (
+        f"the '{LIVE_STACK_SECTION_PREFIXES}' section now has {len(members)} targets, "
+        f"not the {LIVE_STACK_SECTION_TARGET_COUNT} audited when this wholesale "
+        f"exclusion was written. Confirm the new one really does need a live "
+        f"deployed stack — if it does not, it belongs in a scanned section — then "
+        f"update LIVE_STACK_SECTION_TARGET_COUNT. Members: {members}"
     )
 
 

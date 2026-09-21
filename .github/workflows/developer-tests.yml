@@ -132,7 +132,7 @@ jobs:
       # the changed files — so it cannot see a break the change caused in a file
       # the diff did not include, which is the ordinary shape of a type error.
       # It also meant nothing ever ran the check that pyrightconfig.json's
-      # `include` closure is a closure OF. A full run is ~47s.
+      # `include` closure is a closure OF. A full run is ~1 minute over 1273 files.
       - name: Run type checking
         run: make typecheck
 

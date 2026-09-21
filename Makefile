@@ -503,10 +503,10 @@ check-retired-models: ## Ask Bedrock whether any model this repo offers has been
 # `typecheck` is THE type gate, and it is what both CIs run. It reads
 # pyrightconfig.json's 12-entry `include`, whose closure over every tracked .py
 # file scripts/tests/test_pyright_config.py derives from `git ls-files` — so the
-# set it covers cannot silently shrink. A full run is ~47s over ~1700 files,
-# which is why there is no cheaper CI variant: the PR-scoped form below narrows
-# the file set and therefore cannot see a break your change caused in a file it
-# did not select.
+# set it covers cannot silently shrink. A full run is ~1 minute through make
+# (48-60s measured; the bare binary is ~47s) over 1273 files, which is why there
+# is no cheaper CI variant: the PR-scoped form below narrows the file set and
+# therefore cannot see a break your change caused in a file it did not select.
 typecheck: ## Run type checks with basedpyright over the whole tree (the CI gate)
 	@echo "Running type checks..."
 	basedpyright
@@ -933,9 +933,14 @@ ui-lint: ## Run UI linting with checksum caching (skips if unchanged). Use FORCE
 
 ui-lint-fix: ## Auto-fix what eslint can fix in src/ui, then re-run the strict gate
 	@echo "Applying eslint --fix to src/ui..."
-	cd src/ui && $(NPM_CI) && npm run lint:fix
-	@# Deliberately re-runs the CHECKING form afterwards, so the exit status
-	@# reflects what is left rather than what was repaired.
+	@# The `-` prefix is load-bearing. `eslint --fix` exits non-zero when anything
+	@# it could NOT fix remains, which is the common case — so without it make
+	@# aborts here and the re-check below never runs, leaving the operator with the
+	@# fixer's output instead of the gate's. Ignoring this line's status is safe:
+	@# the gate runs next and decides the target's exit status.
+	-@cd src/ui && $(NPM_CI) && npm run lint:fix
+	@# Deliberately re-runs the CHECKING form, so the exit status reflects what is
+	@# left rather than what was repaired.
 	@$(MAKE) --no-print-directory ui-lint FORCE=1
 
 ui-build: ## Build UI for production (runs lint + typecheck + vite build)
