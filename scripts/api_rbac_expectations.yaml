@@ -100,11 +100,18 @@ operations:
   # Documents — read
   # ==========================================================================
   # Document CONTENT, and the means of obtaining it, requires an assigned group
-  # (ANY_GROUP): a self-registered user in no group is refused. The payload these
-  # return is the sensitive thing the whole system exists to process, and the
-  # narrowing they do carry — reviewer row filtering, allowedConfigVersions,
-  # get_file_contents_resolver's bucket allow-list — bounds WHICH objects are
-  # reachable, not WHO may ask. Group membership is still the wrong axis for
+  # (ANY_GROUP): a self-registered user in no group is refused. Every operation in
+  # this section carries that floor, because the means of obtaining content is not
+  # only the operations that return it — an object key, an `s3://` URI, a state
+  # machine execution ARN and a prose description of what a document contains are
+  # each a step of the same chain, and #1033 measured that chain composing end to
+  # end for a caller in no group. The payload these return is the sensitive thing
+  # the whole system exists to process, and the narrowing they do carry — reviewer
+  # row filtering, allowedConfigVersions, get_file_contents_resolver's bucket
+  # allow-list — bounds WHICH objects are reachable, not WHO may ask. Two of those
+  # three also stand down for a self-registered caller specifically: a caller in no
+  # group is not a Reviewer, and a caller no UsersTable row matches is unrestricted
+  # on the config-version axis. Group membership is still the wrong axis for
   # per-document privacy; a Viewer may read any document a Viewer can see. That
   # is a separate question, tracked in the notes on issue #979 rather than
   # settled by this declaration.
@@ -120,32 +127,45 @@ operations:
     enforced_in: nested/api-resolvers/src/lambda/list_documents_gsi_resolver/index.py
     args: {}
   getDocumentCount:
-    groups: ANY
+    groups: ANY_GROUP
     kind: read
     scope_filtered: true
     enforced_in: nested/api-resolvers/src/lambda/list_documents_gsi_resolver/index.py
     args: {}
     note: >-
-      The header figure beside listDocuments, so it carries the same two filters
-      (config-version scope, reviewer-only) from the same helpers. A count is data:
-      an unfiltered one reports how many documents exist outside the caller's scope.
+      The header figure beside listDocuments, which is ANY_GROUP, and it carries
+      the same two filters (config-version scope, reviewer-only) from the same
+      helpers. Neither filter narrows anything for a caller in no group, so they
+      cannot carry the policy on their own: _is_reviewer_only requires "Reviewer"
+      among the caller's groups, and resolve_allowed_config_versions returns None —
+      unrestricted, deliberately — for a caller no UsersTable row matches, which is
+      what self-service sign-up produces. A count is data, and the one a groupless
+      caller receives is the deployment's whole tally. ANY_GROUP, matching the list
+      it is the header for.
   listDocumentsDateHour:
-    groups: ANY
+    groups: ANY_GROUP
     kind: read
     enforced_in: *ddb
     args: {}
     note: >-
-      ANY is deliberate, on the same basis as listDocumentsDateShard: these two
-      are index-partition enumerations the UI uses to page the timeline, and
-      they expose the existence and timing of processed documents rather than
-      their content. Narrowing them is the enumeration-and-metadata question the
-      #979 decision deliberately left at ANY.
+      ANY_GROUP. It returns raw TrackingTable index rows for one date and hour,
+      each carrying ObjectKey, with no filter of any kind applied — so it is a
+      source of document keys rather than a volume-and-timing summary, and it is
+      the pairing with listDocuments (ANY_GROUP) that decides it. The web UI does
+      not call this operation: the timeline pages through listDocuments and
+      listDocumentsByDateRange, so the floor costs the UI nothing.
   listDocumentsDateShard:
-    groups: ANY
+    groups: ANY_GROUP
     kind: read
     enforced_in: *ddb
     args: {}
-    note: see listDocumentsDateHour — same index-partition enumeration, same decision
+    note: >-
+      ANY_GROUP. Same unfiltered TrackingTable index rows carrying ObjectKey as
+      listDocumentsDateHour, for a four-hour shard instead of an hour. This is the
+      operation the #1033 chain was measured against: on a live stack a
+      self-registered caller in no group got 200 and a document's object key and
+      queued time from it, so a caller needs no prior knowledge of the deployment
+      to obtain a key. Not called by the web UI.
   listDocumentsByDateRange:
     groups: ANY_GROUP
     kind: read
@@ -185,7 +205,7 @@ operations:
       later check. Key-level scoping remains open (UI.T06). Same runtime
       bucket substitution as getFileContents — see its note.
   getStepFunctionExecution:
-    groups: ANY
+    groups: ANY_GROUP
     kind: read
     scope_checked: true
     enforced_in: nested/api-resolvers/src/lambda/get_stepfunction_execution_resolver/index.py
@@ -200,21 +220,30 @@ operations:
       apply_dynamic_args in scripts/test_api_rbac.py) and SKIPs the op when the
       stack has processed no documents.
 
-      ANY is deliberate: this is workflow execution metadata, and the two checks
-      that bound it — the ARN must name this deployment's state machine, and the
-      caller's allowedConfigVersions must cover the execution's config_version —
-      are per-object rather than per-group, so a group floor would add nothing a
-      caller could not already pass.
+      ANY_GROUP. The two per-object checks are real but neither binds a
+      self-registered caller: the ARN arm only asks that the execution be this
+      deployment's own, and resolve_allowed_config_versions returns None —
+      unrestricted — for a caller no UsersTable row matches, so the config-version
+      arm stands down for exactly the population the floor is about. Measured on a
+      live stack (#1033), a caller in no group passed both and received 317,614
+      bytes: the execution input and the step history, which name the document and
+      the S3 location of its full state.
   listDocumentVersions:
-    groups: ANY
+    groups: ANY_GROUP
     kind: read
     enforced_in: nested/api-resolvers/src/lambda/document_versions_resolver/index.py
     args: { objectKey: "__nonexistent__.pdf" }
     note: >-
-      ANY is deliberate. It returns the run ids and timestamps for one object
-      key the caller already has to know, and no extracted values — enumeration
-      and metadata, where the two operations that return the runs' CONTENT
-      (getDocumentVersion, compareDocumentVersions) are ANY_GROUP.
+      ANY_GROUP. It shapes every run of one object key through the same
+      _shape_version helper as getDocumentVersion (ANY_GROUP), so the two return
+      the same fields and differ only in how many runs: Sections[].OutputJSONUri,
+      Pages[].ImageUri / TextUri / OcrPageDataUri, the whole
+      ConfidenceThresholdAlerts list — which names every extracted attribute — and
+      Pages[].ClassReason, model-generated prose about what the document contains.
+      Measured on a live stack (#1033), a caller in no group received 17,527 bytes
+      in which ClassReason named "employee personal information (name, address,
+      Social Security Number), pay period dates". The object key is not prior
+      knowledge either: listDocumentsDateShard hands one over.
   getDocumentVersion:
     groups: ANY_GROUP
     kind: read
@@ -745,17 +774,34 @@ operations:
     enforced_in: nested/api-resolvers/src/lambda/list_agent_chat_sessions_resolver/index.py
     args: {}
     note: >-
-      ANY is deliberate. The resolver returns only the caller's OWN sessions, so
-      the reachable data for a groupless caller is the empty set — the ownership
-      scope, not the group floor, is the control that matters here. Same for
-      getChatMessages. deleteChatSession is ANY_GROUP because it is a mutation.
+      ANY is deliberate, and the reason is the SHAPE of the scope rather than the
+      existence of one: the resolver's DynamoDB read is a KeyConditionExpression on
+      `userId`, taken from the verified identity, so the caller's own partition is
+      the only one it can address and there is no branch on which it addresses
+      another. A caller in no group also has nothing to list — neither operation
+      that creates a session admits one (sendAgentChatMessage is Admin/Author/Viewer,
+      sendChatDocumentMessage is ANY_GROUP). getChatMessages is ANY_GROUP: its scope
+      is a separate ownership VERIFICATION with two stand-down branches, which is a
+      different control, so it gets its own decision rather than this one.
+      deleteChatSession is ANY_GROUP because it is a mutation.
   getChatMessages:
-    groups: ANY
+    groups: ANY_GROUP
     kind: read
     ownership: true
     enforced_in: nested/api-resolvers/src/lambda/get_agent_chat_messages_resolver/index.py
     args: { sessionId: "__nope__" }
-    note: see listChatSessions — own-sessions-only ownership scope, same decision
+    note: >-
+      ANY_GROUP. The message read itself is `PK = sessionId` with no caller term;
+      what bounds it to the caller is _verify_session_ownership, a separate check
+      that stands down in two recorded cases — an operator setting
+      ENFORCE_CHAT_SESSION_OWNERSHIP=false for legacy sessions, and an unset
+      CHAT_SESSIONS_TABLE, which returns True to preserve function. On either branch
+      a session id is the whole credential, and the resolver's own comment says the
+      messages can hold "user queries, document content quoted by the LLM". The
+      floor costs a groupless caller nothing, because neither operation that creates
+      a session admits one, so it is free defence in depth over a check that can be
+      turned off. The ownership verification stays: it is what stops one GROUPED
+      caller reading another's session.
   deleteChatSession:
     groups: ANY_GROUP
     kind: mutation
@@ -873,15 +919,29 @@ operations:
     enforced_in: nested/api-resolvers/src/lambda/finetuning_jobs_resolver/index.py
     args: {}
     note: >-
-      ANY is deliberate: job name, model and status for training jobs this
-      deployment ran — platform state, not document content. Creating and
-      deleting jobs is [Admin, Author].
+      ANY is deliberate, and it is a whole-deployment list: the query filters on
+      PK begins_with "finetuning#" with no caller term, and the job rows carry no
+      creator attribute for one to be written against. What that list holds is
+      platform state — job and test-set names, base and custom model ids and ARNs,
+      status, hyperparameters, training metrics, deployment endpoint — and no
+      document content or document location. Creating and deleting jobs is
+      [Admin, Author]. Two conditions this rests on, both worth rechecking if
+      either changes: `errorMessage` relays a caught exception string, whose
+      contents are not bounded by anything here, and the projection's
+      trainingDataConfig / validationDataConfig / outputDataConfig fields are
+      always null because nothing writes those attribute names — the real
+      `trainingDataUri` sits unprojected on the same row, so projecting it would
+      put a dataset S3 location in this response and this answer would change.
   getFinetuningJob:
     groups: ANY
     kind: read
     enforced_in: nested/api-resolvers/src/lambda/finetuning_jobs_resolver/index.py
     args: { jobId: "__nope__" }
-    note: see listFinetuningJobs — same platform state, same decision
+    note: >-
+      ANY is deliberate. One job by jobId, projected through the same
+      _format_job_for_graphql as listFinetuningJobs, so the same platform-state
+      fields and the same two conditions on that entry apply to it — and it has no
+      owner check either, because the rows record no owner.
 
   # ==========================================================================
   # Capacity / version metadata / knowledge
@@ -926,7 +986,10 @@ operations:
       served by ddb_direct when the breaker is disabled, resolver when enabled.
       ANY is deliberate: a paused/open breaker is why the whole UI looks stalled,
       so every authenticated user needs the badge to read it. The three controls
-      that change it are Admin-only.
+      that change it are Admin-only. One global singleton row, so there is nothing
+      per-caller to scope; the payload is enabled/state/timestamps/counters plus
+      `lastError`, the throttling or service failure string the breaker manager last
+      recorded, which names no document by intent.
   pauseCircuitBreaker:
     groups: [Admin]
     kind: mutation
@@ -949,32 +1012,51 @@ operations:
   # ==========================================================================
   # Feature platform (conditional on EnableFeaturePlatform)
   # ==========================================================================
-  # ANY is deliberate for all three: which optional features this deployment has
-  # installed, what the catalog offers, and whether a given feature is entitled.
-  # The UI consults them on every page load to decide what to render at all, for
-  # every role, and they expose no document data. Installing, subscribing and
-  # launching a feature are Admin-only.
+  # ANY is deliberate for all three, but they return three different things and the
+  # note on each says what its own payload is. What they share is that the UI
+  # consults them on every page load to decide what to render at all, for every
+  # role, none of them reads cognito:groups, and none returns document data.
+  # Installing, subscribing and launching a feature are Admin-only.
   listInstalledFeatures:
     groups: ANY
     kind: read
     conditional: feature_platform
     enforced_in: feature-platform/main-stack-extensions/lambdas/list_installed_features/index.py
     args: {}
-    note: see the block comment above — feature-catalog read, decided ANY
+    note: >-
+      ANY is deliberate: the install inventory — feature id, display name,
+      installed and latest version, whether an update is available, and where the
+      feature's own UI bundle and API live. Nothing document-derived. It does
+      disclose deployment topology (stack id, stack name, the feature API endpoint,
+      a generation queue ARN) to any authenticated caller, which is reconnaissance
+      value rather than data, and is the cost of the UI being able to render a
+      feature's nav entry before it knows the caller's role.
   listCatalogFeatures:
     groups: ANY
     kind: read
     conditional: feature_platform
     enforced_in: feature-platform/main-stack-extensions/lambdas/list_catalog_features/index.py
     args: {}
-    note: see the block comment above — feature-catalog read, decided ANY
+    note: >-
+      ANY is deliberate: the published catalog manifest — what optional features
+      exist, their versions, descriptions, docs links, and the artifact bucket and
+      prefix the published extension templates are fetched from. That is the
+      feature-artifacts location, not a document bucket, and the manifest is the
+      same for every caller.
   checkFeatureEntitlement:
     groups: ANY
     kind: read
     conditional: feature_platform
     enforced_in: feature-platform/main-stack-extensions/lambdas/check_feature_entitlement/index.py
     args: { featureId: "__nope__" }
-    note: see the block comment above — feature-catalog read, decided ANY
+    note: >-
+      ANY is deliberate, and this one is not a catalog read: it answers whether
+      THIS DEPLOYMENT is entitled to one feature, and the answer carries the
+      deployment's own AWS Marketplace customer identifier, product code and
+      license mode. Those are per-deployment billing identifiers, not per-caller
+      and not document-derived, and the UI needs the entitlement state to decide
+      whether to offer the feature at all — which it must do before it knows the
+      caller's role.
   getFeatureLaunchUrl:
     groups: [Admin]
     kind: read

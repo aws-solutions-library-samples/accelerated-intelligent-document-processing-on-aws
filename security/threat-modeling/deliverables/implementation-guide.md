@@ -150,9 +150,9 @@ and mapped to the specific threats they address.
 | **Read allow-list** | `getFilePresignedUrl`/`getFileContents` restrict the target to this stack's buckets (`_validate_bucket`) |
 
 > **Read-scoping gap (UI.T06).** Presigned **read** URLs are bucket-scoped but
-> **not key-scoped**, and both operations are callable by *any authenticated
-> user* — so they are not a valid boundary for deployments relying on
-> `allowedConfigVersions` to partition users. The allow-list also fails **open**
+> **not key-scoped**, and both operations are callable by *any caller holding any
+> one of the five groups* — so they are not a valid boundary for deployments relying
+> on `allowedConfigVersions` to partition users. The allow-list also fails **open**
 > if the bucket env vars are unset. Open item.
 
 ## 4. Data Protection

@@ -678,9 +678,13 @@ def test_api_authorization_counts_match_the_expectations_file() -> None:
         "remaining {n} are declared `groups: ANY`",
         f"{len(any_auth)} operations are reachable by any authenticated user.",
     )
+    # The template carries no verb, so it reads correctly whatever the measured
+    # value is. "{n} ... are narrowed" would force ungrammatical prose the moment
+    # the count reaches one, and the page must not be pushed into bad English to
+    # satisfy a check about numbers.
     _assert_count_phrase(
         len(any_auth) - len(unnarrowed),
-        "{n} of those " + str(len(any_auth)) + " are narrowed further",
+        "{n} of those " + str(len(any_auth)) + " narrowed further",
         "Ownership- or scope-narrowed ANY operations.",
     )
     _assert_count_phrase(

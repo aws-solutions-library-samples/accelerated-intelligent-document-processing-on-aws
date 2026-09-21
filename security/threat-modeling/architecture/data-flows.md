@@ -253,8 +253,8 @@ sequenceDiagram
 results — each run is retained as an immutable snapshot addressed by pinned S3
 object versions. This **increases data retention surface**: deleted-then-
 reprocessed content remains readable through version history until retention
-expires. `deleteDocumentVersion` is Admin-only; `listDocumentVersions` is
-readable by any authenticated user. Version bytes are fetched via
+expires. `deleteDocumentVersion` is Admin-only; `listDocumentVersions` requires an
+assigned group, and within that has no per-document scope. Version bytes are fetched via
 `getFilePresignedUrl` with an explicit `versionId` — see UI.T02/UI.T06 for the
 key-scoping gap that applies to those reads.
 

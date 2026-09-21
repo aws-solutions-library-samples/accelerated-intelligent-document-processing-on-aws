@@ -330,18 +330,27 @@ on an operation, so it declares `assigned_by:` in the register; the static scann
 > widening this warns against: `ANY` means the dispatcher checks authentication
 > only, so a forgotten resolver check on an `ANY` operation is still reachable by
 > any authenticated caller — including one in no group, which self-signup produces.
-> 15 of the 118 operations are `ANY`, each with a note in the expectations file
-> saying why that is the intended answer for it; they are enumeration, platform,
-> profile and feature-catalog reads.
+> 9 of the 118 operations are `ANY`, each with a note in the expectations file
+> saying why that is the intended answer for **that operation**, not for the section
+> it sits in; they are platform, profile and feature-catalog reads.
 
 ### The four policies — pick the weakest one that is still correct
 
 | Declare | Means | Use for |
 |---|---|---|
 | `[Admin, Author, ...]` | one of those groups | anything only a subset of roles should do |
-| `ANY_GROUP` | **any** group `template.yaml` creates; a caller in no group is refused | operations every onboarded role legitimately needs, where "onboarded at all" is the real requirement — document content, and mutations |
-| `ANY` | authentication only | the caller's own profile, public metadata, enumeration that discloses no content |
+| `ANY_GROUP` | **any** group `template.yaml` creates; a caller in no group is refused | operations every onboarded role legitimately needs, where "onboarded at all" is the real requirement — document content, anything that leads to it, and mutations |
+| `ANY` | authentication only | the caller's own profile, public metadata, platform state |
 | `IAM_ONLY` | no Cognito caller at all | backend-written status updates |
+
+⚠️ **"Enumeration, so it discloses no content" is not a reason.** It was the
+recorded reason for five operations, and issue #1033 measured a caller in no group
+composing them into a chain that ended in extracted personal data: an object key from
+an index listing, then a run's section and page URIs plus a model-written description
+of the contents, then the execution input. Ask what the payload *leads to*, not only
+what it literally contains. Ask it about **one** operation at a time, too: four of
+those five carried a reason written for the set ("same enumeration, same decision"),
+which is how a false premise about one member survived review.
 
 ⚠️ **Do not spell `ANY_GROUP` out as the five group names.** The sentinel is
 resolved against the `AWS::Cognito::UserPoolGroup` resources in `template.yaml` by

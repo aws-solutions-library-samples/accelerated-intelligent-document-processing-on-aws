@@ -358,14 +358,16 @@ def test_cognito_group_names_come_from_the_root_template():
 # ============================ the ANY_GROUP policy ========================== #
 # "An assigned group, whichever one" — the product decision recorded in issue
 # #979 for the document-content reads and the three mutations that used to be
-# `ANY`. `ANY` means authenticated, not vetted: with AllowedSignUpEmailDomain set,
-# template.yaml sets AllowAdminCreateUserOnly: false, so a user can self-register
-# and holds a valid token whose cognito:groups claim is EMPTY.
+# `ANY`, extended by issue #1033 to the operations that hand a caller the keys,
+# URIs and descriptions those reads need. `ANY` means authenticated, not vetted:
+# with AllowedSignUpEmailDomain set, template.yaml sets
+# AllowAdminCreateUserOnly: false, so a user can self-register and holds a valid
+# token whose cognito:groups claim is EMPTY.
 #
 # This list IS hardcoded, deliberately, unlike every enumeration in the parity
 # section above. Those enumerate the op UNIVERSE, where a hardcoded inventory
 # silently drops an operation out of coverage. This one is the DECISION itself, and
-# pinning it is the point: widening any of these eleven back to `ANY` must fail a
+# pinning it is the point: widening any of these back to `ANY` must fail a
 # test rather than pass quietly as "one fewer group-restricted operation".
 TIGHTENED_TO_ANY_GROUP = (
     # mutations
@@ -381,6 +383,17 @@ TIGHTENED_TO_ANY_GROUP = (
     "listDocuments",
     "listDocumentsByDateRange",
     "queryKnowledgeBase",
+    # #1033: each of these was measured serving a self-registered caller in no
+    # group on a live stack, and each supplies a step of the chain that ends in
+    # extracted values — an object key, a run's section and page URIs plus a
+    # model-written description of the contents, the execution input and step
+    # history, the size of the document population, and the chat transcript.
+    "listDocumentsDateHour",
+    "listDocumentsDateShard",
+    "listDocumentVersions",
+    "getStepFunctionExecution",
+    "getDocumentCount",
+    "getChatMessages",
 )
 
 
@@ -392,7 +405,7 @@ def _app_groups() -> list[str]:
 
 @pytest.mark.parametrize("field", TIGHTENED_TO_ANY_GROUP)
 def test_tightened_op_requires_an_assigned_group(field, manifest):
-    """Each of the eleven names the full group vocabulary, not `ANY`."""
+    """Each tightened op names the full group vocabulary, not `ANY`."""
     assert manifest[field] == _app_groups(), (
         f"{field} is declared '{manifest[field]}' but the #979 decision is "
         "ANY_GROUP — an assigned group is required. Declaring it ANY again means "
