@@ -1413,6 +1413,16 @@ Resources:
           # Test Studio's test set browser reads source docs + ground truth
           # (baseline result.json) from the TestSetBucket via this resolver.
           TEST_SET_BUCKET: !Ref TestSetBucketName
+          # RBAC: key-level scope. CONFIGURATION_BUCKET and TEST_SET_BUCKET above
+          # are not only allow-list entries — they name the two buckets whose
+          # contents are partitioned per user, so `key_scope` needs them to decide
+          # which requests carry a scope question. This table is where the answer
+          # comes from: `allowedConfigVersions` for a `config_revisions/<profile>/`
+          # key, `allowedTestSets` for a `<test_set_id>/` one. An unset value denies
+          # every scoped read rather than serving it — the parent wires it
+          # unconditionally, so empty means a wiring regression, not a deployment
+          # without RBAC.
+          USERS_TABLE_NAME: !Ref UsersTableName
       LoggingConfig:
         LogGroup: !Ref GetFileContentsResolverFunctionLogGroup
       Policies:
@@ -1437,6 +1447,19 @@ Resources:
               Action:
                 - s3:GetObjectVersion
               Resource: !Sub "arn:${AWS::Partition}:s3:::${OutputBucketName}/*"
+        # Read-only access on UsersTable + EmailIndex so the resolver can look up
+        # the caller's allowedConfigVersions / allowedTestSets and enforce key-level
+        # scope. Without this the lookup fails with AccessDenied — which this path
+        # turns into a DENIAL, not into an unrestricted caller, so the failure mode
+        # is every scoped read refused rather than a silent scope bypass.
+        - Statement:
+            - Effect: Allow
+              Action:
+                - dynamodb:Query
+                - dynamodb:GetItem
+              Resource:
+                - !Ref UsersTableArn
+                - !Sub "${UsersTableArn}/index/*"
         - Statement:
             - Effect: Allow
               Action:

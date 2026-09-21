@@ -11526,6 +11526,40 @@ Resources:
                   - lambda:InvokeFunction
                   - lambda:InvokeFunctionUrl
                 Resource: !GetAtt ChatStreamProcessorFunction.Arn
+        # What the BROWSER may read with the signed-in user's own credentials.
+        #
+        # Every authenticated user assumes this one role — `CognitoIdentityPoolSetRole`
+        # declares no `RoleMappings`, so Cognito group membership plays no part in
+        # which role is assumed. Whatever is listed here is therefore readable by
+        # every signed-in user irrespective of group, with no resolver in the path and
+        # so with no group check, no per-document check and no scope check available to
+        # apply. That makes this list, not the API surface, the boundary for anything
+        # it names.
+        #
+        # It names the Input and Output buckets because the UI genuinely signs those
+        # GETs in the browser: `use-page-thumbnails` and `PageImageViewer` fetch
+        # `page.ImageUri` (Output), `FileViewer` defaults to `presignVia: 'client'`
+        # against `settings.InputBucket`, and `presignForExport` signs client-side
+        # for exactly those two and routes every other bucket to the resolver.
+        # Narrowing those is the document-bucket half of this, which needs the read
+        # path redesigned rather than the grant trimmed
+        # ([#1033](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/1033)).
+        #
+        # It does NOT name the Configuration bucket, and must not. That bucket holds
+        # `config_revisions/<profile>/<nnnnnn>.json.gz` — every configuration
+        # profile's full revision history, prompts and few-shot examples included —
+        # and which profiles a user may see is their `allowedConfigVersions`, a
+        # per-user boundary no IAM grant on this shared role can express. Granted
+        # here it was also `s3:ListBucket`, so the profile names did not have to be
+        # known in advance. No UI code path reads it: the bucket name is not
+        # referenced anywhere in `src/ui/`, the browser holds no S3 API client (only
+        # `S3RequestPresigner`, at four call sites that resolve to Input or Output),
+        # and the Configuration-bucket content the UI does display — bundled samples
+        # under `samples/`, the config library, profile bodies — is served by
+        # `getSampleDocumentUrl`, `getConfigurationLibraryFile` and
+        # `getConfigVersion`, each of which applies the caller's scope. The reads that
+        # remain go through `getFileContents` / `getFilePresignedUrl`, where
+        # `key_scope` enforces the same axis on the key.
         - PolicyName: S3
           PolicyDocument:
             Version: 2012-10-17
@@ -11545,8 +11579,6 @@ Resources:
                   - !Sub "arn:${AWS::Partition}:s3:::${OutputBucket}/*"
                   - !Sub "arn:${AWS::Partition}:s3:::${InputBucket}"
                   - !Sub "arn:${AWS::Partition}:s3:::${InputBucket}/*"
-                  - !Sub "arn:${AWS::Partition}:s3:::${ConfigurationBucket}"
-                  - !Sub "arn:${AWS::Partition}:s3:::${ConfigurationBucket}/*"
               - Effect: Allow
                 Action:
                   - kms:Encrypt

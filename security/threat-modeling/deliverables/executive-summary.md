@@ -72,8 +72,9 @@ The system includes a web UI, multi-agent AI assistant, SDK/CLI for automation, 
 
 The six **Open** items are CHAT.T03 and CHAT.T06 (chat streaming Function URL
 enforces neither RBAC group nor session ownership, and the agent route trusts a
-client-supplied caller identity), UI.T06 (presigned object reads are
-bucket-scoped but not key-scoped, and callable by any authenticated user),
+client-supplied caller identity), UI.T06 (object reads are not scoped
+per document, so any authenticated user holding a group can read any document's
+bytes by key),
 JOB.T02 (the Jobs API sits outside the automated authorization harness),
 HOOK.T07 (`onError: fail` halts the workflow at one of the seven hook points, not
 all seven) and SDK.T05 (the shipped CloudFormation deployment service role is
@@ -149,8 +150,10 @@ in issue #928** (AUTH.T16).
 4. **Make hook failure containment uniform (HOOK.T07)** — `onError: fail` is
    terminal at the preprocessing hook point only; a deployment relying on a hook
    as a gate elsewhere does not have that guarantee (**issue #919**, pending)
-5. **Scope presigned object reads to the caller (UI.T06)** — today any
-   authenticated user can read any object in the stack's buckets by key
+5. **Scope object reads to the document's owner (UI.T06)** — the two per-user
+   scope axes are enforced on the key, but documents have no owner to scope
+   against, so any authenticated user holding a group can read any document by
+   key (**issue #1033**, pending)
 6. **Add bundle integrity verification (SRI) to the Feature Platform (FEAT.T01)** —
    installed extension UI code runs unsandboxed in the host origin with the user's session
 7. **Implement VPC egress controls** for MCP Lambda functions to prevent unauthorized data exfiltration
