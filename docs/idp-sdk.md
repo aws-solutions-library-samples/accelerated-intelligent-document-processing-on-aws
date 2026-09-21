@@ -14,9 +14,14 @@ The IDP SDK provides programmatic Python access to all IDP Accelerator capabilit
 make setup-venv
 source .venv/bin/activate
 
-# Or install just the SDK with pip/uv
-uv pip install -e ./lib/idp_sdk
+# Or install just the SDK with pip/uv, from the repository root. `idp_common` has
+# to be on the same command line: the SDK requires it by name, and that name on
+# public PyPI belongs to an unrelated party.
+uv pip install -e ./lib/idp_common_pkg -e ./lib/idp_sdk
 ```
+
+See [Installing First-Party Packages Safely](dependency-confusion.md) for why the
+single-command form matters.
 
 ## Quick Start
 

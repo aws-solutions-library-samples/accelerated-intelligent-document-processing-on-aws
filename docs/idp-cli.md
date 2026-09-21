@@ -91,9 +91,13 @@ source .venv/bin/activate
 
 ### Install with test dependencies
 
+Run this from the repository root. The CLI requires `idp-sdk`, which requires
+`idp_common`; both names on public PyPI belong to unrelated parties, so all three
+packages go in a single command and all three come from a path. See
+[Installing First-Party Packages Safely](dependency-confusion.md).
+
 ```bash
-cd lib/idp_cli_pkg
-pip install -e ".[test]"
+pip install -e lib/idp_common_pkg -e lib/idp_sdk -e "lib/idp_cli_pkg[test]"
 ```
 
 ## Makefile Shortcuts

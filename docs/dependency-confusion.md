@@ -18,7 +18,8 @@ installs **someone else's package** into the environment that holds your AWS
 deployment credentials, and the mismatch usually surfaces later as a confusing
 unrelated error rather than an obvious one.
 
-Use `make setup`, or a path, and this cannot happen.
+Use `make setup` and this cannot happen. If you write the `pip install` yourself,
+the next section is the whole of what you need to get right.
 
 ## Installing correctly
 
@@ -29,17 +30,36 @@ make setup          # into the current environment
 make setup-venv     # create a .venv and install into it
 ```
 
-For a single component, use a path from the repository root — never a bare name:
+Two rules make any hand-written `pip install` safe, and they have to be applied
+together:
+
+1. **Every requirement is a path from the repository root**, never a bare name.
+2. **Every first-party package a requirement needs is on the same command line.**
+   The first-party packages require each other *by name* — `lib/idp_cli_pkg`
+   requires `idp-sdk`, `lib/idp_sdk` requires `idp_common` — so installing them one
+   at a time lets pip go looking for a sibling that is not on disk yet and fall back
+   to the index. Rule 1 alone does not prevent that: `pip install -e lib/idp_sdk` on
+   its own is a path install that still resolves `idp_common` from PyPI.
+
+Which siblings a package needs is recorded in its `pyproject.toml`, next to the
+bare requirement it explains. Applying both rules gives one command per component:
 
 ```bash
+# idp_common has no first-party requirements, so it stands alone
 pip install -e "lib/idp_common_pkg[extraction]"
-pip install -e lib/idp_sdk
+
+# the SDK requires idp_common; the CLI requires the SDK, which requires idp_common
+pip install -e lib/idp_common_pkg -e lib/idp_sdk
+pip install -e lib/idp_common_pkg -e lib/idp_sdk -e lib/idp_cli_pkg
+
+# the Feature Platform SDK and the MCP connector have no first-party requirements
 pip install -e lib/idp_feature_sdk
+pip install -e lib/idp_mcp_connector_pkg
 ```
 
-> ⚠️ Install first-party packages **together, in a single `pip install`**. They
-> depend on each other by name, so installing them one at a time lets pip go
-> looking for a sibling that is not on disk yet. `make setup` handles this.
+`--no-deps` is the other way to be safe, because pip then resolves nothing at all —
+but the siblings still have to get installed somehow, so it is only useful when you
+know they are already there.
 
 Lambda `requirements.txt` files already use relative paths, which are unaffected:
 
@@ -47,20 +67,51 @@ Lambda `requirements.txt` files already use relative paths, which are unaffected
 ../../lib/idp_common_pkg[extraction]
 ```
 
-## Verifying an environment
+## The two controls
 
-`scripts/check_first_party_deps.py` checks that every installed first-party
-package came from source rather than from a package index:
+There are two gates, and they cover different halves of the problem. Neither can
+do the other's job.
+
+### An environment that is already installed
+
+`scripts/check_first_party_deps.py` checks that every installed first-party package
+came from source rather than from a package index. It reads the
+[PEP 610](https://peps.python.org/pep-0610/) `direct_url.json` that pip writes for
+a local or VCS install and omits for an index install, so it works for editable and
+non-editable installs alike:
 
 ```bash
 python scripts/check_first_party_deps.py
 ```
 
-Exit code 0 means everything resolved locally. `make setup` runs it
-automatically. It is also worth running in CI, and after any manual `pip install`
-in a development environment.
+Exit code 0 means everything resolved locally. `make setup` runs it automatically,
+both CI systems run it on every change, and it is worth running yourself after any
+manual `pip install` in a development environment.
 
-## If the check fails
+Because it inspects an environment, it can only report on an install that has
+already happened — which in CI is CI's own, correct install. It cannot see an
+instruction in a document that nobody has followed yet.
+
+### An install command that a document tells you to run
+
+`scripts/tests/test_doc_install_commands.py` closes that gap. It reads every
+`pip install` in a fenced code block in every tracked Markdown file and fails if any
+of them could resolve a first-party name from an index — either because a
+requirement is a bare name, or because a package is installed from a path without
+the siblings it requires by name. It runs in both CI systems as part of
+`make test-packages-cicd`:
+
+```bash
+pytest scripts/tests/test_doc_install_commands.py
+```
+
+The package names, and which siblings each one needs, are derived from the
+`pyproject.toml` files at test time rather than listed in the test, so a new
+first-party package with a bare sibling requirement is covered the moment it is
+added. What it does not read is prose: a command written in inline backticks while
+being discussed, rather than in a code block to be copied, is outside its scope.
+
+## If the environment check fails
 
 1. **See what is installed.** A first-party package whose version does not match
    the repository's is the tell:
