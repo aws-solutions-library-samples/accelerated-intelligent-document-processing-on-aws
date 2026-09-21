@@ -295,6 +295,13 @@ class TestEvaluationResultsContract:
             "`key.endswith(suffix)` filter matches every object in the output "
             "bucket and would fetch all of them."
         )
+        assert "/" in suffix, (
+            f"the derived results suffix {suffix!r} contains no path separator, so "
+            "it is too unspecific to identify an evaluation artifact: get_metrics "
+            "would fetch and parse every object in the output bucket whose key "
+            "happens to end that way. Non-emptiness is a floor, not a specificity "
+            "check, which is why this is asserted separately."
+        )
         assert evaluation_results_key("batch-1/doc.pdf").endswith(suffix), (
             f"a real results key does not end with the derived suffix {suffix!r}. "
             "The document id has moved out of the front of "

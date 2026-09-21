@@ -61,6 +61,7 @@ severity in the file still reads "error".
 from __future__ import annotations
 
 import json
+import posixpath
 import subprocess
 import tomllib
 from fnmatch import fnmatch
@@ -914,11 +915,21 @@ def _relaxation_scope_findings(config: dict) -> list[str]:
     back to exit 0 while every severity in the file still reads "error". So a root
     is required to be a **strict descendant** of an `include` entry: inside the
     gate's scope, and smaller than it.
+
+    The root is canonicalised with `posixpath.normpath` before either comparison,
+    and that is load-bearing rather than tidiness. Comparing the raw string lets
+    `"lib/.."` through — it is not `"."`, it is not an `include` entry, and it
+    starts with `"lib/"` — while denoting the repository root, which was measured
+    to downgrade a `reportCallIssue` in a file nowhere near `lib/` from error to
+    warning, exactly as `{"root": "."}` does. `"lib/./"` reaches `lib` the same
+    way. `normpath` is lexical (`"lib/.."` -> `"."`, `"lib/./"` -> `"lib"`), which
+    is what is wanted: pyright resolves these relative to the config file, and a
+    symlink-following `resolve()` would make the verdict depend on the checkout.
     """
-    includes = [inc.rstrip("/") for inc in _include_paths()]
+    includes = [posixpath.normpath(inc) for inc in _include_paths()]
     findings: list[str] = []
     for root in sorted(_relaxations(config)):
-        normalised = root.rstrip("/")
+        normalised = posixpath.normpath(root)
         if normalised in {"", ".", "/"} or normalised in includes:
             findings.append(
                 f"executionEnvironments root {root!r} covers a whole `include` entry "
@@ -1086,6 +1097,19 @@ _REJECTABLE_SCOPES: dict[str, list] = {
     ],
     "a relaxation that silences rather than softens, via a boolean": [
         {"root": "lib/idp_sdk/idp_sdk", "reportCallIssue": False}
+    ],
+    # The two forms that reach the repo root, or an include entry, without
+    # spelling either — the reason `_relaxation_scope_findings` canonicalises.
+    # Measured: "lib/.." downgrades a reportCallIssue in a file under `src/` from
+    # error to warning, identically to a root of ".".
+    "a relaxation reaching the repo root through ..": [
+        {"root": "lib/..", "reportCallIssue": "warning"}
+    ],
+    "a relaxation reaching an include entry through . and a trailing slash": [
+        {"root": "lib/./", "reportCallIssue": "warning"}
+    ],
+    "a relaxation reaching an include entry through a deeper ..": [
+        {"root": "lib/idp_sdk/..", "reportCallIssue": "warning"}
     ],
 }
 

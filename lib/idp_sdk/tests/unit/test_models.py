@@ -253,38 +253,58 @@ class TestPublicExportSurface:
         dangling = [n for n in idp_sdk.__all__ if not hasattr(idp_sdk, n)]
         assert not dangling, f"idp_sdk.__all__ names undefined attributes: {dangling}"
 
+    #: Heading of the section whose code block is the reader's copy-paste target.
+    RESPONSE_MODELS_HEADING = "## Response Models"
+
     def test_the_documented_import_block_is_importable(self):
         """Parse the reader's copy-paste target and import every name in it."""
         import importlib
         import re
         from pathlib import Path
 
-        # Walk up for the checkout root rather than counting parents: a
-        # hardcoded index was off by one and turned this into a silent skip,
-        # which protects nothing.
+        # Walk up for the checkout root rather than counting parents: a hardcoded
+        # index was off by one and turned this into a silent skip, which protects
+        # nothing. `pyrightconfig.json` anchors it to *this* checkout — matching
+        # the first `docs/idp-sdk.md` in any ancestor could read a sibling clone.
         here = Path(__file__).resolve()
         doc = next(
             (
                 candidate
                 for parent in here.parents
-                if (candidate := parent / "docs" / "idp-sdk.md").is_file()
+                if (parent / "pyrightconfig.json").is_file()
+                and (candidate := parent / "docs" / "idp-sdk.md").is_file()
             ),
             None,
         )
         assert doc is not None, (
-            "docs/idp-sdk.md was not found above "
-            f"{here}. This test asserts that the documented import block works, so "
-            "a missing target means it is checking nothing — fix the lookup rather "
-            "than letting it skip."
+            "no checkout root above "
+            f"{here} holds both pyrightconfig.json and docs/idp-sdk.md. This test "
+            "asserts that the documented import block works, so a missing target "
+            "means it is checking nothing — fix the lookup rather than letting it "
+            "skip."
         )
 
+        # Scoped to the Response Models section rather than the whole page: a
+        # guard that accepts *any* parenthesised import block would still pass if
+        # that section lost its block, as long as some other block matched.
+        text = doc.read_text()
+        start = text.find(self.RESPONSE_MODELS_HEADING)
+        assert start != -1, (
+            f"{doc.name} no longer has a {self.RESPONSE_MODELS_HEADING!r} heading, "
+            "so this test cannot find the block it exists to check. Re-point it at "
+            "wherever the reader is now told to import result models from."
+        )
+        end = text.find("\n## ", start + 1)
+        section = text[start : end if end != -1 else len(text)]
+
         blocks = re.findall(
-            r"```python\nfrom idp_sdk import \(\n(.*?)\n\)\n```", doc.read_text(), re.S
+            r"```python\nfrom idp_sdk import \(\n(.*?)\n\)\n```", section, re.S
         )
         assert blocks, (
-            f"no `from idp_sdk import (...)` block found in {doc.name}. Either the "
-            "Response Models section was removed or its fencing changed — this test "
-            "would silently check nothing, so it fails instead."
+            f"no `from idp_sdk import (...)` block under "
+            f"{self.RESPONSE_MODELS_HEADING!r} in {doc.name}. Either it was removed "
+            "or its fencing changed — this test would silently check nothing, so it "
+            "fails instead."
         )
 
         module = importlib.import_module("idp_sdk")

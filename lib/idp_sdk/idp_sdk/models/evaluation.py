@@ -98,7 +98,11 @@ class EvaluationMetrics:
     """Aggregate evaluation metrics across documents."""
 
     total_documents: int
-    #: Averaged over documents, from each one's ``overall_metrics``.
+    #: Averaged over documents, from each one's ``overall_metrics`` — but over the
+    #: documents that *reported the metric*, which is not necessarily
+    #: ``total_documents``. Each metric carries its own denominator, so a document
+    #: whose ``overall_metrics`` is empty is counted in ``total_documents`` and
+    #: excluded from these averages rather than dragging them toward zero.
     #:
     #: ``None`` in two cases, both of which would otherwise be a plausible-looking
     #: number that answers a different question than the caller asked. When

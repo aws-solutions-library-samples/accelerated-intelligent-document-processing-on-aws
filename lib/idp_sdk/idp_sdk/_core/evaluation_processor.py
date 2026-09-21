@@ -227,12 +227,20 @@ class EvaluationProcessor:
         under a prefix — so it needs the template's tail rather than a concrete
         key, and derives it from the same helper by passing an empty id.
 
-        Two properties this relies on and ``tests/unit/test_evaluation_operations
-        .py`` asserts, because both fail *silently* rather than loudly: the
-        document id must sit at the **front** of the template (otherwise no real
-        key ends with this string and the scan reports zero evaluations), and the
-        result must be non-empty (otherwise it matches every object in the
-        bucket).
+        Three properties this relies on, all asserted in
+        ``tests/unit/test_evaluation_operations.py`` because each fails *silently*
+        rather than loudly:
+
+        * the document id must sit at the **front** of the template, or no real key
+          ends with this string and the scan reports zero evaluations;
+        * the suffix must contain a ``/``, or it is too unspecific to identify an
+          evaluation artifact — a template of ``{id}.json`` yields ``.json``, which
+          front-anchors fine and would have ``get_metrics`` fetch and parse every
+          JSON object in the output bucket;
+        * and it must be non-empty, which is the degenerate case of the above.
+
+        Non-emptiness alone is a floor, not a specificity check, which is why the
+        separator is asserted separately.
         """
         return cls._evaluation_results_key("")
 
@@ -436,10 +444,16 @@ class EvaluationProcessor:
                         if not sections:
                             continue
 
-                    overall = eval_data.get("overall_metrics")
-                    self._accumulate_scores(
-                        document_scores, overall if isinstance(overall, dict) else {}
-                    )
+                    # Skipped entirely under a class filter: the document-level
+                    # averages are reported as None in that case, so accumulating
+                    # them would be per-object work on a bucket-wide scan for a
+                    # value nothing can read.
+                    if not document_class:
+                        overall = eval_data.get("overall_metrics")
+                        self._accumulate_scores(
+                            document_scores,
+                            overall if isinstance(overall, dict) else {},
+                        )
                     count += 1
 
                     for section in sections:

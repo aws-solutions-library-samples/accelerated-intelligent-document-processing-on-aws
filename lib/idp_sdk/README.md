@@ -155,13 +155,36 @@ on the mock's call arguments cannot see this class of defect, so the tests in
 `tests/unit/test_evaluation_operations.py` build the real result object from a
 stubbed processor response instead.
 
-Two things follow for the evaluation surface specifically. `get_report` reads
-`<document key>/evaluation/results.json` from the output bucket — the artifact
-`idp_common.evaluation.contract.evaluation_results_key` names — so its field
-vocabulary (`accuracy`, `precision`, `recall`, `f1_score`, per-attribute
-comparisons) tracks that file. And `get_metrics` averages **documents** for its
-four top-level scores while `by_document_class` aggregates **sections**, because a
-document class is a property of a section.
+**A score is `Optional[float]`, and `None` never means zero.** Every metric the
+evaluation surface returns can be absent, and the distinction carries information a
+`0.0` would destroy: a section the pipeline excluded from evaluation records no
+scores, a stack whose evaluations have not run reports no documents, and a query
+matching nothing is not a query that scored zero. So callers format these through a
+guard rather than directly — `f"{metrics.avg_accuracy:.1%}"` raises `TypeError` on
+`None`. The same rule is why `SearchResult.confidence` is `None` for an empty
+answer.
+
+Three things follow for the evaluation surface specifically.
+
+`get_report` reads `<document key>/evaluation/results.json` from the output bucket.
+The key comes from `idp_common.evaluation.contract.evaluation_results_key` — it is
+**imported, not restated**, because the evaluation service and the aggregation
+Lambda import the same helper, so a copy here could drift and leave this reader
+looking for an object nothing writes. Its field vocabulary (`accuracy`,
+`precision`, `recall`, `f1_score`, per-attribute comparisons) tracks that file.
+
+`get_metrics` averages **documents** for its four top-level scores and aggregates
+**sections** in `by_document_class`, because a document class is a property of a
+section rather than of a document. Each metric carries its own denominator, so a
+document or section that reported no score does not dilute the others.
+
+⚠️ **`get_metrics(document_class=…)` returns `None` for all four top-level
+averages.** They are whole-document figures and cannot answer a question about one
+class of section; returning one anyway would be a real number measuring something
+the caller did not ask for. The class-scoped answer is
+`by_document_class[<class>]`, which carries all four scores. The filter is echoed
+back on the result as `document_class`, which is what distinguishes this `None`
+from "nothing reported that metric".
 
 ## Buckets the CLI creates
 

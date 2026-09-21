@@ -822,6 +822,10 @@ excluded or failed to evaluate carries no scores, and a class where none of them
 did reports `None` rather than `0.0`.
 
 ```python
+def pct(value):
+    return f"{value:.1%}" if value is not None else "n/a"
+
+
 metrics = client.evaluation.get_metrics(
     start_date="2024-01-01",
     end_date="2024-01-31"
@@ -834,10 +838,16 @@ print(f"Average F1: {pct(metrics.avg_f1_score)}")
 for doc_class, stats in metrics.by_document_class.items():
     print(f"{doc_class}: {stats['count']} sections, {pct(stats['avg_accuracy'])}")
 
-# Scoped to one class: read the breakdown, not the top-level averages.
+# Scoped to one class: read the breakdown, not the top-level averages. A class
+# that matched no section is simply absent from the breakdown, so use .get().
 invoices = client.evaluation.get_metrics(document_class="invoice")
 assert invoices.avg_accuracy is None
-print(f"Invoice sections: {pct(invoices.by_document_class['invoice']['avg_accuracy'])}")
+
+stats = invoices.by_document_class.get("invoice")
+if stats is None:
+    print("No invoice sections have been evaluated")
+else:
+    print(f"Invoice sections: {stats['count']}, {pct(stats['avg_accuracy'])}")
 ```
 
 ### evaluation.list_baselines()
