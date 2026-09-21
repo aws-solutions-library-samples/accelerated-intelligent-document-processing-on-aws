@@ -35,7 +35,7 @@ two PRs that carry the results. The per-tier make targets remain runnable on the
 
 | Tier | What only a live stack can prove | Make target |
 |---|---|---|
-| Offline suites, lint, typecheck, dependency audit | — (runs in CI; recorded here for completeness) | `make test` · `make lint-cicd` · `make typecheck` · `make dep-audit` |
+| Offline suites, lint, typecheck, dependency audit | — (recorded here for completeness) | `make test` · `make lint-cicd` · `make typecheck` · `make dep-audit` |
 | Build + package | the published template lints and validates | `python3 publish.py …` |
 | SRT (SAST + deps) | — | `make srt-scan` |
 | RBAC static + dynamic | that every API operation's authorization is enforced by the *deployed* resolver, per Cognito group and config-version scope | `make api-test STACK_NAME=…` |
@@ -49,6 +49,17 @@ two PRs that carry the results. The per-tier make targets remain runnable on the
 
 Every method above, plus the layers that *do* run in CI, is described in
 [Testing](../testing.md) — this table is only the live-stack subset.
+
+Note the entry point in the first row. `make test` is the local way to run the offline
+suites; the targets a pull request actually runs are `make test-cicd -C
+lib/idp_common_pkg` and `make test-packages-cicd`. Run the row as written for a
+release, but do not read a green pipeline as having covered it, because the two sets
+differ in both directions. `make typecheck` is whole-repository where CI runs
+`make typecheck-pr` over the files a branch changes, so that half is genuinely
+stricter here. The **test** half is not: every suite `make test` runs is now also in
+one of the two CI targets, and CI additionally runs one directory `make test`
+excludes. `make test-list` prints the split, and `docs/testing.md` records which
+targets a pull request runs.
 
 Two companion records hold the detail this one summarises:
 

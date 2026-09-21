@@ -670,23 +670,24 @@
     },
     "scripts/run_all_tests.py::QUARANTINE": {
       "kind": "exemption",
-      "turnsOff": "`make test` entirely, for the listed directories",
+      "turnsOff": "TWO gates, for the listed directories: `make test` entirely, and -- since test_src_lambda_tests_in_ci.py was widened past src/lambda -- the requirement that a directory holding tests be reachable from a CI-invoked target. The second consumer is why membership is matched EXACTLY on the quarantine side of that gate: `scripts` is excluded for one file, and as a prefix that one sentence would also exempt scripts/tests, scripts/sdlc/tests, scripts/srt/tests and scripts/security/tests, i.e. this repository's entire gate layer, from running on a pull request.",
       "premise": [
         "JUDGEMENT"
       ],
       "ratchet": "universe-closure",
-      "reason": "Roots known not to run in the shared gate, each with a reason. Two reasons are dependency-availability facts (huggingface_hub, cfnresponse) that an import could check; one is 'collects zero pytest tests', which the RUN_ROOTS comment records as having been false for a sibling entry.",
+      "reason": "Roots known not to run in the shared gate. Each member carries its own reason in the constant, which is the authority -- this field records the judgement the reasons need rather than re-listing them, because an enumeration here goes stale the moment a member is added or paid off. Two members need that judgement recorded. `scripts` is the member whose reason is narrowest relative to the path it names: it is a mis-collection of ONE file, the live RBAC harness's test_email helper, so both consuming gates match it exactly rather than as a prefix -- inherited, it would exempt the four gate suites beneath it. `nested/bedrockkb/src/s3_vectors_manager` names one failing test, which is the most perishable kind of reason there is, so test_run_all_tests_registry.py computes it three ways: the node must still resolve to exactly one collected test, it must still fail, and its file must still pass without it, so fixing, renaming or deleting that test all invalidate the entry rather than leaving it standing. The remaining reasons are dependency availability, an absence of collectable tests, a source tree whose modules are named test_*, operator-run scripts, and one asymmetry in the safe direction (excluded from `make test` while both CIs run it directly). No single predicate is the premise for a set that heterogeneous.",
       "crossReferences": [
         "lib/idp_common_pkg/pytest.ini::norecursedirs",
         "scripts/run_all_tests.py::RUN_ROOTS"
       ],
       "predicateConsidered": {
-        "collects_zero_tests": "It DOES apply to the subset whose reason makes that claim, and it is now applied: test_run_all_tests_registry.py runs the collector per member for every QUARANTINE reason matching that wording. It is recorded here rather than as this entry's premise because the constant's members are heterogeneous -- an unavailable dependency, a mis-collection, a source tree, an absence of tests -- so no single predicate is the premise for the constant."
+        "collects_zero_tests": "It DOES apply to the subset whose reason makes that claim, and it is now applied: test_run_all_tests_registry.py runs the collector per member for every QUARANTINE reason matching that wording. It is recorded here rather than as this entry's premise because the constant's members are heterogeneous -- an unavailable dependency, a mis-collection, a source tree, an absence of tests, one failing test -- so no single predicate is the premise for the constant."
       },
       "memberKind": "path",
       "ratchetEvidence": [
         "scripts/run_all_tests.py",
-        "scripts/tests/test_run_all_tests_registry.py"
+        "scripts/tests/test_run_all_tests_registry.py",
+        "scripts/tests/test_src_lambda_tests_in_ci.py"
       ]
     },
     "scripts/run_all_tests.py::RUN_ROOTS": {
