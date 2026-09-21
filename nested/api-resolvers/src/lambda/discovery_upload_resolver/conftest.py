@@ -1,9 +1,25 @@
 # Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
 # SPDX-License-Identifier: MIT-0
 
-"""Resolve `idp_common.s3_targets` from THIS tree, not from whatever is installed.
+"""Resolve `idp_common.s3_targets` from THIS tree, and supply placeholder credentials.
 
-This function carries the `idp_common` layer, so its handler imports
+Two independent jobs, both of which have to happen before `index` is imported.
+
+**Placeholder credentials.** `create_s3_signed_post_url` calls
+`generate_presigned_post`, and signing a POST policy reads
+`credentials.access_key` — so with no credentials resolvable botocore raises
+`AttributeError: 'NoneType' object has no attribute 'access_key'` from
+`botocore/auth.py` and the two "a legitimate upload still succeeds" tests fail.
+Presigning is arithmetic over a local key: nothing is sent, no account is touched,
+and any syntactically valid key pair produces a signature. `$(PYTEST_HERMETIC)`
+takes the machine's real credentials away deliberately — a suite here that reached
+a real endpoint should fail loudly rather than transact against whoever the
+developer is signed in as — so the placeholders are reinstated here, in the suite
+that needs them, with `setdefault` so a caller's own values win. The suite's
+`index` fixture supplies the region the same way, via `monkeypatch.setenv`.
+
+**Module resolution.** This function carries the `idp_common` layer, so its handler
+imports
 `idp_common.s3_targets` by module path — the same convention `config_scope` uses. In
 a developer environment the package is often an editable install pointing at a
 different worktree, so a bare `pytest` here imports another checkout's copy of the
@@ -19,8 +35,12 @@ reason: the module is stdlib-only (`os`, `re`, `typing`), so loading one file co
 nothing and adds no dependency on the library being installed.
 """
 
+import os
 import sys
 from pathlib import Path
+
+os.environ.setdefault("AWS_ACCESS_KEY_ID", "testing")
+os.environ.setdefault("AWS_SECRET_ACCESS_KEY", "testing")
 
 
 def _repo_root() -> Path:

@@ -164,7 +164,7 @@ class NovaInferenceService:
         temperature: float = 0.0,
         top_k: int = 5,
         max_tokens: int = 1000,
-    ) -> Dict:
+    ) -> Dict:  # pyright: ignore[reportReturnType] - every loop exit returns or re-raises; the implicit fall-through is unreachable
         """
         Invoke Nova model for inference.
 

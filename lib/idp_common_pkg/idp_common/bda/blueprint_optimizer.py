@@ -530,7 +530,7 @@ class BlueprintOptimizer:
             time.sleep(interval)
             iteration += 1
 
-    def _fetch_optimization_results(self, output_s3_uri: str) -> dict:
+    def _fetch_optimization_results(self, output_s3_uri: str) -> dict:  # pyright: ignore[reportReturnType] - every loop exit returns or re-raises; the implicit fall-through is unreachable
         """Read optimization results from S3 output location.
 
         After ``get_blueprint_optimization_status`` returns *Success*,

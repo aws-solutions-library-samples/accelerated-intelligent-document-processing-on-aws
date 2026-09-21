@@ -170,7 +170,7 @@ def _count_extraction_items(extraction_data: dict) -> int:
     return count
 
 
-@xray_recorder.capture("extraction_function")
+@xray_recorder.capture("extraction_function")  # pyright: ignore[reportCallIssue] - aws-xray-sdk types capture() as the wrapped function, not the decorator factory
 def handler(event, context):
     """Extract one section. See ``_handle``.
 

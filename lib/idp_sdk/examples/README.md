@@ -4,10 +4,11 @@ This directory contains example scripts demonstrating how to use the IDP SDK.
 
 ## Prerequisites
 
-1. Install the IDP SDK in development mode:
+1. Install the IDP SDK in development mode. Run this from the repository root,
+   with `idp_common` on the same command line — the SDK requires it by name, and
+   that name on public PyPI belongs to an unrelated party:
    ```bash
-   cd lib/idp_sdk
-   pip install -e .
+   pip install -e lib/idp_common_pkg -e lib/idp_sdk
    ```
 
 2. Configure AWS credentials with access to your IDP stack.

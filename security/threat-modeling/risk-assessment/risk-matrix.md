@@ -97,7 +97,7 @@
 | SELL.T08 | Unavailability of the Activation Service Locks Out Paying Customers | **6** | Seller Entitlement Service | Partially Mitigated |
 | UI.T01 | Cross-Site Scripting (XSS) | **6** | Web UI | Partially Mitigated |
 | UI.T03 | UI API Abuse (REST dispatcher) | **6** | Web UI | Mitigated |
-| UI.T06 | Presigned Read URLs Are Bucket-Scoped, Not Key-Scoped | **6** | Web UI | **Open** |
+| UI.T06 | Object Reads Are Not Scoped Per Document | **6** | Web UI | **Open** (fix pending, #1033) |
 
 ### Medium Risk (Score 3–5)
 
@@ -234,7 +234,7 @@ issue is named, but the status stays *Open* until that change merges.
 | HOOK.T07 | `onError: fail` Does Not Halt the Workflow at Six of Seven Hook Points | Lambda Hooks | #919 |
 | JOB.T02 | Jobs API Is Outside the Automated Authorization Test Harness | Jobs API | — |
 | SDK.T05 | Deployment Service Role Is Broad Enough to Reach Account Administrator | SDK/CLI | #927 |
-| UI.T06 | Presigned Read URLs Are Bucket-Scoped, Not Key-Scoped | Web UI | — |
+| UI.T06 | Object Reads Are Not Scoped Per Document | Web UI | — |
 
 ## 4. Top Priority Threats
 
@@ -253,7 +253,7 @@ Ranked by risk score, then by how much work remains (Open → Partially Mitigate
 | 9 | SELL.T05 | Signing-Key Compromise or Trust Re-Pointing | 8 | Mitigated |
 | 10 | CHAT.T03 | Chat Streaming Function URL — Missing Group and Session-Ownership Enforcement | 6 | **Open** (fix pending, #920) |
 | 11 | HOOK.T07 | `onError: fail` Does Not Halt the Workflow at Six of Seven Hook Points | 6 | **Open** (fix pending, #919) |
-| 12 | UI.T06 | Presigned Read URLs Are Bucket-Scoped, Not Key-Scoped | 6 | **Open** |
+| 12 | UI.T06 | Object Reads Are Not Scoped Per Document | 6 | **Open** (fix pending, #1033) |
 | 13 | AUTH.T07 | Config-Version Scope Bypass (Fail-Open Scope Lookup) | 6 | Partially Mitigated |
 | 14 | AUTH.T16 | Authorization Is Opt-In Per Resolver (No Default Deny at the Dispatcher) | 6 | Partially Mitigated (fix pending, #928) |
 | 15 | FEAT.T03 | Feature Stack IAM Privilege and Host Resource Access | 6 | Partially Mitigated |
@@ -279,11 +279,15 @@ effort-to-value:
    merges. The prerequisite neither issue currently covers is a **verified
    subject**: the browser presenting its Cognito ID token alongside the signed
    request.
-2. **Presigned read key scoping (UI.T06)** — derive the permitted key prefix
-   from the caller's identity/scope instead of trusting the supplied `s3Uri`,
-   and make the bucket allow-list fail **closed** when its env vars are unset.
-   This is a prerequisite for `allowedConfigVersions` to be a real boundary, and
-   it also bounds RPT.T08 and PII.T05.
+2. **Per-document read key scoping (UI.T06)** — give documents an ownership or
+   tenancy attribute and derive the permitted key from it, instead of trusting the
+   supplied `s3Uri`, then narrow the Identity Pool role to match (#1033). The two
+   **per-user** axes are already derived from the caller rather than trusted: a
+   `config_revisions/<profile>/` key is matched against `allowedConfigVersions` and a
+   Test Set bucket key against `allowedTestSets`, and the bucket allow-list fails
+   closed. What is left is the document buckets, where there is no per-user axis to
+   derive a key from — which is why this needs a data-model change and not a check.
+   It also bounds RPT.T08 and PII.T05.
 3. **Jobs API scope-negative test (JOB.T02)** — add a `jobs.read`-only-token
    write attempt and an unauthenticated request to the Jobs API stack test, so
    the gate asymmetry with the UI API closes.

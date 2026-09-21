@@ -370,8 +370,10 @@ For batch processing, evaluation workflows, or automated testing:
 #### Quick Batch Test
 
 ```bash
-# Install CLI
-cd lib/idp_cli_pkg && pip install -e .
+# Install the CLI, from the repository root. All three first-party packages go in
+# ONE pip invocation, so the sibling names they require resolve from this checkout.
+# `make setup` does the same thing. See docs/dependency-confusion.md.
+pip install -e lib/idp_common_pkg -e lib/idp_sdk -e lib/idp_cli_pkg
 
 # Process sample documents
 idp-cli run-inference \
