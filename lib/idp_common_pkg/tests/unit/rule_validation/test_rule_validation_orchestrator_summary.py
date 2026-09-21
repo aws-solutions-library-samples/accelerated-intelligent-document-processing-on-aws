@@ -302,22 +302,31 @@ class TestGenerateConsolidatedSummary:
 
 
 def _summary_for_markdown(**overrides):
+    # "pass_count" and "pass_percentage" are two of the field names
+    # _generate_consolidated_summary emits, and this fixture reproduces that
+    # summary shape verbatim so the markdown formatter is exercised against the
+    # contract it actually has to read. Renaming either key would make these
+    # tests assert a shape the orchestrator never produces, so the four
+    # occurrences below carry a pragma instead: bandit B105's dict-literal
+    # branch reports any constant value stored under a key matching /^pass_/,
+    # whatever the value's type, which is why the identical keys used as
+    # subscripts in the assertions above are not flagged.
     summary = {
         "document_id": "lending_package.pdf",
         "overall_statistics": {
             "total_rules": 3,
-            "pass_count": 1,
+            "pass_count": 1,  # nosec B105 - summary-API field name
             "fail_count": 1,
             "information_not_found_count": 1,
-            "pass_percentage": 33.33,
+            "pass_percentage": 33.33,  # nosec B105 - summary-API field name
         },
         "rule_details": {
             "lending_policy": {
                 "total_rules": 3,
-                "pass_count": 1,
+                "pass_count": 1,  # nosec B105 - summary-API field name
                 "fail_count": 1,
                 "information_not_found_count": 1,
-                "pass_percentage": 33.33,
+                "pass_percentage": 33.33,  # nosec B105 - summary-API field name
                 "rules": [
                     _response("Income documented", "Pass", ["1"], "Found on page 1"),
                     _response("LTV under 80%", "Fail", ["2", "3"], "LTV is 92%"),
