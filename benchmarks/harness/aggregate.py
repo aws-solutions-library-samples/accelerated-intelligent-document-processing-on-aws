@@ -339,14 +339,19 @@ def cell_stats(rows):
 # arrays, a `{confidence: (n, n_correct)}` tally, a mean/stdev/min/max roll-up —
 # with no key a reader scans for and no value they read in isolation.
 #
+# They are three of the FIVE new container-valued keys the backfill adds. The other two
+# stay expanded: `rows[].conf_unscored_by_field` is keyed by field NAME, which a reader
+# does look up, and `meta.augmented` is provenance rather than a numeric block.
+#
 # The reason is reviewability of the artifact diff, and it is measured rather than
 # aesthetic: expanded, the calibration payloads alone cost ~104,700 of the ~130,800
 # lines the #935 backfill adds to the twelve committed summaries, 80,956 of them
-# holding one number each. Compact, the same data is ~1,700 lines: an 80% smaller
-# diff for a 32% larger file. A 130k-line diff is one nobody reads by eye — which is
-# why the backfill's strict additivity had to be proven by script rather than seen —
-# and one line per row still diffs meaningfully: a row whose curve changed shows as
-# one changed line instead of sixty.
+# holding one number each. Compact, the same data is ~1,700 lines, taking the diff on
+# those twelve files from +130,806 to +26,412 added lines — 80% smaller — for a 35%
+# larger file on disk (+35.18% over the twelve, +35.32% over all fourteen). A 130k-line
+# diff is one nobody reads by eye — which is why the backfill's strict additivity had
+# to be proven by script rather than seen — and one line per row still diffs
+# meaningfully: a row whose curve changed shows as one changed line instead of sixty.
 #
 # The `_stats` siblings in `cell_stats` (`cost`, `cell_accuracy`, ...) are the same
 # shape and stay expanded, deliberately. They predate this change, so reformatting
@@ -1489,8 +1494,12 @@ def _empty_curve_reason(n_conf_leaves):
 
     Kept apart because the two invite different actions and a single bucket invited
     the wrong one: the escalation rule attached to the pooled count ("chase it when it
-    exceeds the off-cells") fired on the published grid's own output, where 49 of 89
-    are off-cells and the other 40 are this second state.
+    exceeds the off-cells") fired on the published grid's own output. Of the 89 there,
+    **55** are ``no_confidence`` — 49 ``confidence.mode: off`` cells plus 6 rows whose
+    assessment returned an empty ``explainability_info`` — and **34** are
+    ``no_joinable_cell``. Those 6 belong in the FIRST bucket, not the second:
+    "completed and produced confidence" is false of a row with no confidence leaf,
+    whatever its configured mode says.
     """
     return "no_joinable_cell" if (n_conf_leaves or 0) > 0 else "no_confidence"
 
@@ -1546,14 +1555,20 @@ def _print_calibration(report):
     )
     # The two are separated, and each carries its own reading, because pooling them
     # under "no joinable confidence" produced a count whose only escalation rule fired
-    # on the grid the study publishes: 89 there, of which 49 are off-cells and 40 are
-    # the second bucket, so "chase it when it exceeds the off-cells" fired every time.
+    # on the grid the study publishes: 89 there, splitting 55 / 34 against 49 off-cells,
+    # so "chase it when it exceeds the off-cells" fired every time. Splitting them does
+    # not by itself make the rule exact -- 55 still exceeds 49 -- so the expected
+    # surplus has to be named, which is what the first message below does.
     if s["no_confidence"]:
         print(
             f"  ({s['no_confidence']} with no confidence: EXPECTED and benign at one "
             "per `confidence.mode: off` cell per document — that configuration emits "
-            "no confidence leaf. Compare against the off-cell count in the grid; a "
-            "surplus is an assessment that returned an empty explainability_info)"
+            "no confidence leaf. A SURPLUS over the grid's off-cell count is expected "
+            "too, wherever a run's assessment returned an empty explainability_info, "
+            "which the weak-extraction arms do: the published v0.6.8 matrix reads 55 "
+            "against 49 off-cells for exactly that reason. Chase it only when the "
+            "surplus falls outside the arms that also show not_success or "
+            "no_joinable_cell exclusions)"
         )
     if s["no_joinable_cell"]:
         print(

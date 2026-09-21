@@ -68,7 +68,8 @@ while `v0.6.8/corefast/summary.json` is the same suite over the same three docum
 scored on `IDPRel068` — 171 rows and 19 cells on both sides, matching on every
 `(cell, doc, repeat)` key, and different data. It has also been `--augment`ed with the
 #935 calibration statistic, which the release directory's copy has not been, so it is
-now ~300 KB larger as well.
+larger as well: 533 KB before the backfill, 720 KB after, against 523 KB for the
+release-directory copy.
 
 Two consequences. **Verify the promotion rather than assuming it** — compare `meta.stack`
 and `meta.scored_at`, which identify the grid, instead of comparing file sizes or

@@ -191,20 +191,35 @@ the mean-confidence estimator and is the one to quote. `AUROC` is the gate's bin
 (biased low by design); `AUROCu` is the unbinned one and is the one to quote.
 
 ⚠️ The `skipped:` line has **four** buckets and the last two are different findings.
-*No confidence at all* is normally benign — a cell with `confidence.mode: off` emits no
-confidence leaf, so expect one per off-cell per document; chase it only when it exceeds
-the grid's off-cell count, which means an assessment returned an empty
-`explainability_info`. *Confidence but no joinable cell* means the run completed and
-produced confidence and EXTRACTION returned no `SEQ`-tagged row, so read it as an
-extraction-completeness figure and localise it with the per-arm `excl` column. It is
-neither an S3 failure nor an assessment failure. On the published v0.6.8 matrix these
-read 55 and 34, so a rule phrased on the pooled count fires on the page's own output.
+
+*No confidence at all* — the run emitted no confidence leaf. Benign at one per
+`confidence.mode: off` cell per document, and **a surplus over that count is also
+expected**, from runs whose assessment returned an empty `explainability_info`. The
+published v0.6.8 matrix reads 55 against 49 off-cells for exactly that reason, so
+"chase it when it exceeds the off-cell count" fires on the page's own output and is the
+wrong rule. The exact rule: the surplus should sit in the same arms that also show
+`not_success` or `no_joinable_cell` exclusions. A surplus in a clean 112-run arm is
+worth chasing.
+
+*Confidence but no joinable cell* — the run completed and produced confidence, and
+EXTRACTION returned no `SEQ`-tagged row. Read it as an extraction-completeness figure and
+localise it with the per-arm `excl` column. It is neither an S3 failure nor an assessment
+failure: no read is attempted for a row whose statistic is stored, and the confidence is
+right there. On the published matrix this reads 34, all of it in the two weak-extraction
+arms.
 
 ⚠️ Group by **extraction model as well as** the grader and the mode. The grader's
 calibration depends on the extraction it is grading, so pooling a 50%-wrong arm with a
 99.9%-correct one reports neither. `--augment` and `--calibration-from-s3` need the
 corpus truth files — pass `--corpus` if `benchmarks/corpus/docs` is not populated, and
 note `gen_corpus.py` rewrites the tracked `corpus/manifest.yaml` with absolute paths.
+
+⚠️ **Two ways a `--calibration` run dirties the tree.** The manifest above, and the
+reliability diagram: it lands at `benchmarks/paper/figures/reliability-diagram.png`, and
+`benchmarks/.gitignore` explicitly **un-ignores** `paper/figures/*.png` (three tracked
+PNGs live there), so it appears as untracked rather than being ignored. Revert the
+manifest and delete the PNG before committing — and never `rm -rf benchmarks/paper`,
+which removes the three tracked figures and the README too.
 
 Measured for v0.6.8/v0.6.9 in
 [docs/benchmarking/studies/confidence-calibration.md](../../docs/benchmarking/studies/confidence-calibration.md):

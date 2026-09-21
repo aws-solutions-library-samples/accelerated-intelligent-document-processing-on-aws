@@ -56,10 +56,29 @@ lib/idp_common_pkg`` and ``make test-packages-cicd``, and neither reaches this d
 So every assertion here, including the ones that stop the estimator being reverted and the
 ones that are the sole check on every AUROC the study publishes, is advisory until someone
 runs ``make test`` locally. That is pre-existing and true of the other suites here too.
-Compounding it: the ``sys.path.insert`` below is RELATIVE to the working directory, so
-running this file from anywhere but the repository root turns it into ``1 skipped`` with
-no warning and a green exit — the same absence-versus-failure shape tracked in
+Compounding it twice. The ``sys.path.insert`` below is RELATIVE to the working directory,
+so running this file from anywhere but the repository root collapses the whole suite to
+``1 skipped`` with no warning and a green exit — the same absence-versus-failure shape
+tracked in
 [#1079](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/1079).
+And ``develop`` has no branch protection (#933), so even a red gate cannot block a merge:
+run ``make check-branch-protection`` rather than taking that from this docstring.
+
+⚠️ **The three Stickler equality assertions are vacuous without ``stickler`` installed.**
+``test_the_mean_confidence_ece_agrees_with_sticklers_estimator``,
+``test_the_brier_score_agrees_with_sticklers_metric`` and
+``test_the_unbinned_auroc_matches_sticklers_over_raw_pairs`` are each
+``importorskip``-guarded, which is deliberate — the whole point of the local
+implementations is that scoring must not require the ``[evaluation]`` extra — but it means
+a bare local run without that extra reports green while three cross-checks never
+executed. CI installs the ``test`` extra, so they are live there. If you are relying on
+them to sign off a change to ``unbinned_auroc``, ``mean_conf_ece`` or the Brier
+arithmetic, confirm they did not skip (``-rs``).
+
+A note on counting passes from this directory: four tests in ``test_typed_scoring.py``
+skip unless ``benchmarks/harness/gen_corpus.py --only kv_form`` has been run, so the same
+tree reports 238 passed with the corpus generated and 234 passed / 4 skipped without it.
+Quote the split, not the total.
 """
 
 from __future__ import annotations
@@ -615,12 +634,49 @@ def test_the_unbinned_auroc_is_none_when_a_class_is_absent_or_the_tally_is_dropp
     assert analyze.unbinned_auroc(analyze.value_tally([(0.9, False)] * 50)) is None
     assert analyze.unbinned_auroc(None) is None
     # Past the cap the tally is dropped whole rather than truncated: half a tally
-    # would yield a confident AUROC over part of the data.
+    # would yield a confident AUROC over part of the data. Derived from the constant
+    # ON PURPOSE here — this assertion is about the drop-whole BEHAVIOUR at whatever
+    # the cap is. The cap's VALUE is pinned separately, below, because a case derived
+    # from the constant cannot pin it.
     many = [
         (i / (analyze.MAX_TALLY_VALUES * 2), i % 3 != 0)
         for i in range(analyze.MAX_TALLY_VALUES * 2)
     ]
     assert analyze.value_tally(many) is None
+
+
+def test_the_tally_cap_is_pinned_at_a_literal_and_brackets_the_real_distribution():
+    """``MAX_TALLY_VALUES`` is free to move unless a literal says otherwise.
+
+    Its only other test builds ``MAX_TALLY_VALUES * 2`` distinct values, so it passes
+    for *every* value of the constant: measured, raising it 390x to 100,000 and lowering
+    it to 64 both left the whole suite green. That is the same free-to-move-constant
+    shape the two regression thresholds were ratcheted against, in the same file, and
+    ``COMPACT_PAYLOAD_KEYS`` a few hundred lines below already applies the opposite
+    discipline for the same reason.
+
+    The cap has two jobs and the literals below pin both. It must sit ABOVE the real
+    distribution, or a legitimate document silently loses its unbinned AUROC: the
+    published corpus emits 1 to 8 distinct confidence values per document-run, and the
+    widest single document sampled reaches 6. And it must sit far enough BELOW
+    per-cell-distinct to actually bound memory on a grader that emits one value per
+    cell, where a 1,600-row document would otherwise tally 3,200 entries.
+    """
+    assert analyze.MAX_TALLY_VALUES == 256
+
+    # Above the distribution: 8 distinct values is the widest arm measured on the
+    # published grid (Sonnet 5, `separate`), and 64 is comfortable headroom over it.
+    kept = analyze.value_tally([(i / 64, i % 3 != 0) for i in range(64)])
+    assert kept is not None and len(kept) == 64
+
+    # At the cap, kept; one past it, dropped whole. Written as literals derived from
+    # nothing, so a change to the constant fails here rather than silently re-deriving.
+    assert len(analyze.value_tally([(i / 256, i % 3 != 0) for i in range(256)])) == 256
+    assert analyze.value_tally([(i / 257, i % 3 != 0) for i in range(257)]) is None
+
+    # Below per-cell-distinct on the largest corpus document, which is what the cap is
+    # for: 3,200 cells on `xl_narrow` would tally far past it.
+    assert analyze.MAX_TALLY_VALUES < 3200
 
 
 def test_pooling_nothing_is_none():

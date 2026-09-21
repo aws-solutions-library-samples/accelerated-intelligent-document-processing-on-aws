@@ -51,11 +51,22 @@ The two columns the gate does *not* read — the **unbinned AUROC** and the **Br
 score** — are computed locally in the harness, by `analyze.unbinned_auroc(tally)` from
 the stored value tally and by `sum((conf − correct)²) / n` from the stored
 `brierSse`. Both are asserted equal to the metric classes the evaluation service
-passes to `compare_with` (Stickler's `AUROCMetric` and `BrierScoreMetric`) to better
-than 1e-12, in `benchmarks/tests/test_confidence_calibration.py`, rather than being
-claimed equal here. Computing them locally is what keeps the `[evaluation]` extra off
-the default scoring path, so a synthetic scoring run does not die part-way through a
-grid for a missing metric library — see the Reproduce section.
+passes to `compare_with` — Stickler's `AUROCMetric` and `BrierScoreMetric` — in
+`benchmarks/tests/test_confidence_calibration.py`, rather than being claimed equal
+here. **The two assertions do not carry the same tolerance, and the difference is worth
+knowing before quoting either.** The AUROC is compared as a float, `abs(mine − theirs)
+< 1e-12`, so the equivalence is exact to numerical precision. The Brier score is
+compared at the 4 decimal places the harness stores, `round(sse/n, 4) == round(theirs,
+4)`, which detects a relative error of 1e-4 on the squared-error sum and not 1e-5 — a
+real check at the precision the artifact carries, which is the precision every Brier
+figure on this page is quoted to, but not a 1e-12 one.
+
+Computing both locally is what keeps the `[evaluation]` extra off the default scoring
+path, so a synthetic scoring run does not die part-way through a grid for a missing
+metric library — see the Reproduce section. ⚠️ The consequence for the three
+equality assertions is that they are `importorskip`-guarded, so they are **vacuous
+where `stickler` is absent**: they skip silently and the suite still reports green.
+They are live in CI, which installs the `test` extra.
 
 ---
 
@@ -451,6 +462,12 @@ which is scratch — the copy this page cites was copied from there to
 `images/benchmark-v0.6.8-confidence-reliability.png`, and a regenerated chart has to be
 copied across again to change what the page shows.
 
+⚠️ **The chart leaves your working tree dirty, and `benchmarks/.gitignore` will not hide
+it.** That file explicitly un-ignores `paper/figures/*.png` — three tracked PNGs live
+there — so a freshly-written `reliability-diagram.png` shows up as untracked rather than
+being ignored. Delete it after a run, or leave it and do not stage it; do **not**
+`rm -rf benchmarks/paper`, which takes the three tracked figures and the README with it.
+
 Each arm reports its own `runs`, `docs` and `excl` counts, and the grid's totals appear
 in the trailing `skipped:` line. **That line has four buckets and two of them are
 normally non-zero, for unrelated reasons.** On the full v0.6.8 matrix above it reads
@@ -460,8 +477,12 @@ confidence but no joinable cell`, and each of the last two needs its own reading
 - **no confidence at all** — the run emitted no confidence leaf. This is *expected* at
   one per `confidence.mode: off` cell per document, and 49 of the 55 are exactly that.
   The other 6 are `separate`-mode runs on the Nova-Lite-extraction arm whose assessment
-  returned an empty `explainability_info`. Compare the count against the grid's off-cell
-  count; a surplus is the second kind.
+  returned an empty `explainability_info` — and note they belong here rather than in the
+  next bucket precisely because they produced no confidence, whatever their configured
+  mode says. **So a surplus over the off-cell count is expected, not a finding:** the
+  exact rule is that the surplus should sit in the same arms that also show `not_success`
+  or `no_joinable_cell` exclusions, which is where a failing extraction shows up. A
+  surplus in a clean 112-run arm is the one worth chasing.
 - **confidence but no joinable cell** — the run completed *and* produced confidence
   (6 to 148 leaves), and extraction returned no `SEQ`-tagged row for those scores to be
   joined to. All 34 fall in the two weak-extraction arms. This is a statement about
