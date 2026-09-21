@@ -493,9 +493,10 @@ def score_calibration(sections, rows_typed, list_key, observations=None):
     }
 
 
-# A confidence grader emits few distinct values — measured 2 to 10 per document on
-# this corpus, because `_expand_row_to_per_column` fans ONE per-row score across the
-# row's columns — so a tally keyed on the value itself is a handful of entries and is
+# A confidence grader emits few distinct values — measured 1 to 5 per document-run on
+# the Nova graders and 1 to 8 on Sonnet 5 over this corpus, because
+# `_expand_row_to_per_column` fans ONE per-row score across the row's columns — so a
+# tally keyed on the value itself is a handful of entries and is
 # an exact sufficient statistic for the unbinned AUROC. A grader that emitted a
 # distinct value per cell would make it as large as the document, so it is capped:
 # past the cap the tally is dropped rather than truncated, because half a tally would

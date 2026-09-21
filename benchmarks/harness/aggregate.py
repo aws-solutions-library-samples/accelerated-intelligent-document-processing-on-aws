@@ -14,7 +14,9 @@ complete set per release (see results/RETENTION.md).
 Writes summary.json (per (cell,doc) full scores) + summary.csv (+ meta.json).
 Regression thresholds: accuracy -0.02, cost +15%, any new failure, calibration
 separation -0.03 (field-level and class-level alike), pooled mean-confidence ECE
-+0.01, pooled binned AUROC -0.05, or either crossing its shipped unreliable bar.
++0.01, pooled UNBINNED AUROC -0.05, or either crossing its shipped unreliable bar on
+the gate's own estimator (see calibration_findings: magnitude reads the estimator that
+moves, crossing reads the one the product thresholds).
 
 --calibration pools confidence against the synthetic corpus's exact per-cell truth,
 per configuration arm. It reads the `calibration_curve` sufficient statistic stored
