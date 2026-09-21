@@ -2201,7 +2201,17 @@ which is never compared at all.
 **So before setting `fail`:** confirm every array-of-object field in your classes
 models table rows rather than an entity group, and that no unrelated table in the
 same section shares a width with one of them. It is the right setting for a
-corpus of long transaction lists, which is the case it was built for.
+corpus of long transaction lists, which is the case it was built for. Narrowing
+the attribution — which is what would let `fail` be the default — is tracked in
+[issue #1046](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/1046).
+
+⚠️ **One asymmetry to know about if you choose `fail`.** A list that comes back
+**empty** is reported by `extraction_incomplete`, not by this check, and that
+stays a warning — so a section losing every row of a list still reports
+`COMPLETED` while one losing 95% of them fails. An empty list has an innocent
+reading that a 5%-complete one does not, which is why it is handled separately;
+the asymmetry is tracked in
+[issue #1047](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/1047).
 
 **Add `minItems` to list fields you care about.** It costs nothing at extraction
 time and turns an invisible truncation into a visible warning:

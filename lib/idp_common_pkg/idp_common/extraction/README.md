@@ -2094,7 +2094,13 @@ make both loud without changing what is extracted:
   are known to over-count — the section-wide sum, sibling lists whose property counts differ
   (the same-width grouping keys on equality), a nested sub-list replacing its parent as the
   compared target, `maxItems` not bounding `expected`, and a list under a plain object
-  property never being compared — and narrowing them is what would let `fail` be a default.
+  property never being compared — and narrowing them is what would let `fail` be a default
+  (GitHub issue #1046). Note one narrowing is already ruled out by measurement: replacing the
+  sum with the LARGEST matching table neither fixes `account_summary` (the Daily Balance table
+  alone is 32 rows against 5 extracted) nor survives the true-positive case, because a table
+  reprinted per page is N tables of the same width and the sum is what lets the check see 800
+  rows at all. `tests/unit/extraction/test_truncation_warnings.py::TestWhyFailIsOptIn` pins the
+  misattribution against the real shipped schema and fails if the default is flipped first.
 - `ExtractionOutputIncomplete` — the section's list came back under half the rows its own
   OCR text evidences, and `extraction.row_shortfall_action` is `fail` (opt-in; see the trade
   above). Raised by `_fail_on_row_shortfall`, which is the **last statement of
