@@ -85,8 +85,8 @@ python scripts/check_first_party_deps.py
 ```
 
 Exit code 0 means everything resolved locally. `make setup` runs it automatically,
-both CI systems run it on every change, and it is worth running yourself after any
-manual `pip install` in a development environment.
+both CI systems run it on every pull request, and it is worth running yourself after
+any manual `pip install` in a development environment.
 
 Because it inspects an environment, it can only report on an install that has
 already happened — which in CI is CI's own, correct install. It cannot see an
@@ -95,10 +95,11 @@ instruction in a document that nobody has followed yet.
 ### An install command that a document tells you to run
 
 `scripts/tests/test_doc_install_commands.py` closes that gap. It reads every
-`pip install` in a fenced code block in every tracked Markdown file and fails if any
-of them could resolve a first-party name from an index — either because a
-requirement is a bare name, or because a package is installed from a path without
-the siblings it requires by name. It runs in both CI systems as part of
+`pip install` a reader could copy — a fenced code block in any tracked Markdown
+file, and a code cell or markdown fence in any tracked notebook — and fails if any
+of them could resolve a first-party name from an index, either because a requirement
+is a bare name or because a package is installed from a path without the siblings it
+requires by name. It runs on every pull request in both CI systems as part of
 `make test-packages-cicd`:
 
 ```bash
@@ -108,8 +109,23 @@ pytest scripts/tests/test_doc_install_commands.py
 The package names, and which siblings each one needs, are derived from the
 `pyproject.toml` files at test time rather than listed in the test, so a new
 first-party package with a bare sibling requirement is covered the moment it is
-added. What it does not read is prose: a command written in inline backticks while
-being discussed, rather than in a code block to be copied, is outside its scope.
+added.
+
+What it does not read is prose — a command written in inline backticks while being
+discussed, rather than in a code block to be copied. Nor does it match a command
+that is not in a shell command position on its line: a parenthesised subshell, a
+`sudo` carrying its own options, or a command assembled by a loop or held in a
+variable. Installers other than pip (`uv add`, `poetry add`, `pipx`) resolve names
+the same way and are also unmatched; `uv pip`, which this repository does use, is
+matched. The module docstring states each of these and why, and they are the whole
+list — nothing is excluded by path, so there is no exemption list to audit.
+
+Being run is not the same as being enforced. Neither `develop` nor `main` carries
+branch protection, so both gates above — and every other gate in this repository —
+are advisory: a pull request can be merged with them red. `make
+check-branch-protection` reads the live setting, and
+[issue #933](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/933)
+tracks turning protection on.
 
 ## If the environment check fails
 
