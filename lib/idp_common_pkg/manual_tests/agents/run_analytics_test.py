@@ -44,12 +44,12 @@ def main():
         print("To use .env files, install python-dotenv: pip install python-dotenv")
 
     # Add the idp_common_pkg root to Python path
-    pkg_root = Path(__file__).parent.parent.parent.parent
+    pkg_root = Path(__file__).parent.parent.parent
     sys.path.insert(0, str(pkg_root))
 
     # Import after path modification to avoid E402 linting error
     try:
-        from idp_common.agents.testing.test_analytics import (
+        from test_analytics import (
             main as test_main,  # noqa: E402
         )
 

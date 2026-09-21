@@ -411,15 +411,24 @@ agent = agent_factory.create_agent(
 response = agent("test query")
 ```
 
-### Running Unit Tests
+### Running Tests
+
+The offline unit tests for this subpackage live in
+`lib/idp_common_pkg/tests/unit/agents/` and run in the normal gate:
 
 ```bash
-# Test conversational orchestrator
-cd lib/idp_common_pkg/idp_common/agents/testing
-python run_conversational_orchestrator_test.py
+cd lib/idp_common_pkg && make test-unit
+```
 
-# Or with pytest
-pytest test_conversational_orchestrator.py -v
+The scripts in `lib/idp_common_pkg/manual_tests/agents/` are a different thing:
+they drive real Bedrock, Athena and DynamoDB, so they are run by hand against a
+deployed stack and are excluded from every automated invocation. See
+`manual_tests/agents/README.md` for the credentials and `.env` they need.
+
+```bash
+cd lib/idp_common_pkg
+python manual_tests/agents/test_analytics.py -q "How many documents were processed today?"
+python manual_tests/agents/test_orchestrator_with_subagents.py
 ```
 
 ## Troubleshooting

@@ -17,7 +17,7 @@ from pathlib import Path
 import boto3
 
 # Add the idp_common_pkg root to Python path so we can import idp_common
-pkg_root = Path(__file__).parent.parent.parent.parent
+pkg_root = Path(__file__).parent.parent.parent
 sys.path.insert(0, str(pkg_root))
 
 # Import after path modification to avoid E402 linting error

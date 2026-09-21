@@ -17,11 +17,15 @@ test: test-unit
 # NOT `-m "unit"`: hundreds of real unit tests were never marked, so the old
 # `unit`-only filter silently skipped ~800+ of them. `not integration` matches
 # pytest.ini's default and the rest of the repo's suites.
+#
+# The operator-run scripts that call real Bedrock live in manual_tests/ and are
+# excluded by pytest.ini's `norecursedirs`, which covers a bare `pytest` too —
+# these recipes no longer carry an --ignore of their own.
 test-unit:
-	$(PYTEST_HERMETIC) -m "not integration" --ignore=idp_common/agents/testing
+	$(PYTEST_HERMETIC) -m "not integration"
 
 test-integration:
-	$(PYTHON) -m pytest -m "integration" --ignore=idp_common/agents/testing
+	$(PYTHON) -m pytest -m "integration"
 
 test-cicd: test-unit-cicd
 
@@ -33,7 +37,7 @@ test-cicd: test-unit-cicd
 # PYTEST_ARGS lets CI pass `-n auto` (pytest-xdist) to parallelize across cores.
 test-unit-cicd:
 	@if [ -z "$(SKIP_INSTALL)" ]; then pip install -e ".[test]"; else echo "SKIP_INSTALL set — using pre-installed deps"; fi
-	$(PYTEST_HERMETIC) -m "not integration" --ignore=idp_common/agents/testing $(PYTEST_ARGS) --cov=idp_common --cov-report=xml:test-reports/coverage.xml --cov-report=term --junitxml=test-reports/test-results.xml tests/
+	$(PYTEST_HERMETIC) -m "not integration" $(PYTEST_ARGS) --cov=idp_common --cov-report=xml:test-reports/coverage.xml --cov-report=term --junitxml=test-reports/test-results.xml tests/
 
 clean:
 	rm -rf .pytest_cache

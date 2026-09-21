@@ -46,8 +46,22 @@ PRUNE_DIR_MARKERS = (
     # scratch/ is gitignored (local benchmarks, cloned tools, throwaway work);
     # never part of the gate. CI never sees it, so prune it locally too.
     "/scratch/",
-    # idp_common ships fixture-style helper "tests" that are not a suite.
-    "/idp_common/agents/testing/",
+    # Two gitignored, locally-staged copies of lib/idp_common_pkg that the
+    # idp-data-generator feature's build drops next to its Lambda sources. They
+    # hold library code only (no tests/ dir), so every test_*.py they contain is
+    # a duplicate of one in lib/idp_common_pkg. CI never sees them; a developer
+    # machine that has built that feature does. They cannot be matched by a
+    # shared substring -- `/idp-data-generator/` would also prune
+    # feature-platform/idp-data-generator/feature-api/tests, which is a real
+    # registered suite -- so each copy root is named.
+    "/idp-data-generator/idp_common_pkg/",
+    "/idp-data-generator/bootstrap-processor/idp_common_pkg/",
+    # Operator-run agent scripts that call real Bedrock/Athena. Named test_*.py,
+    # so they look like a suite to the walk below; they are not one. Excluded
+    # here and by `norecursedirs` in lib/idp_common_pkg/pytest.ini, so no
+    # invocation collects them. Listed as a prune marker rather than in
+    # QUARANTINE because the walk must not descend into it at all.
+    "/lib/idp_common_pkg/manual_tests/",
     # Agent worktrees: `git worktree` checkouts of this same repo, created under
     # .claude/worktrees/ when work is delegated to a subagent. Every test file in
     # the repo therefore appears once per live worktree, so without this the guard
