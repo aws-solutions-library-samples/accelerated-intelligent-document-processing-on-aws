@@ -25,13 +25,11 @@ class TestParameterPreservation:
             admin_email="admin@example.com",
             max_concurrent=100,
             log_level="INFO",
-            enable_hitl="false",
         )
 
         assert params["AdminEmail"] == "admin@example.com"
         assert params["MaxConcurrentWorkflows"] == "100"
         assert params["LogLevel"] == "INFO"
-        assert params["EnableHITL"] == "false"
 
     def test_build_parameters_update_no_params(self):
         """Test parameter building for update with no parameters - should be empty"""
@@ -49,7 +47,6 @@ class TestParameterPreservation:
         assert params["MaxConcurrentWorkflows"] == "200"
         assert "AdminEmail" not in params
         assert "LogLevel" not in params
-        assert "EnableHITL" not in params
 
     def test_build_parameters_update_selective_log_level_only(self):
         """Test parameter building for update with only log level"""
@@ -59,20 +56,17 @@ class TestParameterPreservation:
         assert params["LogLevel"] == "DEBUG"
         assert "AdminEmail" not in params
         assert "MaxConcurrentWorkflows" not in params
-        assert "EnableHITL" not in params
 
     def test_build_parameters_update_multiple_selective(self):
         """Test parameter building for update with multiple selective parameters"""
         params = build_parameters(
             max_concurrent=150,
             log_level="DEBUG",
-            enable_hitl="true",
         )
 
         # Only the provided parameters should be included
         assert params["MaxConcurrentWorkflows"] == "150"
         assert params["LogLevel"] == "DEBUG"
-        assert params["EnableHITL"] == "true"
         assert "AdminEmail" not in params
 
     def test_build_parameters_additional_params(self):
@@ -95,7 +89,6 @@ class TestParameterPreservation:
             admin_email=None,
             max_concurrent=None,
             log_level=None,
-            enable_hitl=None,
             custom_config=None,
         )
 
@@ -135,7 +128,6 @@ class TestParameterPreservationIntegration:
 
         # These should NOT be in the dict (CloudFormation preserves them)
         assert "LogLevel" not in params
-        assert "EnableHITL" not in params
         assert "AdminEmail" not in params
 
     def test_new_stack_scenario_all_required_params(self):
@@ -149,7 +141,6 @@ class TestParameterPreservationIntegration:
             admin_email="user@example.com",
             max_concurrent=100,  # Default value
             log_level="INFO",  # Default value
-            enable_hitl="false",  # Default value
         )
 
         # Required params for new stack
@@ -158,7 +149,6 @@ class TestParameterPreservationIntegration:
         # Defaults should be included for new stack
         assert params["MaxConcurrentWorkflows"] == "100"
         assert params["LogLevel"] == "INFO"
-        assert params["EnableHITL"] == "false"
 
     def test_update_with_custom_config_only(self):
         """
@@ -365,3 +355,50 @@ class TestLogLevelOption:
 
     def test_unset_level_is_omitted(self):
         assert "LogLevel" not in build_parameters(log_level=None)
+
+
+class TestEnableHitlIsNoLongerAStackParameter:
+    """`--enable-hitl true` must refuse, not build a rejected parameter set.
+
+    The root template stopped declaring `EnableHITL` in v0.4.11, when HITL became a
+    configuration setting, but `build_parameters` kept emitting it — so
+    `idp-cli deploy --enable-hitl true` died at CreateStack with
+    ``Parameters: [EnableHITL] do not exist in the template`` and created nothing.
+
+    The tests in this file were what let that stand for that whole span: they
+    asserted ``params["EnableHITL"] == "true"``, which pins the name the function
+    produced rather than the names the template accepts. The load-bearing check is
+    therefore NOT here — it is
+    ``scripts/tests/test_script_deployed_template_parameters.py::test_build_parameters_emits_only_declared_parameters``,
+    which reads the template. What these two add is the flag's surface: it is still
+    accepted as `false` so an existing script keeps working, and `true` now says
+    where HITL moved to instead of failing opaquely in CloudFormation.
+    """
+
+    @staticmethod
+    def _option():
+        from idp_cli.cli import deploy
+
+        return next(p for p in deploy.params if p.name == "enable_hitl")
+
+    def test_the_flag_is_still_accepted_so_existing_invocations_keep_working(self):
+        option = self._option()
+        assert option.default == "false"
+        assert set(option.type.choices) == {"true", "false"}
+
+    def test_true_is_refused_with_the_place_hitl_actually_lives(self):
+        from click.testing import CliRunner
+
+        from idp_cli.cli import deploy
+
+        result = CliRunner().invoke(
+            deploy, ["--stack-name", "any-stack", "--enable-hitl", "true"]
+        )
+        assert result.exit_code == 1, result.output
+        assert "no longer a stack parameter" in result.output
+        assert "Assessment & HITL Configuration" in result.output
+
+    def test_build_parameters_does_not_accept_it_at_all(self):
+        import inspect
+
+        assert "enable_hitl" not in inspect.signature(build_parameters).parameters

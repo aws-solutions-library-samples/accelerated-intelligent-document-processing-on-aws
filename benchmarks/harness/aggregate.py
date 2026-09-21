@@ -162,6 +162,17 @@ CSV_COLS = [
     "coercion_refusals",
     "mean_confidence",
     "pct_conf_below_0.9",
+    # Confidence COVERAGE (#997): the share of extracted list rows carrying a
+    # confidence, by the same rule the assessment_coverage_incomplete guard fires
+    # on. Distinct from mean_confidence, which averages the scores that exist and
+    # is silent about the rows that have none. Carried in the CSV as well as the
+    # JSON because DictWriter(extrasaction="ignore") drops any row key absent from
+    # this list without a word — which is how n_conf_leaves came to be written by
+    # the scorer and readable from nothing.
+    "conf_rows_expected",
+    "conf_rows_scored",
+    "conf_rows_unscored",
+    "conf_coverage",
     "calibration_separation",
     "class_accuracy",
     "class_mean_confidence",
@@ -234,6 +245,13 @@ def cell_stats(rows):
                 [r.get("validation_valid_rate") for r in succ]
             ),
             "wall_s": _stats([r.get("wall_s") for r in succ]),
+            # #997 asked for the DISTRIBUTION, not just the mean: a mean of 0.99
+            # is consistent both with every document at 0.99 and with 99 documents
+            # at 1.0 and one at 0.0, and only the second says anything about the
+            # guard's false-positive rate. _stats carries min/max/stdev/CV, and it
+            # drops Nones — so documents with no list attribute (coverage
+            # undefined) are excluded rather than counted as perfect.
+            "conf_coverage": _stats([r.get("conf_coverage") for r in succ]),
         }
     return out
 
