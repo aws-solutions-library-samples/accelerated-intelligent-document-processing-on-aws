@@ -45,12 +45,20 @@ const ArrayConstraints = ({ attribute, onUpdate, availableClasses = [] }: ArrayC
     <>
       <Header {...({ variant: 'h4' } as Record<string, unknown>)}>Array Constraints</Header>
 
-      <FormField label="Min Items" description="Minimum number of items expected in the array. Use 1 to require at least one item.">
+      <FormField
+        label="Min Items"
+        description={
+          'Minimum number of items required in the array. Leave empty for no floor. In Advanced extraction this is a hard floor enforced ' +
+          'while the agent works — and per shard when the section is sharded — so a floor a document (or one shard) cannot reach fails ' +
+          'extraction and keeps no rows. Set only a floor you are willing to fail on; to be warned instead, leave this empty and use ' +
+          'Row Shortfall Action.'
+        }
+      >
         <Input
           type="number"
           value={attribute.minItems?.toString() || ''}
           onChange={({ detail }) => onUpdate({ minItems: detail.value ? parseInt(detail.value, 10) : undefined })}
-          placeholder="e.g., 1 for at least one item"
+          placeholder="empty = no floor"
         />
       </FormField>
 

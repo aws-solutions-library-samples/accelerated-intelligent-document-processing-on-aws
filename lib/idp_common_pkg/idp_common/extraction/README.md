@@ -1935,10 +1935,12 @@ written to fix.
 
 v0.7 acted on that argument for schema validation too, by flipping
 `validation.enabled` to default **on** (`ValidationConfig.enabled` in
-`idp_common/config/models.py`). This check nevertheless stays ungated: a config that
-explicitly turns validation off should not thereby turn off a check that costs
-nothing and only ever asks the model to try again. So the two remain independently
-enabled, and `_build_schema_validator` returns `None` only when *neither* applies.
+`idp_common/config/models.py`). This check nevertheless stays ungated: its worst case
+is **one wasted agent turn** on a document that genuinely has no rows inside a
+detected table, and a config that explicitly turns validation off should not thereby
+turn off a guard whose whole effect is to ask the model to try again. So the two
+remain independently enabled, and `_build_schema_validator` returns `None` only when
+*neither* applies.
 
 The failure this closes: an agent declined the deterministic table parser because
 one column was OCR-corrupted (`tool_usage_decision.agent_stated_reason`: *"the
@@ -2188,10 +2190,29 @@ signals make both loud without changing what is extracted:
     never stored, `_invoke_agent_for_extraction` spends `max_extraction_retries` whole-
     section agent turns, and `structured_output_async` then raises
     `ValueError("Failed to generate valid structured output.")` — the section fails with no
-    rows and no diagnosis of what was short. The sharded route reaches the same constraint
-    when the merged dict is re-validated against `dynamic_model`. Prefer
+    rows and no diagnosis of what was short. Prefer
     `extraction.row_shortfall_action`, which persists the partial rows, the error-severity
     issue and the processing report *first*.
+  - ⚠️ **Sharded: the floor is enforced PER SHARD, so a whole-section floor is
+    unsatisfiable.** Both fan-out sites pass the whole-section transport model as
+    `data_format` — `concurrent_structured_output_async(data_format=dynamic_model, ...)`
+    in-process and `run_section_shard`'s `extract_one_shard(data_format=dynamic_model)`
+    for the Step Functions route — `_run_shard_agent` forwards it unmodified, and
+    `structured_output_async` builds the agent's tools with
+    `create_dynamic_extraction_tool_and_patch_tool(data_format)`. So each shard's
+    `extraction_tool` carries the section's `minItems`, while the shard sees only its page
+    range. `minItems: 100` over a 17-page section (`max_pages_per_shard` 5) rejects every
+    shard holding under 100 rows, and a cover-page shard holds none — the document fails
+    though it holds 800 rows. `shard_validation_schema` (no `required`, no `minItems`) is
+    the in-loop **feedback** validator passed as `schema_validator` and consulted for the
+    self-correction round; it is NOT the tool boundary, so it does not relax this. Verified
+    by driving `_run_shard_agent` with a spy on the tool builder: the tool is built from
+    the same object the shard plan returned, a 17-row shard is rejected `too_short` at that
+    boundary, and the shard feedback validator reports the same 17 rows as satisfying every
+    constraint. Sharding is opt-in
+    (`extraction.agentic.max_concurrent_batches > 1`, default `1`), and the only floor
+    every shard can satisfy is none — so on a sharding config, use
+    `extraction.row_shortfall_action`, which is evaluated once on the merged section.
   - ⚠️ **Reachability: treat this as a Simple-mode signal.** A short non-empty list does not
     survive the tool boundary in Advanced mode, so the section fails instead of reporting
     this. The string form the Web UI stores (`minItems: "100"`) is enforced there too — the

@@ -4633,6 +4633,16 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
         and a cover-page shard has no rows — and no OCR table evidence. Both
         fan-out sites (in-process and SFN) use this, so the shard rule has one
         home and one test. See ``_build_schema_validator(shard_scoped=True)``.
+
+        ⚠️ This relaxation reaches the agent's **self-correction feedback** only. It
+        is passed as ``schema_validator``, which ``structured_output_async`` consults
+        after a tool call; the ``extraction_tool`` itself is built from
+        ``data_format``, the whole-section transport model, so a ``minItems`` floor
+        IS enforced per shard at the tool boundary and a section-sized floor is
+        unsatisfiable by any shard. Relaxing that too would mean generating a
+        per-shard transport model; until then, ``row_shortfall_action`` is the
+        shard-aware completeness lever. See the ``extraction_list_truncated`` entry
+        in this package's README.
         """
         return self._build_schema_validator(shard_scoped=True)
 

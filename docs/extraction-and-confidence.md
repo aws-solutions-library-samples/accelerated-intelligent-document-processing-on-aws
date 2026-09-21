@@ -2281,7 +2281,7 @@ difference decides how you should pick the number:
 
 | | Simple (`extraction.mode: simple`) | Advanced (`extraction.mode: advanced`) |
 |---|---|---|
-| Where the floor is checked | after extraction, on the returned result | **inside** the extraction loop, at the agent's tool boundary |
+| Where the floor is checked | after extraction, on the returned result | **inside** the extraction loop, at the agent's tool boundary — and **per shard** when the section shards |
 | A list under the floor | raises `extraction_list_truncated` (**warning**) and, when `extraction.validation.enabled` is on (the default since v0.7), a schema violation in `metadata.validation` / `extraction_validation_failed` | is **rejected**; the agent gets a bounded number of correction rounds, and if it still cannot reach the floor the extraction **fails** |
 | The rows that were extracted | kept, and visible in the section result | **discarded** — a failed extraction writes no `inference_result` |
 | Document status | unchanged: `COMPLETED` | the section fails, so the document fails |
@@ -2314,21 +2314,40 @@ So, in Advanced mode:
   fail those too.
 - **If what you want is a signal rather than a failure, use
   `extraction.row_shortfall_action`** — it keeps the data and the explanation.
-- The sharded route reaches the same constraint when the shards are merged, so
-  sharding does not soften it.
 
-Without `minItems`, only the empty/absent and sparse signals apply — a list that returns
-10 of 1,200 rows cannot be distinguished from a document that genuinely has 10.
+⚠️ **With sharding on, a whole-section floor cannot be satisfied by any shard.**
+This is the case to know about, because it is the configuration this page
+recommends for exactly the documents someone would put a floor on. Sharding is
+opt-in (`extraction.agentic.max_concurrent_batches > 1`; the default of `1` runs one
+agent over the whole section), but once it is on, each shard agent gets **the whole
+section's** Pydantic model as its extraction tool — the floor is enforced *per
+shard*, not at the merge. A shard sees only its page range (`max_pages_per_shard`
+defaults to 5), so a `minItems: 100` floor on a 17-page section rejects every shard
+that holds fewer than 100 rows, and a shard over a cover page holds none at all.
+The document fails even though it genuinely contains 800 rows.
+
+There is no floor that is both useful and safe here: the only value every shard can
+satisfy is no floor. The relaxed per-shard *feedback* validator — which drops
+`required` and `minItems` precisely because a shard legitimately holds neither —
+governs the agent's self-correction round, not the tool boundary that rejects the
+call, so it does not rescue this. So **if the section shards, do not put `minItems`
+on its lists**; use `extraction.row_shortfall_action`, which is evaluated once on
+the merged section and is the only completeness lever here that is shard-aware.
+
+Without `minItems`, the OCR-row estimate
+(`extraction_rows_below_ocr_estimate`) is what catches a partial Simple-mode list — it
+compares the rows extracted with the rows in the section's OCR tables of the same shape,
+so 43 of 800 is reported with no `minItems` set at all. What neither signal can do is
+distinguish a list that returns 10 of 1,200 rows *from a document whose OCR shows only
+10 table rows* from a document that genuinely has 10: with no evidence of the missing
+rows, nothing is detectable.
+
 For corpora where large tables are expected — in practice anything beyond ~400 rows
 or ~10 pages per document — use **Advanced** mode, which holds recall 1.000 through
 3,200 rows by sharding. Simple mode deliberately does not shard: that is the capability
-that distinguishes the two modes. Without `minItems`, the OCR-row estimate
-(`extraction_rows_below_ocr_estimate`) is what catches a partial Simple-mode list — it
-compares the rows extracted with the rows in the section's OCR tables of the same shape,
-so 43 of 800 is reported even with no `minItems`; a list that returns 10 of 1,200 rows
-from a document whose OCR shows only 10 table rows cannot be distinguished from a document
-that genuinely has 10. When a Simple-mode section is too large to fit the model's input
-window at all, the run **fails** (Bedrock's *Input is too long for requested model*); the
+that distinguishes the two modes. When a Simple-mode section is too large to fit the
+model's input window at all, the run **fails** (Bedrock's *Input is too long for
+requested model*); the
 failure is raised as `ExtractionInputTooLarge` with an explanation and the remedy (the
 estimated request size, the window, and "use Advanced extraction or split the document")
 in the Step Functions cause and the extraction log, and it is deliberately not retried.
@@ -2349,8 +2368,10 @@ in particular it is *not* behind `extraction.validation.enabled` — a guard aga
 silent data loss that has to be switched on protects nobody who did not already
 know to look. (That argument is also why `extraction.validation.enabled` itself now
 defaults to **on** as of v0.7; this check stays ungated regardless, so explicitly
-turning validation off does not also disable a check that costs nothing.) Its only
-effect is one more agent turn; it can never fail a document.
+turning validation off does not also disable a guard whose whole effect is to ask
+the model to try again.) Its only effect is one more agent turn — which is billed,
+so the worst case is one wasted turn on a document that genuinely has no rows inside
+a detected table — and it can never fail a document.
 
 This closes a real failure mode: an agent declined the deterministic table parser
 because one column was OCR-corrupted, then returned the whole 100-row list as

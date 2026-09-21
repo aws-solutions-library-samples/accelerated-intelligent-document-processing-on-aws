@@ -32,15 +32,19 @@ Bedrock's bare "Input is too long". This pins:
 
 from __future__ import annotations
 
+import asyncio
 import io
+import json
 import re
 from pathlib import Path
 from types import SimpleNamespace
+from typing import Any
 from unittest.mock import patch
 
 import pytest
 
 from idp_common.config.models import IDPConfig
+from idp_common.extraction import agentic_idp
 from idp_common.extraction.service import (
     ExtractionImageRejected,
     ExtractionInputTooLarge,
@@ -49,6 +53,7 @@ from idp_common.extraction.service import (
     ExtractionService,
     SectionInfo,
 )
+from idp_common.extraction.validation import shard_validation_schema
 from idp_common.models import Document, Section, Status
 from idp_common.utils.bedrock_utils import (
     is_image_request_rejection,
@@ -832,7 +837,7 @@ class TestZeroRowsStillCompletesUnderFail:
         # Markdown emphasis and line wrapping fall between the words of a phrase,
         # so flatten both away before looking for it.
         text = re.sub(
-            r"[*`\s]+", " ", (_repo_root() / path).read_text(encoding="utf-8")
+            r"[*`#\s]+", " ", (_repo_root() / path).read_text(encoding="utf-8")
         )
         for token in ("95%", "100%", "3,631", "99 returned zero rows"):
             assert token in text, (
@@ -864,21 +869,27 @@ class TestMinItemsIsVisibilityNotAHardConstraint:
     """
 
     # Every surface the `minItems` claim reached, plus the scaling guide (which
-    # recommends `minItems` for the same purpose) and `patterns/unified/template.yaml`
-    # (the copy the Configuration editor renders — the one a user reads at the moment
-    # of choosing a value, which is why it is in the parametrisation and not merely
-    # in the prose).
+    # recommends `minItems` for the same purpose) and the two copies a user reads at
+    # the moment of choosing a value — `patterns/unified/template.yaml`, which the
+    # Configuration editor renders, and the Schema Builder's own Min Items field,
+    # which is the strongest instance of that argument because it is the control that
+    # sets the number.
     _CLAIM_SURFACES = (
         "lib/idp_common_pkg/idp_common/extraction/service.py",
         "lib/idp_common_pkg/idp_common/extraction/README.md",
         "docs/extraction-and-confidence.md",
         "docs/extraction-scaling-guide.md",
         "patterns/unified/template.yaml",
+        "src/ui/src/components/json-schema-builder/constraints/ArrayConstraints.tsx",
     )
 
-    # Literal strings that were the false claims, banned outright rather than
-    # matched in context: "not a hard constraint" is a retraction, and per CLAUDE.md
-    # the text should state what the setting DOES instead.
+    # The false claims, as regexes over the flattened text, banned outright rather
+    # than matched in context: "not a hard constraint" is a retraction, and per
+    # CLAUDE.md the text should state what the setting DOES instead.
+    #
+    # Slashes carry `\s*` because flattening collapses a line break to a space but
+    # does not close up "downstream / HITL" — the spaced form is the wording in both
+    # notebooks (#1063), so prose copied out of one would otherwise pass.
     #
     # ⚠️ This is a LITERAL-RECURRENCE ratchet, not a semantic one. It catches the
     # exact sentences that shipped and near-verbatim reuse of them; a paraphrase
@@ -887,17 +898,17 @@ class TestMinItemsIsVisibilityNotAHardConstraint:
     # hard ``minItems`` constraint violations", green because "minItems" sat between
     # the two banned words. Do not read a green run as "no false promise anywhere in
     # these files".
-    _BANNED_PHRASES = (
+    _BANNED_PATTERNS = (
         # #1048, the minItems claim
-        "hard constraint",
-        "hard constraints",
+        r"hard constraints?",
         # #1048 adjacent, the fail_action: reject claim. Deliberately NOT
         # "section is marked failed" — that is TRUE of
         # `row_shortfall_action: fail`, and template.yaml says it about that.
-        "marked failed because",
-        "section as failed",
-        "failed for hitl",
-        "downstream/hitl",
+        r"marked failed because",
+        r"section as failed",
+        r"failed for hitl",
+        r"downstream\s*/\s*hitl",
+        r"rout\w*\s+to\s+hitl",
     )
 
     def test_a_minitems_shortfall_is_only_a_warning_in_simple_mode(self):
@@ -996,19 +1007,26 @@ class TestMinItemsIsVisibilityNotAHardConstraint:
         that does not exist — which is how two copies of the ``reject`` claim
         survived the first pass through these same files.
 
-        Whitespace and Markdown emphasis are flattened first, so a phrase split
-        across a line break still counts.
+        Whitespace, Markdown emphasis and comment leaders are flattened first, so a
+        phrase split across a line break still counts — including inside a ``#``
+        comment or a ``*``-continued block comment, where the leader lands between
+        the two words and a whitespace-only flatten misses it (measured: the
+        wrapped form evaded the scan in ``service.py`` and
+        ``patterns/unified/template.yaml`` until ``#`` joined the class).
         """
         text = re.sub(
-            r"[*`\s]+", " ", (_repo_root() / path).read_text(encoding="utf-8")
+            r"[*`#\s]+", " ", (_repo_root() / path).read_text(encoding="utf-8")
         ).lower()
-        for phrase in self._BANNED_PHRASES:
-            assert phrase not in text, (
-                f"{path} contains the retired claim {phrase!r}. `minItems` is a "
-                "hard floor in Advanced mode and advisory in Simple mode, and "
-                "`validation.fail_action: reject` fails nothing — it records "
-                "parsing_succeeded=false, which only the processing report and the "
-                "UI report tab read, and it does not route to human review (#1048)."
+        for pattern in self._BANNED_PATTERNS:
+            found = re.search(pattern, text)
+            assert found is None, (
+                f"{path} contains the retired claim {found.group(0)!r} "
+                f"(pattern {pattern!r}). `minItems` is a hard floor in Advanced "
+                "mode — per shard once the section shards — and advisory in Simple "
+                "mode; and `validation.fail_action: reject` fails nothing: it "
+                "records parsing_succeeded=false, which only the processing report "
+                "and the UI report tab read, and it does not send the section to "
+                "human review (#1048)."
             )
 
     def test_no_processing_issue_severity_fails_the_section(self):
@@ -1168,6 +1186,91 @@ class TestMinItemsIsAHardFloorInAdvancedMode:
             root / "lib/idp_common_pkg/idp_common/extraction/agentic_idp.py"
         ).read_text(encoding="utf-8")
         assert 'raise ValueError("Failed to generate valid structured output.")' in text
+
+    def test_each_shard_agent_gets_the_whole_sections_floor(self):
+        """The case the guidance turns on: the floor is PER SHARD, not at the merge.
+
+        Both fan-out sites pass the whole-section transport model as ``data_format``
+        and ``_run_shard_agent`` forwards it unmodified, so
+        ``structured_output_async`` builds each shard's ``extraction_tool`` from it.
+        A section-sized floor is then unsatisfiable by a shard covering part of the
+        pages — which is why the docs say not to put ``minItems`` on a list whose
+        section shards.
+
+        Driven through the real ``_run_shard_agent`` with a spy on the tool builder,
+        stopping at agent construction: the identity of the model the tool is built
+        from is the whole contract, and going further would need Bedrock.
+        """
+        model = self._model()
+        seen: dict[str, Any] = {}
+        real = agentic_idp.create_dynamic_extraction_tool_and_patch_tool
+
+        def spy(model_class):
+            seen["tool_model"] = model_class
+            return real(model_class)
+
+        async def drive():
+            with (
+                patch.object(
+                    agentic_idp,
+                    "create_dynamic_extraction_tool_and_patch_tool",
+                    side_effect=spy,
+                ),
+                patch.object(agentic_idp, "Agent", side_effect=RuntimeError("stop")),
+            ):
+                with pytest.raises(RuntimeError):
+                    await agentic_idp._run_shard_agent(
+                        shard_index=0,
+                        total_shards=6,
+                        page_start=0,
+                        page_end=3,
+                        total_pages=17,
+                        model_id="us.anthropic.claude-sonnet-4-20250514-v1:0",
+                        data_format=model,
+                        shard_prompt="pages 1-3 text",
+                        config=_svc(agentic=True, schema=self._SCHEMA).config,
+                        context="Extraction",
+                        max_retries=1,
+                        connect_timeout=10.0,
+                        read_timeout=30.0,
+                        max_tokens=None,
+                        checkpoint_callback=None,
+                        schema_validator=_svc(
+                            agentic=True, schema=self._SCHEMA
+                        )._shard_schema_validator(),
+                    )
+
+        asyncio.run(drive())
+        assert seen.get("tool_model") is model, (
+            "the shard's extraction_tool must be built from the whole-section "
+            "transport model — if this changes to a per-shard model, the per-shard "
+            "floor warning in both doc tiers is no longer true and should go"
+        )
+
+    def test_the_relaxed_shard_schema_does_not_reach_the_tool_boundary(self):
+        """The two shard-scoped boundaries disagree, and only one is relaxed.
+
+        ``shard_validation_schema`` drops ``required`` and ``minItems`` because a
+        shard legitimately holds neither — but it feeds the in-loop *feedback*
+        validator, not the tool. So for the same 17-row shard of a
+        ``minItems: 100`` section the feedback validator reports every constraint
+        satisfied while the tool boundary rejects the call. That gap is what the
+        docs now warn about, so it is pinned rather than described.
+        """
+        import pydantic
+
+        svc = _svc(agentic=True, schema=self._SCHEMA)
+        shard_rows = _rows(17)
+
+        assert "minItems" not in json.dumps(shard_validation_schema(self._SCHEMA))
+        ok, feedback = svc._shard_schema_validator()(
+            {"Account Number": "1", "Transactions": shard_rows}
+        )
+        assert ok, feedback
+
+        with pytest.raises(pydantic.ValidationError) as ei:
+            self._model()(**{"Account Number": "1", "Transactions": shard_rows})
+        assert any(e["type"] == "too_short" for e in ei.value.errors())
 
     def test_row_shortfall_action_is_the_alternative_that_keeps_the_rows(self):
         """The contrast the guidance rests on, asserted rather than asserted-about.
