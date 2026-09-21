@@ -33,6 +33,7 @@ Bedrock's bare "Input is too long". This pins:
 from __future__ import annotations
 
 import io
+import re
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -828,8 +829,6 @@ class TestZeroRowsStillCompletesUnderFail:
         ),
     )
     def test_both_doc_tiers_state_the_asymmetry_and_its_size(self, path):
-        import re
-
         # Markdown emphasis and line wrapping fall between the words of a phrase,
         # so flatten both away before looking for it.
         text = re.sub(
@@ -844,40 +843,64 @@ class TestZeroRowsStillCompletesUnderFail:
 
 
 class TestMinItemsIsVisibilityNotAHardConstraint:
-    """#1048: `minItems` makes a list shortfall VISIBLE. Nothing acts on it.
+    """#1048: what `minItems` costs is MODE-DEPENDENT, and the text must say so.
 
-    Three places used to tell the reader that setting ``minItems`` turns a
-    shortfall into a hard constraint — the two ``ExtractionService`` messages and
-    the processing report's completeness line in
-    ``docs/extraction-and-confidence.md``. It is not one at any layer:
+    In **Simple** extraction a ``minItems`` shortfall is advisory:
+    ``extraction_list_truncated`` is ``severity="warning"``; the same shortfall is a
+    JSON-Schema failure whose worst outcome under
+    ``extraction.validation.fail_action: reject`` is ``parsing_succeeded=False``,
+    read by ``_generate_processing_report``'s status line and the UI's report tab
+    and by nothing in the status path; and no ``ProcessingIssue`` changes a
+    document's status *by virtue of its severity*,  ``error`` included —
+    ``extraction.row_shortfall_action: fail`` changes the outcome by **raising**
+    (``_fail_on_row_shortfall``), not by being an error.
 
-    * ``extraction_list_truncated`` is ``severity="warning"``.
-    * A ``minItems`` violation is also a JSON-Schema failure, and
-      ``extraction.validation.fail_action: reject`` sets
-      ``parsing_succeeded=False`` — read by ``_generate_processing_report``'s
-      status line and the UI's report tab, and by nothing in the status path.
-    * No ``ProcessingIssue`` changes a document's status at any severity,
-      ``error`` included. ``extraction.row_shortfall_action: fail`` is the only
-      setting in this module that turns a detection into an outcome, and it works
-      by raising, not by severity.
-
-    Giving ``minItems`` a real consequence is a product decision and is not taken
-    here, so the claim must not come back as wording. The phrase scan below is
-    what stops it.
+    In **Advanced** extraction it is a HARD floor.
+    ``TestMinItemsIsAHardFloorInAdvancedMode`` below pins that end to end. So a
+    blanket "minItems only makes a shortfall visible" is false for half the
+    product, and the previous blanket "minItems makes a shortfall a hard
+    constraint" was false for the other half. Both wordings have shipped; the scans
+    here are what stop either from returning.
     """
 
-    # The three files the claim reached, plus the scaling guide, which recommends
-    # `minItems` for the same purpose. The phrase is banned outright rather than
-    # matched in context: "not a hard constraint" is a retraction, and per
-    # CLAUDE.md the text should state what `minItems` DOES instead.
+    # Every surface the `minItems` claim reached, plus the scaling guide (which
+    # recommends `minItems` for the same purpose) and `patterns/unified/template.yaml`
+    # (the copy the Configuration editor renders — the one a user reads at the moment
+    # of choosing a value, which is why it is in the parametrisation and not merely
+    # in the prose).
     _CLAIM_SURFACES = (
         "lib/idp_common_pkg/idp_common/extraction/service.py",
         "lib/idp_common_pkg/idp_common/extraction/README.md",
         "docs/extraction-and-confidence.md",
         "docs/extraction-scaling-guide.md",
+        "patterns/unified/template.yaml",
     )
 
-    def test_a_minitems_shortfall_is_only_a_warning(self):
+    # Literal strings that were the false claims, banned outright rather than
+    # matched in context: "not a hard constraint" is a retraction, and per CLAUDE.md
+    # the text should state what the setting DOES instead.
+    #
+    # ⚠️ This is a LITERAL-RECURRENCE ratchet, not a semantic one. It catches the
+    # exact sentences that shipped and near-verbatim reuse of them; a paraphrase
+    # ("makes the floor binding", "rejects the section") gets past it, and one
+    # already did — `_check_population_completeness`'s docstring said "only flags
+    # hard ``minItems`` constraint violations", green because "minItems" sat between
+    # the two banned words. Do not read a green run as "no false promise anywhere in
+    # these files".
+    _BANNED_PHRASES = (
+        # #1048, the minItems claim
+        "hard constraint",
+        "hard constraints",
+        # #1048 adjacent, the fail_action: reject claim. Deliberately NOT
+        # "section is marked failed" — that is TRUE of
+        # `row_shortfall_action: fail`, and template.yaml says it about that.
+        "marked failed because",
+        "section as failed",
+        "failed for hitl",
+        "downstream/hitl",
+    )
+
+    def test_a_minitems_shortfall_is_only_a_warning_in_simple_mode(self):
         svc = _svc(
             schema={
                 "type": "object",
@@ -891,7 +914,7 @@ class TestMinItemsIsVisibilityNotAHardConstraint:
                 },
             }
         )
-        # The schema is read off the class schema's own properties, so drive the
+        # The floor is read off the class schema's own properties, so drive the
         # real builder rather than asserting on a constructed issue.
         issue = next(
             i
@@ -901,18 +924,54 @@ class TestMinItemsIsVisibilityNotAHardConstraint:
         assert issue.severity == "warning"
         assert "hard constraint" not in issue.message
 
-    def test_no_shipped_message_promises_a_hard_constraint(self):
-        """The recommendation the two shortfall messages carry, in both modes.
+    def test_the_simple_mode_recommendation_does_not_overpromise(self):
+        """``extraction_rows_below_ocr_estimate``'s remedy clause, Simple mode.
 
-        ``_check_completeness_detailed``'s summary and
-        ``extraction_rows_below_ocr_estimate``'s remedy clause are the two places
-        that recommend ``minItems`` to a user. Both must still recommend it — it
-        is the one signal with no false positives — without promising a
-        consequence it does not have.
+        It must still recommend ``minItems`` — the one signal with no false
+        positives — while saying that in Simple extraction it changes visibility
+        and not the outcome.
         """
         svc = _svc()
         svc._document_text = _table(800, pages=17)
-        summary = svc._check_completeness_detailed(
+        message = next(
+            i
+            for i in _issues(svc, {"Account Number": "1", "Transactions": _rows(43)})
+            if i.code == CODE
+        ).message
+        assert "minItems" in message
+        assert "hard constraint" not in message
+        assert "Simple extraction it makes the loss visible" in message
+        assert "row_shortfall_action" in message
+
+    def test_the_advanced_mode_recommendation_warns_that_the_floor_is_hard(self):
+        """The same clause on the Advanced path must NOT read as advisory.
+
+        Constructed, not reached: ``_build_extraction_issues`` is called directly
+        because in Advanced mode a short list does not survive the tool boundary to
+        be reported (see ``TestMinItemsIsAHardFloorInAdvancedMode``). The contract
+        under test is the wording a reader gets, not that a flow produces it.
+        """
+        svc = _svc(agentic=True)
+        svc._document_text = _table(800, pages=17)
+        message = next(
+            i
+            for i in _issues(svc, {"Account Number": "1", "Transactions": _rows(43)})
+            if i.code == CODE
+        ).message
+        assert "minItems is NOT advisory on this path" in message
+        assert "fails the extraction with no rows kept" in message
+        # …and it must point at the setting that keeps the rows.
+        assert "row_shortfall_action" in message
+        assert "hard constraint" not in message
+
+    def test_the_agentic_completeness_summary_warns_before_recommending(self):
+        """``_check_completeness_detailed`` runs on the AGENTIC path only.
+
+        Its caller sits inside ``extraction_method == "agentic"``, so its
+        ``minItems`` recommendation is an Advanced-mode one and has to carry the
+        Advanced-mode cost.
+        """
+        summary = _svc(agentic=True)._check_completeness_detailed(
             extracted_fields={"Transactions": []},
             schema=SCHEMA,
             tool_used=False,
@@ -922,38 +981,34 @@ class TestMinItemsIsVisibilityNotAHardConstraint:
                 "estimated_row_count": 800,
             },
         )["summary"]
-        messages = [summary]
-        for agentic in (False, True):
-            s = _svc(agentic=agentic)
-            s._document_text = _table(800, pages=17)
-            messages.append(
-                next(
-                    i
-                    for i in _issues(
-                        s, {"Account Number": "1", "Transactions": _rows(43)}
-                    )
-                    if i.code == CODE
-                ).message
-            )
-        for text in messages:
-            assert "minItems" in text, text
-            assert "hard constraint" not in text, text
+        assert "minItems" in summary
+        assert "hard constraint" not in summary
+        assert "binding rather than advisory" in summary
+        assert "keeps no rows" in summary
+        assert "row_shortfall_action" in summary
 
     @pytest.mark.parametrize("path", _CLAIM_SURFACES)
-    def test_no_document_or_source_promises_a_hard_constraint(self, path):
-        """Both doc tiers, the service source, and the config editor's own copy.
+    def test_no_document_or_source_repeats_a_retired_claim(self, path):
+        """Both doc tiers, the service source, the scaling guide, the template.
 
-        Scanned as text because the claim is prose: it reached three files at once
-        and a fix applied to one of them would leave the other two promising a
-        failure that cannot happen.
+        Scanned as text because the claims are prose: each reached several files at
+        once, and a fix applied to one file left the others promising a consequence
+        that does not exist — which is how two copies of the ``reject`` claim
+        survived the first pass through these same files.
+
+        Whitespace and Markdown emphasis are flattened first, so a phrase split
+        across a line break still counts.
         """
-        text = (_repo_root() / path).read_text(encoding="utf-8")
-        for phrase in ("hard constraint", "hard constraints"):
-            assert phrase not in text.lower(), (
-                f"{path} promises that a schema constraint is 'hard'. A minItems "
-                "shortfall raises a warning and no ProcessingIssue changes a "
-                "document's status; extraction.row_shortfall_action is the only "
-                "setting here with an outcome (#1048)."
+        text = re.sub(
+            r"[*`\s]+", " ", (_repo_root() / path).read_text(encoding="utf-8")
+        ).lower()
+        for phrase in self._BANNED_PHRASES:
+            assert phrase not in text, (
+                f"{path} contains the retired claim {phrase!r}. `minItems` is a "
+                "hard floor in Advanced mode and advisory in Simple mode, and "
+                "`validation.fail_action: reject` fails nothing — it records "
+                "parsing_succeeded=false, which only the processing report and the "
+                "UI report tab read, and it does not route to human review (#1048)."
             )
 
     def test_no_processing_issue_severity_fails_the_section(self):
@@ -1018,6 +1073,121 @@ class TestMinItemsIsVisibilityNotAHardConstraint:
             {"parsing_succeeded": True, "extraction_method": "traditional"}
         )
         assert "Status: SUCCESS" in ok
+
+
+class TestMinItemsIsAHardFloorInAdvancedMode:
+    """#1048: in Advanced mode `minItems` is enforced where the rows are produced.
+
+    This is the half of the product the "visibility only" reading gets wrong, and
+    the reason the guidance is split by mode. ``_transport_model`` runs the class
+    schema through ``nullable_leaves_for_transport``, which makes scalar **leaves**
+    nullable and leaves the array bounds alone — so ``minItems`` reaches the
+    ``extraction_tool`` boundary and a list under the floor is rejected there.
+
+    The consequence chain from that rejection, which is what makes the guidance
+    matter: the ``@tool`` call raises, ``current_extraction`` is never stored,
+    ``_invoke_agent_for_extraction`` spends ``max_extraction_retries`` whole-section
+    agent turns and returns ``None``, and ``structured_output_async`` raises
+    ``ValueError("Failed to generate valid structured output.")``. Nothing catches
+    it before the Lambda, so the section fails carrying no rows — strictly worse
+    than ``row_shortfall_action: fail``, which persists the partial rows, the
+    error-severity issue and the processing report first.
+
+    This test pins the **enforcement**, which is the part a wording change could
+    silently invalidate (a future decision to strip bounds for transport, the way
+    scalar nullability already is stripped, would make the docs wrong again).
+    """
+
+    _SCHEMA = {
+        "type": "object",
+        "properties": {
+            "Account Number": {"type": "string"},
+            "Transactions": {"type": "array", "minItems": 100, "items": ROW},
+        },
+    }
+
+    def _model(self):
+        return _svc(agentic=True, schema=self._SCHEMA)._transport_model(
+            self._SCHEMA, "Statement"
+        )
+
+    def test_the_floor_survives_into_the_transport_model(self):
+        """`nullable_leaves_for_transport` nulls leaves; it does not drop bounds."""
+        import json
+
+        assert "minItems" in json.dumps(self._model().model_json_schema())
+
+    @pytest.mark.parametrize(
+        "label,rows,accepted",
+        [
+            ("a short list is rejected at the tool boundary", 43, False),
+            ("an empty list is rejected too", 0, False),
+            ("a list at the floor is accepted", 100, True),
+        ],
+    )
+    def test_the_tool_boundary_enforces_the_floor(self, label, rows, accepted):
+        import pydantic
+
+        model = self._model()
+        payload = {"Account Number": "1", "Transactions": _rows(rows)}
+        if accepted:
+            model(**payload)
+            return
+        with pytest.raises(pydantic.ValidationError) as ei:
+            model(**payload)
+        assert any(e["type"] == "too_short" for e in ei.value.errors()), label
+
+    def test_the_web_uis_string_form_of_the_floor_is_enforced_too(self):
+        """The Configuration table stores numeric schema fields as strings.
+
+        ``minItems: "100"`` is what a class authored in the Web UI arrives as, and
+        it is NOT a hole in the floor — the generator coerces it. Pinned because
+        "the string form slips through" is the obvious guess about where an
+        Advanced-mode `extraction_list_truncated` could come from, and it is wrong.
+        """
+        import pydantic
+
+        schema = {
+            "type": "object",
+            "properties": {
+                "Transactions": {"type": "array", "minItems": "100", "items": ROW},
+            },
+        }
+        model = _svc(agentic=True, schema=schema)._transport_model(schema, "Statement")
+        with pytest.raises(pydantic.ValidationError):
+            model(**{"Transactions": _rows(43)})
+
+    def test_the_failure_wording_the_agent_path_raises_is_unchanged(self):
+        """The bare message the docs describe, read from the source that raises it.
+
+        Quoted in both doc tiers as what a reader sees when an unreachable floor
+        exhausts the correction rounds, so it is asserted rather than restated.
+        """
+        root = _repo_root()
+        text = (
+            root / "lib/idp_common_pkg/idp_common/extraction/agentic_idp.py"
+        ).read_text(encoding="utf-8")
+        assert 'raise ValueError("Failed to generate valid structured output.")' in text
+
+    def test_row_shortfall_action_is_the_alternative_that_keeps_the_rows(self):
+        """The contrast the guidance rests on, asserted rather than asserted-about.
+
+        Same section, same 43-of-800 shortfall: under `fail` the partial rows and
+        the diagnosis are durable before the section fails. That is what makes
+        `row_shortfall_action` the recommended lever over an Advanced-mode floor.
+        """
+        svc = _svc(row_shortfall_action="fail")
+        write, _doc, _section, exc = TestRowShortfallOutcome._saved(
+            self, svc, {"Account Number": "1", "Transactions": _rows(43)}
+        )
+        assert exc is not None
+        written = write.call_args.args[0]
+        assert len(written["inference_result"]["Transactions"]) == 43
+        assert [
+            i
+            for i in written["metadata"]["processing_issues"]
+            if i["code"] == CODE and i["severity"] == "error"
+        ]
 
 
 class TestSiblingsRefsAndWrappers:

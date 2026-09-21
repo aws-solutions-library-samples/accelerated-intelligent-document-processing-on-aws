@@ -445,7 +445,7 @@ extraction:
       min_population_ratio: 0.5  # advisory: warn if <50% of fields populated (silent-loss guard)
 ```
 
-- **`fail_action: escalate`** re-extracts only the failing top-level fields with `escalation_model` and merges them back — far cheaper than human review. The re-extraction replaces the original only if it lost no populated data (a list that had rows must not come back null or shorter; a filled value must not come back null) *and* got better field by field; a result that merely has fewer errors in total is not enough, because nulling a whole 100-row list produces one error where 100 unreadable cells produce 100. The decision and its reason appear in the **Processing Report** as `escalation_kept` / `escalation_decision`. `warn` records the outcome and proceeds; `reject` marks the section failed for HITL.
+- **`fail_action: escalate`** re-extracts only the failing top-level fields with `escalation_model` and merges them back — far cheaper than human review. The re-extraction replaces the original only if it lost no populated data (a list that had rows must not come back null or shorter; a filled value must not come back null) *and* got better field by field; a result that merely has fewer errors in total is not enough, because nulling a whole 100-row list produces one error where 100 unreadable cells produce 100. The decision and its reason appear in the **Processing Report** as `escalation_kept` / `escalation_decision`. `warn` records the outcome and proceeds; `reject` records the result as not parsed, which makes the section's Processing Report read `FAILED` and raises the issue at error severity — it does not change the section's or the document's outcome, and it does not route the section to human review (HITL routing is driven by `hitl.confidence_threshold`, not by this).
 - A per-class override `x-aws-idp-extraction-escalation-model` takes precedence over the global `escalation_model`.
 - **`min_population_ratio`** is an advisory completeness heuristic: it flags suspiciously sparse results (e.g. a table that returned zero rows) without failing extraction.
 - Outcomes are recorded per section under `metadata.validation` and `metadata.population_check`, and surfaced in the Web UI **Processing Report** tab.
@@ -2220,19 +2220,30 @@ the attribution — which is what would let `fail` be the default — is tracked
 
 ##### `fail` does not cover a list that lost *every* row
 
-⚠️ **Under `row_shortfall_action: fail`, a document that lost 95% of its rows
-fails and one that lost 100% completes.** This is worth knowing before you rely on
-the setting, because the uncovered case is the worse one.
+⚠️ **`row_shortfall_action: fail` is the only thing deciding the outcome here, and
+under it a document that lost 95% of its rows fails while one that lost 100%
+completes.** This is worth knowing before you rely on the setting, because the
+uncovered case is the worse one.
 
 A width group in which *every* list came back empty is not compared against the
 OCR evidence at all. It is reported by `extraction_incomplete`, which is a
 warning, and a warning cannot change a document's status — so a section whose OCR
-evidences 800 table rows and whose list came back `[]` reports `COMPLETED`, while
-the same section returning 43 of those rows fails.
+evidences 800 table rows and whose list came back `[]` completes, while the same
+section returning 43 of those rows fails.
+
+One other setting does reach the empty case, in **Advanced** mode only: a schema
+`minItems` floor, which the agent's tool boundary enforces, so `[]` is rejected
+there and a floor the section cannot reach fails it. That is a different mechanism
+with a different cost — read
+[`minItems` in Simple vs Advanced mode](#minitems-on-a-list-field--a-warning-in-simple-mode-a-hard-floor-in-advanced)
+before reaching for it, because it discards the rows rather than saving them. The
+rest of this section describes the behaviour with no such floor in force, which is
+every shipped preset.
 
 Both populations are real, and the empty one is larger. Of the 3,631 recorded
-`COMPLETED` benchmark runs with at least 30 ground-truth rows, **99 returned zero
-rows** against 65 with partial loss — so `fail` catches the smaller of the two.
+`COMPLETED` benchmark runs that reach this check's population — the section's OCR
+text evidences at least 30 table rows of the list's shape — **99 returned zero
+rows** against 65 with partial loss, so `fail` catches the smaller of the two.
 
 **Why it is left that way.** A genuinely empty list is a common, legitimate
 outcome — an account with no fees, a statement period with no deposits — and the
@@ -2250,33 +2261,61 @@ are tracked in
 expect rows from as equivalent in severity to a row shortfall. It reaches the
 document list's **Processing Issues** column, the **Processing Report** tab, and
 the tracking table's sparse `HasProcessingIssues` attribute, so it is filterable —
-which is what has to substitute for document status here. Setting `minItems` on
-those fields adds a second signal for the same loss (next section).
+which is what has to substitute for document status here.
 
-#### Add `minItems` to list fields you care about
+#### `minItems` on a list field — a warning in Simple mode, a hard floor in Advanced
 
-It costs nothing at extraction time and turns an invisible truncation into a
-visible warning:
+No shipped preset sets `minItems`; it is something you add.
 
 ```yaml
 Transactions:
   type: array
-  minItems: 1        # or a realistic floor for your corpus
+  minItems: 1        # read the Advanced-mode note below before choosing this
   items: { … }
 ```
 
-**What `minItems` buys is visibility.** A list under its floor raises
-`extraction_list_truncated`, which is a *warning*, and the same shortfall is also a
-JSON-Schema violation, so it appears in the section's `metadata.validation` block
-and in `extraction_validation_failed`. None of that changes an outcome: no
-processing issue changes a document's status at any severity, and the strongest
-thing `extraction.validation.fail_action: reject` does is record
-`parsing_succeeded: false`, which the Processing Report reads and the status path
-does not. Its value is that the shortfall is **unambiguous** — the schema author
-declared the floor, so unlike the OCR-row estimate it has no false positives — and
-that it is therefore something you can filter and alert on. The only setting that
-makes an incomplete list change the document's outcome is
-`extraction.row_shortfall_action: fail` above.
+`minItems` is the one completeness signal with **no false positives by
+construction**, because the schema author declared the floor rather than a heuristic
+inferring it. What it *costs* is not the same in the two extraction modes, and the
+difference decides how you should pick the number:
+
+| | Simple (`extraction.mode: simple`) | Advanced (`extraction.mode: advanced`) |
+|---|---|---|
+| Where the floor is checked | after extraction, on the returned result | **inside** the extraction loop, at the agent's tool boundary |
+| A list under the floor | raises `extraction_list_truncated` (**warning**) and, when `extraction.validation.enabled` is on (the default since v0.7), a schema violation in `metadata.validation` / `extraction_validation_failed` | is **rejected**; the agent gets a bounded number of correction rounds, and if it still cannot reach the floor the extraction **fails** |
+| The rows that were extracted | kept, and visible in the section result | **discarded** — a failed extraction writes no `inference_result` |
+| Document status | unchanged: `COMPLETED` | the section fails, so the document fails |
+
+**In Simple mode `minItems` buys visibility and nothing else.** No processing
+issue changes a document's status *by virtue of its severity* — including the
+`error`-severity `extraction_rows_below_ocr_estimate` above, which fails its
+section by **raising** rather than by being an error — and the strongest thing
+`extraction.validation.fail_action: reject` does is record
+`parsing_succeeded: false`, which the Processing Report and the UI's Processing
+Report tab read and the status path does not. So the value is that the loss becomes
+something you can filter and alert on, and
+`extraction.row_shortfall_action: fail` above is what decides the outcome.
+
+⚠️ **In Advanced mode `minItems` is a hard floor, and an unreachable one costs the
+document.** The Pydantic model the agent fills carries the constraint (only scalar
+*leaves* are made nullable for transport, not the list bounds), so a short list is
+rejected where it is produced. The correction rounds are whole-section agent turns
+and each is billed; when they run out, the section fails with *Failed to generate
+valid structured output*, carrying no rows and no diagnosis of what was short. That
+is a **worse** outcome than `row_shortfall_action: fail`, which writes the partial
+rows, the error-severity issue and the Processing Report first and only then fails
+the section.
+
+So, in Advanced mode:
+
+- **Set a floor you are willing to fail the document on.** `minItems: 1` on a list
+  that is sometimes legitimately empty will fail those documents. A floor near the
+  true row count on a corpus where the agent occasionally falls a row short will
+  fail those too.
+- **If what you want is a signal rather than a failure, use
+  `extraction.row_shortfall_action`** — it keeps the data and the explanation.
+- The sharded route reaches the same constraint when the shards are merged, so
+  sharding does not soften it.
 
 Without `minItems`, only the empty/absent and sparse signals apply — a list that returns
 10 of 1,200 rows cannot be distinguished from a document that genuinely has 10.
