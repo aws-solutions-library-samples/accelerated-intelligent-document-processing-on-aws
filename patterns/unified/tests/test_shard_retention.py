@@ -310,7 +310,7 @@ def test_a_fully_successful_extraction_does_release_its_resume_state(
 
 
 @pytest.mark.unit
-def test_the_cleanup_itself_cannot_fail_the_invocation_it_runs_at_the_end_of(
+def test_a_refused_delete_does_not_fail_the_invocation_it_runs_at_the_end_of(
     in_process, monkeypatch
 ):
     """Putting the cleanup LAST is only safe if the cleanup cannot raise.
@@ -329,3 +329,50 @@ def test_the_cleanup_itself_cannot_fail_the_invocation_it_runs_at_the_end_of(
 
     assert response["section_id"] == "2"
     assert s3.delete_objects.called and s3.delete_object.called
+
+
+@pytest.mark.unit
+def test_nothing_in_the_cleanup_escapes_even_before_the_first_api_call(
+    in_process, monkeypatch
+):
+    """The test above injects the client, so it cannot see the client *acquisition*.
+
+    That is the gap the shape of these helpers invites: an import and a
+    ``_get_s3_client()`` sitting above the ``try`` look like setup rather than work,
+    and they are the two steps a fixture that hands in a fake client never exercises.
+    A misconfigured region raises from exactly there. Both helpers must swallow it,
+    so this replaces ``_get_s3_client`` itself with something that raises — after the
+    checkpoint load has already used it, so the handler reaches the cleanup normally.
+    """
+    document, s3 = in_process
+    state = {"serialised": False, "asked_after": 0}
+
+    def _serialize(self, *a, **kw):
+        state["serialised"] = True
+        return {"inline": True}
+
+    def _client(*, poisoned_after_serialise=True):
+        # The handler uses S3 several times before the tail (checkpoint load and
+        # save), so the fault has to be keyed on the serialise having happened
+        # rather than on a call count.
+        if state["serialised"] and poisoned_after_serialise:
+            state["asked_after"] += 1
+            raise RuntimeError("NoRegionError: you must specify a region")
+        return s3
+
+    monkeypatch.setattr(Document, "serialize_document", _serialize)
+    monkeypatch.setattr(extraction_index, "_get_s3_client", _client)
+
+    response = extraction_index.handler(
+        {"document": document.to_dict(), "section_id": "2"}, _Context()
+    )
+
+    assert response["section_id"] == "2", (
+        "a raise while acquiring the S3 client in the cleanup failed an invocation "
+        "whose extraction, persistence and serialise had all succeeded. Both cleanup "
+        "helpers must have the client acquisition INSIDE their try."
+    )
+    assert state["asked_after"] == 2, (
+        "expected both cleanup helpers to ask for a client after the serialise; got "
+        f"{state['asked_after']} request(s), so this test asserted less than it reads"
+    )

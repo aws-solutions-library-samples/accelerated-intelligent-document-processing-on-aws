@@ -130,14 +130,20 @@ def delete_shard_results(bucket: str, execution_arn: str, section) -> None:
     ``{class_label}_{first_page}_{last_page}``, not by the section's ordinal
     ``section_id``, so a prefix built from the ordinal addressed a location
     nothing was ever written to and this deleted nothing.
-    """
-    from idp_common.extraction.runtime import (
-        shard_persistence_section_id,
-        shard_results_prefix,
-    )
 
-    s3 = _get_s3_client()
+    **Everything is inside the ``try``, including the import and the client.** This
+    is the last thing a successful invocation does, so anything escaping here fails a
+    Lambda whose extraction, persistence and serialise have all already succeeded —
+    the hazard that moving the call to the end exists to close, arriving from the
+    other direction.
+    """
     try:
+        from idp_common.extraction.runtime import (
+            shard_persistence_section_id,
+            shard_results_prefix,
+        )
+
+        s3 = _get_s3_client()
         prefix = shard_results_prefix(
             execution_arn,
             shard_persistence_section_id(section.classification, section.page_ids),

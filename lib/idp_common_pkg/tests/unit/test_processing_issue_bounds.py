@@ -12,8 +12,9 @@ from ordinary inputs:
   offending row echoing its `input_value`;
 * `details` gets there through *authored* content — `_build_extraction_issues` keeps
   the first five jsonschema messages, and jsonschema embeds `repr(instance)` in each,
-  so one `minItems` failure on a 900-row list is 77,392 characters. `[:5]` bounds the
-  count and not the size.
+  so one `minItems` failure on a 900-row list is 57,592 characters (jsonschema
+  4.25.1). `[:5]` bounds the count and not the size, and it is the `[:5]` that sets
+  the scale: five such messages are **281 KB, 70% of the ceiling in one field**.
 
 Past the ceiling the section write raises, the extraction failure path swallows that
 deliberately so it cannot mask the original exception, and the section is left
@@ -26,11 +27,13 @@ Three properties are easy to get wrong and each has its own test below:
    `Section.from_dict` on every Step Functions hand-off and by `get_document`, so a
    bound that re-fires on an already-bounded value warns once per read about work
    done once on write.
-2. **Authored content keeps its tail.** Every authored `root_cause` in the tree ends
-   with the remedy and puts a variable-length list in the middle, so the middle is
-   what goes.
-3. **The bound is on bytes.** 2,048 CJK characters are 6,159 UTF-8 bytes, and the
-   item ceiling is in bytes.
+2. **Authored content keeps its tail.** The extraction and assessment sites end with
+   the remedy and put a variable-length list in the middle, so the middle is what
+   goes. The classification site is the exception — its page list is at the tail —
+   and where it crosses the ceiling is pinned rather than assumed.
+3. **The bound is on bytes.** A test whose fixture is over the ceiling in *both*
+   units cannot see a size guard that switched to characters, so there is a case that
+   straddles it: 2,000 CJK characters is 6,000 UTF-8 bytes.
 """
 
 from __future__ import annotations
@@ -68,6 +71,31 @@ def test_root_cause_is_bounded_in_bytes_not_characters():
 
 
 @pytest.mark.unit
+def test_a_value_under_the_ceiling_in_characters_and_over_it_in_bytes_is_bounded():
+    """The case a 40,000-character fixture cannot discriminate.
+
+    40,000 characters is past a 4,096 ceiling in *either* unit, so a bound that
+    measured characters would still fire on it and the test above would still pass.
+    The regression that actually escapes is a **partial** conversion — the size guard
+    moved to characters while the slicing stays byte-based — and only a value that is
+    under the ceiling in characters and over it in bytes can see that. 2,000 CJK
+    characters is 6,000 UTF-8 bytes: under 4,096 counted one way, half again over it
+    counted the other.
+    """
+    cjk = "漢" * 2_000
+    assert len(cjk) < ProcessingIssue.MAX_ROOT_CAUSE_BYTES < len(cjk.encode("utf-8")), (
+        "fixture precondition: this string must straddle the ceiling — under it in "
+        f"characters ({len(cjk)}) and over it in bytes ({len(cjk.encode('utf-8'))})"
+    )
+    encoded = len(_issue(root_cause=cjk).root_cause.encode("utf-8"))
+    assert encoded <= ProcessingIssue.MAX_ROOT_CAUSE_BYTES, (
+        f"{encoded} bytes survived a {ProcessingIssue.MAX_ROOT_CAUSE_BYTES}-byte "
+        "ceiling. The size guard is counting characters even though the elision "
+        "slices bytes."
+    )
+
+
+@pytest.mark.unit
 def test_the_result_never_overshoots_the_bound():
     """Appending the marker *outside* the budget is the easy mistake: the value then
     exceeds its own stated limit, and re-reading it elides again."""
@@ -90,19 +118,30 @@ def test_the_head_and_the_tail_both_survive():
     assert "elided" in issue.root_cause
 
 
+def _classification_worst_case(n_pages: int) -> str:
+    """The classification site's real template, at ``n_pages`` page ids.
+
+    Mirrors ``classification/service.py``: up to ``_MAX_ISSUE_DETAILS`` (3) distinct
+    reasons, each already capped at ``_MAX_ISSUE_DETAIL_CHARS`` (500), joined with
+    ``"; "``, then an ``"; and N more"``, then the section's whole page list in
+    parentheses. Reproduced rather than imported because the point is the *size* the
+    template can reach, and a real call would need a whole classification run.
+    """
+    reasons = "; ".join(["d" * 500] * 3) + "; and 7 more"
+    pages = ", ".join(str(n) for n in range(1, n_pages + 1))
+    return f"{reasons} (pages {pages})"
+
+
 @pytest.mark.unit
-def test_authored_root_causes_in_the_tree_are_not_clipped_at_all():
+def test_authored_root_causes_at_realistic_sizes_are_not_clipped():
     """Property 2, at the sizes the tree actually produces.
 
-    The three authored sites append a page-id or field list and then a remedy. Their
-    realistic worst cases must pass through untouched, or the bound is silently
-    rewriting content a reader was meant to see. Sizes here are the shapes of the
-    real strings, with the page counts a single section plausibly holds.
+    The extraction and assessment sites are comfortably inside the bound. The
+    classification site is **not** comfortable — see the test below — so its case
+    here is the size it reaches at a page count a single section plausibly holds.
     """
     page_ids = ", ".join(str(n) for n in range(1, 501))
     authored = [
-        # classification/service.py — reason then the page list
-        f"3 pages could not be classified (pages {page_ids})",
         # assessment/service.py — page list then the remedy sentence
         f"Pages missing from the document: {page_ids}. Check the Classification "
         "step's section boundaries and the OCR step's page list.",
@@ -115,12 +154,44 @@ def test_authored_root_causes_in_the_tree_are_not_clipped_at_all():
         )
         + " Set extraction.row_shortfall_action to 'warn' to accept a partial list "
         "as success.",
+        # classification/service.py, its real template at 500 page ids
+        _classification_worst_case(500),
     ]
     for text in authored:
         assert _issue(root_cause=text).root_cause == text, (
             f"an authored root_cause of {len(text.encode('utf-8'))} bytes was "
             "elided; the bound is too tight for content the tree really writes"
         )
+
+
+@pytest.mark.unit
+def test_where_the_classification_site_crosses_the_bound_is_known_and_narrow():
+    """The one authored site that can reach the ceiling, pinned at both ends.
+
+    Its worst case is 3,915 bytes at 500 page ids — 96% of a 4,096-byte ceiling — so
+    "no authored content is ever touched" is not true of this site, and a reader of
+    the bound should know where the edge is rather than discovering it. It takes more
+    than 530 page ids on a single section to cross, and crossing is acceptable
+    because the same ids are also in ``details["page_ids"]`` and in the unbounded
+    ``message``: what is lost is a duplicate, not the diagnosis.
+
+    Both directions are asserted, because a bound whose crossing point drifts
+    silently is the thing that makes the paragraph above stale.
+    """
+    just_inside = _classification_worst_case(530)
+    assert _issue(root_cause=just_inside).root_cause == just_inside, (
+        f"the classification template at 530 page ids "
+        f"({len(just_inside.encode('utf-8'))} bytes) is now elided; the ceiling moved "
+        "down or the template grew, and the documented edge is wrong"
+    )
+
+    over = _classification_worst_case(600)
+    assert _issue(root_cause=over).root_cause != over, (
+        f"the classification template at 600 page ids "
+        f"({len(over.encode('utf-8'))} bytes) is no longer elided, so the ceiling has "
+        "been raised. That weakens the bound for the exception-derived text it exists "
+        "for; the page list is redundant here and was the acceptable thing to lose"
+    )
 
 
 @pytest.mark.unit
@@ -281,9 +352,9 @@ def test_a_real_jsonschema_error_in_details_is_bounded():
 
     serialised = len(json.dumps(issue.details, default=str).encode("utf-8"))
     assert serialised < 8_192, (
-        f"details serialised to {serialised} bytes; four such fields on one section "
-        "is most of DynamoDB's 400 KB item budget, and the write that fails is the "
-        "one whose error is deliberately swallowed"
+        f"details serialised to {serialised} bytes; eight such fields on one section "
+        "exceed DynamoDB's 400 KB item budget, and the write that fails is the one "
+        "whose error is deliberately swallowed"
     )
     # The structure a consumer reads is intact — keys, types and list length.
     assert issue.details["error_count"] == 1
@@ -294,6 +365,64 @@ def test_a_real_jsonschema_error_in_details_is_bounded():
     # tail-clipping bound would have kept 1 KB of transaction rows and dropped it.
     assert issue.details["errors"][0].endswith("is too short")
     assert "elided" in issue.details["errors"][0]
+
+
+@pytest.mark.unit
+def test_the_five_error_shape_the_slice_exists_for_is_bounded():
+    """One oversized message is the easy case; `[:5]` is the one that sets the scale.
+
+    `_build_extraction_issues` keeps `errors[:5]`, so the worst case for a single
+    `details` field is five of them, not one — a document with five list-bearing
+    properties all short of their `minItems`. Unbounded that is one field holding
+    **70% of DynamoDB's 400 KB item ceiling on its own**, so two fields like it
+    exceed the limit and the section write fails silently. A single-error fixture
+    understates the need by a factor of five, which is why this case exists
+    separately.
+    """
+    jsonschema = pytest.importorskip("jsonschema")
+
+    schema = {
+        "type": "object",
+        "properties": {
+            f"Table{i}": {
+                "type": "array",
+                "minItems": 1200,
+                "items": {"type": "object"},
+            }
+            for i in range(5)
+        },
+    }
+    rows = [
+        {"description": f"PAYMENT TO MERCHANT {n}", "amount": f"{n * 1.37:.2f}"}
+        for n in range(900)
+    ]
+    instance = {f"Table{i}": rows for i in range(5)}
+    errors = [
+        e.message for e in jsonschema.Draft7Validator(schema).iter_errors(instance)
+    ]
+    assert len(errors) == 5, f"fixture precondition: five errors, got {len(errors)}"
+
+    unbounded = len(
+        json.dumps({"errors": errors[:5], "error_count": 5}, default=str).encode(
+            "utf-8"
+        )
+    )
+    ceiling = 400 * 1024
+    assert unbounded > ceiling // 2, (
+        "fixture precondition: five jsonschema minItems messages over a 900-row list "
+        f"must dominate the item budget to make the point ({unbounded} bytes vs a "
+        f"{ceiling}-byte ceiling)"
+    )
+
+    issue = _issue(details={"errors": errors[:5], "error_count": 5})
+    bounded = len(json.dumps(issue.details, default=str).encode("utf-8"))
+    assert bounded < 8_192, (
+        f"five bounded messages serialised to {bounded} bytes, from {unbounded} "
+        "unbounded; the bound is not holding on the shape [:5] exists for"
+    )
+    # All five survive as five, and each still ends in its own verdict.
+    assert len(issue.details["errors"]) == 5
+    assert all(m.endswith("is too short") for m in issue.details["errors"])
 
 
 @pytest.mark.unit

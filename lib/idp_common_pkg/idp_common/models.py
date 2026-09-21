@@ -158,14 +158,20 @@ def _elide_middle(text: str, max_bytes: int, tail_bytes: int) -> str:
     DynamoDB's 400 KB item ceiling: 2,048 CJK characters are 6,159 bytes.
 
     The middle goes rather than the tail because of where these strings put the
-    part a reader acts on. Every authored ``root_cause`` in the tree leads with
-    what happened and ends with the remedy — "Check the Classification step's
-    section boundaries", "Set extraction.row_shortfall_action to 'warn'" — and the
-    variable-length middle is a page-id or field list that also exists verbatim in
-    ``details``. Exception-derived text has the same shape: the class name at the
-    front, the remedy sentence at the back, and whatever the exception chose to
-    echo in between. Clipping the tail would reliably remove the one sentence worth
-    keeping, which is why this does not do that.
+    part a reader acts on. Exception-derived text — the case this bound exists for —
+    puts the class name at the front, whatever the exception chose to echo in the
+    middle, and its remedy sentence at the back, so clipping the tail would reliably
+    remove the one sentence worth keeping. The extraction and assessment sites are
+    built the same way: reason first, a variable-length page-id or field list in the
+    middle, remedy last.
+
+    ⚠️ The classification site is **not** that shape. Its page list is at the very
+    tail with no remedy after it, so eliding the middle there removes the boundary
+    between the model's error text and the start of the page list rather than a
+    redundant list. That is tolerable only because the same page ids are in
+    ``details["page_ids"]`` and in the unbounded ``message``, and because it takes
+    more than 530 page ids on one section to reach. Do not generalise "the middle is
+    always redundant" from the other two sites.
 
     The result is at or under ``max_bytes``, so passing it through again is a no-op.
     """
@@ -243,15 +249,29 @@ class ProcessingIssue:
     #: offending row echoing its ``input_value``. ``details`` gets there through
     #: authored content rather than an exception: ``_build_extraction_issues``
     #: stores the first five jsonschema messages, and jsonschema embeds
-    #: ``repr(instance)`` in each one, so a single ``minItems`` failure on a 900-row
-    #: list measures 77,392 characters — the count is bounded, the size is not, and
-    #: four such fields in one section is ~400 KB on its own.
+    #: ``repr(instance)`` in each one, so **one** ``minItems`` failure on a 900-row
+    #: list is 57,592 characters (jsonschema 4.25.1). The count is bounded by
+    #: ``[:5]``; the size is not, and it is the ``[:5]`` that sets the scale — five
+    #: such messages, the shape that slice exists for, serialise to **281 KB, 70% of
+    #: the ceiling in a single field**, so two fields like it exceed the item limit.
     #:
-    #: The numbers are generous against everything authored in the tree (the
-    #: longest, an assessment page-id list plus its remedy, is a few thousand bytes)
-    #: and small against the item budget even with a dozen issues on a section.
-    #: Both elide the MIDDLE — see :func:`_elide_middle` for why that is not a
-    #: detail.
+    #: ``MAX_ROOT_CAUSE_BYTES`` is *not* generous against everything authored in the
+    #: tree. The classification site's worst case — three capped reasons, an "and N
+    #: more", then the section's whole page list — is 3,915 bytes at 500 page ids,
+    #: 96% of the ceiling, and elides somewhere between 530 and 540. That is
+    #: acceptable rather than accidental: the same page list is in
+    #: ``details["page_ids"]`` and in the unbounded ``message``, so nothing is lost,
+    #: and raising the ceiling to fit it would weaken the bound for the
+    #: exception-derived text it exists for. Both fields elide the MIDDLE — see
+    #: :func:`_elide_middle`, and note the caveat there about where the page list
+    #: actually sits at that site.
+    #:
+    #: ``message`` is a third free-size field and is deliberately left alone. It is
+    #: also written to DynamoDB, and the classification site embeds the page list in
+    #: it, but every writer composes it from a fixed template plus a page count or
+    #: page list — never from an exception — so it is bounded by the section's page
+    #: count rather than by document content, which is what makes the other two a
+    #: 400 KB risk and this one not.
     MAX_ROOT_CAUSE_BYTES: ClassVar[int] = 4096
     ROOT_CAUSE_TAIL_BYTES: ClassVar[int] = 512
 
@@ -309,10 +329,20 @@ class ProcessingIssue:
     def _bound_details(cls, value: Any) -> Any:
         """Recursively bound every string leaf in ``details``.
 
-        Structure, keys and types are preserved; only oversized strings shrink, so
-        a consumer reading ``details["page_ids"]`` still finds a list of strings.
+        Keys, nesting and scalar types are preserved; only oversized strings shrink,
+        so a consumer reading ``details["page_ids"]`` still finds a list of strings.
         A string already within the bound is returned unchanged, which is what makes
         a re-read free rather than merely quiet.
+
+        Two things it does change, neither exercised by any caller today and both
+        worth knowing before one relies on the opposite:
+
+        * A ``namedtuple`` comes back as a plain ``tuple``. Reconstructing it as
+          ``type(value)(...)`` is not an option — a namedtuple's constructor takes
+          positional fields, not one iterable — and ``details`` is JSON-serialised on
+          the way to DynamoDB, where the distinction does not survive anyway.
+        * The returned ``details`` is always a **new** dict, so mutating the dict
+          passed to the constructor no longer affects the issue.
         """
         if isinstance(value, str):
             return _elide_middle(

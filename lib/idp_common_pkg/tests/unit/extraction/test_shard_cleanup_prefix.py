@@ -56,6 +56,14 @@ EXECUTION_ARN = "arn:aws:states:us-east-1:123456789012:execution:idp:abc-123"
 #: Every extraction handler that is deployed, and whether it is allowed to release a
 #: section's per-shard results. ``test_the_camps_are_what_this_file_assumes`` checks
 #: this against the modules, so neither adding a cleanup nor losing one goes unseen.
+#:
+#: ⚠️ Both lists are **authored**, and the check over them is by attribute NAME, so
+#: it is hardening rather than a closed gate: a cleanup reintroduced into the merge
+#: handler as ``_release_shard_state`` would pass it, and a third handler added to the
+#: directory would be in neither list. What actually closes those two holes is
+#: ``patterns/unified/tests/test_shard_retention.py``, which asserts on the S3 calls a
+#: merge makes rather than on what the module is called — so a cleanup under any name
+#: fails there. Do not treat a green run here as proof the merge handler is clean.
 DEPLOYED_HANDLERS = ["index.py", "sfn_runtime_handler.py"]
 HANDLERS_WITH_A_CLEANUP = ["index.py"]
 

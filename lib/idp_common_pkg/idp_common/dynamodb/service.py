@@ -683,7 +683,12 @@ class DocumentDynamoDBService:
             # HasProcessingIssues currently has NO reader: it is not a GSI key, not
             # projected, not queried, absent from the UI and absent from every Glue
             # and Athena schema. ProcessingIssueCount, written above, is what the
-            # document list reads and filters on. This is written in the shape a
+            # document list reads — on `list_documents_range_resolver` only. The fast
+            # `list_documents_gsi_resolver` path cannot see it either: the attribute
+            # is not in that GSI's INCLUDE projection and resolves to None there (its
+            # own note at the mapping site explains why the projection cannot be
+            # amended in place), so the badge on that path comes from the sections.
+            # This is written in the shape a
             # sparse index attribute would need — SET only when there are issues,
             # mirroring HITLPendingReview — so it is ready to back one, but do not
             # build a filter on it without also handling the fact that it is never
