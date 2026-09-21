@@ -85,7 +85,8 @@ gate is not mistaken for full coverage:
 | Breadth of the shipped CloudFormation deployment service role | **Partly** — `scripts/sdlc/validate_service_role_permissions.py` checks the role has what the stack needs, not that it has no more | SDK.T05 |
 | Chat streaming **Lambda Function URL** (`/chat/*`) | **No** — the harness drives `/op` only | CHAT.T03, CHAT.T06 |
 | **Jobs API** (`/jobs`, M2M OAuth realm) | **No** scope-negative test in the gate | JOB.T02 |
-| Object-read key scoping (`getFilePresignedUrl`) | **No** out-of-scope-key case | UI.T06 |
+| Object-read key scoping — per-user axes (`getFileContents`, `getFilePresignedUrl`) | **Yes** — out-of-scope-key cases for both axes and both fields, offline (`get_file_contents_resolver/test_key_scope.py`) | UI.T06 |
+| Object-read key scoping — per **document** | **No** — document ownership is not modelled, so there is no out-of-scope case to write; the browser's direct-read reach is pinned instead (`scripts/tests/test_browser_s3_grants.py`) | UI.T06, #1033 |
 | CSP in `WebUIHosting=APIGateway` mode | ZAP scans the API, not that hosting mode's SPA responses | UI.T07 |
 | Feature UI bundle integrity | **No** — no SRI/digest check exists to test | FEAT.T01 |
 | Seller activation endpoint — auth, IAM, payload robustness | **Yes** — template-security + payload-fuzz suites, per commit | SELL.T02, T03, T05, T07, T09 |

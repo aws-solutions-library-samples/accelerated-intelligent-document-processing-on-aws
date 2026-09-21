@@ -1144,6 +1144,25 @@
       "memberKind": "path",
       "ratchetEvidence": "scripts/tests/test_asl_placeholder_substitution.py"
     },
+    "scripts/tests/test_browser_s3_grants.py::PINNED_BROWSER_READABLE_BUCKETS": {
+      "kind": "exemption",
+      "turnsOff": "the rule the rest of the file enforces -- that a bucket must not be readable with the browser's own Cognito credentials -- for these two buckets only",
+      "premise": [
+        "JUDGEMENT"
+      ],
+      "memberKind": "CloudFormation bucket logical id",
+      "ratchet": "universe-closure",
+      "ratchetEvidence": [
+        "scripts/tests/test_browser_s3_grants.py"
+      ],
+      "reason": "Not computable: whether the web UI still needs a client-signed S3 GET on a bucket is a property of the browser code, not of the template, and the evidence is a code survey (no S3 API client in the bundle; four S3RequestPresigner call sites resolving to Input/Output; presignForExport hard-refusing any other bucket). Both members are there because the UI genuinely signs those GETs today -- page thumbnails and the page-image viewer read page.ImageUri from Output, FileViewer defaults to client signing against Input. Removing them is a redesign of the document read path, tracked as issue 1033, not a policy trim. Exempt per BUCKET rather than for the role as a whole, so the two buckets that ARE partitioned per user stay enforced. Ratchet: test_the_set_of_browser_readable_buckets_has_not_grown compares the set derived from template.yaml against this one, so a bucket in neither the enforced nor the exempt set is unregistered drift and fails; test_no_s3_grant_on_this_role_uses_a_wildcard_resource covers the one Resource shape that names no logical id and would otherwise satisfy the equality while granting every bucket in the account.",
+      "crossReferences": [
+        "scripts/tests/test_iam_prose_consistency.py::EXPECTED_CLAIM_COUNTS"
+      ],
+      "issues": [
+        "1033"
+      ]
+    },
     "scripts/tests/test_cfn_export_ownership.py::EXPECTED_EXTENSION_SOURCES": {
       "kind": "enforced-universe",
       "turnsOff": "nothing; the expected producing stacks",
@@ -1414,6 +1433,48 @@
       "reason": "Build output and local work.",
       "memberKind": "path",
       "ratchetEvidence": "scripts/tests/test_iam_privilege_escalation.py"
+    },
+    "scripts/tests/test_iam_prose_consistency.py::DOCUMENTS_WITH_HISTORICAL_CLAIMS_ONLY": {
+      "kind": "exemption",
+      "turnsOff": "the requirement that a registered document carry at least one CURRENT grant claim (test_every_registered_document_states_the_grant); the prose-vs-policy comparison itself still applies to these paths",
+      "premise": [
+        "JUDGEMENT"
+      ],
+      "memberKind": "document path",
+      "ratchet": "count-pinned",
+      "ratchetEvidence": [
+        "scripts/tests/test_iam_prose_consistency.py"
+      ],
+      "reason": "Not computable, and deliberately an exemption from the POSITIVE direction only. The threat-model README's single enumeration of this grant lives in its historical ledger, so requiring a current claim of it would force a present-tense restatement into an audit artifact whose purpose is to record the past. Listed rather than omitted so that the comparison still reads the rest of the file, and so that universe closure counts it as classified: test_no_document_states_the_grant_outside_the_registered_set derives the candidate set from `git ls-files '*.md'` and fails on any claim-bearing document in neither list, which is what makes this list's membership meaningful rather than whatever someone remembered to write down. Ratchet: this member is pinned at (0, 0) claims in EXPECTED_CLAIM_COUNTS, so a current claim appearing in it fails."
+    },
+    "scripts/tests/test_iam_prose_consistency.py::EXCLUDED_HISTORICAL_LEDGER_SECTIONS": {
+      "kind": "exemption",
+      "turnsOff": "the prose-vs-policy comparison, for one named markdown section of one named document",
+      "premise": [
+        "JUDGEMENT"
+      ],
+      "memberKind": "document path + markdown heading",
+      "ratchet": "non-vacuity",
+      "ratchetEvidence": [
+        "scripts/tests/test_iam_prose_consistency.py"
+      ],
+      "reason": "Not computable: whether a sentence describes the past or the present is a reading of prose. The threat model's Version History is one of this repository's two sanctioned historical ledgers (see the no-doc-about-doc rule in CLAUDE.md), and its rows state grants AS THEY WERE -- the v3.7 row records that the Configuration bucket used to be on this role, which is true and would be a false positive. Bounded to one SECTION and not the rest of the file: the region runs from the heading to the next '## ' heading, and that bound is asserted rather than assumed -- test_the_excluded_region_is_one_section_and_not_the_rest_of_the_file recomputes it against text with a section appended and requires the end to move to the new heading, and test_a_claim_after_the_excluded_section_would_still_be_read confirms a claim below the heading is still compared. Both exist because the first implementation truncated at the heading, which is indistinguishable from bounding while the excluded section happens to be last. Ratchet: test_the_historical_ledger_exclusion_is_still_load_bearing fails when the section shields nothing, or when everything it shields now agrees with the template."
+    },
+    "scripts/tests/test_iam_prose_consistency.py::EXPECTED_CLAIM_COUNTS": {
+      "kind": "fixture",
+      "turnsOff": "nothing -- this is the ratchet itself, not a carve-out: it pins how many grant claims the reader finds per document, in both directions",
+      "premise": [
+        "JUDGEMENT"
+      ],
+      "memberKind": "document path -> (total claims, exhaustive claims)",
+      "ratchet": "count-pinned",
+      "ratchetEvidence": [
+        "scripts/tests/test_iam_prose_consistency.py"
+      ],
+      "reason": "Registered as a fixture rather than an exemption: it removes no assertion. It exists because the claim reader is a heuristic over prose -- an enumeration of declared bucket names, one of the role's DERIVED granted actions in the same sentence, no negation in the span immediately before the phrase, and the role named within 600 characters -- and a heuristic whose reach is not pinned can silently stop reaching the thing it was written for. Pinned per claim KIND as well as per document, because the exhaustive/narrow split decides whether the missing-bucket direction applies at all: a complete enumeration that started reading as a narrow one would drop that half of the check with every test green. Ratchet: the inventory is compared both ways.",
+      "crossReferences": [
+        "scripts/tests/test_browser_s3_grants.py::PINNED_BROWSER_READABLE_BUCKETS"
+      ]
     },
     "scripts/tests/test_lambda_log_groups.py::CUSTOM_RESOURCE_ONLY": {
       "kind": "exemption",

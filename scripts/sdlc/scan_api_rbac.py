@@ -198,8 +198,8 @@ SCOPE_PATTERNS = (
     # `scope_allows`, so the DynamoDB attribute name appears nowhere in the branch.
     #
     # The bare local name `allowed_versions` is deliberately NOT here: it is the
-    # weakest of the candidates, and dropping it costs nothing (all 17 flagged
-    # operations — 4 `scope_filtered` + 13 `scope_checked` — still pass on the three
+    # weakest of the candidates, and dropping it costs nothing (all 19 flagged
+    # operations — 4 `scope_filtered` + 15 `scope_checked` — still pass on the three
     # above).
     #
     # It does not make the check strict, though, and nothing here should be read as

@@ -352,6 +352,26 @@ PENDING_FIX: dict[str, frozenset[str]] = {
     # from a ``return``, not an assignment to a named key, so that rule does not reach
     # it — and naming a rule that does not fire is what that test refuses.
     "lib/idp_common_pkg/idp_common/testset_scope.py": frozenset({"SCOPE1", "SCOPE3"}),
+    # The **byte-identical vendored copy** of the entry above, carried by the object-read
+    # resolver so it can enforce the same ``allowedTestSets`` rule on a Test-Set-bucket
+    # key. That function has no ``idp_common`` layer, so it cannot import the canonical
+    # module; the copy is what ships.
+    #
+    # This is the one entry here whose premise is **computed rather than judged**:
+    # ``get_file_contents_resolver/test_scope_vendored.py`` asserts the two files are
+    # byte-identical, so this copy cannot carry a shape the canonical file does not, and
+    # its exemption is exactly as broad as that one — same two rules, same inverted-polarity
+    # reason, and it expires at the same moment, because the rules stop firing on both
+    # files together. Vendoring it is also why the copy is *in* this gate's view at all:
+    # ``SCAN_ROOTS`` covers the resolver tree, so a copy placed there is policed like any
+    # other consumer, which is the behaviour to keep.
+    #
+    # ⚠️ Do not read this as a template for exempting a vendored file generally. It holds
+    # only while the byte-identity assertion does; drift makes the copy a separate
+    # implementation, and then it needs its own answer rather than this one.
+    "nested/api-resolvers/src/lambda/get_file_contents_resolver/testset_scope.py": (
+        frozenset({"SCOPE1", "SCOPE3"})
+    ),
 }
 
 
@@ -1594,11 +1614,11 @@ def test_the_scan_finds_the_consumers_it_is_meant_to_police(scanned):
     discovered, _ = scanned
     names = {path.parent.name for path in discovered}
 
-    # A floor equal to the real count, not a token one. A generous `>= 8` against 14
-    # discovered would mean six consumers could drop out of discovery — and a module
+    # A floor equal to the real count, not a token one. A generous `>= 8` against 17
+    # discovered would mean nine consumers could drop out of discovery — and a module
     # that escapes discovery has NO rule applied to it, silently — while the assertion
     # still passed. Raise this when a consumer is added; lowering it needs a reason.
-    assert len(discovered) >= 14, (
+    assert len(discovered) >= 17, (
         f"the scope-lookup scan discovered only {len(discovered)} modules. A module "
         "that escapes discovery has no rule applied to it at all, so a drop here is "
         f"a silent loss of coverage, not a cleanup. Found: {sorted(names)}"
@@ -1608,6 +1628,10 @@ def test_the_scan_finds_the_consumers_it_is_meant_to_police(scanned):
     # explicit is what makes losing one a failure rather than a smaller number.
     for expected in (
         "configuration_resolver",
+        # The object-read path. It resolves the scope to authorize an S3 KEY rather
+        # than a record, which is the only enforcement point where a fail-open would
+        # disclose bytes directly instead of a row.
+        "get_file_contents_resolver",
         "get_stepfunction_execution_resolver",
         "list_documents_gsi_resolver",
         "list_documents_range_resolver",

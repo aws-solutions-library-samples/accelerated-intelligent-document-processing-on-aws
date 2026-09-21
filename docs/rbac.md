@@ -169,6 +169,15 @@ Non-admin users can optionally be assigned **allowedConfigVersions** — a list 
   - View/edit configuration — and read, compare, restore, and label revisions — for those profiles only
 - **No scope set** (empty/null): User sees all profiles and documents (unrestricted)
 
+The guarantee covers the **bytes as well as the API surface**. A profile's configuration is
+also an S3 object (`config_revisions/<profile>/<nnnnnn>.json.gz` in the Configuration
+bucket), and the operations that serve arbitrary objects apply the same profile check to the
+key — so prompts and few-shot examples from an out-of-scope profile are not reachable by
+asking for the file instead of the profile. The Configuration bucket is deliberately not
+readable with the browser's own Cognito credentials, which is what keeps that true off the
+API as well. ⚠️ This is **not** yet the case for the document buckets — see
+[Known Limitations](#known-limitations).
+
 ### Scope Is Enforced at the Profile, Never at the Revision
 
 A revision is *content inside* a profile, not an access-control object of its own.
@@ -372,6 +381,8 @@ number with no indication. Narrow the date range if a scoped count looks wrong.
 | **Config Profile List** (server-side) | `getConfigVersions` Lambda resolver filters returned profiles |
 | **Config Profile Access** (server-side) | `getConfigVersion` Lambda resolver rejects requests for out-of-scope profiles |
 | **Revision Operations** (server-side) | All five `*ConfigProfileRevision*` operations reject out-of-scope profiles before doing any work |
+| **Revision Bodies in S3** (server-side) | A revision's configuration is stored as an object in the Configuration bucket, so the object-read path applies the same profile check to the **key**: `getFileContents` / `getFilePresignedUrl` match the profile in a `config_revisions/<profile>/` key against `allowedConfigVersions` before reading anything. Without it the revision operations above could be bypassed by asking for the body directly, and the Configuration bucket is no longer readable with the browser's own credentials either |
+| **Test-Set Objects in S3** (server-side) | The same path applies `allowedTestSets` to every Test Set bucket key (`<test_set_id>/…` — source documents, ground truth, published baseline snapshots), so a scoped Annotator cannot read another test set's documents or labels through it |
 | **Version Dropdowns** (UI) | `useConfigurationVersions` hook filters versions client-side for immediate UX |
 | **Default Version Selection** (UI) | All version pickers auto-select the first available scoped version |
 
@@ -495,23 +506,35 @@ private to their submitter or to a tenant, group membership is the wrong axis.
 directly.** `CognitoIdentityPoolSetRole` in `template.yaml` attaches a **single**
 `authenticated` role with **no `RoleMappings`**, so group membership plays no part
 in which role a signed-in user assumes. That role, `CognitoAuthorizedRole`, grants
-`s3:GetObject`, `s3:GetObjectVersion` and `s3:ListBucket` on the Input, Output and
-Configuration buckets, plus five KMS actions on the customer-managed key
+`s3:GetObject`, `s3:GetObjectVersion` and `s3:ListBucket` on the Input and Output
+buckets, plus five KMS actions on the customer-managed key
 (`Encrypt`, `Decrypt`, `ReEncrypt*`, `GenerateDataKey*`, `DescribeKey`) — to **every**
 authenticated user, including one in no group. This is the production read path, not
 a theoretical one: `FileViewer` defaults to `presignVia = 'client'`, and the page
 thumbnails, the page-image viewer and the document export all sign S3 GETs in the
 browser with those credentials. And two operations that remain `ANY`,
 `listDocumentsDateHour` and `listDocumentsDateShard`, return raw tracking-index rows
-that carry `ObjectKey` — so a caller can enumerate keys through an `ANY` operation
-and fetch the bytes without calling the API at all.
+that carry `ObjectKey` — so a caller can enumerate document keys through an `ANY`
+operation and fetch the bytes without calling the API at all.
+
+⚠️ **The two buckets the scope axes partition are deliberately absent from that
+role**, and that is what makes `allowedConfigVersions` and `allowedTestSets` hold
+off the API as well as on it. The Configuration bucket holds every profile's
+revision history, so a browser-credential read of it — with `s3:ListBucket`, so
+without needing to know the profile names — would defeat the profile scope
+outright. The Test Set bucket has never been on the role. Both are reachable only
+through `getFileContents` / `getFilePresignedUrl`, which check the key against the
+caller's scope. `scripts/tests/test_browser_s3_grants.py` pins which buckets the
+role may name, so the set cannot grow back unnoticed.
 
 So the accurate statement of what `ANY_GROUP` buys is: **those eleven API
 operations** now refuse a caller in no group. The document bytes are not yet behind
 a group check, and putting them there means either group-scoped Identity Pool
 `RoleMappings` or narrowing that role and routing every read through a resolver —
-a change to the document-viewing data path. `UI.T06` in the threat model covers the
-key-scoping half of this; the part that needs no resolver at all, and that "any
+a change to the document-viewing data path, tracked as
+[issue #1033](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/1033).
+`UI.T06` in the threat model covers the
+per-document key-scoping half of this; the part that needs no resolver at all, and that "any
 authenticated user" includes a user in **none**, is recorded here.
 
 ⚠️ **This layer gates the REST route only.** Chat streaming is served by a Lambda
