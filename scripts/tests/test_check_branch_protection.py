@@ -39,6 +39,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import re
 import sys
 from pathlib import Path
 from textwrap import dedent
@@ -1478,10 +1479,19 @@ def test_the_script_is_wired_into_the_makefile_but_not_into_lint() -> None:
         "every branch. Re-enable it there only once #933 is closed."
     )
 
-    parity = (REPO_ROOT / "scripts" / "tests" / "test_ci_gate_parity.py").read_text(
-        encoding="utf-8"
+    # Read the LIST, not the file. The claim is "it is not a gate CI must run",
+    # and `check-branch-protection` appearing anywhere in the parity module is a
+    # much broader condition than that — the module now registers it by name as
+    # deliberately out of CI, with the #933 reason, which is the correct state and
+    # the opposite of what this asserts against.
+    parity_module = (
+        REPO_ROOT / "scripts" / "tests" / "test_ci_gate_parity.py"
+    ).read_text(encoding="utf-8")
+    shared_gates = re.search(
+        r"^SHARED_GATES = \[(.*?)^\]", parity_module, re.MULTILINE | re.DOTALL
     )
-    assert "check-branch-protection" not in parity, (
+    assert shared_gates, "SHARED_GATES is no longer a literal list in the parity module"
+    assert "check-branch-protection" not in shared_gates.group(1), (
         "adding this to SHARED_GATES would require it in both CIs, which is "
         "exactly what it must not be yet"
     )

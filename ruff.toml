@@ -315,7 +315,6 @@ exclude = [
     "scripts/sdlc/tests/test_scan_api_rbac_scope_check.py",
     "scripts/sdlc/tests/test_stale_stack_reaper.py",
     "scripts/sdlc/tests/test_suppress_invite_sentinel.py",
-    "scripts/sdlc/typecheck_pr_changes.py",
     "scripts/sdlc/validate_buildspec.py",
     "scripts/sdlc/validate_service_role_permissions.py",
     "scripts/security/curate_results.py",

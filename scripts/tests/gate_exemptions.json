@@ -1194,6 +1194,29 @@
         "933"
       ]
     },
+    "scripts/tests/test_ci_gate_parity.py::GATES_DELIBERATELY_OUT_OF_CI": {
+      "kind": "exemption",
+      "turnsOff": "the 'every check-shaped Makefile target runs in both CIs' assertion, for one named target",
+      "premise": [
+        "JUDGEMENT"
+      ],
+      "ratchet": "universe-closure",
+      "reason": "Whether a target CAN be a CI gate is a property of what it does — mutates the tree, prompts a human, needs AWS credentials, needs a deployed stack, reports rather than asserts — and none of that is readable from the Makefile. So one sentence per target, naming that target's own obstacle.",
+      "ratchetGap": "The reasons themselves are unchecked prose; what is mechanical is that no gate-shaped target may be absent from both this list and CI, that a listed target which CI has since started running fails, and that a listed target which no longer exists fails.",
+      "memberKind": "make target",
+      "ratchetEvidence": "scripts/tests/test_ci_gate_parity.py"
+    },
+    "scripts/tests/test_ci_gate_parity.py::CHECK_ONLY_EQUIVALENTS": {
+      "kind": "exemption",
+      "turnsOff": "the 'lint-cicd invokes make <target>' form of the lint-parity assertion, for one prerequisite of `lint`",
+      "premise": [
+        "JUDGEMENT"
+      ],
+      "ratchet": "staleness",
+      "reason": "Two of `make lint`'s prerequisites auto-fix, so `lint-cicd` cannot invoke them — it runs the check-only command instead, and that command's spelling is not derivable from the target's name. The substituted command must still be present in the recipe, so this relaxes how the gate is spelled and not whether it runs.",
+      "memberKind": "make target",
+      "ratchetEvidence": "scripts/tests/test_ci_gate_parity.py"
+    },
     "scripts/tests/test_classification_prompt_copies_in_sync.py::EXEMPT": {
       "kind": "exemption",
       "turnsOff": "the 'every committed copy carries the #653 rules' check for four files",
