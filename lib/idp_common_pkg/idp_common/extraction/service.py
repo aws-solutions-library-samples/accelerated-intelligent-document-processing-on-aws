@@ -2945,7 +2945,21 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
                     if not tool_used
                     else "The table parsing tool ran but produced no rows."
                 )
-                + " Set minItems on the list field to make this a hard constraint."
+                # This summary is written on the AGENTIC path only (its caller is
+                # inside the `extraction_method == "agentic"` branch), where
+                # `minItems` is not advisory: the generated Pydantic model carries
+                # it into the `extraction_tool` boundary, so a list under the floor
+                # is REJECTED, the agent spends its correction rounds, and
+                # `structured_output_async` then raises. Recommending it here
+                # without saying so would trade a warning for a failed section
+                # that keeps no rows (#1048).
+                + " Setting minItems on this list field would make the floor "
+                "binding rather than advisory on this path: it is enforced at the "
+                "agent's tool boundary, the agent gets a bounded number of "
+                "correction rounds, and a floor the section cannot reach fails the "
+                "extraction and keeps no rows. Set a floor you are willing to fail "
+                "on, or use extraction.row_shortfall_action, which saves the rows "
+                "and this diagnosis first."
             )
         else:
             summary = "All schema constraints satisfied"
@@ -3044,8 +3058,8 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
     ) -> dict[str, Any]:
         """Heuristic: how much of the schema actually got populated.
 
-        Unlike ``_check_completeness_detailed`` (which only flags hard
-        ``minItems`` constraint violations), this flags *suspiciously sparse*
+        Unlike ``_check_completeness_detailed`` (which reports a declared
+        ``minItems`` floor the result is under), this flags *suspiciously sparse*
         extractions — e.g. an agentic run that returned a correct top-level
         object but null for nearly every nested field. It cannot know a field
         *should* have had a value, so it is advisory (a warning signal), not a
@@ -3724,15 +3738,44 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
                 ):
                     continue
                 fields_str = ", ".join(labels)
-                rec = (
+                # What `minItems` buys is MODE-DEPENDENT, and recommending it
+                # without the split is how a reader trades a warning for a lost
+                # document (#1048):
+                #
+                # * Simple — visibility only. It adds
+                #   `extraction_list_truncated` (a warning) and, when
+                #   `validation.enabled` is on, a JSON-Schema violation whose worst
+                #   outcome under `fail_action: reject` is
+                #   `parsing_succeeded=False`, read by the processing report and
+                #   the UI's report tab and by nothing in the status path. So
+                #   `extraction.row_shortfall_action` decides the outcome.
+                # * Advanced — a HARD floor. `_transport_model` keeps `minItems`
+                #   (`nullable_leaves_for_transport` nulls scalar leaves only), so
+                #   a short list is rejected at the `extraction_tool` boundary, the
+                #   agent spends its correction rounds, and
+                #   `structured_output_async` raises "Failed to generate valid
+                #   structured output" — failing the section with no rows kept.
+                mode_rec = (
                     " Simple extraction returns one response per section and "
                     "stops early on long lists; for documents this size use "
-                    "Advanced (agentic) extraction, which shards, or set minItems "
-                    "on the list field to make the shortfall a hard constraint."
+                    "Advanced (agentic) extraction, which shards."
                     if not is_agentic
-                    else " Set minItems on the list field to make this a hard "
-                    "constraint, and check the table-parsing tool was used."
+                    else " Check that the table-parsing tool was used."
                 )
+                minitems_rec = (
+                    " Setting minItems on the list field adds a second signal for "
+                    "the same shortfall; in Simple extraction it makes the loss "
+                    "visible without changing the outcome, and "
+                    "extraction.row_shortfall_action is what decides that."
+                    if not is_agentic
+                    else " Note that minItems is NOT advisory on this path: it is "
+                    "enforced at the agent's tool boundary, so a floor this "
+                    "section cannot reach spends the agent's correction rounds and "
+                    "then fails the extraction with no rows kept. Prefer "
+                    "extraction.row_shortfall_action, which saves the rows and "
+                    "this diagnosis first."
+                )
+                rec = mode_rec + minitems_rec
                 # What the shortfall COSTS follows extraction.row_shortfall_action,
                 # the way extraction_validation_failed's severity follows
                 # validation.fail_action: 'fail' means the section fails once this
@@ -4014,8 +4057,10 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
         #
         # Applies to BOTH modes (agentic writes the same metadata block). Severity
         # follows fail_action, because that is what the deployment decided the
-        # outcome MEANS: `reject` already failed the section, so `error`; `warn`
-        # and `escalate` leave the data in place, so `warning`.
+        # outcome MEANS: `reject` recorded the result as unparsed, so `error`;
+        # `warn` and `escalate` left it standing as a valid result, so `warning`.
+        # None of the three changes the section's or the document's outcome — see
+        # the consequence clause below.
         validation = metadata.get("validation")
         if isinstance(validation, dict) and validation.get("valid") is False:
             failed = [str(f) for f in (validation.get("failed_fields") or [])]
@@ -4026,8 +4071,15 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
             if len(failed) > 8:
                 named += f", +{len(failed) - 8} more"
             if fail_action == "reject":
+                # `reject` records the result as unparsed and makes the processing
+                # report read FAILED. It does not change the section's or the
+                # document's outcome — nothing in the status path reads
+                # `parsing_succeeded` — so the message says what it does (#1048).
                 consequence = (
-                    " The section is marked FAILED because Fail Action is 'reject'."
+                    " Fail Action is 'reject', so the result is recorded as not "
+                    "parsed and this section's processing report reads FAILED. The "
+                    "values are stored as extracted and the document's status is "
+                    "unchanged."
                 )
             elif escalated:
                 consequence = (
@@ -4581,6 +4633,16 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
         and a cover-page shard has no rows — and no OCR table evidence. Both
         fan-out sites (in-process and SFN) use this, so the shard rule has one
         home and one test. See ``_build_schema_validator(shard_scoped=True)``.
+
+        ⚠️ This relaxation reaches the agent's **self-correction feedback** only. It
+        is passed as ``schema_validator``, which ``structured_output_async`` consults
+        after a tool call; the ``extraction_tool`` itself is built from
+        ``data_format``, the whole-section transport model, so a ``minItems`` floor
+        IS enforced per shard at the tool boundary and a section-sized floor is
+        unsatisfiable by any shard. Relaxing that too would mean generating a
+        per-shard transport model; until then, ``row_shortfall_action`` is the
+        shard-aware completeness lever. See the ``extraction_list_truncated`` entry
+        in this package's README.
         """
         return self._build_schema_validator(shard_scoped=True)
 
@@ -4777,8 +4839,10 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
           Validation is on by default precisely because this combination is free;
           a default that quietly spent money on every schema violation would be a
           cost surprise rather than a safety net.
-        - ``reject`` — same, plus ``parsing_succeeded=False`` so downstream/HITL
-          treats the section as failed. Also free.
+        - ``reject`` — same, plus ``parsing_succeeded=False``, which makes the
+          section's processing report and the UI's report tab read FAILED. Also
+          free. It does **not** change the section's or the document's outcome:
+          nothing in the status path reads ``parsing_succeeded``.
         - ``escalate`` — one scoped re-extraction of ONLY the failing top-level
           fields with the stronger ``escalation_model``, merged back over the
           fields that already validated. This is the opt-in that costs money.
@@ -5082,7 +5146,9 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
                 section_info=section_info,
             )
 
-        # reject: surface the failure so downstream/HITL can act on it.
+        # reject: record the result as unparsed, which makes the processing report
+        # and the UI's report tab read FAILED. The section and the document still
+        # complete — nothing in the status path reads `parsing_succeeded`.
         if not report.valid and vcfg.fail_action == "reject":
             parsing_succeeded = False
 

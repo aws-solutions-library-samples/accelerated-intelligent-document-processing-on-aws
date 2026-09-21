@@ -551,12 +551,21 @@ rewritten without a record. See `idp_common.extraction.coercion`.
 | `fail_action` | Behaviour | Extra inference? |
 |---|---|---|
 | `warn` (default) | Record the outcome in `metadata.validation` and raise a ProcessingIssue | **No — free** |
-| `reject` | Same, plus `parsing_succeeded=False` so downstream/HITL treats the section as failed | **No — free** |
+| `reject` | Same, plus `parsing_succeeded=False`, which makes the processing report and the UI's report tab read FAILED | **No — free** |
 | `escalate` | Re-extract ONLY the failing top-level fields with `escalation_model`, merged back over the fields that already validated | **Yes** |
 
 Validation is **on by default** precisely because the default action is free: it
 turns an otherwise-silent schema violation into something visible at no cost.
 `escalate` is the opt-in that spends money.
+
+⚠️ **No `fail_action` value rejects a section.** `reject` is a *visibility*
+setting: `parsing_succeeded=False` is read by `_generate_processing_report`'s
+status line and by `ProcessingReportTab.tsx`, and by nothing in the status path, so
+the values are still written to `result.json` and the document still completes. The
+one extraction setting that turns a detection into an outcome is
+`extraction.row_shortfall_action: fail`, which raises `ExtractionOutputIncomplete`
+and so fails the Step Functions execution (see *Simple-mode large-document
+warnings* below).
 
 Escalation is deliberately **not** preceded by a same-model retry: re-asking the
 model that just produced invalid output, with the same prompt, mostly buys
@@ -1850,7 +1859,8 @@ How it works:
      warn if it still fails. (When the failures can't be expressed as a field
      subset — e.g. they're root-level only — it falls back to a whole-section
      re-extraction.)
-   - **`reject`** — mark `parsing_succeeded=false` so downstream/HITL can act.
+   - **`reject`** — mark `parsing_succeeded=false`, which makes the processing
+     report read FAILED. The section and the document still complete.
 3. The outcome is recorded under `metadata.validation` (see *Audit metadata*
    below).
 
@@ -1915,14 +1925,22 @@ Deliberately narrow:
   the loop keeps the best-effort result, so the worst case is one wasted turn on a
   document that genuinely has no rows inside a detected table.
 
-⚠️ **Not gated on `validation.enabled`** — unlike the schema checks above. That flag
-defaults to `false`, and the config that produced this bug has it `false`, so the
-first version of this check (which *was* gated on it) was dead on exactly the
-configurations that needed it — caught by live verification, not by the tests. A
-guard against **silent data loss** cannot itself be off by default. The two checks
-are independently enabled: schema validation stays opt-in; the empty-list check
-runs whenever the OCR evidence is present. `_build_schema_validator` returns `None`
-only when *neither* applies.
+⚠️ **Not gated on `validation.enabled`** — unlike the schema checks above, and that is
+a considered decision rather than an oversight. The first version of this check *was*
+gated on it, and live verification caught the mistake: the very config that produced
+the bug had `validation.enabled: false`, the documented default at the time, so the
+safety net was dead on exactly the configurations that needed it. A guard against
+**silent data loss** that is itself off by default reproduces the problem it was
+written to fix.
+
+v0.7 acted on that argument for schema validation too, by flipping
+`validation.enabled` to default **on** (`ValidationConfig.enabled` in
+`idp_common/config/models.py`). This check nevertheless stays ungated: its worst case
+is **one wasted agent turn** on a document that genuinely has no rows inside a
+detected table, and a config that explicitly turns validation off should not thereby
+turn off a guard whose whole effect is to ask the model to try again. So the two
+remain independently enabled, and `_build_schema_validator` returns `None` only when
+*neither* applies.
 
 The failure this closes: an agent declined the deterministic table parser because
 one column was OCR-corrupted (`tool_usage_decision.agent_stated_reason`: *"the
@@ -2091,8 +2109,8 @@ Use these metrics to:
 
 With over-splitting fixed (#726) a Simple-mode section is ONE request, and the measured
 consequence is an 800-row / 17-page statement returning 43 rows with `COMPLETED` and no
-processing issue, and 25+ pages failing with Bedrock's bare *Input is too long*. Two things
-make both loud without changing what is extracted:
+processing issue, and 25+ pages failing with Bedrock's bare *Input is too long*. These
+signals make both loud without changing what is extracted:
 
 - `extraction_rows_below_ocr_estimate` (warning; **error** under
   `extraction.row_shortfall_action: fail`, which also fails the section; both modes) — rows extracted for the lists of
@@ -2133,6 +2151,83 @@ make both loud without changing what is extracted:
   reprinted per page is N tables of the same width and the sum is what lets the check see 800
   rows at all. `tests/unit/extraction/test_truncation_warnings.py::TestWhyFailIsOptIn` pins the
   misattribution against the real shipped schema and fails if the default is flipped first.
+  ⚠️ **`fail` does not cover a list that lost EVERY row, so a document losing 95% of its
+  rows fails and one losing 100% completes.** `_build_extraction_issues` skips a width
+  group in which every list is empty (`if not labels: continue`) and leaves it to
+  `extraction_incomplete`, a warning, which cannot change a document's status. (In
+  Advanced mode a `minItems` floor does reject `[]` at the agent's tool boundary — a
+  different mechanism with a different cost, see `extraction_list_truncated` below.) Of the
+  3,631 recorded `COMPLETED` benchmark runs that reach this check's population — the
+  section's OCR text evidences at least 30 table rows of the list's shape — 99
+  returned zero rows against 65 with partial loss, so the uncovered population is the
+  larger one. It is left that way because a genuinely empty list is common and legitimate
+  (an account with no fees, a period with no deposits) and indistinguishable from total
+  loss, where "43 of 800" has no innocent reading; because the over-attribution above
+  applies more strongly to an empty list, which scores 0 against whatever evidence is
+  attributed to it; and because the recorded corpus cannot bound the false-failure rate —
+  it holds no legitimately-empty-list document that also carries a same-width table, so
+  the case needs its own measurement. Tracked with the narrowing in GitHub issue #1046.
+- `extraction_list_truncated` (warning) — a non-empty list came back under its schema
+  `minItems`. The one completeness signal with no false positives by construction, because
+  the config author declared the floor rather than a heuristic inferring it. ⚠️ **What
+  `minItems` costs is NOT the same in the two modes, and in Advanced mode it is a hard
+  floor that discards the rows.**
+  - **Simple** — advisory, and this is the issue's normal home. The shortfall is reported
+    and the rows are kept; the same shortfall is also a JSON-Schema violation, so it shows
+    up in `metadata.validation` and `extraction_validation_failed` when
+    `extraction.validation.enabled` is on (the default since v0.7). The strongest thing
+    `extraction.validation.fail_action: reject` does with it is set
+    `parsing_succeeded=False`, which only `_generate_processing_report`'s status line and
+    `ProcessingReportTab.tsx` read. No `ProcessingIssue` changes a document's status *by
+    virtue of its severity*, `error` included — `extraction_rows_below_ocr_estimate` under
+    `fail` changes the outcome by **raising** (`_fail_on_row_shortfall`), not by being an
+    error — so `extraction.row_shortfall_action: fail` remains the only setting in this
+    module that turns an incompleteness detection into an outcome.
+  - **Advanced** — a hard floor, enforced where the rows are produced.
+    `_transport_model` passes the class schema through `nullable_leaves_for_transport`,
+    which nulls scalar **leaves** and leaves `minItems` in place, so a list under the floor
+    (and an empty list) is **rejected** inside `extraction_tool`. `current_extraction` is
+    never stored, `_invoke_agent_for_extraction` spends `max_extraction_retries` whole-
+    section agent turns, and `structured_output_async` then raises
+    `ValueError("Failed to generate valid structured output.")` — the section fails with no
+    rows and no diagnosis of what was short. Prefer
+    `extraction.row_shortfall_action`, which persists the partial rows, the error-severity
+    issue and the processing report *first*.
+  - ⚠️ **Sharded: the floor is enforced PER SHARD, so a whole-section floor is
+    unsatisfiable.** Both fan-out sites pass the whole-section transport model as
+    `data_format` — `concurrent_structured_output_async(data_format=dynamic_model, ...)`
+    in-process and `run_section_shard`'s `extract_one_shard(data_format=dynamic_model)`
+    for the Step Functions route — `_run_shard_agent` forwards it unmodified, and
+    `structured_output_async` builds the agent's tools with
+    `create_dynamic_extraction_tool_and_patch_tool(data_format)`. So each shard's
+    `extraction_tool` carries the section's `minItems`, while the shard sees only its page
+    range. `minItems: 100` over a 17-page section (`max_pages_per_shard` 5) rejects every
+    shard holding under 100 rows, and a cover-page shard holds none — the document fails
+    though it holds 800 rows. `shard_validation_schema` (no `required`, no `minItems`) is
+    the in-loop **feedback** validator passed as `schema_validator` and consulted for the
+    self-correction round; it is NOT the tool boundary, so it does not relax this. Verified
+    by driving `_run_shard_agent` with a spy on the tool builder: the tool is built from
+    the same object the shard plan returned, a 17-row shard is rejected `too_short` at that
+    boundary, and the shard feedback validator reports the same 17 rows as satisfying every
+    constraint. **This is the default Advanced-mode configuration, not a tuned one:**
+    `max_concurrent_batches` ships at `10` in `base-extraction.yaml` and in the UI schema
+    in `patterns/unified/template.yaml`, so the `default=1` on the Pydantic field in
+    `config/models.py` is only the fallback for an absent key and a deployed stack does not
+    read it. Sharding engages once the section exceeds one shard's budget — over
+    `max_pages_per_shard` (shipped `5`) pages of ordinary text, fewer when the pages are
+    dense enough to fill the shard token budget — so a 17-page section plans four shards at
+    the shipped defaults. The only floor every shard can satisfy is none, so use
+    `extraction.row_shortfall_action`, which is evaluated once on the merged section.
+  - ⚠️ **Reachability: treat this as a Simple-mode signal.** A short non-empty list does not
+    survive the tool boundary in Advanced mode, so the section fails instead of reporting
+    this. The string form the Web UI stores (`minItems: "100"`) is enforced there too — the
+    Pydantic generator coerces it, verified directly against `_transport_model` — so that is
+    not a gap either. No reachable Advanced-mode path to this issue has been identified;
+    `test_truncation_warnings.py` exercises the Advanced *wording* by calling
+    `_build_extraction_issues` directly and says so, rather than implying a flow reaches it.
+
+  Giving a `minItems` violation its own consequence in Simple mode is a product decision,
+  not a wording one, and is deliberately not taken here (GitHub issue #1048).
 - `ExtractionOutputIncomplete` — the section's list came back under half the rows its own
   OCR text evidences, and `extraction.row_shortfall_action` is `fail` (opt-in; see the trade
   above). Raised by `_fail_on_row_shortfall`, which is the **last statement of
