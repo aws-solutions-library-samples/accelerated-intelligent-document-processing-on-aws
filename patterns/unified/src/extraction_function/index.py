@@ -472,21 +472,14 @@ def _handle(event, context):
             error=error,
         )
         # The checkpoint and the per-shard results are deliberately NOT released
-        # here (see the success-path cleanup below). ExtractionStep retries a
-        # Lambda timeout once and the transient families up to eight times, and
-        # resuming from the checkpoint — re-inferring only the shards that did not
-        # finish — is exactly what they exist for (#1014). Releasing them before
-        # re-raising would make that retry start from nothing. Keeping them costs
-        # only space the working bucket's lifecycle rule reclaims anyway.
+        # here (see the success-path cleanup at the very end). ExtractionStep
+        # retries a Lambda timeout once and the transient families up to eight
+        # times, and resuming from the checkpoint — re-inferring only the shards
+        # that did not finish — is exactly what they exist for (#1014). Releasing
+        # them before re-raising would make that retry start from nothing.
         raise
     t1 = time.time()
     logger.info(f"Total extraction time: {t1 - t0:.2f} seconds")
-
-    # --- Checkpoint: cleanup on successful completion ---
-    if agentic_enabled and working_bucket and execution_arn:
-        delete_extraction_checkpoint(working_bucket, execution_arn, section_id)
-        # Remove per-shard results now the section is fully merged & saved.
-        delete_shard_results(working_bucket, execution_arn, section)
 
     # Add Lambda metering for successful extraction execution
     try:
@@ -523,6 +516,28 @@ def _handle(event, context):
             working_bucket, f"extraction_{section_id}", logger
         ),
     }
+
+    # --- Checkpoint + per-shard cleanup, LAST ---
+    #
+    # After `serialize_document`, deliberately, rather than next to the extraction
+    # call that produced them. `size_threshold_kb` defaults to 0, so serialising
+    # always performs an S3 put, and it is not wrapped: a SlowDown, a
+    # ServiceUnavailable or a read timeout there surfaces as TransientError, which
+    # ExtractionStep retries eight times. Releasing the resume state before that
+    # point meant a fully successful, fully paid-for extraction could be retried
+    # with nothing to resume from, so the retry re-inferred the whole section.
+    #
+    # Unlike the shard-merge handler — where the shards are a PRECONDITION and their
+    # absence is a permanent failure, which is why nothing there deletes them at all
+    # — these are an optimisation on this path: without them a retry re-runs
+    # extraction from scratch, which costs money rather than correctness. That is
+    # what makes deleting them safe here, and doing it last is what makes it cheap.
+    # A residual window remains between this and the Lambda returning, and it cannot
+    # be closed from inside the function: whether the STATE succeeded is not
+    # observable here. Its cost is bounded at re-inference.
+    if agentic_enabled and working_bucket and execution_arn:
+        delete_extraction_checkpoint(working_bucket, execution_arn, section_id)
+        delete_shard_results(working_bucket, execution_arn, section)
 
     logger.info(f"Response: {json.dumps(response, default=str)}")
     return response

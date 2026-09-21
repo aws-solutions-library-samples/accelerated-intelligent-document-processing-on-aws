@@ -2198,6 +2198,14 @@ ladder runs and then clear itself. Only a failure that will not be retried is
 recorded. If a retry ladder exhausts every attempt, the document fails with the
 explanation in the Step Functions cause and the section is not flagged.
 
+**A very long explanation is abridged in the middle.** A processing issue's details
+are bounded (4 KB for the technical cause, 1 KB per value in its structured payload)
+because they all share one DynamoDB record with every other issue on the section, and
+some exceptions echo extracted document content — a schema-validation failure on a
+900-row list renders the whole list into its message. What is removed is the middle,
+so the failure at the start and the remedy at the end both survive. The unabridged
+text is in the section's `result.json` and in the CloudWatch log for the step.
+
 ##### Why `fail` is opt-in, and what to check before turning it on
 
 Not caution — a property of the evidence. Matching is on **width only** and

@@ -318,17 +318,19 @@ def test_a_transient_failure_does_not_mark_the_section(in_process, monkeypatch):
 def test_a_bounded_root_cause_keeps_the_write_under_the_item_limit(
     in_process, monkeypatch
 ):
-    """An exception echoing document content must not be copied verbatim.
+    """What reaches the write must be bounded, and still useful.
 
-    A Pydantic ValidationError over a merged 1,200-row list renders one entry per
-    offending row, each carrying its input_value. Unbounded, that is hundreds of
-    kilobytes of extracted text written into a field the UI renders — and past
-    DynamoDB's 400 KB item ceiling the write fails, is swallowed, and the section
-    is not marked at all, on exactly the large documents this exists for.
+    An exception echoing document content — a schema-validation failure over a merged
+    long list renders each offending row — would otherwise push the section map past
+    DynamoDB's 400 KB item ceiling, and this handler swallows that write error
+    deliberately, so the section would end up unmarked. The bound's own behaviour is
+    covered in tests/unit/test_processing_issue_bounds.py; this asserts the boundary
+    the Lambda hands to DynamoDB.
     """
     from idp_common.models import ProcessingIssue as PI
 
-    error = ExtractionInputTooLarge("row content: " + ("x" * 500_000))
+    remedy = "Use Advanced extraction or split the document."
+    error = ExtractionInputTooLarge(f"row content: {'x' * 500_000} {remedy}")
 
     with pytest.raises(ExtractionInputTooLarge):
         _invoke_in_process(
@@ -337,11 +339,11 @@ def test_a_bounded_root_cause_keeps_the_write_under_the_item_limit(
 
     persisted = in_process.update_document_section.call_args.kwargs["section"]
     root_cause = persisted.processing_issues[0].root_cause
-    assert len(root_cause) <= PI.MAX_ROOT_CAUSE_CHARS + len("… [truncated]")
-    assert root_cause.endswith("… [truncated]")
-    # The head survives, so the exception type and the start of its message — the
-    # part that identifies the failure — are still readable.
+    assert len(root_cause.encode("utf-8")) <= PI.MAX_ROOT_CAUSE_BYTES
+    # Head and tail both survive: the exception type identifies the failure, and the
+    # remedy is the sentence a reader acts on.
     assert root_cause.startswith("ExtractionInputTooLarge: row content:")
+    assert root_cause.endswith(remedy)
 
 
 @pytest.mark.unit
@@ -457,14 +459,23 @@ def test_a_failed_merge_persists_the_section_and_keeps_its_shards(
 
 
 @pytest.mark.unit
-def test_a_successful_merge_still_releases_its_shards(merge_mode, monkeypatch):
-    """The other half of the shard decision: kept on failure, reclaimed on
-    success, so a later re-process of the same execution + section starts clean."""
+def test_a_successful_merge_persists_the_section_and_still_keeps_its_shards(
+    merge_mode, monkeypatch
+):
+    """The other half of the shard decision, and it is the same answer.
+
+    Success is not a safe moment to release them either, because success *here* is
+    not the state succeeding: the tail of this branch serialises the document, which
+    always writes to S3 and is not wrapped, so a transient fault after a merge that
+    already worked puts ExtractionMergeStep into a retry that needs every shard
+    present. The working bucket's lifecycle rule is what reclaims them. The window
+    itself is reproduced in ``patterns/unified/tests/test_shard_retention.py``.
+    """
     doc_service, s3_client = merge_mode
     service = MagicMock()
     service.merge_section_shards.side_effect = lambda document, **kw: document
 
     _invoke_merge(monkeypatch, service)
 
-    assert s3_client.delete_objects.called
     assert doc_service.update_document_section.called
+    assert not s3_client.delete_objects.called

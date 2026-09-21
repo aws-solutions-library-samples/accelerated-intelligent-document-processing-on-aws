@@ -5,9 +5,9 @@
 
 Issues are written per-section (camelCase, details JSON-stringified), a top-level
 ProcessingIssueCount is written whenever the document carries the sections that
-count is derived from — including 0 — and a sparse HasProcessingIssues GSI
-attribute is set only when issues exist, mirroring the ConfidenceAlertCount /
-HITLPendingReview patterns.
+count is derived from — including 0 — and a HasProcessingIssues attribute is set
+only when issues exist, in the shape a sparse index would need (it has no reader
+today; ProcessingIssueCount is what the document list reads).
 
 The "whenever it carries sections" part is load-bearing and has its own test
 below: a sectionless Document reports 0 by absence rather than by measurement, and

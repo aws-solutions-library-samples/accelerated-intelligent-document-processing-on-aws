@@ -1050,7 +1050,12 @@ Three properties it relies on, and one it deliberately does not do:
   one issue per attempt.
 - **The write cannot mask the original error.** It is swallowed and logged. The
   original exception is what names the rows lost or the input that was too large,
-  and it is what the Step Functions cause reports.
+  and it is what the Step Functions cause reports. That swallowing is also why the
+  section map has to stay under DynamoDB's 400 KB item limit: a write that fails
+  here is not reported, so an oversized issue leaves the section unmarked. Both
+  free-size fields are bounded by `ProcessingIssue` itself — see
+  `MAX_ROOT_CAUSE_BYTES` and `MAX_DETAIL_STRING_BYTES` — which is what makes
+  `assessment/degradation.py` covered without a second copy of the rule.
 - **No metric.** Unlike `idp_common.assessment.degradation`, whose whole reason for
   existing is that the document *completes* and trips no alarm, everything here
   re-raises — the execution fails and the existing failure alarms already count it.
@@ -1061,16 +1066,38 @@ Three properties it relies on, and one it deliberately does not do:
   2.5x backoff from a 10-second interval — and then clear itself. The residual is
   that an exhausted ladder leaves the section unmarked; the execution still fails.
 
-**Per-shard results are kept on failure**, released on success. The reason is that
-`merge_section_shards` **re-loads every shard from S3 on entry** and raises if any is
-absent, and `ExtractionMergeStep` retries the transient families — so releasing the
-shards before re-raising one of those would turn a recoverable merge into a permanent
-"shard(s) have no persisted result" on the next attempt. On the in-process path the
-same holds for the whole-section checkpoint, which is what lets `ExtractionStep`'s
-single Lambda-timeout retry resume. Note that `ExtractionMergeStep` has no `Catch`
-and no path back to `ExtractionShardMap`, so a *deterministic* merge failure is not
-retried at all and the kept objects simply expire on the working bucket's lifecycle
-schedule.
+### Who may delete a section's resume state, and when
+
+The whole-section checkpoint and the per-shard results exist so a Step Functions retry
+does not start from nothing. Whether deleting them is safe differs between the two
+runtimes, and the difference decides the rule:
+
+| | shard merge (`sfn_runtime_handler`, `mode="merge"`) | in-process (`index.py`) |
+|---|---|---|
+| What they are | a **precondition** — `merge_section_shards` re-loads every shard on entry and raises if one is absent | an **optimisation** — without them the retry re-runs extraction |
+| Cost of deleting too early | permanent `"shard(s) … have no persisted result"`, discarding every token of shard inference | re-inference: money, not correctness |
+| Rule | **never deleted from the handler** | deleted **last**, after the response is built |
+
+What makes "too early" reachable at all is the tail of both handlers:
+`serialize_document` defaults to `size_threshold_kb=0`, so it **always** performs an S3
+put, and it is not wrapped in `try`. A `SlowDown`, a `ServiceUnavailable` or a read
+timeout there is re-raised, classified `TransientError`, and retried — after the
+extraction has already succeeded and been paid for.
+
+For the merge path there is therefore **no safe point inside the Lambda**: whether the
+*state* succeeded is not observable from inside it, and that is what decides whether a
+retry follows. So nothing there deletes the shards and the working bucket's lifecycle
+rule reclaims them. Nothing else reads them, and a reprocess from the UI starts a new
+execution and so a new key prefix, which means "start clean" needs no deletion either.
+
+For the in-process path deleting is safe at any point, so it happens as late as
+possible — after `serialize_document` returns — which bounds the residual window's cost
+at one re-inference. `patterns/unified/tests/test_shard_retention.py` pins both rules,
+including the transient-tail reproduction.
+
+`ExtractionMergeStep` also has no `Catch` and no path back to `ExtractionShardMap`, so
+a *deterministic* merge failure is not retried at all; those kept objects simply
+expire.
 
 ### Shard results are keyed by content, not by the section's ordinal id
 
@@ -1198,8 +1225,9 @@ The extraction service is designed to be thread-safe, supporting concurrent proc
 > (config-guidance §2.1). The cost delta is model-dependent: ~2.5× per 100-row document
 > at Sonnet 5, cheaper than the integrated call at Sonnet 4.6 (live pass 2026-09-09). Recorded
 > in `metadata.confidence_mode_effective` / `confidence_mode_downgraded_reason` and the
-> Processing Flow (`status: info`) — deliberately NOT a ProcessingIssue, because
-> `HasProcessingIssues` is severity-blind and would badge every document. Two class-level
+> Processing Flow (`status: info`) — deliberately NOT a ProcessingIssue, because the
+> document list's badge counts `ProcessingIssueCount`, which is severity-blind, and
+> would badge every document. Two class-level
 > opt-outs keep 1S-TopK: `x-aws-idp-extraction-task-prompt` (a user-controlled prompt is
 > never half-applied) and `x-aws-idp-allow-integrated-lists: true` (the author has
 > verified list completeness). `config.merge_utils._validate_simple_integrated_lists`

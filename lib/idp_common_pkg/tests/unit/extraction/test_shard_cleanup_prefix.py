@@ -6,10 +6,19 @@
 Per-shard results are keyed by a **content-derived** section id —
 ``{class_label}_{first_page}_{last_page}`` — not by the section's ordinal
 ``section_id``, which classification assigns as ``str(idx)`` and which is not
-stable across a reclassify. Both cleanup callers built their prefix from the
-ordinal instead, so they listed ``checkpoints/{arn}/0/shards/`` while the writer
-had written ``checkpoints/{arn}/bank-statement_1_5/shards/``. The listing came
-back empty, the cleanup deleted nothing, and it logged success either way.
+stable across a reclassify. A cleanup that built its prefix from the ordinal
+listed ``checkpoints/{arn}/0/shards/`` while the writer had written
+``checkpoints/{arn}/bank-statement_1_5/shards/``. The listing came back empty, the
+cleanup deleted nothing, and it logged success either way.
+
+**One deployed handler has a cleanup and one deliberately has none.** The
+in-process handler (``index.py``) releases its resume state after the response is
+built; the shard-merge handler releases nothing, because ``merge_section_shards``
+requires every shard present and a retry can follow a merge that already succeeded.
+Which handler is in which camp is asserted below rather than assumed, so a cleanup
+reintroduced into the merge handler fails here as well as in
+``patterns/unified/tests/test_shard_retention.py``, where the window it would open
+is reproduced.
 
 Two kinds of assertion here, and the split matters. The structural ones hold
 whatever the format strings are, because ``shard_result_key`` is *built on*
@@ -43,6 +52,24 @@ _SRC = os.path.join(
 )
 
 EXECUTION_ARN = "arn:aws:states:us-east-1:123456789012:execution:idp:abc-123"
+
+#: Every extraction handler that is deployed, and whether it is allowed to release a
+#: section's per-shard results. ``test_the_camps_are_what_this_file_assumes`` checks
+#: this against the modules, so neither adding a cleanup nor losing one goes unseen.
+DEPLOYED_HANDLERS = ["index.py", "sfn_runtime_handler.py"]
+HANDLERS_WITH_A_CLEANUP = ["index.py"]
+
+
+def _cleanup_of(module):
+    """The callable a handler uses to release per-shard results, or ``None``.
+
+    Both spellings are checked: ``index.py`` imports ``delete_shard_results`` from
+    ``idp_common.extraction.runtime``, and a local helper has historically been
+    called ``_cleanup_shards``.
+    """
+    return getattr(module, "delete_shard_results", None) or getattr(
+        module, "_cleanup_shards", None
+    )
 
 
 def _load(module_name: str, filename: str):
@@ -144,9 +171,30 @@ def test_the_service_keys_shards_under_the_id_the_cleanup_derives():
 
 
 @pytest.mark.unit
-@pytest.mark.parametrize("handler_module", ["index.py", "sfn_runtime_handler.py"])
-def test_both_deployed_cleanups_list_the_prefix_shards_are_written_to(handler_module):
-    """The regression pin, driven through the deployed handlers.
+def test_the_camps_are_what_this_file_assumes():
+    """Derive which handlers have a cleanup rather than trusting the list above.
+
+    Without this, dropping the merge handler out of the parametrisation would also
+    silently stop noticing a cleanup put back into it — and a cleanup there is the
+    one that can turn a paid-for extraction into a permanent failure.
+    """
+    with_a_cleanup = [
+        name
+        for name in DEPLOYED_HANDLERS
+        if _cleanup_of(_load(name.replace(".py", ""), name)) is not None
+    ]
+    assert with_a_cleanup == HANDLERS_WITH_A_CLEANUP, (
+        f"{with_a_cleanup} expose a per-shard cleanup, expected "
+        f"{HANDLERS_WITH_A_CLEANUP}. The shard-merge handler must have none: "
+        "merge_section_shards requires every shard present, and its own tail can "
+        "fail transiently after the merge has already succeeded."
+    )
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("handler_module", HANDLERS_WITH_A_CLEANUP)
+def test_a_deployed_cleanup_lists_the_prefix_shards_are_written_to(handler_module):
+    """The regression pin, driven through the deployed handler.
 
     Each is given a fake S3 that answers a hit for the CORRECT prefix only —
     which is what the real bucket does. A cleanup listing the ordinal prefix gets
@@ -177,10 +225,7 @@ def test_both_deployed_cleanups_list_the_prefix_shards_are_written_to(handler_mo
     s3.list_objects_v2.side_effect = _list_objects_v2
 
     with patch.object(module, "_get_s3_client", lambda: s3):
-        cleanup = (
-            getattr(module, "delete_shard_results", None) or module._cleanup_shards
-        )
-        cleanup("working", EXECUTION_ARN, section)
+        _cleanup_of(module)("working", EXECUTION_ARN, section)
 
     assert listed == [correct_prefix], (
         f"{handler_module} listed {listed} instead of [{correct_prefix!r}]. Shards "
@@ -194,7 +239,7 @@ def test_both_deployed_cleanups_list_the_prefix_shards_are_written_to(handler_mo
 
 
 @pytest.mark.unit
-@pytest.mark.parametrize("handler_module", ["index.py", "sfn_runtime_handler.py"])
+@pytest.mark.parametrize("handler_module", HANDLERS_WITH_A_CLEANUP)
 def test_a_cleanup_that_finds_nothing_deletes_nothing_and_does_not_raise(
     handler_module,
 ):
@@ -204,8 +249,5 @@ def test_a_cleanup_that_finds_nothing_deletes_nothing_and_does_not_raise(
     s3 = MagicMock()
     s3.list_objects_v2.return_value = {}
     with patch.object(module, "_get_s3_client", lambda: s3):
-        cleanup = (
-            getattr(module, "delete_shard_results", None) or module._cleanup_shards
-        )
-        cleanup("working", EXECUTION_ARN, _section())
+        _cleanup_of(module)("working", EXECUTION_ARN, _section())
     assert not s3.delete_objects.called

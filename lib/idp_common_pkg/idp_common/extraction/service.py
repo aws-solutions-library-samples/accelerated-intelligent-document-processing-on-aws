@@ -3628,7 +3628,7 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
         # 0) Integrated confidence downgraded to a separate pass for this
         # list-bearing class (see _simple_integrated_list_downgrade). Recorded in
         # metadata and the Processing Flow, deliberately NOT as a ProcessingIssue:
-        # the document-level HasProcessingIssues flag and the list-view badge are
+        # the list view's badge counts ProcessingIssueCount and is therefore
         # severity-blind, so even an `info` issue would mark every document of a
         # Simple + integrated deployment "Processing Issues: 1" for a routing
         # decision that produced a complete, scored section.

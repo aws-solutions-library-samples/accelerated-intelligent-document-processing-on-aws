@@ -235,61 +235,35 @@ def test_a_deterministic_error_is_recorded_even_when_it_shares_vocabulary():
 
 
 @pytest.mark.unit
-def test_root_cause_is_bounded_so_the_write_cannot_exceed_the_item_limit():
-    """An exception echoing document content must not be copied in whole.
-
-    A Pydantic ``ValidationError`` over a merged 1,200-row list renders one entry
-    per offending row, each carrying its ``input_value``. Unbounded that is
-    hundreds of kilobytes of extracted text in a field the UI renders — and past
-    DynamoDB's 400 KB item ceiling the section write fails, is swallowed, and the
-    section is not marked at all, on exactly the large documents this exists for.
+def test_an_exception_echoing_document_content_is_bounded_but_keeps_its_remedy():
+    """The bound itself lives on the model and is covered in
+    ``tests/unit/test_processing_issue_bounds.py``. What matters here is that this
+    path's ``root_cause`` survives it *usefully*, because an oversized exception on
+    this path is the concrete case the bound was added for: the section write would
+    otherwise exceed DynamoDB's 400 KB item ceiling, and this path swallows that
+    write error deliberately, so the section would be left unmarked.
     """
     document = _document()
+    remedy = "Set extraction.row_shortfall_action to 'warn' to accept a partial list."
     issue = record_section_extraction_failure(
-        document, "1", ExtractionOutputIncomplete("row data: " + "y" * 500_000)
+        document,
+        "1",
+        ExtractionOutputIncomplete(f"row data: {'y' * 500_000} {remedy}"),
     )
 
     assert issue is not None
-    assert len(issue.root_cause) <= ProcessingIssue.MAX_ROOT_CAUSE_CHARS + len(
-        "… [truncated]"
-    )
-    assert issue.root_cause.endswith("… [truncated]")
-    # The head survives, so the exception type still identifies the failure.
+    assert len(issue.root_cause.encode("utf-8")) <= ProcessingIssue.MAX_ROOT_CAUSE_BYTES
+    # Head: the exception class still identifies the failure.
     assert issue.root_cause.startswith("ExtractionOutputIncomplete: row data:")
-
-
-@pytest.mark.unit
-def test_the_bound_is_enforced_by_the_model_so_the_sibling_path_is_covered_too():
-    """The cap lives in ``ProcessingIssue.__post_init__``, not at this call site.
-
-    ``idp_common.assessment.degradation`` builds ``root_cause`` the same way from
-    its own broad ``except`` and is reached by the identical
-    oversized-``ValidationException`` failure. A cap applied only here would fix
-    one instance of a class-level gap, so this asserts the *class* enforces it and
-    that the sibling is bounded in consequence.
-    """
-    from idp_common.assessment.degradation import degrade_section_to_no_confidence
-
-    # Any construction, anywhere, is bounded.
-    direct = ProcessingIssue(
-        stage="ocr", severity="info", code="c", message="m", root_cause="z" * 100_000
-    )
-    assert direct.root_cause.endswith("… [truncated]")
-
-    document = _document()
-    sibling = degrade_section_to_no_confidence(
-        document, "1", ValueError("scored rows: " + "z" * 200_000)
-    )
-    assert len(sibling.root_cause) <= ProcessingIssue.MAX_ROOT_CAUSE_CHARS + len(
-        "… [truncated]"
-    )
-    assert sibling.root_cause.startswith("ValueError: scored rows:")
+    # Tail: the remedy is the sentence a reader acts on, and it is still there. A
+    # bound that clipped the tail would drop it while still looking like it worked.
+    assert issue.root_cause.endswith(remedy)
 
 
 @pytest.mark.unit
 def test_a_root_cause_within_the_bound_is_left_exactly_as_it_is():
-    """Truncation must not touch the ordinary case: every diagnostic sentence in
-    the tree is far shorter than the cap, and an ellipsis on one would be noise."""
+    """The ordinary case must be untouched: every diagnostic sentence in the tree is
+    far shorter than the bound, and an elision marker on one would be noise."""
     cause = "ExtractionOutputIncomplete: materially incomplete: 43 of 1200 rows."
     issue = ProcessingIssue(
         stage="extraction",
@@ -299,7 +273,6 @@ def test_a_root_cause_within_the_bound_is_left_exactly_as_it_is():
         root_cause=cause,
     )
     assert issue.root_cause == cause
-    assert ProcessingIssue.MAX_ROOT_CAUSE_CHARS > len(cause)
 
 
 @pytest.mark.unit
