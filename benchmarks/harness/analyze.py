@@ -309,12 +309,20 @@ def confidence_observations(sections, rows_typed, list_key):
     re-checks it per section, so a change to reconciliation fails here loudly
     instead of quietly producing plausible calibration numbers.
 
-    Two residuals are known and not reachable on this corpus. A top-level
-    ``explainability_info`` list with more than one element collapses every element
-    onto the same (empty) path prefix, last-write-wins — the wrapper is written with
-    exactly one element and all sampled sections have one. And a nested group that
-    carries a group-level ``confidence`` alongside its per-field leaves would
-    contribute one spurious observation per group; no class in this corpus does.
+    Two residuals are known, **unfiled**, and not reachable on this corpus. They have no
+    issue number on purpose: neither is triggerable by any class in
+    ``benchmarks/corpus/``, so neither has an observable symptom to file against, and a
+    tracking issue would read as a known product defect rather than as a bound on this
+    harness. If the corpus grows a class that reaches either, file it then.
+
+    1. A top-level ``explainability_info`` list with more than one element collapses
+       every element onto the same (empty) path prefix, last-write-wins. The wrapper is
+       written with exactly one element and all sampled sections have one.
+    2. A nested group carrying a group-level ``confidence`` alongside its per-field
+       leaves would contribute one spurious observation per group. No class here does.
+
+    Distinct from #1066 and #1067, which are filed, are about code outside this file, and
+    are described in the pull request rather than here.
     """
     if not rows_typed:
         return []

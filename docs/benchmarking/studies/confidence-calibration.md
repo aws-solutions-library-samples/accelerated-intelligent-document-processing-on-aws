@@ -40,14 +40,22 @@ bank-statement documents (`tiny_form`, `small_narrow`, `med_narrow`, `large_narr
 `Amount` cell of every tagged transaction row. Extraction, OCR and geometry are held
 fixed across the grader arms; the only axis that moves is named in each table.
 
-Statistics come from the shipped engine, not from a local reimplementation.
+**Every number the gate acts on comes from the shipped engine.**
 `idp_common.evaluation.confidence_curve.ConfidenceCurve` supplies the calibration
-error, the binned AUROC and the reliability verdict, so the numbers are statements
-about the bars the product itself acts on: `ECE_UNRELIABLE_THRESHOLD = 0.15`,
+error, the binned AUROC and the reliability verdict, so those are statements about the
+bars the product itself applies: `ECE_UNRELIABLE_THRESHOLD = 0.15`,
 `AUROC_UNRELIABLE_THRESHOLD = 0.55`, `MIN_OBSERVATIONS_FOR_MEASURED = 30`,
-`MIN_OBSERVATIONS_FOR_AUROC = 100`, `MIN_BINS_FOR_SIGNAL = 3`. The unbinned AUROC and
-the Brier score come from Stickler's `AUROCMetric` and `BrierScoreMetric`, which are
-the same metric classes the evaluation service passes to `compare_with`.
+`MIN_OBSERVATIONS_FOR_AUROC = 100`, `MIN_BINS_FOR_SIGNAL = 3`.
+
+The two columns the gate does *not* read — the **unbinned AUROC** and the **Brier
+score** — are computed locally in the harness, by `analyze.unbinned_auroc(tally)` from
+the stored value tally and by `sum((conf − correct)²) / n` from the stored
+`brierSse`. Both are asserted equal to the metric classes the evaluation service
+passes to `compare_with` (Stickler's `AUROCMetric` and `BrierScoreMetric`) to better
+than 1e-12, in `benchmarks/tests/test_confidence_calibration.py`, rather than being
+claimed equal here. Computing them locally is what keeps the `[evaluation]` extra off
+the default scoring path, so a synthetic scoring run does not die part-way through a
+grid for a missing metric library — see the Reproduce section.
 
 ---
 
@@ -172,7 +180,7 @@ doubt, though the second decimal place is.
 
 ---
 
-## 4. What `integrated` mode could not be measured on
+## 4. What `integrated` mode could and could not be measured on
 
 Six of the seven `integrated`-mode arms returned **zero** wrong cells: 8,814 to 8,820
 cells per arm, all correct. Discrimination is undefined when one class is absent — there
@@ -180,21 +188,38 @@ are no wrong cells to rank — so those rows report `—` rather than a number, 
 the absence as a good result would be exactly backwards.
 
 The seventh is the arm where extraction itself was Nova Lite, and it is a different
-animal: 998 cells over 6 documents and 5 of the 14 runs, with 318 wrong cells, a
-mean-confidence ECE of 0.310 and both `overconfident` and `undiscriminating` set. It is
-not a measurement of `integrated` mode so much as of a broken extraction, and with 8 of
-its 14 runs excluded it is the thinnest arm in the grid. Nothing here rests on it.
+animal: 998 cells over **5** documents and **6** of the 14 runs, the other 8 excluded,
+with 318 wrong cells, a mean-confidence ECE of 0.310 and both `overconfident` and
+`undiscriminating` set. It is the thinnest arm in the grid — see §6's table for the
+per-arm counts — and it is not a measurement of `integrated` mode so much as of a broken
+extraction.
 
-State the power floor rather than the null. With 0 errors observed in 8,820 cells, the
-95% Wilson interval on accuracy is [0.999565, 1.0], so the true cell-error rate could
-be as high as **1 in 2,297** and still produce this observation. At that rate the
-7-document, 14-run `integrated` grid would be expected to yield **3.84** errors —
-against `MIN_OBSERVATIONS_FOR_AUROC` of 100. So `integrated` mode's ranking power is
-**unknown on this corpus**, and it is unknown for a sample-size reason that more
-repeats of these documents would fix only slowly: reaching 100 errors at the upper
-bound of the error rate would take roughly 230,000 cells, about 26 times this grid. The
-one thing that *is* measured for it is bin coverage, and it splits the same way as
-`separate`: 1 to 2 bins on the Nova graders, 3 on Sonnet 5.
+Because it *does* have errors, it is the only `integrated` arm with a ranking-power
+number at all, and the number is **0.5594 unbinned** (Brier 0.3112, binned AUROC 0.500).
+It is reported here for the same reason §3 gives for reporting bin coverage first: on
+318 wrong against 680 correct the Hanley–McNeil standard error is 0.0197, which puts
+0.5594 three standard errors above chance but only half a standard error above the 0.55
+bar — an approximate 95% interval of **[0.521, 0.598]**, and wider still under §6's
+non-independence argument, which applies here too. The structural reading is the one to
+carry: all 998 cells sit in **one** bin, so every pair of cells ties and the ordering is
+arbitrary whatever the statistic reads. `undiscriminating` is set, and it is set for the
+same reason it is set on the `separate` Nova arms.
+
+State the power floor rather than the null for the other six. With 0 errors observed in
+8,820 cells, the 95% Wilson interval on accuracy is [0.999565, 1.0], so the true
+cell-error rate could be as high as **1 in 2,297** and still produce this observation. At
+that rate the 7-document, 14-run `integrated` grid would be expected to yield **3.84**
+errors — against `MIN_OBSERVATIONS_FOR_AUROC` of 100. So for those six arms ranking power
+is **unmeasurable for want of errors**, and unmeasurable for a sample-size reason that
+more repeats of these documents would fix only slowly: reaching 100 errors at the upper
+bound of the error rate would take roughly 230,000 cells, about 26 times this grid.
+
+Put the two halves together and the honest statement about the mode is this: on the six
+arms where extraction works there are too few errors to measure ranking power at all,
+and on the one arm with errors it measures 0.559 on a single bin, which is
+undiscriminating. Neither half licenses "`integrated` mode ranks errors". The one thing
+measured across every arm is bin coverage, and it splits the same way as `separate`:
+1 to 2 bins on the Nova graders, 3 on Sonnet 5.
 
 The arms are also not equally powered against each other: `separate` ran 112 runs per
 arm and `integrated` 14, because the `coresynth` grid allocates them that way. No
@@ -230,14 +255,22 @@ ordered by its scores is ordered arbitrarily, and the review-effort estimator's
 `recommendReviewAll` is the correct output for it — which is what the shipped estimator
 already returns, because `calibration_health()` sets both flags.
 
-One arm needs the clause spelled out: the `astra`-extraction arm's unbinned AUROC is
-0.520 in v0.6.8 and **0.557 in v0.6.9**, and the second of those is fractionally
-*above* `AUROC_UNRELIABLE_THRESHOLD` (0.55). It does not join Sonnet 5 on the usable
-side of this conclusion, and the reason is the argument in §3 rather than the AUROC
-figure: that arm's 70,542 cells occupy **one** bin, so it is `degenerate` and its
-ordering is arbitrary whatever the ranking statistic reads. Two releases straddling a
-threshold by 0.007 on an estimate this imprecise is also exactly the situation in which
-a point estimate should not decide anything.
+**Two arms sit fractionally above `AUROC_UNRELIABLE_THRESHOLD` (0.55) and neither joins
+Sonnet 5 on the usable side of this conclusion.** Both appear in the Reproduce output
+below, so expect to see them there:
+
+| Arm | Unbinned AUROC | Bins | Errors |
+|---|---:|---:|---:|
+| `separate` / `nova_lite` / `astra`, v0.6.9 | 0.557 | 1 | 1,806 |
+| `integrated` / `nova_lite` / `nova_lite`, v0.6.8 | 0.559 | 1 | 318 |
+
+The reason neither counts is the argument in §3 rather than the AUROC figure: each
+arm's cells occupy **one** bin, so each is `degenerate` and its ordering is arbitrary
+whatever the ranking statistic reads. The `astra` arm reads 0.520 in v0.6.8 and 0.557 in
+v0.6.9 — two releases straddling a threshold by 0.007 on an estimate this imprecise is
+exactly the situation in which a point estimate should not decide anything. The
+`integrated` arm's 0.559 carries a 0.020 standard error (§4), which places it half a
+standard error above the bar.
 
 **This is not a recommendation to change the default.** The default is a cost
 decision, and the cost gap is large: `base-confidence.yaml` records a live A/B at
@@ -258,11 +291,26 @@ than correlation.** `reconcile_assessment_to_data`'s `_expand_row_to_per_column`
 **one** per-row confidence out across every populated scalar column of that row, so a
 row's cells frequently carry the *identical* value by construction. Measured in
 `separate`/`nova_lite` on `wide_400`: 396 to 400 of the 400 rows have every column
-carrying the same confidence, and the whole 1,200-leaf document contains only **2**
-distinct confidence values — 2 to 10 across sampled documents, 4 to 10 for Sonnet 5. So
-"70,320 cells" is not 70,320 independent scores and should not be read as one. Every
-interval on this page treats cells as independent and therefore reports *less*
-uncertainty than is really present.
+carrying the same confidence.
+
+The whole distribution is countable from the committed artifact, because each row's
+`calibration_curve.valueTally` is keyed by distinct confidence value. Over the **joinable**
+cells — the `Date` and `Amount` of each tagged row, 800 per 400-row document; the
+`Description` cell carries the SEQ tag and is not scored — a document-run holds:
+
+| Grader | Mode | Runs | Distinct confidence values per document-run | Median |
+|---|---|---:|---|---:|
+| `nova_lite` | `separate` | 832 | 1 – 5 | 2 |
+| `nova_lite` | `integrated` | 100 | 1 – 5 | 2 |
+| `nova_2_lite` | `separate` | 224 | 1 – 7 | 2 |
+| `nova_2_lite` | `integrated` | 24 | 1 – 7 | 3 |
+| `sonnet5` | `separate` | 112 | 1 – 8 | 4 |
+| `sonnet5` | `integrated` | 14 | 1 – 7 | 3 |
+
+So "70,320 cells" is not 70,320 independent scores and should not be read as one — the
+whole 70,320-cell arm is 112 runs of a two-to-five-valued score. Every interval on this
+page treats cells as independent and therefore reports *less* uncertainty than is really
+present.
 
 This is also why §3 rests the conclusion on bin coverage rather than on the AUROC point
 estimate. A grader whose entire output is two distinct values cannot order a review
@@ -286,12 +334,22 @@ count. Per-arm, for v0.6.8:
 
 Two consequences the grid-level totals hide. The `nova_lite`-extraction arm — the one §2
 uses to argue that calibration *does* catch gross overconfidence — is a **58-run,
-6-document** arm with 54 of its 112 runs excluded, and the `astra` arm excluded 10. An
-excluded run is one that did not complete or produced no joinable confidence, so the
-surviving runs in those two arms are **conditioned on success** in a way the numbers
-alone do not show; on an arm that fails half its runs, the cells that survive are
-plausibly the easier ones. Treat those two arms as directional. The five 112-run arms
-excluded nothing and carry no such conditioning.
+6-document** arm with 54 of its 112 runs excluded, and the `astra` arm excluded 10. The
+harness reports each arm's exclusions by reason, and the three arms that have any split
+like this:
+
+| Arm | Did not complete | No confidence at all | Confidence, no joinable cell |
+|---|---:|---:|---:|
+| `separate` / `nova_lite` / `nova_lite` | 26 | 6 | 22 |
+| `separate` / `nova_lite` / `astra` | 0 | 0 | 10 |
+| `integrated` / `nova_lite` / `nova_lite` | 6 | 0 | 2 |
+
+The third column is the one to read carefully: those runs completed *and* produced
+confidence, and were excluded because extraction returned no SEQ-tagged row for the
+scores to be joined to. So the surviving runs in these arms are **conditioned on
+extraction success** in a way the numbers alone do not show; on an arm that fails half
+its runs, the cells that survive are plausibly the easier ones. Treat those arms as
+directional. The five 112-run arms excluded nothing and carry no such conditioning.
 
 The `astra` arm (1,413 errors) and the `nova_lite`-extraction arm (2,875 errors) remain
 the only arms where the AUROC estimate is thick, and both agree with the thin ones.
@@ -321,8 +379,14 @@ statistic and cannot be made to: the backfill reports the read error rather than
 recording the grid as having had no confidence, which is what a silently-swallowed
 decryption failure would otherwise look like. **An artifact's readable lifetime is the
 shorter of its bucket's and its key's,** and neither is under this repository's control.
-The v0.6.8 and v0.6.9 grids on `IDPUpg067to068` and `IDP1` were backfilled while they
-were still readable, and the numbers here now outlive all of it.
+
+That argument is the reason **every** grid still readable was backfilled, not only the
+ones this page reports: all nine `coresynth` grids on `IDPUpg067to068` and all four on
+`IDP1`. Two of the nine — `coresynth__classification-model-haiku45` and
+`coresynth__extraction-model-sonnet5-1m` — add configuration arms this page does not
+discuss, and are excluded from the commands below for that reason rather than because
+their data is unavailable. Leaving a recoverable grid unbackfilled is what the
+readable-lifetime argument exists to prevent.
 
 Add `--calibration-from-s3` to bypass the stored statistic and re-read every run from
 the bucket. That is what a freshly-completed grid needs, and what verifies the stored
@@ -333,9 +397,13 @@ statistic against its source.
 as below. `PYTHONPATH` alone puts the source tree on the path but not its dependencies.
 Nothing here needs the `[evaluation]` extra: the calibration statistics are computed
 through `idp_common.evaluation.confidence_curve` and `curve_store`, which are
-standard-library-only by design, and the unbinned AUROC is derived from the value tally
-rather than by calling Stickler. `matplotlib` is needed only for the reliability
-diagram, which is skipped with a message if it is absent.
+standard-library-only by design, and the unbinned AUROC and Brier score are derived from
+the stored value tally and squared-error sum rather than by calling Stickler.
+`matplotlib` is needed only for the reliability diagram, which is skipped with a message
+if it is absent. **`AWS_PROFILE` is not needed either** for a `--calibration` run over
+these committed summaries: no boto3 client is constructed unless a row is missing its
+stored statistic, so an environment with no `~/.aws/config` at all reproduces the whole
+page.
 
 ```bash
 # Only needed for a --calibration-from-s3 run, which joins against the truth files.
@@ -345,7 +413,7 @@ diagram, which is skipped with a message if it is absent.
 python3 benchmarks/harness/gen_corpus.py
 
 # The headline single-axis grader contrast + the reliability diagram.
-PYTHONPATH=lib/idp_common_pkg AWS_PROFILE=default python3 benchmarks/harness/aggregate.py \
+PYTHONPATH=lib/idp_common_pkg python3 benchmarks/harness/aggregate.py \
   --calibration \
     benchmarks/results/v0.6.8/coresynth__classification-model-sonnet5/summary.json \
     benchmarks/results/v0.6.8/coresynth__confidence-model-nova-2-lite/summary.json \
@@ -355,7 +423,7 @@ PYTHONPATH=lib/idp_common_pkg AWS_PROFILE=default python3 benchmarks/harness/agg
 # The full v0.6.8 matrix behind §2 and §5: 14 arms, 466,322 cells. Seven suites, not
 # a glob over coresynth__* — the haiku-classifier and sonnet5-1m arms are excluded
 # because they add arms this page does not report.
-PYTHONPATH=lib/idp_common_pkg AWS_PROFILE=default python3 benchmarks/harness/aggregate.py \
+PYTHONPATH=lib/idp_common_pkg python3 benchmarks/harness/aggregate.py \
   --calibration \
     benchmarks/results/v0.6.8/coresynth__classification-model-sonnet5/summary.json \
     benchmarks/results/v0.6.8/coresynth__confidence-model-nova-2-lite/summary.json \
@@ -367,7 +435,7 @@ PYTHONPATH=lib/idp_common_pkg AWS_PROFILE=default python3 benchmarks/harness/agg
   --calibration-group assessment,confidence_model,extraction_model
 
 # The v0.6.9 replication set in §5 (stack IDP1).
-PYTHONPATH=lib/idp_common_pkg AWS_PROFILE=default python3 benchmarks/harness/aggregate.py \
+PYTHONPATH=lib/idp_common_pkg python3 benchmarks/harness/aggregate.py \
   --calibration \
     benchmarks/results/v0.6.9/coresynth__classification-model-sonnet5/summary.json \
     benchmarks/results/v0.6.9/coresynth__confidence-model-nova-2-lite/summary.json \
@@ -384,13 +452,28 @@ which is scratch — the copy this page cites was copied from there to
 copied across again to change what the page shows.
 
 Each arm reports its own `runs`, `docs` and `excl` counts, and the grid's totals appear
-in the trailing `skipped:` line. **The third bucket of that line is normally non-zero
-and benign:** a cell configured `confidence.mode: off` has no confidence leaves at all,
-so it lands there, one per off-cell per document. It is worth chasing only when it
-exceeds the number of off-cells in the grid, which would mean a run's S3 prefix is gone
-or its assessment failed. A summary whose stack no longer resolves to an output bucket
-prints a warning naming the stack, and says how many of its rows lacked a stored
-statistic and therefore could not contribute.
+in the trailing `skipped:` line. **That line has four buckets and two of them are
+normally non-zero, for unrelated reasons.** On the full v0.6.8 matrix above it reads
+`32 unsuccessful, 0 without exact per-cell truth, 55 with no confidence at all, 34 with
+confidence but no joinable cell`, and each of the last two needs its own reading:
+
+- **no confidence at all** — the run emitted no confidence leaf. This is *expected* at
+  one per `confidence.mode: off` cell per document, and 49 of the 55 are exactly that.
+  The other 6 are `separate`-mode runs on the Nova-Lite-extraction arm whose assessment
+  returned an empty `explainability_info`. Compare the count against the grid's off-cell
+  count; a surplus is the second kind.
+- **confidence but no joinable cell** — the run completed *and* produced confidence
+  (6 to 148 leaves), and extraction returned no `SEQ`-tagged row for those scores to be
+  joined to. All 34 fall in the two weak-extraction arms. This is a statement about
+  extraction completeness, not about confidence, and it is neither a missing S3 prefix
+  nor a failed assessment: no S3 read is attempted for a row whose statistic is stored,
+  and the assessment plainly succeeded. The per-arm `excl` column is where to localise
+  it.
+
+So the escalation rule is per bucket, not on a pooled count: chase bucket three when it
+exceeds the off-cells, and read bucket four as an extraction figure. A summary whose
+stack no longer resolves to an output bucket prints a warning naming the stack, and says
+how many of its rows lacked a stored statistic and therefore could not contribute.
 
 ### The per-release gate
 
@@ -401,18 +484,47 @@ pools them per cell. `aggregate.compare_cells` gates on the pooled figures:
 - **Calibration error** worse by more than 0.01, measured on `ece_mean_conf`. The
   mean-confidence estimator, not the gate's own: `ece` compares each bin to its
   midpoint, so confidence moving *within* a bin is invisible to it — across the six
-  grader arms above it spans 0.0013 where `ece_mean_conf` spans 0.0239. The 0.01
-  threshold is about fourteen times the largest drift observed for an unchanged
-  configuration across the two releases (0.0007).
-- **Ranking power** worse by more than 0.05 on the binned AUROC.
+  grader arms above it spans 0.0013 where `ece_mean_conf` spans 0.0239.
+- **Ranking power** worse by more than 0.05, measured on the **unbinned** AUROC, for the
+  same reason. The binned estimator is even less mobile than midpoint ECE: across the
+  216 committed cells carrying a calibration block it is undefined on 183 and *exactly*
+  0.5000 on 29 of the 33 where it is defined, and across these two releases it moved
+  0.0000 on every configuration-matched arm while the unbinned value moved up to 0.0461.
 - **Either crossing its shipped bar** — `ECE_UNRELIABLE_THRESHOLD` or
   `AUROC_UNRELIABLE_THRESHOLD` — at any step size, because past those the estimator
-  stops recommending a review subset at all. The crossing check reads `ece`, the
-  midpoint estimator, because that is the value the shipped product applies the
-  threshold to.
+  stops recommending a review subset at all. Both crossing checks read the *gate's* own
+  estimators, `ece` and the binned `auroc`, because those are the values the shipped
+  product applies the thresholds to. On a single-bin curve the AUROC crossing arm cannot
+  fire at all — 0.5 is below 0.55 on both sides of any comparison — which is precisely
+  why the magnitude arm must not read the same number.
 
-`benchmarks/results/baseline.json` carries both metrics, so the gate is live. A baseline
-that did not would make every comparison vacuous, and `compare_cells` prints a
-`NOT COMPARED — baseline predates the metric` block naming the metric and the affected
-cells rather than printing nothing, because an empty regression list from a skipped gate
-and an empty one from a clean run are otherwise indistinguishable.
+**Where the 0.01 threshold comes from, and what its real headroom is.** Across the
+**eight** configuration-matched arms of these two releases — four `separate` and four
+`integrated` — the largest `ece_mean_conf` drift for an unchanged configuration is
+0.0019, on `integrated`/`nova_lite`/`sonnet5` (0.0036 → 0.0017). Among the `separate`
+arms alone it is 0.0008, so 0.01 is 12.5× the `separate`-only drift and 5.3× the full
+set.
+
+But the gate fires **per cell** and those figures are **per arm**, and a cell is a much
+smaller sample. Measured at cell granularity over the 72 configuration-matched cell pairs
+the committed data supports: 0 of 72 would false-positive at 0.01, median |Δ| is 0.00075,
+and the largest *worsening* is +0.0088 — on a cell whose pooled observations collapsed
+4,410 → 410 between the releases. Excluding the two sample-collapse cells the largest
+worsening is +0.0033. So the real headroom is 1.14× where `n` collapses and about 3×
+where it does not. ⚠️ **The gate has no stability-of-`n` guard:**
+`MIN_OBSERVATIONS_FOR_MEASURED` is 30, so n=410 clears the floor comfortably and its
+noise is gated on as though it were the 4,410-observation measurement it replaced. The
+finding line prints `n 4410->410`, but the decision to fire ignores it.
+
+`benchmarks/results/baseline.json` carries both metrics, so the gate is live. A
+comparison where **either** side lacks a metric is skipped, and `compare_cells` prints a
+`NOT COMPARED — one side lacks the metric` block naming the metric, the side and the
+affected cells rather than printing nothing, because an empty regression list from a
+skipped gate and an empty one from a clean run are otherwise indistinguishable. Both
+directions are reported, and the *current*-side gap is the common one: 13 of the 96
+committed summaries carry a calibration statistic and **83 do not**, so comparing this
+release procedure's
+own named pair — `v0.6.9/corefast/summary.json` against `baseline.json` — compares a grid
+with the statistic on 0 of its 171 rows against one carrying it on 162. That is the
+`IDPUpg068to069` grid, whose objects are undecryptable, so for those cells the gate is
+permanently inert and now says so.

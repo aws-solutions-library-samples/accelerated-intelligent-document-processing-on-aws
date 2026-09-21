@@ -190,9 +190,15 @@ midpoint-based estimator and floors at 0.05 on an all-1.00 all-correct curve; `E
 the mean-confidence estimator and is the one to quote. `AUROC` is the gate's binned value
 (biased low by design); `AUROCu` is the unbinned one and is the one to quote.
 
-⚠️ A non-zero third bucket on the `skipped:` line is normally benign: a cell with
-`confidence.mode: off` has no confidence leaves and lands there. Chase it only when it
-exceeds the number of off-cells in the grid.
+⚠️ The `skipped:` line has **four** buckets and the last two are different findings.
+*No confidence at all* is normally benign — a cell with `confidence.mode: off` emits no
+confidence leaf, so expect one per off-cell per document; chase it only when it exceeds
+the grid's off-cell count, which means an assessment returned an empty
+`explainability_info`. *Confidence but no joinable cell* means the run completed and
+produced confidence and EXTRACTION returned no `SEQ`-tagged row, so read it as an
+extraction-completeness figure and localise it with the per-arm `excl` column. It is
+neither an S3 failure nor an assessment failure. On the published v0.6.8 matrix these
+read 55 and 34, so a rule phrased on the pooled count fires on the page's own output.
 
 ⚠️ Group by **extraction model as well as** the grader and the mode. The grader's
 calibration depends on the extraction it is grading, so pooling a 50%-wrong arm with a
@@ -211,21 +217,44 @@ accuracy −0.02, cost +15%, any new failure, calibration separation −0.03 →
 as regressions. Improvements ≥ +0.02 accuracy are also reported.
 
 `compare_cells` additionally gates the **pooled** per-cell calibration: `ece_mean_conf`
-+0.01, binned AUROC −0.05, or a cell crossing `ECE_UNRELIABLE_THRESHOLD` /
++0.01, **unbinned** AUROC −0.05, or a cell crossing `ECE_UNRELIABLE_THRESHOLD` /
 `AUROC_UNRELIABLE_THRESHOLD` at any step size.
 
-⚠️ **The magnitude check reads `ece_mean_conf` and the crossing check reads `ece`, and
-that is not interchangeable.** `ece` compares each bin to its MIDPOINT, so confidence
-moving within a bin is invisible to it — it spans 0.0013 across the published grid where
-`ece_mean_conf` spans 0.0239. A magnitude gate on `ece` is blind to a real +0.025
-worsening and reports a real +0.041 worsening as an *improvement*. The crossing check
-must nonetheless read `ece`, because that is the value the shipped product applies
-`ECE_UNRELIABLE_THRESHOLD` to.
+⚠️ **For both metrics the magnitude check and the crossing check read different
+estimators, and that is not interchangeable.** Magnitude reads the estimator that can
+move (`ece_mean_conf`, `auroc_unbinned`); crossing reads the one the shipped product
+applies its threshold to (`ece`, binned `auroc`). The gate's own estimators barely move
+here: midpoint `ece` compares each bin to its MIDPOINT so confidence moving within a bin
+is invisible to it, and it spans 0.0013 across the published grid where `ece_mean_conf`
+spans 0.0239; binned `auroc` is *exactly* 0.5000 on 29 of the 33 committed cells where it
+is defined at all, and moved 0.0000 on every configuration-matched arm across the two
+releases where the unbinned value moved up to 0.0461. A magnitude gate on `ece` is blind
+to a real +0.025 worsening and reports a real +0.041 worsening as an *improvement*; a
+magnitude gate on binned `auroc` is simply inert on a single-bin curve, which is the shape
+the shipped default produces. The crossing arms must nonetheless read the gate's own
+values — and note the AUROC crossing arm therefore cannot fire on a cell already at 0.5,
+since 0.5 is below the 0.55 bar on both sides.
 
-⚠️ The gate is **inert** against a baseline scored before the metric existed.
-`compare_cells` now prints a `NOT COMPARED — baseline predates the metric` block naming
-the metric and cells rather than printing nothing, so check for it; `--augment` the
-baseline (or re-promote one) to make the gate live.
+⚠️ **The +0.01 ECE threshold is justified per ARM and applied per CELL.** Per arm, the
+largest drift for an unchanged configuration across the two published releases is 0.0019
+over all eight matched arms (0.0008 if you look only at the four `separate` ones, which
+overstates the headroom by 2.4×). Per cell, over the 72 matched cell pairs the committed
+data supports, 0 of 72 false-positive at 0.01 but median |Δ| is 0.00075 and the largest
+worsening is +0.0088. So real headroom is ~1.14× on the worst cell and ~3× excluding
+sample collapse, not 14×. ⚠️ **There is no stability-of-`n` guard.**
+`MIN_OBSERVATIONS_FOR_MEASURED` is 30, so that +0.0088 — from a cell whose pooled sample
+went 4,410 → 410 — clears the floor and is gated on as if it were the larger measurement.
+`note()` prints `n 4410->410` beside the finding; the decision to fire ignores it. If you
+see a finding whose `n` moved by more than ~2×, treat it as a grid finding first.
+
+⚠️ The gate is **inert whenever either side lacks the metric**, and both directions are
+reachable today. `compare_cells` prints a `NOT COMPARED — one side lacks the metric` block
+naming the metric, the side and the cells rather than printing nothing, so check for it.
+Baseline-side: `--augment` the baseline or re-promote one. **Current-side is the common
+case** — 13 of the 96 committed summaries carry a calibration statistic and 83 do not, so
+comparing `v<REL>/corefast/summary.json` against `baseline.json` can produce zero findings
+and no note purely because the current grid was never backfilled. If its stack or its KMS
+key is gone it cannot be, and the gate is permanently inert for those cells.
 
 Two calibration separations are tracked, on the same −0.03 threshold:
 `calibration_separation` (extracted FIELDS) and `class_calibration_separation`

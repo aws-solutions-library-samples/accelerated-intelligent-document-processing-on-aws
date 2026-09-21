@@ -27,22 +27,39 @@ What these tests pin
    the committed baselines stay comparable.
 3. The join is by SEQ tag, not by position, and a row returned out of order still
    scores against its own truth.
-4. ECE, AUROC and the reliability verdict come from the SHIPPED engine, not a
-   lookalike — the point of the exercise is to measure the thresholds that ship.
-5. The two ECE estimators differ in the documented direction, so neither is quoted
-   as the other.
+4. The binned ECE, AUROC and the reliability verdict come from the SHIPPED engine, not
+   a lookalike — the point of the exercise is to measure the thresholds that ship. The
+   two figures computed locally instead, the unbinned AUROC and the Brier score, are
+   each asserted EQUAL to the metric class the evaluation service uses, since computing
+   them locally is what keeps the ``[evaluation]`` extra off the scoring path.
+5. The two estimators of each metric differ in the documented direction, so neither is
+   quoted as the other, and the gate reads the mobile one for magnitude and the
+   product's own for a threshold crossing — on BOTH metrics.
 6. The failure this whole measurement exists to catch is detectable: confident,
    well-calibrated, and wrong at the top of the range.
 7. Pooling is exact rather than an average of per-document averages.
 8. The gate fires on a magnitude move AND on a threshold crossing, and stays silent
    on a sample too thin to read.
-9. The keys reach ``CSV_COLS`` — a row key absent from that list is dropped by
-   ``DictWriter(extrasaction="ignore")`` in silence.
+9. Both regression THRESHOLDS are pinned, and a sub-threshold move measured on real
+   release-to-release data is asserted SILENT. Without that, the values were free to be
+   lowered arbitrarily with every test still passing.
+10. A comparison is reported as unread when EITHER side lacks the metric, not only when
+    the baseline does.
+11. The keys reach ``CSV_COLS`` — a row key absent from that list is dropped by
+    ``DictWriter(extrasaction="ignore")`` in silence — and the artifact's numeric
+    payloads round-trip through the one-line writer unchanged.
 
-Note on where this runs: ``benchmarks/tests`` is in ``scripts/run_all_tests.py``'s
-``RUN_ROOTS``, so ``make test`` covers it. Neither CI target
-(``test-cicd``/``test-packages-cicd``) runs this directory — that is pre-existing and
-true of the other suites here too.
+⚠️ **Note on where this runs, because it bounds what any of the above guarantees.**
+``benchmarks/tests`` is in ``scripts/run_all_tests.py``'s ``RUN_ROOTS``, so ``make test``
+covers it. **Neither CI target runs it** — GitLab and GitHub both run ``make test-cicd -C
+lib/idp_common_pkg`` and ``make test-packages-cicd``, and neither reaches this directory.
+So every assertion here, including the ones that stop the estimator being reverted and the
+ones that are the sole check on every AUROC the study publishes, is advisory until someone
+runs ``make test`` locally. That is pre-existing and true of the other suites here too.
+Compounding it: the ``sys.path.insert`` below is RELATIVE to the working directory, so
+running this file from anywhere but the repository root turns it into ``1 skipped`` with
+no warning and a green exit — the same absence-versus-failure shape tracked in
+[#1079](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/1079).
 """
 
 from __future__ import annotations
@@ -313,15 +330,31 @@ def test_the_two_ece_estimators_differ_in_the_documented_direction():
     assert scored["calibration_brier"] == 0.0
 
 
+def _stickler_pairs(observations):
+    """``observations`` as Stickler ``ConfidencePair``s. Import-guarded by the caller."""
+    from stickler.structured_object_evaluator.models.confidence import ConfidencePair
+
+    return [
+        ConfidencePair(
+            is_match=bool(ok), confidence=float(c), similarity=1.0 if ok else 0.0
+        )
+        for c, ok in observations
+    ]
+
+
 def test_the_mean_confidence_ece_agrees_with_sticklers_estimator():
     """``calibration_ece_mean_conf`` is documented as the estimator Stickler's
     ``ECEMetric`` uses, and the study page quotes it as the grader's calibration error.
     That claim is only worth making if the two agree, and they can disagree on bin-edge
     convention alone — Stickler bisects upper edges where ``bin_index`` divides — so it
     is asserted rather than stated.
-    """
-    from stickler.structured_object_evaluator.models.confidence import ConfidencePair
 
+    Guarded by ``importorskip`` like every other Stickler comparison in this file:
+    computing these statistics without the ``[evaluation]`` extra is the point of the
+    local implementations, so a check ON that extra must not be the thing that makes the
+    suite require it.
+    """
+    pytest.importorskip("stickler")
     from idp_common.evaluation.stickler_backend.confidence import ECEMetric
 
     n = 300
@@ -343,19 +376,42 @@ def test_the_mean_confidence_ece_agrees_with_sticklers_estimator():
     for c, _ok in observations:
         counts[c] = counts.get(c, 0) + 1
     assert len(set(counts.values())) > 1, "per-bin counts must differ, see above"
-    stickler = ECEMetric(n_bins=10).compute(
-        [
-            ConfidencePair(
-                is_match=bool(ok), confidence=float(c), similarity=1.0 if ok else 0.0
-            )
-            for c, ok in observations
-        ]
-    )["value"]
+    stickler = ECEMetric(n_bins=10).compute(_stickler_pairs(observations))["value"]
     scored = analyze.score_calibration([section], truth["rows_typed"], LIST_KEY)
     assert scored["calibration_ece_mean_conf"] == round(stickler, 4)
     # And the gate's midpoint estimator is a different number on the same data, which
     # is the reason both are recorded.
     assert scored["calibration_ece"] != scored["calibration_ece_mean_conf"]
+
+
+def test_the_brier_score_agrees_with_sticklers_metric():
+    """``calibration_brier`` is `sse / n` over the stored `brierSse`, not a call into
+    Stickler's ``BrierScoreMetric`` — same trade as the unbinned AUROC, and asserted for
+    the same reason. The study page publishes this column, so "it is obviously the same
+    formula" is not enough: the two could diverge on which observations they see (a cell
+    the join skipped, a duplicate row counted twice) even with identical arithmetic, and
+    that difference would be invisible in the number itself.
+    """
+    pytest.importorskip("stickler")
+    from idp_common.evaluation.stickler_backend.confidence import BrierScoreMetric
+
+    def confidence(seq):
+        return [0.05, 0.3, 0.62, 0.62, 0.9, 1.0, 1.0, 0.45, 0.78, 0.99][seq % 10]
+
+    n = 240
+    for wrong in ({}, set(range(0, n, 4)), set(range(n)) - {5}, set(range(0, n, 7))):
+        section = _section(_rows(n, confidence=confidence, wrong=wrong))
+        truth = _truth(range(n))
+        observations = analyze.confidence_observations(
+            [section], truth["rows_typed"], LIST_KEY
+        )
+        theirs = BrierScoreMetric().compute(_stickler_pairs(observations))["value"]
+        scored = analyze.score_calibration([section], truth["rows_typed"], LIST_KEY)
+        assert scored["calibration_brier"] == round(theirs, 4), (wrong and len(wrong),)
+        # And pooling the stored sufficient statistic reaches the same value, which is
+        # what the published per-arm Brier column is.
+        pooled = analyze.pool_calibration([scored["calibration_curve"]])
+        assert pooled["brier"] == round(theirs, 4)
 
 
 def test_auroc_is_undefined_rather_than_perfect_when_nothing_is_wrong():
@@ -523,21 +579,19 @@ def test_the_unbinned_auroc_matches_sticklers_over_raw_pairs():
     """The tally-based computation replaced a call into Stickler, which removed the
     harness's only dependency on the ``[evaluation]`` extra from the default scoring
     path. The equivalence is the reason that was safe, so it is asserted rather than
-    assumed — on ties, on a single class, and on a spread of values.
+    assumed — under heavy ties, at both extremes of ranking, and over many distinct
+    values.
+
+    Not on a single class: AUROC is undefined there, so there is no value to be equal
+    to. That case is
+    :func:`test_the_unbinned_auroc_is_none_when_a_class_is_absent_or_the_tally_is_dropped`,
+    which asserts ``None``.
     """
     pytest.importorskip("stickler")
-    from stickler.structured_object_evaluator.models.confidence import ConfidencePair
-
     from idp_common.evaluation.stickler_backend.confidence import AUROCMetric
 
     def stickler_auroc(observations):
-        pairs = [
-            ConfidencePair(
-                is_match=bool(ok), confidence=float(c), similarity=1.0 if ok else 0.0
-            )
-            for c, ok in observations
-        ]
-        return AUROCMetric().compute(pairs).get("value")
+        return AUROCMetric().compute(_stickler_pairs(observations)).get("value")
 
     cases = [
         # Heavy ties at one value — the shipped default's actual shape.
@@ -593,20 +647,26 @@ def test_the_cell_rollup_pools_rather_than_averaging():
 # ---------------------------------------------------------------------- the gate
 
 
-def _cell(observations, ece, auroc, ece_mean_conf=None):
+#: "not given", as distinct from an explicit ``None`` — which is a meaningful value
+#: here, because an undefined AUROC is exactly one of the states under test.
+_DEFAULT = object()
+
+
+def _cell(observations, ece, auroc, ece_mean_conf=_DEFAULT, auroc_unbinned=_DEFAULT):
     """A minimal pooled-calibration block.
 
-    ``ece_mean_conf`` defaults to ``ece`` so the older cases below still describe a
-    cell whose two estimators agree. The cases that matter are the ones where they do
-    NOT, because that is the whole reason the gate reads different ones for the
-    magnitude and the crossing.
+    ``ece_mean_conf`` and ``auroc_unbinned`` default to their binned/midpoint
+    counterparts so the simple cases below describe a cell whose two estimators of each
+    metric agree. The cases that matter are the ones where they do NOT, because that is
+    the whole reason the gate reads different ones for the magnitude and the crossing.
     """
     return {
         "calibration": {
             "observations": observations,
             "ece": ece,
-            "ece_mean_conf": ece if ece_mean_conf is None else ece_mean_conf,
+            "ece_mean_conf": ece if ece_mean_conf is _DEFAULT else ece_mean_conf,
             "auroc": auroc,
+            "auroc_unbinned": auroc if auroc_unbinned is _DEFAULT else auroc_unbinned,
         }
     }
 
@@ -682,6 +742,61 @@ def test_a_tiny_move_that_crosses_a_shipped_bar_is_still_a_regression():
         regression=True,
     )
     assert len(findings) == 1
+    assert "CROSSED" in findings[0]
+
+
+def test_the_auroc_magnitude_check_reads_the_estimator_that_can_actually_move():
+    """The AUROC arm of the same defect the ECE arm was fixed for.
+
+    The curve's BINNED AUROC is what the shipped gate reads, and on this corpus it is
+    almost immobile: across the 216 committed cells carrying a calibration block it is
+    undefined on 183 and exactly 0.5000 on 29 of the 33 where it is defined, because a
+    single-bin curve makes every pair a tie. Here both sides sit at that 0.5, while the
+    unbinned value falls 0.62 -> 0.54. A magnitude gate reading the binned number sees
+    nothing at all.
+    """
+    base = _cell(500, 0.02, 0.5, auroc_unbinned=0.62)
+    cur = _cell(500, 0.02, 0.5, auroc_unbinned=0.54)
+    assert base["calibration"]["auroc"] == cur["calibration"]["auroc"]
+    findings = aggregate.calibration_findings(cur, base, regression=True)
+    assert len(findings) == 1
+    assert "confidence AUROC -0.080" in findings[0]
+    # The crossing arm is silent, and cannot do otherwise: 0.5 is below the 0.55 bar on
+    # both sides, so there is nothing to cross. That is exactly why the magnitude arm
+    # must not read the same value.
+    assert "CROSSED" not in findings[0]
+
+
+def test_the_auroc_crossing_check_still_reads_the_gates_own_binned_value():
+    """``AUROC_UNRELIABLE_THRESHOLD`` is applied by the shipped product to
+    ``CalibrationHealth.auroc``, so a crossing computed from the unbinned value would
+    not predict what the review-effort estimator does. The unbinned value is held
+    constant here, so the finding can only have come from the crossing."""
+    from idp_common.evaluation.confidence_curve import AUROC_UNRELIABLE_THRESHOLD
+
+    findings = aggregate.calibration_findings(
+        _cell(500, 0.02, AUROC_UNRELIABLE_THRESHOLD, auroc_unbinned=0.80),
+        _cell(500, 0.02, AUROC_UNRELIABLE_THRESHOLD + 0.005, auroc_unbinned=0.80),
+        regression=True,
+    )
+    assert len(findings) == 1
+    assert "CROSSED" in findings[0]
+    assert "binned estimator" in findings[0]
+
+
+def test_an_auroc_undefined_on_one_side_still_reports_a_crossing():
+    """An arm can lose its unbinned value (no wrong cells to rank) while the binned one
+    still crosses the bar. Reporting nothing there would hide a product-behaviour change
+    behind a missing statistic."""
+    from idp_common.evaluation.confidence_curve import AUROC_UNRELIABLE_THRESHOLD
+
+    findings = aggregate.calibration_findings(
+        _cell(500, 0.02, AUROC_UNRELIABLE_THRESHOLD, auroc_unbinned=None),
+        _cell(500, 0.02, AUROC_UNRELIABLE_THRESHOLD + 0.01, auroc_unbinned=0.80),
+        regression=True,
+    )
+    assert len(findings) == 1
+    assert "confidence AUROC unmeasured" in findings[0]
     assert "CROSSED" in findings[0]
 
 
@@ -875,3 +990,174 @@ def test_score_synthetic_declares_every_calibration_key_even_with_no_observation
         [_section(_rows(5))], _truth(range(5))["rows_typed"], LIST_KEY
     )
     assert set(empty) == set(populated)
+
+
+def test_a_grid_that_never_recorded_the_metric_is_reported_too(capsys, tmp_path):
+    """The REVERSE direction, and the one that is common.
+
+    Reporting only "current has it, baseline does not" left the mirror case silent, and
+    the mirror case is the state of most committed grids: only a handful of the 96
+    committed summaries carry a calibration statistic. Comparing the release procedure's
+    own named pair — a `corefast` grid against the backfilled `baseline.json` — therefore
+    produced zero findings and no note, output indistinguishable from a clean run, and
+    for the `IDPUpg068to069` grid it cannot be fixed at all: that stack's KMS key is
+    pending deletion, so no re-score can reach its objects.
+    """
+    scored = analyze.score_calibration(
+        [_section(_rows(60, confidence=0.85, wrong={0, 1}))],
+        _truth(range(60))["rows_typed"],
+        LIST_KEY,
+    )
+    coverage = analyze.score_confidence_coverage([_section(_rows(60))])
+    base_row = {
+        "cell": "c",
+        "doc": "d.pdf",
+        "sub_doc": None,
+        "repeat": 0,
+        "success": True,
+        "cost": 0.01,
+        "scalar_accuracy": 1.0,
+        **coverage,
+        **scored,
+    }
+    # The CURRENT side is the one missing the metric this time.
+    cur_row = {
+        k: v
+        for k, v in base_row.items()
+        if not k.startswith("calibration") and not k.startswith("conf_")
+    }
+    cur_path, base_path = tmp_path / "cur.json", tmp_path / "base.json"
+    cur_path.write_text(json.dumps({"meta": {}, "rows": [cur_row]}))
+    base_path.write_text(json.dumps({"meta": {}, "rows": [base_row]}))
+
+    aggregate.compare_cells(str(cur_path), str(base_path))
+    out = capsys.readouterr().out
+    assert "NOT COMPARED" in out
+    assert "THIS RUN does not" in out
+    assert "#935" in out and "#997" in out
+    # And the direction is distinguishable in the returned structure, not only in prose.
+    cur_cell = aggregate._cells(json.loads(cur_path.read_text()))["c"]
+    base_cell = aggregate._cells(json.loads(base_path.read_text()))["c"]
+    assert all(
+        side == "current"
+        for _label, side in aggregate._missing_metric_notes(cur_cell, base_cell)
+    )
+    assert all(
+        side == "baseline"
+        for _label, side in aggregate._missing_metric_notes(base_cell, cur_cell)
+    )
+
+
+# ------------------------------------------------------- the thresholds are ratcheted
+
+
+def test_the_ece_threshold_is_not_free_to_be_lowered():
+    """The threshold's own value is pinned, in both directions.
+
+    Reverting the ESTIMATOR fails three tests above and reverting the threshold to the
+    old 0.03 fails one, but nothing stopped the value being lowered: dropping it 100x to
+    0.0001 left every test in this file passing, because no test read
+    ``CALIBRATION_ECE_REGRESSION`` and nothing asserted that a sub-threshold move stays
+    SILENT. A gate that fires on everything is as uninformative as one that fires on
+    nothing, and it would fire here — the drift measured below is what an UNCHANGED
+    configuration does between releases.
+    """
+    assert aggregate.CALIBRATION_ECE_REGRESSION == 0.01
+
+    # The largest mean-confidence ECE drift measured for a configuration-matched arm
+    # across the two published releases: `integrated`/`nova_lite`/`sonnet5`, 0.0036 ->
+    # 0.0017 on v0.6.8 -> v0.6.9. Real data, unchanged configuration, and therefore the
+    # floor the threshold has to sit above.
+    observed_arm_drift = 0.0019
+    assert aggregate.CALIBRATION_ECE_REGRESSION > observed_arm_drift
+
+    for direction in (+1, -1):
+        base = _cell(5000, 0.02, 0.80, ece_mean_conf=0.0036)
+        cur = _cell(5000, 0.02, 0.80, ece_mean_conf=0.0036 + direction * 0.0019)
+        assert aggregate.calibration_findings(cur, base, regression=True) == []
+        assert aggregate.calibration_findings(cur, base, regression=False) == []
+
+    # The largest WORSENING measured at CELL granularity, which is the granularity the
+    # gate fires at: +0.0088, on a cell whose pooled sample collapsed 4,410 -> 410. It
+    # must also stay silent, and the margin is only 1.14x — see the constant's comment.
+    base = _cell(4410, 0.02, 0.80, ece_mean_conf=0.0010)
+    cur = _cell(410, 0.02, 0.80, ece_mean_conf=0.0098)
+    assert aggregate.calibration_findings(cur, base, regression=True) == []
+
+
+def test_the_auroc_threshold_is_not_free_to_be_lowered():
+    """Same ratchet on the ranking-power side. The largest unbinned-AUROC drift for a
+    configuration-matched arm across the two releases is 0.0461, which is 92% of the
+    0.05 threshold — so this one has very little margin and a reduction would start
+    reporting unchanged configurations as regressions immediately."""
+    assert aggregate.CALIBRATION_AUROC_REGRESSION == 0.05
+
+    observed_arm_drift = 0.0461
+    assert aggregate.CALIBRATION_AUROC_REGRESSION > observed_arm_drift
+
+    for direction in (+1, -1):
+        base = _cell(5000, 0.02, 0.50, auroc_unbinned=0.3817)
+        cur = _cell(5000, 0.02, 0.50, auroc_unbinned=0.3817 + direction * 0.0461)
+        assert aggregate.calibration_findings(cur, base, regression=True) == []
+        assert aggregate.calibration_findings(cur, base, regression=False) == []
+
+
+# ------------------------------------------- the skipped buckets, and the artifact shape
+
+
+def test_a_run_with_no_confidence_is_counted_apart_from_one_with_no_joinable_cell():
+    """The two halves of what used to be a single ``no_observations`` bucket.
+
+    They mean opposite things — the first is a configuration (`confidence.mode: off`),
+    the second is an extraction that returned nothing joinable — and pooling them
+    produced a count whose only escalation rule ("chase it when it exceeds the
+    off-cells") fired on the published grid's own output, where 55 are the first and 34
+    the second.
+    """
+    assert aggregate._empty_curve_reason(0) == "no_confidence"
+    assert aggregate._empty_curve_reason(None) == "no_confidence"
+    assert aggregate._empty_curve_reason(1) == "no_joinable_cell"
+    assert aggregate._empty_curve_reason(148) == "no_joinable_cell"
+
+
+def test_the_numeric_payloads_are_written_on_one_line(tmp_path):
+    """Compaction is a formatting choice with a measured justification, so the shape is
+    pinned: expanded, the calibration payloads were ~104,700 of the ~130,800 lines the
+    #935 backfill added to the committed summaries, over 80,000 of them holding one
+    number each. The `_stats` siblings stay expanded — see ``COMPACT_PAYLOAD_KEYS``.
+    """
+    scored = analyze.score_calibration(
+        [_section(_rows(60, confidence=0.85, wrong={0, 1}))],
+        _truth(range(60))["rows_typed"],
+        LIST_KEY,
+    )
+    row = {"cell": "c", "doc": "d.pdf", "repeat": 0, "success": True, **scored}
+    summary = {
+        "meta": {"stack": "S"},
+        "rows": [row],
+        "cell_stats": aggregate.cell_stats([row]),
+    }
+    path = tmp_path / "summary.json"
+    aggregate.dump_summary(summary, str(path))
+    text = path.read_text()
+
+    # Round-trips exactly: compaction must not be able to change a value.
+    assert json.loads(text) == json.loads(json.dumps(summary))
+
+    # Named explicitly, not read from the constant: iterating the constant would make
+    # this test vacuous the moment someone emptied it.
+    assert set(aggregate.COMPACT_PAYLOAD_KEYS) == {
+        "calibration_curve",
+        "calibration",
+        "conf_coverage",
+    }
+
+    lines = text.splitlines()
+    for key in ("calibration_curve", "calibration", "conf_coverage"):
+        holding = [ln for ln in lines if f'"{key}": {{' in ln]
+        assert holding, key
+        for ln in holding:
+            assert ln.rstrip().rstrip(",").endswith("}"), (key, ln[:120])
+    # A `_stats` sibling that predates this change is NOT compacted, so the deleted-lines
+    # -are-punctuation property of the backfill diff holds.
+    assert any(ln.rstrip().endswith('"cost": {') for ln in lines)

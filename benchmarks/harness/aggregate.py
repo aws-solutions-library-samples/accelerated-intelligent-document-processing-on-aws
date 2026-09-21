@@ -51,20 +51,43 @@ QUALITY_SPREAD_FLOOR = 0.02
 # How far a cell's POOLED calibration may move between releases before it is a
 # regression (#935).
 #
-# The ECE threshold is set from the metric's MEASURED scale, not by analogy with the
-# older `calibration_separation` threshold. Across the fourteen arms of the published
-# study the mean-confidence ECE spans 0.0005 to 0.3097, and the healthy arms cluster
-# below 0.005; more to the point, the same configuration measured on two releases and
-# two stacks drifts by at most 0.0007 (0.0037 -> 0.0030, 0.0211 -> 0.0210,
-# 0.0033 -> 0.0030, 0.0005 -> 0.0004). 0.01 is roughly fourteen times that observed
-# drift and still small enough to catch a healthy arm doubling several times over.
+# Both thresholds are set from the metric's MEASURED scale, not by analogy with the
+# older `calibration_separation` threshold. A threshold chosen by analogy instead was
+# 0.03 for ECE — larger than the entire range the metric occupies on this corpus, so
+# the magnitude arm of the gate could not fire on any real movement.
 #
-# A threshold chosen by analogy instead was 0.03 — larger than the entire range the
-# metric occupies on this corpus, so the magnitude arm of the gate could not fire on
-# any real movement.
+# ⚠️ **The headroom below is measured PER ARM and the gate fires PER CELL, and the
+# two are not the same number.** An arm pools 8,800 to 70,000 cells across a whole
+# grid; a cell is one configuration over seven documents and a handful of repeats, so
+# it is noisier by construction. Both are reported here because the arm figure is what
+# the published study supports and the cell figure is what the gate actually sees.
 #
-# AUROC keeps a coarser threshold: the gate's estimator is binned, so it moves in
-# steps set by how mass redistributes across bins rather than continuously.
+# Per ARM: across the EIGHT configuration-matched arms of the two published releases
+# (four `separate`, four `integrated`) the mean-confidence ECE drifts by at most
+# 0.0019 -- `integrated`/`nova_lite`/`sonnet5`, 0.0036 -> 0.0017. The largest drift
+# among the `separate` arms alone is 0.0008 (0.0037 -> 0.0029), so quoting only those
+# overstates the headroom by 2.4x. 0.01 is 5.3x the full-set drift and 12.5x the
+# `separate`-only drift, and still small enough to catch a healthy arm (they cluster
+# below 0.005) doubling several times over.
+#
+# Per CELL, over the 72 configuration-matched cell pairs the committed data supports:
+# 0 of 72 would false-positive at 0.01, which is the result that matters. But median
+# |delta| is 0.00075 and the largest WORSENING is +0.0088 -- on a cell whose pooled
+# observation count collapsed 4,410 -> 410 between the releases. Excluding the two
+# sample-collapse cells the largest worsening is +0.0033. So real headroom is 1.14x
+# where `n` collapses and 3x where it does not, not 14x.
+#
+# The gate has no stability-of-`n` guard, and that is the residual worth knowing.
+# `MIN_OBSERVATIONS_FOR_MEASURED` is 30, so n=410 clears the floor comfortably and its
+# noise is gated on as if it were the 4,410-observation measurement it replaced.
+# `note()` prints `n 4410->410` beside every finding, but the decision to fire ignores
+# it. A cell whose sample collapsed is a finding about the grid, not about calibration.
+#
+# AUROC keeps a coarser threshold because its scale is coarser, not because its gate
+# estimator moves in steps -- see `calibration_findings` for why the magnitude arm
+# reads the UNBINNED value instead. Across the same eight arms the unbinned AUROC
+# drifts up to 0.0461, 92% of this threshold, where the binned one drifts 0.0000 on
+# every arm where it is defined at all.
 CALIBRATION_ECE_REGRESSION = 0.01
 CALIBRATION_AUROC_REGRESSION = 0.05
 
@@ -309,6 +332,60 @@ def cell_stats(rows):
     return out
 
 
+# Fixed-schema numeric payloads written on ONE line rather than expanded by
+# `indent=2`. All three are machine-generated blocks of counts — ten-element bin
+# arrays, a `{confidence: (n, n_correct)}` tally, a mean/stdev/min/max roll-up —
+# with no key a reader scans for and no value they read in isolation.
+#
+# The reason is reviewability of the artifact diff, and it is measured rather than
+# aesthetic: expanded, the calibration payloads alone cost ~104,700 of the ~130,800
+# lines the #935 backfill adds to the twelve committed summaries, 80,956 of them
+# holding one number each. Compact, the same data is ~1,700 lines: an 80% smaller
+# diff for a 32% larger file. A 130k-line diff is one nobody reads by eye — which is
+# why the backfill's strict additivity had to be proven by script rather than seen —
+# and one line per row still diffs meaningfully: a row whose curve changed shows as
+# one changed line instead of sixty.
+#
+# The `_stats` siblings in `cell_stats` (`cost`, `cell_accuracy`, ...) are the same
+# shape and stay expanded, deliberately. They predate this change, so reformatting
+# them would delete lines carrying values — and "every deleted line is punctuation"
+# is exactly the property that makes a backfill of this size checkable as additive.
+# Compacting them is a reformat of untouched data and belongs in its own change.
+COMPACT_PAYLOAD_KEYS = ("calibration_curve", "calibration", "conf_coverage")
+
+_COMPACT_TOKEN = "@@compact-payload-{}@@"
+_COMPACT_TOKEN_RE = re.compile(r'"@@compact-payload-(\d+)@@"')
+
+
+def _reserve_compact_payloads(node, payloads, key=None):
+    """Copy of ``node`` with each compactable payload swapped for a placeholder."""
+    if isinstance(node, dict):
+        if key in COMPACT_PAYLOAD_KEYS and node:
+            payloads.append(node)
+            return _COMPACT_TOKEN.format(len(payloads) - 1)
+        return {k: _reserve_compact_payloads(v, payloads, k) for k, v in node.items()}
+    if isinstance(node, list):
+        return [_reserve_compact_payloads(v, payloads, key) for v in node]
+    return node
+
+
+def dump_summary(summary, path):
+    """Write a summary as ``indent=2`` JSON, with the numeric payloads on one line.
+
+    Substituting placeholders after the fact rather than encoding in one pass is
+    what keeps this to the stdlib: ``json`` has no per-key indent control, and a
+    hand-rolled encoder for a 10 MB artifact is a correctness risk for no gain. The
+    substitution is a single regex pass, so it does not scale with payload count.
+    """
+    payloads = []
+    text = json.dumps(_reserve_compact_payloads(summary, payloads), indent=2)
+    text = _COMPACT_TOKEN_RE.sub(
+        lambda m: json.dumps(payloads[int(m.group(1))], separators=(", ", ": ")), text
+    )
+    with open(path, "w") as f:
+        f.write(text)
+
+
 def _write_summary_csvs(rows, cells, out):
     """The two CSV views beside `summary.json`.
 
@@ -378,10 +455,9 @@ def write_summary(rm, rows, out):
             "locally-scored rows."
         )
     cells = cell_stats(rows)
-    json.dump(
+    dump_summary(
         {"meta": _meta(rm), "rows": rows, "cell_stats": cells},
-        open(os.path.join(out, "summary.json"), "w"),
-        indent=2,
+        os.path.join(out, "summary.json"),
     )
     _write_summary_csvs(rows, cells, out)
     # warn loudly when cost CV is high at low n (means are untrustworthy)
@@ -553,11 +629,15 @@ def calibration_findings(cur, base, regression=True):
        recommending a worst-first review subset at all. That is a product behaviour
        change, not a metric wobble.
 
-    ⚠️ **The two questions read DIFFERENT calibration-error estimators, and they have
-    to.** The crossing check reads ``ece`` — the midpoint-based one — because
-    ``ECE_UNRELIABLE_THRESHOLD`` is a bar the shipped product applies to exactly that
-    value via ``CalibrationHealth.ece``, so a crossing computed from anything else
-    would not predict what the estimator does. The magnitude check reads
+    ⚠️ **BOTH metrics read DIFFERENT estimators for the two questions, and they have
+    to.** The pattern is the same in each case: the crossing check must read the value
+    the shipped product applies its threshold to, and the magnitude check must read the
+    estimator that can actually move.
+
+    *Calibration error.* The crossing check reads ``ece`` — the midpoint-based one —
+    because ``ECE_UNRELIABLE_THRESHOLD`` is a bar the shipped product applies to
+    exactly that value via ``CalibrationHealth.ece``, so a crossing computed from
+    anything else would not predict what the estimator does. The magnitude check reads
     ``ece_mean_conf``, because ``ece`` is nearly immobile: it compares each bin's
     accuracy to the bin MIDPOINT, so any movement in confidence WITHIN a bin is
     invisible to it. Measured across the six grader arms of the published study,
@@ -573,6 +653,20 @@ def calibration_findings(cur, base, regression=True):
     * *Inverted.* Hold confidence at 0.995 and let accuracy fall 0.999 → 0.95. Real
       error worsens by 0.041; midpoint ECE moves −0.049 and the cell is reported as
       an **improvement**.
+
+    *Ranking power.* Identically split, for the identical reason. The crossing check
+    reads ``auroc``, the curve's BINNED estimate, because that is the value
+    ``AUROC_UNRELIABLE_THRESHOLD`` is applied to by ``calibration_health()``. The
+    magnitude check reads ``auroc_unbinned``, because the binned one barely moves on
+    this corpus: across the 216 committed cells carrying a calibration block it is
+    undefined on 183 and **exactly 0.5000 on 29 of the 33** where it is defined, and
+    across the two published releases it drifted 0.0000 on every configuration-matched
+    arm while the unbinned value drifted up to 0.0461 — 92% of
+    ``CALIBRATION_AUROC_REGRESSION``. On a single-bin curve every ordering is a tie, so
+    the binned estimator has one value available to it and the crossing arm cannot fire
+    either: 0.5 sits below the 0.55 bar on both sides of any comparison. Reading
+    magnitude off the binned value would leave the whole AUROC gate inert on exactly
+    the shape the shipped default produces.
 
     Both sides must carry enough observations for the statistic to mean anything —
     the shipped floors, ``MIN_OBSERVATIONS_FOR_MEASURED`` for calibration error and
@@ -648,50 +742,87 @@ def calibration_findings(cur, base, regression=True):
 
     # Ranking power: higher is better, and it is the only property worst-first
     # review depends on. An AUROC that goes undefined on one side is not compared —
-    # "no wrong cells to rank" is not a change in ranking power.
-    if enough(MIN_OBSERVATIONS_FOR_AUROC) and None not in (cc["auroc"], bc["auroc"]):
-        delta = cc["auroc"] - bc["auroc"]
-        crossed = cc["auroc"] <= AUROC_UNRELIABLE_THRESHOLD < bc["auroc"]
-        healed = bc["auroc"] <= AUROC_UNRELIABLE_THRESHOLD < cc["auroc"]
-        if regression and (delta <= -CALIBRATION_AUROC_REGRESSION or crossed):
-            tag = f"confidence AUROC {delta:+.3f} {note(cc['auroc'], bc['auroc'])}"
+    # "no wrong cells to rank" is not a change in ranking power. Magnitude on the
+    # unbinned estimator, crossing on the gate's own binned one — see the docstring.
+    if enough(MIN_OBSERVATIONS_FOR_AUROC):
+        cur_u, base_u = cc.get("auroc_unbinned"), bc.get("auroc_unbinned")
+        cur_gate, base_gate = cc.get("auroc"), bc.get("auroc")
+        delta = None if None in (cur_u, base_u) else cur_u - base_u
+        crossed = healed = False
+        if None not in (cur_gate, base_gate):
+            crossed = cur_gate <= AUROC_UNRELIABLE_THRESHOLD < base_gate
+            healed = base_gate <= AUROC_UNRELIABLE_THRESHOLD < cur_gate
+        fell = delta is not None and delta <= -CALIBRATION_AUROC_REGRESSION
+        rose = delta is not None and delta >= CALIBRATION_AUROC_REGRESSION
+        if regression and (fell or crossed):
+            tag = (
+                f"confidence AUROC {delta:+.3f} {note(cur_u, base_u)}"
+                if delta is not None
+                else "confidence AUROC unmeasured"
+            )
             if crossed:
                 tag += (
-                    f"  [CROSSED the {AUROC_UNRELIABLE_THRESHOLD} chance bar — "
-                    "confidence no longer ranks errors, so worst-first review is "
-                    "not justified]"
+                    f"  [CROSSED the {AUROC_UNRELIABLE_THRESHOLD} chance bar "
+                    f"({base_gate:.3f}->{cur_gate:.3f} on the gate's own binned "
+                    "estimator) — confidence no longer ranks errors, so worst-first "
+                    "review is not justified]"
                 )
             findings.append(tag)
-        elif not regression and (delta >= CALIBRATION_AUROC_REGRESSION or healed):
-            findings.append(
-                f"confidence AUROC {delta:+.3f} {note(cc['auroc'], bc['auroc'])}"
+        elif not regression and (rose or healed):
+            tag = (
+                f"confidence AUROC {delta:+.3f} {note(cur_u, base_u)}"
+                if delta is not None
+                else "confidence AUROC unmeasured"
             )
+            if healed:
+                tag += (
+                    f"  [back above the {AUROC_UNRELIABLE_THRESHOLD} chance bar "
+                    f"({base_gate:.3f}->{cur_gate:.3f} binned)]"
+                )
+            findings.append(tag)
     return findings
 
 
-# Metrics whose comparison is skipped outright when the baseline predates them, and
-# where to look for each. The point of naming them is that "skipped" and "unchanged"
-# print identically otherwise, and a gate that cannot be distinguished from a passing
-# gate is not a gate — the defect class this repository keeps rediscovering as "a
-# control that exists but is never consulted". `conf_coverage` (#997) is in the same
-# state as `calibration` (#935) for the same reason: both were added after the
-# baseline was promoted.
-BASELINE_ONLY_METRICS = {
+# Metrics whose comparison is skipped outright when EITHER side lacks them, and where
+# to look for each. The point of naming them is that "skipped" and "unchanged" print
+# identically otherwise, and a gate that cannot be distinguished from a passing gate is
+# not a gate — the defect class this repository keeps rediscovering as "a control that
+# exists but is never consulted". Both were added after the baseline was promoted, so
+# `conf_coverage` (#997) is in the same state as `calibration` (#935); and both are
+# absent from most committed grids, which is the other direction of the same problem —
+# see `_missing_metric_notes`.
+LATE_ADDED_METRICS = {
     "calibration": "pooled confidence ECE / AUROC (#935)",
     "conf_coverage": "confidence coverage (#997)",
 }
 
 
 def _missing_metric_notes(cur, base):
-    """Which comparisons this cell pair cannot make, and why.
+    """Which comparisons this cell pair cannot make, and why — in BOTH directions.
 
-    Reports only the case that matters — present on the current side, absent on the
-    baseline — because that is the one where a reader would otherwise assume the gate
-    looked and found nothing. A metric absent from BOTH sides is not yet collected
-    anywhere and says nothing about the baseline.
+    A metric present on one side and absent on the other cannot be compared, and
+    which side is missing does not change that. Both directions are reported because
+    both are reachable today and both print identically to a clean run otherwise:
+
+    * **baseline predates the metric** — the state ``--augment`` fixes by backfilling
+      the baseline.
+    * **current grid never recorded it** — the state of 83 of the 96 committed
+      summaries, and of the grid the release procedure names first: comparing
+      ``v0.6.9/corefast/summary.json`` against the backfilled ``baseline.json``
+      compares a grid carrying ``calibration_curve`` on **0** of its 171 rows against
+      one carrying it on 162, because that stack's KMS key is pending deletion and
+      every object under it is undecryptable. Reporting only the other direction made
+      that case indistinguishable from "compared, nothing moved" — the same defect
+      class, on the same gate, in the mirror direction.
+
+    A metric absent from BOTH sides is not yet collected anywhere and says nothing
+    about either grid, so it is not reported.
+
+    Returns ``(label, direction)`` pairs, where direction is ``"baseline"`` or
+    ``"current"`` naming the side that lacks the metric.
     """
     notes = []
-    for metric, label in BASELINE_ONLY_METRICS.items():
+    for metric, label in LATE_ADDED_METRICS.items():
         cur_value = cur.get(metric)
         if metric == "conf_coverage":
             # A `_stats` block, so "collected" means it saw at least one observation.
@@ -700,7 +831,9 @@ def _missing_metric_notes(cur, base):
         else:
             cur_present, base_present = bool(cur_value), bool(base.get(metric))
         if cur_present and not base_present:
-            notes.append(label)
+            notes.append((label, "baseline"))
+        elif base_present and not cur_present:
+            notes.append((label, "current"))
     return notes
 
 
@@ -723,8 +856,8 @@ def compare_cells(summary_path, baseline_path):
         b = base.get(cell)
         if not b:
             continue
-        for label in _missing_metric_notes(c, b):
-            unread.setdefault(label, []).append(cell)
+        for note_key in _missing_metric_notes(c, b):
+            unread.setdefault(note_key, []).append(cell)
         cc, bc = c["cost"], b["cost"]
         if cc["mean"] is not None and bc["mean"] and bc["mean"] > 0:
             delta = cc["mean"] - bc["mean"]
@@ -815,13 +948,28 @@ def compare_cells(summary_path, baseline_path):
     if unread:
         # NOT silent. A skipped comparison and a passing comparison print the same
         # thing otherwise, so a reader has no way to tell that a gate looked at
-        # nothing — see BASELINE_ONLY_METRICS.
-        print(f"\n=== NOT COMPARED — baseline predates the metric ({len(unread)}) ===")
-        for label, cells in sorted(unread.items()):
+        # nothing — see LATE_ADDED_METRICS. Both directions are reported: the
+        # baseline-side gap is the one --augment fixes, and the current-side gap is
+        # the state of most committed grids.
+        print(f"\n=== NOT COMPARED — one side lacks the metric ({len(unread)}) ===")
+        for (label, side), cells in sorted(unread.items()):
+            missing, fix = (
+                (
+                    "baseline does not",
+                    "until the baseline is re-promoted from a grid scored with "
+                    "current code, or --augment'ed",
+                )
+                if side == "baseline"
+                else (
+                    "THIS RUN does not",
+                    "until this grid is re-scored or --augment'ed; if its stack or "
+                    "its KMS key is gone, it cannot be and the gate is permanently "
+                    "inert for these cells",
+                )
+            )
             print(
-                f"  {label}: current run has it, baseline does not, for "
-                f"{len(cells)} cell(s) — this gate is INERT until the baseline is "
-                "re-promoted from a grid scored with current code "
+                f"  {label}: {missing} carry it, for {len(cells)} cell(s) — this "
+                f"gate is INERT {fix} "
                 f"(e.g. {', '.join(sorted(cells)[:3])})"
             )
     return reg, imp, weak
@@ -1086,7 +1234,7 @@ def augment_summary(path, corpus_dir, dry_run=False):
     }
     if dry_run:
         return updated, skipped
-    json.dump(summary, open(path, "w"), indent=2)
+    dump_summary(summary, path)
     out_dir = os.path.dirname(path)
     if os.path.basename(path) == "summary.json":
         _write_summary_csvs(summary.get("rows") or [], summary["cell_stats"], out_dir)
@@ -1098,6 +1246,16 @@ def _first_read_error(bucket, prefix):
 
     ``lib.get_json`` returns None for a missing object and for an unreadable one alike,
     which is convenient for scoring and indistinguishable for diagnosis.
+
+    ⚠️ This is a **partial** probe, and a ``None`` from it does not mean "everything
+    under this grid is readable". It examines the first empty prefix only, looks only
+    under ``sections/``, stops at the first ``result.json`` it finds, and returns
+    ``None`` as soon as one object reads — so a grid where one section decrypts and the
+    next does not still reports no error. It exists to name the cause of a
+    whole-grid-wide failure (a pending-deletion KMS key, a bucket that has gone), which
+    is the shape actually encountered, not to audit per-object readability.
+    Generalising it is part of the absence-versus-failure class in
+    [#1079](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/1079).
     """
     try:
         listing = lib.s3().list_objects_v2(
@@ -1170,9 +1328,16 @@ def calibration_study(
     denominator would credit the thin arms with the thick ones' sample.
     """
     group_by = list(group_by or CALIBRATION_GROUP_DEFAULT)
-    lib.s3()  # build the client once rather than per object read
     arms: dict[tuple, dict] = {}
-    skipped = {"no_truth": 0, "no_observations": 0, "not_success": 0}
+    # `no_observations` is split in two because the two halves mean opposite things
+    # and pooling them produced a note that fired on its own benign output. See
+    # `_print_calibration`.
+    skipped = {
+        "no_truth": 0,
+        "no_confidence": 0,
+        "no_joinable_cell": 0,
+        "not_success": 0,
+    }
 
     def arm_for(resolved):
         key = tuple(str(resolved.get(k)) for k in group_by)
@@ -1183,7 +1348,12 @@ def calibration_study(
                 "payloads": [],
                 "docs": set(),
                 "runs": 0,
-                "excluded": {"not_success": 0, "no_truth": 0, "no_observations": 0},
+                "excluded": {
+                    "not_success": 0,
+                    "no_truth": 0,
+                    "no_confidence": 0,
+                    "no_joinable_cell": 0,
+                },
                 "sources": set(),
                 "suites": set(),
                 "stacks": set(),
@@ -1208,6 +1378,12 @@ def calibration_study(
             if r.get("success") and r.get("run_id") and "calibration_curve" not in r
         ]
         bucket = None
+        # Nothing above this point touches boto3, deliberately. `lib.session()` pins
+        # `profile_name`, so building a client with no `~/.aws/config` raises
+        # `ProfileNotFound`; built at function entry it killed the documented
+        # "reproducible with no AWS access at all" command before it opened a single
+        # summary, on grids fully covered by their own stored statistic. `lib.client`
+        # caches per service, so the first real read below builds it once anyway.
         if from_s3 or missing:
             try:
                 bucket = _resolve_output_bucket(stack)
@@ -1231,9 +1407,14 @@ def calibration_study(
                     arm["docs"].add(row.get("doc"))
                     arm["runs"] += 1
                 else:
-                    # Measured and empty — not a failure and not unread.
-                    skipped["no_observations"] += 1
-                    arm["excluded"]["no_observations"] += 1
+                    # Measured and empty — not a failure and not unread. Which of the
+                    # two empty shapes it is, is readable from the row: a run with no
+                    # confidence leaf at all had nothing to calibrate, while one with
+                    # leaves and no observation produced confidence the truth could
+                    # not be joined to.
+                    why = _empty_curve_reason(row.get("n_conf_leaves"))
+                    skipped[why] += 1
+                    arm["excluded"][why] += 1
                 continue
             if not row.get("success") or not row.get("run_id") or not bucket:
                 skipped["not_success"] += 1
@@ -1251,8 +1432,13 @@ def calibration_study(
                 sections, truth.get("rows_typed"), truth.get("list_key")
             )
             if not scored["calibration_curve"]:
-                skipped["no_observations"] += 1
-                arm["excluded"]["no_observations"] += 1
+                leaves = sum(
+                    len(lib.walk_confidence(sec.get("explainability_info")))
+                    for sec in sections
+                )
+                why = _empty_curve_reason(leaves)
+                skipped[why] += 1
+                arm["excluded"][why] += 1
                 continue
             arm["payloads"].append(scored["calibration_curve"])
             arm["sources"].add("s3")
@@ -1282,6 +1468,25 @@ def calibration_study(
         json.dump(report, open(out_path, "w"), indent=2)
         print(f"\ncalibration report -> {out_path}")
     return report
+
+
+def _empty_curve_reason(n_conf_leaves):
+    """Which of the two "measured, nothing recorded" states a row is in.
+
+    ``no_confidence`` — the run produced no confidence leaf at all, so there was
+    nothing to calibrate. Every cell configured ``confidence.mode: off`` is here, one
+    per document, and so is a run whose assessment returned an empty
+    ``explainability_info``.
+
+    ``no_joinable_cell`` — confidence exists but no ``SEQnnnnn``-tagged row could be
+    joined to it, so extraction, not confidence, is what came back empty.
+
+    Kept apart because the two invite different actions and a single bucket invited
+    the wrong one: the escalation rule attached to the pooled count ("chase it when it
+    exceeds the off-cells") fired on the published grid's own output, where 49 of 89
+    are off-cells and the other 40 are this second state.
+    """
+    return "no_joinable_cell" if (n_conf_leaves or 0) > 0 else "no_confidence"
 
 
 def _print_calibration(report):
@@ -1330,17 +1535,29 @@ def _print_calibration(report):
     s = report["skipped"]
     print(
         f"skipped: {s['not_success']} unsuccessful, {s['no_truth']} without exact "
-        f"per-cell truth, {s['no_observations']} with no joinable confidence"
+        f"per-cell truth, {s['no_confidence']} with no confidence at all, "
+        f"{s['no_joinable_cell']} with confidence but no joinable cell"
     )
-    if s["no_observations"]:
-        # Said plainly because the instruction "chase a number materially above zero
-        # here" otherwise fires on its own benign output: a cell configured with
-        # `confidence.mode: off` produces no confidence at all and is counted here.
+    # The two are separated, and each carries its own reading, because pooling them
+    # under "no joinable confidence" produced a count whose only escalation rule fired
+    # on the grid the study publishes: 89 there, of which 49 are off-cells and 40 are
+    # the second bucket, so "chase it when it exceeds the off-cells" fired every time.
+    if s["no_confidence"]:
         print(
-            "  (a run with the confidence mode OFF has no confidence leaves and lands "
-            "in the third bucket — expect one per off-cell per document. Chase it only "
-            "when it exceeds the off-cells in the grid, which would mean a run's S3 "
-            "prefix is gone or its assessment failed)"
+            f"  ({s['no_confidence']} with no confidence: EXPECTED and benign at one "
+            "per `confidence.mode: off` cell per document — that configuration emits "
+            "no confidence leaf. Compare against the off-cell count in the grid; a "
+            "surplus is an assessment that returned an empty explainability_info)"
+        )
+    if s["no_joinable_cell"]:
+        print(
+            f"  ({s['no_joinable_cell']} with confidence but no joinable cell: "
+            "extraction returned no SEQ-tagged row for these runs, so there was "
+            "nothing for the scores to be joined to. Neither an S3 failure nor an "
+            "assessment failure — no read was attempted and the confidence is "
+            "present. Read it as an EXTRACTION completeness figure, and expect it to "
+            "be concentrated in the weak-extraction arms: the arms' own `excl` column "
+            "is where to look)"
         )
 
 

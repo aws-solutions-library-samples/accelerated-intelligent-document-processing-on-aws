@@ -2226,8 +2226,18 @@ def _field_path(prefix, key):
 def _list_item_path(prefix, node, index):
     """Path for one member of a list.
 
-    A single-element list adds no level: ``explainability_info`` arrives wrapped in
-    one, and adding a level there would misalign it from ``inference_result``.
+    A single-element list adds no level, which keeps ``explainability_info``'s wrapper
+    list from adding a level that ``inference_result`` does not have.
+
+    ⚠️ **The rule is keyed off list LENGTH, and that is not how the rest of the
+    repository keys list paths.** ``curve_store.flatten_values`` always emits an index,
+    so a one-row table keys ``Transactions.Date`` here and ``Transactions[0].Date``
+    there — the paths from the two are not interchangeable even though both are
+    "the field path". Nothing crosses them today (this one is only ever compared against
+    :func:`_walk_confidence_named`, within a single request, so no user-visible value is
+    wrong), but a caller that mixed them would silently fail to match on exactly the
+    single-row documents. Replacing this with the now-public ``flatten_values`` is
+    [#1066](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/1066).
     """
     return prefix if len(node) == 1 else f"{prefix}[{index}]"
 
