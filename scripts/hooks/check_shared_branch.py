@@ -21,7 +21,10 @@ refuses three commands:
   a bare push follows ``push.default``, so the two settings that pick one of the
   branch name and the upstream do not also get the other; and ``--tags`` with no
   refspec has no branch destination at all.
-* ``gh pr merge`` for a pull request that has a **failing** check.
+* ``gh pr merge`` for a pull request that has a **failing** check. The pull request
+  is read past the options that take a separate value, and ``--repo`` is honoured
+  on either side of the subcommand, because misreading either one leaves the check
+  unable to run and so allows the merge with nothing printed.
 
 Overrides, because each refusal has a legitimate case: set
 ``ALLOW_SHARED_BRANCH=1`` for the first two and ``ALLOW_RED_MERGE=1`` for the
