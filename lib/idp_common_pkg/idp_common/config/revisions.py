@@ -206,8 +206,15 @@ class ConfigRevisionStore:
         bucket: Optional[str] = None,
         cap: Optional[int] = None,
         s3_client: Optional[Any] = None,
+        region: Optional[str] = None,
     ):
         self.table = table
+        # Region for the lazily built S3 client. ``None`` = boto3's own
+        # resolution, which is correct in Lambda. An out-of-region caller (the
+        # CLI with an explicit --region) must pass it, or revision objects are
+        # written to a bucket of that name in whatever region the ambient
+        # credentials resolve to.
+        self.region = region
         self.bucket = (
             bucket if bucket is not None else os.environ.get("CONFIGURATION_BUCKET", "")
         )
@@ -231,7 +238,7 @@ class ConfigRevisionStore:
     @property
     def s3(self) -> Any:
         if self._s3 is None:
-            self._s3 = boto3.client("s3")
+            self._s3 = boto3.client("s3", region_name=self.region)
         return self._s3
 
     @staticmethod

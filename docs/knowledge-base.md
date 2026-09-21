@@ -86,7 +86,7 @@ KnowledgeBaseVectorStore:
 DocumentKnowledgeBaseModel:
   Type: String
   Default: "us.amazon.nova-pro-v1:0"
-  Description: Bedrock model to use for knowledge base queries (e.g., "us.anthropic.claude-3-7-sonnet-20250219-v1:0")
+  Description: Bedrock model to use for knowledge base queries (e.g., "us.anthropic.claude-sonnet-4-5-20250929-v1:0")
 ```
 
 ### Supported Embedding Models

@@ -42,6 +42,12 @@ The default page lists processed documents, over a scope chosen with the **Load*
 
 Your choice is remembered, so changing it once sticks for later visits.
 
+**The date picker will not accept a custom range longer than 365 days.** That bound
+is in the picker only. The list itself is served by a single indexed query over the
+chosen window, so its cost tracks the *number of documents it returns* rather than
+the length of the window — a quiet year costs no more to page through than a quiet
+week.
+
 ### Production vs Test Studio documents
 
 Test Studio submits its documents through the same pipeline as ordinary uploads — deliberately, so confidence and cost figures match what real runs produce. Because it makes them indistinguishable once processed, they are recorded on a separate index partition and the Document List shows one partition at a time, selected with the **Production / Test Studio** control beside the search box:

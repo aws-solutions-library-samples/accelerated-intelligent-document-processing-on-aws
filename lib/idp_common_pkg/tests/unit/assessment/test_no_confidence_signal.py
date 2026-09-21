@@ -27,6 +27,21 @@ These tests pin the contract per path:
   excluded section class, and a class with no attributes to extract (whose empty
   result extraction flags ``skipped_due_to_empty_attributes``) — stay silent, or
   the alarm would fire on healthy throughput.
+
+Two later additions, both the same shape:
+
+* **a section none of whose pages the document contains** was the one case where
+  silence was actively misleading rather than merely missing. The page loop
+  appended a ``document.errors`` line per absent page and carried on, so the
+  confidence pass ran with ``document_text == ""`` and ``page_images == []`` and
+  the section came back WITH a confidence number for every field, derived from
+  nothing. It is now skipped like the others, and when only SOME pages are absent
+  the pass still runs but records a warning;
+* **a section whose class is absent from the configuration** is no longer covered
+  by the attribute-less carve-out. Extraction distinguishes the two at the
+  producer (``metadata.empty_schema_reason``), so a class renamed or deleted while
+  documents were in flight is reported, while a blank page's ``unclassified``
+  section stays silent here and is reported by the classification stage instead.
 """
 
 from __future__ import annotations
@@ -40,6 +55,11 @@ from idp_common.assessment.degradation import (
     CONFIDENCE_UNAVAILABLE_METRIC,
 )
 from idp_common.assessment.service import AssessmentService
+from idp_common.empty_schema import (
+    EMPTY_SCHEMA_CLASS_NOT_CONFIGURED,
+    EMPTY_SCHEMA_REASON_KEY,
+    EMPTY_SCHEMA_UNCLASSIFIED,
+)
 from idp_common.models import Document, Page, ProcessingIssue, Section, Status
 
 _EXTRACTION_URI = "s3://output-bucket/doc.pdf/sections/1/result.json"
@@ -343,3 +363,304 @@ class TestDeliberateSilence:
         assert CONFIDENCE_UNAVAILABLE_METRIC not in [
             call.args[0] for call in mock_put_metric.call_args_list
         ]
+
+    @patch("idp_common.s3.get_json_content")
+    @patch("idp_common.metrics.put_metric")
+    def test_unclassified_section_stays_silent_here(
+        self, mock_put_metric, mock_get_json_content, service
+    ):
+        """Classification determined no class, so the classification stage reports
+        it. Reporting it from here as well would double the alarm's volume for the
+        commonest benign case in the pipeline — a blank page — and point its
+        ``root_cause`` at an Extraction step where nothing is wrong."""
+        mock_get_json_content.return_value = {
+            "document_class": {"type": "unclassified"},
+            "inference_result": {},
+            "metadata": {
+                "parsing_succeeded": True,
+                "skipped_due_to_empty_attributes": True,
+                EMPTY_SCHEMA_REASON_KEY: EMPTY_SCHEMA_UNCLASSIFIED,
+            },
+        }
+
+        result = service.process_document_section(_document(), "1")
+
+        assert not _skip_issues(result)
+        assert CONFIDENCE_UNAVAILABLE_METRIC not in [
+            call.args[0] for call in mock_put_metric.call_args_list
+        ]
+
+    @patch("idp_common.s3.get_json_content")
+    @patch("idp_common.metrics.put_metric")
+    def test_a_stub_written_before_the_reason_existed_stays_silent(
+        self, mock_put_metric, mock_get_json_content, service
+    ):
+        """Back-compatibility, and it is the safe default in both directions: a
+        result file written by an earlier version carries the flag and no reason,
+        and must keep reading back as the attribute-less case rather than becoming
+        a fleet of new alarm points the moment old documents are reassessed."""
+        mock_get_json_content.return_value = {
+            "document_class": {"type": "cover_sheet"},
+            "inference_result": {},
+            "metadata": {
+                "parsing_succeeded": True,
+                "skipped_due_to_empty_attributes": True,
+            },
+        }
+
+        result = service.process_document_section(_document(), "1")
+
+        assert not _skip_issues(result)
+        assert CONFIDENCE_UNAVAILABLE_METRIC not in [
+            call.args[0] for call in mock_put_metric.call_args_list
+        ]
+
+
+_BATCHED = {
+    "assessment": {"invoice_number": {"confidence": 0.9, "confidence_reason": "clear"}},
+    "alerts": [],
+    "metering": {},
+    "parsing_succeeded": True,
+    "duration_seconds": 0.1,
+    "split_stats": None,
+}
+
+
+def _extraction_data() -> dict:
+    return {
+        "document_class": {"type": "invoice"},
+        "inference_result": {"invoice_number": "INV-1"},
+        "metadata": {"parsing_succeeded": True},
+    }
+
+
+def _page_issues(document: Document) -> list[ProcessingIssue]:
+    return [
+        issue
+        for issue in (document.sections[0].processing_issues or [])
+        if issue.code == "assessment_pages_missing"
+    ]
+
+
+@pytest.mark.unit
+class TestPagesMissingFromTheDocument:
+    """A section whose ``page_ids`` name pages the document does not contain.
+
+    The page loop logged each absence into ``document.errors`` and continued, so
+    with EVERY page absent the confidence pass ran against no text and no image and
+    still returned a score per field. That is worse than no confidence: a
+    fabricated number is indistinguishable in the UI, in HITL routing and in the
+    reporting lake from one the model derived from the page.
+
+    This is malformed input, not an ordinary outcome — the reprocess resolver
+    validates page ids against ``document.pages`` before saving a regrouping — so
+    reporting it cannot reach the alarm's threshold on throughput.
+    """
+
+    @patch("idp_common.assessment.batching.assess_results_batched")
+    @patch("idp_common.s3.write_content")
+    @patch("idp_common.s3.get_json_content")
+    @patch("idp_common.metrics.put_metric")
+    def test_every_page_missing_skips_the_pass_instead_of_scoring_nothing(
+        self, mock_put_metric, mock_get_json, mock_write, mock_batched, service
+    ):
+        mock_get_json.return_value = _extraction_data()
+        mock_batched.return_value = dict(_BATCHED)
+        document = _document()
+        document.sections[0].page_ids = ["7", "8"]
+
+        result = service.process_document_section(document, "1")
+
+        _assert_signalled(result, mock_put_metric, root_cause="None of the section")
+        # The point of the fix: no confidence was computed, and nothing was written
+        # back over the extraction result.
+        assert not mock_batched.called
+        assert not mock_write.called
+
+    @patch("idp_common.assessment.batching.assess_results_batched")
+    @patch("idp_common.s3.write_content")
+    @patch("idp_common.image.prepare_image")
+    @patch("idp_common.s3.get_text_content")
+    @patch("idp_common.s3.get_json_content")
+    @patch("idp_common.metrics.put_metric")
+    def test_some_pages_missing_still_assesses_and_warns(
+        self,
+        mock_put_metric,
+        mock_get_json,
+        mock_get_text,
+        mock_prepare_image,
+        mock_write,
+        mock_batched,
+        service,
+    ):
+        """Partial evidence is not no evidence, so the pass runs and the section
+        does get confidence scores. The values that live on the absent pages were
+        scored without them, which is a warning — and publishes NO metric, because
+        the question the metric answers (is this section coming back without
+        confidence?) is answered no."""
+        mock_get_json.return_value = _extraction_data()
+        mock_get_text.return_value = "INVOICE 1"
+        mock_prepare_image.return_value = b"image-bytes"
+        mock_batched.return_value = dict(_BATCHED)
+        document = _document()
+        document.sections[0].page_ids = ["1", "9"]
+
+        result = service.process_document_section(document, "1")
+
+        assert mock_batched.called
+        assert not _skip_issues(result)
+        warnings = _page_issues(result)
+        assert len(warnings) == 1
+        assert warnings[0].severity == "warning"
+        assert warnings[0].details["missing_page_ids"] == ["9"]
+        assert CONFIDENCE_UNAVAILABLE_METRIC not in [
+            call.args[0] for call in mock_put_metric.call_args_list
+        ]
+
+    @patch("idp_common.assessment.batching.assess_results_batched")
+    @patch("idp_common.s3.write_content")
+    @patch("idp_common.image.prepare_image")
+    @patch("idp_common.s3.get_text_content")
+    @patch("idp_common.s3.get_json_content")
+    @patch("idp_common.metrics.put_metric")
+    def test_all_pages_present_records_no_warning(
+        self,
+        mock_put_metric,
+        mock_get_json,
+        mock_get_text,
+        mock_prepare_image,
+        mock_write,
+        mock_batched,
+        service,
+    ):
+        """The noise guard: an ordinary section must not be badged."""
+        mock_get_json.return_value = _extraction_data()
+        mock_get_text.return_value = "INVOICE 1"
+        mock_prepare_image.return_value = b"image-bytes"
+        mock_batched.return_value = dict(_BATCHED)
+
+        result = service.process_document_section(_document(), "1")
+
+        assert not _page_issues(result)
+        assert not _skip_issues(result)
+
+
+@pytest.mark.unit
+class TestClassAbsentFromConfigurationIsReported:
+    """The carve-out's blind spot, fixed at the producer.
+
+    ``_get_class_schema`` returns ``{}`` both for a class configured with no
+    attributes and for a label the configuration does not contain, and extraction
+    routed both to one stub flagged ``skipped_due_to_empty_attributes``. Keying the
+    carve-out on that one flag therefore also silenced a class **renamed or deleted
+    while documents were in flight**, and an old document reprocessed under a
+    configuration that no longer defines its class: no fields, no confidence, no
+    signal, document green.
+
+    The stub now says which, so only the deliberate cases stay silent.
+    """
+
+    @patch("idp_common.s3.get_json_content")
+    @patch("idp_common.metrics.put_metric")
+    def test_named_class_not_in_configuration(
+        self, mock_put_metric, mock_get_json_content, service
+    ):
+        mock_get_json_content.return_value = {
+            "document_class": {"type": "bank_statement"},
+            "inference_result": {},
+            "metadata": {
+                "parsing_succeeded": True,
+                "skipped_due_to_empty_attributes": True,
+                EMPTY_SCHEMA_REASON_KEY: EMPTY_SCHEMA_CLASS_NOT_CONFIGURED,
+            },
+        }
+        document = _document()
+        document.sections[0].classification = "bank_statement"
+
+        result = service.process_document_section(document, "1")
+
+        _assert_signalled(
+            result, mock_put_metric, root_cause="not in the configuration"
+        )
+
+    @patch("idp_common.s3.get_json_content")
+    @patch("idp_common.metrics.put_metric")
+    def test_the_remedy_names_configuration_not_the_confidence_model(
+        self, mock_put_metric, mock_get_json_content, service
+    ):
+        """A skip's ``root_cause`` is the operator's only pointer, and the generic
+        empty-result text ("extraction returned no fields") would send them to
+        inspect a model call that never happened."""
+        mock_get_json_content.return_value = {
+            "document_class": {"type": "bank_statement"},
+            "inference_result": {},
+            "metadata": {
+                "skipped_due_to_empty_attributes": True,
+                EMPTY_SCHEMA_REASON_KEY: EMPTY_SCHEMA_CLASS_NOT_CONFIGURED,
+            },
+        }
+        document = _document()
+        document.sections[0].classification = "bank_statement"
+
+        result = service.process_document_section(document, "1")
+
+        root_cause = _skip_issues(result)[0].root_cause
+        assert "reclassify" in root_cause
+        assert "extraction_class_not_configured" in root_cause
+
+
+@pytest.mark.unit
+class TestIntegerPageIdsDoNotRaise:
+    """A page id only has to be int-CASTABLE to reach the skip.
+
+    `sorted(section.page_ids, key=int)` accepts integers, and `str.join` raises
+    `TypeError` on them — which would turn the reported skip this code exists to
+    produce into an unhandled exception, on exactly the malformed input it reports.
+    """
+
+    @patch("idp_common.assessment.batching.assess_results_batched")
+    @patch("idp_common.s3.write_content")
+    @patch("idp_common.s3.get_json_content")
+    @patch("idp_common.metrics.put_metric")
+    def test_every_page_missing_with_integer_page_ids(
+        self, mock_put_metric, mock_get_json, mock_write, mock_batched, service
+    ):
+        mock_get_json.return_value = _extraction_data()
+        mock_batched.return_value = dict(_BATCHED)
+        document = _document()
+        document.sections[0].page_ids = [7, 8]  # type: ignore[list-item]
+
+        result = service.process_document_section(document, "1")
+
+        _assert_signalled(result, mock_put_metric, root_cause="None of the section")
+        assert not mock_batched.called
+
+    @patch("idp_common.assessment.batching.assess_results_batched")
+    @patch("idp_common.s3.write_content")
+    @patch("idp_common.image.prepare_image")
+    @patch("idp_common.s3.get_text_content")
+    @patch("idp_common.s3.get_json_content")
+    @patch("idp_common.metrics.put_metric")
+    def test_some_pages_missing_with_integer_page_ids(
+        self,
+        mock_put_metric,
+        mock_get_json,
+        mock_get_text,
+        mock_prepare_image,
+        mock_write,
+        mock_batched,
+        service,
+    ):
+        mock_get_json.return_value = _extraction_data()
+        mock_get_text.return_value = "INVOICE 1"
+        mock_prepare_image.return_value = b"image-bytes"
+        mock_batched.return_value = dict(_BATCHED)
+        document = _document()
+        document.pages[1] = document.pages["1"]  # type: ignore[index]
+        document.sections[0].page_ids = [1, 9]  # type: ignore[list-item]
+
+        result = service.process_document_section(document, "1")
+
+        warnings = _page_issues(result)
+        assert len(warnings) == 1
+        assert warnings[0].details["missing_page_ids"] == ["9"]

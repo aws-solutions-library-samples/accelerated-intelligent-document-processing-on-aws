@@ -382,9 +382,12 @@ classifications:
    > than a prompt one.
 3. The retry repeats up to `maxValidationRetries` times.
 4. If all retries are exhausted, the page is assigned `invalidClassFallback`
-   (default `unclassified`) and flagged with a `validation_error` entry in its
-   classification metadata. The document continues processing — there is no
-   hard failure.
+   (default `unclassified`) and a warning-severity
+   `classification_invalid_class_fallback` processing issue is recorded on the
+   section that holds the page, naming the class the model returned. The document
+   continues processing — there is no hard failure, but the stored class is not the
+   model's answer and the section says so. See [Pages classification could not
+   classify](#pages-classification-could-not-classify).
 
 ```yaml
 classification:
@@ -470,7 +473,7 @@ Despite its strengths in handling full-document context, this method has several
 **Context & Model Constraints:**: 
 - Long documents can exceed the context window of smaller models, resulting in request failure.
 - Lengthy inputs may dilute the model’s focus, leading to inaccurate or inconsistent classifications.
-- Requires high-context models such as Amazon Nova Premier, which supports up to 1 million tokens. Smaller models are not suitable for this method.
+- Requires high-context models. The extended-context Claude variants — `us.anthropic.claude-sonnet-4-6:1m`, `us.anthropic.claude-sonnet-5:1m` and the `:1m` Opus variants — carry a 1-million-token input window; the base Claude 4.x/5 models carry 200K and the Nova family ~300K. Smaller models are not suitable for this method.
 - For more details on supported models and their context limits, refer to the [Amazon Bedrock Supported Models documentation](https://docs.aws.amazon.com/bedrock/latest/userguide/models-supported.html).
 
 **Scalability Challenges**: Not ideal for very large or visually complex document sets. In such cases, the Multi-Modal Page-Level Classification method is more appropriate.
@@ -665,6 +668,69 @@ Result: Single section
 Entire document treated as one unit
 ```
 
+## Pages Classification Could Not Classify
+
+A page can come out of classification without a usable class. When that happens
+the page is labelled `unclassified` (or `invalidClassFallback`, which defaults to
+the same), and because no class of that name exists in configuration it has no
+extraction schema — so extraction skips the model for its section and the section
+completes holding no data. A document in that state still completes normally, and
+that is the right behaviour: one unreadable page should not discard the rest of a
+packet.
+
+What it must not do is complete without saying so. Classification records a
+processing issue on the section that holds the page, which is where the Sections
+panel renders it and where `ProcessingIssueCount` on the document counts it. The
+severity says how much attention the case deserves:
+
+> **Scope: `multimodalPageLevelClassification` only.** These issues are recorded
+> from the page-level classification path. `textbasedHolisticClassification` makes
+> one decision per segment rather than per page and records none of them; on that
+> method a page the model places in no segment is appended to no section at all, so
+> it produces neither data nor a record. Extending this to holistic classification
+> is tracked as follow-up work.
+
+| Issue code | Severity | What happened | What to do |
+|---|---|---|---|
+| `classification_failed` | error | A classification attempt errored, exhausted its retries, or the page's required OCR artifacts were absent, so the page has no class and nothing was extracted from it. **Reached on the SageMaker/UDOP backend.** On the Bedrock backend an exception propagates instead and fails the document, where the error appears in the execution history rather than as an issue | Check the ClassificationFunction log group for the page, and endpoint health, model access and quota |
+| `classification_page_no_content` | warning | The page had neither usable OCR text nor a loadable page image, so there was nothing to classify. Note this needs *both* to be absent — a blank page normally still has an image, so it does not land here | Check the OCR step for those pages unless they are genuinely empty |
+| `classification_invalid_class_fallback` | warning | The model returned a class outside the configured vocabulary after every retry, so `invalidClassFallback` was assigned. The stored class is not the model's answer, and extraction ran against the fallback's schema | Add the class the model kept choosing if it is legitimate, or sharpen the class descriptions it confused. See [Enforcing a Valid Class Vocabulary](#enforcing-a-valid-class-vocabulary-validation--retry) |
+
+One issue per section per cause, listing the page IDs, so a long run of
+unclassifiable pages produces one row rather than one per page.
+
+**Why two of them are warnings and not errors.** An error-severity issue puts a red
+indicator on the section in the UI, and an indicator that appears on most documents
+is one nobody reads — the same reasoning that keeps the confidence alarm usable in
+[Monitoring](./monitoring.md#confidence-assessment-degraded). The fallback case is
+where a page the model cannot place ends up, so it is the one you are most likely to
+see; a class was assigned, it is just not the model's.
+
+⚠️ The document list's **Processing Issues** badge is severity-blind — it renders
+`ProcessingIssueCount`, which counts warnings and errors alike — so a deployment
+whose documents routinely contain pages the classifier cannot place will show the
+badge on them. That is the intended reading, since those pages produced no extracted
+data, but if it is unwanted the lever is to define a catch-all class the model can
+legitimately choose (see **Catch-all class** under [Enforcing a Valid Class
+Vocabulary](#enforcing-a-valid-class-vocabulary-validation--retry)), which removes
+the condition rather than hiding it. The badge clears when a later run of the
+document records no issues; a "has processing issues" **filter** is stickier, because
+the index attribute behind it is only ever set and never cleared.
+
+**Why no CloudWatch metric.** Every fleet-level alarm in this solution is paired
+with a threshold parameter a deployer tunes, and none of these three has an
+established base rate to set one from; an unalarmed metric would only add cost.
+The issues reach the Sections panel, the document's `ProcessingIssueCount` and the
+processing-issues index, which is what a document-level query reads.
+
+**Downstream.** The confidence pass does **not** also report an `unclassified`
+section as unscored. It has no confidence to be missing that this page's issues do
+not already explain, and a `root_cause` written from the Assessment step would
+point the operator at Extraction, where nothing is wrong. A section whose class is
+a *named* class missing from configuration is a different case and **is** reported
+from both Extraction and Assessment — see
+[Monitoring](./monitoring.md#confidence-assessment-degraded).
+
 ## Excluding Static Pages (e.g. Instructions, Legal Boilerplate)
 
 Many forms packages bundle several pages of **static** content alongside
@@ -775,7 +841,7 @@ When deciding between Text-Based Holistic Classification and MultiModal Page-Lev
 ### Use Text-Based Holistic Classification When:
 - Documents have clear logical boundaries based on content
 - Text context spans multiple pages and requires understanding the full document
-- You have access to high-context models (e.g., Amazon Nova Premier)
+- You have access to high-context models (e.g. `us.anthropic.claude-sonnet-4-6:1m`)
 - Document packets are relatively small (within model context limits)
 - Visual elements are less important than textual continuity
 

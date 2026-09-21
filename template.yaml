@@ -354,16 +354,12 @@ Parameters:
     AllowedValues:
       - "us.amazon.nova-lite-v1:0"
       - "us.amazon.nova-pro-v1:0"
-      - "us.amazon.nova-premier-v1:0"
       - "us.amazon.nova-2-lite-v1:0"
       - "us.amazon.nova-2-lite-v1:0:priority"
       - "us.amazon.nova-2-lite-v1:0:flex"
       - "global.amazon.nova-2-lite-v1:0"
       - "global.amazon.nova-2-lite-v1:0:priority"
       - "global.amazon.nova-2-lite-v1:0:flex"
-      - "us.anthropic.claude-3-haiku-20240307-v1:0"
-      - "us.anthropic.claude-3-5-sonnet-20241022-v2:0"
-      - "us.anthropic.claude-3-7-sonnet-20250219-v1:0"
       - "us.anthropic.claude-sonnet-4-20250514-v1:0"
       - "us.anthropic.claude-sonnet-4-5-20250929-v1:0"
       - "us.anthropic.claude-sonnet-5"
@@ -372,9 +368,6 @@ Parameters:
       - "eu.amazon.nova-2-lite-v1:0"
       - "eu.amazon.nova-2-lite-v1:0:priority"
       - "eu.amazon.nova-2-lite-v1:0:flex"
-      - "eu.anthropic.claude-3-haiku-20240307-v1:0"
-      - "eu.anthropic.claude-3-5-sonnet-20241022-v2:0"
-      - "eu.anthropic.claude-3-7-sonnet-20250219-v1:0"
       - "eu.anthropic.claude-sonnet-4-20250514-v1:0"
       - "eu.anthropic.claude-sonnet-4-5-20250929-v1:0"
       - "qwen.qwen3-vl-235b-a22b"
@@ -392,7 +385,7 @@ Parameters:
       - "amazon.nova-lite-v1:0"
       - "us-gov.anthropic.claude-sonnet-4-5-20250929-v1:0"
 
-    Description: Model to use for optional Document Knowledge Base. Model access MUST be enabled in Amazon Bedrock. Note - Nova Premier may not be available in all EU regions. GovCloud deployments must use one of the GovCloud-verified entries above (amazon.nova-pro-v1:0, amazon.nova-lite-v1:0, or us-gov.anthropic.claude-sonnet-4-5-20250929-v1:0) — the commercial default is overridden automatically by the --govcloud template transform.
+    Description: Model to use for optional Document Knowledge Base. Model access MUST be enabled in Amazon Bedrock. Note - not every listed model is available in all EU regions. GovCloud deployments must use one of the GovCloud-verified entries above (amazon.nova-pro-v1:0, amazon.nova-lite-v1:0, or us-gov.anthropic.claude-sonnet-4-5-20250929-v1:0) — the commercial default is overridden automatically by the --govcloud template transform.
 
   # Optional - Post processing Lambda hook
   PostProcessingLambdaHookFunctionArn:
@@ -1390,7 +1383,7 @@ Conditions:
   # turned off at all, which is what the parameter's description promises.
   # PassThrough — not an absent property — is written on the false branch: the
   # two resolve identically, and naming it says the choice was made. Neither
-  # branch changes a function's IAM: SAM attaches AWSXrayWriteOnlyAccess to a
+  # branch changes a function's IAM: SAM attaches its X-Ray managed policy to a
   # role it GENERATES whenever Tracing is declared in any form, because it
   # cannot evaluate the Fn::If. A function with an explicit `Role:` gets
   # nothing from SAM and must carry the X-Ray grant itself — checked by
@@ -3216,6 +3209,13 @@ Resources:
         # groups, which carry NO retention policy, so their logs accumulated
         # and were billed indefinitely (issue #826).
         LogRetentionDays: !Ref LogRetentionDays
+        # Tracing for the nested stack's Lambdas. Without this they hardcoded
+        # `Tracing: Active`, so EnableXRayTracing=false left them tracing —
+        # the #983 defect surviving in the one extension template that IS part
+        # of the main deployment. The six catalog extensions are separate
+        # stacks with their own parameters and cannot be reached this way; see
+        # docs/monitoring.md.
+        EnableXRayTracing: !Ref EnableXRayTracing
         # Forward the permissions boundary so the nested stack's IAM role
         # (FeaturePlatformLambdaRole) is created with it. Without this,
         # accounts with an SCP that requires a boundary on every role fail
@@ -9288,12 +9288,14 @@ Resources:
                 Action: sts:AssumeRole
                 Resource: !Ref BedrockHubRoleArn
               - !Ref AWS::NoValue
-            # RBAC scope enforcement — the processor queries the UsersTable
-            # EmailIndex GSI for the caller's `allowedConfigVersions` and rejects
-            # chats against documents outside that scope. Email is the join key:
-            # the table's own PK/SK are USER#<userId>, a uuid4 unrelated to the
-            # Cognito sub. The caller is taken from the verified claims the
-            # dispatcher's resolver forwards; the query failing for any reason
+            # RBAC scope enforcement — the processor reads the caller's UsersTable
+            # row for `allowedConfigVersions` and rejects chats against documents
+            # outside that scope. Two key spaces, hence both actions: GetItem for the
+            # SUB#<sub> pointer item (the immutable join, preferred) and Query on
+            # EmailIndex (the compatibility join). The table's own PK/SK are
+            # USER#<userId>, a uuid4 that no token names, which is why a pointer
+            # exists at all. The caller is taken from the verified claims the
+            # dispatcher's resolver forwards; a read failing for any reason
             # (including a missing grant here) DENIES the turn.
             - Effect: Allow
               Action:
@@ -9861,8 +9863,9 @@ Resources:
               Condition:
                 StringLike:
                   "aws:ResourceTag/idp:feature-id": "*"
-            # RBAC scope enforcement — query the UsersTable EmailIndex GSI for the
-            # caller's `allowedConfigVersions`. Retained for this function because
+            # RBAC scope enforcement — read the caller's UsersTable row for their
+            # `allowedConfigVersions`, on either key space (the SUB#<sub> pointer via
+            # GetItem, or EmailIndex via Query). Retained for this function because
             # it runs the same Chat-with-Document processor code, but on THIS
             # transport the check stands down and the grant goes unused: a Function
             # URL forwards no Cognito claims, so there is no verified per-user
@@ -10065,8 +10068,8 @@ Resources:
           # Token calculation
           MIN_TOKENS_PER_REQUEST: "500"
           # Bedrock model quota codes (TPM and RPM)
-          BEDROCK_MODEL_QUOTA_CODES: '{"us.anthropic.claude-sonnet-5":"L-D4FBCF4E","global.anthropic.claude-sonnet-5":"L-DD84E5CA","us.amazon.nova-lite-v1:0":"L-7C42E72A","us.amazon.nova-pro-v1:0":"L-C0326783","us.amazon.nova-premier-v1:0":"L-AA7FE948","us.amazon.nova-2-lite-v1:0":"L-C6F5908D","global.amazon.nova-2-lite-v1:0":"L-C6F5908D","us.anthropic.claude-3-haiku-20240307-v1:0":"L-DCADBC78","us.anthropic.claude-haiku-4-5-20251001-v1:0":"L-58BE175A","us.anthropic.claude-3-5-sonnet-20241022-v2:0":"L-FF8B4E28","us.anthropic.claude-3-7-sonnet-20250219-v1:0":"L-6E888CC2","us.anthropic.claude-sonnet-4-20250514-v1:0":"L-59759B4A","us.anthropic.claude-sonnet-4-5-20250929-v1:0":"L-F4DDD3EB","us.anthropic.claude-opus-4-20250514-v1:0":"L-29C2B0A3","us.anthropic.claude-opus-4-1-20250805-v1:0":"L-BD85BFCD","us.anthropic.claude-opus-4-5-20251101-v1:0":"L-7007E9C9","global.anthropic.claude-haiku-4-5-20251001-v1:0":"L-58BE175A","global.anthropic.claude-sonnet-4-5-20250929-v1:0":"L-F4DDD3EB","global.anthropic.claude-opus-4-5-20251101-v1:0":"L-7007E9C9"}'
-          BEDROCK_MODEL_RPM_QUOTA_CODES: '{"us.anthropic.claude-sonnet-5":"L-D4FBCF4E","global.anthropic.claude-sonnet-5":"L-DD84E5CA","us.amazon.nova-lite-v1:0":"L-89F8391A","us.amazon.nova-pro-v1:0":"L-ED46B8C5","us.amazon.nova-premier-v1:0":"L-9AD981E7","us.amazon.nova-2-lite-v1:0":"L-F06F1187","global.amazon.nova-2-lite-v1:0":"L-F06F1187","us.anthropic.claude-3-haiku-20240307-v1:0":"L-616A3F5B","us.anthropic.claude-haiku-4-5-20251001-v1:0":"L-CCA5DF70","us.anthropic.claude-3-5-sonnet-20241022-v2:0":"L-1D3E59A3","us.anthropic.claude-3-7-sonnet-20250219-v1:0":"L-3D8CC480","us.anthropic.claude-sonnet-4-20250514-v1:0":"L-559DCC33","us.anthropic.claude-sonnet-4-5-20250929-v1:0":"L-4A6BFAB1","us.anthropic.claude-opus-4-20250514-v1:0":"L-C99C7EF6","us.anthropic.claude-opus-4-1-20250805-v1:0":"L-7EC72A47","us.anthropic.claude-opus-4-5-20251101-v1:0":"L-27989F42","global.anthropic.claude-haiku-4-5-20251001-v1:0":"L-CCA5DF70","global.anthropic.claude-sonnet-4-5-20250929-v1:0":"L-4A6BFAB1","global.anthropic.claude-opus-4-5-20251101-v1:0":"L-27989F42"}'
+          BEDROCK_MODEL_QUOTA_CODES: '{"us.anthropic.claude-sonnet-5":"L-D4FBCF4E","global.anthropic.claude-sonnet-5":"L-DD84E5CA","us.amazon.nova-lite-v1:0":"L-7C42E72A","us.amazon.nova-pro-v1:0":"L-C0326783","us.amazon.nova-2-lite-v1:0":"L-C6F5908D","global.amazon.nova-2-lite-v1:0":"L-C6F5908D","us.anthropic.claude-haiku-4-5-20251001-v1:0":"L-58BE175A","us.anthropic.claude-sonnet-4-20250514-v1:0":"L-59759B4A","us.anthropic.claude-sonnet-4-5-20250929-v1:0":"L-F4DDD3EB","us.anthropic.claude-opus-4-1-20250805-v1:0":"L-BD85BFCD","us.anthropic.claude-opus-4-5-20251101-v1:0":"L-7007E9C9","global.anthropic.claude-haiku-4-5-20251001-v1:0":"L-58BE175A","global.anthropic.claude-sonnet-4-5-20250929-v1:0":"L-F4DDD3EB","global.anthropic.claude-opus-4-5-20251101-v1:0":"L-7007E9C9"}'
+          BEDROCK_MODEL_RPM_QUOTA_CODES: '{"us.anthropic.claude-sonnet-5":"L-D4FBCF4E","global.anthropic.claude-sonnet-5":"L-DD84E5CA","us.amazon.nova-lite-v1:0":"L-89F8391A","us.amazon.nova-pro-v1:0":"L-ED46B8C5","us.amazon.nova-2-lite-v1:0":"L-F06F1187","global.amazon.nova-2-lite-v1:0":"L-F06F1187","us.anthropic.claude-haiku-4-5-20251001-v1:0":"L-CCA5DF70","us.anthropic.claude-sonnet-4-20250514-v1:0":"L-559DCC33","us.anthropic.claude-sonnet-4-5-20250929-v1:0":"L-4A6BFAB1","us.anthropic.claude-opus-4-1-20250805-v1:0":"L-7EC72A47","us.anthropic.claude-opus-4-5-20251101-v1:0":"L-27989F42","global.anthropic.claude-haiku-4-5-20251001-v1:0":"L-CCA5DF70","global.anthropic.claude-sonnet-4-5-20250929-v1:0":"L-4A6BFAB1","global.anthropic.claude-opus-4-5-20251101-v1:0":"L-27989F42"}'
       Policies:
         - Statement:
             - Effect: Allow
@@ -14145,7 +14148,14 @@ Resources:
       Handler: index.lambda_handler
       Runtime: python3.12
       CodeUri: nested/api-resolvers/src/lambda/finetuning_jobs_resolver/
-      Timeout: 60
+      # 30s, matching the list resolvers in nested/api-resolvers. The dispatcher
+      # stops waiting at 20s (_RESOLVER_READ_TIMEOUT_SECONDS in
+      # http_api_dispatcher/index.py) and does not cancel the invocation, so a
+      # Timeout far above that window only buys orphaned work: at 60s this
+      # function's bounded scan could keep examining the tracking table for 35s
+      # after the caller had already been answered with a labelled 504. See
+      # MAX_SCAN_PAGES / SCAN_TIME_RESERVE_MS in the handler.
+      Timeout: 30
       MemorySize: 512
       Layers:
         - !Ref IDPCommonBaseLayer

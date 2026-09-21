@@ -79,7 +79,9 @@ def tables(monkeypatch):
     on table name, which is how the Lambda sees it too.
     """
 
-    def _configure(*, documents=(), scope_items=None, scope_error=None):
+    def _configure(
+        *, documents=(), scope_items=None, scope_error=None, scope_store=None
+    ):
         tracking = MagicMock()
         tracking.query.return_value = {
             "Items": list(documents),
@@ -88,8 +90,17 @@ def tables(monkeypatch):
         users = MagicMock()
         if scope_error is not None:
             users.query.side_effect = scope_error
+            users.get_item.side_effect = scope_error
         else:
             users.query.return_value = {"Items": scope_items or []}
+            # Both key spaces. `scope_store` maps a raw `PK` to its item, which is
+            # how the `sub` join is modelled: a `SUB#<sub>` pointer carrying a
+            # `userId`, and the `USER#<userId>` row it names. A double that answers
+            # only `query` leaves `get_item` returning a truthy Mock.
+            _store = dict(scope_store or {})
+            users.get_item.side_effect = lambda Key: (
+                {"Item": _store[Key["PK"]]} if Key["PK"] in _store else {}
+            )
 
         def _table(name):
             return users if "Users" in name else tracking

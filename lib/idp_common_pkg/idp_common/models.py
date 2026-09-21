@@ -146,16 +146,24 @@ class ProcessingIssue:
     icon + tooltip. An issue never fails the document — it flags it.
 
     Fields:
-        stage: Where it arose — ``"extraction"`` | ``"assessment"`` | ``"ocr"`` …
+        stage: Where it arose — ``"classification"`` | ``"extraction"`` |
+            ``"assessment"`` | ``"ocr"`` …
         severity: ``"error"`` (incomplete/failed), ``"warning"`` (partial /
             degraded), or ``"info"`` (auto-recovered but worth noting).
         code: Stable machine code, e.g. ``"assessment_incomplete"``,
             ``"assessment_recovered_with_retries"``,
             ``"assessment_deadline_reached"``, ``"extraction_incomplete"``,
             ``"assessment_failed_confidence_unavailable"`` (the confidence pass
-            ran and failed deterministically) or
+            ran and failed deterministically),
             ``"assessment_skipped_confidence_unavailable"`` (it never ran — the
-            section had nothing to assess).
+            section had nothing to assess),
+            ``"assessment_pages_missing"`` (some of the section's pages were absent
+            from the document, so their values were scored without their evidence),
+            ``"extraction_class_not_configured"`` (the section's class is absent
+            from the configuration, so there was no schema to extract against), or
+            ``"classification_failed"`` / ``"classification_page_no_content"`` /
+            ``"classification_invalid_class_fallback"`` (classification produced no
+            usable class for one or more of the section's pages).
         message: User-friendly one-liner.
         root_cause: Technical detail — model, output cap, rows affected, geometry
             mode, escalation chain tried.

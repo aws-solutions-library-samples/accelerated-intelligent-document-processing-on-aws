@@ -158,22 +158,32 @@ operations:
     groups: ANY_GROUP
     kind: read
     enforced_in: nested/api-resolvers/src/lambda/get_file_contents_resolver/index.py
-    args: { s3Uri: "s3://__nonexistent-bucket__/x" }
+    args: { s3Uri: "s3://__resolved-at-runtime__/__sectest-nonexistent-key__.json" }
     note: >-
       bucket allow-list enforced in the resolver, not groups — so before
       ANY_GROUP the allow-list was the only thing between an authenticated
       caller and any object in a permitted bucket. It still is, for a caller who
       holds a group; the group floor removes the groupless caller only.
+      The `args` bucket is REPLACED by apply_dynamic_args() with this
+      deployment's own input bucket, because the matrix measures the GROUP floor
+      and an out-of-allow-list bucket is refused to every caller by the
+      allow-list instead — which the matrix would read as the allowed roles
+      being wrongly denied. An in-allow-list bucket with a key that does not
+      exist gives an allowed role a clean 400 (auth passed, argument bogus) and
+      a disallowed role the dispatcher's 403. The allow-list refusal itself is a
+      403 and is asserted offline, where the list's contents are knowable:
+      get_file_contents_resolver/test_index.py.
   getFilePresignedUrl:
     groups: ANY_GROUP
     kind: read
     alias_of: getFileContents
     enforced_in: nested/api-resolvers/src/lambda/get_file_contents_resolver/index.py
-    args: { s3Uri: "s3://__nonexistent-bucket__/x" }
+    args: { s3Uri: "s3://__resolved-at-runtime__/__sectest-nonexistent-key__.json" }
     note: >-
       capability-issuing: the returned URL carries its own authorization for the
       lifetime of the signature, so it is the operation least able to rely on a
-      later check. Key-level scoping remains open (UI.T06).
+      later check. Key-level scoping remains open (UI.T06). Same runtime
+      bucket substitution as getFileContents — see its note.
   getStepFunctionExecution:
     groups: ANY
     kind: read
@@ -1109,6 +1119,33 @@ function_url_endpoints:
 # will then hold the line.
 # ============================================================================
 known_gaps:
+  GAP-SEC-INCONCLUSIVE-5XX:
+    # Assigned by the DYNAMIC harness from the observed response, not declared on
+    # an operation — so the orphan check in the static scanner (S0) verifies the
+    # reference HERE instead, and fails if this file stops mentioning the id.
+    assigned_by: scripts/test_api_rbac.py
+    summary: >
+      a 5xx makes a matrix cell INCONCLUSIVE, and 5xx is common because ~50
+      resolver-level validation refusals raise a bare Exception
+    detail: >
+      An authorization check establishes that a caller was refused. A 5xx
+      establishes nothing: whether the resolver refused this caller before or
+      after doing the work is exactly what is unknown. classify() therefore
+      records a 5xx as ERROR rather than as a pass — the published 0.6.9
+      snapshot contains 43 cells reading "500 OK" beneath a header claiming the
+      gate passed, because the positive arms asserted only "not denied".
+      It is registered here rather than left as a hard failure because the cause
+      is a known backlog and not a regression: the dispatcher chooses an HTTP
+      status from the resolver exception's class name, and roughly 50 validation
+      refusals across the resolvers (test_set_resolver alone has ~40) raise a
+      bare `Exception`, which can only map to 500 `InternalError`. This harness
+      deliberately sends bogus arguments to prove auth ran before the argument
+      was used, so it lands on many of them.
+      Closing it means giving those refusals a `ValueError` so they become 400
+      `BadRequest`. Until then these are WARN: visible, counted separately, and
+      never counted as passes. Everything else inconclusive — a timeout, a dead
+      connection, an unreadable body — is a HARD failure, because none of those
+      is a known condition of this deployment.
   GAP-02:
     summary: queryKnowledgeBase has no group check
     detail: >

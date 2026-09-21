@@ -1,0 +1,560 @@
+{
+  "$comment": [
+    "What the Python lint gates do not read, and what each omission shields.",
+    "Consumed by scripts/check_lint_debt.py, which generates ruff.toml's three",
+    "exclusion arrays from this file and re-measures the tree against it.",
+    "",
+    "MEMBERSHIP IS DERIVED, JUDGEMENT IS AUTHORED. `lintDebt` and `formatDebt` are",
+    "produced by `python3 scripts/check_lint_debt.py --write`; do not hand-edit",
+    "them. `scope` is hand-authored, because it is the one part that is a decision",
+    "rather than a measurement.",
+    "",
+    "WHY IT EXISTS. ruff.toml excluded five bare directory names -- notebooks,",
+    "options, patterns, src, scripts -- which match at ANY path depth, so 442 of",
+    "1230 tracked .py files were read by neither the linter nor the formatter.",
+    "Issue #975. Closing that surfaced 267 lint findings and 189 unformatted files",
+    "at once. 42 of the unformatted files were being edited by five of the seven",
+    "branches then open against develop, so the exclusions",
+    "were made per-file and ratcheted instead of being deleted in one commit.",
+    "",
+    "THE RATCHET. Naming a file keeps NEW files covered but leaves the named file",
+    "unexamined forever, which is how an exemption rots. So every listed file also",
+    "records the findings it shields, and the gate fails if it gains one, if it",
+    "becomes clean (delist it), or if the path disappears. Same shape as",
+    "METERING_KEY_EXEMPT in",
+    "lib/idp_common_pkg/tests/unit/bedrock/test_long_context_metering_key.py:",
+    "the exemption covers the sites audited when it was written, not the filename",
+    "forever.",
+    "",
+    "FIELDS of a `scope` entry:",
+    "  turnsOff    what stops being asserted for the paths it matches",
+    "  premise     name of a predicate in scripts/check_lint_debt.py, evaluated",
+    "              against this tree per entry",
+    "  reason      the judgement itself, in prose",
+    "  ratchet     what keeps the entry finite",
+    "  ratchetGap  required when the ratchet does not pin the count: what is",
+    "              consequently unprotected. An unmeasured gap is how this class",
+    "              started, so the gaps are enumerated rather than implied away.",
+    "  shields     re-measured by --write; informational, not asserted exactly"
+  ],
+  "generator": "python3 scripts/check_lint_debt.py --write",
+  "scope": {
+    "**/*.ipynb": {
+      "turnsOff": "ruff lint AND format for every Jupyter notebook",
+      "premise": "only_notebooks_and_they_have_their_own_gate",
+      "reason": "E402 (imports not at the top), F811 (redefinition) and I001 (import order) describe a module; a notebook is a document run cell by cell, so they are not a quality signal there. `ruff format` would additionally rewrite every cell's source array, making notebook diffs unreadable. Notebooks are not unchecked as a result: notebooks/_validate_notebooks.py resolves their imports and symbol references against a real Python environment, which is the failure class that matters for them.",
+      "ratchet": "non-vacuity + premise (the pattern must match only .ipynb, and the notebook harness must still exist)",
+      "ratchetGap": "the count is not pinned, so a new notebook may add ruff findings without failing anything. Pinning it would red-line every notebook edit. basedpyright also excludes notebooks (pyrightconfig.json), where the 10 errors it shields are mostly not defects: 5 reportUndefinedVariable and 1 reportUnboundVariable are artefacts of basedpyright resolving cells in document order while Python resolves globals at call time. The remaining 4 are untriaged. See TYPECHECK_SCOPE_EXCLUSIONS in scripts/tests/test_pyright_config.py.",
+      "shields": {
+        "files": 47,
+        "lintFindings": 333,
+        "unformatted": 47
+      }
+    },
+    "feature-platform/pii-anonymizer/hook/vendor": {
+      "turnsOff": "ruff lint AND format for the vendored copy of awslabs/pii-anonymizer",
+      "premise": "vendored_with_provenance",
+      "reason": "Third-party source (Apache-2.0), kept byte-for-byte so that .claude/skills/sync-pii-anonymizer.md can diff it against the upstream commit pinned in its PROVENANCE.md. Reformatting it to our style would make every re-sync a manual merge.",
+      "ratchet": "non-vacuity + premise (PROVENANCE.md must still pin an upstream commit)",
+      "ratchetGap": "the count is not pinned, because an upstream re-sync legitimately changes it. A defect introduced into the vendored tree by us rather than upstream would therefore not be caught here; the sync skill's diff-against-upstream step is what covers that.",
+      "shields": {
+        "files": 31,
+        "lintFindings": 44,
+        "unformatted": 3
+      }
+    }
+  },
+  "lintDebt": {
+    "lib/idp_common_pkg/idp_common/config/__init__.py": {
+      "F401": 21,
+      "F541": 1,
+      "F811": 1,
+      "I001": 1
+    },
+    "lib/idp_common_pkg/idp_common/config/configuration_manager.py": {
+      "F401": 2,
+      "F541": 1,
+      "I001": 1
+    },
+    "lib/idp_common_pkg/idp_common/config/migration.py": {
+      "E402": 1,
+      "F401": 2,
+      "I001": 1
+    },
+    "lib/idp_common_pkg/idp_common/utils/__init__.py": {
+      "F401": 5,
+      "F841": 1,
+      "I001": 2
+    },
+    "lib/idp_common_pkg/idp_common/utils/few_shot_example_builder.py": {
+      "F401": 1,
+      "I001": 1
+    },
+    "lib/idp_common_pkg/idp_common/utils/lambda_metering.py": {
+      "I001": 1
+    },
+    "lib/idp_common_pkg/idp_common/utils/strands_agent_tools/todo_list.py": {
+      "I001": 1
+    },
+    "nested/api-resolvers/src/lambda/abort_workflow_resolver/index.py": {
+      "I001": 1
+    },
+    "nested/api-resolvers/src/lambda/copy_to_baseline_resolver/index.py": {
+      "I001": 1
+    },
+    "nested/api-resolvers/src/lambda/delete_document_resolver/index.py": {
+      "I001": 1
+    },
+    "nested/api-resolvers/src/lambda/discovery_upload_resolver/index.py": {
+      "F841": 1,
+      "I001": 1
+    },
+    "nested/api-resolvers/src/lambda/document_versions_resolver/index.py": {
+      "I001": 1
+    },
+    "nested/api-resolvers/src/lambda/process_changes_resolver/index.py": {
+      "I001": 1
+    },
+    "nested/api-resolvers/src/lambda/query_knowledgebase_resolver/index.py": {
+      "I001": 1
+    },
+    "nested/api-resolvers/src/lambda/reprocess_document_resolver/index.py": {
+      "I001": 1
+    },
+    "nested/api-resolvers/src/lambda/sync_bda_idp_resolver/index.py": {
+      "F841": 1,
+      "I001": 1
+    },
+    "nested/api-resolvers/src/lambda/test_results_resolver/index.py": {
+      "I001": 1
+    },
+    "nested/api-resolvers/src/lambda/test_runner/index.py": {
+      "I001": 1
+    },
+    "nested/api-resolvers/src/lambda/test_set_resolver/index.py": {
+      "E722": 1,
+      "F841": 1
+    },
+    "nested/bedrockkb/src/opensearch_index_custom_resource/oss_handler.py": {
+      "I001": 1
+    },
+    "nested/bedrockkb/src/s3_vectors_manager/handler.py": {
+      "F841": 2,
+      "I001": 1
+    },
+    "nested/bedrockkb/src/s3_vectors_manager/test_handler.py": {
+      "F401": 2,
+      "I001": 1
+    },
+    "patterns/unified/src/assessment_function/assessment_validator.py": {
+      "F401": 1,
+      "I001": 1
+    },
+    "patterns/unified/src/bda_completion_function/index.py": {
+      "I001": 1
+    },
+    "patterns/unified/src/bda_invoke_function/index.py": {
+      "I001": 1
+    },
+    "patterns/unified/src/bda_processresults_function/index.py": {
+      "F841": 2,
+      "I001": 1
+    },
+    "patterns/unified/src/classification_function/index.py": {
+      "F541": 1,
+      "I001": 1
+    },
+    "patterns/unified/src/evaluation_function/index.py": {
+      "I001": 1
+    },
+    "patterns/unified/src/evaluation_function/save_to_reporting.py": {
+      "F401": 4,
+      "I001": 1
+    },
+    "patterns/unified/src/mlflow_logger_function/index.py": {
+      "I001": 1
+    },
+    "patterns/unified/src/ocr_function/index.py": {
+      "I001": 1
+    },
+    "patterns/unified/src/processresults_function/index.py": {
+      "I001": 1
+    },
+    "patterns/unified/src/rule-validation-function/index.py": {
+      "I001": 1
+    },
+    "patterns/unified/src/rule-validation-orchestration-function/index.py": {
+      "F541": 1,
+      "I001": 1
+    },
+    "patterns/unified/src/rule-validation-policy-classification-function/index.py": {
+      "I001": 1
+    },
+    "patterns/unified/src/summarization_function/index.py": {
+      "I001": 1
+    },
+    "src/lambda/agent_chat_processor/index.py": {
+      "I001": 1
+    },
+    "src/lambda/agentcore_gateway_manager/index.py": {
+      "I001": 1
+    },
+    "src/lambda/agentcore_mcp_handler/index.py": {
+      "F541": 3
+    },
+    "src/lambda/agentcore_mcp_handler/tools/batch_reprocess.py": {
+      "F541": 1,
+      "I001": 1
+    },
+    "src/lambda/agentcore_mcp_handler/tools/batch_run.py": {
+      "F541": 1,
+      "I001": 1
+    },
+    "src/lambda/agentcore_mcp_handler/tools/batch_status.py": {
+      "F541": 1,
+      "I001": 1
+    },
+    "src/lambda/api_handler/index.py": {
+      "I001": 1
+    },
+    "src/lambda/batch_pre_processor/index.py": {
+      "I001": 1
+    },
+    "src/lambda/bda_ocr_project/tests/test_index.py": {
+      "I001": 1
+    },
+    "src/lambda/blueprint_optimization/index.py": {
+      "I001": 1
+    },
+    "src/lambda/calculate_capacity/index.py": {
+      "E402": 4,
+      "F541": 10,
+      "F811": 1,
+      "F841": 2,
+      "I001": 1
+    },
+    "src/lambda/calculate_capacity/test_capacity_calculations.py": {
+      "I001": 2
+    },
+    "src/lambda/calculate_capacity/test_validation.py": {
+      "F401": 1,
+      "I001": 1
+    },
+    "src/lambda/calculate_capacity/validation.py": {
+      "F401": 1,
+      "I001": 1
+    },
+    "src/lambda/chat_stream_processor/vendored/agent_chat_processor.py": {
+      "I001": 1
+    },
+    "src/lambda/complete_section_review/index.py": {
+      "I001": 1
+    },
+    "src/lambda/create_chat_session_resolver/index.py": {
+      "F401": 1,
+      "I001": 1
+    },
+    "src/lambda/dashboard_merger/index.py": {
+      "I001": 1
+    },
+    "src/lambda/discovery_processor/index.py": {
+      "I001": 1
+    },
+    "src/lambda/docsplit_testset_deployer/index.py": {
+      "F541": 1,
+      "I001": 1
+    },
+    "src/lambda/external_idp_group_mapping/test_index.py": {
+      "F401": 1,
+      "F841": 2,
+      "I001": 10
+    },
+    "src/lambda/fcc_dataset_deployer/index.py": {
+      "F541": 2,
+      "F601": 1
+    },
+    "src/lambda/finetuning_data_generator/index.py": {
+      "I001": 1
+    },
+    "src/lambda/finetuning_job_creator/index.py": {
+      "F401": 1
+    },
+    "src/lambda/finetuning_process_document/index.py": {
+      "I001": 1
+    },
+    "src/lambda/initialize_counter/index.py": {
+      "I001": 1
+    },
+    "src/lambda/ipset_updater/index.py": {
+      "F841": 1,
+      "I001": 1
+    },
+    "src/lambda/job_tracker/index.py": {
+      "I001": 1
+    },
+    "src/lambda/lookup_function/index.py": {
+      "F401": 1,
+      "I001": 1
+    },
+    "src/lambda/multi_doc_discovery/appsync_status.py": {
+      "I001": 1
+    },
+    "src/lambda/multi_doc_discovery/cluster_handler.py": {
+      "I001": 1
+    },
+    "src/lambda/multi_doc_discovery/embed_handler.py": {
+      "F401": 1,
+      "I001": 1
+    },
+    "src/lambda/multi_doc_discovery/prepare_handler.py": {
+      "I001": 1
+    },
+    "src/lambda/multi_doc_discovery/save_handler.py": {
+      "I001": 1
+    },
+    "src/lambda/ocr_benchmark_deployer/index.py": {
+      "I001": 1
+    },
+    "src/lambda/ocr_benchmark_deployer/test_local.py": {
+      "F401": 2,
+      "I001": 1
+    },
+    "src/lambda/post_processing_decompressor/index.py": {
+      "F541": 1,
+      "I001": 1
+    },
+    "src/lambda/queue_sender/index.py": {
+      "I001": 1
+    },
+    "src/lambda/save_reporting_data/index.py": {
+      "F401": 3,
+      "I001": 1
+    },
+    "src/lambda/start_codebuild/index.py": {
+      "I001": 1
+    },
+    "src/lambda/test_file_copier/index.py": {
+      "F401": 1,
+      "I001": 1
+    },
+    "src/lambda/test_file_copier/test_index.py": {
+      "F401": 1,
+      "I001": 1
+    },
+    "src/lambda/test_set_file_copier/index.py": {
+      "I001": 1
+    },
+    "src/lambda/test_set_zip_extractor/index.py": {
+      "F541": 1,
+      "I001": 1
+    },
+    "src/lambda/update_configuration/index.py": {
+      "I001": 2
+    },
+    "src/lambda/update_settings/index.py": {
+      "I001": 1
+    },
+    "src/lambda/user_sync/index.py": {
+      "I001": 1
+    },
+    "src/lambda/w2_dataset_deployer/index.py": {
+      "I001": 2
+    },
+    "src/lambda/workflow_tracker/index.py": {
+      "E402": 1,
+      "F401": 2,
+      "I001": 1
+    }
+  },
+  "formatDebt": [
+    "lib/idp_common_pkg/idp_common/bedrock/client.py",
+    "lib/idp_common_pkg/idp_common/config/__init__.py",
+    "lib/idp_common_pkg/idp_common/config/configuration_manager.py",
+    "lib/idp_common_pkg/idp_common/config/constants.py",
+    "lib/idp_common_pkg/idp_common/image/__init__.py",
+    "nested/api-resolvers/src/lambda/abort_test_runs/index.py",
+    "nested/api-resolvers/src/lambda/abort_workflow_resolver/index.py",
+    "nested/api-resolvers/src/lambda/agent_request_handler/index.py",
+    "nested/api-resolvers/src/lambda/configuration_resolver/index.py",
+    "nested/api-resolvers/src/lambda/configuration_resolver/test_revision_ops.py",
+    "nested/api-resolvers/src/lambda/copy_to_baseline_resolver/index.py",
+    "nested/api-resolvers/src/lambda/create_document_resolver/index.py",
+    "nested/api-resolvers/src/lambda/create_document_resolver/robust_list_deletion.py",
+    "nested/api-resolvers/src/lambda/delete_agent_chat_session_resolver/index.py",
+    "nested/api-resolvers/src/lambda/delete_document_resolver/index.py",
+    "nested/api-resolvers/src/lambda/delete_tests/index.py",
+    "nested/api-resolvers/src/lambda/discovery_upload_resolver/index.py",
+    "nested/api-resolvers/src/lambda/finetuning_jobs_resolver/index.py",
+    "nested/api-resolvers/src/lambda/get_file_contents_resolver/index.py",
+    "nested/api-resolvers/src/lambda/get_file_contents_resolver/test_index.py",
+    "nested/api-resolvers/src/lambda/get_stepfunction_execution_resolver/index.py",
+    "nested/api-resolvers/src/lambda/get_stepfunction_execution_resolver/test_index.py",
+    "nested/api-resolvers/src/lambda/http_api_dispatcher/authz.py",
+    "nested/api-resolvers/src/lambda/http_api_dispatcher/ddb_direct.py",
+    "nested/api-resolvers/src/lambda/list_agent_chat_sessions_resolver/index.py",
+    "nested/api-resolvers/src/lambda/list_agent_chat_sessions_resolver/tests/test_surface_filter.py",
+    "nested/api-resolvers/src/lambda/list_documents_gsi_resolver/index.py",
+    "nested/api-resolvers/src/lambda/list_documents_range_resolver/index.py",
+    "nested/api-resolvers/src/lambda/list_documents_range_resolver/test_scope_fail_closed.py",
+    "nested/api-resolvers/src/lambda/reprocess_document_resolver/index.py",
+    "nested/api-resolvers/src/lambda/reprocess_document_resolver/test_scope_fail_closed.py",
+    "nested/api-resolvers/src/lambda/send_chat_document_message_resolver/index.py",
+    "nested/api-resolvers/src/lambda/sync_bda_idp_resolver/test_scope_fail_closed.py",
+    "nested/api-resolvers/src/lambda/test_results_resolver/index.py",
+    "nested/api-resolvers/src/lambda/test_runner/index.py",
+    "nested/api-resolvers/src/lambda/test_runner/test_captured_config_size.py",
+    "nested/api-resolvers/src/lambda/test_runner/test_revision_pinning.py",
+    "nested/api-resolvers/src/lambda/test_set_resolver/test_index.py",
+    "nested/api-resolvers/src/lambda/upload_resolver/index.py",
+    "nested/api-resolvers/src/lambda/upload_resolver/test_index.py",
+    "nested/bedrockkb/src/opensearch_index_custom_resource/client_utils.py",
+    "nested/bedrockkb/src/opensearch_index_custom_resource/oss_handler.py",
+    "nested/bedrockkb/src/opensearch_index_custom_resource/oss_utils.py",
+    "nested/bedrockkb/src/s3_vectors_manager/handler.py",
+    "nested/bedrockkb/src/s3_vectors_manager/test_handler.py",
+    "nested/bedrockkb/src/start_ingestion_job_custom_resource/handler.py",
+    "nested/bedrockkb/src/start_ingestion_job_custom_resource/test_handler.py",
+    "notebooks/_run_nb.py",
+    "notebooks/_validate_notebooks.py",
+    "notebooks/examples/demo-lambda/GENAIIDP-notebook-demo-extractor.py",
+    "notebooks/misc/standalone_sharded_extraction_demo.py",
+    "patterns/unified/src/assessment_function/assessment_validator.py",
+    "patterns/unified/src/bda_completion_function/index.py",
+    "patterns/unified/src/bda_invoke_function/index.py",
+    "patterns/unified/src/bda_processresults_function/index.py",
+    "patterns/unified/src/classification_function/index.py",
+    "patterns/unified/src/evaluation_function/save_to_reporting.py",
+    "patterns/unified/src/ocr_function/index.py",
+    "patterns/unified/src/pipeline_hooks_function/index.py",
+    "patterns/unified/src/processresults_function/index.py",
+    "patterns/unified/src/rule-validation-function/index.py",
+    "patterns/unified/src/rule-validation-orchestration-function/index.py",
+    "patterns/unified/src/summarization_function/index.py",
+    "patterns/unified/src/test_execution_aggregation_function/index.py",
+    "patterns/unified/tests/test_hook_point_reachability.py",
+    "scripts/check_python_arn_partitions.py",
+    "scripts/check_threat_model_currency.py",
+    "scripts/deploy-vpc-endpoints.py",
+    "scripts/discover_model_limits.py",
+    "scripts/generate_govcloud_template.py",
+    "scripts/generate_standard_classes.py",
+    "scripts/sdlc/integration_test_deployment.py",
+    "scripts/sdlc/scan_api_rbac.py",
+    "scripts/sdlc/tests/test_api_security_cases.py",
+    "scripts/sdlc/tests/test_codebuild_failure_trail.py",
+    "scripts/sdlc/tests/test_credential_refresh.py",
+    "scripts/sdlc/tests/test_pipeline_hook_step.py",
+    "scripts/sdlc/tests/test_progressive_summary.py",
+    "scripts/sdlc/tests/test_resolver_layer_coverage.py",
+    "scripts/sdlc/tests/test_retired_services_not_documented.py",
+    "scripts/sdlc/tests/test_scan_api_rbac_function_urls.py",
+    "scripts/sdlc/tests/test_scan_api_rbac_scope_check.py",
+    "scripts/sdlc/tests/test_stale_stack_reaper.py",
+    "scripts/sdlc/tests/test_suppress_invite_sentinel.py",
+    "scripts/sdlc/typecheck_pr_changes.py",
+    "scripts/sdlc/validate_buildspec.py",
+    "scripts/sdlc/validate_service_role_permissions.py",
+    "scripts/security/curate_results.py",
+    "scripts/security/live_checks/oidc_provider/deploy.py",
+    "scripts/security/live_checks/verify_execution_scope.py",
+    "scripts/security/live_checks/verify_idp_group_mapping.py",
+    "scripts/srt/ci_paths.py",
+    "scripts/srt/tests/test_ci_paths.py",
+    "scripts/srt/tests/test_scanner_health.py",
+    "scripts/test_api_rbac.py",
+    "scripts/tests/test_asl_placeholder_substitution.py",
+    "scripts/tests/test_check_python_arn_partitions.py",
+    "scripts/tests/test_contributing_doc.py",
+    "scripts/tests/test_metric_namespace_alignment.py",
+    "scripts/tests/test_repo_quality_review_skill.py",
+    "scripts/tests/test_repo_walk_guards_prune_local_work.py",
+    "scripts/tests/test_scope_lookup_fail_closed.py",
+    "scripts/tests/test_secure_transport_deny.py",
+    "scripts/tests/test_state_machine_retry_policies.py",
+    "scripts/tests/test_threat_model_currency.py",
+    "scripts/tests/test_well_architected_doc.py",
+    "security/threat-modeling/scripts/build_threat_model.py",
+    "src/lambda/agent_chat_processor/index.py",
+    "src/lambda/agent_processor/index.py",
+    "src/lambda/agentcore_gateway_manager/__init__.py",
+    "src/lambda/agentcore_gateway_manager/index.py",
+    "src/lambda/agentcore_mcp_handler/index.py",
+    "src/lambda/agentcore_mcp_handler/tools/batch_reprocess.py",
+    "src/lambda/agentcore_mcp_handler/tools/batch_run.py",
+    "src/lambda/agentcore_mcp_handler/tools/batch_status.py",
+    "src/lambda/agentcore_mcp_handler/tools/search.py",
+    "src/lambda/api_handler/models.py",
+    "src/lambda/api_handler/test_index.py",
+    "src/lambda/backfill_gsi_attributes/index.py",
+    "src/lambda/batch_pre_processor/conftest.py",
+    "src/lambda/batch_pre_processor/index.py",
+    "src/lambda/batch_pre_processor/test_index.py",
+    "src/lambda/bda_ocr_project/tests/test_index.py",
+    "src/lambda/calculate_capacity/index.py",
+    "src/lambda/calculate_capacity/test_capacity_calculations.py",
+    "src/lambda/calculate_capacity/test_validation.py",
+    "src/lambda/calculate_capacity/validation.py",
+    "src/lambda/calculate_capacity_resolver/index.py",
+    "src/lambda/chat_stream_processor/sse.py",
+    "src/lambda/chat_stream_processor/tests/test_stream_processor.py",
+    "src/lambda/chat_stream_processor/tests/test_vendored_in_sync.py",
+    "src/lambda/chat_stream_processor/vendored/agent_chat_processor.py",
+    "src/lambda/chat_stream_processor/vendored/chat_with_document_processor.py",
+    "src/lambda/chat_with_document_processor/index.py",
+    "src/lambda/chat_with_document_processor/tests/conftest.py",
+    "src/lambda/chat_with_document_processor/tests/test_chat_with_document_processor.py",
+    "src/lambda/circuit_breaker_manager/index.py",
+    "src/lambda/circuit_breaker_manager/test_index.py",
+    "src/lambda/complete_section_review/conftest.py",
+    "src/lambda/complete_section_review/test_index.py",
+    "src/lambda/create_chat_session_resolver/index.py",
+    "src/lambda/dashboard_merger/index.py",
+    "src/lambda/discovery_processor/index.py",
+    "src/lambda/docsplit_testset_deployer/index.py",
+    "src/lambda/external_idp_group_mapping/index.py",
+    "src/lambda/external_idp_group_mapping/test_index.py",
+    "src/lambda/finetuning_deployment_handler/index.py",
+    "src/lambda/finetuning_job_creator/index.py",
+    "src/lambda/finetuning_job_status_checker/index.py",
+    "src/lambda/finetuning_list_documents/index.py",
+    "src/lambda/finetuning_merge_data/index.py",
+    "src/lambda/initialize_counter/index.py",
+    "src/lambda/ipset_updater/index.py",
+    "src/lambda/job_tracker/conftest.py",
+    "src/lambda/job_tracker/test_index.py",
+    "src/lambda/lookup_function/index.py",
+    "src/lambda/multi_doc_discovery/analyze_handler.py",
+    "src/lambda/multi_doc_discovery/appsync_status.py",
+    "src/lambda/multi_doc_discovery/cluster_handler.py",
+    "src/lambda/multi_doc_discovery/embed_handler.py",
+    "src/lambda/multi_doc_discovery/save_handler.py",
+    "src/lambda/ocr_benchmark_deployer/index.py",
+    "src/lambda/ocr_benchmark_deployer/test_local.py",
+    "src/lambda/post_processing_decompressor/index.py",
+    "src/lambda/queue_processor/index.py",
+    "src/lambda/queue_processor/test_check_circuit_breaker.py",
+    "src/lambda/queue_processor/test_config_version_pin.py",
+    "src/lambda/queue_processor/test_reconcile_counter.py",
+    "src/lambda/queue_processor/test_slot_ownership.py",
+    "src/lambda/queue_sender/conftest.py",
+    "src/lambda/queue_sender/index.py",
+    "src/lambda/save_reporting_data/index.py",
+    "src/lambda/start_codebuild/index.py",
+    "src/lambda/test_file_copier/test_index.py",
+    "src/lambda/test_set_zip_extractor/index.py",
+    "src/lambda/update_settings/index.py",
+    "src/lambda/user_management/test_index.py",
+    "src/lambda/user_management/test_scan_pagination.py",
+    "src/lambda/user_sync/index.py",
+    "src/lambda/w2_dataset_deployer/index.py",
+    "src/lambda/workflow_tracker/conftest.py",
+    "src/lambda/workflow_tracker/index.py",
+    "src/lambda/workflow_tracker/test_decrement_floor_and_idempotency.py",
+    "src/lambda/workflow_tracker/test_notify_circuit_breaker.py"
+  ],
+  "highWaterMark": {
+    "lintDebtFiles": 85,
+    "lintFindings": 196,
+    "formatDebtFiles": 184
+  }
+}

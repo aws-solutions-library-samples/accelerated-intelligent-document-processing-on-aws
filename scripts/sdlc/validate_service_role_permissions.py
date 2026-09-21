@@ -314,6 +314,26 @@ def extract_aws_services_from_template(template_path):
         print(f'Error parsing {template_path}: {e}')
         return set()
 
+def extract_sam_subtypes_from_template(template_path):
+    """The ``AWS::Serverless::<X>`` sub-types a template declares.
+
+    Separate from :func:`extract_aws_services_from_template` because that one collapses
+    every resource type to its middle namespace token, which is precisely what made the
+    SAM macro look like a service.
+    """
+    try:
+        template = load_template(template_path)
+        subtypes = set()
+        for resource in (template or {}).get('Resources', {}).values():
+            resource_type = (resource or {}).get('Type') or ''
+            if resource_type.startswith('AWS::Serverless::'):
+                subtypes.add(resource_type.split('::', 2)[2])
+        return subtypes
+    except Exception as exc:
+        print(f'Error parsing {template_path}: {exc}')
+        return set()
+
+
 def extract_permissions_from_role(role_template_path):
     """Extract permissions from CloudFormation service role template"""
     role_template = load_template(role_template_path)
@@ -620,17 +640,71 @@ def extract_required_permissions_from_templates(templates):
     wildcard_permissions = set()
     required_iam_actions = set()
     
-    # Services to ignore (not real AWS services)
-    ignore_services = {'serverless', 'opensearchserverless', 'cognito'}
-    
+    # The CloudFormation namespace is not always the IAM prefix, so `AWS::X::Y` ->
+    # `x:*` is wrong for some services. This used to be an ignore set of three
+    # entries whose stated reason was "not real AWS services", and that was true of
+    # exactly one of them: Cognito and OpenSearch Serverless are very real, they were
+    # listed because their DERIVED TOKEN is not their IAM prefix, and ignoring them
+    # meant the role's Cognito and OpenSearch grants were never derived at all. The
+    # gate would have reported success with `cognito-idp:*` removed and every deploy
+    # broken. The fix is a translation, not an exclusion.
+    #
+    # `AWS::Serverless::*` is the one genuine non-service: it is the SAM transform's
+    # namespace. But it EXPANDS to real resources, so ignoring it also silently
+    # dropped the `states:*` and `apigateway:*` requirements -- two more grants hidden
+    # behind the one correct member of the old set.
+    iam_prefixes = {
+        'cognito': {'cognito-idp', 'cognito-identity'},
+        'opensearchserverless': {'aoss'},
+    }
+
+    # `AWS::Serverless::*` is a macro, not a service, so each sub-type expands to the
+    # real resources SAM emits. Keyed on the SUB-TYPE rather than collapsed to
+    # 'serverless', because a single hand-written three-element expansion reproduced the
+    # defect this map replaced one level down: adding AWS::Serverless::GraphQLApi or
+    # ::SimpleTable left the derived permission set unchanged, with no warning.
+    #
+    # An unmapped sub-type is a hard error rather than a silent skip. A gate whose
+    # coverage shrinks quietly when the templates grow is the failure mode this whole
+    # file's ignore-set had; erring toward a noisy prompt is the correction.
+    sam_expansions = {
+        'Function': {'lambda'},
+        'LayerVersion': {'lambda'},
+        'Api': {'apigateway'},
+        'HttpApi': {'apigateway'},
+        'StateMachine': {'states'},
+        'SimpleTable': {'dynamodb'},
+        'GraphQLApi': {'appsync'},
+        'Application': set(),
+        'Connector': set(),
+    }
+
     for template_path in templates:
         if os.path.exists(template_path):
             services = extract_aws_services_from_template(template_path)
             iam_actions = extract_iam_actions_from_template(template_path)
-            
+
+            sam_subtypes = extract_sam_subtypes_from_template(template_path)
+            unmapped = sorted(sam_subtypes - set(sam_expansions))
+            if unmapped:
+                print(
+                    f'ERROR: {template_path} declares AWS::Serverless::{{{",".join(unmapped)}}}, '
+                    'which sam_expansions does not map to an IAM prefix. Add each one '
+                    '(an empty set if it needs no grant of its own) -- an unmapped '
+                    'sub-type would silently derive no permission requirement.'
+                )
+                sys.exit(1)
+
             for service in services:
-                if service != 'iam' and service not in ignore_services:
-                    wildcard_permissions.add(f'{service}:*')
+                if service == 'iam':
+                    continue
+                if service == 'serverless':
+                    for subtype in sam_subtypes:
+                        for prefix in sam_expansions[subtype]:
+                            wildcard_permissions.add(f'{prefix}:*')
+                    continue
+                for prefix in iam_prefixes.get(service, {service}):
+                    wildcard_permissions.add(f'{prefix}:*')
             
             # Only add IAM actions to required_iam_actions
             for action in iam_actions:

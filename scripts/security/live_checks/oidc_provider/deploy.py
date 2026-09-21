@@ -118,7 +118,7 @@ def up(region: str) -> int:
         *external_idp_group_parameters(),
     ):
         print(f"    ParameterKey={key},ParameterValue={value}")
-    print(f"\nThen run verify_federated_signin.py with:")
+    print("\nThen run verify_federated_signin.py with:")
     print(f"    --idp-function {outputs['FunctionName']}")
     print(f"    --idp-name {IDP_NAME}")
     print(json.dumps({"issuer": outputs["Issuer"], "secret_arn": secret_arn}, indent=2))

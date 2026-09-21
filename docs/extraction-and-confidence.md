@@ -89,7 +89,7 @@ and is a good fit for the majority of documents.
 extraction:
   agentic:
     enabled: false            # Simple mode (default)
-  model: anthropic.claude-3-haiku-20240307-v1:0
+  model: anthropic.claude-haiku-4-5-20251001-v1:0
   temperature: 0.0
   reasoning_effort: low       # reasoning-capable models only (see note below)
 ```
@@ -151,20 +151,14 @@ extraction:
 Agentic extraction requires models with tool-use support:
 
 - **Anthropic Claude Sonnet** models (recommended for optimal performance)
-  - `anthropic.claude-3-5-sonnet-20241022-v2:0` — Best balance of speed and accuracy
-  - `anthropic.claude-3-7-sonnet-20250219-v1:0` — Latest with enhanced capabilities
+  - `anthropic.claude-sonnet-4-5-20250929-v1:0` — Best balance of speed and accuracy
+  - `anthropic.claude-sonnet-4-5-20250929-v1:0` — Latest with enhanced capabilities
 - **Anthropic Claude Opus** models (for highest accuracy requirements)
 - **Amazon Nova Pro** (AWS native alternative) — **no successful agentic run has
   been measured for Nova Pro**: its advanced cells in the v0.6.8 sweep hit the same
   mid-stream tool-use failure described below and the grid was abandoned, so it is
   unmeasured on this path rather than known to be incapable. Treat it as unproven
   until a benchmark run completes on it
-- ~~**Amazon Nova Premier**~~ — **not usable.** As of 2026-09-20 every
-  `us.amazon.nova-premier-v1:0` call in `us-west-2`, including a trivial baseline,
-  returns `ResourceNotFoundException: This model version has reached the end of its
-  life`. That applies to extraction, classification and confidence, not just the
-  agentic path. The model id still appears in the selectable list; pick a different
-  one.
 
 > **⚠️ Amazon Nova Lite does not complete Advanced (agentic) extraction as
 > shipped.** On the agentic path Nova Lite fails mid-stream with Bedrock's
@@ -615,7 +609,7 @@ classes:
 extraction:
   agentic:
     enabled: true            # Advanced mode recommended for production
-  model: anthropic.claude-3-5-sonnet-20241022-v2:0
+  model: anthropic.claude-sonnet-4-5-20250929-v1:0
   temperature: 0.0           # Keep low for consistency
   top_p: 0.1
   top_k: 5
@@ -1520,21 +1514,31 @@ extraction:
 > of the failure alarms. Each degrade therefore publishes
 > `AssessmentConfidenceUnavailable` to the stack's own metric namespace. So does a
 > section that reached the Assessment step with **nothing to assess** — no
-> extraction result, no pages, or an empty `inference_result` — which records
+> extraction result, no pages, an empty `inference_result`, or none of its pages
+> present in the document — which records
 > `assessment_skipped_confidence_unavailable` instead and is likewise invisible in
 > the document's own status. The metric covers both, because the alarm's question is
 > whether sections are coming back without confidence; the issue code says which
-> happened. One exception, and you will meet it on ordinary documents: a section
-> whose class has **no attributes to extract** publishes nothing and records
-> nothing, because extraction skipped the model deliberately for it. That covers
-> every page classified `unclassified` — a blank page, a page whose classification
-> errored — so do not expect a data point for those.
+> happened. Two exceptions, and you will meet them on ordinary documents: a section
+> whose class is in configuration with **no attributes to extract**, and a section
+> **classification could not classify at all**, publish nothing and record nothing
+> here, because extraction skipped the model deliberately for both. The second
+> covers every page labelled `unclassified` — a blank page, a page whose
+> classification failed — so do not expect a data point for those; the
+> [classification stage](./classification.md#pages-classification-could-not-classify)
+> reports them, where the remedy is. A section whose *named* class is missing from
+> the configuration is **not** an exception and does publish: the section was
+> expected to hold data and holds none. How often that arrives depends on your
+> classification configuration — on the default it needs a configuration edit, but
+> `textbasedHolisticClassification` and `enforceValidClasses: false` both store an
+> out-of-vocabulary prediction verbatim, so there the rate follows model output and
+> `ConfidenceUnavailableThreshold` is the lever.
 > `AssessmentConfidenceUnavailableAlarm` fires at ten or more in fifteen
 > minutes — on volume, not on the first occurrence, since one such section is an
 > expected outcome ([#996](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/996),
 > [#1006](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/1006)).
 > See [Monitoring](./monitoring.md#confidence-assessment-degraded) for the metric,
-> the alarm and the four causes worth checking first.
+> the alarm and the causes worth checking first.
 >
 > **This replaces granular assessment.** The former "granular assessment"
 > service (a separate thread-pool fan-out with DynamoDB caching) has been

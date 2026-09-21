@@ -131,7 +131,32 @@ Logging verbosity is a single deploy-time parameter. `LogLevel` defaults to `WAR
 applies across the Lambda functions and the API stage;
 `scripts/tests/test_log_level_default.py` pins that default so it cannot silently regress
 to `INFO`, because at `INFO` the accelerator can write presigned URLs, document contents
-and PII into CloudWatch Logs.
+and PII into CloudWatch Logs. That gate accounts for every template in the tree declaring a `LogLevel` parameter,
+discovered rather than listed: each one is either enforced at `WARN` or named in an
+exemption with a recorded reason, so a new template cannot appear outside both.
+
+Two exceptions to know about if you install extensions. The five catalog features
+(`pii-anonymizer`, `idp-data-generator`, `confbench-testset`, and the two samples) pin
+`LogLevel: INFO` in their own `feature.yaml`, which the console install flow passes
+explicitly — so an installed extension logs at `INFO` regardless of what the host stack
+is set to, and you should lower it on the extension's own stack for production. And
+`idp-feature-cli deploy` passes the parameter only when `--log-level` is given, so pass
+it there rather than relying on the manifest.
+
+**Raise it deliberately, and lower it again.** Above `WARN`, handlers across the
+solution log their invocation events. Known-sensitive keys are redacted before an event
+is written — tokens, credentials and identity claims, by a single shared denylist
+(`idp_common.utils.log_sanitizer`) that every handler either imports or carries a
+byte-identical copy of — but a denylist cannot anticipate what a caller puts in a
+free-text field, so an event can still carry document content or caller-supplied text.
+That is exactly what makes `INFO` and `DEBUG` useful for diagnosis, and what makes them
+unsuitable as a steady state.
+
+So treat raising the level as scoped and temporary: raise it for a specific
+investigation, gather what you need, and set it back to `WARN`. Note that the data written
+while it was raised persists for the log group's whole retention period, so lowering the
+level does not undo it. `LogRetentionDays` and the CMK-encrypted log groups described
+above bound that exposure; the level is what creates it.
 
 Be aware of what that safe default costs you in observability. The REST API stage's
 structured JSON access log — which carries the authorizer status, WAF response code and

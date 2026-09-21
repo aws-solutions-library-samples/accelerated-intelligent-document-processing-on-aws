@@ -44,14 +44,15 @@ for APIs" checklist. Mapping (suite → checklist item), implemented in
 | 2.3 | Tokens rejected after expiry | `run_token_lifecycle_suite` (+ token negatives); real-expiry wait via `IDP_SECTEST_WAIT_EXPIRY=<seconds>` |
 | 2.4 | Tokens revoked after logout | `run_token_lifecycle_suite` — global sign-out then re-test; **stateless-JWT reuse is a documented gap** (`GAP-SEC-LOGOUT`, WARN — see AUTH.T10) |
 | 2.5 | Deleted resources no longer accessible | `run_deleted_resource_suite` (config version create→delete→read-gone) |
-| 3 | Input validation (invalid input rejected) | `run_input_validation_suite` — **tolerant** by default (4xx or 5xx ok); `IDP_SECTEST_STRICT_INPUT=true` requires a clean 4xx (the behavior central schema validation introduces) |
+| 3 | Input validation (invalid input rejected) | `run_input_validation_suite` — only a clean 4xx is ever a PASS. By default a 5xx or a silent 200 is recorded against `GAP-SEC-INPUT`, i.e. a **WARN**: visible, not blocking, **not a pass**. `IDP_SECTEST_STRICT_INPUT=true` drops the gap so the same result is a hard failure |
 | 4 | TLS 1.0/1.1/HTTP refused, TLS 1.2+ accepted | `run_tls_suite` (raw-socket protocol probes) |
 
 Notes:
 - The AppSec engineer may request **additional** tests per use case — this is the
   floor, not the ceiling.
-- Suites that need conditions not present are recorded as **SKIP (pass)**, never
-  silent omissions (e.g. expiry without `IDP_SECTEST_WAIT_EXPIRY`).
+- Suites that need conditions not present are recorded as **SKIP**, never silent
+  omissions (e.g. expiry without `IDP_SECTEST_WAIT_EXPIRY`). A SKIP is **not** a
+  pass — see the outcome vocabulary below.
 - Threat-model coverage: AUTH.T09 (IDOR), AUTH.T10 (token lifecycle), AUTH.T11
   (TLS), AUTH.T13 (IdP group-claim provenance) in
   `security/threat-modeling/feature-threats/rbac-authentication.md`.
@@ -174,7 +175,14 @@ regenerate the manifest.
   run by `make api-test-static`).
 - `nested/api-resolvers/src/lambda/http_api_dispatcher/authz.py` — the
   default-deny enforcement point.
-- `scripts/test_api_rbac.py` — dynamic harness.
+- `scripts/test_api_rbac.py` — dynamic harness. `inconclusive()` / `classify()` /
+  `_record()` / `hard_failures()` are where an outcome becomes a verdict;
+  `scripts/sdlc/tests/test_api_rbac_verdicts.py` pins them offline, including a run
+  in which every operation times out (which must not be green).
+- `scripts/api_security_cases.py` — the mandatory suites. `_inconclusive_response()`
+  and `_tls_probe()` are the equivalents there; `_tls_probe` TCP-connects separately
+  from the handshake so an unreachable host cannot read as "the server refused this
+  protocol".
 - `lib/idp_common_pkg/tests/unit/test_http_api_dispatcher_authz.py` — manifest
   parity (enumerated from `FIELD_ALIASES`, `ddb_direct._HANDLED` and the
   template's field→function map) plus the deny paths.
@@ -212,15 +220,61 @@ Test users get a **random per-run password** (printed when NO_TEARDOWN or
 --setup-only keeps them alive). Exit code is non-zero only on **hard fails**
 (a real leak) — known gaps are WARNs.
 
+## The five outcomes — a refusal and an inconclusive result are different
+
+Every check records one of these. `passed` is `True` for exactly one of them.
+
+| Outcome | Means | Exit code |
+|---|---|---|
+| **PASS** ✅ | the check ran and the API behaved as required | 0 |
+| **FAIL** ❌ | the check ran and the API did not | **non-zero** |
+| **ERROR** 🛑 | the check **could not be run** | **non-zero** |
+| **SKIP** ⏭️ | a precondition for the check is absent | 0 |
+| **WARN** ⚠️ | a FAIL or ERROR registered against a `known_gap` | 0 |
+
+**ERROR exists because this harness asserts refusals.** Its positive arms can only
+ask "was this NOT denied?", and a request that never completed is not denied either —
+so a timeout, a dead connection, an empty body, a body that will not parse and a 5xx
+all used to satisfy them. `inconclusive()` in `scripts/test_api_rbac.py` is the one
+place that judgement is made; `classify()` consults it before any cell-specific rule,
+so no cell can pass on a result that established nothing.
+
+Two things follow that are easy to get wrong when adding a suite:
+
+- **A `known_gap` decides whether to block, not whether the check ran.** A gapped
+  ERROR is a WARN *and* still carries `inconclusive: true`, so it appears in the
+  report's "Could not be run" section. `GAP-SEC-INCONCLUSIVE-5XX` registers the 5xx
+  case, because ~50 resolver validation refusals still raise a bare `Exception` (which
+  the dispatcher can only map to 500) and this harness deliberately sends bogus
+  arguments. A **timeout is not registered** and is a hard failure.
+- **A 5xx is inconclusive for a "was it refused?" assertion and conclusive for a
+  "does this body contain X?" one.** The IDOR suite is the second kind — the body is
+  in hand and the marker is not in it — so it passes `treat_5xx=False`. Everything
+  else is the first kind.
+
+`GAP-SEC-INCONCLUSIVE-5XX` is assigned from an observed response rather than declared
+on an operation, so it declares `assigned_by:` in the register; the static scanner's
+**S0** orphan check then verifies the reference in that file instead of switching off.
+
 ## Reading the report
 
-- `meta.json` — stack, account, git_sha, api_base, per-run totals, request IDs.
-- `report.md` — the group matrix (op × role), scope suite, token negatives.
+- `meta.json` — stack, account, git_sha, api_base, per-run totals (`passed`,
+  `failed`, `errored`, `skipped`, `hard_fail`, `gap_warn`), request IDs.
+- `report.md` — a **Could not be run** section first, then hard failures, known-gap
+  warnings, and the full group matrix (op × role) with the marks above.
 - A finding is a **hard fail** only if it has no `known_gap`; documented gaps
   (GAP-01..) surface as WARN so they stay visible without failing the gate.
+- `scripts/security/curate_results.py` carries the distinction into the published
+  snapshot: a run with no hard failure but some check that could not be run is
+  reported as **PASS with reservations ⚠️**, not PASS.
 
 ## When a hard fail appears — triage order
 
+0. **Is it a failure at all, or a check that could not run?** 🛑 rows are in the
+   report's own section. A timeout or a dead connection is an environment problem;
+   a 5xx is usually a resolver raising a bare `Exception` for a validation refusal
+   (see `GAP-SEC-INCONCLUSIVE-5XX`) and is fixed by giving that refusal a
+   `ValueError`, not by widening anything here.
 1. **In-band denial not recognized?** If the op denies via `{success:false,
    error:{type:Unauthorized}}` (200), confirm `classify()`/`_denied()` treat
    in-band `Unauthorized` as denied. (Config & sync resolvers use this.)

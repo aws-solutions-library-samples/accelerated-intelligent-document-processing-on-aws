@@ -1,5 +1,6 @@
 import React, { useState, useRef } from 'react';
 import { Box, SpaceBetween, Header, FormField, Select, Button, Container, ExpandableSection, Alert } from '@cloudscape-design/components';
+import { refNode } from './utils/schemaHelpers';
 
 interface SchemaAttribute {
   oneOf?: Array<Record<string, unknown>>;
@@ -13,6 +14,25 @@ interface AvailableClass {
   name: string;
   id?: string;
 }
+
+const DEFS_POINTER_PREFIX = '#/$defs/';
+
+/**
+ * One composition branch, retyped.
+ *
+ * `type` and `$ref` are alternatives — the branch either names a type inline or points at
+ * a shared class — so switching between them removes the other. Everything else the branch
+ * carries is kept, including `schemaId`: that is a React list key for the branch rows, so
+ * replacing the branch wholesale remounted the row, and reaching for it explicitly wrote
+ * `schemaId: undefined` onto a branch that never had one.
+ *
+ * `schemaId` is the designer's own bookkeeping and not a JSON Schema keyword; it is
+ * stripped on export by `sanitizeAttributeSchema`, which reaches composition branches.
+ */
+const branchForType = (existing: Record<string, unknown> | undefined, newType: string): Record<string, unknown> => {
+  const { type: _type, $ref: _ref, ...rest } = existing || {};
+  return newType.startsWith(DEFS_POINTER_PREFIX) ? { ...rest, ...refNode(newType) } : { ...rest, type: newType };
+};
 
 interface SchemaCompositionEditorProps {
   selectedAttribute?: SchemaAttribute | null;
@@ -120,13 +140,7 @@ const SchemaCompositionEditor = ({
 
     const updates = { ...selectedAttribute } as Record<string, unknown>;
     const schemas = [...((updates[currentComposition] as Array<Record<string, unknown>>) || [])];
-    const existingSchemaId = (schemas[index] as Record<string, unknown>).schemaId;
-
-    if (newType.startsWith('#/$defs/')) {
-      schemas[index] = { $ref: newType, schemaId: existingSchemaId };
-    } else {
-      schemas[index] = { type: newType, schemaId: existingSchemaId };
-    }
+    schemas[index] = branchForType(schemas[index], newType);
 
     updates[currentComposition] = schemas;
     onUpdate(updates as SchemaAttribute);
@@ -135,13 +149,7 @@ const SchemaCompositionEditor = ({
   const handleUpdateNotSchema = (newType: string): void => {
     if (!selectedAttribute) return;
     const updates = { ...selectedAttribute };
-
-    if (newType.startsWith('#/$defs/')) {
-      updates.not = { $ref: newType };
-    } else {
-      updates.not = { type: newType };
-    }
-
+    updates.not = branchForType(updates.not, newType);
     onUpdate(updates);
   };
 

@@ -103,7 +103,7 @@ print(f"Processing time: {result.metadata['timing']['total_duration']} seconds")
 ```python
 validation_config = {
     # Model Configuration
-    "model_id": "us.anthropic.claude-3-5-sonnet-20240620-v1:0",
+    "model_id": "us.anthropic.claude-sonnet-4-5-20250929-v1:0",
     "temperature": 0.0,  # Deterministic responses
     "top_k": 5,
     "top_p": 0.1,
@@ -388,7 +388,7 @@ The service provides comprehensive token and cost tracking:
 ```python
 # Automatic token aggregation
 {
-    "us.anthropic.claude-3-5-sonnet-20240620-v1:0": {
+    "us.anthropic.claude-sonnet-4-5-20250929-v1:0": {
         "inputTokens": 15420,
         "outputTokens": 892,
         "totalTokens": 16312
@@ -548,7 +548,7 @@ logging.getLogger('idp_common.criteria_validation').setLevel(logging.DEBUG)
 ```python
 # Healthcare-specific configuration
 healthcare_config = {
-    "model_id": "us.anthropic.claude-3-5-sonnet-20240620-v1:0",
+    "model_id": "us.anthropic.claude-sonnet-4-5-20250929-v1:0",
     "criteria_types": [
         "medical_necessity",
         "administration_requirements", 

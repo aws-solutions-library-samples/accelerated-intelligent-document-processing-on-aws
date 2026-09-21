@@ -161,7 +161,8 @@ hand-written scanners for classes of defect that have each shipped at least once
 
 | Gate | What it catches |
 |---|---|
-| `make ruff-lint` · `make format` | Python style and formatting (88 cols, Python 3.12) |
+| `make ruff-lint` · `make format` | Python style and formatting (88 cols, Python 3.12) over every tracked `.py` file except a named per-file debt list |
+| `make check-lint-debt` | that debt list staying honest: an excluded file that *gained* a finding, one that is now clean and should be delisted, a dead path, a bare directory name in one of the three generated arrays, or a tracked file ruff's walk never reaches (which is what covers the top-level `exclude` array, whose bare names are deliberate). `ruff.toml` excluded five bare directory names until [#975](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/975), which match at any depth, so 442 of 1230 tracked `.py` files were read by neither gate. Use `python3 scripts/check_lint_debt.py --explain <path>` to ask whether one file is linted — no `ruff` invocation answers that correctly |
 | `make cfn-lint` | any file declaring `AWSTemplateFormatVersion` — discovered by **content**, so a new template cannot escape it. Fails on errors only |
 | `make check-arn-partitions` | hardcoded `arn:aws:` / `amazonaws.com` instead of `${AWS::Partition}` / `${AWS::URLSuffix}` — GovCloud compatibility |
 | `make check-filtered-scans` | DynamoDB `Scan` with a filter expression that cannot see all matches |
@@ -173,12 +174,21 @@ hand-written scanners for classes of defect that have each shipped at least once
 | `python3 scripts/check_first_party_deps.py` | a first-party package installed by bare name, which on public PyPI is [somebody else's code](./dependency-confusion.md) |
 | `python3 scripts/sdlc/validate_service_role_permissions.py` | the CloudFormation service role missing a permission the templates need |
 
-Two of these gates guard the **gates themselves**:
+Three of these gates guard the **gates themselves**:
 `scripts/tests/test_ci_gate_parity.py` fails if a gate runs in one CI and not the
-other, or if `lint-cicd` becomes weaker than local `make lint`; and
+other, or if `lint-cicd` becomes weaker than local `make lint`;
 `scripts/tests/test_nested_stack_parameters.py` checks parent-to-nested stack
-parameter wiring that `cfn-lint`'s own rule cannot see. Both exist because every
-parity gap they cover was originally found by hand, months late.
+parameter wiring that `cfn-lint`'s own rule cannot see; and
+`scripts/tests/test_lint_debt_gate.py` drives `check-lint-debt` through each
+failure mode it claims, because a ratchet nobody has watched fail is not a
+ratchet. All three exist because every gap they cover was originally found by
+hand, months late.
+
+`make typecheck` reads every tracked `.py` file, which
+`scripts/tests/test_pyright_config.py` asserts by deriving the set from
+`git ls-files` rather than from a list. Its `include` array named six paths and
+reached 432 of 1230 files, and two `NameError`-class defects reached `develop`
+through the gap.
 
 ### Whether any of this actually blocks a merge
 

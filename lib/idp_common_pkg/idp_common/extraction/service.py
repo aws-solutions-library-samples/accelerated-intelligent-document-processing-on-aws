@@ -27,6 +27,7 @@ from idp_common.config.schema_constants import (
     SCHEMA_TYPE,
     TYPE_ARRAY,
     TYPE_OBJECT,
+    UNCLASSIFIED_CLASS,
     X_AWS_IDP_ALLOW_INTEGRATED_LISTS,
     X_AWS_IDP_DOCUMENT_TYPE,
     X_AWS_IDP_EXTRACTION_ESCALATION_MODEL,
@@ -35,6 +36,12 @@ from idp_common.config.schema_constants import (
     X_AWS_IDP_EXTRACTION_TASK_PROMPT,
     X_AWS_IDP_INSTANCE_ARRAY,
     X_AWS_IDP_SOURCE_PAGE_TYPES,
+)
+from idp_common.empty_schema import (
+    EMPTY_SCHEMA_CLASS_NOT_CONFIGURED,
+    EMPTY_SCHEMA_NO_ATTRIBUTES,
+    EMPTY_SCHEMA_REASON_KEY,
+    EMPTY_SCHEMA_UNCLASSIFIED,
 )
 from idp_common.extraction.page_type_resolver import (
     PageTypePresence,
@@ -1822,6 +1829,56 @@ class ExtractionService:
 
         return class_schema, attribute_descriptions
 
+    def _empty_schema_reason(self, class_label: str) -> str:
+        """Why this section's effective extraction schema is empty.
+
+        ``_get_class_schema`` returns ``{}`` both for a class the configuration
+        contains but gave no attributes, and for a label the configuration does
+        not contain at all — and ``_prepare_section_context`` routes both here.
+        Collapsing them into one flag made three different situations
+        indistinguishable downstream, and the one that is an operator fault was
+        the one that went unreported: a class **renamed or deleted while
+        documents were in flight**, or an old document reprocessed under a
+        configuration that no longer has its class, produces a section with no
+        fields that completes green.
+
+        The three are told apart by what the label is, not by how it got here:
+
+        * the label resolves to a class in configuration →
+          ``EMPTY_SCHEMA_NO_ATTRIBUTES``;
+        * the label is the ``unclassified`` sentinel (or the configured
+          ``classification.invalidClassFallback``, which defaults to it) →
+          ``EMPTY_SCHEMA_UNCLASSIFIED``. Classification determined no class,
+          which is an ordinary outcome for a blank page and a reportable failure
+          for a page whose classification errored — a distinction only
+          classification can draw, and it draws it at its own stage;
+        * anything else → ``EMPTY_SCHEMA_CLASS_NOT_CONFIGURED``.
+
+        A fallback set to one of the deployment's real classes lands in the first
+        case, correctly: that class has a schema, so this method is not reached
+        for it at all.
+
+        ⚠️ ``EMPTY_SCHEMA_CLASS_NOT_CONFIGURED`` is NOT reached only by a
+        configuration edit. Two supported classification configurations store a
+        model-invented class name verbatim, so its rate follows model output rather
+        than operator action: ``textbasedHolisticClassification``, which has no
+        vocabulary-enforcement loop at all (the loop lives in
+        ``classify_page_bedrock``), and ``multimodalPageLevelClassification`` with
+        ``enforceValidClasses: false``, which logs "using anyway" and stores the
+        prediction. Both are documented configurations, and small classification
+        models are the ones most prone to out-of-vocabulary predictions — so on
+        those two paths the reported section count can reach
+        ``ConfidenceUnavailableThreshold``, and that parameter is the lever. The
+        signal is still correct (the section really does hold no data); it is the
+        volume bound that does not hold there.
+        """
+        if self._get_class_schema(class_label):
+            return EMPTY_SCHEMA_NO_ATTRIBUTES
+        fallback = self.config.classification.invalidClassFallback
+        if class_label in {UNCLASSIFIED_CLASS, fallback}:
+            return EMPTY_SCHEMA_UNCLASSIFIED
+        return EMPTY_SCHEMA_CLASS_NOT_CONFIGURED
+
     def _handle_empty_schema(
         self,
         document: Document,
@@ -1833,6 +1890,17 @@ class ExtractionService:
         """
         Handle case when schema has no attributes - skip LLM and return empty result.
 
+        The stub records WHY the schema was empty
+        (``metadata.empty_schema_reason``, see :meth:`_empty_schema_reason`),
+        because the three causes are not equivalent and the confidence pass keys
+        on the difference: it stays silent for a deliberately attribute-less class
+        and for a section classification never resolved, and reports the section
+        as unscored when the class is simply absent from the configuration.
+
+        For that last case — a fault nothing else in the pipeline reports — this
+        also records an error-severity ``extraction_class_not_configured`` issue
+        on the section, at the stage that discovered it and can name the remedy.
+
         Args:
             document: Document being processed
             section: Section being processed
@@ -1843,8 +1911,12 @@ class ExtractionService:
         Returns:
             Updated document
         """
+        class_label = section_info.class_label
+        reason = self._empty_schema_reason(class_label)
         logger.info(
-            f"No attributes defined for class {section_info.class_label}, skipping LLM extraction"
+            "No attributes defined for class %s (%s), skipping LLM extraction",
+            class_label,
+            reason,
         )
 
         # Create empty result structure
@@ -1858,16 +1930,78 @@ class ExtractionService:
         total_duration = 0.0
         parsing_succeeded = True
 
+        metadata: dict[str, Any] = {
+            "parsing_succeeded": parsing_succeeded,
+            "extraction_time_seconds": total_duration,
+            # Kept unconditionally: it is the flag existing readers and stored
+            # result files already use for "extraction wrote no fields without
+            # calling a model", and it is true in all three cases. The reason
+            # below refines it rather than replacing it, so a result written by an
+            # earlier version still reads back as the attribute-less case.
+            "skipped_due_to_empty_attributes": True,
+            EMPTY_SCHEMA_REASON_KEY: reason,
+        }
+
+        if reason == EMPTY_SCHEMA_CLASS_NOT_CONFIGURED:
+            from idp_common.models import ProcessingIssue
+
+            issue = ProcessingIssue(
+                stage="extraction",
+                severity="error",
+                code="extraction_class_not_configured",
+                message=(
+                    f"No fields were extracted from this section: the class it was "
+                    f"classified as ('{class_label}') does not exist in the "
+                    f"configuration this document was processed under, so there was "
+                    f"no schema to extract against. The section completed with no "
+                    f"data rather than with incorrect data."
+                ),
+                root_cause=(
+                    f"Section class '{class_label}' has no matching entry in "
+                    f"configuration classes"
+                    + (
+                        f" (version {document.config_version})"
+                        if getattr(document, "config_version", None)
+                        else ""
+                    )
+                    + ". Three causes: a class renamed or deleted while documents "
+                    "were in flight; a document reprocessed under a configuration "
+                    "that no longer defines its class; or the classifier returned a "
+                    "class outside the configured vocabulary and the "
+                    "classification path in use does not enforce one "
+                    "(textbasedHolisticClassification, or "
+                    "multimodalPageLevelClassification with "
+                    "enforceValidClasses: false). Add the class to the "
+                    "configuration, reclassify the document under the current one, "
+                    "or turn vocabulary enforcement on."
+                ),
+                section_id=section_id,
+            )
+            logger.error(
+                "Section %s is classified '%s', which is not in the configuration; "
+                "no fields could be extracted. Recorded %s.",
+                section_id,
+                class_label,
+                issue.code,
+            )
+            # Replace only the issues this stage owns, for the same reason
+            # _save_results does: the DynamoDB writer replaces the whole section
+            # map, so issues from other stages must survive.
+            section.processing_issues = [
+                pi
+                for pi in (section.processing_issues or [])
+                if getattr(pi, "stage", None) != "extraction"
+            ] + [issue]
+            metadata["processing_issues"] = [
+                pi.to_dict() for pi in section.processing_issues
+            ]
+
         # Write to S3
         output = {
-            "document_class": {"type": section_info.class_label},
+            "document_class": {"type": class_label},
             "split_document": {"page_indices": section_info.page_indices},
             "inference_result": extracted_fields,
-            "metadata": {
-                "parsing_succeeded": parsing_succeeded,
-                "extraction_time_seconds": total_duration,
-                "skipped_due_to_empty_attributes": True,
-            },
+            "metadata": metadata,
         }
         s3.write_content(
             output,

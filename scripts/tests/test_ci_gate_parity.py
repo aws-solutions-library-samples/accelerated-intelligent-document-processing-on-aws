@@ -22,9 +22,12 @@ GitLab-only. See ``scripts/sdlc/docs/CI_TEST_COVERAGE.md``.
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 import pytest
+from packaging.specifiers import SpecifierSet
+from packaging.version import Version
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 GITLAB = REPO_ROOT / ".gitlab-ci.yml"
@@ -49,6 +52,27 @@ def _github_ci_text() -> str:
     return GITHUB_TESTS.read_text() + GITHUB_SECURITY.read_text()
 
 
+def _lint_cicd_recipe() -> str:
+    """The body of the ``lint-cicd`` target, ending at the next target definition.
+
+    A recipe line begins with a tab, so the first line matching ``^name:`` after
+    the target's own header is the start of the next target. ``##@`` (a section
+    heading) is also a terminator, for the case where ``lint-cicd`` is the last
+    target in its section.
+    """
+    text = MAKEFILE.read_text()
+    start = text.index("\nlint-cicd:") + 1
+    body_offset = text.index("\n", start) + 1
+    ends = [
+        match.start() + body_offset
+        for match in re.finditer(
+            r"^(?:[A-Za-z0-9_.-]+:|##@)", text[body_offset:], re.MULTILINE
+        )
+    ]
+    end = min(ends) if ends else len(text)
+    return text[start:end]
+
+
 @pytest.mark.unit
 @pytest.mark.parametrize("gate", SHARED_GATES)
 def test_gate_runs_in_both_cis(gate: str) -> None:
@@ -70,6 +94,7 @@ def test_gate_runs_in_both_cis(gate: str) -> None:
     [
         "cfn-lint",
         "validate-buildspec",
+        "check-lint-debt",
         "check-arn-partitions",
         "check-filtered-scans",
         "check-data-plane-tags",
@@ -82,15 +107,48 @@ def test_lint_cicd_covers_what_local_lint_covers(gate: str) -> None:
 
     ``cfn-lint`` and ``validate-buildspec`` were in ``lint``/``fastlint`` only, so
     CI ran neither — the gap this file exists to catch.
-    """
-    text = MAKEFILE.read_text()
-    recipe_start = text.index("\nlint-cicd:")
-    recipe_end = text.index("\n##@", recipe_start)
-    recipe = text[recipe_start:recipe_end]
 
-    assert gate in recipe, (
-        f"'{gate}' is not reachable from `make lint-cicd`, so neither CI runs it "
-        f"even though `make lint` does. Add it to lint-cicd."
+    The slice this reads is the recipe and nothing else. It used to run from
+    ``lint-cicd:`` to the next ``##@`` section heading, which is **320 lines** and
+    contains the target *definitions* of ten other gates — so every one of the
+    names below was found in the slice whether ``lint-cicd`` invoked it or not, and
+    deleting an entire ``@if ! make <gate>`` block from the recipe left all of these
+    tests passing. A control that cannot fail is not a control. It also asserts
+    ``make <gate>`` rather than the bare name, so a mention in a comment does not
+    satisfy it.
+    """
+    recipe = _lint_cicd_recipe()
+    # Word-boundary, not substring: `make cfn-lint-RENAMED` contains
+    # `make cfn-lint`, so a plain `in` accepts a target that no longer exists.
+    invoked = re.search(rf"make {re.escape(gate)}(?![A-Za-z0-9_.-])", recipe)
+    assert invoked, (
+        f"'{gate}' is not invoked from `make lint-cicd` (looked for "
+        f"'make {gate}' in its {len(recipe.splitlines())}-line recipe), so neither "
+        f"CI runs it even though `make lint` does. Add it to lint-cicd."
+    )
+
+
+@pytest.mark.unit
+def test_the_recipe_slice_stops_at_the_recipe() -> None:
+    """Anti-vacuity guard for the slice the test above depends on.
+
+    If the slice ever widens to include other target definitions again, every
+    assertion above starts passing for the wrong reason, silently.
+    """
+    recipe = _lint_cicd_recipe()
+    stray = [
+        match.group(1)
+        for match in re.finditer(r"^([A-Za-z0-9_.-]+):", recipe, re.MULTILINE)
+        if match.group(1) != "lint-cicd"
+    ]
+    assert not stray, (
+        f"the lint-cicd slice reaches the definitions of other targets {stray}, so "
+        "`make <gate>` can be found in the slice without lint-cicd invoking it. "
+        "Narrow _lint_cicd_recipe()."
+    )
+    assert 10 < len(recipe.splitlines()) < 120, (
+        f"the lint-cicd slice is {len(recipe.splitlines())} lines, which is not a "
+        "plausible length for one recipe — check _lint_cicd_recipe()."
     )
 
 
@@ -114,6 +172,42 @@ def test_cfn_lint_is_pinned_consistently() -> None:
             f"CFN_LINT_VERSION). CI would then run a different linter than "
             f"`make cfn-lint` does locally."
         )
+
+
+@pytest.mark.unit
+def test_ruff_is_pinned_consistently() -> None:
+    """The two CIs must pin the same ``ruff``, and the pin must be installable here.
+
+    ``ruff``'s findings are version-dependent, and ``make check-lint-debt``
+    compares a recorded per-file finding count against a live measurement — so
+    two CI systems on different ``ruff`` releases would disagree about whether
+    the baseline is current, and the disagreement would look like a code defect.
+    ``lib/idp_common_pkg/pyproject.toml`` supplies ``ruff`` locally as a range, so
+    the CI pin has to fall inside it or a contributor's ``make lint`` and CI are
+    running different linters by construction.
+    """
+    pins = {}
+    for path in (GITLAB, GITHUB_TESTS):
+        found = re.findall(r"ruff==([0-9][0-9A-Za-z.\-]*)", path.read_text())
+        assert found, f"{path.name} no longer pins a ruff version"
+        assert len(set(found)) == 1, f"{path.name} pins several ruff versions: {found}"
+        pins[path.name] = found[0]
+
+    assert len(set(pins.values())) == 1, (
+        f"the two CI configs pin different ruff versions: {pins}. `ruff check` and "
+        "`make check-lint-debt` would then reach different verdicts depending on "
+        "which CI a change was merged through."
+    )
+    version = next(iter(pins.values()))
+
+    pyproject = (REPO_ROOT / "lib" / "idp_common_pkg" / "pyproject.toml").read_text()
+    specifier = re.search(r'"ruff([^"]*)"', pyproject)
+    assert specifier, "lib/idp_common_pkg/pyproject.toml no longer declares ruff"
+    assert Version(version) in SpecifierSet(specifier.group(1)), (
+        f"CI pins ruff=={version}, which is outside the range "
+        f"{specifier.group(1)!r} that lib/idp_common_pkg installs locally. A "
+        "developer's `make lint` would then run a different linter than CI."
+    )
 
 
 @pytest.mark.unit

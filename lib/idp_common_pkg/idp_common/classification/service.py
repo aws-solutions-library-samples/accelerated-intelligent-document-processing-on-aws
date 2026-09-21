@@ -51,6 +51,7 @@ from idp_common.config.schema_constants import (
     SCHEMA_TYPE,
     TYPE_ARRAY,
     TYPE_OBJECT,
+    UNCLASSIFIED_CLASS,
     X_AWS_IDP_CLASSIFICATION,
     X_AWS_IDP_DOCUMENT_NAME_REGEX,
     X_AWS_IDP_DOCUMENT_TYPE,
@@ -59,7 +60,7 @@ from idp_common.config.schema_constants import (
     X_AWS_IDP_PAGE_CONTENT_REGEX,
 )
 from idp_common.config.schema_utils import deref_schema
-from idp_common.models import Document, Section, Status
+from idp_common.models import Document, ProcessingIssue, Section, Status
 from idp_common.utils import (
     extract_json_from_text,
     extract_structured_data_from_text,
@@ -68,6 +69,21 @@ from idp_common.utils import (
 from idp_common.utils.few_shot_example_builder import build_few_shot_examples_content
 
 logger = logging.getLogger(__name__)
+
+# Why a page came back ``unclassified``, recorded in the page classification's
+# ``metadata["unclassified_reason"]``. The two are not the same event and
+# ``_record_unclassified_page_issues`` reports them at different severities: a page
+# the service had nothing to send may simply be empty, whereas a classification
+# attempt that errored or ran out of retries went wrong.
+UNCLASSIFIED_FAILED = "failed"
+UNCLASSIFIED_NO_CONTENT = "no_content"
+
+# Bounds on what a classification ProcessingIssue's ``root_cause`` may carry. The
+# text comes from model output or a service error message, and the issue rides to
+# DynamoDB inside the section map, whose 400 KB item ceiling the assessment path
+# guards explicitly while ``serialize_processing_issues`` truncates nothing.
+_MAX_ISSUE_DETAIL_CHARS = 500
+_MAX_ISSUE_DETAILS = 3
 
 
 @dataclass
@@ -279,7 +295,7 @@ class ClassificationService:
             )
             doc_types.append(
                 DocumentType(
-                    type_name="unclassified",
+                    type_name=UNCLASSIFIED_CLASS,
                     description="A document that does not match any known type.",
                 )
             )
@@ -878,6 +894,12 @@ class ClassificationService:
             document = self._apply_section_splitting_strategy(
                 document, all_page_results
             )
+
+            # Sections exist now, so a page classification that failed, found no
+            # content, or had its class coerced to the fallback can finally be
+            # recorded somewhere a user sees it — the section that contains the
+            # page. Runs after splitting for exactly that reason.
+            self._record_unclassified_page_issues(document, all_page_results)
 
             # Update document status and metering
             document = self._update_document_status(document)
@@ -1699,6 +1721,7 @@ class ClassificationService:
                 text_uri=text_uri,
                 raw_text_uri=raw_text_uri,
                 error_message="No content available for classification",
+                reason=UNCLASSIFIED_NO_CONTENT,
             )
 
         # Get classification configuration
@@ -1895,7 +1918,7 @@ class ClassificationService:
                 if not enforce:
                     # Legacy behavior: warn and use the prediction as-is.
                     if not doc_type:
-                        doc_type = "unclassified"
+                        doc_type = UNCLASSIFIED_CLASS
                         logger.warning(
                             f"Empty classification for page {page_id}, using 'unclassified'"
                         )
@@ -2040,7 +2063,7 @@ class ClassificationService:
 
                 # Parse response
                 response_body = json.loads(response["Body"].read().decode())
-                doc_type = response_body.get("prediction", "unclassified")
+                doc_type = response_body.get("prediction", UNCLASSIFIED_CLASS)
 
                 # Log success metrics
                 logger.info(
@@ -2242,9 +2265,19 @@ class ClassificationService:
         text_uri: Optional[str] = None,
         raw_text_uri: Optional[str] = None,
         error_message: str = "Unknown error",
+        reason: str = UNCLASSIFIED_FAILED,
     ) -> PageClassification:
         """
         Create a standard unclassified result with error information.
+
+        ``reason`` separates the two situations that reach this method, because
+        they are not the same event and ``_record_unclassified_page_issues``
+        reports them at different severities: a page the service had nothing to
+        send (:data:`UNCLASSIFIED_NO_CONTENT`) may simply be empty, whereas a
+        classification attempt that errored or exhausted its retries
+        (:data:`UNCLASSIFIED_FAILED`) means the page's class is unknown because
+        something went wrong. It defaults to the latter so a call site added later
+        is loud rather than quiet by omission.
 
         Args:
             page_id: ID of the page
@@ -2252,6 +2285,7 @@ class ClassificationService:
             text_uri: Optional URI of the text content
             raw_text_uri: Optional URI of the raw text
             error_message: Error message to include in metadata
+            reason: :data:`UNCLASSIFIED_FAILED` or :data:`UNCLASSIFIED_NO_CONTENT`
 
         Returns:
             PageClassification with unclassified result
@@ -2259,14 +2293,201 @@ class ClassificationService:
         return PageClassification(
             page_id=page_id,
             classification=DocumentClassification(
-                doc_type="unclassified",
+                doc_type=UNCLASSIFIED_CLASS,
                 confidence=0.0,
-                metadata={"error": error_message},
+                metadata={"error": error_message, "unclassified_reason": reason},
             ),
             image_uri=image_uri,
             text_uri=text_uri,
             raw_text_uri=raw_text_uri,
         )
+
+    def _record_unclassified_page_issues(
+        self, document: Document, all_page_results: List[PageClassification]
+    ) -> None:
+        """Record on each section why classification could not classify its pages.
+
+        Classification produced no ``ProcessingIssue`` of any kind before this: a
+        page whose classification failed after retries became ``unclassified`` with
+        the reason in ``DocumentClassification.metadata["error"]``, and a page whose
+        class was out of vocabulary after ``maxValidationRetries`` was coerced to
+        ``invalidClassFallback`` with the reason in ``metadata["validation_error"]``.
+        Neither reached anywhere a user looks. ``metadata`` is copied onto the
+        ``Page`` object with ``setattr``, and ``Page`` has no ``metadata`` field, so
+        it is absent from ``Document.to_dict`` and never survives the Step Functions
+        hop or reaches DynamoDB; the matching ``document.errors`` line is read only
+        by ``processresults_function``'s ``Status.FAILED`` branch, which a document
+        that completes never enters. The document therefore finished green while a
+        page's class was a fallback nobody chose.
+
+        The issue is attached to the SECTION the page belongs to, not to the
+        document, because ``ProcessingIssues`` is a Section field in the GraphQL
+        schema — a document-level issue would bump ``ProcessingIssueCount`` and
+        then have no text to show. One issue per (section, reason) with the page
+        ids listed, rather than one per page, so a 50-page section cannot produce
+        50 identical rows.
+
+        Severity follows what happened, which is also what keeps this usable:
+
+        * a classification that **failed** or exhausted its retries → ``error``;
+        * an out-of-vocabulary class **coerced to the fallback** → ``warning``: a
+          class was assigned, it is just not the model's, and it is the commonest
+          of the three because it is where a page the model cannot place ends up;
+        * a page with **nothing to classify** → ``warning``. Note what that
+          actually requires: no usable OCR text AND no loadable page image, since
+          ``classify_page_bedrock`` checks both. A blank page normally still has an
+          image, so it does not land here — this is either a text-only ingestion of
+          an empty page or missing page artifacts. Warning rather than error
+          because the message cannot tell the two apart and says so.
+
+        No CloudWatch metric is published from here. Every fleet-level alarm in
+        this stack is paired with a threshold parameter a deployer tunes, and none
+        of the three cases above has an established base rate to set one from;
+        emitting an unalarmed metric would only add cost. The issues reach the
+        Sections panel, ``ProcessingIssueCount`` and the ``HasProcessingIssues``
+        index, which is what an operator queries.
+
+        ⚠️ The document list's badge is **severity-blind** — it renders
+        ``ProcessingIssueCount``, which counts warnings and errors alike — so a
+        deployment whose documents routinely contain pages the classifier cannot
+        place will see "Processing Issues" on them. That is the intended reading,
+        since those pages produced no extracted data, but it is the cost of the
+        signal; the lever is to define a class the model can legitimately choose for
+        them (a catch-all "other"), which removes the condition rather than hiding
+        it.
+
+        The badge itself clears on reprocessing: ``ProcessingIssueCount`` is written
+        on **every** document write, including as ``0``. What does not clear is the
+        sparse ``HasProcessingIssues`` GSI attribute, which is only ever ``SET`` and
+        deliberately never ``REMOVE``d — so a document that once carried an issue
+        keeps matching a "has processing issues" index query after a later run
+        cleared it. That is pre-existing and applies to every issue code; what
+        changes here is how many documents reach it.
+        """
+        if not document.sections:
+            return
+
+        # reason code -> (page ids, one representative message)
+        # code -> {page_id: detail}. Per PAGE, not per code: two pages can fail the
+        # same way for different reasons (page 3 AccessDenied, page 40 Throttling),
+        # and keeping only the first detail made every section's root_cause blame
+        # one of them for all of them — which listing the page ids beside it turns
+        # from a vague message into an actively wrong one.
+        by_reason: Dict[str, Dict[str, str]] = {}
+        for result in all_page_results:
+            metadata = result.classification.metadata or {}
+            error_message = metadata.get("error")
+            validation_error = metadata.get("validation_error")
+            if error_message:
+                unclassified_reason = metadata.get(
+                    "unclassified_reason", UNCLASSIFIED_FAILED
+                )
+                code = (
+                    "classification_page_no_content"
+                    if unclassified_reason == UNCLASSIFIED_NO_CONTENT
+                    else "classification_failed"
+                )
+                detail = str(error_message)
+            elif validation_error:
+                code = "classification_invalid_class_fallback"
+                detail = str(validation_error)
+            else:
+                continue
+            # Bounded before it is stored. A validation_error embeds the model's
+            # rejected output, which on a parse failure is a whole line of raw
+            # generation; these issues ride to DynamoDB inside the section map,
+            # which has a 400 KB item ceiling that the assessment path guards
+            # explicitly and ``serialize_processing_issues`` does not truncate.
+            by_reason.setdefault(code, {})[str(result.page_id)] = detail[
+                :_MAX_ISSUE_DETAIL_CHARS
+            ]
+
+        if not by_reason:
+            return
+
+        severities = {
+            "classification_failed": "error",
+            "classification_page_no_content": "warning",
+            "classification_invalid_class_fallback": "warning",
+        }
+        messages = {
+            "classification_failed": (
+                "Classification did not produce a class for {count} page(s) "
+                "({pages}), which were labelled '{unclassified}'. No class means no "
+                "extraction schema, so those pages' fields were not extracted and "
+                "the section holds no data for them."
+            ),
+            "classification_page_no_content": (
+                "{count} page(s) ({pages}) had neither usable OCR text nor a "
+                "loadable page image, so they could not be classified and were "
+                "labelled '{unclassified}'. No fields were extracted from them. "
+                "Check the OCR step for those pages unless they are genuinely empty."
+            ),
+            "classification_invalid_class_fallback": (
+                "The model returned a class outside the configured vocabulary for "
+                "{count} page(s) ({pages}) after every retry, so the configured "
+                "fallback class was assigned instead. The stored class is not the "
+                "model's answer, and extraction ran against the fallback's schema."
+            ),
+        }
+
+        for code, detail_by_page in by_reason.items():
+            for section in document.sections:
+                section_pages = sorted(
+                    (
+                        str(pid)
+                        for pid in section.page_ids
+                        if str(pid) in detail_by_page
+                    ),
+                    key=str,
+                )
+                if not section_pages:
+                    continue
+                # Only the distinct reasons THIS section's pages actually met, so
+                # the root_cause cannot attribute one page's failure to another.
+                seen_details: List[str] = []
+                for pid in section_pages:
+                    detail = detail_by_page[pid]
+                    if detail not in seen_details:
+                        seen_details.append(detail)
+                shown = seen_details[:_MAX_ISSUE_DETAILS]
+                root_cause = "; ".join(shown)
+                if len(seen_details) > len(shown):
+                    root_cause += f"; and {len(seen_details) - len(shown)} more"
+                issue = ProcessingIssue(
+                    stage="classification",
+                    severity=severities[code],
+                    code=code,
+                    message=messages[code].format(
+                        count=len(section_pages),
+                        pages=", ".join(section_pages),
+                        unclassified=UNCLASSIFIED_CLASS,
+                    ),
+                    root_cause=f"{root_cause} (pages {', '.join(section_pages)})",
+                    section_id=section.section_id,
+                    details={"page_ids": section_pages},
+                )
+                # Replace only this stage's issues: downstream stages write their
+                # own onto the same section and the DynamoDB writer replaces the
+                # whole section map, so anything else here must survive. Matching
+                # on the code as well keeps two different classification issues on
+                # one section (a failed page and a fallback page) from evicting
+                # each other.
+                section.processing_issues = [
+                    pi
+                    for pi in (section.processing_issues or [])
+                    if not (
+                        getattr(pi, "stage", None) == "classification"
+                        and getattr(pi, "code", None) == code
+                    )
+                ] + [issue]
+                logger.warning(
+                    "Recorded classification ProcessingIssue %s on section %s for "
+                    "page(s) %s",
+                    code,
+                    section.section_id,
+                    ", ".join(section_pages),
+                )
 
     def _extract_class_from_text(self, text: str) -> str:
         """Extract class name from text if JSON parsing fails."""

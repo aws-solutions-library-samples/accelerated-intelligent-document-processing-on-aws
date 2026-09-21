@@ -25,6 +25,140 @@ export const SCHEMA_REQUIRED = 'required';
 export const SCHEMA_DESCRIPTION = 'description';
 export const SCHEMA_EXAMPLES = 'examples';
 
+/**
+ * Every keyword whose value is itself a subschema, or a list of subschemas.
+ *
+ * Anything that walks a property node has to descend through these, not just through
+ * `items` and `properties`. A class referenced from any of them is as much part of the
+ * schema's `$defs` as one referenced from a property, and a `$ref` that reaches `$defs`
+ * without its target publishes a pointer resolving to nothing.
+ *
+ * The reachable writer today is the `contains` builder, via `ArrayConstraints`, which
+ * points `contains` at a shared class. `SchemaCompositionEditor` and
+ * `SchemaConditionalEditor` write into `oneOf`/`anyOf`/`allOf`/`not` and
+ * `if`/`then`/`else`, but neither component is imported anywhere, so nothing they write can
+ * be in a user's configuration; they are covered because the walk should not depend on
+ * which editors happen to be wired up.
+ */
+export const SUBSCHEMA_KEYWORDS = [
+  'items',
+  'oneOf',
+  'anyOf',
+  'allOf',
+  'not',
+  'contains',
+  'if',
+  'then',
+  'else',
+  'prefixItems',
+  'propertyNames',
+  'additionalItems',
+  'additionalProperties',
+  'unevaluatedItems',
+  'unevaluatedProperties',
+] as const;
+
+/**
+ * Keywords whose value is a **map** of subschemas keyed by a name the author chose.
+ *
+ * They are listed apart from `SUBSCHEMA_KEYWORDS` because the walk must descend into the
+ * map's *values*: treating the map itself as a subschema would read an author's property
+ * name as a JSON Schema keyword, and would let `DESIGNER_ONLY_KEYS` delete a property
+ * legitimately called `id` or `name`.
+ */
+export const SUBSCHEMA_MAP_KEYWORDS = ['properties', 'patternProperties', 'dependentSchemas'] as const;
+
+/**
+ * The designer's own bookkeeping fields. None is a JSON Schema keyword, so none belongs in
+ * an exported schema.
+ *
+ * `id` and `name` are how the designer labels a node it holds in memory, and a `$defs`
+ * body loaded from a saved schema can carry either — that one is reachable and tested.
+ * `schemaId` is a React list key `SchemaCompositionEditor` allocates from a render-scoped
+ * counter; that component has no importers, so no user's configuration can contain one.
+ * It is stripped because the boundary should not depend on which editors are wired up.
+ */
+export const DESIGNER_ONLY_KEYS = ['id', 'name', 'schemaId'] as const;
+
+/**
+ * The keywords an **object** definition can carry. Anything else in a body implies some
+ * other shape, so `type: "object"` must not be invented for it.
+ *
+ * Stated as an allow-list on purpose. A deny-list of "keywords that mean something other
+ * than object" cannot be completed — `enum`, `const`, `items`, `contains`, `prefixItems`,
+ * `pattern`, `format`, `minLength`, `multipleOf`, `minimum`, `uniqueItems` and more all
+ * qualify — and every one it misses is a definition published with a type it contradicts:
+ * an array or a string can never validate against `type: "object"`.
+ *
+ * Every keyword listed is object-applicable and cannot imply another type, so a typeless
+ * body carrying only these still gets `object`, which is what keeps 113 of the 232 shipped
+ * `$defs` entries — typeless, with properties — exporting exactly as they do today. `x-`
+ * extensions are allowed by prefix for the same reason: they are type-agnostic.
+ *
+ * The list deliberately runs past `properties`/`required`/`description` to two further
+ * groups: the object-only *constraints* (`minProperties`, `additionalProperties`,
+ * `patternProperties` …) and the type-agnostic *annotations* (`title`, `default`, `$comment`
+ * …). Stopping earlier would also be sound, but it would withdraw the `object` from a
+ * typeless body like `{additionalProperties: false, properties: {…}}` or `{title: 'T',
+ * properties: {…}}`, both of which have always been written out with one, and neither of
+ * which says anything that contradicts it. Including them keeps the rule exactly as narrow as
+ * its purpose: the only bodies that lose an invented type are the ones that were being given
+ * a contradictory one.
+ *
+ * `useSchemaDesigner.shippedSchemas.test.ts` is what holds that balance in place, over the
+ * real files rather than over reasoning about them.
+ */
+export const OBJECT_BODY_KEYWORDS = [
+  'type',
+  'properties',
+  'required',
+  // Object-only constraints: applicable to an object and meaningless on anything else, so
+  // their presence is consistent with `object` rather than evidence against it.
+  'minProperties',
+  'maxProperties',
+  'additionalProperties',
+  'patternProperties',
+  'propertyNames',
+  'dependentSchemas',
+  'dependentRequired',
+  'unevaluatedProperties',
+  // Type-agnostic annotations. Allowed for the same reason `x-` extensions are: they say
+  // nothing about the type, so a body carrying one alongside `properties` is still an object
+  // and must keep the `object` it has always been written out with.
+  'description',
+  'title',
+  '$comment',
+  '$id',
+  'default',
+  'examples',
+  'deprecated',
+] as const;
+
+/**
+ * Keywords that must not sit beside a `$ref` in a node the designer **writes**.
+ *
+ * `type` is here because `resolveAttributeType` prefers a sibling `type` over following the
+ * pointer, so the same attribute would read back differently depending on which route
+ * created it; `properties` and `required` because they described the inline object the
+ * reference replaces, and `updateAttribute` treats an absent key as "leave it alone", so
+ * they have to be cleared explicitly or they stay underneath as orphans.
+ *
+ * ⚠️ This is a **write** list, not a sanitizer list. `refAttributeUpdates` uses it when a
+ * user turns a property into a reference, where clearing stale inline-object state is the
+ * whole point. Sanitization runs over every node of every export, including hand-authored
+ * ones, where `minProperties`, `maxProperties` and `additionalProperties` beside a `$ref`
+ * are the documented draft-2020-12 way to constrain a reference — nothing reads them, they
+ * contradict nothing, and deleting them loses authored intent. `REF_INCOMPATIBLE_KEYWORDS`
+ * below is what the sanitizer uses.
+ */
+export const INLINE_OBJECT_KEYWORDS = ['type', 'properties', 'required', 'minProperties', 'maxProperties', 'additionalProperties'] as const;
+
+/**
+ * Keywords a sanitizer removes from a node that carries a `$ref`: only the ones that
+ * genuinely conflict with delegating the type designation to the referenced entry.
+ */
+export const REF_INCOMPATIBLE_KEYWORDS = ['type', 'properties', 'required'] as const;
+
 // ============================================================================
 // JSON Schema Type Values
 // ============================================================================
@@ -92,7 +226,6 @@ export const EXTRACTION_MODEL_OVERRIDE_OPTIONS = [
   { label: '(Use global default)', value: '' },
   { label: 'us.amazon.nova-lite-v1:0', value: 'us.amazon.nova-lite-v1:0' },
   { label: 'us.amazon.nova-pro-v1:0', value: 'us.amazon.nova-pro-v1:0' },
-  { label: 'us.amazon.nova-premier-v1:0', value: 'us.amazon.nova-premier-v1:0' },
   { label: 'us.amazon.nova-2-lite-v1:0', value: 'us.amazon.nova-2-lite-v1:0' },
   { label: 'us.anthropic.claude-haiku-4-5-20251001-v1:0', value: 'us.anthropic.claude-haiku-4-5-20251001-v1:0' },
   { label: 'us.anthropic.claude-sonnet-4-5-20250929-v1:0', value: 'us.anthropic.claude-sonnet-4-5-20250929-v1:0' },

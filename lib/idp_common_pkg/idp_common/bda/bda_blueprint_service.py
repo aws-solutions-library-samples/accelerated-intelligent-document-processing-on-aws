@@ -32,11 +32,20 @@ logger = logging.getLogger(__name__)
 
 
 class BdaBlueprintService:
-    def __init__(self, dataAutomationProjectArn: Optional[str] = None):
+    def __init__(
+        self,
+        dataAutomationProjectArn: Optional[str] = None,
+        region: Optional[str] = None,
+    ):
         self.dataAutomationProjectArn = dataAutomationProjectArn
-        self.blueprint_creator = BDABlueprintCreator()
+        self.region = region
+        self.blueprint_creator = BDABlueprintCreator(region=region)
         self.blueprint_name_prefix = os.environ.get("STACK_NAME", "")
-        self.config_manager = ConfigurationManager()
+        # This service WRITES the BDA-derived document classes back to the
+        # configuration table, so the region matters as much here as on the read:
+        # `idp-cli config-sync-bda --region eu-west-1` resolved the table name in
+        # eu-west-1 and used to write the classes to the ambient region.
+        self.config_manager = ConfigurationManager(region=region)
         self.max_workers = int(os.environ.get("BDA_SYNC_MAX_WORKERS", "5"))
         # Track skipped properties during schema transformation for reporting
         self._skipped_properties = []
@@ -98,7 +107,12 @@ class BdaBlueprintService:
             )
             return self.dataAutomationProjectArn
 
-        dynamodb = boto3.resource("dynamodb")
+        # self.region, not boto3's default. This reads the ConfigurationTable
+        # DIRECTLY rather than through ConfigurationManager, so it needs the region
+        # threaded for the same reason: the table name is not region-qualified, and
+        # `idp-cli config-sync-bda --region` resolved that name in the requested
+        # region.
+        dynamodb = boto3.resource("dynamodb", region_name=self.region)
         table = dynamodb.Table(table_name)
 
         # Look up stored project ARN for this version
@@ -2189,7 +2203,10 @@ class BdaBlueprintService:
             configuration_table_name = os.environ.get("CONFIGURATION_TABLE_NAME")
             if configuration_table_name:
                 try:
-                    dynamodb = boto3.resource("dynamodb")
+                    # See get_or_create_project_for_version: a direct read of the
+                    # ConfigurationTable needs the region as much as one through
+                    # ConfigurationManager does.
+                    dynamodb = boto3.resource("dynamodb", region_name=self.region)
                     table = dynamodb.Table(configuration_table_name)
                     # Find and delete BdaProject# entries that reference this ARN.
                     # Must paginate: DynamoDB bounds the 1MB page by items

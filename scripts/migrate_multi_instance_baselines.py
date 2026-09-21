@@ -102,7 +102,12 @@ def load_classes(
     """Read the stack's document classes from its Configuration table."""
     from idp_common.config.configuration_manager import ConfigurationManager
 
-    manager = ConfigurationManager(table_name=_configuration_table(stack_name, region))
+    # `region` goes to the manager as well as to the table-name lookup: the name
+    # it returns is not region-qualified, so a manager without it would read the
+    # same name in whatever region the ambient credentials resolve to.
+    manager = ConfigurationManager(
+        table_name=_configuration_table(stack_name, region), region=region
+    )
     config = (
         manager.get_merged_config(config_profile)
         if config_profile

@@ -47,6 +47,9 @@ make ruff-lint
 # Python formatting only
 make format
 
+# Re-measure ruff's per-file exclusion baseline (part of lint, fastlint, lint-cicd)
+make check-lint-debt
+
 # Type checking with basedpyright
 make typecheck
 make typecheck-stats
@@ -67,18 +70,70 @@ make cfn-lint
 make cfn-lint-warnings
 ```
 
+**The Python lint gates read every tracked `.py` file, and what they skip is a
+named list of files rather than a directory.** `ruff.toml` used to exclude five
+**bare directory names** — `notebooks`, `options`, `patterns`, `src`, `scripts` —
+and a bare name in ruff's exclusion patterns matches at **any** path depth, so
+`src` also excluded `nested/*/src` and `patterns/*/src`. 442 of 1230 tracked `.py`
+files were read by neither `ruff check` nor `ruff format`, including all 138 files
+under `scripts/` (this repository's own gate layer) and 76 under `nested/*/src/`
+that nobody had counted. A clean `ruff check` on one of them meant the file was
+never opened. Issue #975.
+
+The exclusions are now per-file, generated from `scripts/lint_debt.json`, and
+ratcheted: `ruff.toml`'s `[lint] exclude` names 85 files holding 196 pre-existing
+findings, `[format] exclude` names 184 files `ruff format` has never run over, and
+`make check-lint-debt` (in `lint`, `fastlint` **and** `lint-cicd`, so both CIs)
+re-measures every tracked file with the exclusions bypassed. It fails if a listed
+file *gained* a finding, if a listed file is now clean and should be delisted, if a
+listed path is gone, if one of the three **generated** arrays grows a bare
+directory name, or if ruff's walk misses a tracked file no `scope` entry accounts
+for. That last check is what covers the top-level `exclude` array, which is bare
+directory names **on purpose** (a `build/` at any depth is build output) and so is
+deliberately outside the bare-name check — #975 would otherwise be re-openable
+through it with every other check green.
+
+⚠️ **To find out whether a given file is linted, run `python3
+scripts/check_lint_debt.py --explain <path>`. Do not ask ruff.** Every ruff-native
+probe misreports at least one class of file: a plain `ruff check <path>` bypasses
+the exclusions, and `--force-exclude` restores only the *discovery* ones, so
+`ruff check --force-exclude <path>` prints `All checks passed!` and exits 0 for all
+85 lint-excluded files. `ruff check --show-files` does not honour `[lint] exclude`
+either. A misleading probe is the stated reason #975 survived inspection.
+
+Pay a file down by fixing its findings and running `python3
+scripts/check_lint_debt.py --write` — for a formatting entry spell the path out,
+`ruff format <that path>`, because bare `ruff format` honours the exclusion and
+skips the file you are fixing. Never hand-edit either array. `--write` **refuses to
+grow** either list, naming the paths, unless given `--allow-new-debt "<reason>"`,
+which records the reason in the baseline; without that refusal `--write` would
+launder a brand-new finding into a permanent exclusion. `--summary` prints the
+current split. Two `extend-exclude` entries are scope decisions rather than debt —
+the vendored `pii-anonymizer` tree and `**/*.ipynb` — and each carries a premise
+the gate evaluates against the tree.
+
+The **formatting** debt is deliberately unpaid: `ruff format` over those 184 files
+is a mechanical, conflict-generating sweep that belongs in its own change.
+
+`basedpyright` covers all 1230 tracked `.py` files (`pyrightconfig.json`'s `include`
+previously named six paths and reached 432).
+`scripts/tests/test_pyright_config.py` derives that closure from `git ls-files`, so
+a new tree holding Python fails there rather than being silently uncovered.
+
 **`make cfn-lint`** discovers templates by **content** (anything declaring
 `AWSTemplateFormatVersion`), not by filename, so a new template cannot be added
-without being covered. `make check-arn-partitions` now uses the **same** discovery
-(`scripts/discover_templates.sh cfn`, `Makefile:234`) and both targets fail outright
+without being covered. `make check-arn-partitions` uses the **same** discovery
+(`scripts/discover_templates.sh cfn`) and both targets fail outright
 if it returns nothing, so the two gates see the same set — 30 templates today. The
 hardcoded glob list that once missed `nested/`, `samples/`, `notebooks/`, `scripts/`
 and `iam-roles/` is gone; that directory list survives only as the historical note in
-the Makefile comments. One deliberate carve-out remains: `ARN_PARTITION_EXEMPT`
-(`Makefile:226`) skips any discovered template whose path starts with
-`scripts/sdlc/cfn/` — the four SDLC pipeline templates, which name a commercial-only
-cross-account principal by construction — so the ARN gate's real coverage is
-"every template found by content, less that prefix" — 26 of the 30. `cfn-lint`
+the Makefile comments. **Both gates now scan all 30 templates: no template is skipped
+at path scope by either.** The ARN gate's one carve-out, `ARN_PARTITION_EXEMPT`, is
+per **line**: entries are `<path>:<line-pattern>` (the shape
+`scripts/sdlc/retired_services.json` uses), and the single entry today hides the two
+statements in `scripts/sdlc/cfn/credential-vendor.yml` that trust a named role in the
+commercial CI account — cross-partition IAM trust does not exist, so those two cannot
+be parameterised. Everything else in those templates now is. `cfn-lint`
 exempts nothing at **path** scope: no template is skipped. It does exempt specific
 *rules*, which is a different axis — it runs with `--ignore-checks
 $(CFN_LINT_IGNORE)` (E3043 disabled repo-wide, see below) and E1161/E3031 are
@@ -109,6 +164,61 @@ entirely in CI and reports false positives against a stale copy locally — nois
 both. `scripts/tests/test_nested_stack_parameters.py` asserts that wiring directly
 against the **source** templates instead, and also covers the reverse direction
 (a required nested parameter the parent never passes) that E3043 ignores.
+
+### Every gate exemption is registered — `scripts/tests/gate_exemptions.json`
+
+**If you turn a gate off for anything, you register it.** Adding an exemption list
+without a registry entry fails
+`scripts/tests/test_gate_exemption_registry.py::test_every_discovered_exemption_is_registered`,
+and the failure names your constant and tells you what to write.
+
+The reason is a defect class that has shipped repeatedly here: **one justification
+attached to a set, where the justification is a property of individual members.**
+Four exemption lists stated a premise that was false for at least one member, and in
+each case the false member was the one the gate most needed to see — a nested stack
+exempted as independently deployed, a Lambda tree exempted as built separately that
+the publisher builds in the same run, a `LogLevel` exclusion resting on an installer
+manifest one excluded directory does not have, four templates exempted for naming a
+commercial-only principal one of which contains no ARN at all. Read in aggregate
+("does this reason hold broadly?") all four pass. That is why reading them did not
+catch them.
+
+So:
+
+- **One entry, one member's worth of reason.** Never exempt a directory where a file
+  will do, or a file where a line will do. `ARN_PARTITION_EXEMPT` entries are
+  `<path>:<line-pattern>`; `scripts/sdlc/retired_services.json` uses the same shape.
+  Bounding a reason to one file is what makes the mismatch show up while you are
+  writing it rather than in an audit later.
+- **If the premise is computable, compute it.** The predicates live in
+  `scripts/tests/gate_premises.py` — `not_a_nested_stack_of_parent`,
+  `built_separately_from_main_stack`, `file_absent_or_untracked`,
+  `installer_manifest_pins_parameter` — each taking **one** member and returning a
+  verdict. Name the predicate in your registry entry and parametrise your gate over
+  the members; a named predicate the gate never calls is itself a test failure.
+- **If it genuinely is not computable, say `JUDGEMENT` and write the reason.** That is
+  a legitimate answer (a foreign account's partition, another assistant's
+  capabilities, an acknowledged backlog). It is not an exemption from scrutiny: the
+  ratchets still apply.
+- **Give it a ratchet.** *Non-vacuity* — it must currently shield at least one finding,
+  or it is dead and pre-exempting whatever next occupies the path. *Count pinning* —
+  store how many sites it shielded when written, so a new site inside an exempt tree
+  still fails. *Universe closure* — derive the universe and fail if any member is in
+  neither the enforced nor the exempt set; this is what makes an exemption list
+  trustworthy at all. *Staleness* — a dead entry fails.
+- **If it can have none, say what is unprotected** in `ratchetGap`. Those are the
+  honest residuals and they are counted: `MAX_UNRATCHETED` in the meta-test may shrink
+  and not grow, so declaring a gap cannot quietly become the default answer.
+
+Membership is **derived** and only the judgement is authored:
+`scripts/tests/exemption_discovery.py` finds exemption surfaces by constant name, by
+the prose of the attached comment (a constant whose comment argues for an exclusion is
+one, whatever it is called), in the `Makefile` and `make/*.mk`, in `scripts/*.sh`, in
+`ruff.toml` and `pyrightconfig.json`, and in the three JSON baselines. It reads
+**source**, not imported modules, because two of these constants change after import.
+It discovers through `git ls-files`, so it cannot report findings against build output
+or a sibling worktree. The meta-test fails in **both** directions — unregistered, and
+registered-but-vanished.
 
 ### CI parity between GitHub and GitLab
 
@@ -210,7 +320,9 @@ The per-tier procedures stay in
 `scripts/sdlc/docs/CI_TEST_COVERAGE.md`.
 
 ```bash
-# Run all tests (idp_common_pkg + idp_cli + srt security scan)
+# Run every non-integration suite (auto-discovered; see scripts/run_all_tests.py).
+# Note this does NOT run the SRT security scan - that is `make srt-scan`, and it is
+# in neither the lint nor the test gate set, so Bandit findings surface only in CI.
 make test
 
 # Run tests in idp_common_pkg only
@@ -223,7 +335,7 @@ cd lib/idp_common_pkg && make test-unit
 cd lib/idp_common_pkg && make test-integration
 
 # Run idp_cli tests
-cd idp_cli && python -m pytest -v
+cd lib/idp_cli_pkg && python -m pytest -v
 
 # Run specific test markers
 pytest -m "unit"
@@ -437,7 +549,7 @@ See `lib/idp_common_pkg/idp_common/extraction/README.md` for detailed documentat
   - Automatic merging of table fragments split by page breaks
   - Hybrid extraction: agent uses parsing for tables, LLM for complex layouts
 
-**`idp_cli`** (`idp_cli/`):
+**`idp_cli`** (`lib/idp_cli_pkg/idp_cli/`):
 - Command-line interface for deployment and batch processing
 - Stack deployment and updates
 - Batch document processing
@@ -483,7 +595,7 @@ Custom configurations override selected pattern presets when specified.
 
 ### Testing Standards
 
-- Tests located in `lib/idp_common_pkg/tests/` and `idp_cli/tests/`
+- Tests located in `lib/idp_common_pkg/tests/` and `lib/idp_cli_pkg/tests/`
 - Use pytest markers: `@pytest.mark.unit` and `@pytest.mark.integration`
 - Integration tests require AWS resources
 
@@ -553,9 +665,9 @@ The codebase maintains GovCloud compatibility:
 - Use `arn:${AWS::Partition}:` instead of hardcoded `arn:aws:`
 - Use `${AWS::URLSuffix}` instead of hardcoded `amazonaws.com`
 - Validation enforced via `make check-arn-partitions`, which runs in `lint`,
-  `fastlint` and `lint-cicd` (so both CIs) over every template discovered by
-  content, except those under `scripts/sdlc/cfn/` — see the `ARN_PARTITION_EXEMPT`
-  note above
+  `fastlint` and `lint-cicd` (so both CIs) over **every** template discovered by
+  content. No template is skipped; two individual lines are, via the per-line
+  `ARN_PARTITION_EXEMPT` — see the note above
 
 ### Nested Stacks
 

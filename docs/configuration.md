@@ -216,7 +216,9 @@ See the [config_library README](../config_library/README.md) for available confi
 
 Bedrock retires model versions over time. A retired model is removed from the
 model picklists (the enums in `patterns/unified/template.yaml` and
-`template.yaml`) and from `config_library/pricing.yaml`. Model IDs in a
+`template.yaml`) but **keeps** its `config_library/pricing.yaml` entry, so a cost
+report covering documents processed while it was still selectable resolves the
+right rate. Model IDs in a
 configuration are plain strings, not a closed enum, so **a stored configuration
 that still names a retired model keeps loading** — it just fails at invoke time
 with:
@@ -231,17 +233,42 @@ current model to fix it.
 
 Two failure shapes to distinguish:
 
-- **End of life** — the model is gone for everyone. It is removed from the
-  picklists. `us.anthropic.claude-3-5-haiku-20241022-v1:0` is the most recent
-  example.
-- **Provider-legacy, account-scoped** — the model still exists but access is
-  withdrawn per account after inactivity:
+- **End of life** — the model is gone for everyone, in every region, and no
+  account can invoke it. It is removed from the picklists.
+  `us.amazon.nova-premier-v1:0` (end of life 2026-09-14) and
+  `us.anthropic.claude-3-5-haiku-20241022-v1:0` are examples. You can confirm the
+  state yourself: `aws bedrock get-foundation-model --model-identifier
+  amazon.nova-premier-v1:0` answers `ResourceNotFoundException` with the
+  end-of-life message, while a live model returns its details.
+- **Provider-legacy, account-scoped** — the model still exists and existing users
+  can still invoke it, but access is withdrawn per account after inactivity:
   `ResourceNotFoundException: Access denied. This Model is marked by provider as
   Legacy and you have not been actively using the model in the last 30 days.`
-  `us.amazon.nova-premier-v1:0` is currently in this state for some accounts. It
-  remains selectable because it works for accounts that have used it recently —
-  if you hit this error, either pick a current model or request access again in
-  the Bedrock console.
+  `us.anthropic.claude-sonnet-4-20250514-v1:0` is in this state. Such models stay
+  selectable, because they work for accounts that have used them recently — if
+  you hit this error, either pick a current model or request access again in the
+  Bedrock console.
+
+A model removed from the picklists keeps its `pricing.yaml` entry, so cost
+reports covering documents processed while it was selectable still resolve the
+right rate.
+
+**`config-validate` catches it before you deploy.** `idp-cli config-validate` and
+`idp-cli config-upload` (unless you pass `--no-validate`) reject a configuration
+that pins an end-of-life model, naming the date and the command that confirms it,
+rather than letting the failure appear part-way through a document. Loading a
+stored configuration that still names one is unaffected — the model fields are
+plain strings and nothing revalidates a stored config — so an existing deployment
+does not break on upgrade; it keeps failing at inference exactly as it already
+was, until you repoint the stage.
+
+**Upgrading a stack that selected a removed model.** `KnowledgeBaseModelId` is a
+CloudFormation parameter, so if your stack's current value is a model that this
+release removed from `AllowedValues`, the stack update is rejected with
+`Parameter value ... does not match AllowedValues` rather than proceeding. Pass a
+current model for that parameter in the same update. A removed model named in
+your stored *configuration* (rather than a stack parameter) does not block the
+update; repoint that stage in the Configuration editor.
 
 ## Summarization Configuration
 
@@ -253,7 +280,7 @@ Summarization can be controlled via the configuration file rather than CloudForm
 ```yaml
 summarization:
   enabled: true  # Set to false to disable summarization
-  model: us.anthropic.claude-3-7-sonnet-20250219-v1:0
+  model: us.anthropic.claude-sonnet-4-5-20250929-v1:0
   temperature: 0.0
   # ... other summarization settings
 ```
@@ -399,7 +426,7 @@ Key parameters that can be configured during CloudFormation deployment:
 - `CustomConfigPath`: Optional S3 URI to a custom configuration file that overrides pattern presets. Leave blank to use selected pattern configuration. Example: s3://my-bucket/custom-config/config.yaml
 
 ### Integration and Tracing Parameters
-- `EnableXRayTracing`: Enable X-Ray tracing for Lambda functions and Step Functions (default: true). Provides distributed tracing capabilities for debugging and performance analysis. It covers every traced Lambda function in the main and unified-pattern stacks as well as both state machines, so setting it to `false` turns tracing off — and stops the associated X-Ray charges — across the whole deployment. On `false` those functions run in `PassThrough` mode: they record nothing of their own and continue a trace only if a caller already sampled the request.
+- `EnableXRayTracing`: Enable X-Ray tracing for Lambda functions and Step Functions (default: true). Provides distributed tracing capabilities for debugging and performance analysis. It covers every traced Lambda function in the main stack, the unified pattern and the nested feature-platform stack, plus both state machines — so setting it to `false` turns tracing off, and stops the associated X-Ray charges, for everything the main stack creates. On `false` those functions run in `PassThrough` mode: they record nothing of their own and continue a trace only if a caller already sampled the request. It does **not** reach an extension you install from the Extensions catalog: each is a separate stack with its own parameters and traces unconditionally, and for those of its functions whose execution role can write a trace segment that means real X-Ray charges. See [monitoring.md](./monitoring.md#installed-extensions-trace-unconditionally).
 - `EnableMCP`: Enable Model Context Protocol (MCP) integration for external application access via AWS Bedrock AgentCore Gateway (default: true). See [mcp-server.md](mcp-server.md) for details.
 - `EnableECRImageScanning`: Enable automatic vulnerability scanning for Lambda container images in ECR for Patterns 1-3 (default: false). Recommended for production deployments but may impact deployment reliability. See [troubleshooting.md](troubleshooting.md) for guidance.
 
@@ -1055,7 +1082,7 @@ ocr:
   bda_project_arn: null
 
   # For Bedrock backend:
-  bedrock_model: us.anthropic.claude-3-5-sonnet-20241022-v2:0
+  bedrock_model: us.anthropic.claude-sonnet-4-5-20250929-v1:0
   system_prompt: "You are an OCR expert..."
   task_prompt: "Extract all text from this document..."
 ```

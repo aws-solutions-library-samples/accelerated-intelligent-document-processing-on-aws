@@ -161,9 +161,10 @@ from typing import Any, Dict, List, NamedTuple, Optional, Tuple
 import boto3
 from botocore.config import Config
 from botocore.exceptions import BotoCoreError, ClientError
+from log_sanitizer import sanitize_event_for_logging
 
 logger = logging.getLogger()
-logger.setLevel(os.environ.get("LOG_LEVEL", "INFO"))
+logger.setLevel(os.environ.get("LOG_LEVEL", "WARN"))
 
 _DEFAULT_CUSTOMER_IDENTIFIER = os.environ.get("DEFAULT_CUSTOMER_IDENTIFIER", "")
 _DEFAULT_BUYER_ACCOUNT_ID = os.environ.get("DEFAULT_BUYER_ACCOUNT_ID", "111122223333")
@@ -1036,7 +1037,7 @@ def _answer(
 
 
 def handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
-    logger.info("checkFeatureEntitlement event: %s", event)
+    logger.info("checkFeatureEntitlement event: %s", sanitize_event_for_logging(event))
 
     args = event.get("arguments", {}) or {}
     feature_id = args.get("featureId")

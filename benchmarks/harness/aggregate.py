@@ -240,6 +240,23 @@ def cell_stats(rows):
 
 def write_summary(rm, rows, out):
     os.makedirs(out, exist_ok=True)
+    # Surfaced at scoring time as well as in the artifact: whoever runs
+    # aggregate.py is the person about to copy these numbers somewhere, and they
+    # did not necessarily watch the launch.
+    if rm.get("cells_skipped_config_upload"):
+        print(
+            "⚠ INCOMPLETE GRID — configuration upload failed for "
+            f"{rm.get('config_upload_failed_versions')}, so these cells were "
+            f"never launched: {rm['cells_skipped_config_upload']}. This summary "
+            "does not cover the whole suite."
+        )
+    if rm.get("docs_missing_truth"):
+        print(
+            "⚠ scored WITHOUT exact ground truth for "
+            f"{rm['docs_missing_truth']} — these rows come from the stack's own "
+            "evaluation, which is a different scorer and not comparable with "
+            "locally-scored rows."
+        )
     cells = cell_stats(rows)
     json.dump(
         {"meta": _meta(rm), "rows": rows, "cell_stats": cells},
@@ -342,6 +359,14 @@ def _meta(rm):
         "docs_reference": rm.get("docs_reference"),
         "docs_unlaunchable": rm.get("docs_unlaunchable"),
         "docs_other_class": rm.get("docs_other_class"),
+        # Setup failures, carried through for the same reason as the coverage
+        # keys above: the runmap is gitignored, so summary.json's meta is the
+        # only durable record. A non-empty `cells_skipped_config_upload` means
+        # this summary does NOT cover the whole suite — those cells ran against
+        # no uploaded configuration and were never launched.
+        "config_upload_failed_versions": rm.get("config_upload_failed_versions"),
+        "cells_skipped_config_upload": rm.get("cells_skipped_config_upload"),
+        "docs_missing_truth": rm.get("docs_missing_truth"),
         # NOTE: `commit` is the LOCAL repo HEAD at scoring time, which is not
         # necessarily the code that ran — a run against a published template, or a
         # run scored after further local commits, will differ. `stack_version` above

@@ -187,6 +187,13 @@ model_limits:
   # ---------------------------------------------------------------------------
   # Nova Pro/Lite: 300K context; Nova Micro: 128K; Nova 2: 300K. Use the
   # conservative 300K for the family (the context buffer adds further safety).
+  # `premier` stays in this pattern even though Nova Premier is end-of-life and
+  # no longer selectable. Like pricing.yaml and the template's quota-code maps,
+  # this file is consulted for whatever model a DEPLOYED stack's stored config
+  # names, which is a superset of what is newly selectable. Dropping it would make
+  # get_model_max_output_tokens raise "Unsupported model ID ... run
+  # discover_model_limits.py" for such a config, replacing Bedrock's accurate
+  # end-of-life error with a misleading one.
   - pattern: "nova-(premier|pro|lite|micro|2)"
     max_output_tokens: 10000
     max_input_tokens: 300000

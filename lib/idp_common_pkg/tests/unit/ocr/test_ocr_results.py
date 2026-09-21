@@ -16,8 +16,14 @@ class TestOcrResults:
         """Test that the module is properly marked as deprecated."""
         import idp_common.ocr.results
 
+        docstring = idp_common.ocr.results.__doc__
+        assert docstring is not None, (
+            "idp_common.ocr.results has no module docstring, so it no longer "
+            "tells a reader that the module is deprecated"
+        )
+
         # Check that the module docstring indicates it's deprecated
-        assert "deprecated" in idp_common.ocr.results.__doc__.lower()
+        assert "deprecated" in docstring.lower()
 
         # Check that the docstring mentions where functionality was moved
-        assert "idp_common.models" in idp_common.ocr.results.__doc__
+        assert "idp_common.models" in docstring

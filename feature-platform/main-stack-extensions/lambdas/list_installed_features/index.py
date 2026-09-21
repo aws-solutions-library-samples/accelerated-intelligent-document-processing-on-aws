@@ -70,9 +70,10 @@ import boto3
 from botocore import UNSIGNED
 from botocore.config import Config
 from botocore.exceptions import BotoCoreError, ClientError
+from log_sanitizer import sanitize_event_for_logging
 
 logger = logging.getLogger()
-logger.setLevel(os.environ.get("LOG_LEVEL", "INFO"))
+logger.setLevel(os.environ.get("LOG_LEVEL", "WARN"))
 
 _INSTALLED_FEATURES_TABLE = os.environ.get("INSTALLED_FEATURES_TABLE", "")
 _CONFIGURATION_BUCKET = os.environ.get("CONFIGURATION_BUCKET", "")
@@ -425,7 +426,7 @@ def _row_to_feature(
 
 def handler(event: Dict[str, Any], context: Any) -> List[Dict[str, Any]]:
     """AppSync resolver entry point."""
-    logger.info("listInstalledFeatures event: %s", event)
+    logger.info("listInstalledFeatures event: %s", sanitize_event_for_logging(event))
     if not _INSTALLED_FEATURES_TABLE:
         raise RuntimeError("INSTALLED_FEATURES_TABLE env var is not configured")
 

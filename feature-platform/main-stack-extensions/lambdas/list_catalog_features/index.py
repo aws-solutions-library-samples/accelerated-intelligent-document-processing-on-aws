@@ -56,9 +56,10 @@ from typing import Any, Dict, List, Optional
 
 import boto3
 from botocore.exceptions import BotoCoreError, ClientError
+from log_sanitizer import sanitize_event_for_logging
 
 logger = logging.getLogger()
-logger.setLevel(os.environ.get("LOG_LEVEL", "INFO"))
+logger.setLevel(os.environ.get("LOG_LEVEL", "WARN"))
 
 _CONFIGURATION_BUCKET = os.environ.get("CONFIGURATION_BUCKET", "")
 _CATALOG_KEY = os.environ.get("CATALOG_KEY", "config_library/catalog.json")
@@ -175,7 +176,7 @@ def _to_catalog_feature(entry: Dict[str, Any]) -> Optional[Dict[str, Any]]:
 
 def handler(event: Dict[str, Any], context: Any) -> List[Dict[str, Any]]:
     """AppSync resolver entry point."""
-    logger.info("listCatalogFeatures event: %s", event)
+    logger.info("listCatalogFeatures event: %s", sanitize_event_for_logging(event))
 
     catalog = _read_catalog()
     if not catalog or not isinstance(catalog, dict):

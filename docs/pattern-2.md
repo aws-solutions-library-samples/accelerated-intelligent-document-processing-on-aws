@@ -258,7 +258,7 @@ Bedrock OCR is configured through the pattern's configuration files. The OCR bac
 ```yaml
 ocr:
   backend: "bedrock"  # Options: "textract", "bedrock", "none"
-  model_id: "us.anthropic.claude-3-7-sonnet-20250219-v1:0"
+  model_id: "us.anthropic.claude-sonnet-4-5-20250929-v1:0"
   system_prompt: "You are an expert OCR system. Extract all text from the provided image accurately, preserving layout where possible."
   task_prompt: "Extract all text from this document image. Preserve the layout, including paragraphs, tables, and formatting."
 ```
@@ -271,17 +271,16 @@ To use Bedrock OCR:
 2. **Choose a model**: Select from supported vision-capable models:
    - `us.amazon.nova-lite-v1:0`
    - `us.amazon.nova-pro-v1:0` 
-   - `us.amazon.nova-premier-v1:0`
    - `us.amazon.nova-2-lite-v1:0`
-   - `us.anthropic.claude-3-haiku-20240307-v1:0`
    - `us.anthropic.claude-haiku-4-5-20251001-v1:0`
-   - `us.anthropic.claude-3-5-sonnet-20241022-v2:0`
-   - `us.anthropic.claude-3-7-sonnet-20250219-v1:0`
+   - `us.anthropic.claude-haiku-4-5-20251001-v1:0`
+   - `us.anthropic.claude-sonnet-4-5-20250929-v1:0`
+   - `us.anthropic.claude-sonnet-4-5-20250929-v1:0`
    - `us.anthropic.claude-sonnet-4-20250514-v1:0`
    - `us.anthropic.claude-sonnet-4-5-20250929-v1:0`
    - `us.anthropic.claude-sonnet-4-6`
    - `us.anthropic.claude-sonnet-4-6:1m`
-   - `us.anthropic.claude-opus-4-20250514-v1:0`
+   - `us.anthropic.claude-opus-4-5-20251101-v1:0`
    - `us.anthropic.claude-opus-4-1-20250805-v1:0`
    - `us.anthropic.claude-opus-4-5-20251101-v1:0`
    - `us.anthropic.claude-opus-4-6-v1`
@@ -295,10 +294,10 @@ To use Bedrock OCR:
    - `eu.amazon.nova-lite-v1:0`
    - `eu.amazon.nova-pro-v1:0`
    - `eu.amazon.nova-2-lite-v1:0`
-   - `eu.anthropic.claude-3-haiku-20240307-v1:0`
    - `eu.anthropic.claude-haiku-4-5-20251001-v1:0`
-   - `eu.anthropic.claude-3-5-sonnet-20241022-v2:0`
-   - `eu.anthropic.claude-3-7-sonnet-20250219-v1:0`
+   - `eu.anthropic.claude-haiku-4-5-20251001-v1:0`
+   - `eu.anthropic.claude-sonnet-4-5-20250929-v1:0`
+   - `eu.anthropic.claude-sonnet-4-5-20250929-v1:0`
    - `eu.anthropic.claude-sonnet-4-20250514-v1:0`
    - `eu.anthropic.claude-sonnet-4-5-20250929-v1:0`
    - `eu.anthropic.claude-sonnet-4-6`

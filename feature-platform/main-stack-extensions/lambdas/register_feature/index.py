@@ -24,9 +24,10 @@ from datetime import datetime, timezone
 from typing import Any, Dict
 
 import boto3
+from log_sanitizer import sanitize_event_for_logging
 
 logger = logging.getLogger()
-logger.setLevel(os.environ.get("LOG_LEVEL", "INFO"))
+logger.setLevel(os.environ.get("LOG_LEVEL", "WARN"))
 
 _INSTALLED_FEATURES_TABLE = os.environ.get("INSTALLED_FEATURES_TABLE", "")
 
@@ -167,7 +168,9 @@ def _unregister(feature_id: str) -> bool:
 
 def handler(event: Dict[str, Any], context: Any) -> Any:
     """AppSync resolver entry point for both registerFeature and unregisterFeature."""
-    logger.info("register/unregister feature event: %s", event)
+    logger.info(
+        "register/unregister feature event: %s", sanitize_event_for_logging(event)
+    )
     if not _INSTALLED_FEATURES_TABLE:
         raise RuntimeError("INSTALLED_FEATURES_TABLE env var is not configured")
 

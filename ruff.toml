@@ -1,41 +1,56 @@
-# Let's exclude some whole directories until we are ready to format them individually
+# What the Python lint gates do and do not read, and why.
+#
+# EVERY EXCLUSION BELOW NAMES A PATH, NEVER A BARE DIRECTORY NAME. A bare name in
+# ruff's exclusion patterns matches at *any* path depth, and `make ruff-lint`,
+# `make format` and `make lint-cicd` all invoke ruff with no path argument, so the
+# exclusions apply. This file used to exclude `notebooks`, `options`, `patterns`,
+# `src` and `scripts` that way, which meant 442 of 1230 tracked .py files were read
+# by neither the linter nor the formatter -- including all 138 files under
+# `scripts/` (this repository's own gate layer, 137 of them at its root plus one
+# under `security/threat-modeling/scripts/`) and 76 files under `nested/*/src/` --
+# 67 API-resolver Lambdas and 9 Bedrock Knowledge Base custom-resource handlers --
+# which nobody had counted because `src` matched there too. A clean `ruff check` on
+# any of them meant the file was never opened. Issue #975.
+#
+# The three arrays below are GENERATED from scripts/lint_debt.json, which also
+# records, per file, exactly which findings each exclusion shields. `make
+# check-lint-debt` re-measures with the exclusions bypassed and fails if a listed
+# file gains a finding, becomes clean (delist it), or disappears -- so a new
+# violation inside an excluded file is still caught, and a new file anywhere in the
+# repository is linted by default. To change any of them:
+#
+#     python3 scripts/check_lint_debt.py --write
+#
+# which REFUSES to grow either list without --allow-new-debt "<reason>". To ask
+# whether one file is read by either gate, use `--explain <path>`: no ruff
+# invocation answers that correctly, because --force-exclude restores only the
+# discovery-level exclusions and the two arrays below filter after discovery.
+#
+# `scope` is the only array that is a judgement rather than debt: those paths hold
+# code ruff's rules do not describe. Each carries a premise that
+# scripts/check_lint_debt.py evaluates against this tree.
 extend-exclude = [
-    "lib/appsync_helper_pkg",
-    "lib/get_config_pkg",
-    "lib/idp_common_pkg/idp_common/bedrock",
-    # idp_common/config is excluded FILE-BY-FILE rather than as a directory, so
-    # that anything NEW added there is linted by default. A shared helper
-    # (schema_utils.py) landed in this package and silently got no lint, isort or
-    # format enforcement because the whole directory was skipped. These entries
-    # are pre-existing debt (31 findings); do not add to the list.
-    "lib/idp_common_pkg/idp_common/config/__init__.py",
-    "lib/idp_common_pkg/idp_common/config/class_names.py",
-    "lib/idp_common_pkg/idp_common/config/configuration_manager.py",
-    "lib/idp_common_pkg/idp_common/config/constants.py",
-    "lib/idp_common_pkg/idp_common/config/merge_utils.py",
-    "lib/idp_common_pkg/idp_common/config/migration.py",
-    "lib/idp_common_pkg/idp_common/config/migrations",
-    "lib/idp_common_pkg/idp_common/config/models.py",
-    "lib/idp_common_pkg/idp_common/config/schema_constants.py",
-    "lib/idp_common_pkg/idp_common/config/system_defaults",
-    "lib/idp_common_pkg/idp_common/image",
-    "lib/idp_common_pkg/idp_common/metrics",
-    "lib/idp_common_pkg/idp_common/s3",
-    "lib/idp_common_pkg/idp_common/utils",
-    "notebooks",
-    "options",
-    "patterns",
-    "src",
-    "scripts",
-    # Vendored third-party code (AWS Labs pii-anonymizer, Apache-2.0). Kept
-    # byte-for-byte to ease re-sync; not linted against our style. See
-    # feature-platform/pii-anonymizer/hook/vendor/PROVENANCE.md.
+# >>> GENERATED scope — edit scripts/lint_debt.json, then --write
+    "**/*.ipynb",
     "feature-platform/pii-anonymizer/hook/vendor",
+# <<< GENERATED scope
 ]
 
-# Exclude a variety of commonly ignored directories.
+# Build output, caches and checkouts-inside-the-checkout. These ARE bare names on
+# purpose -- a `build/` or `.venv/` at any depth is build output wherever it sits,
+# which is the opposite of the `src`/`scripts` case above. `scratch/` and
+# `.claude/worktrees/` routinely hold whole copies of this repository.
+#
+# Because these ARE bare names, `check_lint_debt.py`'s bare-name check deliberately
+# does not read this array — so it asserts the property instead, in both
+# directions: ruff's walk must reach nothing git ignores, and it must reach every
+# tracked source file that no `scope` entry accounts for. Naming a source tree here
+# would therefore fail, which is what stops issue #975 being re-opened through this
+# array with every other check green.
 exclude = [
+    ".aws-sam",
     ".bzr",
+    ".claude",
     ".direnv",
     ".eggs",
     ".git",
@@ -57,8 +72,10 @@ exclude = [
     "_build",
     "buck-out",
     "build",
+    "cdk.out",
     "dist",
     "node_modules",
+    "scratch",
     "site-packages",
     "venv",
 ]
@@ -80,6 +97,101 @@ ignore = []
 # TID251: enforce banned-api rules (prevents direct imports from idp_sdk._core)
 extend-select = ["I", "TID251"]
 
+# Files carrying lint findings that predate issue #975, when the trees holding them
+# were excluded wholesale and nothing examined them. Listed file by file so that a
+# NEW file in the same directory is linted, and ratcheted per rule by
+# `make check-lint-debt` so a new finding in a listed file still fails. Paying one
+# down means fixing its findings and re-running --write; do not add to this list.
+exclude = [
+# >>> GENERATED lint-debt — edit scripts/lint_debt.json, then --write
+    "lib/idp_common_pkg/idp_common/config/__init__.py",
+    "lib/idp_common_pkg/idp_common/config/configuration_manager.py",
+    "lib/idp_common_pkg/idp_common/config/migration.py",
+    "lib/idp_common_pkg/idp_common/utils/__init__.py",
+    "lib/idp_common_pkg/idp_common/utils/few_shot_example_builder.py",
+    "lib/idp_common_pkg/idp_common/utils/lambda_metering.py",
+    "lib/idp_common_pkg/idp_common/utils/strands_agent_tools/todo_list.py",
+    "nested/api-resolvers/src/lambda/abort_workflow_resolver/index.py",
+    "nested/api-resolvers/src/lambda/copy_to_baseline_resolver/index.py",
+    "nested/api-resolvers/src/lambda/delete_document_resolver/index.py",
+    "nested/api-resolvers/src/lambda/discovery_upload_resolver/index.py",
+    "nested/api-resolvers/src/lambda/document_versions_resolver/index.py",
+    "nested/api-resolvers/src/lambda/process_changes_resolver/index.py",
+    "nested/api-resolvers/src/lambda/query_knowledgebase_resolver/index.py",
+    "nested/api-resolvers/src/lambda/reprocess_document_resolver/index.py",
+    "nested/api-resolvers/src/lambda/sync_bda_idp_resolver/index.py",
+    "nested/api-resolvers/src/lambda/test_results_resolver/index.py",
+    "nested/api-resolvers/src/lambda/test_runner/index.py",
+    "nested/api-resolvers/src/lambda/test_set_resolver/index.py",
+    "nested/bedrockkb/src/opensearch_index_custom_resource/oss_handler.py",
+    "nested/bedrockkb/src/s3_vectors_manager/handler.py",
+    "nested/bedrockkb/src/s3_vectors_manager/test_handler.py",
+    "patterns/unified/src/assessment_function/assessment_validator.py",
+    "patterns/unified/src/bda_completion_function/index.py",
+    "patterns/unified/src/bda_invoke_function/index.py",
+    "patterns/unified/src/bda_processresults_function/index.py",
+    "patterns/unified/src/classification_function/index.py",
+    "patterns/unified/src/evaluation_function/index.py",
+    "patterns/unified/src/evaluation_function/save_to_reporting.py",
+    "patterns/unified/src/mlflow_logger_function/index.py",
+    "patterns/unified/src/ocr_function/index.py",
+    "patterns/unified/src/processresults_function/index.py",
+    "patterns/unified/src/rule-validation-function/index.py",
+    "patterns/unified/src/rule-validation-orchestration-function/index.py",
+    "patterns/unified/src/rule-validation-policy-classification-function/index.py",
+    "patterns/unified/src/summarization_function/index.py",
+    "src/lambda/agent_chat_processor/index.py",
+    "src/lambda/agentcore_gateway_manager/index.py",
+    "src/lambda/agentcore_mcp_handler/index.py",
+    "src/lambda/agentcore_mcp_handler/tools/batch_reprocess.py",
+    "src/lambda/agentcore_mcp_handler/tools/batch_run.py",
+    "src/lambda/agentcore_mcp_handler/tools/batch_status.py",
+    "src/lambda/api_handler/index.py",
+    "src/lambda/batch_pre_processor/index.py",
+    "src/lambda/bda_ocr_project/tests/test_index.py",
+    "src/lambda/blueprint_optimization/index.py",
+    "src/lambda/calculate_capacity/index.py",
+    "src/lambda/calculate_capacity/test_capacity_calculations.py",
+    "src/lambda/calculate_capacity/test_validation.py",
+    "src/lambda/calculate_capacity/validation.py",
+    "src/lambda/chat_stream_processor/vendored/agent_chat_processor.py",
+    "src/lambda/complete_section_review/index.py",
+    "src/lambda/create_chat_session_resolver/index.py",
+    "src/lambda/dashboard_merger/index.py",
+    "src/lambda/discovery_processor/index.py",
+    "src/lambda/docsplit_testset_deployer/index.py",
+    "src/lambda/external_idp_group_mapping/test_index.py",
+    "src/lambda/fcc_dataset_deployer/index.py",
+    "src/lambda/finetuning_data_generator/index.py",
+    "src/lambda/finetuning_job_creator/index.py",
+    "src/lambda/finetuning_process_document/index.py",
+    "src/lambda/initialize_counter/index.py",
+    "src/lambda/ipset_updater/index.py",
+    "src/lambda/job_tracker/index.py",
+    "src/lambda/lookup_function/index.py",
+    "src/lambda/multi_doc_discovery/appsync_status.py",
+    "src/lambda/multi_doc_discovery/cluster_handler.py",
+    "src/lambda/multi_doc_discovery/embed_handler.py",
+    "src/lambda/multi_doc_discovery/prepare_handler.py",
+    "src/lambda/multi_doc_discovery/save_handler.py",
+    "src/lambda/ocr_benchmark_deployer/index.py",
+    "src/lambda/ocr_benchmark_deployer/test_local.py",
+    "src/lambda/post_processing_decompressor/index.py",
+    "src/lambda/queue_sender/index.py",
+    "src/lambda/save_reporting_data/index.py",
+    "src/lambda/start_codebuild/index.py",
+    "src/lambda/test_file_copier/index.py",
+    "src/lambda/test_file_copier/test_index.py",
+    "src/lambda/test_set_file_copier/index.py",
+    "src/lambda/test_set_zip_extractor/index.py",
+    "src/lambda/update_configuration/index.py",
+    "src/lambda/update_settings/index.py",
+    "src/lambda/user_sync/index.py",
+    "src/lambda/w2_dataset_deployer/index.py",
+    "src/lambda/workflow_tracker/index.py",
+# <<< GENERATED lint-debt
+]
+
 # Allow fix for all enabled rules (when `--fix`) is provided.
 fixable = ["ALL"]
 unfixable = []
@@ -94,8 +206,6 @@ known-first-party = ["idp_common", "idp_cli", "idp_sdk", "idp_feature_sdk", "idp
 "idp_sdk._core" = {msg = "This is a private internal module. Use IDPClient from idp_sdk instead."}
 
 [lint.per-file-ignores]
-# Let's ignore some annoying rules in notebooks
-"notebooks/*" = ["F401"]
 # Internal SDK implementation files are allowed to import from _core
 "lib/idp_sdk/idp_sdk/**" = ["TID251"]
 # Lambda tools that need direct _core access
@@ -103,8 +213,211 @@ known-first-party = ["idp_common", "idp_cli", "idp_sdk", "idp_feature_sdk", "idp
 # Tests mock _core internals directly
 "lib/idp_cli_pkg/tests/**" = ["TID251"]
 "lib/idp_sdk/tests/**" = ["TID251"]
+# The gate tests reach into _core for the same reason the SDK's own tests do: they
+# monkeypatch the template transformer, or read its resource list to compare against
+# a template. Neither has a public equivalent -- the public wrapper is what they are
+# standing in for. Listed per directory rather than as `scripts/**/tests/**` so a
+# new gate-test directory fails closed and its author makes the same decision.
+"scripts/tests/**" = ["TID251"]
+"scripts/sdlc/tests/**" = ["TID251"]
 
 [format]
+# Files `ruff format` has never been run over, because the tree holding them was
+# excluded. Paying these down rewrites whole files, so it is deliberately NOT part
+# of the change that closed issue #975: five of the seven branches then open were
+# editing 42 of these files, so a formatting sweep would have conflicted with all
+# five.
+# Listed per file so a NEW file is format-checked, and ratcheted by
+# `make check-lint-debt`: a file that is already formatted must be delisted.
+exclude = [
+# >>> GENERATED format-debt — edit scripts/lint_debt.json, then --write
+    "lib/idp_common_pkg/idp_common/bedrock/client.py",
+    "lib/idp_common_pkg/idp_common/config/__init__.py",
+    "lib/idp_common_pkg/idp_common/config/configuration_manager.py",
+    "lib/idp_common_pkg/idp_common/config/constants.py",
+    "lib/idp_common_pkg/idp_common/image/__init__.py",
+    "nested/api-resolvers/src/lambda/abort_test_runs/index.py",
+    "nested/api-resolvers/src/lambda/abort_workflow_resolver/index.py",
+    "nested/api-resolvers/src/lambda/agent_request_handler/index.py",
+    "nested/api-resolvers/src/lambda/configuration_resolver/index.py",
+    "nested/api-resolvers/src/lambda/configuration_resolver/test_revision_ops.py",
+    "nested/api-resolvers/src/lambda/copy_to_baseline_resolver/index.py",
+    "nested/api-resolvers/src/lambda/create_document_resolver/index.py",
+    "nested/api-resolvers/src/lambda/create_document_resolver/robust_list_deletion.py",
+    "nested/api-resolvers/src/lambda/delete_agent_chat_session_resolver/index.py",
+    "nested/api-resolvers/src/lambda/delete_document_resolver/index.py",
+    "nested/api-resolvers/src/lambda/delete_tests/index.py",
+    "nested/api-resolvers/src/lambda/discovery_upload_resolver/index.py",
+    "nested/api-resolvers/src/lambda/finetuning_jobs_resolver/index.py",
+    "nested/api-resolvers/src/lambda/get_file_contents_resolver/index.py",
+    "nested/api-resolvers/src/lambda/get_file_contents_resolver/test_index.py",
+    "nested/api-resolvers/src/lambda/get_stepfunction_execution_resolver/index.py",
+    "nested/api-resolvers/src/lambda/get_stepfunction_execution_resolver/test_index.py",
+    "nested/api-resolvers/src/lambda/http_api_dispatcher/authz.py",
+    "nested/api-resolvers/src/lambda/http_api_dispatcher/ddb_direct.py",
+    "nested/api-resolvers/src/lambda/list_agent_chat_sessions_resolver/index.py",
+    "nested/api-resolvers/src/lambda/list_agent_chat_sessions_resolver/tests/test_surface_filter.py",
+    "nested/api-resolvers/src/lambda/list_documents_gsi_resolver/index.py",
+    "nested/api-resolvers/src/lambda/list_documents_range_resolver/index.py",
+    "nested/api-resolvers/src/lambda/list_documents_range_resolver/test_scope_fail_closed.py",
+    "nested/api-resolvers/src/lambda/reprocess_document_resolver/index.py",
+    "nested/api-resolvers/src/lambda/reprocess_document_resolver/test_scope_fail_closed.py",
+    "nested/api-resolvers/src/lambda/send_chat_document_message_resolver/index.py",
+    "nested/api-resolvers/src/lambda/sync_bda_idp_resolver/test_scope_fail_closed.py",
+    "nested/api-resolvers/src/lambda/test_results_resolver/index.py",
+    "nested/api-resolvers/src/lambda/test_runner/index.py",
+    "nested/api-resolvers/src/lambda/test_runner/test_captured_config_size.py",
+    "nested/api-resolvers/src/lambda/test_runner/test_revision_pinning.py",
+    "nested/api-resolvers/src/lambda/test_set_resolver/test_index.py",
+    "nested/api-resolvers/src/lambda/upload_resolver/index.py",
+    "nested/api-resolvers/src/lambda/upload_resolver/test_index.py",
+    "nested/bedrockkb/src/opensearch_index_custom_resource/client_utils.py",
+    "nested/bedrockkb/src/opensearch_index_custom_resource/oss_handler.py",
+    "nested/bedrockkb/src/opensearch_index_custom_resource/oss_utils.py",
+    "nested/bedrockkb/src/s3_vectors_manager/handler.py",
+    "nested/bedrockkb/src/s3_vectors_manager/test_handler.py",
+    "nested/bedrockkb/src/start_ingestion_job_custom_resource/handler.py",
+    "nested/bedrockkb/src/start_ingestion_job_custom_resource/test_handler.py",
+    "notebooks/_run_nb.py",
+    "notebooks/_validate_notebooks.py",
+    "notebooks/examples/demo-lambda/GENAIIDP-notebook-demo-extractor.py",
+    "notebooks/misc/standalone_sharded_extraction_demo.py",
+    "patterns/unified/src/assessment_function/assessment_validator.py",
+    "patterns/unified/src/bda_completion_function/index.py",
+    "patterns/unified/src/bda_invoke_function/index.py",
+    "patterns/unified/src/bda_processresults_function/index.py",
+    "patterns/unified/src/classification_function/index.py",
+    "patterns/unified/src/evaluation_function/save_to_reporting.py",
+    "patterns/unified/src/ocr_function/index.py",
+    "patterns/unified/src/pipeline_hooks_function/index.py",
+    "patterns/unified/src/processresults_function/index.py",
+    "patterns/unified/src/rule-validation-function/index.py",
+    "patterns/unified/src/rule-validation-orchestration-function/index.py",
+    "patterns/unified/src/summarization_function/index.py",
+    "patterns/unified/src/test_execution_aggregation_function/index.py",
+    "patterns/unified/tests/test_hook_point_reachability.py",
+    "scripts/check_python_arn_partitions.py",
+    "scripts/check_threat_model_currency.py",
+    "scripts/deploy-vpc-endpoints.py",
+    "scripts/discover_model_limits.py",
+    "scripts/generate_govcloud_template.py",
+    "scripts/generate_standard_classes.py",
+    "scripts/sdlc/integration_test_deployment.py",
+    "scripts/sdlc/scan_api_rbac.py",
+    "scripts/sdlc/tests/test_api_security_cases.py",
+    "scripts/sdlc/tests/test_codebuild_failure_trail.py",
+    "scripts/sdlc/tests/test_credential_refresh.py",
+    "scripts/sdlc/tests/test_pipeline_hook_step.py",
+    "scripts/sdlc/tests/test_progressive_summary.py",
+    "scripts/sdlc/tests/test_resolver_layer_coverage.py",
+    "scripts/sdlc/tests/test_retired_services_not_documented.py",
+    "scripts/sdlc/tests/test_scan_api_rbac_function_urls.py",
+    "scripts/sdlc/tests/test_scan_api_rbac_scope_check.py",
+    "scripts/sdlc/tests/test_stale_stack_reaper.py",
+    "scripts/sdlc/tests/test_suppress_invite_sentinel.py",
+    "scripts/sdlc/typecheck_pr_changes.py",
+    "scripts/sdlc/validate_buildspec.py",
+    "scripts/sdlc/validate_service_role_permissions.py",
+    "scripts/security/curate_results.py",
+    "scripts/security/live_checks/oidc_provider/deploy.py",
+    "scripts/security/live_checks/verify_execution_scope.py",
+    "scripts/security/live_checks/verify_idp_group_mapping.py",
+    "scripts/srt/ci_paths.py",
+    "scripts/srt/tests/test_ci_paths.py",
+    "scripts/srt/tests/test_scanner_health.py",
+    "scripts/test_api_rbac.py",
+    "scripts/tests/test_asl_placeholder_substitution.py",
+    "scripts/tests/test_check_python_arn_partitions.py",
+    "scripts/tests/test_contributing_doc.py",
+    "scripts/tests/test_metric_namespace_alignment.py",
+    "scripts/tests/test_repo_quality_review_skill.py",
+    "scripts/tests/test_repo_walk_guards_prune_local_work.py",
+    "scripts/tests/test_scope_lookup_fail_closed.py",
+    "scripts/tests/test_secure_transport_deny.py",
+    "scripts/tests/test_state_machine_retry_policies.py",
+    "scripts/tests/test_threat_model_currency.py",
+    "scripts/tests/test_well_architected_doc.py",
+    "security/threat-modeling/scripts/build_threat_model.py",
+    "src/lambda/agent_chat_processor/index.py",
+    "src/lambda/agent_processor/index.py",
+    "src/lambda/agentcore_gateway_manager/__init__.py",
+    "src/lambda/agentcore_gateway_manager/index.py",
+    "src/lambda/agentcore_mcp_handler/index.py",
+    "src/lambda/agentcore_mcp_handler/tools/batch_reprocess.py",
+    "src/lambda/agentcore_mcp_handler/tools/batch_run.py",
+    "src/lambda/agentcore_mcp_handler/tools/batch_status.py",
+    "src/lambda/agentcore_mcp_handler/tools/search.py",
+    "src/lambda/api_handler/models.py",
+    "src/lambda/api_handler/test_index.py",
+    "src/lambda/backfill_gsi_attributes/index.py",
+    "src/lambda/batch_pre_processor/conftest.py",
+    "src/lambda/batch_pre_processor/index.py",
+    "src/lambda/batch_pre_processor/test_index.py",
+    "src/lambda/bda_ocr_project/tests/test_index.py",
+    "src/lambda/calculate_capacity/index.py",
+    "src/lambda/calculate_capacity/test_capacity_calculations.py",
+    "src/lambda/calculate_capacity/test_validation.py",
+    "src/lambda/calculate_capacity/validation.py",
+    "src/lambda/calculate_capacity_resolver/index.py",
+    "src/lambda/chat_stream_processor/sse.py",
+    "src/lambda/chat_stream_processor/tests/test_stream_processor.py",
+    "src/lambda/chat_stream_processor/tests/test_vendored_in_sync.py",
+    "src/lambda/chat_stream_processor/vendored/agent_chat_processor.py",
+    "src/lambda/chat_stream_processor/vendored/chat_with_document_processor.py",
+    "src/lambda/chat_with_document_processor/index.py",
+    "src/lambda/chat_with_document_processor/tests/conftest.py",
+    "src/lambda/chat_with_document_processor/tests/test_chat_with_document_processor.py",
+    "src/lambda/circuit_breaker_manager/index.py",
+    "src/lambda/circuit_breaker_manager/test_index.py",
+    "src/lambda/complete_section_review/conftest.py",
+    "src/lambda/complete_section_review/test_index.py",
+    "src/lambda/create_chat_session_resolver/index.py",
+    "src/lambda/dashboard_merger/index.py",
+    "src/lambda/discovery_processor/index.py",
+    "src/lambda/docsplit_testset_deployer/index.py",
+    "src/lambda/external_idp_group_mapping/index.py",
+    "src/lambda/external_idp_group_mapping/test_index.py",
+    "src/lambda/finetuning_deployment_handler/index.py",
+    "src/lambda/finetuning_job_creator/index.py",
+    "src/lambda/finetuning_job_status_checker/index.py",
+    "src/lambda/finetuning_list_documents/index.py",
+    "src/lambda/finetuning_merge_data/index.py",
+    "src/lambda/initialize_counter/index.py",
+    "src/lambda/ipset_updater/index.py",
+    "src/lambda/job_tracker/conftest.py",
+    "src/lambda/job_tracker/test_index.py",
+    "src/lambda/lookup_function/index.py",
+    "src/lambda/multi_doc_discovery/analyze_handler.py",
+    "src/lambda/multi_doc_discovery/appsync_status.py",
+    "src/lambda/multi_doc_discovery/cluster_handler.py",
+    "src/lambda/multi_doc_discovery/embed_handler.py",
+    "src/lambda/multi_doc_discovery/save_handler.py",
+    "src/lambda/ocr_benchmark_deployer/index.py",
+    "src/lambda/ocr_benchmark_deployer/test_local.py",
+    "src/lambda/post_processing_decompressor/index.py",
+    "src/lambda/queue_processor/index.py",
+    "src/lambda/queue_processor/test_check_circuit_breaker.py",
+    "src/lambda/queue_processor/test_config_version_pin.py",
+    "src/lambda/queue_processor/test_reconcile_counter.py",
+    "src/lambda/queue_processor/test_slot_ownership.py",
+    "src/lambda/queue_sender/conftest.py",
+    "src/lambda/queue_sender/index.py",
+    "src/lambda/save_reporting_data/index.py",
+    "src/lambda/start_codebuild/index.py",
+    "src/lambda/test_file_copier/test_index.py",
+    "src/lambda/test_set_zip_extractor/index.py",
+    "src/lambda/update_settings/index.py",
+    "src/lambda/user_management/test_index.py",
+    "src/lambda/user_management/test_scan_pagination.py",
+    "src/lambda/user_sync/index.py",
+    "src/lambda/w2_dataset_deployer/index.py",
+    "src/lambda/workflow_tracker/conftest.py",
+    "src/lambda/workflow_tracker/index.py",
+    "src/lambda/workflow_tracker/test_decrement_floor_and_idempotency.py",
+    "src/lambda/workflow_tracker/test_notify_circuit_breaker.py",
+# <<< GENERATED format-debt
+]
+
 # Like Black, use double quotes for strings.
 quote-style = "double"
 

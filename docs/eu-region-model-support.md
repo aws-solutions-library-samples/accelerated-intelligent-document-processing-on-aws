@@ -16,17 +16,17 @@ The following table shows all US to EU model mappings currently configured in th
 |----------|----------|-------|
 | `us.amazon.nova-lite-v1:0` | `eu.amazon.nova-lite-v1:0` | Direct mapping |
 | `us.amazon.nova-pro-v1:0` | `eu.amazon.nova-pro-v1:0` | Direct mapping |
-| `us.amazon.nova-premier-v1:0` | `eu.anthropic.claude-sonnet-4-5-20250929-v1:0` | **Fallback mapping** |
+| `us.amazon.nova-premier-v1:0` | `eu.anthropic.claude-sonnet-4-5-20250929-v1:0` | **Fallback mapping.** Nova Premier reached end of life on 2026-09-14 and cannot be selected any more; the row remains so that a configuration stored before its removal is rewritten onto a working model when the stack is deployed in an EU region |
 | `us.amazon.nova-2-lite-v1:0` | `eu.amazon.nova-2-lite-v1:0` | Direct mapping |
-| `us.anthropic.claude-3-haiku-20240307-v1:0` | `eu.anthropic.claude-3-haiku-20240307-v1:0` | Direct mapping |
+| `us.anthropic.claude-3-haiku-20240307-v1:0` | `eu.anthropic.claude-haiku-4-5-20251001-v1:0` | **Fallback mapping.** Claude 3 Haiku is end-of-life in both regions, so the row exists to move a configuration stored before its removal onto the current Haiku-class model |
 | `us.anthropic.claude-haiku-4-5-20251001-v1:0` | `eu.anthropic.claude-haiku-4-5-20251001-v1:0` | Direct mapping |
-| `us.anthropic.claude-3-5-sonnet-20241022-v2:0` | `eu.anthropic.claude-3-5-sonnet-20241022-v2:0` | Direct mapping |
-| `us.anthropic.claude-3-7-sonnet-20250219-v1:0` | `eu.anthropic.claude-3-7-sonnet-20250219-v1:0` | Direct mapping |
+| `us.anthropic.claude-3-5-sonnet-20241022-v2:0` | `eu.anthropic.claude-sonnet-4-5-20250929-v1:0` | **Fallback mapping.** Claude 3.5 Sonnet is end-of-life; the EU twin was no better than the US original |
+| `us.anthropic.claude-3-7-sonnet-20250219-v1:0` | `eu.anthropic.claude-sonnet-4-5-20250929-v1:0` | **Fallback mapping.** Claude 3.7 Sonnet is end-of-life; same reason |
 | `us.anthropic.claude-sonnet-4-20250514-v1:0` | `eu.anthropic.claude-sonnet-4-20250514-v1:0` | Direct mapping |
 | `us.anthropic.claude-sonnet-4-5-20250929-v1:0` | `eu.anthropic.claude-sonnet-4-5-20250929-v1:0` | Direct mapping |
 | `us.anthropic.claude-sonnet-4-6` | `eu.anthropic.claude-sonnet-4-6` | Direct mapping |
 | `us.anthropic.claude-sonnet-4-6:1m` | `eu.anthropic.claude-sonnet-4-6:1m` | Direct mapping |
-| `us.anthropic.claude-opus-4-20250514-v1:0` | `eu.anthropic.claude-sonnet-4-5-20250929-v1:0` | **Fallback mapping** |
+| `us.anthropic.claude-opus-4-20250514-v1:0` | `eu.anthropic.claude-sonnet-4-5-20250929-v1:0` | **Fallback mapping.** Claude Opus 4 is end-of-life, so this row is reachable only by a configuration stored before its removal |
 | `us.anthropic.claude-opus-4-1-20250805-v1:0` | `eu.anthropic.claude-sonnet-4-5-20250929-v1:0` | **Fallback mapping** |
 | `us.anthropic.claude-opus-4-5-20251101-v1:0` | `eu.anthropic.claude-opus-4-5-20251101-v1:0` | Direct mapping |
 | `us.anthropic.claude-opus-4-6-v1` | `eu.anthropic.claude-opus-4-6-v1` | Direct mapping |
@@ -109,10 +109,7 @@ Based on the mappings above, the following EU models are supported:
 - `eu.amazon.nova-pro-v1:0`
 
 #### Anthropic Claude Models
-- `eu.anthropic.claude-3-haiku-20240307-v1:0`
 - `eu.anthropic.claude-haiku-4-5-20251001-v1:0`
-- `eu.anthropic.claude-3-5-sonnet-20241022-v2:0`
-- `eu.anthropic.claude-3-7-sonnet-20250219-v1:0`
 - `eu.anthropic.claude-sonnet-4-20250514-v1:0`
 - `eu.anthropic.claude-sonnet-4-5-20250929-v1:0`
 
@@ -144,8 +141,11 @@ The UpdateConfiguration lambda processes default configurations as follows:
 
 **⚠️ Critical**: Some US models are not directly available in EU regions and use fallback mappings:
 
-- **Nova Premier**: `us.amazon.nova-premier-v1:0` → `eu.anthropic.claude-sonnet-4-5-20250929-v1:0`
 - **Claude Opus Models**: Both Opus variants → `eu.anthropic.claude-sonnet-4-5-20250929-v1:0`
+- **Nova Premier**: `us.amazon.nova-premier-v1:0` →
+  `eu.anthropic.claude-sonnet-4-5-20250929-v1:0`. Reachable only by a
+  configuration stored before Nova Premier reached end of life (2026-09-14); it
+  can no longer be selected, so nothing new produces this mapping.
 
 ### Implications of Fallback Mappings
 
@@ -166,7 +166,6 @@ The following third-party models are available in US regions only and have no EU
 ### Missing Direct EU Equivalents
 
 The following US models do not have direct EU equivalents:
-- Nova Premier
 - Claude 3.5 Haiku (specific version)
 - Claude Opus 4 variants
 - Meta Llama 4 Maverick/Scout (US cross-region only)

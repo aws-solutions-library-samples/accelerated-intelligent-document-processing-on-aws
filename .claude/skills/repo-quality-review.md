@@ -126,7 +126,7 @@ ASSESSED with the reason**, never dropped.
 | 2 | **Security** | IAM wildcard census (measurement E) and whether each `Resource: "*"` carries a `reason:` in cfn-nag/checkov metadata. Authorization decision points: `lib/idp_common_pkg/idp_common/config_scope.py` is the canonical fail-closed contract — find every caller and check each honours it. `scripts/tests/test_iam_privilege_escalation.py` and `scripts/tests/test_config_revision_read_grants.py` are the existing structural gates; read what they *don't* cover. Log redaction (Class 2 worked example). SRT suppressions in `scripts/srt/issues.json` and dep-audit triage in `scripts/security/dep_audit_allowlist.json` — each needs a specific justification, not a bulk waiver |
 | 3 | **Test strategy & coverage** | Registered vs quarantined test roots (measurement C) and what each quarantine reason costs. Which suites CI actually runs vs which only `make test` runs (measurement G) — a suite outside both `test-cicd` and `test-packages-cicd` runs on no PR. Structural gates in `scripts/tests/` are this repo's strongest asset; inventory them and note which enumerate from the source and which carry a hardcoded list (Class 2). `docs/testing.md` is the published per-method map; check it against reality |
 | 4 | **Observability** | Alarm inventory and action wiring (measurement D) — an alarm whose topic has no subscriber is decoration. Lambda-to-LogGroup ratio per template (measurement D2) and whether the gaps are the deliberate custom-resource-only ones `scripts/tests/test_lambda_log_groups.py` enforces. Metric namespace consistency (`scripts/tests/test_metric_namespace_alignment.py`). X-Ray annotation correctness (Class 2 worked example). Whether a failure that matters is *visible*: dead-letter queues with no alarm, `logger.error` on a fail-open path with no metric |
-| 5 | **Code quality** | Lint and typecheck coverage (measurement B) — the *coverage* number matters more than the finding count, because an excluded path reports zero. `ruff.toml` `extend-exclude` currently skips whole trees (`src`, `scripts`, `patterns`, `notebooks`) plus per-file config debt; `pyrightconfig.json` `include` is a three-entry allowlist. Largest files (`find . -name '*.py' | xargs wc -l | sort -rn | head`) — a 6,000-line module that no gate covers is the worst combination. Duplication: identical helper defined in N Lambdas |
+| 5 | **Code quality** | Lint and typecheck coverage (measurement B) — the *coverage* number matters more than the finding count, because an excluded path reports zero. `ruff.toml` skips a named per-file list rather than any directory, and `pyrightconfig.json` `include` covers every tree holding tracked Python, so the coverage question is now "has the debt list grown?" rather than "which trees are dark?" — `python3 scripts/check_lint_debt.py --summary` answers it. Largest files (`find . -name '*.py' | xargs wc -l | sort -rn | head`) — a 6,000-line module that no gate covers is the worst combination. Duplication: identical helper defined in N Lambdas |
 | 6 | **CI/CD & automation** | Gate inventory (measurement G): which `make` targets exist, which run on GitHub, which on GitLab, which are advisory (`allow_failure`, `continue-on-error`), and — the one people skip — which are actually **required** on `develop` (measurement G2). `scripts/tests/test_ci_gate_parity.py` enforces GitHub/GitLab symmetry; it cannot enforce branch protection, so check that separately. Workflow triggers: GitHub is `pull_request`-only, so a direct push to `develop` runs nothing there |
 | 7 | **Documentation** | Doc-to-template drift, both directions (measurement F): a service shipped and documented nowhere, and a service documented that no template declares. `docs/aws-services-and-roles.md` is the one that must match IAM reality. Both doc tiers per `.claude/skills/documentation.md` — `docs/*.md` and `lib/idp_common_pkg/**/README.md`. Frontmatter/licence header conformance. `CHANGELOG.md` `[Unreleased]` shape. Skill-file inventory vs the `CLAUDE.md` table (measurement F2) |
 | 8 | **Frontend / UI** | `src/ui/src` test-file-to-source ratio (measurement H). Cloudscape-only component use; no stray `console.log`; `DOMPurify` on every `dangerouslySetInnerHTML`. Generated GraphQL types in sync (`src/ui/src/graphql/generated/`). Accessibility on new surfaces. Bundle/dependency posture: `src/ui/.npmrc` supply-chain keys and whether the pinned npm honours them (Class 1 worked example) |
@@ -217,21 +217,24 @@ for k in ('include', 'exclude'):
 "
 ```
 
-Last measured: **767 of 1114** tracked `.py` files are linted (347, ~31%, are not),
-and `pyrightconfig.json` `include` names **`idp_cli/idp_cli`, which does not exist** —
-the package lives at `lib/idp_cli_pkg/idp_cli`. basedpyright silently type-checks
-nothing there, including `lib/idp_cli_pkg/idp_cli/cli.py` at **6,791 lines** (issue
-**#923**). `exclude` also names a non-existent `options/*/src`; harmless, but the same
-class.
+Last measured: `ruff check` reads **1114 of 1230** tracked `.py` files and
+`ruff format --check` **1013**; `basedpyright` reads all 1230. What each gate skips is
+a named list of individual files, not a tree — 85 files carrying 196 pre-existing lint
+findings, 186 files `ruff format` has never run over, plus two scope entries (the
+vendored `pii-anonymizer` tree and `**/*.ipynb`). `python3
+scripts/check_lint_debt.py --summary` prints the split, and `make check-lint-debt`
+fails if a listed file gains a finding or has become clean.
 
-One thing to know before you report the ruff gap as new: the bare-name `extend-exclude`
-entries that produce it are tracked as issue **#975**, and `scripts/tests/` is inside
-the excluded `scripts` tree — so this skill's own guard,
-`scripts/tests/test_repo_quality_review_skill.py`, is one of the unlinted files
-(`ruff check --force-exclude <that path>` reports "No Python files found", exit 0;
-`basedpyright` does cover it). Cite #975 rather than re-deriving it, and use
-`--force-exclude` when demonstrating an exclusion — it is not ruff's default, and an
-explicitly named path bypasses exclusions without it.
+Two things to know before reporting a coverage gap here. The **formatting** debt is
+deliberately unpaid and is not a new finding: reformatting those 186 files is a
+mechanical sweep deferred to its own change (issue #975 closed the exclusions, not the
+formatting). And when you demonstrate that a file is excluded, use
+`python3 scripts/check_lint_debt.py --explain <path>`. **No ruff invocation answers
+this correctly.** A plain `ruff check <path>` bypasses the exclusions, and
+`--force-exclude` restores only `exclude`/`extend-exclude` — `[lint] exclude` and
+`[format] exclude` filter after discovery, so `ruff check --force-exclude <path>`
+prints `All checks passed!` and exits 0 for every one of the 85 lint-excluded files.
+`ruff check --show-files` does not honour `[lint] exclude` either.
 
 Pair the coverage number with the largest uncovered files:
 
@@ -751,6 +754,7 @@ the pass in the date column and then withdrawn after investigation.
 | 2026-09 | `nested/bedrockkb/` declaring 5 Lambda functions and 0 `AWS::Logs::LogGroup` resources | Deliberate: those are custom-resource-only Lambdas that run during a stack operation and keep Lambda's auto-created log group, an accepted retention cost. `scripts/tests/test_lambda_log_groups.py` asserts exactly this shape |
 | 2026-09 | `last_exception` in `lib/idp_common_pkg/idp_common/bedrock/client.py` looks like a swallowed error | It is dead but harmless, and it is a **Python semantics trap a fresh reviewer will re-derive from scratch** — which is why it is here rather than left to be rediscovered. The three sites (`:1554`, `:2058`, `:2603`) are *function parameters*, not local variables, on the recursive retry helpers `_invoke_with_retry`, `_generate_embedding_with_retry` and `_invoke_lambda_hook_with_retry`; each is threaded down the recursion at the `last_exception=e` call sites and **never loaded** (verified by AST: zero `Name`-in-`Load` occurrences). Nothing is swallowed because every exhaustion path ends in a **bare `raise`** (`:1706` and `:1792` in the first helper, `:2165`, `:2746` and `:2768`), which re-raises the exception currently being handled in that frame — i.e. the most recent attempt's — which is what the parameter was presumably meant to supply. Dead code worth deleting; not an error-handling defect |
 | 2026-09 | "108 of 109 log groups are encrypted", i.e. one unencrypted log group | The **figure** is withdrawn as a conflation of two different statistics over the same population, and it carries a **scope trap** worth recording: 106 of 109 declare `KmsKeyId` and 108 of 109 take `RetentionInDays` from a parameter, and the denominator 109 only reproduces if you restrict to `template.yaml` (56), `patterns/unified/template.yaml` (20) and `nested/api-resolvers/template.yaml` (33). Against `scripts/discover_templates.sh cfn`'s **30** templates it is **158** log groups, 131 with `KmsKeyId` and 145 parameterised — so quoting "109" without naming the three-template scope is not reproducible. ⚠️ **Only the statistic is withdrawn, not the gap.** `HttpApiDispatcherLogGroup` (`nested/api-resolvers/template.yaml:2876`) is the sole exception on retention (hardcoded `30`) and one of *three* on encryption, and unlike the other two (`StacknameCheckFunctionLogGroup`, `ReadPreviousIDPPatternFunctionLogGroup`, which each carry a `cfn_nag` W84 suppression and a `checkov:skip` with a reason) it carries no suppression, comment or test saying the deviation is deliberate. That is a live finding, addressed by PR **#973** |
+| 2026-09 | `scripts/tests/test_cfn_export_ownership.py` needs an append-only snapshot of host export names, so that withdrawing or moving one forces a deliberate acknowledgement | The property is already enforced, twice, and `PINNED_PRODUCERS` *is* that snapshot: `test_every_host_export_is_pinned` compares the produced suffixes against it **in both directions**, so a withdrawn name fails, and `test_host_exports_keep_their_pinned_producer` compares each name's producing template against the pin, so a move fails. Verified by probe — renaming one `Export.Name` in `feature-platform/main-stack-extensions/template.yaml` fails **three** tests. A second artifact would duplicate a passing check and add a third place to keep in step. ⚠️ **The gap the review actually found is a different one, and a snapshot does not close it:** `MARKETPLACE_EXTENSION_HOST_IMPORTS` records which *closed-source* extension imports which name, is a documented **lower bound** rather than a census, and is used only to cross-check manifest `featureId`s and to enrich a failure message — never to assert a template property. Those templates live in another repository, so nothing readable from here can enumerate them; an artifact that looked authoritative about consumers would be trusted more than it deserves. Leave the lower bound, labelled as one |
 
 When you withdraw a finding, **add a row here in the same PR as the report**, dated,
 with the reason in one sentence. When you keep a finding that looks like one of these,

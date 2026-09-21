@@ -143,8 +143,8 @@ setup-venv: ## Create .venv and install all packages into it
 	@echo -e "$(YELLOW)   'basedpyright' is separate again: npm install -g basedpyright$(NC)"
 
 ##@ Code Quality
-lint: ruff-lint format check-arn-partitions check-filtered-scans check-data-plane-tags check-retired-services check-threat-model-currency validate-buildspec cfn-lint ui-lint codegen-check ## Run all linting (ruff, format, ARN checks, filtered scans, retired-service docs, threat-model currency, buildspec, UI, codegen). Use FORCE=1 to force UI lint re-run despite checksum match.
-fastlint: ruff-lint format check-arn-partitions check-filtered-scans check-data-plane-tags check-retired-services check-threat-model-currency validate-buildspec ## Quick lint without UI checks
+lint: ruff-lint format check-lint-debt check-arn-partitions check-filtered-scans check-data-plane-tags check-retired-services check-threat-model-currency validate-buildspec cfn-lint ui-lint codegen-check ## Run all linting (ruff, format, ARN checks, filtered scans, retired-service docs, threat-model currency, buildspec, UI, codegen). Use FORCE=1 to force UI lint re-run despite checksum match.
+fastlint: ruff-lint format check-lint-debt check-arn-partitions check-filtered-scans check-data-plane-tags check-retired-services check-threat-model-currency validate-buildspec ## Quick lint without UI checks
 
 ruff-lint: ## Run ruff linting with auto-fix
 	ruff check --fix
@@ -165,6 +165,14 @@ lint-cicd: ## CI/CD lint — checks only, no modifications
 		exit 1; \
 	fi; \
 	echo "All checks passed!"
+	@# The two ruff invocations above are only as strong as what they are
+	@# allowed to read. This asserts the exclusion baseline they honour is still
+	@# the one that was measured -- see issue #975.
+	@if ! make check-lint-debt; then \
+		echo -e "$(RED)ERROR: ruff exclusion baseline is out of date$(NC)"; \
+		echo -e "$(YELLOW)Run 'python3 scripts/check_lint_debt.py --write' after fixing the findings.$(NC)"; \
+		exit 1; \
+	fi
 	@echo "Frontend checks"
 	@if ! make ui-lint; then \
 		echo -e "$(RED)ERROR: UI lint failed$(NC)"; \
@@ -225,6 +233,15 @@ lint-cicd: ## CI/CD lint — checks only, no modifications
 
 	@echo -e "$(GREEN)All code quality checks passed!$(NC)"
 
+check-lint-debt: ## Ratchet ruff's per-file exclusions: fail if an excluded file gains a finding, or is now clean (issue #975)
+	@# ruff.toml used to exclude five BARE directory names, which match at any
+	@# path depth, so 442 of 1230 tracked .py files were read by neither the
+	@# linter nor the formatter. The exclusions are now per-file and generated;
+	@# this re-measures them with the exclusions bypassed so a listed file cannot
+	@# quietly accumulate more. Regenerate with --write after fixing findings.
+	@$(PYTHON) scripts/check_lint_debt.py || \
+		(echo -e "$(RED)ERROR: ruff exclusion baseline is out of date (see issue #975)$(NC)" && exit 1)
+
 check-filtered-scans: ## Check for DynamoDB filtered Scans that can't see all matches (issue #599)
 	@$(PYTHON) scripts/check_filtered_scans.py || \
 		(echo -e "$(RED)ERROR: Unpaginated filtered DynamoDB scan(s) found!$(NC)" && exit 1)
@@ -261,18 +278,33 @@ validate-buildspec: ## Validate AWS CodeBuild buildspec files
 		(echo -e "$(RED)ERROR: Buildspec validation failed!$(NC)" && exit 1)
 	@echo -e "$(GREEN)✅ All buildspec files are valid!$(NC)"
 
-# Templates the ARN-partition gate does NOT scan, each with its reason. This is
-# a per-PATH exemption, never a per-rule one: every rule still runs on everything
-# else. Keep it short, and justify each entry here.
+# Lines the ARN-partition gate does NOT flag, each with its reason. Entries are
+# `<path>:<line-pattern>`, the same shape scripts/sdlc/retired_services.json uses,
+# so a file can be PARTLY exempt. A bare `<path>` (or `<path>/` prefix) still works
+# and skips the whole file, but prefer the per-line form: this is never a per-RULE
+# exemption, and it should not be a per-DIRECTORY one either.
 #
-#   scripts/sdlc/cfn/ — the SDLC pipeline's own infrastructure (CodePipeline,
-#     the GitLab-runner credential vendor, the builder IAM role). It deploys only
-#     in the commercial CI account by construction: it names a commercial
-#     cross-account principal (arn:aws:iam::<account>:role/gitlab-runners-prod)
-#     that has no counterpart in another partition. Mirrors the /scripts/sdlc/
-#     exclusion in scripts/check_python_arn_partitions.py. If the harness ever
-#     grows a GovCloud probe, drop this and fix the templates.
-ARN_PARTITION_EXEMPT := scripts/sdlc/cfn/
+# Why per line. This used to read `scripts/sdlc/cfn/` — one directory entry, one
+# reason, four templates — justified on the ground that the SDLC pipeline templates
+# "name a commercial cross-account principal that has no counterpart in another
+# partition". Measured with this gate's own greps, that was true of 2 lines out of
+# the 51 the entry hid: one template contained no ARN at all, and the other 49 were
+# own-account or AWS-managed ARNs and service principals that simply needed
+# parameterising, which they now have. The premise was a property of two lines and
+# was attached to a directory, so reading it in aggregate ("do these deploy only in
+# the commercial account?" — yes) confirmed it while it shielded 49 fixable
+# findings. Naming the lines makes the mismatch impossible to write down.
+#
+#   scripts/sdlc/cfn/credential-vendor.yml:gitlab-runners-prod — two statements
+#     trust a named role in the commercial CI account that owns this pipeline.
+#     Cross-partition IAM trust does not exist, so `arn:${AWS::Partition}:` here
+#     would render an ARN naming a GovCloud account that is not the one meant. This
+#     is the only line in these templates that cannot be parameterised.
+#
+# scripts/tests/test_discover_templates.py checks the shape, requires a reason, and
+# fails if an entry hides nothing — a dead exemption is a standing licence for
+# whatever next occupies the path.
+ARN_PARTITION_EXEMPT := scripts/sdlc/cfn/credential-vendor.yml:gitlab-runners-prod
 
 check-arn-partitions: ## Check CloudFormation templates for hardcoded ARN partitions
 	@echo "Checking CloudFormation templates for hardcoded ARN partitions and service principals..."
@@ -286,22 +318,31 @@ check-arn-partitions: ## Check CloudFormation templates for hardcoded ARN partit
 		exit 1; \
 	fi; \
 	for template in $$TEMPLATES; do \
-		SKIP=0; \
+		SKIP=0; LINEFILTER=cat; \
 		for exempt in $(ARN_PARTITION_EXEMPT); do \
-			case "$$template" in $$exempt*) SKIP=1;; esac; \
+			case "$$exempt" in \
+				*:*) epath=$${exempt%%:*}; epat=$${exempt#*:};; \
+				*)   epath=$$exempt; epat='';; \
+			esac; \
+			if [ -n "$$epat" ]; then \
+				if [ "$$template" = "$$epath" ]; then LINEFILTER="grep -v $$epat"; fi; \
+			else \
+				case "$$template" in $$epath*) SKIP=1;; esac; \
+			fi; \
 		done; \
 		if [ $$SKIP -eq 1 ]; then \
 			echo "Skipping $$template (ARN_PARTITION_EXEMPT — see Makefile for the reason)"; \
 		elif [ -f "$$template" ]; then \
-			echo "Checking $$template..."; \
-			ARN_MATCHES=$$(grep -n "arn:aws:" "$$template" | grep -v "arn:\$${AWS::Partition}:" | grep -v "^[0-9]*:[[:space:]]*#" || true); \
+			if [ "$$LINEFILTER" = cat ]; then echo "Checking $$template..."; \
+			else echo "Checking $$template (ARN_PARTITION_EXEMPT hides lines matching '$${LINEFILTER#grep -v }' — see Makefile)"; fi; \
+			ARN_MATCHES=$$(grep -n "arn:aws:" "$$template" | grep -v "arn:\$${AWS::Partition}:" | grep -v "^[0-9]*:[[:space:]]*#" | $$LINEFILTER || true); \
 			if [ -n "$$ARN_MATCHES" ]; then \
 				echo -e "$(RED)ERROR: Found hardcoded 'arn:aws:' references in $$template:$(NC)"; \
 				echo "$$ARN_MATCHES" | sed 's/^/  /'; \
 				echo -e "$(YELLOW)  These should use 'arn:\$${AWS::Partition}:' instead for GovCloud compatibility$(NC)"; \
 				FOUND_ISSUES=1; \
 			fi; \
-			SERVICE_MATCHES=$$(grep -n "\.amazonaws\.com" "$$template" | grep -v "\$${AWS::URLSuffix}" | grep -v "^[0-9]*:[[:space:]]*#" | grep -v "Description:" | grep -v "Comment:" | grep -v "reason:" | grep -v "cognito" | grep -v "ContentSecurityPolicy" || true); \
+			SERVICE_MATCHES=$$(grep -n "\.amazonaws\.com" "$$template" | grep -v "\$${AWS::URLSuffix}" | grep -v "^[0-9]*:[[:space:]]*#" | grep -v "Description:" | grep -v "Comment:" | grep -v "reason:" | grep -v "cognito" | grep -v "ContentSecurityPolicy" | $$LINEFILTER || true); \
 			if [ -n "$$SERVICE_MATCHES" ]; then \
 				echo -e "$(RED)ERROR: Found hardcoded service principal references in $$template:$(NC)"; \
 				echo "$$SERVICE_MATCHES" | sed 's/^/  /'; \
@@ -309,7 +350,7 @@ check-arn-partitions: ## Check CloudFormation templates for hardcoded ARN partit
 				echo -e "$(YELLOW)  Example: 'lambda.amazonaws.com' should be 'lambda.\$${AWS::URLSuffix}'$(NC)"; \
 				FOUND_ISSUES=1; \
 			fi; \
-			CONSOLE_MATCHES=$$(grep -n "console\.aws\.amazon\.com\|s3\.console\.aws\.amazon\.com" "$$template" | grep -v "^[0-9]*:[[:space:]]*#" | grep -v "Domain:" | grep -v "Description:" | grep -v "Comment:" || true); \
+			CONSOLE_MATCHES=$$(grep -n "console\.aws\.amazon\.com\|s3\.console\.aws\.amazon\.com" "$$template" | grep -v "^[0-9]*:[[:space:]]*#" | grep -v "Domain:" | grep -v "Description:" | grep -v "Comment:" | $$LINEFILTER || true); \
 			if [ -n "$$CONSOLE_MATCHES" ]; then \
 				echo -e "$(RED)ERROR: Found hardcoded AWS console domain references in $$template:$(NC)"; \
 				echo "$$CONSOLE_MATCHES" | sed 's/^/  /'; \
@@ -454,6 +495,9 @@ cfn-lint-warnings: ## Same as cfn-lint but lists every advisory warning (W*/I*) 
 # rather than a silent pass.
 check-branch-protection: ## Report whether branch protection actually requires the CI checks (opt-in, needs a GitHub token; see issue #933)
 	@$(PYTHON) scripts/sdlc/check_branch_protection.py $(BRANCH_PROTECTION_ARGS)
+
+check-retired-models: ## Ask Bedrock whether any model this repo offers has been retired (opt-in, needs AWS credentials; NOT a CI gate)
+	@$(PYTHON) scripts/sdlc/check_retired_models.py $(RETIRED_MODELS_ARGS)
 
 ##@ Type Checking
 typecheck: ## Run type checks with basedpyright

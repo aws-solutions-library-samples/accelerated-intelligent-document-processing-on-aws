@@ -6794,7 +6794,9 @@ def bootstrap(
 
         from idp_common.config.configuration_manager import ConfigurationManager
 
-        config_manager = ConfigurationManager()
+        # The table name above was resolved in `region`; the manager must read
+        # and write it there too (see ConfigurationManager's region docstring).
+        config_manager = ConfigurationManager(region=region)
         test_set_bucket = _os.environ.get("TEST_SET_BUCKET")
 
         result = bootstrap_mod.run_bootstrap(

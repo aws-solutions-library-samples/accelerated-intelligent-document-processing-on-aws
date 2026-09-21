@@ -2787,6 +2787,13 @@
         "name": "setAsActiveReference",
         "non_null": false,
         "type": "Boolean"
+      },
+      {
+        "elem_non_null": false,
+        "is_list": false,
+        "name": "clientToken",
+        "non_null": false,
+        "type": "String"
       }
     ],
     "ReextractTestSetDocumentInput": [

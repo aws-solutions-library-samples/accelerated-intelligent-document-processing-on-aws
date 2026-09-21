@@ -73,9 +73,10 @@ from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Tuple
 
 import boto3
+from log_sanitizer import sanitize_event_for_logging
 
 logger = logging.getLogger()
-logger.setLevel(os.environ.get("LOG_LEVEL", "INFO"))
+logger.setLevel(os.environ.get("LOG_LEVEL", "WARN"))
 
 _CONFIG_TABLE = os.environ["CONFIGURATION_TABLE"]
 
@@ -471,7 +472,7 @@ def _remove(feature_id: str) -> bool:
 
 
 def handler(event: Dict[str, Any], _context: Any) -> Any:
-    logger.info("applyFeatureConfigPreset event: %s", event)
+    logger.info("applyFeatureConfigPreset event: %s", sanitize_event_for_logging(event))
     field = event.get("info", {}).get("fieldName", "")
     args = event.get("arguments", {}) or {}
     if field == "applyFeatureConfigPreset":

@@ -20,9 +20,8 @@ monkeypatched. They pin the properties the gate exists for:
 
 import os
 
-import pytest
-
 import codebuild_deployment as cbd
+import pytest
 
 pytestmark = pytest.mark.unit
 
@@ -72,7 +71,13 @@ def wired(monkeypatch):
     monkeypatch.setattr(cbd.boto3, "client", _fake_client)
 
     class _FakeTransformer:
-        def transform(self, src, dst):
+        # Signature mirrors the real HeadlessTemplateTransformer as the SDK's
+        # public transform_template_headless() calls it, since that wrapper is
+        # what codebuild_deployment now goes through.
+        def __init__(self, verbose=False):
+            self.verbose = verbose
+
+        def transform(self, src, dst, update_govcloud_config=False):
             calls["transformed"].append((src, dst))
             with open(dst, "w") as fh:
                 fh.write("Resources: {}\n")
@@ -145,7 +150,10 @@ def test_upload_exception_fails_without_raising(packaged_template, monkeypatch):
     monkeypatch.setattr(cbd.boto3, "client", _boom)
 
     class _FakeTransformer:
-        def transform(self, src, dst):
+        def __init__(self, verbose=False):
+            self.verbose = verbose
+
+        def transform(self, src, dst, update_govcloud_config=False):
             with open(dst, "w") as fh:
                 fh.write("Resources: {}\n")
             return True

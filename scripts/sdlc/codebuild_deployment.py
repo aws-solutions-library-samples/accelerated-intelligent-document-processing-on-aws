@@ -356,10 +356,11 @@ def validate_headless_template(main_template_url):
 
     out_path = os.path.join(".aws-sam", "idp-headless.yaml")
     try:
-        from idp_sdk._core.template_transform import HeadlessTemplateTransformer
+        from idp_sdk import IDPClient
 
-        if not HeadlessTemplateTransformer().transform(packaged, out_path):
-            return False, "headless transform reported failure (see log above)"
+        result = IDPClient().publish.transform_template_headless(packaged, out_path)
+        if not result.success:
+            return False, f"headless transform reported failure: {result.error}"
     except Exception as e:  # noqa: BLE001
         return False, f"headless transform raised: {e}"
 

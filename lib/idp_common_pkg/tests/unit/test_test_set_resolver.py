@@ -9,7 +9,10 @@ from unittest.mock import MagicMock, Mock, patch
 
 import boto3
 import pytest
+from botocore.exceptions import ClientError
 from moto import mock_aws
+
+from idp_common.dynamodb.client import DynamoDBError
 
 # Mock environment variables and dependencies before importing.
 #
@@ -91,6 +94,9 @@ def publish_table():
     and the concurrency guarantee would go untested. The module-level
     db_client is a mock (patched at import), so point its get_item/put_item at
     the real table for the duration of the test.
+
+    Publishing copies the set's baselines as part of recording a version, so this
+    needs a real (moto) bucket too — a version that cannot copy must not be written.
     """
     # The resolver builds its own boto3 resource with no explicit region, so it
     # picks up the ambient one. Pin the region for both here — other tests in
@@ -100,6 +106,7 @@ def publish_table():
         "AWS_DEFAULT_REGION": "us-east-1",
         "AWS_REGION": "us-east-1",
         "TRACKING_TABLE": "test-table",
+        "TEST_SET_BUCKET": "test-set-bucket",
     }
     with mock_aws(), patch.dict(os.environ, region_env):
         ddb = boto3.resource("dynamodb", region_name="us-east-1")
@@ -115,8 +122,10 @@ def publish_table():
             ],
             BillingMode="PAY_PER_REQUEST",
         )
+        s3 = boto3.client("s3", region_name="us-east-1")
+        s3.create_bucket(Bucket="test-set-bucket")
 
-        with _db_client_on(table):
+        with _db_client_on(table), patch.object(test_set_index, "s3_client", s3):
             yield table
 
 
@@ -130,7 +139,21 @@ def _db_client_on(table):
         kwargs = {"Item": item}
         if condition_expression:
             kwargs["ConditionExpression"] = condition_expression
-        return table.put_item(**kwargs)
+        try:
+            return table.put_item(**kwargs)
+        except ClientError as exc:
+            # Raise what the REAL client raises. `idp_common.dynamodb.DynamoDBClient`
+            # translates botocore's ClientError into DynamoDBError carrying
+            # `.error_code`; a double that lets moto's ClientError through lets the
+            # resolver catch an exception the deployed artifact never produces.
+            #
+            # That is not hypothetical: it hid a live 500 on every retried publish
+            # through four review rounds. The offline suite was green because this
+            # fixture raised the type the code caught.
+            raise DynamoDBError(
+                f"Put item failed: {exc.response['Error']['Message']}",
+                exc.response["Error"]["Code"],
+            ) from exc
 
     def _update_item(
         key,
@@ -1144,9 +1167,16 @@ class TestTestSetResolver:
             Key={"PK": "testset#ts1", "SK": "metadata"}
         )
 
-    @patch.dict(os.environ, {"TRACKING_TABLE": "test-table"})
+    @patch.dict(
+        os.environ, {"TRACKING_TABLE": "test-table", "TEST_SET_BUCKET": "ts-bucket"}
+    )
     def test_get_test_set_versions_maps_and_sorts(self):
-        with patch.object(test_set_index, "boto3") as mock_boto3:
+        s3 = MagicMock()
+        s3.list_objects_v2.return_value = {"KeyCount": 1}
+        with (
+            patch.object(test_set_index, "boto3") as mock_boto3,
+            patch.object(test_set_index, "s3_client", s3),
+        ):
             mock_table = MagicMock()
             mock_table.query.return_value = {
                 "Items": [
@@ -1173,6 +1203,8 @@ class TestTestSetResolver:
             assert [r["version"] for r in result] == [1, 2]  # ascending
             assert result[0]["label"] == "v1"
             assert result[1]["fileCount"] == 12
+            # Probed per version, not inferred from the row.
+            assert [r["hasStoredLabels"] for r in result] == [True, True]
 
     # -- Membership editing: remove ---------------------------------------
 
@@ -3491,6 +3523,526 @@ class TestTestSetResolver:
             )["Body"].read()
         )
         assert frozen["inference_result"]["total"] == "original"
+
+    def test_publishing_copies_the_labels_the_version_names(self, labeling_env):
+        """Publishing is the call that promises a version's content, so it is the call
+        that copies it. A version that is a DynamoDB row and no bytes is a number whose
+        meaning the next baseline write can change."""
+        table, s3 = labeling_env
+        self._seed_labelled_set(table, s3, value="as-published")
+
+        result = test_set_index.publish_test_set_version(
+            {"input": {"testSetId": "ts1"}}
+        )
+
+        assert result["version"] == 1
+        assert result["snapshotObjectCount"] == 1
+        assert self._baseline_keys(s3, "ts1/versions/1/baseline/") == [
+            "ts1/versions/1/baseline/a.pdf/sections/1/result.json"
+        ]
+        # And the row records what it froze, so "is this version's content actually
+        # frozen?" is answerable without listing S3.
+        written = table.get_item(Key={"PK": "testset#ts1", "SK": "version#000001"})[
+            "Item"
+        ]
+        assert int(written["snapshotObjectCount"]) == 1
+
+    def test_a_retry_under_the_same_client_token_does_not_publish_twice(
+        self, labeling_env
+    ):
+        """Publishing copies the labels, so it can outlast the dispatcher's 20s bound and
+        report failure for work that in fact succeeded. Without a token, the retry that
+        follows creates a second version and a second full copy of the labels — the caller
+        having been told the first one failed."""
+        table, s3 = labeling_env
+        self._seed_labelled_set(table, s3)
+
+        first = test_set_index.publish_test_set_version(
+            {"input": {"testSetId": "ts1", "label": "reviewed", "clientToken": "tok-1"}}
+        )
+        # The caller saw a 504 and tried again. The dialog no longer holds the label.
+        second = test_set_index.publish_test_set_version(
+            {"input": {"testSetId": "ts1", "clientToken": "tok-1"}}
+        )
+
+        assert second["version"] == first["version"] == 1
+        # The version that exists is the one the first try created, label included.
+        assert second["label"] == "reviewed"
+        assert [
+            v["version"]
+            for v in test_set_index.get_test_set_versions({"testSetId": "ts1"})
+        ] == [1]
+
+    def test_a_retry_while_the_first_attempt_is_still_running_is_refused(
+        self, labeling_env
+    ):
+        """The failure the token exists for, and the one a lookup against written version
+        rows cannot cover.
+
+        The dispatcher's 20s bound is a read timeout on its own invoke, not a cancellation:
+        at the 504 the resolver is still executing, up to its 60s Timeout, and has not
+        written its version row yet. So the retry arrives while the work that will succeed
+        is in flight. Comparing the token against existing versions finds nothing and
+        publishes a second version and a second full copy.
+        """
+        table, s3 = labeling_env
+        self._seed_labelled_set(table, s3)
+        # The claim the in-flight attempt holds: taken, no version recorded yet.
+        table.put_item(
+            Item={
+                "PK": "testset#ts1",
+                "SK": "publishclaim#tok-1",
+                "ItemType": "testset_publish_claim",
+                "claimedAt": datetime.utcnow().isoformat() + "Z",
+            }
+        )
+
+        with pytest.raises(Exception, match="already\\s+running"):
+            test_set_index.publish_test_set_version(
+                {"input": {"testSetId": "ts1", "clientToken": "tok-1"}}
+            )
+
+        assert test_set_index.get_test_set_versions({"testSetId": "ts1"}) == []
+        assert self._baseline_keys(s3, "ts1/versions/1/baseline/") == []
+
+    def test_a_retry_that_arrives_genuinely_mid_flight_publishes_nothing(
+        self, labeling_env, monkeypatch
+    ):
+        """The window itself, rather than a reconstruction of it.
+
+        Every other test here seeds a claim row to *represent* an attempt in flight. This one
+        creates the state: `_snapshot_baselines` is the bounded copy at the centre of a
+        publish, so re-entering `publish_test_set_version` from inside it puts the second
+        caller exactly where a retry after a 504 lands — version number reserved, copy in
+        progress, version row not yet written, claim taken and carrying no version.
+
+        That is the one state a seeded row can only resemble, because what makes it dangerous
+        is that *nothing durable yet records* the attempt that is going to succeed. A retry
+        must not conclude from that absence that it should publish.
+
+        Asserted on outcomes — version rows, snapshot prefixes, the returned payload, the
+        reserved counter — rather than on calls into the claim helpers, so the test survives a
+        refactor of them.
+
+        Measured mutation-sensitive, which is the reason it earns its place alongside the
+        seeded-row cases rather than duplicating them: reverting the claim check to the
+        row-only comparison it replaced — a token compared against written version rows, which
+        is what the design looked like before this — fails **this test and no other**. All
+        fifteen of the surrounding claim and token cases pass under that revert, because none
+        of them can produce a state in which the row is not yet written.
+        """
+        table, s3 = labeling_env
+        self._seed_labelled_set(table, s3, value="as-published")
+
+        real_snapshot = test_set_index._snapshot_baselines
+        copies = []
+        retry = {}
+
+        def snapshot_and_retry_midway(bucket, set_id, version):
+            copies.append(version)
+            # Explicit one-shot. If the retry ever got as far as copying, this stops a third
+            # entry instead of recursing, and `copies` below reports that it did.
+            assert len(copies) <= 2, (
+                f"publish re-entered the copy {len(copies)} times; the recursion guard "
+                "exists so a change to this call graph fails rather than hanging"
+            )
+            if len(copies) == 1:
+                try:
+                    retry["result"] = test_set_index.publish_test_set_version(
+                        {"input": {"testSetId": "ts1", "clientToken": "tok-1"}}
+                    )
+                except Exception as exc:  # noqa: BLE001 - the refusal is the subject
+                    retry["error"] = exc
+            return real_snapshot(bucket, set_id, version)
+
+        monkeypatch.setattr(
+            test_set_index, "_snapshot_baselines", snapshot_and_retry_midway
+        )
+
+        published = test_set_index.publish_test_set_version(
+            {"input": {"testSetId": "ts1", "label": "reviewed", "clientToken": "tok-1"}}
+        )
+
+        # The retry was refused, and refused for the right reason — not by some unrelated
+        # error that would leave this test passing for the wrong cause.
+        assert "result" not in retry, "the retry must not have published"
+        assert "already" in str(retry["error"]) and "running" in str(retry["error"])
+
+        # One version, one snapshot, one reserved number: the retry left no trace anywhere.
+        assert [
+            v["version"]
+            for v in test_set_index.get_test_set_versions({"testSetId": "ts1"})
+        ] == [1]
+        assert copies == [1], "only the first attempt may copy"
+        assert self._baseline_keys(s3, "ts1/versions/2/baseline/") == []
+        meta = table.get_item(Key={"PK": "testset#ts1", "SK": "metadata"})["Item"]
+        assert int(meta["latestVersion"]) == 1, "the retry must not reserve a number"
+
+        # And the attempt that was in flight finished normally, with the labels it froze.
+        assert published["version"] == 1
+        assert published["label"] == "reviewed"
+        assert published["snapshotObjectCount"] == 1
+        assert published["hasStoredLabels"] is True
+        frozen = json.loads(
+            s3.get_object(
+                Bucket="test-set-bucket",
+                Key="ts1/versions/1/baseline/a.pdf/sections/1/result.json",
+            )["Body"].read()
+        )
+        assert frozen["inference_result"]["total"] == "as-published"
+
+    def test_a_failed_attempt_releases_its_claim_so_a_retry_can_publish(
+        self, labeling_env, monkeypatch
+    ):
+        """Otherwise a token whose first attempt died is locked out forever, and the dialog
+        can only ever report the same refusal."""
+        table, s3 = labeling_env
+        self._seed_labelled_set(table, s3)
+        monkeypatch.setattr(test_set_index, "_SNAPSHOT_MAX_OBJECTS", 0)
+
+        with pytest.raises(Exception, match="more than the 0"):
+            test_set_index.publish_test_set_version(
+                {"input": {"testSetId": "ts1", "clientToken": "tok-1"}}
+            )
+        assert "Item" not in table.get_item(
+            Key={"PK": "testset#ts1", "SK": "publishclaim#tok-1"}
+        )
+
+        monkeypatch.setattr(test_set_index, "_SNAPSHOT_MAX_OBJECTS", 6000)
+        result = test_set_index.publish_test_set_version(
+            {"input": {"testSetId": "ts1", "clientToken": "tok-1"}}
+        )
+
+        assert result["snapshotObjectCount"] == 1
+
+    def test_a_version_row_beats_a_claim_that_never_recorded_it(self, labeling_env):
+        """The window between the two writes.
+
+        An attempt writes its version row and then records that row on its claim. Killed
+        between the two — or told its row write failed when it had in fact landed — it leaves
+        a version row and a claim that does not name it. The row is the durable record, so a
+        retry must replay it rather than publish a second version once the claim looks
+        abandoned.
+        """
+        table, s3 = labeling_env
+        self._seed_labelled_set(table, s3)
+        test_set_index.publish_test_set_version(
+            {"input": {"testSetId": "ts1", "label": "reviewed", "clientToken": "tok-1"}}
+        )
+        # Roll the claim back to the state it had before it recorded the version, and age it
+        # past the point where any attempt could still be running.
+        table.put_item(
+            Item={
+                "PK": "testset#ts1",
+                "SK": "publishclaim#tok-1",
+                "ItemType": "testset_publish_claim",
+                "claimedAt": (datetime.utcnow() - timedelta(seconds=600)).isoformat()
+                + "Z",
+            }
+        )
+
+        result = test_set_index.publish_test_set_version(
+            {"input": {"testSetId": "ts1", "clientToken": "tok-1"}}
+        )
+
+        assert result["version"] == 1
+        assert result["label"] == "reviewed"
+        assert [
+            v["version"]
+            for v in test_set_index.get_test_set_versions({"testSetId": "ts1"})
+        ] == [1]
+
+    def test_a_released_claim_does_not_republish_a_version_that_landed(
+        self, labeling_env
+    ):
+        """A failure releases the claim so a retry is not locked out — but the write it
+        failed on may have landed anyway (a lost response, not a lost write). The retry
+        re-claims cleanly, so only the version row can tell it to stop."""
+        table, s3 = labeling_env
+        self._seed_labelled_set(table, s3)
+        test_set_index.publish_test_set_version(
+            {"input": {"testSetId": "ts1", "clientToken": "tok-1"}}
+        )
+        # The claim as a released one leaves it: absent entirely.
+        table.delete_item(Key={"PK": "testset#ts1", "SK": "publishclaim#tok-1"})
+
+        result = test_set_index.publish_test_set_version(
+            {"input": {"testSetId": "ts1", "clientToken": "tok-1"}}
+        )
+
+        assert result["version"] == 1
+        assert [
+            v["version"]
+            for v in test_set_index.get_test_set_versions({"testSetId": "ts1"})
+        ] == [1]
+
+    def test_two_retries_reading_one_abandoned_claim_do_not_both_publish(
+        self, labeling_env
+    ):
+        """Both read the same abandoned claim before either writes. An unconditional takeover
+        lets both conclude they own it, both find no version row, and both publish."""
+        table, s3 = labeling_env
+        self._seed_labelled_set(table, s3)
+        abandoned = (datetime.utcnow() - timedelta(seconds=600)).isoformat() + "Z"
+        observed = {
+            "PK": "testset#ts1",
+            "SK": "publishclaim#tok-1",
+            "ItemType": "testset_publish_claim",
+            "claimedAt": abandoned,
+        }
+        table.put_item(Item=observed)
+
+        # The first retry takes it over, which replaces `claimedAt`.
+        first = test_set_index._take_over_publish_claim("ts1", "tok-1", observed)
+        # The second retry read the same claim a moment earlier, so it is conditioning on a
+        # value that no longer exists.
+        second = test_set_index._take_over_publish_claim("ts1", "tok-1", observed)
+
+        assert first is not None
+        assert second is None, "the loser must not also be told it owns the claim"
+
+    def test_a_late_release_does_not_delete_the_retrys_claim(self, labeling_env):
+        """The release is issued before the dispatcher gives up, and nothing orders the two, so
+        it can land after a retry has claimed cleanly. Deleting the retry's claim would leave a
+        third attempt free to run concurrently with it."""
+        table, s3 = labeling_env
+        self._seed_labelled_set(table, s3)
+        mine = "2026-01-01T00:00:00+00:00"
+        table.put_item(
+            Item={
+                "PK": "testset#ts1",
+                "SK": "publishclaim#tok-1",
+                "ItemType": "testset_publish_claim",
+                "claimedAt": mine,
+            }
+        )
+        # A retry claims, replacing claimedAt with its own.
+        theirs = datetime.now(timezone.utc).isoformat()
+        table.put_item(
+            Item={
+                "PK": "testset#ts1",
+                "SK": "publishclaim#tok-1",
+                "ItemType": "testset_publish_claim",
+                "claimedAt": theirs,
+            }
+        )
+
+        # The first attempt's release lands now.
+        test_set_index._release_publish_claim("ts1", "tok-1", mine)
+
+        surviving = table.get_item(
+            Key={"PK": "testset#ts1", "SK": "publishclaim#tok-1"}
+        )["Item"]
+        assert surviving["claimedAt"] == theirs, "the retry's claim must survive"
+
+    def test_a_claim_naming_a_missing_version_does_not_lock_the_token_out(
+        self, labeling_env
+    ):
+        """A claim that names a version whose row is gone would otherwise refuse every retry
+        forever: the row lookup finds nothing, and the claim is never treated as abandoned
+        because it carries a version number."""
+        table, s3 = labeling_env
+        self._seed_labelled_set(table, s3)
+        test_set_index.publish_test_set_version(
+            {"input": {"testSetId": "ts1", "clientToken": "tok-1"}}
+        )
+        table.delete_item(Key={"PK": "testset#ts1", "SK": "version#000001"})
+
+        result = test_set_index.publish_test_set_version(
+            {"input": {"testSetId": "ts1", "clientToken": "tok-1"}}
+        )
+
+        assert result["version"] == 2
+
+    def test_the_stale_threshold_stays_clear_of_the_deployed_timeout(self):
+        """Two constants in two files with nothing linking them. The threshold is only sound
+        while it exceeds the longest an attempt can live, which the template decides."""
+        template = pathlib.Path(test_set_index.__file__).parents[3] / "template.yaml"
+        block = template.read_text(encoding="utf-8").split("TestSetResolverFunction:")[
+            1
+        ]
+        # Up to the next top-level resource, so this reads that function's own Timeout.
+        boundary = re.search(r"\n  \w+:\n    Type:", block)
+        if boundary:
+            block = block[: boundary.start()]
+        found = re.search(r"^\s+Timeout:\s*(\d+)", block, re.MULTILINE)
+        assert found, "TestSetResolverFunction declares no Timeout"
+        timeout = int(found.group(1))
+
+        assert test_set_index._PUBLISH_CLAIM_STALE_SECONDS >= 2 * timeout, (
+            f"a claim is assumed abandoned after "
+            f"{test_set_index._PUBLISH_CLAIM_STALE_SECONDS}s, but the resolver may run for "
+            f"{timeout}s"
+        )
+
+    def test_a_claim_expires_on_its_own_rather_than_accumulating(self, labeling_env):
+        # One row per publish, forever, is the alternative. Cleanup only — TTL deletion is
+        # best-effort, so nothing depends on it having happened.
+        table, s3 = labeling_env
+        self._seed_labelled_set(table, s3)
+
+        test_set_index.publish_test_set_version(
+            {"input": {"testSetId": "ts1", "clientToken": "tok-1"}}
+        )
+
+        claim = table.get_item(Key={"PK": "testset#ts1", "SK": "publishclaim#tok-1"})[
+            "Item"
+        ]
+        assert int(claim["ExpiresAfter"]) > int(time.time())
+
+    def test_a_claim_older_than_the_function_can_live_is_taken_over(self, labeling_env):
+        """A killed attempt leaves a claim nothing will ever complete or release. The
+        resolver's Timeout is 60s, so a claim past double that cannot have a live owner."""
+        table, s3 = labeling_env
+        self._seed_labelled_set(table, s3)
+        stale = datetime.utcnow() - timedelta(seconds=600)
+        table.put_item(
+            Item={
+                "PK": "testset#ts1",
+                "SK": "publishclaim#tok-1",
+                "ItemType": "testset_publish_claim",
+                "claimedAt": stale.isoformat() + "Z",
+            }
+        )
+
+        result = test_set_index.publish_test_set_version(
+            {"input": {"testSetId": "ts1", "clientToken": "tok-1"}}
+        )
+
+        assert result["version"] == 1
+
+    def test_publishing_without_a_token_still_publishes_every_time(self, labeling_env):
+        # Two deliberate publishes are two versions; the token is opt-in and its absence
+        # must not dedupe anything.
+        table, s3 = labeling_env
+        self._seed_labelled_set(table, s3)
+
+        test_set_index.publish_test_set_version({"input": {"testSetId": "ts1"}})
+        test_set_index.publish_test_set_version({"input": {"testSetId": "ts1"}})
+
+        assert [
+            v["version"]
+            for v in test_set_index.get_test_set_versions({"testSetId": "ts1"})
+        ] == [1, 2]
+
+    def test_a_published_version_survives_a_regenerate_then_annotate(
+        self, labeling_env
+    ):
+        """The sequence that made a published version mutable.
+
+        Publish v1; regenerate the draft labels, which rewrites ``{id}/baseline/``
+        wholesale; then open an annotation draft. Taking the copy at draft-open time
+        snapshotted the *regenerated* labels as v1, so v1's content became labels that
+        were never v1's — and a run pinned to v1 scored against them, with nothing in the
+        version row changing to say so.
+        """
+        table, s3 = labeling_env
+        self._seed_labelled_set(table, s3, value="as-published")
+        test_set_index.publish_test_set_version({"input": {"testSetId": "ts1"}})
+
+        # Generate draft labels: the live baselines are rewritten in place.
+        s3.put_object(
+            Bucket="test-set-bucket",
+            Key="ts1/baseline/a.pdf/sections/1/result.json",
+            Body=json.dumps({"inference_result": {"total": "regenerated"}}).encode(),
+        )
+
+        # A colleague clicks Annotate.
+        result = test_set_index.open_test_set_annotation_draft(
+            {"input": {"testSetId": "ts1"}}
+        )
+
+        assert (result["baseVersion"], result["draftVersion"]) == (1, 2)
+        frozen = json.loads(
+            s3.get_object(
+                Bucket="test-set-bucket",
+                Key="ts1/versions/1/baseline/a.pdf/sections/1/result.json",
+            )["Body"].read()
+        )
+        assert frozen["inference_result"]["total"] == "as-published"
+        # Nothing to copy: v1 was frozen when it was published.
+        assert result["snapshotObjectCount"] == 0
+
+    def test_a_version_published_before_snapshots_existed_is_backfilled_once(
+        self, labeling_env
+    ):
+        """An existing deployment's v1 rows have no snapshot, so the number refers to
+        nothing. The current labels are the most that can still be captured for it —
+        they are not what was published, and the row's missing snapshotObjectCount is
+        what says so.
+        """
+        table, s3 = labeling_env
+        self._seed_labelled_set(table, s3, value="unknown-provenance")
+        # A version row as an older release wrote it: no snapshotObjectCount, no bytes.
+        table.put_item(
+            Item={
+                "PK": "testset#ts1",
+                "SK": "version#000001",
+                "ItemType": "testset_version",
+                "testSetId": "ts1",
+                "versionNumber": 1,
+                "label": "v1",
+            }
+        )
+        table.update_item(
+            Key={"PK": "testset#ts1", "SK": "metadata"},
+            UpdateExpression="SET publishedVersion = :v, latestVersion = :v",
+            ExpressionAttributeValues={":v": 1},
+        )
+
+        result = test_set_index.open_test_set_annotation_draft(
+            {"input": {"testSetId": "ts1"}}
+        )
+
+        assert result["snapshotObjectCount"] == 1
+        assert self._baseline_keys(s3, "ts1/versions/1/baseline/")
+        # Detectable, not repairable: the row still reports no publish-time snapshot.
+        [version] = test_set_index.get_test_set_versions({"testSetId": "ts1"})
+        assert version["snapshotObjectCount"] is None
+        # But it does have labels to score against now, which is a different question and
+        # the one a run pinned to it turns on.
+        assert version["hasStoredLabels"] is True
+
+    def test_whether_a_version_has_stored_labels_is_not_its_object_count(
+        self, labeling_env
+    ):
+        """The two disagree in both directions, so a reader must not substitute one.
+
+        A version published from a set with no labels yet has a count of 0 and an empty
+        prefix — a run pinned to it scores the set's current labels. A version published
+        before publishing copied anything has no count at all and yet does have labels once
+        annotation backfilled them. Reading the count as "has content" is wrong for the
+        first; reading its absence that way is wrong for the second.
+        """
+        table, s3 = labeling_env
+        # A set with a document but no ground truth for it.
+        _seed_test_set(table, "ts1", fileCount=1)
+        s3.put_object(Bucket="test-set-bucket", Key="ts1/input/a.pdf", Body=b"x")
+
+        test_set_index.publish_test_set_version({"input": {"testSetId": "ts1"}})
+
+        [version] = test_set_index.get_test_set_versions({"testSetId": "ts1"})
+        assert version["snapshotObjectCount"] == 0
+        assert version["hasStoredLabels"] is False
+
+    def test_an_oversize_set_is_refused_at_publish_with_no_version_written(
+        self, labeling_env, monkeypatch
+    ):
+        """The copy is bounded, so publishing a set too large to freeze inside one
+        request has to refuse rather than write a version it cannot back with bytes."""
+        table, s3 = labeling_env
+        self._seed_labelled_set(table, s3)
+        monkeypatch.setattr(test_set_index, "_SNAPSHOT_MAX_OBJECTS", 0)
+
+        with pytest.raises(Exception, match="more than the 0"):
+            test_set_index.publish_test_set_version({"input": {"testSetId": "ts1"}})
+
+        assert "Item" not in table.get_item(
+            Key={"PK": "testset#ts1", "SK": "version#000001"}
+        )
+        meta = table.get_item(Key={"PK": "testset#ts1", "SK": "metadata"})["Item"]
+        assert meta.get("publishedVersion") is None
+        assert self._baseline_keys(s3, "ts1/versions/1/baseline/") == []
 
     def test_a_set_with_no_published_version_gets_its_arriving_labels_captured(
         self, labeling_env

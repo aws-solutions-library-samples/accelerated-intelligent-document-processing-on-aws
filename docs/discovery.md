@@ -564,10 +564,9 @@ The Discovery module supports comprehensive configuration through the deployment
 **Supported Models:**
 - `us.amazon.nova-lite-v1:0` - Fast, cost-effective for simple documents
 - `us.amazon.nova-pro-v1:0` - Balanced performance and accuracy (recommended)
-- `us.amazon.nova-premier-v1:0` - Highest accuracy for complex documents
-- `us.anthropic.claude-3-haiku-20240307-v1:0` - Fast processing
-- `us.anthropic.claude-3-5-sonnet-20241022-v2:0` - High accuracy
-- `us.anthropic.claude-3-7-sonnet-20250219-v1:0` - Latest capabilities
+- `us.anthropic.claude-haiku-4-5-20251001-v1:0` - Fast processing
+- `us.anthropic.claude-sonnet-4-5-20250929-v1:0` - High accuracy
+- `us.anthropic.claude-sonnet-4-5-20250929-v1:0` - Latest capabilities
 
 > **⚠️ OpenAI GPT-5.x is NOT supported for Discovery.** Discovery ingests whole
 > PDFs as Bedrock `document` content blocks, which the OpenAI Responses API
@@ -1814,7 +1813,7 @@ Flatten complex structures — avoid nested objects and place arrays at the top 
 **Model Selection Guidelines:**
 - **Nova Lite**: Simple forms with clear structure
 - **Nova Pro**: Most document types (recommended default)
-- **Nova Premier**: Complex layouts, handwritten content
+- **Claude Sonnet 4.5 / 4.6**: Complex layouts, handwritten content
 - **Claude Models**: Alternative for specific use cases
 
 **Parameter Optimization:**
@@ -1908,7 +1907,7 @@ Causes:
 
 Solutions:
 - Use higher resolution documents (minimum 150 DPI)
-- Try different models (Nova Premier for complex documents)
+- Try different models (Claude Sonnet 4.6 for complex documents)
 - Customize prompts with domain-specific terminology
 - Provide ground truth data for better guidance
 ```
@@ -1961,7 +1960,6 @@ def validate_discovery_config(config):
     supported_models = [
         'us.amazon.nova-lite-v1:0',
         'us.amazon.nova-pro-v1:0',
-        'us.amazon.nova-premier-v1:0',
         # ... other supported models
     ]
     

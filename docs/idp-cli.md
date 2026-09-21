@@ -175,6 +175,50 @@ idp-cli deploy --profile production --stack-name my-stack ...
 idp-cli deploy --stack-name my-stack --profile production ...
 ```
 
+#### Region and its precedence
+
+`--region` is a **per-command** option, not a global one, so it goes after the
+subcommand:
+
+```bash
+idp-cli config-upload --stack-name my-stack --config-file ./config.yaml \
+    --config-profile v2 --region eu-west-1
+```
+
+The resolution order is:
+
+1. `--region` on the subcommand, if given.
+2. Otherwise boto3's own chain: `AWS_REGION`, then `AWS_DEFAULT_REGION`, then the
+   `region` configured for the selected `--profile` (or `AWS_PROFILE`), then EC2
+   instance metadata.
+
+Nothing substitutes a hardcoded region for the configuration commands, so a
+command run with no `--region` and no region resolvable from the environment fails
+with boto3's `NoRegionError` rather than guessing.
+
+`--region` applies to every AWS call a command makes, not only to the
+CloudFormation lookup that resolves a resource's name. That distinction is the
+whole point: a stack's `ConfigurationTable` physical id is not region-qualified, so
+a command that looked the name up in one region and then read or wrote it in
+another would hit a *different stack's* table on a multi-region account — and
+report success. It therefore covers
+
+- the DynamoDB read and write of the Configuration Table,
+- the S3 write of configuration revision history,
+- the document classes `config-sync-bda` derives from a BDA project, and the BDA
+  project calls themselves,
+- the schema and rules that `discover` and `discover-multidoc` write back,
+- the model-limits read on `config-upload`'s validation path, which would
+  otherwise fall back silently to the on-disk defaults and could reject a
+  configuration that is legitimately above a default cap.
+
+A whole-tree check (`scripts/tests/test_config_region_threading.py`) asserts that
+no code outside a Lambda builds a configuration client without a region, so a new
+command cannot reintroduce the gap.
+
+Three commands take no `--region` because they make no AWS calls at all:
+`config-create`, `config-validate` and `validate-manifest`.
+
 ### Machine-readable output
 
 Every payload the CLI writes to stdout for a program to read is written verbatim:

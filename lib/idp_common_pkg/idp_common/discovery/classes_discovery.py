@@ -134,8 +134,13 @@ class ClassesDiscovery:
         self.region = region or os.environ.get("AWS_REGION")
         self.version = version
         try:
-            self.config_reader = ConfigurationReader()
-            self.config_manager = ConfigurationManager()
+            # self.region, resolved just above, must reach these too: this class
+            # WRITES the discovered schema back to the configuration table, and
+            # `idp-cli discover --region eu-west-1` used to write it to whatever
+            # region the ambient credentials resolved to. The BedrockClient below
+            # already gets the same value.
+            self.config_reader = ConfigurationReader(region=self.region)
+            self.config_manager = ConfigurationManager(region=self.region)
             try:
                 self.config: IDPConfig = cast(
                     IDPConfig,

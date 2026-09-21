@@ -740,6 +740,14 @@ def test_suite_collects_without_an_aws_region(workdir: str, args: list[str]):
             "collection (see src/lambda/test_file_copier/conftest.py), or, if the "
             "client sits in a library that many callers import, build it lazily "
             "(see idp_common/utils/settings_helper.py)."
+            "\n\nKnow what the conftest route costs before taking it. That "
+            "`setdefault` re-supplies the region for EVERYTHING that suite imports, "
+            "not just the module that needed it, so this check stops seeing "
+            "import-time AWS calls anywhere under that directory. Two handler "
+            "modules under patterns/unified/src sat behind one of them and built "
+            "regional-only clients at import for a release. Prefer the lazy client "
+            "when the suite is large or imports handler code; if you do add the "
+            "conftest, say in it which module needs the region and why."
         )
     pytest.fail(
         f"`pytest --collect-only {' '.join(args)}` in {workdir} exited "

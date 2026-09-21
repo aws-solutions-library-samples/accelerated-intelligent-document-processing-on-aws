@@ -61,8 +61,8 @@ Install on the machine you build from:
 
 Also request access to the default Bedrock models in your GovCloud region
 before processing documents: `amazon.nova-lite-v1:0`, `amazon.nova-pro-v1:0`,
-`us.anthropic.claude-3-5-sonnet-20240620-v1:0`, and
-`anthropic.claude-3-7-sonnet-20250219-v1:0`.
+`us-gov.anthropic.claude-sonnet-4-5-20250929-v1:0`, and
+`anthropic.claude-sonnet-4-5-20250929-v1:0`.
 
 > **Note**: The CLI creates the artifacts S3 bucket automatically. Customize
 > with `--bucket-basename` and `--prefix`.

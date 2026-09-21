@@ -59,6 +59,54 @@ SEC_OBJREF = "SEC-2.1-CALLER-SUPPLIED-REF"
 
 
 # ---------------------------------------------------------------------------
+# A refusal and an inconclusive result are different outcomes
+#
+# Every suite below asserts something about how the API REFUSED a request. A
+# request that never completed, or whose response could not be read, refutes
+# nothing and confirms nothing — and it is the one case a "did the refusal marker
+# appear?" test gets wrong by default, because a marker is absent from a response
+# you never received.
+#
+# The shapes that were scoring as passes before this was factored out:
+#   * `call_body` returns (0, "<request error: ...>") for a timeout or a dead
+#     connection, and no marker is "present" in that string;
+#   * a `record(..., "ERR", True, ...)` after an exception;
+#   * a setup call that did not return 200/201, recorded as passed;
+#   * `socket.gaierror` / `ConnectionRefusedError` / `socket.timeout` — all
+#     `OSError` subclasses — read as "the endpoint refused this protocol".
+#
+# These helpers are the single place that judgement is made, so a new suite cannot
+# reintroduce the conflation by hand.
+# ---------------------------------------------------------------------------
+
+# Mirrors test_api_rbac.UNREADABLE_BODY; duplicated rather than imported because
+# that module imports THIS one, and the value is a private marker either way.
+UNREADABLE_BODY = "__unreadable_body__"
+
+
+def _inconclusive_response(status, body=None, et=None, treat_5xx=True):
+    """Why this response established nothing, or ``None`` if it established
+    something.
+
+    ``treat_5xx`` is a real distinction, not a convenience. For an assertion of the
+    form "the caller must have been REFUSED", a 5xx settles nothing — whether the
+    resolver refused before or after doing the work is exactly what is unknown. For
+    an assertion of the form "this response must NOT CONTAIN X", a 5xx settles it
+    perfectly well: the body is in hand and X is not in it. The IDOR suite is the
+    second kind, so it passes ``treat_5xx=False``; everything else is the first.
+    """
+    if status in (0, "ERR", None):
+        return "request did not complete (timeout / connection error)"
+    if et == UNREADABLE_BODY:
+        return "response body was empty or not JSON"
+    if body is not None and str(body).startswith("<request error:"):
+        return f"request did not complete: {body}"
+    if treat_5xx and isinstance(status, int) and status >= 500:
+        return f"server error {status}"
+    return None
+
+
+# ---------------------------------------------------------------------------
 # 2.1 IDOR — User A's data is not reachable by User B
 # ---------------------------------------------------------------------------
 def run_idor_suite(ctx, record, results, tokens, seed_fn=None, call_body=None):
@@ -80,7 +128,8 @@ def run_idor_suite(ctx, record, results, tokens, seed_fn=None, call_body=None):
     harness; returns None if it can't seed, e.g. table not present -> SKIP).
 
     Requires two authenticated users + a working seed + body-returning call. Any
-    missing precondition records a SKIP (pass), never a false failure.
+    missing precondition records a SKIP — which is not a pass, but is not a failure
+    either: an absent precondition is not a satisfied assertion.
     """
     print("\n=== IDOR (User B cannot access User A's data) ===")
     a_tok = tokens.get("Admin")
@@ -91,9 +140,10 @@ def run_idor_suite(ctx, record, results, tokens, seed_fn=None, call_body=None):
             "getAgentJobStatus",
             "idor",
             "SKIP",
-            True,
+            False,
             f"{SEC_IDOR}: preconditions unavailable (two users + seed + "
             "body-call) — skipped",
+            outcome="SKIP",
         )
         print("  SKIP (preconditions unavailable)")
         return
@@ -113,24 +163,44 @@ def run_idor_suite(ctx, record, results, tokens, seed_fn=None, call_body=None):
             "getAgentJobStatus",
             "idor-seed",
             "SKIP",
-            True,
+            False,
             f"{SEC_IDOR}: could not seed A's job (agent table unavailable) — skipped",
+            outcome="SKIP",
         )
         print("  SKIP (could not seed User A's job)")
         return
 
     # 1. User B reads A's job id -> body must NOT contain A's marker.
+    #
+    # `call_body` returns (0, "<request error: ...>") for a timeout or a dead
+    # connection. That body contains no marker, so "marker absent" used to pass this
+    # assertion — the harness concluded "User B must not receive A's data" from a
+    # request that never reached the API. Absence of a leak in a response we never
+    # got is not absence of a leak.
     st, body = call_body(ctx["api_base"], "getAgentJobStatus", {"jobId": job_id}, b_tok)
+    # treat_5xx=False: the property here is non-disclosure, and a 500 whose body we
+    # can read and which does not contain A's marker establishes it. What does not
+    # establish it is having no response at all.
+    why = _inconclusive_response(st, body, treat_5xx=False)
     leaked = marker in (body or "")
     record(
         results,
         "getAgentJobStatus",
         "userB(reads A's job)",
         st,
-        not leaked,
-        f"{SEC_IDOR}: User B must not receive A's data; marker "
-        f"{'PRESENT (LEAK)' if leaked else 'absent'}; got {st}",
+        (not why) and not leaked,
+        f"{SEC_IDOR}: INCONCLUSIVE — {why}"
+        if why
+        else (
+            f"{SEC_IDOR}: User B must not receive A's data; marker "
+            f"{'PRESENT (LEAK)' if leaked else 'absent'}; got {st}"
+        ),
+        outcome="ERROR" if why else None,
     )
+    if why:
+        print(f"  User B getAgentJobStatus(A's job) -> {st} (INCONCLUSIVE: {why})")
+        print("  IDOR check abandoned: the probe request did not complete")
+        return
     print(
         f"  User B getAgentJobStatus(A's job) -> {st} "
         f"({'LEAK' if leaked else 'OK no disclosure'})"
@@ -166,18 +236,31 @@ def run_idor_suite(ctx, record, results, tokens, seed_fn=None, call_body=None):
         )
         print(f"  User A getAgentJobStatus(own job) -> {st} (OK owner sees data)")
     else:
-        # Downgrade step 1's result to inconclusive too: without a readable seed,
-        # "no marker for B" proves nothing. Re-record as SKIP so a keying mismatch
-        # never masquerades as either a pass or a fail.
+        # Step 1's result is inconclusive too: without a readable seed, "no marker
+        # for B" proves nothing. The comment here has always said "downgrade step
+        # 1's result" — but appending a second row did not downgrade anything, it
+        # left step 1's PASS standing beside a SKIP. Retract it for real.
+        for row in results:
+            if (
+                row["op"] == "getAgentJobStatus"
+                and row["principal"] == "userB(reads A's job)"
+            ):
+                row["passed"] = False
+                row["outcome"] = "SKIP"
+                row["detail"] = (
+                    f"{SEC_IDOR}: retracted — the owner could not read the seeded "
+                    "job either, so 'no marker for User B' proves nothing"
+                )
         record(
             results,
             "getAgentJobStatus",
             "idor-inconclusive",
             "SKIP",
-            True,
+            False,
             f"{SEC_IDOR}: owner could not read the seeded job (marker absent for "
             f"the owner too; got {st}) — seed keying mismatch, IDOR check "
             "inconclusive on this deployment (NOT a security failure)",
+            outcome="SKIP",
         )
         print(
             f"  User A getAgentJobStatus(own job) -> {st} "
@@ -206,17 +289,21 @@ def run_token_lifecycle_suite(
     # 2.3 expiry
     if expired_token:
         st, et, ib, rid = call(ctx["api_base"], "listDocuments", {}, expired_token)
-        ok = st in (401, 403)
+        why = _inconclusive_response(st, et=et)
+        ok = (not why) and st in (401, 403)
         record(
             results,
             "listDocuments",
             "token:expired",
             st,
             ok,
-            f"{SEC_EXPIRY}: expired token must be rejected; got {st}",
+            f"{SEC_EXPIRY}: INCONCLUSIVE — {why}"
+            if why
+            else f"{SEC_EXPIRY}: expired token must be rejected; got {st}",
             et,
             ib,
             rid,
+            outcome="ERROR" if why else None,
         )
         print(f"  expired token -> {st} ({'OK rejected' if ok else 'LEAK'})")
     else:
@@ -225,9 +312,10 @@ def run_token_lifecycle_suite(
             "listDocuments",
             "token:expired",
             "SKIP",
-            True,
+            False,
             f"{SEC_EXPIRY}: skipped (set IDP_SECTEST_WAIT_EXPIRY to wait for "
             "a real token to expire; token validity is provider-configured)",
+            outcome="SKIP",
         )
         print("  SKIP expiry (no expired token; set IDP_SECTEST_WAIT_EXPIRY)")
 
@@ -238,8 +326,9 @@ def run_token_lifecycle_suite(
             "listDocuments",
             "token:post-logout",
             "SKIP",
-            True,
+            False,
             f"{SEC_LOGOUT}: skipped (logout token/user unavailable)",
+            outcome="SKIP",
         )
         print("  SKIP logout (token/user unavailable)")
         return
@@ -254,14 +343,20 @@ def run_token_lifecycle_suite(
             "listDocuments",
             "token:post-logout",
             "ERR",
-            True,
-            f"{SEC_LOGOUT}: global sign-out call failed ({e}) — skipped",
+            False,
+            f"{SEC_LOGOUT}: global sign-out call failed ({e}) — the revocation "
+            "check could not be run",
+            outcome="ERROR",
         )
-        print(f"  SKIP logout (sign-out failed: {e})")
+        print(f"  ERROR logout (sign-out failed, check not run: {e})")
         return
 
     st_after, et, ib, rid = call(ctx["api_base"], "listDocuments", {}, logout_token)
-    revoked = st_after in (401, 403)
+    # A request that never completed is not evidence that the token was revoked, and
+    # not evidence that it still works either. treat_5xx stays on: a 5xx tells us
+    # nothing about revocation.
+    why = _inconclusive_response(st_after, et=et)
+    revoked = (not why) and st_after in (401, 403)
     # Cognito ID/access JWTs are stateless: unless the API validates revocation,
     # a token remains valid until `exp` even after global sign-out. That is the
     # documented behavior, so a still-accepted token is a KNOWN GAP (WARN), not a
@@ -272,12 +367,21 @@ def run_token_lifecycle_suite(
         "token:post-logout",
         st_after,
         revoked,
-        f"{SEC_LOGOUT}: token before-logout={st_before}, after-logout={st_after}. "
-        f"{'Revoked' if revoked else 'STILL ACCEPTED (stateless JWT — see gap)'}",
+        f"{SEC_LOGOUT}: INCONCLUSIVE — {why}"
+        if why
+        else (
+            f"{SEC_LOGOUT}: token before-logout={st_before}, "
+            f"after-logout={st_after}. "
+            f"{'Revoked' if revoked else 'STILL ACCEPTED (stateless JWT — see gap)'}"
+        ),
         et,
         ib,
         rid,
-        gap=None if revoked else "GAP-SEC-LOGOUT",
+        # GAP-SEC-LOGOUT documents a token that is STILL ACCEPTED. A call that did
+        # not complete is not that observation, so it must not borrow the gap and
+        # become a warning about revocation.
+        gap=None if (why or revoked) else "GAP-SEC-LOGOUT",
+        outcome="ERROR" if why else None,
     )
     print(
         f"  post-logout token -> {st_after} "
@@ -306,8 +410,9 @@ def run_deleted_resource_suite(ctx, call, record, results, tokens, call_body=Non
             "deleteConfigVersion",
             "deleted-resource",
             "SKIP",
-            True,
+            False,
             f"{SEC_DELETED}: admin token / body-call unavailable — skipped",
+            outcome="SKIP",
         )
         return
 
@@ -324,38 +429,59 @@ def run_deleted_resource_suite(ctx, call, record, results, tokens, call_body=Non
     )
     created = not _denied(st, et, ib) and st in (200, 201)
     if not created:
+        # A setup step that did not work is not a satisfied assertion. It used to be
+        # recorded with passed=True, so a deployment where creating a throwaway
+        # config version was BROKEN reported "deleted resources are no longer
+        # accessible" as proven. Which of the two it is matters: a 5xx or a dead
+        # connection means the harness could not run the check (ERROR), while a
+        # clean 4xx means the precondition is genuinely absent here (SKIP).
+        why = _inconclusive_response(st, et=et)
         record(
             results,
             "updateConfiguration",
             "deleted-resource-setup",
             st,
-            True,
+            False,
             f"{SEC_DELETED}: could not create throwaway version "
-            f"({st}/{et}/{ib}) — skipped",
+            f"({st}/{et}/{ib})"
+            + (f" — INCONCLUSIVE: {why}" if why else " — precondition absent"),
             et,
             ib,
             rid,
+            outcome="ERROR" if why else "SKIP",
         )
-        print(f"  SKIP (create returned {st}/{et}/{ib})")
+        print(f"  {'ERROR' if why else 'SKIP'} (create returned {st}/{et}/{ib})")
         return
 
-    present_before = _version_listed(call_body, ctx, admin, version)
-    st, _b = call_body(
+    present_before, why_before = _version_listed(call_body, ctx, admin, version)
+    st, del_body = call_body(
         ctx["api_base"], "deleteConfigVersion", {"versionName": version}, admin
     )
-    absent_after = not _version_listed(call_body, ctx, admin, version)
+    listed_after, why_after = _version_listed(call_body, ctx, admin, version)
+    absent_after = not listed_after
 
-    # The security assertion: it was listed before, and is NOT listed after.
-    gone = present_before and absent_after
+    # The security assertion: it was listed before, and is NOT listed after. Any of
+    # the three calls failing to complete makes it unanswerable rather than false —
+    # "not listed after" read out of a response that never arrived would report the
+    # resource correctly deleted.
+    why = (
+        why_before or _inconclusive_response(st, del_body, treat_5xx=False) or why_after
+    )
+    gone = (not why) and present_before and absent_after
     record(
         results,
         "getConfigVersions",
         "after-delete",
         st,
         gone,
-        f"{SEC_DELETED}: listed-before={present_before}, delete-status={st}, "
-        f"listed-after={not absent_after}. "
-        f"{'Gone' if gone else 'STILL ENUMERABLE (leak)'}",
+        f"{SEC_DELETED}: INCONCLUSIVE — {why}"
+        if why
+        else (
+            f"{SEC_DELETED}: listed-before={present_before}, delete-status={st}, "
+            f"listed-after={not absent_after}. "
+            f"{'Gone' if gone else 'STILL ENUMERABLE (leak)'}"
+        ),
+        outcome="ERROR" if why else None,
     )
     print(
         f"  version after delete -> listed_before={present_before} "
@@ -365,10 +491,17 @@ def run_deleted_resource_suite(ctx, call, record, results, tokens, call_body=Non
 
 
 def _version_listed(call_body, ctx, token, version):
-    """True if `version` appears in getConfigVersions. Best-effort substring
-    match on the response body (the list contains version names)."""
+    """Whether `version` appears in getConfigVersions.
+
+    Returns ``(listed, why_inconclusive)``. The second value is what stops "the
+    version is not in the body" being read out of a body that was never received:
+    `call_body` answers ``(0, "<request error: ...>")`` for a dead connection, and a
+    deleted-resource assertion built on that substring would report the resource
+    correctly gone.
+    """
     st, body = call_body(ctx["api_base"], "getConfigVersions", {}, token)
-    return version in (body or "")
+    why = _inconclusive_response(st, body, treat_5xx=False)
+    return version in (body or ""), why
 
 
 # ---------------------------------------------------------------------------
@@ -378,11 +511,12 @@ def run_input_validation_suite(ctx, call, record, results, tokens, strict=False)
     """Feed each of a representative set of ops deliberately-malformed arguments
     and assert they are handled cleanly.
 
-    Default (tolerant) mode accepts today's behavior — a 4xx (validated) OR a 5xx
-    (resolver blew up on the bad shape) both "pass", because pre-PR-B there is no
-    central validation. In STRICT mode (IDP_SECTEST_STRICT_INPUT, or after PR B's
-    central schema validation lands) only a clean 4xx passes and a 5xx is a
-    failure — that is the regression guard for the schema-validation feature.
+    Only a clean 4xx is ever a PASS. In the default (tolerant) mode a 5xx or a
+    silent 200 is recorded against ``GAP-SEC-INPUT``, which makes it a **WARN** —
+    visible in the report, not a hard failure, and not a pass. STRICT mode
+    (``IDP_SECTEST_STRICT_INPUT``, or after central schema validation lands) drops
+    the gap so the same result becomes a hard failure. The tolerance is therefore
+    opt-OUT of blocking, never opt-out of reporting.
 
     Every malformed case is sent as an AUTHENTICATED Admin so we test validation,
     not authorization (auth is covered by the RBAC matrix).
@@ -396,8 +530,9 @@ def run_input_validation_suite(ctx, call, record, results, tokens, strict=False)
             "input-validation",
             "*",
             "SKIP",
-            True,
+            False,
             f"{SEC_INPUT}: admin token unavailable — skipped",
+            outcome="SKIP",
         )
         return
 
@@ -433,7 +568,30 @@ def run_input_validation_suite(ctx, call, record, results, tokens, strict=False)
     ]
     for op, args, why in cases:
         st, et, ib, rid = call(ctx["api_base"], op, args, admin)
-        clean_4xx = 400 <= st < 500
+        # A 5xx is a real observation HERE (the resolver blew up on the bad shape —
+        # that is the documented weakness this suite exists to surface), so it is
+        # not treated as inconclusive. A request that never completed, or a response
+        # that could not be read, still is: it says nothing about validation.
+        unreadable = st in (0, None) or et == UNREADABLE_BODY
+        if unreadable:
+            record(
+                results,
+                op,
+                f"malformed:{_short(why)}",
+                st,
+                False,
+                f"{SEC_INPUT}: {why} -> INCONCLUSIVE: "
+                f"{_inconclusive_response(st, et=et)}",
+                et,
+                ib,
+                rid,
+                outcome="ERROR",
+            )
+            print(f"  {op:22s} [{_short(why)}] -> {st} (ERROR: no response)")
+            continue
+        # isinstance first: `st` is whatever the injected `call` returns, and the
+        # inconclusive branch above has already taken the non-integer cases out.
+        clean_4xx = isinstance(st, int) and 400 <= st < 500
         silent_accept = st == 200
         gap = None
         if strict:
@@ -494,8 +652,9 @@ def run_tls_suite(ctx, record, results):
             "tls",
             "*",
             "SKIP",
-            True,
+            False,
             f"{SEC_TLS}: could not resolve API host — skipped",
+            outcome="SKIP",
         )
         return
 
@@ -504,44 +663,58 @@ def run_tls_suite(ctx, record, results):
         ("TLS1.0", ssl.TLSVersion.TLSv1),
         ("TLS1.1", ssl.TLSVersion.TLSv1_1),
     ):
-        refused, note = _tls_refused(host, port, proto)
+        outcome, note = _tls_probe(host, port, proto)
         record(
             results,
             "tls",
             label,
             "n/a",
-            refused,
+            outcome == REFUSED,
             f"{SEC_TLS}: {label} must be refused — {note}",
+            outcome="ERROR" if outcome == INCONCLUSIVE else None,
         )
-        print(
-            f"  {label:8s} -> {'OK refused' if refused else 'ACCEPTED (weak)'} ({note})"
-        )
+        shown = {
+            REFUSED: "OK refused",
+            ACCEPTED: "ACCEPTED (weak)",
+            INCONCLUSIVE: "INCONCLUSIVE",
+        }[outcome]
+        print(f"  {label:8s} -> {shown} ({note})")
 
     # TLS 1.2 must be accepted (proves we're testing a live TLS endpoint, not a
     # blanket-refusing host).
-    ok12, note12 = _tls_accepted(host, port, ssl.TLSVersion.TLSv1_2)
+    outcome12, note12 = _tls_probe(host, port, ssl.TLSVersion.TLSv1_2)
     record(
         results,
         "tls",
         "TLS1.2",
         "n/a",
-        ok12,
+        outcome12 == ACCEPTED,
         f"{SEC_TLS}: TLS1.2 must be accepted — {note12}",
+        outcome="ERROR" if outcome12 == INCONCLUSIVE else None,
     )
-    print(f"  TLS1.2   -> {'OK accepted' if ok12 else 'FAILED'} ({note12})")
+    print(
+        f"  TLS1.2   -> "
+        f"{'OK accepted' if outcome12 == ACCEPTED else outcome12.upper()} ({note12})"
+    )
 
     # Plaintext HTTP must not serve the API (connection refused, timeout, or a
     # redirect/deny — anything but a 2xx over cleartext on :80).
-    http_ok, note80 = _http_refused(host)
+    outcome80, note80 = _http_probe(host)
     record(
         results,
         "tls",
         "plaintext-http",
         "n/a",
-        http_ok,
+        outcome80 == REFUSED,
         f"{SEC_TLS}: plaintext HTTP must not serve the API — {note80}",
+        outcome="ERROR" if outcome80 == INCONCLUSIVE else None,
     )
-    print(f"  HTTP:80  -> {'OK not served' if http_ok else 'SERVED (weak)'} ({note80})")
+    shown80 = {
+        REFUSED: "OK not served",
+        ACCEPTED: "SERVED (weak)",
+        INCONCLUSIVE: "INCONCLUSIVE",
+    }[outcome80]
+    print(f"  HTTP:80  -> {shown80} ({note80})")
 
 
 # ---------------------------------------------------------------------------
@@ -578,8 +751,9 @@ def run_caller_supplied_ref_suite(
             "getStepFunctionExecution",
             "caller-ref",
             "SKIP",
-            True,
+            False,
             f"{SEC_OBJREF}: no live execution ARN in this stack — skipped",
+            outcome="SKIP",
         )
         print("  SKIP (no live execution ARN)")
         return
@@ -591,18 +765,24 @@ def run_caller_supplied_ref_suite(
     st, et, ib, rid = call(
         ctx["api_base"], "getStepFunctionExecution", {"executionArn": foreign}, admin
     )
-    denied = _denied(st, et, ib)
+    why = _inconclusive_response(st, et=et)
+    denied = (not why) and _denied(st, et, ib)
     record(
         results,
         "getStepFunctionExecution",
         "foreign-state-machine",
         st,
         denied,
-        f"{SEC_OBJREF}: ARN naming another state machine must be refused; "
-        f"got {st}/{et}/{ib}",
+        f"{SEC_OBJREF}: INCONCLUSIVE — {why}"
+        if why
+        else (
+            f"{SEC_OBJREF}: ARN naming another state machine must be refused; "
+            f"got {st}/{et}/{ib}"
+        ),
         et,
         ib,
         rid,
+        outcome="ERROR" if why else None,
     )
     print(
         f"  Admin, ARN of another state machine -> {st}/{et or ib} "
@@ -617,18 +797,27 @@ def run_caller_supplied_ref_suite(
         {"executionArn": live_execution_arn},
         admin,
     )
-    served = not _denied(st, et, ib)
+    # "not denied" is satisfied by a 500, an empty body or a dead connection, which
+    # is the same conflation classify() had: this arm exists to prove the control does
+    # not OVER-deny, and only a real response can prove that.
+    why = _inconclusive_response(st, et=et)
+    served = (not why) and not _denied(st, et, ib)
     record(
         results,
         "getStepFunctionExecution",
         "own-state-machine",
         st,
         served,
-        f"{SEC_OBJREF}: this deployment's own execution must still be served; "
-        f"got {st}/{et}/{ib}",
+        f"{SEC_OBJREF}: INCONCLUSIVE — {why}"
+        if why
+        else (
+            f"{SEC_OBJREF}: this deployment's own execution must still be served; "
+            f"got {st}/{et}/{ib}"
+        ),
         et,
         ib,
         rid,
+        outcome="ERROR" if why else None,
     )
     print(
         f"  Admin, this stack's own execution -> {st} "
@@ -641,8 +830,9 @@ def run_caller_supplied_ref_suite(
             "getStepFunctionExecution",
             "out-of-scope",
             "SKIP",
-            True,
+            False,
             f"{SEC_OBJREF}: scoped user unavailable — skipped",
+            outcome="SKIP",
         )
         print("  SKIP out-of-scope check (scoped user unavailable)")
         return
@@ -656,18 +846,24 @@ def run_caller_supplied_ref_suite(
         {"executionArn": live_execution_arn},
         scoped,
     )
-    denied = _denied(st, et, ib)
+    why = _inconclusive_response(st, et=et)
+    denied = (not why) and _denied(st, et, ib)
     record(
         results,
         "getStepFunctionExecution",
         "scoped(out-of-scope)",
         st,
         denied,
-        f"{SEC_OBJREF}: a config-scoped caller must not read an execution "
-        f"outside their scope; got {st}/{et}/{ib}",
+        f"{SEC_OBJREF}: INCONCLUSIVE — {why}"
+        if why
+        else (
+            f"{SEC_OBJREF}: a config-scoped caller must not read an execution "
+            f"outside their scope; got {st}/{et}/{ib}"
+        ),
         et,
         ib,
         rid,
+        outcome="ERROR" if why else None,
     )
     print(
         f"  scoped Author, out-of-scope execution -> {st}/{et or ib} "
@@ -691,28 +887,35 @@ def _short(text):
     return text.split("(")[0].strip()[:28]
 
 
-def _tls_refused(host, port, max_version):
-    """Return (refused: bool, note). refused=True if a handshake pinned to
-    max_version fails (the server declined that protocol)."""
-    ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
-    ctx.check_hostname = False
-    ctx.verify_mode = ssl.CERT_NONE
-    try:
-        ctx.minimum_version = max_version
-        ctx.maximum_version = max_version
-    except ValueError as e:
-        # The client's own OpenSSL may refuse to even offer TLS<1.2 — that means
-        # the protocol is disabled locally; treat as "cannot be negotiated".
-        return True, f"client cannot offer {max_version.name}: {e}"
-    try:
-        with socket.create_connection((host, port), timeout=10) as sock:
-            with ctx.wrap_socket(sock, server_hostname=host):
-                return False, "handshake SUCCEEDED (protocol accepted)"
-    except (ssl.SSLError, OSError) as e:
-        return True, f"handshake failed ({type(e).__name__})"
+# The three things a protocol probe can establish. "inconclusive" exists because
+# the TLS probes used to fold every OSError into "the server refused this
+# protocol" — and socket.gaierror (DNS), ConnectionRefusedError and socket.timeout
+# are all OSError subclasses. A host that had simply gone away therefore reported
+# "TLS 1.0 refused ✅ / TLS 1.1 refused ✅", i.e. two passes from zero observations.
+REFUSED = "refused"
+ACCEPTED = "accepted"
+INCONCLUSIVE = "inconclusive"
 
 
-def _tls_accepted(host, port, version):
+def _connect(host, port):
+    """TCP-connect, separated from the handshake.
+
+    This split is the whole fix: reaching the port is what makes a handshake
+    failure mean "the server declined this protocol". If the connection itself
+    fails we never spoke TLS, so there is nothing to conclude.
+    """
+    try:
+        return socket.create_connection((host, port), timeout=10), None
+    except OSError as e:
+        return None, f"could not reach {host}:{port} ({type(e).__name__}: {e})"
+
+
+def _tls_probe(host, port, version):
+    """Probe one pinned TLS version. Returns (REFUSED|ACCEPTED|INCONCLUSIVE, note).
+
+    One function for both directions, so "was it refused?" and "was it accepted?"
+    cannot disagree about what a given failure meant.
+    """
     ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
     ctx.check_hostname = False
     ctx.verify_mode = ssl.CERT_NONE
@@ -720,19 +923,51 @@ def _tls_accepted(host, port, version):
         ctx.minimum_version = version
         ctx.maximum_version = version
     except ValueError as e:
-        return False, f"client cannot offer {version.name}: {e}"
+        # The client's own OpenSSL will not offer this version, so the server was
+        # never asked. Previously counted as "refused" — a pass asserted from the
+        # local build of OpenSSL rather than from the endpoint.
+        return INCONCLUSIVE, f"client cannot offer {version.name}: {e}"
+    sock, err = _connect(host, port)
+    if sock is None:
+        return INCONCLUSIVE, err
     try:
-        with socket.create_connection((host, port), timeout=10) as sock:
+        with sock:
             with ctx.wrap_socket(sock, server_hostname=host) as ss:
-                return True, f"negotiated {ss.version()}"
-    except (ssl.SSLError, OSError) as e:
-        return False, f"handshake failed ({type(e).__name__}: {e})"
+                return ACCEPTED, f"negotiated {ss.version()}"
+    except ssl.SSLError as e:
+        # We reached the port and the handshake failed: a real protocol refusal.
+        return REFUSED, f"handshake failed ({type(e).__name__}: {e})"
+    except ConnectionResetError as e:
+        # How a load balancer commonly declines an obsolete protocol.
+        return REFUSED, f"connection reset during handshake ({e})"
+    except OSError as e:
+        return (
+            INCONCLUSIVE,
+            f"connection lost during handshake ({type(e).__name__}: {e})",
+        )
 
 
-def _http_refused(host):
-    """Return (ok: bool, note). ok=True if plaintext HTTP does NOT serve the API
-    (connection refused/timeout, or a non-2xx). API Gateway execute-api does not
-    listen on :80, so a connection error is the expected/pass case."""
+# Connection outcomes that are a POSITIVE observation that nothing serves the port:
+# the host answered, and its answer was "no". A TCP reset is the shape
+# "execute-api does not listen on :80" actually takes.
+_PORT_CLOSED_ERRORS = (ConnectionRefusedError, ConnectionResetError)
+
+
+def _http_probe(host):
+    """Whether plaintext HTTP serves the API. (REFUSED|ACCEPTED|INCONCLUSIVE, note).
+
+    API Gateway execute-api does not listen on :80, so "the port answered with a
+    reset" is the expected pass. Three failures are NOT that, and each has to be
+    separated from it rather than folded in:
+
+    * **DNS** — the name did not resolve, so port 80 was never asked.
+    * **A connect timeout** — the packet went nowhere and nothing came back. Common
+      on a restricted network with blackholed egress, and indistinguishable from a
+      healthy endpoint if counted as a refusal: the probe would report "plaintext
+      HTTP refused" having observed nothing at all.
+    * **Anything else** — an OSError this function does not recognise is not evidence
+      either way, so it says so instead of guessing in the reassuring direction.
+    """
     url = f"http://{host}/"
     try:
         req = urllib.request.Request(url, method="GET")
@@ -740,11 +975,20 @@ def _http_refused(host):
             # Served something over cleartext — only a redirect to https is ok.
             loc = r.headers.get("Location", "")
             if r.status in (301, 302, 307, 308) and loc.startswith("https://"):
-                return True, f"HTTP {r.status} redirect to https"
-            return False, f"served HTTP {r.status} over cleartext"
+                return REFUSED, f"HTTP {r.status} redirect to https"
+            return ACCEPTED, f"served HTTP {r.status} over cleartext"
     except urllib.error.HTTPError as e:
         # A 4xx/5xx over cleartext still means :80 answered; only a redirect is
         # acceptable, handled above. Treat other HTTP responses as weak.
-        return False, f"HTTP {e.code} over cleartext"
-    except (urllib.error.URLError, OSError, socket.timeout) as e:
-        return True, f"no cleartext service ({type(e).__name__})"
+        return ACCEPTED, f"HTTP {e.code} over cleartext"
+    except (urllib.error.URLError, OSError) as e:
+        # URLError wraps the real cause in `.reason`; a bare OSError is its own.
+        reason = getattr(e, "reason", e)
+        if isinstance(reason, socket.gaierror):
+            return INCONCLUSIVE, f"host did not resolve ({reason})"
+        if isinstance(reason, _PORT_CLOSED_ERRORS):
+            return REFUSED, f"no cleartext service ({type(reason).__name__})"
+        # socket.timeout is TimeoutError on 3.10+; named explicitly for clarity.
+        if isinstance(reason, (TimeoutError, socket.timeout)):
+            return INCONCLUSIVE, f"connect to :80 timed out ({reason})"
+        return INCONCLUSIVE, f"could not probe :80 ({type(reason).__name__}: {reason})"

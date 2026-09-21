@@ -70,9 +70,10 @@ if not result["valid"]:
 |------|---------|
 | `models.py` | Typed `IDPConfig` Pydantic models (per-service config: OCR, classification, extraction, assessment, summarization, evaluation, chat, discovery, …). The source of truth for config field defaults and validation. |
 | `merge_utils.py` | Merge user config with system defaults, diff/strip helpers, and `validate_config()` with its enhanced validators. |
-| `configuration_manager.py` | `ConfigurationManager` — CRUD against the DynamoDB Configuration Table (Default + Custom records), compression, versioning. |
+| `configuration_manager.py` | `ConfigurationManager` — CRUD against the DynamoDB Configuration Table (Default + Custom records), compression, versioning. Takes an optional `region`; see [Region for the underlying clients](#region-for-the-underlying-clients). |
 | `migration.py` | Migration of legacy configuration formats to the current JSON-Schema-based format. |
 | `revisions.py` | `ConfigRevisionStore` — immutable numbered snapshots of a Configuration Profile's configuration. See [Configuration Profiles and revisions](#configuration-profiles-and-revisions). |
+| `retired_models.py` | `RETIRED_MODELS` / `is_retired()` — the single registry of Bedrock models past their end-of-life date. See [Retired models](#retired-models). |
 | `constants.py` | Configuration constants, including the reserved profile names and the active-profile pointer key. |
 | `class_names.py` | Canonical rules for document class ids — `is_valid_class_name()` / `sanitize_class_name()`. See [Class ids](#class-ids). |
 | `class_settings.py` | `carry_forward_authored_settings()` — preserve a class's hand-authored class-level `x-aws-idp-*` keys when a generator (Discovery, BDA blueprint optimization) regenerates that class. See [Regenerating a class](#regenerating-a-class). |
@@ -351,6 +352,78 @@ detects a rollback (a stored `config_format_version` newer than the running
 code's) and returns SUCCESS rather than FAILED on a parse error, so the rollback
 completes instead of wedging — a genuine forward bad-config still fails loudly.
 
+## Region for the underlying clients
+
+`ConfigurationManager(table_name=…, region=…)`,
+`ConfigurationReader(table_name=…, region=…)` and the `get_config(…, region=…)`
+convenience wrapper take an optional `region`, which is passed to the DynamoDB
+resource they build and, through `ConfigRevisionStore`, to the S3 client used for
+revision history.
+
+`region=None` means "let boto3 resolve it" — `AWS_REGION`, then
+`AWS_DEFAULT_REGION`, then the profile, then IMDS. That is the right value inside
+a Lambda, where the runtime always sets `AWS_REGION`, and it is why these classes
+worked for years without the parameter.
+
+**An out-of-region caller must pass it.** A DynamoDB table name is not
+region-qualified, so a caller that resolved `ConfigurationTable`'s physical id
+from CloudFormation in one region and then builds a manager without that region
+reads and writes *the same name* in whatever region the ambient credentials
+resolve to. On a multi-region account that is a successful write to a different
+stack's configuration table, and the caller is told it succeeded. Every
+`idp-cli config-*` command, `idp-cli bootstrap`, `idp-cli discover`,
+`idp-cli config-sync-bda` and `scripts/migrate_multi_instance_baselines.py` are
+out-of-region callers in this sense. Two service classes build their own clients
+and take a `region` for the same reason — `BdaBlueprintService`, which writes
+BDA-derived document classes, and both discovery classes, which write the
+discovered schema and rules.
+
+`scripts/tests/test_config_region_threading.py` enforces this across the whole
+tree: it parses every tracked `.py` and requires each construction of these
+classes to pass a `region` unless it lives in a Lambda-deployed directory, where
+the runtime always sets `AWS_REGION`. That exemption is decided by **directory**
+rather than by a list, so a new handler is covered automatically; the two
+library-internal exceptions are named there with a premise the file asserts.
+
+The precedence, stated once: an explicit `--region` (or `region=`) wins;
+otherwise boto3's own chain applies. No hardcoded region is substituted at any
+point in this layer.
+
+## Retired models
+
+`retired_models.py` holds every Bedrock model past its AWS **end-of-life** date —
+inaccessible in every region, every call returning
+`ResourceNotFoundException: This model version has reached the end of its life`.
+That is distinct from `LEGACY`, where existing users can still invoke the model and
+it correctly stays selectable; only the first class is listed.
+
+It lives in shipped code because three consumers need the same answer:
+`validate_config` (so `idp-cli config-validate` and `config-upload --validate`
+reject a configuration that pins a dead model before a document fails two stages
+in), `scripts/tests/test_model_surface_consistency.py`, and the #708 gate
+`scripts/sdlc/tests/test_retired_models_not_offered.py`.
+
+**Why one registry and not two.** There were two, and they encoded contradictory
+policies. The #708 gate required a retired model to be *absent* from
+`pricing.yaml`, because `validate_config` derived its valid-model set from that
+file and the absence is what made validation fail. But a pricing entry is read
+retrospectively — a cost report over documents processed while the model was still
+selectable resolves its rate by model id, so deleting the row re-prices historical
+runs at zero. Both goals are legitimate and neither can be met by the presence or
+absence of a pricing row. So validation now rejects a model because it is *known to
+be retired*, the pricing row stays, and the fragile coupling to an unrelated file
+is gone.
+
+`is_retired()` matches any region or geo variant: end of life is a property of the
+**foundation model**, so when `amazon.nova-premier-v1:0` was withdrawn the `us.`,
+`eu.` and `global.` profiles routing to it died with it, and the bare form is the
+one GovCloud uses.
+
+`was_offered` decides one thing only — whether a `pricing.yaml` row must be
+retained. A model this solution never made selectable cannot appear in anyone's
+cost report, so it needs no rate, and inventing one would breach the "never invent
+model facts" rule in `.claude/skills/add-model.md`.
+
 ## Adding or changing a model
 
 Model defaults and inference fields live in `models.py`, and model/feature
@@ -358,3 +431,12 @@ compatibility is enforced in `merge_utils.py`. Adding a selectable Bedrock model
 touches many other files too (template enums, pricing, UI, the bedrock client,
 docs) — follow the checklist in
 [.claude/skills/documentation.md](../../../../.claude/skills/documentation.md).
+
+Removing one that has reached **end of life** is the reverse walk of that
+checklist, with one exception: the model keeps its `pricing.yaml` entry, its
+`model_config_limits.yaml` pattern and its quota-code entries, because all three
+are consulted for whatever model a *deployed* stack's stored configuration names,
+which is a superset of what is newly selectable. What must go is every surface a
+customer can newly choose from — the template enums, the UI dropdown, the config
+presets and any `default=` in `models.py`.
+`scripts/tests/test_model_surface_consistency.py` enforces both halves.
