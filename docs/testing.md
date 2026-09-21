@@ -300,8 +300,11 @@ procedure, and each is mandatory for a release. One of them also runs in CI: the
 dynamic API RBAC matrix is step 12 of the GitLab `integration_tests` deployment
 (`scripts/sdlc/codebuild_deployment.py` shells out to `make api-test` against the
 stack that job deploys), so it is the one row below that a GitLab pipeline covers —
-and, being GitLab-only, the one row a GitHub pull request does not. The rest run only
-when a person asks.
+and, being GitLab-only, the one row a GitHub pull request does not. Note when that
+job runs automatically: pushes to `develop` and non-Draft merge requests targeting
+it, and in both cases only when the change touches a deploy-affecting path, so a
+documentation or `CHANGELOG` change does not exercise it. On any other branch it is
+manual. The rest of the rows run only when a person asks.
 
 | Tier | What only a live stack can prove | Command | Procedure |
 |---|---|---|---|

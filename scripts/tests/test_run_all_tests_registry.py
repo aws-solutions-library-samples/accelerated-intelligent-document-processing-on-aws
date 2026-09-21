@@ -19,6 +19,7 @@ doc check derives its stated root count from ``len(RUN_ROOTS)``.
 from __future__ import annotations
 
 import importlib.util
+import re
 import subprocess
 import sys
 from collections import Counter
@@ -150,11 +151,17 @@ def test_a_root_quarantined_for_collecting_nothing_really_collects_nothing(
 # stub had been written one directory down, and the entry above it still named the
 # missing module as the obstruction.
 #
-# So the claim is computed instead of believed, in both directions: the named test must
-# still fail, and everything else in its file must still pass. The first half is the
-# staleness ratchet (fix the test and this fails, telling you to move the root into
-# RUN_ROOTS); the second is what makes "the other tests pass" more than an assertion in
-# a comment.
+# So the claim is computed instead of believed, in three directions: the named test must
+# still EXIST, it must still fail, and everything else in its file must still pass.
+#
+# Existence is not redundant with failure, and leaving it out was a real hole. `pytest
+# <path>::<name>` for a name that is gone exits 4 (usage error, "no match in any of
+# ...") rather than 0, so a `returncode != 0` check alone is satisfied by DELETING or
+# renaming the test. The entry would then stand forever naming a node id nothing can
+# resolve, and the file's four passing tests would stay outside the gate with nothing
+# prompting a revisit -- the same "reason that outlived its subject" failure this whole
+# section exists to stop, reached by a different route. So the first check requires
+# `--collect-only` to find exactly one item.
 
 #: root -> the one pytest node id whose failure holds the root back.
 _ROOTS_HELD_BACK_BY_ONE_TEST = {
@@ -170,6 +177,21 @@ def _pytest(root: str, *arguments: str) -> subprocess.CompletedProcess[str]:
         cwd=REPO_ROOT / root,
         capture_output=True,
         text=True,
+    )
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("root", sorted(_ROOTS_HELD_BACK_BY_ONE_TEST))
+def test_the_one_test_holding_a_root_back_still_exists(root: str) -> None:
+    """Rename or delete the named test and this fails, not the one below."""
+    node = _ROOTS_HELD_BACK_BY_ONE_TEST[root]
+    result = _pytest(root, node, "--collect-only")
+    collected = re.search(r"^(\d+) tests? collected", result.stdout, re.M)
+    assert result.returncode == 0 and collected and collected.group(1) == "1", (
+        f"`pytest {node} --collect-only` does not resolve to exactly one test, so "
+        f"QUARANTINE['{root}'] names something that no longer exists. If the test was "
+        "renamed, re-key this entry; if it was deleted, the root is no longer held back "
+        "and belongs in RUN_ROOTS.\n\n" + (result.stdout + result.stderr)[-2000:]
     )
 
 

@@ -669,22 +669,23 @@
     },
     "scripts/run_all_tests.py::QUARANTINE": {
       "kind": "exemption",
-      "turnsOff": "`make test` entirely, for the listed directories",
+      "turnsOff": "TWO gates, for the listed directories: `make test` entirely, and -- since test_src_lambda_tests_in_ci.py was widened past src/lambda -- the requirement that a directory holding tests be reachable from a CI-invoked target. The second consumer is why membership is matched EXACTLY on the quarantine side of that gate: `scripts` is excluded for one file, and as a prefix that one sentence would also exempt scripts/tests, scripts/sdlc/tests, scripts/srt/tests and scripts/security/tests, i.e. this repository's entire gate layer, from running on a pull request.",
       "premise": [
         "JUDGEMENT"
       ],
       "ratchet": "universe-closure",
-      "reason": "Roots known not to run in the shared gate, each with a reason. The reasons are heterogeneous and so is the checking: one is a dependency-availability fact (huggingface_hub) that an import could settle; one is 'collects zero pytest tests', which the RUN_ROOTS comment records as having been false for a sibling entry and which test_run_all_tests_registry.py now runs the collector for; and one names a single failing test, which the same file computes in both directions so that fixing the test invalidates the entry rather than leaving it standing.",
+      "reason": "Roots known not to run in the shared gate, each with its own reason, and the reasons are heterogeneous enough that no one predicate is the premise for the constant. Member by member: `scripts` is a mis-collection of one file (the live RBAC harness's test_email helper), and it is the member whose reason is narrowest relative to the path it names, so both consuming gates match it exactly rather than as a prefix; `src/lambda/ocr_benchmark_deployer` is a dependency-availability fact (huggingface_hub) an import could settle; `samples/lambda-hook-inference/GENAIIDP-chandra-ocr-hook` claims it collects zero pytest tests, wording the RUN_ROOTS comment records as having been false for a sibling entry, and test_run_all_tests_registry.py now runs the collector for it; `lib/idp_sdk/idp_sdk/_core` is a source tree whose modules are named test_* and which collects nothing; `nested/bedrockkb/src/s3_vectors_manager` names one failing test, computed three ways in test_run_all_tests_registry.py -- the node must still resolve to exactly one collected test, it must still fail, and its file must still pass without it -- so fixing, renaming or deleting that test all invalidate the entry rather than leaving it standing; and `nested/bedrockkb/src/s3_vectors_manager/tests` is an asymmetry in the safe direction, excluded from `make test` while both CIs run it directly.",
       "crossReferences": [
         "scripts/run_all_tests.py::RUN_ROOTS"
       ],
       "predicateConsidered": {
-        "collects_zero_tests": "It DOES apply to the subset whose reason makes that claim, and it is now applied: test_run_all_tests_registry.py runs the collector per member for every QUARANTINE reason matching that wording. It is recorded here rather than as this entry's premise because the constant's members are heterogeneous -- an unavailable dependency, a mis-collection, a source tree, an absence of tests -- so no single predicate is the premise for the constant."
+        "collects_zero_tests": "It DOES apply to the subset whose reason makes that claim, and it is now applied: test_run_all_tests_registry.py runs the collector per member for every QUARANTINE reason matching that wording. It is recorded here rather than as this entry's premise because the constant's members are heterogeneous -- an unavailable dependency, a mis-collection, a source tree, an absence of tests, one failing test -- so no single predicate is the premise for the constant."
       },
       "memberKind": "path",
       "ratchetEvidence": [
         "scripts/run_all_tests.py",
-        "scripts/tests/test_run_all_tests_registry.py"
+        "scripts/tests/test_run_all_tests_registry.py",
+        "scripts/tests/test_src_lambda_tests_in_ci.py"
       ]
     },
     "scripts/run_all_tests.py::RUN_ROOTS": {

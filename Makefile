@@ -685,7 +685,8 @@ test-packages-cicd: ## CI-safe: run the package/Lambda suites NOT covered by idp
 	cd samples/lambda-hook-inference/GENAIIDP-w2-copy-consistency && $(PYTEST_HERMETIC) -q -p no:cacheprovider
 	@echo "Running benchmark harness tests (what a release report claims, and which config a run executes)..."
 	@# A bug in this tree becomes a wrong published number rather than a visible
-	@# failure, which is what happened at v0.6.5. 187 tests, ~2.5s, pure dict/YAML.
+	@# failure, which is what happened at v0.6.5. Pure dict/YAML logic, no AWS, and
+	@# the largest of the suites added here at a couple of seconds.
 	$(PYTEST_HERMETIC) benchmarks/tests -q -p no:cacheprovider
 	@echo "Running unified state-machine structure tests (hook fail-closed ordering, retry/timeout shape)..."
 	@# These parse patterns/unified/statemachine/workflow.asl.json only — no AWS.

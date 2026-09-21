@@ -52,10 +52,14 @@ Every method above, plus the layers that *do* run in CI, is described in
 
 Note the entry point in the first row. `make test` is the local way to run the offline
 suites; the targets a pull request actually runs are `make test-cicd -C
-lib/idp_common_pkg` and `make test-packages-cicd`, and `make typecheck` is stricter
-than the `make typecheck-pr` that CI runs. Running the row as written is the right
-thing for a release — it is broader than CI — but it is not the same set, so a green
-run here does not follow from a green pipeline.
+lib/idp_common_pkg` and `make test-packages-cicd`. Run the row as written for a
+release, but do not read a green pipeline as having covered it, because the two sets
+differ in both directions. `make typecheck` is whole-repository where CI runs
+`make typecheck-pr` over the files a branch changes, so that half is genuinely
+stricter here. The **test** half is not: every suite `make test` runs is now also in
+one of the two CI targets, and CI additionally runs one directory `make test`
+excludes. `make test-list` prints the split, and `docs/testing.md` records which
+targets a pull request runs.
 
 Two companion records hold the detail this one summarises:
 

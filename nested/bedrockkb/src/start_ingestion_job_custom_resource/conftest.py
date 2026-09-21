@@ -14,10 +14,12 @@ line so that no caller has to know. ``$(PYTEST_HERMETIC)`` strips the machine's
 AWS environment precisely so a suite that depends on an ambient one fails locally
 instead of only on a CI runner; a pin in the caller would defeat that. See #988.
 
-A conftest is the route here rather than a lazily-built client because the suite
-patches the client object by name — ``patch.object(handler, "CLIENT", client)`` —
-so ``handler.CLIENT`` must exist at import. Nothing reaches AWS: the replacement
-is a ``MagicMock``.
+A conftest is the route here rather than a lazily-built client because building the
+client lazily would be a change to a deployed Lambda handler, and what is wrong is
+the test harness's assumption rather than the handler: the module-level client is
+correct in production and a warm invocation reuses it. The region is what this suite
+needs, so this suite is where it belongs. Nothing reaches AWS — ``handler.CLIENT`` is
+replaced with a ``MagicMock`` before any call.
 
 Scope note: this ``setdefault`` re-supplies a region for **everything** this
 directory imports, not just ``handler``. ``handler`` is the only module here, and

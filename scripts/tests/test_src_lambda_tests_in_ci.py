@@ -27,7 +27,10 @@ Deliberately excluded directories are taken from ``run_all_tests.QUARANTINE``, w
 already carries a written reason for each one, so there is exactly one place to
 record "this suite does not run in the shared gate" instead of two. There is no
 exemption list in this file, by design: a root is either reachable from a
-CI-invoked target or it is quarantined with a reason.
+CI-invoked target or it is quarantined with a reason. Those reasons are matched to
+**exactly** the directory they name and never to the tree below it — see
+:func:`_uncovered`, where getting that wrong would have exempted this repository's
+whole gate layer on the strength of one sentence about one file.
 
 **Scope, and how it got here.** This check began as ``src/lambda/``-only, and said so
 — the same argument applied to ``patterns/unified/tests`` and the
@@ -50,6 +53,7 @@ case would mean requiring bare-directory invocations throughout.
 from __future__ import annotations
 
 import importlib.util
+import re
 import shlex
 from pathlib import Path
 
@@ -82,13 +86,13 @@ def _run_all_tests_module():
     return module
 
 
-def _recipe_body(makefile: Path, target: str) -> list[str]:
+def _recipe_body(makefile: Path, target: str, root: Path | None = None) -> list[str]:
     """The tab-indented lines of one recipe, with ``\\`` continuations joined."""
     lines = makefile.read_text(encoding="utf-8").splitlines()
     starts = [i for i, ln in enumerate(lines) if ln.startswith(target + ":")]
     assert len(starts) == 1, (
         f"expected exactly one '{target}:' rule in "
-        f"{makefile.relative_to(REPO_ROOT)}, found {len(starts)}"
+        f"{makefile.relative_to(root or REPO_ROOT)}, found {len(starts)}"
     )
     body: list[str] = []
     pending = ""
@@ -123,17 +127,30 @@ def _runnable(lines: list[str]) -> list[str]:
     ]
 
 
-def _covered_dirs() -> set[str]:
+def _covered_dirs(
+    root: Path | None = None,
+    recipes: tuple[tuple[str, str], ...] = CI_RECIPES,
+) -> set[str]:
     """Repo-relative directories the CI recipes actually run pytest against.
 
     A pytest target that names a file is recorded as its parent directory, which is
     what makes the directory-level assertion below correct rather than strict.
+
+    ``root`` and ``recipes`` are arguments so that
+    ``test_the_covered_side_credits_only_what_a_recipe_names`` can drive this real
+    function against a synthetic Makefile, rather than asserting that the parse works
+    by reading the code that implements it. Over-crediting is the direction that turns
+    the whole gate into a no-op while every assertion still passes, so it needs a probe
+    of its own.
     """
+    root = root or REPO_ROOT
     covered: set[str] = set()
-    for makefile_rel, target in CI_RECIPES:
-        makefile = REPO_ROOT / makefile_rel
-        workdir_root = makefile.parent.relative_to(REPO_ROOT).as_posix()
-        for line in _runnable(_recipe_body(makefile, target)):
+    for makefile_rel, target in recipes:
+        makefile = root / makefile_rel
+        workdir_root = makefile.parent.relative_to(root).as_posix()
+        if workdir_root == ".":
+            workdir_root = ""
+        for line in _runnable(_recipe_body(makefile, target, root)):
             if f"$({PYTEST_VAR})" not in line:
                 continue
             workdir = workdir_root
@@ -151,10 +168,35 @@ def _covered_dirs() -> set[str]:
                 continue
             for target_path in targets:
                 resolved = (base / target_path).as_posix().rstrip("/")
-                if (REPO_ROOT / resolved).is_file():
+                if (root / resolved).is_file():
                     resolved = Path(resolved).parent.as_posix()
                 covered.add(resolved)
     return covered
+
+
+def _recipe_workdirs(root: Path | None = None) -> set[str]:
+    """Directories the root Makefile ``cd``s into before running pytest, by regex.
+
+    A second, deliberately cruder derivation of the same fact, used only as a floor
+    for :func:`_covered_dirs`. It reads the raw file and looks at the ``cd`` target and
+    nothing else, so a defect in ``_recipe_body``'s continuation joining, in
+    ``_target_paths``' option handling, or in the file-versus-directory resolution
+    cannot move it. A floor computed by the machinery it is supposed to bound is not a
+    floor, which is what a hardcoded ``> 20`` amounted to when the parse yields 65.
+    """
+    root = root or REPO_ROOT
+    text = (root / "Makefile").read_text(encoding="utf-8")
+    workdirs: set[str] = set()
+    for line in text.splitlines():
+        if not line.startswith("\t") or f"$({PYTEST_VAR})" not in line:
+            continue
+        stripped = line.lstrip("\t")
+        if stripped.startswith("@echo") or stripped.lstrip("@").startswith("#"):
+            continue
+        match = re.match(r"cd (\S+) &&", stripped)
+        if match:
+            workdirs.add(match.group(1).rstrip("/"))
+    return workdirs
 
 
 #: pytest options whose VALUE is a separate argument, so the value is not a path.
@@ -220,12 +262,32 @@ def _covered_by(directory: str, candidates: set[str]) -> bool:
 
 
 def _uncovered(root: Path, covered: set[str], quarantined: set[str]) -> list[str]:
-    """The detector itself, parameterised on its inputs so a probe can drive it."""
+    """The detector itself, parameterised on its inputs so a probe can drive it.
+
+    **The two sides match differently, and that asymmetry is the design.**
+
+    *Covered* is a prefix match, because a recipe line that runs a whole tree really
+    does run everything under it: ``cd lib/idp_common_pkg && pytest tests/`` is one
+    line and it credits 28 nested directories.
+
+    *Quarantined* is **exact membership**, because an exclusion covers only the
+    directory somebody decided to exclude. This is the same rule
+    ``run_all_tests.classify`` applies for the same reason, and the cost of getting it
+    wrong here is larger. ``QUARANTINE`` holds a bare ``"scripts"`` entry whose written
+    reason is about one file — the live RBAC harness, whose ``test_email()`` helper
+    pytest mis-collects. Under prefix matching that one sentence would exempt
+    ``scripts/tests`` (2,382 tests, including this file), ``scripts/sdlc/tests``,
+    ``scripts/srt/tests`` and ``scripts/security/tests``, all four of which are in
+    ``RUN_ROOTS``: deleting their four recipe lines would leave this suite green while
+    the repository's entire gate layer ran on no pull request. That is one
+    justification attached to a set where the justification is a property of a single
+    member, which is the defect class ``CLAUDE.md`` records as recurring here.
+    ``test_a_quarantined_parent_does_not_exempt_its_children`` pins it.
+    """
     return sorted(
         directory
         for directory in _test_dirs(root)
-        if not _covered_by(directory, quarantined)
-        and not _covered_by(directory, covered)
+        if directory not in quarantined and not _covered_by(directory, covered)
     )
 
 
@@ -246,10 +308,17 @@ def test_derivation_is_not_vacuous():
         )
 
     covered = _covered_dirs()
-    assert len(covered) > 20, (
-        "the recipe parse found only "
-        f"{sorted(covered)} — far fewer directories than the recipes name, so the "
-        "parse is broken and the coverage assertion below would pass vacuously."
+    floor = _recipe_workdirs()
+    assert floor, (
+        "the regex floor matched no `cd <dir> && ...$(PYTEST_HERMETIC)` line in the "
+        "Makefile, so it cannot bound anything. Either the recipe stopped using that "
+        "shape or this regex is wrong."
+    )
+    assert len(covered) >= len(floor), (
+        f"the recipe parse credited {len(covered)} directories but the raw Makefile "
+        f"`cd`s into {len(floor)} distinct ones before running pytest, so the parse is "
+        "dropping lines and the coverage assertion below would pass on a subset. "
+        f"Missing from the parse: {sorted(floor - covered)}"
     )
     stale = sorted(path for path in covered if not (REPO_ROOT / path).is_dir())
     assert not stale, (
@@ -288,6 +357,69 @@ def test_the_detector_reports_an_uncovered_directory(tmp_path: Path):
     ), (
         "the detector reported directories it was told are quarantined, so the "
         "excluded registry would not be honoured"
+    )
+
+
+def test_a_quarantined_parent_does_not_exempt_its_children(tmp_path: Path):
+    """An exclusion covers the directory somebody excluded, not the tree below it.
+
+    ``QUARANTINE``'s bare ``"scripts"`` entry is excluded for one file — the live RBAC
+    harness pytest mis-collects. Matched as a prefix it would also exempt
+    ``scripts/tests``, ``scripts/sdlc/tests``, ``scripts/srt/tests`` and
+    ``scripts/security/tests``, which is this repository's whole gate layer and 2,382
+    tests including this file; their four recipe lines could then be deleted with this
+    suite still green. Nothing in the coverage assertion would notice, because every
+    root involved is genuinely in the recipe today — which is why the rule needs its own
+    probe rather than being left to the live tree to demonstrate.
+    """
+    (tmp_path / "scripts" / "tests").mkdir(parents=True)
+    (tmp_path / "scripts" / "tests" / "test_gate.py").write_text("def test_g(): pass\n")
+    (tmp_path / "scripts" / "test_harness.py").write_text("def test_h(): pass\n")
+
+    assert _uncovered(tmp_path, covered=set(), quarantined={"scripts"}) == [
+        "scripts/tests"
+    ], (
+        "quarantining `scripts` also exempted `scripts/tests`. An exclusion must match "
+        "the directory exactly — the same rule run_all_tests.classify applies — or one "
+        "sentence about one file silently covers every suite added beneath it."
+    )
+
+
+def test_the_covered_side_credits_only_what_a_recipe_names(tmp_path: Path):
+    """Can the covered derivation over-credit? Drive it against a synthetic Makefile.
+
+    This is the direction the other probes miss. Gutting ``_uncovered`` is caught, and
+    so is a ``_test_dirs`` that returns nothing — but a ``_covered_dirs`` that credits
+    more than the recipe names turns the whole gate into a no-op with every other
+    assertion still passing, and it is the shape an over-reading refactor of
+    ``_target_paths`` or ``_recipe_body`` would take.
+
+    The synthetic recipe also carries the lines that must credit **nothing**: an
+    ``@echo`` that happens to mention the wrapper variable, an ``@#`` comment that names
+    a real directory, and an invocation whose only argument is an unexpanded Make
+    variable (a pass-through for CI's ``-n auto``, not a path).
+    """
+    for name in ("named", "unnamed", "echoed", "commented"):
+        (tmp_path / name).mkdir()
+    (tmp_path / "Makefile").write_text(
+        "test-packages-cicd:\n"
+        '\t@echo "Running $(PYTEST_HERMETIC) against echoed ..."\n'
+        "\t@# commented is deliberately not run: $(PYTEST_HERMETIC) commented\n"
+        "\tcd named && $(PYTEST_HERMETIC) -q -p no:cacheprovider\n"
+        "\t$(PYTEST_HERMETIC) $(PYTEST_ARGS) -q\n"
+    )
+
+    covered = _covered_dirs(tmp_path, recipes=(("Makefile", "test-packages-cicd"),))
+
+    assert "named" in covered, (
+        f"a `cd named && $(PYTEST_HERMETIC)` line credited nothing; got {covered}"
+    )
+    over_credited = covered & {"unnamed", "echoed", "commented"}
+    assert not over_credited, (
+        f"the parse credited {sorted(over_credited)}, which the recipe does not run "
+        "pytest against. A directory named only in an @echo message or an @# comment, "
+        "or one never mentioned at all, must not count as covered — otherwise this "
+        "gate reports nothing while appearing to check everything."
     )
 
 

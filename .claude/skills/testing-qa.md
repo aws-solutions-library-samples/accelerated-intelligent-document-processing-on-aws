@@ -192,14 +192,20 @@ error** — so when you add tests in a NEW location, `make test`/CI fails until 
 add that dir to `RUN_ROOTS` (if green headless) or `QUARANTINE` (with a reason).
 This is deliberate: it's the guard that stops new tests from being silently
 skipped, which is exactly how ~200 Lambda tests went unrun under the old
-hand-maintained `make test`. Currently quarantined roots (need fixing before
-they join the gate): `ocr_benchmark_deployer` (needs `huggingface_hub`, not a test
-dependency), `s3_vectors_manager` (one stale assertion in `test_handler.py`; the
-other four tests pass), `scripts` (the RBAC harness, not a suite), the
-`chandra-ocr-hook` manual script, and the `idp_sdk/_core` source tree. Run
-`make test-list` to see the current split, and read the reason beside each entry in
-`QUARANTINE` rather than this list — the reasons are what `scripts/tests/test_run_all_tests_registry.py`
-computes against the tree.
+hand-maintained `make test`. **Run `make test-list` for the current quarantined set
+and read the reason beside each entry in `QUARANTINE`** — an enumeration here goes
+stale the moment one is added or paid off, and the reasons are the part that matters:
+they are per-directory, and `scripts/tests/test_run_all_tests_registry.py` computes
+the ones that are computable (whether a root claiming to collect nothing really does,
+and whether the single failing test a root is held back by still exists and still
+fails). `docs/testing.md` carries the same list as prose, and that page is checked
+against the registry in both directions.
+
+An exclusion covers **only the directory named** — nesting under one does not
+inherit it, in `run_all_tests` or in the CI-coverage gate. That matters most for the
+bare `scripts` entry, which is excluded for one mis-collected file: inherited, it
+would cover `scripts/tests`, `scripts/sdlc/tests`, `scripts/srt/tests` and
+`scripts/security/tests`, which is the whole gate layer.
 
 **Being registered in `RUN_ROOTS` does not mean a suite runs on a pull request.**
 `make test` runs in neither CI. CI runs `make test-cicd -C lib/idp_common_pkg` and

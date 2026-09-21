@@ -120,14 +120,8 @@ region or placeholder credentials supplies them from its own `conftest.py`.
 is the command to use locally. It is not what CI runs: neither `.gitlab-ci.yml` nor
 any workflow in `.github/workflows/` invokes it. `scripts/tests/test_src_lambda_tests_in_ci.py`
 is what keeps the two in agreement, by failing when a directory `make test` discovers
-is reachable from neither CI-invoked target.
-
-For a local coverage run:
-
-```bash
-cd src/lambda/calculate_capacity
-pytest --cov=. --cov-report=xml --cov-fail-under=80
-```
+is reachable from neither CI-invoked target. For a local coverage run, use
+`make test-capacity-coverage` (above).
 
 ## Mock Environment Variables
 
