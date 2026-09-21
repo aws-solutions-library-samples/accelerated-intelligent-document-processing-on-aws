@@ -381,10 +381,11 @@ class TestRowShortfallOutcome:
     def test_the_section_fails_with_exactly_one_recorded_error(self):
         """Pins the ``except ExtractionOutputIncomplete: raise`` pass-through.
 
-        Without it, control reaches the generic handler, which appends a SECOND,
-        differently-prefixed entry to ``document.errors`` for one failure. Not
-        visible in a Step Functions cause, but a duplicated error list is what a
-        report or an alarm counts, so the pass-through is observable here.
+        Driven through ``process_document_section``, because that is where the
+        pass-through lives: without it control falls into the generic handler,
+        which appends a SECOND, differently-prefixed entry to ``document.errors``
+        for one failure, and runs the two Bedrock-error matchers over a message
+        that is neither. One failure must record one error.
         """
         svc = _svc(row_shortfall_action="fail")
         doc = Document(
@@ -396,19 +397,23 @@ class TestRowShortfallOutcome:
         )
         section = Section(section_id="1", classification="Statement", page_ids=["1"])
         doc.sections = [section]
-        svc._document_text = _table(800, pages=17)
-        with pytest.raises(ExtractionOutputIncomplete):
-            svc._fail_on_row_shortfall(
-                doc,
-                SimpleNamespace(
-                    processing_issues=[
-                        SimpleNamespace(
-                            code=CODE, severity="error", message="Extracted 43 row(s)."
-                        )
-                    ]
-                ),
-                "1",
-            )
+
+        # Stand in for the work before the tail: the contract under test is how
+        # process_document_section ROUTES the exception _save_results raises, not
+        # how the section was extracted.
+        def _raise_like_save_results(document, *_a, **_kw):
+            msg = "Section 1 extraction is materially incomplete: Extracted 43 row(s)."
+            document.errors.append(msg)
+            raise ExtractionOutputIncomplete(msg)
+
+        with (
+            patch.object(svc, "_prepare_section_context", return_value=([], "sys")),
+            patch.object(svc, "_invoke_extraction_model", return_value=None),
+            patch.object(svc, "_save_results", side_effect=_raise_like_save_results),
+        ):
+            with pytest.raises(ExtractionOutputIncomplete):
+                svc.process_document_section(document=doc, section_id="1")
+
         assert len(doc.errors) == 1, doc.errors
 
     def test_warn_is_the_default_and_reports_success(self):
@@ -664,8 +669,17 @@ class TestWhyFailIsOptIn:
         assert issue.details["ocr_estimated_rows"] == 38  # 6 summary + 32 daily
         assert issue.details["ratio"] < 0.2
         # THEREFORE the default must be advisory. Asserted against the config
-        # default, not a literal, so flipping the default fails here.
-        assert IDPConfig().extraction.row_shortfall_action == "warn"
+        # default, not a literal, so flipping the default fails here — and says
+        # which shipped field it would have cost.
+        assert IDPConfig().extraction.row_shortfall_action == "warn", (
+            "extraction.row_shortfall_action now defaults to 'fail', which would "
+            f"fail this document: {issue.details['list_fields']} in the template's "
+            "default preset (lending-package-sample, Bank-Statement) was extracted "
+            f"completely and still scores {issue.details['ratio']}, because "
+            f"{issue.details['ocr_estimated_rows']} rows of 2-column tables in the "
+            "section are summed into its evidence. Narrow _expected_rows_for_width "
+            "first."
+        )
         assert issue.severity == "warning"
 
     def test_under_fail_that_correct_extraction_would_lose_the_document(self):
