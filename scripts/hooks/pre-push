@@ -28,7 +28,13 @@
 # install-git-hooks` reports success either way.
 #
 # So when there are no ref lines, this judges by HEAD and its upstream instead.
-# ⚠️ That substitutes a different question, and it is wrong in BOTH directions:
+#
+# ⚠️ On a machine with that system-wide redirect, and only there, substituting
+# that question trades a false refusal for a real gap in the same breath: a push
+# of a feature branch while HEAD sits on develop is refused although nothing
+# shared is being written, AND a push whose destination IS a shared branch while
+# HEAD is not on one goes through although the normal path refuses it. Spelled
+# out:
 #
 #   * Over-refusal: pushing a feature branch, or making a no-op push, while HEAD
 #     happens to sit on develop is refused even though nothing shared was being
