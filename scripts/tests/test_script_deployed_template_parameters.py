@@ -350,8 +350,10 @@ def test_supplied_parameters_exist_in_template(
         # reason as "checked elsewhere, named", not as "checked".
         pytest.skip(
             f"{script} builds its parameter list at runtime; checked by "
-            f"{substitute or 'nothing but the by-name test above (see '
-            'NO_SUBSTITUTE_REASONS)'}"
+            f"{
+                substitute
+                or 'nothing but the by-name test above (see NO_SUBSTITUTE_REASONS)'
+            }"
         )
 
     declared = set(_template_parameters(template))
