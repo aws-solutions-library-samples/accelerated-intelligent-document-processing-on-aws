@@ -2161,7 +2161,7 @@ complete one, why neither status nor cost flagged it.
 | Value | Outcome |
 |---|---|
 | `warn` (default) | Record the issue and report success. |
-| `fail` | The rows that *were* extracted, the issue and the processing report are written to the section's `result.json` first; the section then fails with `ExtractionOutputIncomplete`, which is deterministic and in no `Retry` list, so it fails once and in seconds. The document's status is `FAILED` and the Step Functions cause is the sentence naming the rows extracted, the OCR row estimate and the remedy. |
+| `fail` | The rows that *were* extracted, the issue and the processing report are written to the section's `result.json` first; the section then fails with `ExtractionOutputIncomplete`, which is deterministic and in no `Retry` list, so it fails once and in seconds. The document's status is `FAILED`, the Step Functions cause is the sentence naming the rows extracted, the OCR row estimate and the remedy, and the section's own record carries both that shortfall issue and `extraction_failed` — see below. |
 
 It does not change **when** the shortfall is detected — the floor of 30 matching
 OCR rows and the "fewer than half" ratio are identical under both values, so the
@@ -2169,6 +2169,27 @@ sections that fail under `fail` are exactly the ones that warn under `warn`. And
 it is not Simple-mode-only: the check and the outcome are shared by both modes,
 because a truncated Advanced section tells the same lie. Advanced mode shards, so
 it reaches this far less often.
+
+##### Where a failed section shows up
+
+A section whose extraction **failed** is recorded on the section itself, so the
+document's Sections panel shows which section failed and why. That applies to
+every raising extraction failure, not only a row shortfall:
+`ExtractionInputTooLarge`, `ExtractionImageRejected`,
+`ModelInvalidToolUseSequence` and `ExtractionOutputIncomplete` all leave an
+error-severity `extraction_failed` issue whose `root_cause` is the exception's own
+explanation and remedy — the same sentence the Step Functions cause reports, which
+is unchanged.
+
+Two issues appear together under `row_shortfall_action: fail`, and they say
+different things. `extraction_rows_below_ocr_estimate` names what was lost and how
+to accept it; `extraction_failed` says the section did not succeed. The first
+cannot carry that on its own, because it is written at `warning` severity under
+`warn` — where the document completes — and at `error` under `fail`.
+
+The rows that were extracted are still in the section's `result.json` and the
+section still points at it, so a partial result stays readable in the Visual
+Editor rather than being discarded with the failure.
 
 ##### Why `fail` is opt-in, and what to check before turning it on
 

@@ -160,7 +160,11 @@ class ProcessingIssue:
             ``"assessment_pages_missing"`` (some of the section's pages were absent
             from the document, so their values were scored without their evidence),
             ``"extraction_class_not_configured"`` (the section's class is absent
-            from the configuration, so there was no schema to extract against), or
+            from the configuration, so there was no schema to extract against),
+            ``"extraction_failed"`` (the section's extraction step RAISED — the one
+            code here that reports a failure rather than flagging a result the
+            pipeline still accepted; see
+            ``idp_common.extraction.failure``), or
             ``"classification_failed"`` / ``"classification_page_no_content"`` /
             ``"classification_invalid_class_fallback"`` (classification produced no
             usable class for one or more of the section's pages).

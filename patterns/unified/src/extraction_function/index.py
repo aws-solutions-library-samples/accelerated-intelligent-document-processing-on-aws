@@ -12,6 +12,7 @@ from aws_xray_sdk.core import patch_all, xray_recorder
 
 from idp_common import extraction, get_config, metrics
 from idp_common.docs_service import create_document_service
+from idp_common.extraction.failure import persist_section_after_extraction_failure
 from idp_common.models import Document, Status
 from idp_common.utils import calculate_lambda_metering, merge_metering_data
 from idp_common.utils.bedrock_utils import set_lambda_deadline_epoch
@@ -417,14 +418,42 @@ def _handle(event, context):
     # 1800s inside a 900s function). No-op when the deadline is unknown.
     set_lambda_deadline_epoch(deadline_epoch)
 
-    # Process the section in our focused document
+    # Process the section in our focused document.
+    #
+    # #1049: every extraction failure RAISES (ExtractionInputTooLarge,
+    # ExtractionImageRejected, ModelInvalidToolUseSequence,
+    # ExtractionOutputIncomplete), and the section write below — the one the
+    # Sections panel reads — sits after this call, so it never happened on a
+    # failure. The section's DynamoDB record still said whatever classification
+    # left there.
+    #
+    # `process_document_section` mutates the document it is given and returns the
+    # same object, so on a raise `section_document` still carries everything the
+    # service recorded before giving up — which for ExtractionOutputIncomplete is
+    # the persisted partial result and the error-severity row-shortfall issue.
     t0 = time.time()
-    section_document = extraction_service.process_document_section(
-        document=section_document,
-        section_id=section_id,
-        checkpoint_data=checkpoint_data,
-        deadline_epoch=deadline_epoch,
-    )
+    try:
+        section_document = extraction_service.process_document_section(
+            document=section_document,
+            section_id=section_id,
+            checkpoint_data=checkpoint_data,
+            deadline_epoch=deadline_epoch,
+        )
+    except Exception as error:
+        persist_section_after_extraction_failure(
+            document_service=document_service,
+            document=section_document,
+            section_id=section_id,
+            section_index=section_index,
+            error=error,
+        )
+        # The checkpoint and the per-shard results are deliberately NOT cleaned up
+        # here (see the success-path cleanup below): they are what lets a Step
+        # Functions retry of this section re-infer only the shards that did not
+        # finish, which is the entire reason per-shard persistence exists (#1014).
+        # They cost nothing to keep — the working bucket expires every object on
+        # the stack's retention schedule.
+        raise
     t1 = time.time()
     logger.info(f"Total extraction time: {t1 - t0:.2f} seconds")
 

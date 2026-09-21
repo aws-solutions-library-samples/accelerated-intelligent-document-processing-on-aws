@@ -30,6 +30,7 @@ import boto3
 
 from idp_common import extraction, get_config
 from idp_common.docs_service import create_document_service
+from idp_common.extraction.failure import persist_section_after_extraction_failure
 from idp_common.models import Document, Status
 from idp_common.utils import calculate_lambda_metering, merge_metering_data
 from idp_common.utils.bedrock_utils import set_lambda_deadline_epoch
@@ -180,14 +181,38 @@ def _handle(event, context):
     if mode == "merge":
         start_time = time.time()
         section, section_index = _section_scoped(full_document, section_id)
-        section_document = service.merge_section_shards(
-            document=full_document,
-            section_id=section_id,
-            persistence=_persistence(working_bucket, execution_arn),
-            deadline_epoch=deadline_epoch,
-        )
-        if section_document.status == Status.FAILED:
-            raise Exception(f"Merge failed for section {section_id}")
+        # #1049: the merge shares _save_results with the in-process path, so it
+        # shares its raising failures too — including ExtractionOutputIncomplete,
+        # whose whole point is that the diagnosis is durable before the raise.
+        # The section write below sat after this call, so a failed merge left the
+        # section's DynamoDB record untouched and the Sections panel blank.
+        # merge_section_shards mutates `full_document` in place and returns it, so
+        # `section` here is the object the service recorded onto.
+        try:
+            section_document = service.merge_section_shards(
+                document=full_document,
+                section_id=section_id,
+                persistence=_persistence(working_bucket, execution_arn),
+                deadline_epoch=deadline_epoch,
+            )
+            if section_document.status == Status.FAILED:
+                raise Exception(f"Merge failed for section {section_id}")
+        except Exception as error:
+            persist_section_after_extraction_failure(
+                document_service=create_document_service(),
+                document=full_document,
+                section_id=section_id,
+                section_index=section_index,
+                error=error,
+            )
+            # The per-shard results are deliberately KEPT on failure. They exist so
+            # a Step Functions retry of the section re-infers only the shards that
+            # did not finish (#1014); deleting them here would discard paid-for
+            # shard inference at the one moment a retry is most likely, to reclaim
+            # space the working bucket's lifecycle rule reclaims anyway. They are
+            # cleaned up on success below, and by the next successful run of the
+            # same execution + section.
+            raise
         _cleanup_shards(working_bucket, execution_arn, section_id)
         try:
             lambda_metering = calculate_lambda_metering(

@@ -1017,6 +1017,50 @@ The ExtractionService has built-in error handling:
 3. All errors are logged for debugging
 4. Few-shot example loading errors are handled gracefully with fallback to standard prompts
 
+### A raising failure still reaches the section's record — `idp_common.extraction.failure`
+
+Every extraction failure raises: `ExtractionInputTooLarge`,
+`ExtractionImageRejected`, `ModelInvalidToolUseSequence` and
+`ExtractionOutputIncomplete`. Both Lambda entry points persist the section to
+DynamoDB *after* the service call returns, so on a raise the write did not happen
+and the section's record still held whatever classification left there — nothing
+in the Sections panel identified the section that failed.
+
+`idp_common.extraction.failure` is the shared body of the fix. Each entry point
+wraps its service call and, in the `except` block, calls
+`persist_section_after_extraction_failure` before re-raising unchanged:
+
+- `patterns/unified/src/extraction_function/index.py` — the in-process path,
+  around `process_document_section`;
+- `patterns/unified/src/extraction_function/sfn_runtime_handler.py`, `mode="merge"`
+  — the Distributed Map shard merge, around `merge_section_shards`.
+
+Three properties it relies on, and one it deliberately does not do:
+
+- **The document carries the diagnosis on a raise.** Both service entry points
+  mutate the document they are given and return the same object, and the `section`
+  they operate on is the live object inside `document.sections`. So after a raise
+  the caller's handle still holds everything the service recorded — which for
+  `ExtractionOutputIncomplete` is the whole point, since `_save_results` finishes
+  writing the partial result and the error-severity
+  `extraction_rows_below_ocr_estimate` issue before the raise at its tail.
+- **Existing issues are preserved.** A *successful* run replaces the section's
+  extraction-stage issues; doing that here would delete the diagnosis. Only a
+  previous `extraction_failed` is replaced, so a retried section does not collect
+  one issue per attempt.
+- **The write cannot mask the original error.** It is swallowed and logged. The
+  original exception is what names the rows lost or the input that was too large,
+  and it is what the Step Functions cause reports.
+- **No metric.** Unlike `idp_common.assessment.degradation`, whose whole reason for
+  existing is that the document *completes* and trips no alarm, everything here
+  re-raises — the execution fails and the existing failure alarms already count it.
+
+**Per-shard results are kept on failure.** `_cleanup_shards` runs only on success.
+Per-shard S3 persistence exists so a Step Functions retry re-infers only the shards
+that did not finish; deleting them on failure would discard paid-for inference at
+the moment a retry is most likely, to reclaim space the working bucket's lifecycle
+rule reclaims anyway.
+
 ### An empty effective schema: three causes, one of them a fault
 
 `_get_class_schema` returns `{}` both for a class the configuration contains and
