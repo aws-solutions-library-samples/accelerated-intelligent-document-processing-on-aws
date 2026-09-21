@@ -392,6 +392,26 @@ def _markers_for(rel_path: str) -> tuple[str, ...]:
     return SHELL_DEPLOY_MARKERS if rel_path.endswith(".sh") else DEPLOY_CALL_MARKERS
 
 
+def _shell_without_comments(path: Path) -> str:
+    """A shell script's executable lines, comments dropped.
+
+    A by-name check over the raw text is satisfied by a *comment* mentioning the
+    parameter — including a comment explaining why the parameter is needed, which is
+    exactly the comment someone adds while removing the line that supplies it. Found
+    by mutation: deleting the `FeatureBucket` echo from publish.sh left this gate green
+    because the comment above it still named it.
+
+    Only whole-line comments are dropped. A trailing `#` inside a quoted string is not
+    worth parsing for, and a parameter name appearing in a trailing comment on an
+    otherwise-live line is not the failure mode this guards.
+    """
+    return "\n".join(
+        line
+        for line in path.read_text(encoding="utf-8").splitlines()
+        if not line.lstrip().startswith("#")
+    )
+
+
 @pytest.mark.unit
 def test_the_walk_finds_every_deployer_it_is_supposed_to_police():
     """Universe closure, the direction ``test_registry_is_complete`` cannot check.
@@ -680,7 +700,7 @@ def test_shell_deployers_name_every_required_parameter(script: str, template: st
         f"{template} declares no parameter without a Default, so this check is "
         "vacuous — verify the template still has the shape this test assumes"
     )
-    source = (REPO_ROOT / script).read_text()
+    source = _shell_without_comments(REPO_ROOT / script)
     missing = sorted(name for name in required if name not in source)
     assert not missing, (
         f"{script} prints a deploy command for {template} but never mentions "
