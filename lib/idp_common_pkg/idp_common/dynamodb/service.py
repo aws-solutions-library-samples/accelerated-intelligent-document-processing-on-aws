@@ -714,7 +714,9 @@ class DocumentDynamoDBService:
         # Convert any float values to Decimal for DynamoDB compatibility
         expression_values = convert_floats_to_decimal(expression_values)  # type: ignore[assignment]
 
-        return update_expression, expression_names, expression_values
+        # convert_floats_to_decimal is typed over its own recursive Decimal
+        # union, which no longer matches the declared Dict[str, Any].
+        return update_expression, expression_names, expression_values  # pyright: ignore[reportReturnType]
 
     def _dynamodb_item_to_document(self, item: Dict[str, Any]) -> Document:
         """

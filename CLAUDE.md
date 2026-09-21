@@ -254,14 +254,19 @@ to `develop` runs nothing on GitHub.
 
 Parity between the two CIs only means both *run* the gates. Whether a red gate can
 actually stop a merge is a **repository setting**, not anything in this tree, and
-today it does not: `develop` has no branch protection at all, so every gate above
-is advisory. A pull request can be merged with all checks red.
-
-Do not take that on trust from this file — measure it:
+today it does not: **neither `develop` nor `main` has any branch protection**, so
+every gate above is advisory. A pull request can be merged with all checks red.
+`main` matters as much as `develop` here — it is the repository's default branch
+and the one releases are cut from — and one invocation reads one branch, so
+answering the question takes two:
 
 ```bash
-make check-branch-protection          # reads the live setting via the GitHub API
+make check-branch-protection                                       # develop
+make check-branch-protection BRANCH_PROTECTION_ARGS=--branch=main   # main
 ```
+
+Do not take the state on trust from this file. Those commands read the live
+setting via the GitHub API.
 
 The command derives the expected required-check list by **parsing**
 `.github/workflows/*.yml` for job names (a hardcoded inventory would drift the
@@ -288,26 +293,43 @@ It is **opt-in and non-blocking on purpose**: it needs network access and a toke
 comes from the nested `protection.required_status_checks` object on
 `GET .../branches/<branch>`; `administration:read` is what the other five
 assertions need, and without it those five are reported **unread** rather than
-satisfied), and it reports "not protected", which is the standing answer here.
-Enabling protection needs repository **admin**, which no contributor and no CI
-token has, so
-[issue #933](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/933)
-is closed as out of this repository's reach rather than as done. In `lint-cicd` the
-check would red-line every branch for a condition nobody in the tree can fix, so
-it is in neither `lint-cicd` nor `test_ci_gate_parity.py`'s `SHARED_GATES`. With no
-token or no network it exits 0 with an explanation; `--fail-on-skip` turns that
-into an error, which is how to run it if protection is ever granted and it becomes
-a required, blocking gate. Keep it: it is the instrument that measures the claim,
-and "we believe protection is off" is not the same as knowing.
+satisfied), and on this repository it reports "not protected" on both branches, so
+in `lint-cicd` it would red-line every branch for a condition nobody in the tree
+can fix. It is therefore in neither `lint-cicd` nor `test_ci_gate_parity.py`'s
+`SHARED_GATES`, and `scripts/tests/test_check_branch_protection.py` fails if it is
+added to either or invoked from either CI configuration. With no token or no
+network it exits 0 with an explanation; `--fail-on-skip` turns that into an error,
+which is how to run it once it is a blocking gate. Its steady-state result today is
+**exit 1 with one `not_protected` finding** per branch — the expected answer, not a
+regression.
 
-What exists instead is a **client-side** guard, described under
-[the shared-branch guard](#the-check-shared-branch-guard) below. Be precise about
-what it buys, because the two are not substitutes: it refuses an accidental direct
-commit or push to `develop`/`main` from a checkout, and refuses a `gh pr merge` of
-a pull request with a failing check. It cannot make a red gate block anything,
-because a merge through GitHub's own Merge button runs no code on a contributor's
-machine. **So the statement at the top of this section still holds in full: a
-pull request can be merged with all checks red.**
+**The absence of protection is a known, accepted residual, not an open task.**
+Enabling classic protection needs repository **admin**, which no contributor and no
+CI token here has, so it cannot be done from the tree or from tooling; the decision
+to stop pursuing it from inside the repository is recorded in closed
+[issue #933](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/933).
+Cite that issue as the decision record; do not treat it as pending. **Nothing in
+this repository can substitute**, and that is structural rather than a matter of
+effort: enforcement is server-side, so a merge taken through GitHub's own Merge
+button runs no code from this tree and no hook, script or gate here can turn a red
+check into a refused merge.
+
+The trigger for making this a required, blocking gate is therefore a repository
+setting changing, by one of two routes that are **not the same permission**: either
+somebody with repository **admin** enables classic branch protection, or an
+organization or enterprise owner publishes a **branch ruleset** targeting these
+branches. The second needs no repository admin, and the mechanism is demonstrably
+available here — the repository already inherits five enterprise rulesets, four
+`target=repository` and one `target=tag`, none of which targets a branch. Neither
+route is actionable from this tree, and neither announces itself: running the
+command is how either would be noticed.
+
+What the tree *can* do, and does, is make a direct write to a shared branch a
+deliberate act on the machine it is typed on — see
+[the shared-branch guard](#the-check-shared-branch-guard) below. Read it against
+the paragraph above rather than as a weaker form of it: it refuses an accidental
+`git commit`, `git push` or red `gh pr merge` from a checkout, and it changes
+nothing about what GitHub will accept.
 
 ### Testing
 
@@ -374,7 +396,8 @@ make srt-fix       # Interactive fix mode
   A change merged on GitHub used to skip it entirely — see the note in that
   workflow. ⚠️ Being visible is not being blocking: run
   `make check-branch-protection` to see whether this check is actually required
-  on `develop` (it is not, yet — issue #933).
+  on `develop` or `main`. It is required on neither, and enabling protection is
+  out of this repository's reach — see "Visible is not blocking" above.
 - Does not run on feature branch pushes to avoid blocking development
 - Pipeline fails if high-priority security findings are detected
 - Provides security gate before code is merged to `develop`
@@ -864,9 +887,11 @@ Testing samples available in `samples/`:
 - `scripts/sdlc/validate_buildspec.py` - Validates CodeBuild buildspec files
 - `scripts/sdlc/validate_service_role_permissions.py` - Verifies IAM service role permissions
 - `scripts/sdlc/typecheck_pr_changes.py` - Type checks only changed files in PRs
-- `scripts/sdlc/check_branch_protection.py` - Checks that `develop`'s required
+- `scripts/sdlc/check_branch_protection.py` - Checks that a branch's required
   status checks match the jobs the workflows actually run (`make
-  check-branch-protection`; opt-in, read-only GitHub API, see issue #933)
+  check-branch-protection`; opt-in, read-only GitHub API, one branch per run).
+  Neither `develop` nor `main` is protected and enabling it is out of this
+  repository's reach — see "Visible is not blocking" above
 
 ## AWS Access for Live Troubleshooting
 

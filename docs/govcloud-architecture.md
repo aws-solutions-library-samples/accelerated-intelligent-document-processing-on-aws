@@ -207,10 +207,9 @@ error only surfaces later as an access-denied at runtime, in the partition you
 deployed to.
 
 Note what is **not** touched. `CognitoAuthorizedRole`'s `S3` inline policy —
-`s3:GetObject`, `s3:GetObjectVersion` and `s3:ListBucket` on the input, output
-and working buckets, plus its KMS statement — survives both transforms
-unchanged, so a GovCloud deployment gives the authenticated role exactly the same
-S3 reach as a commercial one.
+`s3:GetObject`, `s3:GetObjectVersion` and `s3:ListBucket` on the input and output
+buckets, plus its KMS statement — survives both transforms unchanged, so a GovCloud
+deployment gives the authenticated role exactly the same S3 reach as a commercial one.
 
 So each transform reports every statement it drops, at `INFO`, naming the
 resource (for a role's inline policy, `<RoleLogicalId>.<PolicyName>`), the count

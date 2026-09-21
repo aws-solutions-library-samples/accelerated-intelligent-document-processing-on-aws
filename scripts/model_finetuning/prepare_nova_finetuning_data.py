@@ -176,7 +176,9 @@ class NovaDataPreparationService:
             raise ValueError("Either dataset_name or local_path must be provided")
 
         logger.info(f"Dataset loaded with {len(ds)} samples")
-        return ds
+        # datasets' stub types load_dataset() as a four-way union; passing
+        # `split=` narrows it to a Dataset, which the stub cannot express.
+        return ds  # pyright: ignore[reportReturnType]
 
     def sample_data_by_label(
         self,
