@@ -665,7 +665,9 @@ def test_no_substitute_reasons_matches_the_registry():
     real substitute, and the dict would drift into a list of stale excuses that reads
     as though someone had considered each one.
     """
-    declared_none = {p.values[0] for p in DEPLOYERS if p.values[3] is None}
+    # str() because pytest types ``param.values`` as ``tuple[object | NotSetType,
+    # ...]``, so the set difference below is not otherwise well-typed.
+    declared_none = {str(p.values[0]) for p in DEPLOYERS if p.values[3] is None}
     assert declared_none == set(NO_SUBSTITUTE_REASONS), (
         "NO_SUBSTITUTE_REASONS must name exactly the DEPLOYERS entries with no "
         f"substitute.\n  registered with None but unexplained: "
