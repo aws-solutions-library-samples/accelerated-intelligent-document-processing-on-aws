@@ -178,7 +178,7 @@ def main():
         else:
             print("No question provided. Use --question or -q to specify a question.")
             print(
-                "Example: python test_analytics.py -q 'How many documents have I processed each day of the last week?'"
+                "Example: python manual_tests/agents/test_analytics.py -q 'How many documents have I processed each day of the last week?'"
             )
             print("\nLogging options:")
             print("  --verbose, -v                  Enable verbose application logging")

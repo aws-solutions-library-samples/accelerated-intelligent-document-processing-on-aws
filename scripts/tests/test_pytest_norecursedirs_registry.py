@@ -32,6 +32,7 @@ Registered in `scripts/tests/gate_exemptions.json` as
 from __future__ import annotations
 
 import configparser
+import importlib.util
 import subprocess
 from pathlib import Path
 
@@ -43,24 +44,36 @@ REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 def _pytest_default_norecursedirs() -> tuple[str, ...]:
     """pytest's own default for `norecursedirs`, which setting it REPLACES.
 
-    Read out of a real pytest parser rather than restated here, so a pytest
-    upgrade that adds a directory to the default fails this guard instead of
-    quietly narrowing what the tracked files exclude.
+    Read out of a real pytest parser rather than restated here. Restating it would
+    fail silently in the one direction this guard exists for: a pytest release that
+    adds a directory to the default would leave the tracked `pytest.ini` quietly
+    narrower with this test still green. Reading it means a pytest release that
+    moves this attribute fails loudly instead.
+
+    `_parser._inidict` is private, and so is `get_config`; there is no public read
+    of an ini-option *default*, so the choice is only which private thing to touch.
+    The entry is a 3-tuple of (help, type, default) — asserted as a list rather than
+    indexed blindly, so a shape change fails as a shape change rather than being
+    converted into a plausible wrong value.
     """
     from _pytest.config import get_config
 
     config = get_config([])
-    spec = config._parser._inidict["norecursedirs"]  # (help, type, default)
+    spec = config._parser._inidict["norecursedirs"]
     default = spec[2]
-    assert default, "could not read pytest's default norecursedirs"
-    if isinstance(default, str):
-        return tuple(default.split())
+    assert isinstance(default, list) and default, (
+        "pytest's norecursedirs ini-option no longer exposes a non-empty list "
+        f"default at _inidict[...][2]; got {default!r}. The shape of "
+        "_pytest.config.Parser._inidict has changed — read it wherever it lives now."
+    )
     return tuple(default)
 
 
 def _tracked_pytest_inis() -> list[Path]:
+    # git's default pathspec `*` crosses `/`, so `*/pytest.ini` reaches every
+    # package-level file at any depth; no deeper pattern is needed.
     out = subprocess.run(
-        ["git", "ls-files", "pytest.ini", "*/pytest.ini", "*/*/pytest.ini"],
+        ["git", "ls-files", "pytest.ini", "*/pytest.ini"],
         cwd=REPO_ROOT,
         capture_output=True,
         text=True,
@@ -69,8 +82,25 @@ def _tracked_pytest_inis() -> list[Path]:
     return [REPO_ROOT / rel for rel in out]
 
 
+def _run_all_tests_module():
+    """Load scripts/run_all_tests.py under a private alias.
+
+    Same idiom as test_testing_doc.py and its siblings: the module is a script, not
+    an importable package member, and loading it under its own top-level name would
+    put a second copy of it in sys.modules alongside theirs.
+    """
+    path = REPO_ROOT / "scripts" / "run_all_tests.py"
+    spec = importlib.util.spec_from_file_location("_run_all_tests_for_pytest_ini", path)
+    assert spec and spec.loader
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
 def _norecursedirs(path: Path) -> tuple[str, ...]:
-    parser = configparser.ConfigParser()
+    # interpolation=None: ConfigParser's default BasicInterpolation would raise on a
+    # literal '%' in a future value rather than reading it as written.
+    parser = configparser.ConfigParser(interpolation=None)
     parser.read(path)
     if not parser.has_option("pytest", "norecursedirs"):
         return ()
@@ -152,15 +182,8 @@ def test_each_added_exclusion_is_also_registered_as_a_non_running_suite(
     nothing says so -- which is the state `scripts/run_all_tests.py`'s guard and
     `docs/testing.md`'s table exist to prevent.
     """
-    import sys
-
-    sys.path.insert(0, str(REPO_ROOT / "scripts"))
-    try:
-        from run_all_tests import QUARANTINE, RUN_ROOTS
-    finally:
-        sys.path.pop(0)
-
-    registered = {r.rstrip("/") for r in (*RUN_ROOTS, *QUARANTINE)}
+    registry = _run_all_tests_module()
+    registered = {r.rstrip("/") for r in (*registry.RUN_ROOTS, *registry.QUARANTINE)}
     for entry in _extra_entries(path):
         target = path.parent / entry
         if not target.is_dir():

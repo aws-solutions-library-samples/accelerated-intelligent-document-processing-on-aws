@@ -1819,7 +1819,8 @@
       "crossReferences": [
         "scripts/run_all_tests.py::QUARANTINE"
       ],
-      "ratchetEvidence": "scripts/tests/test_pytest_norecursedirs_registry.py"
+      "ratchetEvidence": "scripts/tests/test_pytest_norecursedirs_registry.py",
+      "ratchetGap": "A new test_*.py added DIRECTLY into an already-registered excluded directory is absorbed silently: the non-vacuity ratchet is already satisfied and the directory is already in QUARANTINE, so nothing fires. A new SUBdirectory does fail, because nesting under a QUARANTINE entry does not inherit the exclusion. Count-pinning would close the residual and is deliberately not used: it would fire on the intended case, an operator adding a sixth script to a directory whose whole purpose is operator scripts."
     }
   }
 }

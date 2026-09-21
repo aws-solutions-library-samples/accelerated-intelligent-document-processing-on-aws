@@ -6,7 +6,7 @@ This script creates an orchestrator with sub-agents and streams a query,
 printing out every event to understand the event structure.
 
 Usage:
-    python test_streaming_events.py
+    python manual_tests/agents/test_streaming_events.py
 """
 
 import asyncio

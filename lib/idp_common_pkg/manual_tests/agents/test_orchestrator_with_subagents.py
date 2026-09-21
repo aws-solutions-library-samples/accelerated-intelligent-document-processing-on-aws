@@ -9,7 +9,7 @@ This script tests that the conversational orchestrator properly delegates
 to subagents and that subagent responses are returned correctly.
 
 Usage:
-    python test_orchestrator_with_subagents.py
+    python manual_tests/agents/test_orchestrator_with_subagents.py
 """
 
 import argparse
