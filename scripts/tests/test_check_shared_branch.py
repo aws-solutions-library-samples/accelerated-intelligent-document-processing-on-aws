@@ -57,6 +57,7 @@ from check_shared_branch import (  # noqa: E402
     chdir_target,
     decide,
     failing_checks,
+    gh_repo_selector,
     inline_config,
     merge_target,
     push_destinations,
@@ -456,16 +457,55 @@ def test_chdir_target_expands_a_home_relative_path() -> None:
 @pytest.mark.parametrize(
     ("args", "expected"),
     [
-        (["merge", "1050"], ("1050", None)),
-        (["merge", "--squash", "1050"], ("1050", None)),
-        (["merge", "--admin"], (None, None)),
-        (["merge"], (None, None)),
-        (["merge", "--repo", "owner/name", "1050"], ("1050", "owner/name")),
-        (["merge", "--repo=owner/name", "1050"], ("1050", "owner/name")),
+        (["merge", "1050"], "1050"),
+        (["merge", "--squash", "1050"], "1050"),
+        (["merge", "--admin"], None),
+        (["merge"], None),
+        (["merge", "--repo", "owner/name", "1050"], "1050"),
+        (["merge", "--repo=owner/name", "1050"], "1050"),
+        (["merge", "-d", "-s", "1050"], "1050"),
     ],
 )
-def test_merge_target(args: list[str], expected: tuple[str | None, str | None]) -> None:
+def test_merge_target(args: list[str], expected: str | None) -> None:
     assert merge_target(args) == expected
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("tokens", "expected"),
+    [
+        (["gh", "pr", "merge", "1050"], None),
+        (["gh", "pr", "merge", "--repo", "owner/name", "1050"], "owner/name"),
+        (["gh", "pr", "merge", "-R", "owner/name", "1050"], "owner/name"),
+        (["gh", "pr", "merge", "--repo=owner/name", "1050"], "owner/name"),
+        # gh registers --repo on its root command, so it is valid here too.
+        (["gh", "-R", "owner/name", "pr", "merge", "1050"], "owner/name"),
+        (["gh", "--repo=owner/name", "pr", "merge", "1050"], "owner/name"),
+    ],
+)
+def test_gh_repo_selector(tokens: list[str], expected: str | None) -> None:
+    """Which repository's checks get read.
+
+    Losing the selector asks about a pull request of the same number in whatever
+    repository the command runs in — a different question with the same shape of
+    answer, so nothing about the result looks wrong.
+    """
+    assert gh_repo_selector(tokens) == expected
+
+
+@pytest.mark.unit
+def test_a_merge_with_the_repo_before_the_subcommand_is_still_a_merge(
+    repo: Path, checks: list[list[str]]
+) -> None:
+    """``gh -R owner/name pr merge 1050`` is a working gh invocation.
+
+    Reading ``owner/name`` as the subcommand makes it not a merge at all, so the
+    check never runs — the same silent shape as reading a flag's value as the pull
+    request number.
+    """
+    checks[0] = ["security-checks / srt"]
+    blocked = _bash("gh -R owner/name pr merge 1050", cwd=repo)
+    assert decide(blocked) is not None
 
 
 @pytest.mark.unit
@@ -491,11 +531,8 @@ def test_a_merge_flags_value_is_not_read_as_the_pull_request(flag: str) -> None:
     point: the earlier two cases were ``--squash`` and ``--admin``, neither of
     which takes a value, so the suite could not see this.
     """
-    assert merge_target(["merge", flag, "some value", "1050"]) == ("1050", None)
-    assert merge_target(["merge", "--squash", flag, "some value", "1050"]) == (
-        "1050",
-        None,
-    )
+    assert merge_target(["merge", flag, "some value", "1050"]) == "1050"
+    assert merge_target(["merge", "--squash", flag, "some value", "1050"]) == "1050"
 
 
 #: A line in ``gh``'s help listing one option. ``gh`` pads the description to a

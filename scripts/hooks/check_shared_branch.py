@@ -148,6 +148,12 @@ PUSH_FLAGS_WITH_VALUE = frozenset(
     {"-o", "--push-option", "--receive-pack", "--exec", "--repo"}
 )
 
+#: ``gh`` options that may sit *before* the subcommand and take a separate value.
+#: ``--repo`` is registered on gh's root command, so ``gh -R owner/name pr merge
+#: 1055`` is a working form -- and reading ``owner/name`` as the subcommand leaves
+#: the command unrecognised, which allows a red merge with nothing printed.
+GH_GLOBAL_WITH_VALUE = frozenset({"-R", "--repo"})
+
 #: ``gh pr merge`` options that take a separate value, so the value is not
 #: mistaken for the pull request number. Getting this wrong is silent: ``gh pr
 #: checks <some flag's value>`` errors, which reads as "cannot tell" and allows
@@ -385,13 +391,18 @@ def split_assignments(tokens: list[str]) -> tuple[dict[str, str], list[str]]:
     return overrides, tokens[index + 1 :]
 
 
-def subcommand(tokens: list[str], program: str) -> list[str] | None:
-    """Arguments after ``program``'s subcommand, or ``None`` if not that program.
+def subcommand(
+    tokens: list[str],
+    program: str,
+    flags_with_value: frozenset[str] = GIT_GLOBAL_WITH_VALUE,
+) -> list[str] | None:
+    """Arguments from ``program``'s subcommand on, or ``None`` if not that program.
 
     Global options before the subcommand are skipped, so ``git -C dir push`` is
-    recognised as a push. An option that takes a *separate* value has to be
-    listed in ``GIT_GLOBAL_WITH_VALUE``, or its value is mistaken for the
-    subcommand and the command goes unrecognised.
+    recognised as a push and ``gh -R owner/name pr merge`` as a merge. An option
+    that takes a *separate* value has to be listed in ``flags_with_value``, or its
+    value is mistaken for the subcommand and the command goes unrecognised -- which
+    is a silent way to stop checking it.
     """
     if not tokens or tokens[0] != program:
         return None
@@ -400,7 +411,7 @@ def subcommand(tokens: list[str], program: str) -> list[str] | None:
         arg = rest[0]
         if not arg.startswith("-"):
             return rest
-        rest = rest[2:] if arg in GIT_GLOBAL_WITH_VALUE else rest[1:]
+        rest = rest[2:] if arg in flags_with_value else rest[1:]
     return None
 
 
@@ -626,11 +637,30 @@ def failing_checks(
     ]
 
 
-def merge_target(args: list[str]) -> tuple[str | None, str | None]:
-    """``(pull request, repository selector)`` for a ``gh pr merge``.
+def gh_repo_selector(tokens: list[str]) -> str | None:
+    """The ``--repo``/``-R`` a ``gh`` command names, or ``None`` for "this one".
 
-    Either may be ``None``: no pull request means "the current branch's", and no
-    selector means "the repository we are in".
+    The whole command is searched, because gh registers the option on its root
+    command and so accepts it on either side of the subcommand: ``gh -R
+    owner/name pr merge 1055`` and ``gh pr merge -R owner/name 1055`` are the same
+    request. Losing it means the checks are read for a pull request of that number
+    in whatever repository the command happens to run in, which is a different
+    question with the same shape of answer.
+    """
+    rest = list(tokens)
+    while rest:
+        arg = rest[0]
+        flag, separator, attached = arg.partition("=")
+        if separator and flag in GH_GLOBAL_WITH_VALUE:
+            return attached or None
+        if arg in GH_GLOBAL_WITH_VALUE and len(rest) > 1:
+            return rest[1]
+        rest = rest[1:]
+    return None
+
+
+def merge_target(args: list[str]) -> str | None:
+    """The pull request a ``gh pr merge`` names, or ``None`` for the branch's own.
 
     A flag's *value* must not be read as the pull request. ``gh pr merge --subject
     "chore: x" 1055`` would otherwise be checked as pull request ``chore: x``,
@@ -638,29 +668,17 @@ def merge_target(args: list[str]) -> tuple[str | None, str | None]:
     and the merge is allowed with nothing printed. Same class as
     ``PUSH_FLAGS_WITH_VALUE``.
     """
-    pull_request: str | None = None
-    selector: str | None = None
     rest = list(args[1:])  # args[0] is "merge"
     while rest:
         arg = rest[0]
         if arg.startswith("-"):
-            flag, sep, attached = arg.partition("=")
-            if sep:
-                if flag in ("-R", "--repo"):
-                    selector = attached
-                rest = rest[1:]
-                continue
-            if arg in GH_MERGE_FLAGS_WITH_VALUE and len(rest) > 1:
-                if arg in ("-R", "--repo"):
-                    selector = rest[1]
+            if "=" not in arg and arg in GH_MERGE_FLAGS_WITH_VALUE and len(rest) > 1:
                 rest = rest[2:]
                 continue
             rest = rest[1:]
             continue
-        if pull_request is None:
-            pull_request = arg
-        rest = rest[1:]
-    return pull_request, selector
+        return arg
+    return None
 
 
 def repo_root(payload: dict[str, object]) -> Path:
@@ -818,13 +836,14 @@ def decide(payload: dict[str, object], notices: list[str] | None = None) -> str 
                     )
                 continue
 
-        gh_args = subcommand(argv, "gh")
+        gh_args = subcommand(argv, "gh", GH_GLOBAL_WITH_VALUE)
         if gh_args and gh_args[:2] == ["pr", "merge"]:
             if _allowed(ALLOW_RED_MERGE, inline):
                 note(_waived(ALLOW_RED_MERGE, "this pull request's checks"))
                 continue
-            pull_request, selector = merge_target(gh_args[1:])
-            failures = failing_checks(pull_request, base, selector)
+            failures = failing_checks(
+                merge_target(gh_args[1:]), base, gh_repo_selector(argv)
+            )
             if not failures:
                 continue
             return (
