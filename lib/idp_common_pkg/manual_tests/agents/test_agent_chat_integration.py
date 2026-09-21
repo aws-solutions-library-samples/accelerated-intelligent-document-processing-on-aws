@@ -9,7 +9,7 @@ This script tests the conversational agent system by directly invoking
 Lambda functions and checking DynamoDB tables in a deployed AWS environment.
 
 Usage:
-    python test_agent_chat_integration.py --stack-name IDP --region us-east-1
+    python manual_tests/agents/test_agent_chat_integration.py --stack-name IDP --region us-east-1
 """
 
 import argparse

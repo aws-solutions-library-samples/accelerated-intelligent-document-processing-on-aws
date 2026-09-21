@@ -16,14 +16,14 @@ Prerequisites:
 - Appropriate AWS permissions for Bedrock and IAM
 
 Example usage:
-    python create_finetuning_job.py \
+    python scripts/model_finetuning/create_finetuning_job.py \
         --training-data-uri s3://my-bucket/data/train.jsonl \
         --validation-data-uri s3://my-bucket/data/validation.jsonl \
         --output-uri s3://my-bucket/output/ \
         --job-name my-finetuning-job \
         --model-name my-finetuned-model
 
-    python create_finetuning_job.py \
+    python scripts/model_finetuning/create_finetuning_job.py \
         --training-data-uri s3://my-bucket/data/train.jsonl \
         --output-uri s3://my-bucket/output/ \
         --job-name my-auto-split-job \
@@ -340,21 +340,21 @@ def main():
         epilog="""
 Examples:
   # Create job with separate validation data
-  python create_finetuning_job.py \\
+  python scripts/model_finetuning/create_finetuning_job.py \\
     --training-data-uri s3://my-bucket/data/train.jsonl \\
     --validation-data-uri s3://my-bucket/data/validation.jsonl \\
     --output-uri s3://my-bucket/output/ \\
     --job-name my-finetuning-job
   
   # Create job with automatic data splitting
-  python create_finetuning_job.py \\
+  python scripts/model_finetuning/create_finetuning_job.py \\
     --training-data-uri s3://my-bucket/data/train.jsonl \\
     --output-uri s3://my-bucket/output/ \\
     --job-name my-auto-split-job \\
     --validation-split 0.2
   
   # Create IAM role and job with custom hyperparameters
-  python create_finetuning_job.py \\
+  python scripts/model_finetuning/create_finetuning_job.py \\
     --training-data-uri s3://my-bucket/data/train.jsonl \\
     --output-uri s3://my-bucket/output/ \\
     --job-name custom-job \\

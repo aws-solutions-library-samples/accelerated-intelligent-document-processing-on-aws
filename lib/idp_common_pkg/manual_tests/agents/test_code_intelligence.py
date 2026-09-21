@@ -6,7 +6,7 @@
 Integration test for Code Intelligence Agent with DeepWiki MCP.
 
 Run directly:
-    python test_code_intelligence.py
+    python manual_tests/agents/test_code_intelligence.py
 """
 
 import logging

@@ -677,6 +677,7 @@
       "ratchet": "universe-closure",
       "reason": "Roots known not to run in the shared gate, each with a reason. Two reasons are dependency-availability facts (huggingface_hub, cfnresponse) that an import could check; one is 'collects zero pytest tests', which the RUN_ROOTS comment records as having been false for a sibling entry.",
       "crossReferences": [
+        "lib/idp_common_pkg/pytest.ini::norecursedirs",
         "scripts/run_all_tests.py::RUN_ROOTS"
       ],
       "predicateConsidered": {
@@ -1835,6 +1836,24 @@
       "ratchet": "none",
       "reason": "Enforced vocabulary.",
       "ratchetGap": "An unrecognised status would be silently uncounted."
+    },
+    "lib/idp_common_pkg/pytest.ini::norecursedirs": {
+      "kind": "exemption",
+      "memberKind": "path",
+      "turnsOff": "pytest collection entirely, for the directories named, in every invocation rooted at lib/idp_common_pkg",
+      "premise": [
+        "JUDGEMENT"
+      ],
+      "ratchet": "non-vacuity",
+      "reason": "One added entry, `manual_tests`, holding operator-run scripts that drive real Bedrock, Athena and DynamoDB against a deployed stack and bill model calls. It is JUDGEMENT because 'these scripts must not run unattended' is a fact about what they do at runtime, not about the tree. What IS computable is checked: the entry shields at least one test_*.py (so it is not dead and pre-exempting), the restated pytest default is complete (setting norecursedirs replaces the default rather than extending it, so dropping `build` or `node_modules` would start walking them), and every directory it hides is also registered in scripts/run_all_tests.py -- without which the exclusion would be recorded in one file and invisible to the test-root guard and docs/testing.md.",
+      "predicateConsidered": {
+        "collects_zero_tests": "Does not apply, and its inverse is what matters here. That predicate justifies excluding a directory because pytest finds nothing in it; this exclusion exists because pytest finds five test_*.py modules and must not run them. Asserting zero collection would fail, and asserting non-zero is the non-vacuity ratchet above."
+      },
+      "crossReferences": [
+        "scripts/run_all_tests.py::QUARANTINE"
+      ],
+      "ratchetEvidence": "scripts/tests/test_pytest_norecursedirs_registry.py",
+      "ratchetGap": "A new test_*.py added DIRECTLY into an already-registered excluded directory is absorbed silently: the non-vacuity ratchet is already satisfied and the directory is already in QUARANTINE, so nothing fires. A new SUBdirectory does fail, because nesting under a QUARANTINE entry does not inherit the exclusion. Count-pinning would close the residual and is deliberately not used: it would fire on the intended case, an operator adding a sixth script to a directory whose whole purpose is operator scripts."
     }
   }
 }
