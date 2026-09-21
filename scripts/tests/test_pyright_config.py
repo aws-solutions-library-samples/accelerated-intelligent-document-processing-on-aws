@@ -35,15 +35,33 @@ and the 798 it missed included every `lib/*/tests` suite and all of `scripts/`,
 goes in `TYPECHECK_SCOPE_EXCLUSIONS` with a reason, and is asserted to still
 shield something.
 
-Deliberately NOT asserted here: `typeCheckingMode` (currently "basic") or the
-13 diagnostic rules pinned to "none". Tightening those is a separate decision
-with a much larger diff; this file only guarantees that whatever strictness is
-configured is actually applied to the files it claims to cover.
+The **severities** are asserted too, not just the paths. Covering every file is
+only half a gate: the other half is whether a finding in a covered file can fail
+it. `reportCallIssue` and `reportReturnType` sat at "warning", so basedpyright
+exited 0 over 36 `reportCallIssue` diagnostics that included six `idp_sdk` result
+constructors which raised `TypeError` on every input — the type checker had found
+all of it and the gate's exit code did not carry the answer. `_severity_findings`
+below now closes that: a rule in `ENFORCED_ERROR_RULES` cannot be downgraded, and
+the set of rules pinned to "none" cannot grow without an entry in
+`DISABLED_RULE_EXEMPTIONS` explaining that member.
+
+Changing a severity string is only the most obvious way to weaken a severity, and
+the other four are each measured rather than reasoned about. `typeCheckingMode` is
+pinned, because it governs the ~100 `report*` rules this config never names and
+`"off"` takes a file whose one defect is `reportIndexIssue` from 1 error to 0.
+Booleans are rejected, because basedpyright accepts `"reportIndexIssue": false`
+and it silences the rule. Deleting a rule that defaults to "none" is caught by
+`ENFORCED_WARNING_RULES` and by a rule count derived from the three authored lists
+rather than a loose bound. And an `executionEnvironments` root is required to be a
+strict descendant of an `include` entry, because `{"root": "."}` relaxes a rule for
+the whole tree — defeating `ENFORCED_ERROR_RULES` through scope while every
+severity in the file still reads "error".
 """
 
 from __future__ import annotations
 
 import json
+import posixpath
 import subprocess
 import tomllib
 from fnmatch import fnmatch
@@ -457,3 +475,704 @@ def test_no_exclude_entry_shadows_an_include_entry() -> None:
         "`exclude` wins over `include` in pyright. Narrow the exclude pattern, or "
         "drop the include entry if it is genuinely not meant to be checked."
     )
+
+
+# --------------------------------------------------------------------------- #
+# Severity ratchet
+#
+# Every check above answers "is this file read by the gate?". None of them answer
+# "can a finding in it fail the gate?", and that is a separate setting. With
+# `reportCallIssue` and `reportReturnType` at "warning", `make typecheck` exited 0
+# over 53 diagnostics in tracked first-party code, six of which were `idp_sdk`
+# result constructors that raised `TypeError` on every input — each wrapped in a
+# broad `except Exception` that reported them as plausible processing errors.
+# Nothing read the type checker's answer because nothing had to.
+#
+# So the rules get the same treatment `include` got: the property is asserted and
+# the judgement is authored. `_severity_findings` derives the rule universe from
+# the config and fails if any rule sits in neither an enforced set nor a
+# registered carve-out, which is what makes the lists below trustworthy —
+# a fifteenth rule quietly added at "none" is a failure, not an omission.
+#
+# A severity can be weakened four ways, and only the obvious one is "change the
+# value". The other three are each measured against basedpyright rather than
+# assumed:
+#
+#   * `typeCheckingMode` is the only thing that sets the ~100 `report*` rules this
+#     config never names, several of them error-class. With `"off"`, a file whose
+#     sole defect is `reportIndexIssue` goes from 1 error to 0 while every rule
+#     named below keeps its severity. So the mode is pinned too.
+#   * A **boolean** is accepted in place of a severity: `"reportIndexIssue": false`
+#     takes the same file from 1 error to 0. Booleans are rejected outright rather
+#     than mapped, because `true` has no unambiguous severity and a `false` is a
+#     silencing that no registry entry would be asked for.
+#   * An `executionEnvironments` entry can relax a rule for a **path**, and a root
+#     of `.` relaxes it for the whole tree. That defeats the enforced-error
+#     guarantee through scope rather than through severity, so the root is bounded
+#     and the rules it may relax are pinned.
+#   * A rule can be **deleted** rather than downgraded. `reportImportCycles` and
+#     `reportDuplicateImport` default to "none" in basic mode, so dropping either
+#     line silences it. Both are named in `ENFORCED_WARNING_RULES`, which fails on
+#     absence.
+# --------------------------------------------------------------------------- #
+
+#: Rules pinned to "error". A downgrade here has to be a visible edit to this set,
+#: not a one-word change in a JSON file nothing reads.
+#:
+#: `reportUndefinedVariable` was already an error. `reportCallIssue` and
+#: `reportReturnType` are errors as of the change that added this block: the tree
+#: was brought to zero of both first, so promoting them red-lined nothing.
+ENFORCED_ERROR_RULES: frozenset[str] = frozenset(
+    {
+        "reportUndefinedVariable",
+        "reportCallIssue",
+        "reportReturnType",
+    }
+)
+
+#: Rules pinned to "warning": reported on every run, not gate-failing.
+#:
+#: Named here for one reason — both default to "none" under
+#: `typeCheckingMode: "basic"`, so **deleting** either line silences the rule as
+#: effectively as setting it to "none" would, and a deletion is what the
+#: universe-closure check below cannot see (a rule the config does not mention is
+#: not in its universe). Absence is therefore a failure.
+ENFORCED_WARNING_RULES: frozenset[str] = frozenset(
+    {
+        "reportImportCycles",
+        "reportDuplicateImport",
+    }
+)
+
+#: The `typeCheckingMode` this config's rule set was chosen against.
+#:
+#: Pinned because it is the only setting that governs the roughly 100 `report*`
+#: rules named nowhere in the file, and several of those are error-class. Lowering
+#: it to "off" or "standard" silences or shifts all of them while every explicit
+#: rule below keeps the severity it is written with, so nothing else here would
+#: notice. Raising it is a deliberate change with a large diff and belongs in its
+#: own commit.
+ENFORCED_TYPE_CHECKING_MODE = "basic"
+
+#: Rules pinned to "none" repo-wide, one reason per rule.
+#:
+#: These are the honest residuals of `typeCheckingMode: "basic"` over a tree with
+#: no third-party stubs. Every one of them was measured to be unusable at
+#: "warning" or above because of how this codebase reaches AWS — `boto3` clients
+#: are untyped factories, so `reportUnknown*` and `reportAttributeAccessIssue`
+#: fire on nearly every service call — rather than because the findings are
+#: uninteresting. Each entry is a property of that rule, not of the set: a reason
+#: shared by fourteen rules would be a reason for none of them.
+#:
+#: Paying one down means fixing its findings and deleting its entry here, in that
+#: order. Adding one means writing the sentence, which is the point.
+DISABLED_RULE_EXEMPTIONS: dict[str, str] = {
+    "reportMissingImports": (
+        "Lambda source trees import their bundled dependencies, which are not "
+        "installed in the checkout, so this fires on correct code in every "
+        "handler. Also load-bearing for the other rules: with imports "
+        "unresolved, promoting it would bury the ones that find real defects."
+    ),
+    "reportMissingTypeStubs": (
+        "No third-party stubs are vendored and none are installed by the lint "
+        "environment, so this reports the absence of a package this repo has "
+        "made no commitment to ship."
+    ),
+    "reportUnusedImport": (
+        "ruff's F401 already covers this, per file and with an autofix; a second "
+        "opinion on the same finding in a gate that cannot fix it is noise."
+    ),
+    "reportUnusedVariable": (
+        "ruff's F841 covers it per file and with an autofix, and pyright's version "
+        "additionally flags the deliberately-unused binding this tree uses in "
+        "tuple unpacking (`result, _ = structured_output(...)`), which F841 "
+        "exempts by name."
+    ),
+    "reportGeneralTypeIssues": (
+        "A catch-all bucket for diagnostics that have no rule of their own, so "
+        "its findings cannot be triaged as a class or ratcheted per rule."
+    ),
+    "reportOptionalCall": (
+        "Optional callables here are lazily-initialised module handles assigned "
+        "once at import and called thereafter; pyright cannot see the assignment "
+        "order across a Lambda module's import-time setup."
+    ),
+    "reportOptionalMemberAccess": (
+        "boto3 response dicts are typed as returning Optional members, so this "
+        "fires on every `response['X']['Y']` chain against an AWS API that "
+        "documents the key as always present."
+    ),
+    "reportOptionalSubscript": (
+        "Same shape as reportOptionalMemberAccess, one syntax along: subscripting "
+        "a boto3 response member that the service contract guarantees."
+    ),
+    "reportPrivateImportUsage": (
+        "pydantic and strands re-export from private submodules without "
+        "declaring them in `__all__`, so importing their documented public names "
+        "reads as private access."
+    ),
+    "reportUnknownMemberType": (
+        "boto3's `client()` is an untyped factory, so every attribute of every "
+        "service client is Unknown. This fires once per AWS call in the tree."
+    ),
+    "reportUnknownArgumentType": (
+        "The argument side of the same untyped-boto3 problem: values read out of "
+        "an Unknown response and passed onward."
+    ),
+    "reportUnknownVariableType": (
+        "The assignment side of the same untyped-boto3 problem: a local bound to a "
+        "value read out of an Unknown response, which is most locals in the "
+        "Lambda handlers and every `_core` processor in the SDK."
+    ),
+    "reportArgumentType": (
+        "Left off while the Unknown* rules above are off: with boto3 values "
+        "typed Unknown, this rule's true positives are indistinguishable from "
+        "the Unknowns flowing into every call. Paying down the boto3 typing is "
+        "the prerequisite, not a wider exemption."
+    ),
+    "reportAttributeAccessIssue": (
+        "Fires on attributes of untyped boto3 clients and resources, the same "
+        "root cause as the Unknown* rules."
+    ),
+}
+
+#: Directory roots where `executionEnvironments` softens a rule below its repo-wide
+#: severity: the rules it may soften, and why that root.
+#:
+#: `rules` is the pin that bounds the relaxation's breadth — a third rule added to
+#: the same root is a failure, not an extension of an approved carve-out. The root
+#: itself is bounded separately: a relaxation is required to name a strict
+#: descendant of an `include` entry, because `{"root": "."}` relaxes a rule for the
+#: entire tree and would defeat `ENFORCED_ERROR_RULES` through scope while every
+#: severity in the file still reads "error".
+#:
+#: A relaxation is narrower than an `exclude` in two further ways worth stating:
+#: the files are still analysed, and the softened rules are still *reported*, at
+#: "warning". `test_a_relaxed_rule_is_still_reported` holds that second property —
+#: relaxing to "none" here would be an exclusion wearing a severity's clothing, and
+#: would not show up in `DISABLED_RULE_EXEMPTIONS` either.
+VENDORED_SEVERITY_EXEMPTIONS: dict[str, dict] = {
+    "feature-platform/pii-anonymizer/hook/vendor": {
+        "rules": frozenset({"reportCallIssue", "reportReturnType"}),
+        "reason": (
+            "A vendored third-party tree, re-copied file-for-file from upstream by "
+            "its own resync script against the commit pinned in PROVENANCE.md. An "
+            "inline `# pyright: ignore` written here would be silently dropped by "
+            "the next resync, and correcting an upstream project's annotations in "
+            "a vendored copy puts this repo's fix and upstream's source in "
+            "conflict. The 5 diagnostics are upstream's to fix; `ruff.toml` carves "
+            "the same tree out of lint and format for the same reason."
+        ),
+    },
+}
+
+#: Severities a rule may hold in this config. A value outside this set is a typo
+#: that pyright accepts by falling back to its default, which is how a rule
+#: silently stops meaning what the file says.
+_VALID_SEVERITIES = frozenset({"none", "information", "warning", "error"})
+
+#: Weakest-to-strongest, for deciding whether a per-root setting is a relaxation.
+_SEVERITY_ORDER = {"none": 0, "information": 1, "warning": 2, "error": 3}
+
+
+def _rule_settings(config: dict) -> dict[str, object]:
+    """Every `report*` key in a config, whatever type its value is.
+
+    Deliberately not filtered to `str`: basedpyright also accepts a **boolean**,
+    and `"reportIndexIssue": false` silences the rule. Filtering booleans out here
+    would drop them from the universe the closure check derives, so a rule could
+    be turned off in a form no registry entry is ever asked for.
+    """
+    return {key: value for key, value in config.items() if key.startswith("report")}
+
+
+def _rule_severities(config: dict) -> dict[str, str]:
+    """The `report*` keys whose value is a severity string."""
+    return {
+        key: value
+        for key, value in _rule_settings(config).items()
+        if isinstance(value, str)
+    }
+
+
+def _severity_findings(config: dict) -> list[str]:
+    """Everything wrong with a config's rule severities, as reader-facing lines.
+
+    A pure function over a parsed config so the tests below can assert it
+    *rejects* a bad one. An assertion nobody has watched fail is a guess about
+    what it checks — which is the failure this whole file is about, one level up.
+    """
+    findings: list[str] = []
+    severities = _rule_severities(config)
+
+    mode = config.get("typeCheckingMode")
+    if mode != ENFORCED_TYPE_CHECKING_MODE:
+        findings.append(
+            f"typeCheckingMode is {mode!r}, not {ENFORCED_TYPE_CHECKING_MODE!r}. It "
+            "is the only setting governing the ~100 `report*` rules this config "
+            "never names, several of them error-class, so lowering it silences them "
+            "while every rule written here keeps its severity — measured: a file "
+            "whose one defect is reportIndexIssue goes from 1 error to 0 under "
+            '"off". Change ENFORCED_TYPE_CHECKING_MODE deliberately if the mode is '
+            "genuinely moving."
+        )
+
+    for rule, value in sorted(_rule_settings(config).items(), key=lambda kv: kv[0]):
+        if isinstance(value, bool):
+            findings.append(
+                f"{rule} is set to the boolean {value!r} rather than a severity "
+                "string. basedpyright accepts it — `false` silences the rule as "
+                'completely as "none" does — but it carries no severity a reader '
+                "or this gate can act on. Spell the severity: "
+                f"{sorted(_VALID_SEVERITIES)}."
+            )
+        elif not isinstance(value, str):
+            findings.append(
+                f"{rule} is set to {value!r}, which is neither a severity string "
+                "nor a boolean. pyright ignores it and falls back to the mode "
+                "default, so this reads as a setting and is not one."
+            )
+
+    for rule, severity in sorted(severities.items()):
+        if severity not in _VALID_SEVERITIES:
+            findings.append(
+                f"{rule} is set to {severity!r}, which is not one of "
+                f"{sorted(_VALID_SEVERITIES)}. pyright falls back to its default "
+                "for an unrecognised value, so this reads as a setting and is not one."
+            )
+
+    for rule in sorted(ENFORCED_WARNING_RULES):
+        actual = severities.get(rule)
+        if actual is None:
+            findings.append(
+                f"{rule} is in ENFORCED_WARNING_RULES but pyrightconfig.json no "
+                'longer sets it. It defaults to "none" under '
+                f"{ENFORCED_TYPE_CHECKING_MODE!r}, so deleting the line silences the "
+                'rule exactly as setting it to "none" would — and a rule the config '
+                "does not mention is outside the universe the closure check below "
+                "derives, so nothing else here would see it."
+            )
+        elif _SEVERITY_ORDER.get(actual, 3) < _SEVERITY_ORDER["warning"]:
+            findings.append(
+                f"{rule} is pinned to at least 'warning' by ENFORCED_WARNING_RULES "
+                f"but pyrightconfig.json sets it to {actual!r}."
+            )
+
+    for rule in sorted(ENFORCED_ERROR_RULES):
+        actual = severities.get(rule)
+        if actual is None:
+            findings.append(
+                f"{rule} is in ENFORCED_ERROR_RULES but pyrightconfig.json no longer "
+                "sets it. Either re-pin it to 'error' or drop it from that set — "
+                "leaving it implicit makes the severity depend on typeCheckingMode."
+            )
+        elif actual != "error":
+            findings.append(
+                f"{rule} is pinned to 'error' by ENFORCED_ERROR_RULES but "
+                f"pyrightconfig.json sets it to {actual!r}. Below 'error' the gate "
+                "exits 0 over its findings, which is how 53 diagnostics in tracked "
+                "code — including six constructors that raised on every input — went "
+                "unread. Fix the findings rather than the severity."
+            )
+
+    # Universe closure: a rule that is neither enforced nor registered has no
+    # recorded decision behind it, whichever direction it drifted from.
+    for rule, severity in sorted(severities.items()):
+        if rule in ENFORCED_ERROR_RULES or rule in ENFORCED_WARNING_RULES:
+            if rule in DISABLED_RULE_EXEMPTIONS:
+                findings.append(
+                    f"{rule} is in both ENFORCED_ERROR_RULES and "
+                    "DISABLED_RULE_EXEMPTIONS. One of the two is stale."
+                )
+            continue
+        if severity == "none" and rule not in DISABLED_RULE_EXEMPTIONS:
+            findings.append(
+                f"{rule} is turned off repo-wide with no entry in "
+                "DISABLED_RULE_EXEMPTIONS. Turning a rule off is allowed; doing it "
+                "without a sentence saying what is consequently unchecked is what "
+                "lets the set grow one silent rule at a time. Add the entry, or "
+                "raise the rule to 'warning' and leave it enabled."
+            )
+        if severity != "none" and rule in DISABLED_RULE_EXEMPTIONS:
+            findings.append(
+                f"{rule} has a DISABLED_RULE_EXEMPTIONS entry but is set to "
+                f"{severity!r}, not 'none'. Delete the entry — a stale one reads as "
+                "a live decision and hides the next real carve-out."
+            )
+
+    for rule in sorted(set(DISABLED_RULE_EXEMPTIONS) - set(severities)):
+        findings.append(
+            f"DISABLED_RULE_EXEMPTIONS names {rule}, which pyrightconfig.json does "
+            "not set at all. Drop the entry."
+        )
+
+    return findings
+
+
+def test_rule_severities_are_registered_and_not_downgraded() -> None:
+    """The severity half of the gate, both directions."""
+    findings = _severity_findings(_config())
+    assert not findings, "pyrightconfig.json severity problems:\n  " + "\n  ".join(
+        findings
+    )
+
+
+def test_the_rule_count_is_pinned_to_the_three_authored_lists() -> None:
+    """Anti-vacuity, and a count pin that needs no magic number.
+
+    The expected total is *derived* from the three lists above rather than
+    written here, so it cannot go stale: a rule added to the config needs a place
+    in one of them, and a rule deleted from the config leaves its list member
+    dangling. A loose `>= 15` bound let `reportImportCycles` be deleted outright
+    with every test green.
+    """
+    settings = _rule_settings(_config())
+    expected = (
+        set(ENFORCED_ERROR_RULES)
+        | set(ENFORCED_WARNING_RULES)
+        | set(DISABLED_RULE_EXEMPTIONS)
+    )
+
+    unaccounted = sorted(set(settings) - expected)
+    missing = sorted(expected - set(settings))
+
+    assert not unaccounted, (
+        f"pyrightconfig.json sets {unaccounted}, which appear in none of "
+        "ENFORCED_ERROR_RULES, ENFORCED_WARNING_RULES or DISABLED_RULE_EXEMPTIONS. "
+        "Every rule the config names carries a decision; put each in the list that "
+        "records it."
+    )
+    assert not missing, (
+        f"{missing} are named in this file's enforced/disabled lists but "
+        "pyrightconfig.json does not set them. A deleted line is a silenced rule "
+        "for anything that defaults to 'none', so this is a weakening and not a "
+        "tidy-up."
+    )
+    assert len(expected) >= 15, (
+        f"only {len(expected)} rules are accounted for ({sorted(expected)}). Either "
+        "the config was gutted or the derivation in _rule_settings() is stale; the "
+        "severity checks would be vacuous either way."
+    )
+
+
+@pytest.mark.parametrize("rule", sorted(DISABLED_RULE_EXEMPTIONS))
+def test_a_disabled_rule_has_a_substantive_reason(rule: str) -> None:
+    """One member's worth of reason, not a shared gesture at it.
+
+    A reason that could be pasted onto any of the fourteen is the defect this
+    repo's exemption registry exists to catch: one justification attached to a
+    set, where the justification is a property of individual members.
+    """
+    reason = DISABLED_RULE_EXEMPTIONS[rule]
+    assert len(reason) >= 80, (
+        f"{rule}'s reason is {len(reason)} characters. Say what this rule reports "
+        "in THIS tree and why that is not actionable — not that it is noisy."
+    )
+    others = [r for r in DISABLED_RULE_EXEMPTIONS if r != rule]
+    assert not any(DISABLED_RULE_EXEMPTIONS[other] == reason for other in others), (
+        f"{rule}'s reason is character-for-character another rule's. If the reason "
+        "really is shared, it is a reason about the tree and belongs in the block "
+        "comment above; the per-rule entry has to say what this rule stops catching."
+    )
+
+
+def _execution_environments(config: dict) -> list[dict]:
+    envs = config.get("executionEnvironments", [])
+    return [env for env in envs if isinstance(env, dict)]
+
+
+def _relaxations(config: dict) -> dict[str, dict[str, str]]:
+    """Per-root rule settings that are *weaker* than the repo-wide severity.
+
+    A boolean `false` counts as a relaxation to "none": it is how a rule gets
+    silenced for a path without any severity string appearing in the file.
+    """
+    repo_wide = _rule_severities(config)
+    out: dict[str, dict[str, str]] = {}
+    for env in _execution_environments(config):
+        root = env.get("root")
+        if not isinstance(root, str):
+            continue
+        weaker: dict[str, str] = {}
+        for rule, value in _rule_settings(env).items():
+            severity = "none" if value is False else value
+            if not isinstance(severity, str):
+                continue
+            here = _SEVERITY_ORDER.get(severity, 3)
+            there = _SEVERITY_ORDER.get(repo_wide.get(rule, "error"), 3)
+            if here < there:
+                weaker[rule] = severity
+        if weaker:
+            out[root] = weaker
+    return out
+
+
+def _relaxation_scope_findings(config: dict) -> list[str]:
+    """Roots whose breadth defeats the point of `ENFORCED_ERROR_RULES`.
+
+    A relaxation is a *narrowing* device, but nothing in pyright stops
+    `{"root": "."}`, which relaxes the rule for the whole tree and takes the run
+    back to exit 0 while every severity in the file still reads "error". So a root
+    is required to be a **strict descendant** of an `include` entry: inside the
+    gate's scope, and smaller than it.
+
+    The root is canonicalised with `posixpath.normpath` before either comparison,
+    and that is load-bearing rather than tidiness. Comparing the raw string lets
+    `"lib/.."` through — it is not `"."`, it is not an `include` entry, and it
+    starts with `"lib/"` — while denoting the repository root, which was measured
+    to downgrade a `reportCallIssue` in a file nowhere near `lib/` from error to
+    warning, exactly as `{"root": "."}` does. `"lib/./"` reaches `lib` the same
+    way. `normpath` is lexical (`"lib/.."` -> `"."`, `"lib/./"` -> `"lib"`), which
+    is what is wanted: pyright resolves these relative to the config file, and a
+    symlink-following `resolve()` would make the verdict depend on the checkout.
+    """
+    includes = [posixpath.normpath(inc) for inc in _include_paths()]
+    findings: list[str] = []
+    for root in sorted(_relaxations(config)):
+        normalised = posixpath.normpath(root)
+        if normalised in {"", ".", "/"} or normalised in includes:
+            findings.append(
+                f"executionEnvironments root {root!r} covers a whole `include` entry "
+                "(or the entire tree). A relaxation at that breadth defeats "
+                "ENFORCED_ERROR_RULES through scope while every severity in the file "
+                "still reads 'error'. Name the specific subtree instead."
+            )
+            continue
+        if not any(
+            normalised.startswith(inc + "/") for inc in includes if inc not in {"", "."}
+        ):
+            findings.append(
+                f"executionEnvironments root {root!r} is not inside any `include` "
+                f"entry ({includes}). Either it relaxes a rule for files the gate "
+                "does not read — dead configuration — or `include` has moved."
+            )
+    return findings
+
+
+def test_every_per_root_relaxation_is_registered() -> None:
+    """`executionEnvironments` is a second way to soften a rule, so it is a second
+    exemption surface — and it is invisible to the repo-wide check above."""
+    relaxed = _relaxations(_config())
+    unregistered = sorted(set(relaxed) - set(VENDORED_SEVERITY_EXEMPTIONS))
+    assert not unregistered, (
+        f"pyrightconfig.json softens diagnostic rules for {unregistered} via "
+        "`executionEnvironments` with no entry in VENDORED_SEVERITY_EXEMPTIONS. "
+        "Per-root softening does not appear in the repo-wide severity block, so "
+        "nothing else in this file would notice it."
+    )
+
+
+def test_no_relaxation_is_broad_enough_to_defeat_the_enforced_rules() -> None:
+    """The scope bound, which is what stops one registry line from disarming the
+    error severities for the entire tree."""
+    findings = _relaxation_scope_findings(_config())
+    assert not findings, "executionEnvironments scope problems:\n  " + "\n  ".join(
+        findings
+    )
+
+
+@pytest.mark.parametrize("root", sorted(VENDORED_SEVERITY_EXEMPTIONS))
+def test_a_registered_relaxation_still_shields_something(root: str) -> None:
+    """Non-vacuity and staleness: the root must exist, hold Python, and still be
+    the subject of a relaxation in the config."""
+    relaxed = _relaxations(_config())
+    assert root in relaxed, (
+        f"VENDORED_SEVERITY_EXEMPTIONS names {root!r}, which pyrightconfig.json no "
+        "longer relaxes any rule for. Drop the entry — a stale exemption reads as a "
+        "live decision and pre-exempts whatever next occupies the path."
+    )
+    target = REPO_ROOT / root
+    assert target.is_dir(), (
+        f"VENDORED_SEVERITY_EXEMPTIONS names {root!r}, which is not a directory. "
+        "A relaxation scoped to a path nobody can find shields nothing."
+    )
+    assert next(target.rglob("*.py"), None) is not None, (
+        f"{root!r} holds no *.py files, so relaxing a diagnostic rule for it "
+        "shields nothing and is dead configuration."
+    )
+
+
+@pytest.mark.parametrize("root", sorted(VENDORED_SEVERITY_EXEMPTIONS))
+def test_a_relaxation_only_covers_the_rules_it_was_approved_for(root: str) -> None:
+    """The breadth pin. A third rule at an approved root is a new decision.
+
+    Without this, one registry line approved for two rules silently covers every
+    rule anybody later adds to the same `executionEnvironments` entry — the
+    "count-pinned" ratchet, applied to rules rather than to sites.
+    """
+    entry = VENDORED_SEVERITY_EXEMPTIONS[root]
+    approved = entry["rules"]
+    actual = frozenset(_relaxations(_config()).get(root, {}))
+
+    assert actual <= approved, (
+        f"{root!r} now relaxes {sorted(actual - approved)}, which "
+        "VENDORED_SEVERITY_EXEMPTIONS does not approve for it. Widening a carve-out "
+        "is a new decision: add the rule to that entry's `rules` and say in the "
+        "reason why this root cannot satisfy it."
+    )
+    assert actual == approved, (
+        f"{root!r} is approved to relax {sorted(approved - actual)} but no longer "
+        "does. Drop the rule from the entry — a stale approval pre-exempts the next "
+        "finding of that rule in this tree."
+    )
+
+
+@pytest.mark.parametrize("root", sorted(VENDORED_SEVERITY_EXEMPTIONS))
+def test_a_registered_relaxation_has_a_substantive_reason(root: str) -> None:
+    """Same standard as `DISABLED_RULE_EXEMPTIONS`: a reason about this member.
+
+    The list without this check accepted an empty string, so a root could be
+    approved by adding one blank line to a dict.
+    """
+    reason = VENDORED_SEVERITY_EXEMPTIONS[root].get("reason", "")
+    assert isinstance(reason, str) and len(reason.strip()) >= 80, (
+        f"{root!r} has a {len(reason.strip())}-character reason. Say what is true of "
+        "THIS path that makes the rule unfixable here — not that it is noisy. A root "
+        "this gate cannot check is approved on the strength of that sentence alone."
+    )
+
+
+@pytest.mark.parametrize("root", sorted(VENDORED_SEVERITY_EXEMPTIONS))
+def test_a_relaxed_rule_is_still_reported(root: str) -> None:
+    """A per-root relaxation may soften a rule, never silence it.
+
+    "none" through this mechanism is an exclusion wearing a severity's clothing:
+    the files stay in `filesAnalyzed` so every path check in this file still
+    passes, and the rule is not in `DISABLED_RULE_EXEMPTIONS` either, so neither
+    half of the gate would report it.
+    """
+    silenced = sorted(
+        rule
+        for rule, severity in _relaxations(_config()).get(root, {}).items()
+        if severity == "none"
+    )
+    assert not silenced, (
+        f"pyrightconfig.json sets {silenced} to 'none' for {root!r}. Relax to "
+        "'warning' so the diagnostics are still printed, or, if the tree genuinely "
+        "must leave the gate, add it to `exclude` and TYPECHECK_SCOPE_EXCLUSIONS "
+        "where the coverage checks in this file can see it."
+    )
+
+
+#: Sentinel meaning "remove this key" in a mutation below.
+_DELETE = object()
+
+#: Synthetic configs the severity check MUST reject, each named for what it is.
+#: An assertion whose failure nobody has observed is a guess about what it checks.
+#:
+#: The last four are ways of weakening the gate that do NOT change a severity
+#: string, and every one of them passed the first version of this block:
+#: lowering the mode silences the ~100 unnamed rules, a boolean silences a named
+#: one, and a deletion silences anything that defaults to "none".
+_REJECTABLE_CONFIGS: dict[str, dict] = {
+    "an enforced rule downgraded to warning": {"reportCallIssue": "warning"},
+    "an enforced rule downgraded to none": {"reportReturnType": "none"},
+    "an enforced rule dropped entirely": {"reportCallIssue": _DELETE},
+    "a fifteenth rule turned off with no reason": {"reportIndexIssue": "none"},
+    "a rule set to a value pyright does not know": {"reportCallIssue": "off"},
+    "typeCheckingMode lowered to off": {"typeCheckingMode": "off"},
+    "typeCheckingMode dropped entirely": {"typeCheckingMode": _DELETE},
+    "a rule silenced with a boolean instead of a severity": {
+        "reportAssignmentType": False
+    },
+    "a rule enabled with a boolean instead of a severity": {"reportIndexIssue": True},
+    "a warning-pinned rule deleted rather than downgraded": {
+        "reportImportCycles": _DELETE
+    },
+    "a warning-pinned rule downgraded to none": {"reportDuplicateImport": "none"},
+}
+
+#: Synthetic configs the *scope* check must reject. Separate from the list above
+#: because `executionEnvironments` weakens the gate without touching any repo-wide
+#: severity, so `_severity_findings` is the wrong function to ask.
+_REJECTABLE_SCOPES: dict[str, list] = {
+    "a relaxation rooted at the repo root": [
+        {"root": ".", "reportCallIssue": "warning"}
+    ],
+    "a relaxation rooted at an include entry": [
+        {"root": "lib", "reportCallIssue": "warning"}
+    ],
+    "a relaxation rooted outside every include entry": [
+        {"root": "no-such-tree/here", "reportCallIssue": "warning"}
+    ],
+    "a relaxation that silences rather than softens, via a boolean": [
+        {"root": "lib/idp_sdk/idp_sdk", "reportCallIssue": False}
+    ],
+    # The two forms that reach the repo root, or an include entry, without
+    # spelling either — the reason `_relaxation_scope_findings` canonicalises.
+    # Measured: "lib/.." downgrades a reportCallIssue in a file under `src/` from
+    # error to warning, identically to a root of ".".
+    "a relaxation reaching the repo root through ..": [
+        {"root": "lib/..", "reportCallIssue": "warning"}
+    ],
+    "a relaxation reaching an include entry through . and a trailing slash": [
+        {"root": "lib/./", "reportCallIssue": "warning"}
+    ],
+    "a relaxation reaching an include entry through a deeper ..": [
+        {"root": "lib/idp_sdk/..", "reportCallIssue": "warning"}
+    ],
+}
+
+
+@pytest.mark.parametrize("case", sorted(_REJECTABLE_CONFIGS))
+def test_the_severity_check_rejects_a_weakened_config(case: str) -> None:
+    """Non-vacuity of the check itself, applied to the live config.
+
+    Each case is the real `pyrightconfig.json` with one thing changed, so a
+    refactor that makes `_severity_findings` silently return `[]` fails here
+    rather than passing everywhere.
+    """
+    config = dict(_config())
+    for rule, severity in _REJECTABLE_CONFIGS[case].items():
+        if severity is _DELETE:
+            config.pop(rule, None)
+        else:
+            config[rule] = severity
+
+    assert _severity_findings(config), (
+        f"_severity_findings() accepted a config with {case}. The checks above are "
+        "then vacuous: they would pass over a gate that cannot fail."
+    )
+
+
+def test_the_severity_check_accepts_the_live_config() -> None:
+    """The control for the case above: unmodified, the live config is clean.
+
+    Without this, a `_severity_findings` that returned a finding for *every*
+    config would satisfy every rejection case and prove nothing.
+    """
+    assert _severity_findings(_config()) == []
+
+
+@pytest.mark.parametrize("case", sorted(_REJECTABLE_SCOPES))
+def test_the_scope_check_rejects_a_broadened_relaxation(case: str) -> None:
+    """Non-vacuity for the scope half, which `_severity_findings` cannot see.
+
+    Each case leaves every repo-wide severity at "error" and weakens the gate
+    purely through `executionEnvironments`. A root of `.` was measured to take the
+    whole tree back to exit 0 with 66 tests still green.
+    """
+    config = dict(_config())
+    config["executionEnvironments"] = _REJECTABLE_SCOPES[case]
+
+    assert _severity_findings(config) == [], (
+        f"{case} was caught by _severity_findings(), so this case is not exercising "
+        "the scope check it was written for. Pick a mutation that leaves every "
+        "repo-wide severity intact."
+    )
+    silenced = [
+        rule
+        for rules in _relaxations(config).values()
+        for rule, severity in rules.items()
+        if severity == "none"
+    ]
+    assert _relaxation_scope_findings(config) or silenced, (
+        f"nothing rejected a config with {case}. The scope checks are then vacuous: "
+        "one line in VENDORED_SEVERITY_EXEMPTIONS would disarm ENFORCED_ERROR_RULES "
+        "for whatever path it named."
+    )
+
+
+def test_the_scope_check_accepts_the_live_config() -> None:
+    """Control for the scope cases, same reason as the severity control."""
+    assert _relaxation_scope_findings(_config()) == []

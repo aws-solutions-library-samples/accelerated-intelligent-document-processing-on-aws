@@ -167,7 +167,7 @@ def create_external_mcp_agent(
     model_id: str = None,
     mcp_server_config: Dict[str, Any] = None,
     **kwargs,
-) -> Agent:
+) -> tuple[Agent, MCPClient]:
     """
     Create External MCP Agent that connects to external MCP servers.
 
@@ -179,7 +179,8 @@ def create_external_mcp_agent(
         **kwargs: Additional arguments
 
     Returns:
-        Agent: Configured Strands agent instance with MCP tools
+        The configured Strands agent and the MCP client it holds open. The
+        caller owns the client's lifetime — `IDPAgent` closes it.
 
     Raises:
         Exception: If authentication or MCP connection fails
