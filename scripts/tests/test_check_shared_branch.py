@@ -545,17 +545,25 @@ GH_FLAG_LINE = re.compile(r"^\s+(?:(-\w), )?(--[\w-]+)(?: (?!\s)(\S+))?\s{2,}\S"
 def _gh_flags_taking_a_value() -> set[str] | None:
     """Value-taking ``gh pr merge`` options, read from ``gh``'s own help.
 
-    ``None`` when ``gh`` is not installed. The parse is asserted non-vacuous by
-    the caller: silently matching nothing would make the comparison below pass for
-    every possible value of the constant, which is the failure mode of a derived
-    universe that nobody checks.
+    ``None`` when ``gh`` is not installed — which is the case in the CI container,
+    so the missing binary has to be caught as an **exception**: ``subprocess.run``
+    raises ``FileNotFoundError`` for a command that is not on ``PATH`` rather than
+    returning a non-zero code, and reading only the exit status turns "no gh here"
+    into a red gate.
+
+    The parse is asserted non-vacuous by the caller: silently matching nothing
+    would make the comparison below pass for every possible value of the constant,
+    which is the failure mode of a derived universe that nobody checks.
     """
-    completed = subprocess.run(  # noqa: S603 - fixed argv, no shell
-        ["gh", "pr", "merge", "--help"],
-        capture_output=True,
-        text=True,
-        check=False,
-    )
+    try:
+        completed = subprocess.run(  # noqa: S603 - fixed argv, no shell
+            ["gh", "pr", "merge", "--help"],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
     if completed.returncode != 0:
         return None
     flags: set[str] = set()
