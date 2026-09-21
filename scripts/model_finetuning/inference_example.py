@@ -18,17 +18,17 @@ Prerequisites:
 - Appropriate AWS permissions for Bedrock
 
 Example usage:
-    python inference_example.py \
+    python scripts/model_finetuning/inference_example.py \
         --model-id us.amazon.nova-lite-v1:0 \
         --image-path /path/to/document.png \
         --system-prompt-file system_prompt.txt
 
-    python inference_example.py \
+    python scripts/model_finetuning/inference_example.py \
         --provisioned-model-arn arn:aws:bedrock:us-east-1:123456789012:provisioned-model/... \
         --image-path /path/to/document.png \
         --compare-with-base
 
-    python inference_example.py \
+    python scripts/model_finetuning/inference_example.py \
         --model-id us.amazon.nova-lite-v1:0 \
         --image-directory /path/to/images/ \
         --ground-truth-file labels.json \
@@ -499,24 +499,24 @@ def main():
         epilog="""
 Examples:
   # Single image inference with base model
-  python inference_example.py \\
+  python scripts/model_finetuning/inference_example.py \\
     --model-id us.amazon.nova-lite-v1:0 \\
     --image-path document.png
   
   # Single image inference with provisioned model
-  python inference_example.py \\
+  python scripts/model_finetuning/inference_example.py \\
     --provisioned-model-arn arn:aws:bedrock:us-east-1:123456789012:provisioned-model/... \\
     --image-path document.png
   
   # Batch inference with ground truth
-  python inference_example.py \\
+  python scripts/model_finetuning/inference_example.py \\
     --model-id us.amazon.nova-lite-v1:0 \\
     --image-directory /path/to/images/ \\
     --ground-truth-file labels.json \\
     --output-file results.json
   
   # Compare base model with fine-tuned model
-  python inference_example.py \\
+  python scripts/model_finetuning/inference_example.py \\
     --provisioned-model-arn arn:aws:bedrock:us-east-1:123456789012:provisioned-model/... \\
     --image-directory /path/to/images/ \\
     --compare-with-base \\

@@ -56,12 +56,6 @@ PRUNE_DIR_MARKERS = (
     # registered suite -- so each copy root is named.
     "/idp-data-generator/idp_common_pkg/",
     "/idp-data-generator/bootstrap-processor/idp_common_pkg/",
-    # Operator-run agent scripts that call real Bedrock/Athena. Named test_*.py,
-    # so they look like a suite to the walk below; they are not one. Excluded
-    # here and by `norecursedirs` in lib/idp_common_pkg/pytest.ini, so no
-    # invocation collects them. Listed as a prune marker rather than in
-    # QUARANTINE because the walk must not descend into it at all.
-    "/lib/idp_common_pkg/manual_tests/",
     # Agent worktrees: `git worktree` checkouts of this same repo, created under
     # .claude/worktrees/ when work is delegated to a subagent. Every test file in
     # the repo therefore appears once per live worktree, so without this the guard
@@ -238,6 +232,20 @@ QUARANTINE = {
     # Vendored/internal helper trees that contain test_*.py but are not suites.
     "lib/idp_sdk/idp_sdk/_core": (
         "Source tree, not a test root (contains helper modules named test_*)."
+    ),
+    # Operator-run agent scripts. Every one drives real Bedrock, Athena or
+    # DynamoDB against a deployed stack, so they are run by hand, never in a gate,
+    # and `norecursedirs` in lib/idp_common_pkg/pytest.ini keeps pytest from
+    # collecting them. Registered here rather than pruned above so that the
+    # exclusion carries the registry's ratchets: the directory appears in
+    # `--list`, it has to be named in docs/testing.md, and -- because nesting
+    # under a QUARANTINE entry deliberately does not inherit the exclusion -- a
+    # NEW subdirectory of manual_tests/ fails this guard instead of being
+    # silently accepted, which a substring prune marker would have allowed.
+    "lib/idp_common_pkg/manual_tests/agents": (
+        "Operator-run scripts that call real Bedrock/Athena against a deployed "
+        "stack; run by hand, excluded from pytest collection by "
+        "lib/idp_common_pkg/pytest.ini's norecursedirs."
     ),
 }
 
