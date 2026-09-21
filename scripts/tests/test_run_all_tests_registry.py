@@ -19,6 +19,8 @@ doc check derives its stated root count from ``len(RUN_ROOTS)``.
 from __future__ import annotations
 
 import importlib.util
+import subprocess
+import sys
 from collections import Counter
 from pathlib import Path
 
@@ -133,4 +135,73 @@ def test_a_root_quarantined_for_collecting_nothing_really_collects_nothing(
         "RUN_ROOTS, or the reason is about something else and should say so -- the "
         "identical claim was already false once, for "
         "samples/lambda-hook-inference/GENAIIDP-w2-copy-consistency, which collects six."
+    )
+
+
+# ---------------------------------------------------------------------------
+# QUARANTINE: a root held back by ONE failing test.
+# ---------------------------------------------------------------------------
+#
+# A root kept out of `make test` because a single test in it fails is the most
+# perishable reason in the registry: the day somebody fixes that test, the reason is
+# stale and nothing says so, and the root then sits outside the gate on the strength of
+# a sentence that is no longer true. That is how the cfnresponse reason on
+# `nested/bedrockkb/src/s3_vectors_manager` outlived its own remedy -- a `cfnresponse`
+# stub had been written one directory down, and the entry above it still named the
+# missing module as the obstruction.
+#
+# So the claim is computed instead of believed, in both directions: the named test must
+# still fail, and everything else in its file must still pass. The first half is the
+# staleness ratchet (fix the test and this fails, telling you to move the root into
+# RUN_ROOTS); the second is what makes "the other tests pass" more than an assertion in
+# a comment.
+
+#: root -> the one pytest node id whose failure holds the root back.
+_ROOTS_HELD_BACK_BY_ONE_TEST = {
+    "nested/bedrockkb/src/s3_vectors_manager": (
+        "test_handler.py::test_get_s3_vector_info_function"
+    ),
+}
+
+
+def _pytest(root: str, *arguments: str) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        [sys.executable, "-m", "pytest", "-q", "-p", "no:cacheprovider", *arguments],
+        cwd=REPO_ROOT / root,
+        capture_output=True,
+        text=True,
+    )
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("root", sorted(_ROOTS_HELD_BACK_BY_ONE_TEST))
+def test_the_one_test_holding_a_root_back_still_fails(root: str) -> None:
+    """Fix the named test and this fails, which is the point."""
+    node = _ROOTS_HELD_BACK_BY_ONE_TEST[root]
+    result = _pytest(root, node)
+    assert result.returncode != 0, (
+        f"{node} passes now, so QUARANTINE['{root}'] no longer describes anything. "
+        f"Move {root} into RUN_ROOTS, point the `make test-packages-cicd` recipe line "
+        "at the directory instead of its `tests` subdirectory, and delete this entry "
+        f"along with the QUARANTINE entries for {root} and {root}/tests.\n\n"
+        + result.stdout[-2000:]
+    )
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("root", sorted(_ROOTS_HELD_BACK_BY_ONE_TEST))
+def test_only_the_named_test_holds_the_root_back(root: str) -> None:
+    """Everything else in that file must pass, or the reason understates the problem."""
+    node = _ROOTS_HELD_BACK_BY_ONE_TEST[root]
+    module, _, name = node.partition("::")
+    # ``-k`` rather than ``--deselect``: the node id ``--deselect`` wants is relative
+    # to pytest's rootdir, which is the repository root here (pytest.ini lives there)
+    # rather than the directory this runs in, so the obvious spelling silently
+    # deselects nothing and the assertion below passes for the wrong reason.
+    result = _pytest(root, module, "-k", f"not {name}")
+    assert result.returncode == 0, (
+        f"QUARANTINE['{root}'] names {node} as the only thing holding the root back, "
+        f"but {module} still fails with that test deselected -- so the reason is "
+        "incomplete and a reader would underestimate the work. Update it.\n\n"
+        + result.stdout[-2000:]
     )

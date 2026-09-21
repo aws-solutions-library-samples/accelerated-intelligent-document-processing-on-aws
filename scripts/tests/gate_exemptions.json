@@ -674,7 +674,7 @@
         "JUDGEMENT"
       ],
       "ratchet": "universe-closure",
-      "reason": "Roots known not to run in the shared gate, each with a reason. Two reasons are dependency-availability facts (huggingface_hub, cfnresponse) that an import could check; one is 'collects zero pytest tests', which the RUN_ROOTS comment records as having been false for a sibling entry.",
+      "reason": "Roots known not to run in the shared gate, each with a reason. The reasons are heterogeneous and so is the checking: one is a dependency-availability fact (huggingface_hub) that an import could settle; one is 'collects zero pytest tests', which the RUN_ROOTS comment records as having been false for a sibling entry and which test_run_all_tests_registry.py now runs the collector for; and one names a single failing test, which the same file computes in both directions so that fixing the test invalidates the entry rather than leaving it standing.",
       "crossReferences": [
         "scripts/run_all_tests.py::RUN_ROOTS"
       ],

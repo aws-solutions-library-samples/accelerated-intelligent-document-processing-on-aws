@@ -105,24 +105,29 @@ When adding new functionality:
 
 ## CI/CD Integration
 
-These tests are automatically run as part of the main test suite in CI/CD pipelines:
+Both CI systems reach this suite through `make test-packages-cicd`, which names this
+directory explicitly:
 
-```yaml
-# Example GitHub Actions workflow
-- name: Install dependencies
-  run: make setup
-
-- name: Run all tests (includes capacity planning)
-  run: make test
-
-# Or run with coverage enforcement
-- name: Run capacity planning tests with coverage
-  run: |
-    cd src/lambda/calculate_capacity
-    pytest --cov=. --cov-report=xml --cov-fail-under=80
+```
+cd src/lambda/calculate_capacity && $(PYTEST_HERMETIC) -q -p no:cacheprovider
 ```
 
-**Note**: The `make test` command now automatically includes capacity planning tests, so they run alongside all other project tests.
+`$(PYTEST_HERMETIC)` runs pytest with the AWS environment stripped — no region, no
+credentials, no profile — because that is what a CI runner has. A suite that needs a
+region or placeholder credentials supplies them from its own `conftest.py`.
+
+`make test` runs this suite too, via `scripts/run_all_tests.py`'s auto-discovery, and
+is the command to use locally. It is not what CI runs: neither `.gitlab-ci.yml` nor
+any workflow in `.github/workflows/` invokes it. `scripts/tests/test_src_lambda_tests_in_ci.py`
+is what keeps the two in agreement, by failing when a directory `make test` discovers
+is reachable from neither CI-invoked target.
+
+For a local coverage run:
+
+```bash
+cd src/lambda/calculate_capacity
+pytest --cov=. --cov-report=xml --cov-fail-under=80
+```
 
 ## Mock Environment Variables
 

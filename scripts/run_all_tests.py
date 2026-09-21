@@ -206,8 +206,24 @@ QUARANTINE = {
     "src/lambda/ocr_benchmark_deployer": (
         "Requires huggingface_hub, which is not a test dependency."
     ),
+    # The obstruction here is ONE assertion, not the environment. The environment
+    # half is fixed: `conftest.py` in this directory stubs `cfnresponse` and
+    # supplies a region and placeholder credentials, so `handler.py` imports and
+    # four of `test_handler.py`'s five tests pass. (test_handler.py does stub
+    # `cfnresponse` itself, but on the line AFTER the `from handler import ...`
+    # that needs it, so its own stub never runs.) The fifth,
+    # test_get_s3_vector_info_function, mocks `get_index` and asserts
+    # Status == 'Existing'; `get_s3_vector_info` no longer consults `get_index` --
+    # it always attempts `create_index` and reports 'Existing' only when that
+    # raises ConflictException -- so against a plain Mock it reports
+    # 'IndexCreated' and the assertion fails. That is a stale test expectation
+    # rather than a handler defect, and correcting it is a change to the suite
+    # that this registration deliberately does not make. Once it is corrected
+    # this root moves to RUN_ROOTS and the recipe line below it can name the
+    # directory instead of `tests`.
     "nested/bedrockkb/src/s3_vectors_manager": (
-        "Requires the Lambda-runtime-only 'cfnresponse' module."
+        "test_handler.py::test_get_s3_vector_info_function asserts a Status the "
+        "handler stopped returning; the other four tests pass."
     ),
     "samples/lambda-hook-inference/GENAIIDP-chandra-ocr-hook": (
         "test_local.py is a manual local-run script; collects zero pytest tests."
@@ -219,7 +235,7 @@ QUARANTINE = {
     # than `make test` does.
     "nested/bedrockkb/src/s3_vectors_manager/tests": (
         "Run directly by `make test-packages-cicd` in both CI systems instead; "
-        "the parent dir is quarantined for its cfnresponse dependency."
+        "the parent dir is quarantined for one stale assertion in test_handler.py."
     ),
     # Vendored/internal helper trees that contain test_*.py but are not suites.
     "lib/idp_sdk/idp_sdk/_core": (

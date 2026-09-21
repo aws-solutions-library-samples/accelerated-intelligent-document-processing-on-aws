@@ -531,6 +531,12 @@ typecheck-pr: ## Type check only files changed vs TARGET_BRANCH (default: main)
 # isolated pytest invocation. It also fails if it finds a test dir that isn't
 # registered (RUN or QUARANTINE), so new tests can never be silently skipped —
 # the gap that let the old hand-maintained list here miss ~200 Lambda tests.
+#
+# `test` itself is NOT a CI target: neither .gitlab-ci.yml nor any workflow in
+# .github/workflows/ invokes it. CI runs `test-packages-cicd` below and
+# `test-cicd -C lib/idp_common_pkg`, and registering a root above buys nothing on
+# a pull request until it is named in one of those two. That is what
+# scripts/tests/test_src_lambda_tests_in_ci.py enforces, over the whole tree.
 test: ## Run every non-integration test suite (auto-discovered; see scripts/run_all_tests.py)
 	$(PYTHON) scripts/run_all_tests.py
 
@@ -577,9 +583,10 @@ test-packages-cicd: ## CI-safe: run the package/Lambda suites NOT covered by idp
 	@# file — a named file covers only itself, which is how a second test module
 	@# added beside it would silently reach no CI.
 	@echo "Running the remaining src/lambda Lambda suites (157 tests that reached NEITHER CI)..."
-	@# Every src/lambda dir holding a test_*.py must appear in this recipe —
-	@# asserted by scripts/tests/test_src_lambda_tests_in_ci.py, which derives
-	@# both sides (filesystem walk vs this recipe) rather than listing them.
+	@# Every directory in the repository holding a test_*.py must appear in this
+	@# recipe or in lib/idp_common_pkg's test-unit-cicd — asserted by
+	@# scripts/tests/test_src_lambda_tests_in_ci.py, which derives both sides
+	@# (git ls-files vs these two recipes) rather than listing them.
 	@# Each gets its own invocation for the same reason as queue_sender above:
 	@# they all define a module named ``index``, so a combined pytest run fails
 	@# collection on the basename collision.
@@ -610,9 +617,9 @@ test-packages-cicd: ## CI-safe: run the package/Lambda suites NOT covered by idp
 	@# Query must DENY, an empty page must stay unrestricted. Each resolver gets its
 	@# own invocation because they all define a module named ``index``, so a combined
 	@# pytest run fails collection on the basename collision (same reason as
-	@# queue_sender above). Four of these directories reached NEITHER CI before —
-	@# issue #980 tracks generalising scripts/tests/test_src_lambda_tests_in_ci.py
-	@# beyond src/lambda so that omission is detected rather than found by hand.
+	@# queue_sender above). Four of these directories reached NEITHER CI before,
+	@# which is the omission scripts/tests/test_src_lambda_tests_in_ci.py now detects
+	@# over the whole tree rather than just src/lambda (#980).
 	cd nested/api-resolvers/src/lambda/configuration_resolver && $(PYTEST_HERMETIC) -q -p no:cacheprovider
 	cd nested/api-resolvers/src/lambda/get_stepfunction_execution_resolver && $(PYTEST_HERMETIC) -q -p no:cacheprovider
 	cd nested/api-resolvers/src/lambda/list_documents_gsi_resolver && $(PYTEST_HERMETIC) -q -p no:cacheprovider
@@ -631,6 +638,55 @@ test-packages-cicd: ## CI-safe: run the package/Lambda suites NOT covered by idp
 	cd nested/bedrockkb/src/s3_vectors_manager && $(PYTEST_HERMETIC) tests -q -p no:cacheprovider
 	@echo "Running fine-tuning job creator tests (ARN partition passthrough)..."
 	cd src/lambda/finetuning_job_creator && $(PYTEST_HERMETIC) tests -q -p no:cacheprovider
+	@echo "Running the remaining API resolver suites (download allow-list, upload target, filtered scans)..."
+	@# These eight directories held 105 tests that reached NEITHER CI. The recipe
+	@# below and scripts/run_all_tests.py were diffed to find them, and
+	@# scripts/tests/test_src_lambda_tests_in_ci.py now derives that diff on every
+	@# run over the WHOLE tree rather than just src/lambda/, which is what #980
+	@# asked for and what kept these eight invisible.
+	@#
+	@# Each gets its own invocation because they all define a module named ``index``,
+	@# so a combined pytest run fails collection on the basename collision.
+	cd nested/api-resolvers/src/lambda/get_file_contents_resolver && $(PYTEST_HERMETIC) -q -p no:cacheprovider
+	cd nested/api-resolvers/src/lambda/upload_resolver && $(PYTEST_HERMETIC) -q -p no:cacheprovider
+	cd nested/api-resolvers/src/lambda/finetuning_jobs_resolver && $(PYTEST_HERMETIC) -q -p no:cacheprovider
+	cd nested/api-resolvers/src/lambda/test_set_resolver && $(PYTEST_HERMETIC) -q -p no:cacheprovider
+	cd nested/api-resolvers/src/lambda/get_sample_document_resolver && $(PYTEST_HERMETIC) -q -p no:cacheprovider
+	cd nested/api-resolvers/src/lambda/discovery_upload_resolver && $(PYTEST_HERMETIC) -q -p no:cacheprovider
+	cd nested/api-resolvers/src/lambda/get_agent_chat_messages_resolver && $(PYTEST_HERMETIC) -q -p no:cacheprovider
+	cd nested/api-resolvers/src/lambda/list_agent_chat_sessions_resolver && $(PYTEST_HERMETIC) tests -q -p no:cacheprovider
+	@echo "Running the KB-ingestion and docker-build custom-resource suites..."
+	@# Both built a boto3 client at import time with no region, so both errored at
+	@# COLLECTION under $(PYTEST_HERMETIC) while passing on a developer machine.
+	@# Each now supplies its own region from its own conftest.py, which is what makes
+	@# running them through the wrapper meaningful -- the wrapper takes the region
+	@# away rather than handing one over. See #988.
+	cd nested/bedrockkb/src/start_ingestion_job_custom_resource && $(PYTEST_HERMETIC) -q -p no:cacheprovider
+	cd nested/multi-doc-discovery/docker_build_lambda && $(PYTEST_HERMETIC) tests -q -p no:cacheprovider
+	@echo "Running the feature-platform extension suites that reached neither CI..."
+	@# The three pii-anonymizer suites above were added by #974; these eight are the
+	@# rest of the same tree -- the ConfBench test-set extension, the data generator's
+	@# feature API, the two sample features, the health-insurance-review sample and the
+	@# feature template's UI deployer. confbench-testset's test_planner.py
+	@# self-skips unless huggingface_hub + pyarrow are installed, which they are not in
+	@# CI; the other modules in it run unconditionally.
+	cd feature-platform/confbench-testset && $(PYTEST_HERMETIC) tests -q -p no:cacheprovider
+	cd feature-platform/idp-data-generator/feature-api && $(PYTEST_HERMETIC) tests -q -p no:cacheprovider
+	cd feature-platform/feature-template/ui-deployer && $(PYTEST_HERMETIC) tests -q -p no:cacheprovider
+	cd feature-platform/sample-feature/feature-api && $(PYTEST_HERMETIC) tests -q -p no:cacheprovider
+	cd feature-platform/sample-feature/ui-deployer && $(PYTEST_HERMETIC) tests -q -p no:cacheprovider
+	cd feature-platform/sample-health-insurance-review/feature-api && $(PYTEST_HERMETIC) tests -q -p no:cacheprovider
+	cd feature-platform/sample-health-insurance-review/hook && $(PYTEST_HERMETIC) tests -q -p no:cacheprovider
+	cd feature-platform/sample-health-insurance-review/ui-deployer && $(PYTEST_HERMETIC) tests -q -p no:cacheprovider
+	@echo "Running the Lambda hook-inference sample suites..."
+	@# Own invocation each: all three define a module named ``index``.
+	cd samples/lambda-hook-inference/GENAIIDP-cohere-parse-hook && $(PYTEST_HERMETIC) -q -p no:cacheprovider
+	cd samples/lambda-hook-inference/GENAIIDP-mistral-ocr-hook && $(PYTEST_HERMETIC) -q -p no:cacheprovider
+	cd samples/lambda-hook-inference/GENAIIDP-w2-copy-consistency && $(PYTEST_HERMETIC) -q -p no:cacheprovider
+	@echo "Running benchmark harness tests (what a release report claims, and which config a run executes)..."
+	@# A bug in this tree becomes a wrong published number rather than a visible
+	@# failure, which is what happened at v0.6.5. 187 tests, ~2.5s, pure dict/YAML.
+	$(PYTEST_HERMETIC) benchmarks/tests -q -p no:cacheprovider
 	@echo "Running unified state-machine structure tests (hook fail-closed ordering, retry/timeout shape)..."
 	@# These parse patterns/unified/statemachine/workflow.asl.json only — no AWS.
 	@# They were registered in scripts/run_all_tests.py but in NEITHER CI, so the

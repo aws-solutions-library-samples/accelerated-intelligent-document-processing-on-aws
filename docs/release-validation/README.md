@@ -35,7 +35,7 @@ two PRs that carry the results. The per-tier make targets remain runnable on the
 
 | Tier | What only a live stack can prove | Make target |
 |---|---|---|
-| Offline suites, lint, typecheck, dependency audit | — (runs in CI; recorded here for completeness) | `make test` · `make lint-cicd` · `make typecheck` · `make dep-audit` |
+| Offline suites, lint, typecheck, dependency audit | — (recorded here for completeness) | `make test` · `make lint-cicd` · `make typecheck` · `make dep-audit` |
 | Build + package | the published template lints and validates | `python3 publish.py …` |
 | SRT (SAST + deps) | — | `make srt-scan` |
 | RBAC static + dynamic | that every API operation's authorization is enforced by the *deployed* resolver, per Cognito group and config-version scope | `make api-test STACK_NAME=…` |
@@ -49,6 +49,13 @@ two PRs that carry the results. The per-tier make targets remain runnable on the
 
 Every method above, plus the layers that *do* run in CI, is described in
 [Testing](../testing.md) — this table is only the live-stack subset.
+
+Note the entry point in the first row. `make test` is the local way to run the offline
+suites; the targets a pull request actually runs are `make test-cicd -C
+lib/idp_common_pkg` and `make test-packages-cicd`, and `make typecheck` is stricter
+than the `make typecheck-pr` that CI runs. Running the row as written is the right
+thing for a release — it is broader than CI — but it is not the same set, so a green
+run here does not follow from a green pipeline.
 
 Two companion records hold the detail this one summarises:
 

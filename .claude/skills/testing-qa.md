@@ -193,7 +193,21 @@ add that dir to `RUN_ROOTS` (if green headless) or `QUARANTINE` (with a reason).
 This is deliberate: it's the guard that stops new tests from being silently
 skipped, which is exactly how ~200 Lambda tests went unrun under the old
 hand-maintained `make test`. Currently quarantined roots (need fixing before
-they join the gate): `ocr_benchmark_deployer` + `s3_vectors_manager`
-(uninstalled runtime deps — huggingface_hub / cfnresponse), `scripts` (the RBAC
-harness, not a suite), the `chandra-ocr-hook` manual script, and the
-`idp_sdk/_core` source tree. Run `make test-list` to see the current split.
+they join the gate): `ocr_benchmark_deployer` (needs `huggingface_hub`, not a test
+dependency), `s3_vectors_manager` (one stale assertion in `test_handler.py`; the
+other four tests pass), `scripts` (the RBAC harness, not a suite), the
+`chandra-ocr-hook` manual script, and the `idp_sdk/_core` source tree. Run
+`make test-list` to see the current split, and read the reason beside each entry in
+`QUARANTINE` rather than this list — the reasons are what `scripts/tests/test_run_all_tests_registry.py`
+computes against the tree.
+
+**Being registered in `RUN_ROOTS` does not mean a suite runs on a pull request.**
+`make test` runs in neither CI. CI runs `make test-cicd -C lib/idp_common_pkg` and
+`make test-packages-cicd`, and the second is a hand-enumerated recipe — so a new root
+has to be added there as well, on its own `cd <dir> && $(PYTEST_HERMETIC) …` line if it
+defines a module named `index`. `scripts/tests/test_src_lambda_tests_in_ci.py` derives
+both sides and fails until you do; 22 roots holding 506 tests were in `RUN_ROOTS` and
+in neither CI before it was generalised beyond `src/lambda/`. Everything gated goes
+through `$(PYTEST_HERMETIC)`, which strips the AWS environment, so a suite that needs a
+region or placeholder credentials supplies them from its own `conftest.py` with
+`os.environ.setdefault`.
