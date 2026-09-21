@@ -49,20 +49,28 @@ What these tests pin
     ``DictWriter(extrasaction="ignore")`` in silence — and the artifact's numeric
     payloads round-trip through the one-line writer unchanged.
 
-⚠️ **Note on where this runs, because it bounds what any of the above guarantees.**
-``benchmarks/tests`` is in ``scripts/run_all_tests.py``'s ``RUN_ROOTS``, so ``make test``
-covers it. **Neither CI target runs it** — GitLab and GitHub both run ``make test-cicd -C
-lib/idp_common_pkg`` and ``make test-packages-cicd``, and neither reaches this directory.
-So every assertion here, including the ones that stop the estimator being reverted and the
-ones that are the sole check on every AUROC the study publishes, is advisory until someone
-runs ``make test`` locally. That is pre-existing and true of the other suites here too.
-Compounding it twice. The ``sys.path.insert`` below is RELATIVE to the working directory,
-so running this file from anywhere but the repository root collapses the whole suite to
-``1 skipped`` with no warning and a green exit — the same absence-versus-failure shape
-tracked in
+**Note on where this runs.** ``benchmarks/tests`` is in ``scripts/run_all_tests.py``'s
+``RUN_ROOTS``, so ``make test`` covers it, and it is **run by both CIs** — ``make
+test-packages-cicd`` invokes it (``.github/workflows/developer-tests.yml`` and
+``.gitlab-ci.yml`` both call that target), and
+``scripts/tests/test_src_lambda_tests_in_ci.py`` derives the universe of directories
+holding a tracked ``test_*.py`` and fails if one reaches neither CI, so this directory
+cannot silently fall out of coverage again.
+
+⚠️ **Two things still bound what a green run here means, and neither is fixed by that.**
+
+The ``sys.path.insert`` below is RELATIVE to the working directory, so running this file
+from anywhere but the repository root collapses the whole suite to ``1 skipped`` with no
+warning and a green exit. CI invokes it from the repository root so CI is unaffected; a
+developer running it from ``benchmarks/`` is not. Same absence-versus-failure shape as
 [#1079](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/1079).
-And ``develop`` has no branch protection (#933), so even a red gate cannot block a merge:
-run ``make check-branch-protection`` rather than taking that from this docstring.
+
+And whether a red gate can actually stop a merge is a repository setting rather than
+anything in this tree: neither ``develop`` nor ``main`` currently carries branch
+protection, so every gate here is advisory in the sense that a pull request can be merged
+over it. That is an accepted residual with a recorded decision, not open work. Do not take
+the state from this docstring — ``make check-branch-protection`` reads it live, one branch
+per invocation.
 
 ⚠️ **The three Stickler equality assertions are vacuous without ``stickler`` installed.**
 ``test_the_mean_confidence_ece_agrees_with_sticklers_estimator``,
