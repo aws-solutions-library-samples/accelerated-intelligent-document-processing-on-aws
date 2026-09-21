@@ -27,7 +27,15 @@ using synthetic bank statements with an exact known number of transaction rows.
 **Key safety point:** when simple mode exceeds its limit it **silently returns a
 partial list with no error** — it looks successful but drops most rows. If your
 documents can contain large tables, either use advanced mode or validate row counts
-downstream (e.g. a schema `minItems` constraint, which advanced mode enforces).
+downstream. A schema `minItems` constraint is the cheapest reconciliation signal, and
+what it costs differs by mode: in **simple** mode it is advisory — a shortfall raises
+a warning and the rows are kept — while in **advanced** mode it is enforced at the
+agent's tool boundary, so a floor the section cannot reach spends the agent's
+correction rounds and then **fails** the extraction, keeping no rows. Set a floor you
+are willing to fail on, or use
+[`extraction.row_shortfall_action`](./extraction-and-confidence.md#making-a-materially-incomplete-list-fail-the-section--extractionrow_shortfall_action),
+which saves the partial rows and the diagnosis before failing the section. See
+[`minItems` in Simple vs Advanced mode](./extraction-and-confidence.md#minitems-on-a-list-field--a-warning-in-simple-mode-a-hard-floor-in-advanced).
 
 ---
 
@@ -130,7 +138,10 @@ behavior can **vary run-to-run**. If your OCR quality is marginal on tabular dat
    for documents with large multi-page tables.
 2. **Guard against silent truncation.** If large tables are possible in simple mode, add
    a schema `minItems` on the list or reconcile extracted row counts against an expected
-   total downstream. Advanced mode enforces completeness constraints for you.
+   total downstream. Advanced mode checks `minItems` inside its extraction loop, so the
+   agent gets correction rounds rather than silently returning a short list — but a floor
+   it cannot reach fails the section and keeps no rows, so pick a floor you are willing to
+   fail on.
 3. **Budget advanced mode.** Estimate ~$0.006–0.013 per row plus OCR; expect 5–15 min for
    thousand-row documents. Split documents above ~3,000 rows / ~60 pages.
 4. **Feed the table tool clean OCR.** Use Textract TABLES or BDA for tabular documents so

@@ -2344,8 +2344,8 @@ class ClassificationService:
         this stack is paired with a threshold parameter a deployer tunes, and none
         of the three cases above has an established base rate to set one from;
         emitting an unalarmed metric would only add cost. The issues reach the
-        Sections panel, ``ProcessingIssueCount`` and the ``HasProcessingIssues``
-        index, which is what an operator queries.
+        Sections panel and the document list's ``ProcessingIssueCount`` badge, which
+        is what an operator looks at.
 
         ⚠️ The document list's badge is **severity-blind** — it renders
         ``ProcessingIssueCount``, which counts warnings and errors alike — so a
@@ -2356,13 +2356,20 @@ class ClassificationService:
         them (a catch-all "other"), which removes the condition rather than hiding
         it.
 
-        The badge itself clears on reprocessing: ``ProcessingIssueCount`` is written
-        on **every** document write, including as ``0``. What does not clear is the
-        sparse ``HasProcessingIssues`` GSI attribute, which is only ever ``SET`` and
-        deliberately never ``REMOVE``d — so a document that once carried an issue
-        keeps matching a "has processing issues" index query after a later run
-        cleared it. That is pre-existing and applies to every issue code; what
-        changes here is how many documents reach it.
+        The badge itself clears on reprocessing, because reprocessing goes through
+        ``create_document``, which writes the whole item with ``Put`` and so replaces
+        ``ProcessingIssueCount`` outright. The incremental ``update_document`` path
+        writes that count only when the document object it is given actually carries
+        the sections the count is derived from — a document with no sections reports
+        ``0`` by absence rather than by measurement, and writing it would erase a
+        count a per-section write had just recorded.
+
+        ``HasProcessingIssues`` is written alongside the count but has **no reader**:
+        it is not a GSI key, not projected, not queried, not in the UI and not in any
+        Glue or Athena schema. It is also only ever ``SET`` and never ``REMOVE``d, so
+        a document that once carried an issue keeps the attribute after a later run
+        cleared it. Nothing reads it, so nothing is currently wrong — but it is not a
+        filter to build on as it stands.
         """
         if not document.sections:
             return

@@ -9,10 +9,13 @@ as it moves through the processing pipeline.
 """
 
 import json
+import logging
 import time
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Any, Dict, List, Optional
+from typing import Any, ClassVar, Dict, List, Optional
+
+logger = logging.getLogger(__name__)
 
 
 def coerce_revision(value: Any) -> Optional[int]:
@@ -135,6 +138,61 @@ class Page:
     records that never had a boundary — round-trip unchanged."""
 
 
+#: Marker left in place of elided text. It is a signal to the reader and, for
+#: ``__post_init__``, the evidence that a value it has to shorten has been through
+#: here before — which decides whether to LOG, never whether to bound. Bounding is
+#: decided by size alone, so a value that carries the marker and is still oversized
+#: (an exception that quoted an already-elided one, say) is not waved through.
+_ELISION_MARKER_PREFIX = "… ["
+_ELISION_MARKER_SUFFIX = " elided] …"
+
+#: Upper bound on the rendered marker, reserved out of the budget so the elided
+#: result is guaranteed to fit rather than overshooting by the marker's length.
+_ELISION_MARKER_RESERVE = 64
+
+
+def _elide_middle(text: str, max_bytes: int, tail_bytes: int) -> str:
+    """Bound ``text`` to ``max_bytes`` of UTF-8, removing from the MIDDLE.
+
+    Measured in bytes, not characters, because the limit being defended is
+    DynamoDB's 400 KB item ceiling: 2,048 CJK characters are 6,159 bytes.
+
+    The middle goes rather than the tail because of where these strings put the
+    part a reader acts on. Exception-derived text — the case this bound exists for —
+    puts the class name at the front, whatever the exception chose to echo in the
+    middle, and its remedy sentence at the back, so clipping the tail would reliably
+    remove the one sentence worth keeping. The extraction and assessment sites are
+    built the same way: reason first, a variable-length page-id or field list in the
+    middle, remedy last.
+
+    ⚠️ The classification site is **not** that shape. Its page list is at the very
+    tail with no remedy after it, so eliding the middle there removes the boundary
+    between the model's error text and the start of the page list rather than a
+    redundant list. That is tolerable only because the same page ids are in
+    ``details["page_ids"]`` and in the unbounded ``message``, and because it takes
+    more than 530 page ids on one section to reach. Do not generalise "the middle is
+    always redundant" from the other two sites.
+
+    The result is at or under ``max_bytes``, so passing it through again is a no-op.
+    """
+    raw = text.encode("utf-8")
+    if len(raw) <= max_bytes:
+        return text
+    head_bytes = max_bytes - tail_bytes - _ELISION_MARKER_RESERVE
+    if head_bytes <= 0:
+        # A budget too small to elide within. Keep the head and nothing else.
+        return raw[:max_bytes].decode("utf-8", errors="ignore")
+    elided = len(raw) - head_bytes - tail_bytes
+    marker = f"{_ELISION_MARKER_PREFIX}{elided} bytes{_ELISION_MARKER_SUFFIX}"
+    head = raw[:head_bytes].decode("utf-8", errors="ignore")
+    tail = raw[-tail_bytes:].decode("utf-8", errors="ignore")
+    return f"{head}{marker}{tail}"
+
+
+def _already_elided(text: str) -> bool:
+    return _ELISION_MARKER_PREFIX in text and _ELISION_MARKER_SUFFIX in text
+
+
 @dataclass
 class ProcessingIssue:
     """A structured, user-surfacing record of something that went wrong (or was
@@ -160,7 +218,11 @@ class ProcessingIssue:
             ``"assessment_pages_missing"`` (some of the section's pages were absent
             from the document, so their values were scored without their evidence),
             ``"extraction_class_not_configured"`` (the section's class is absent
-            from the configuration, so there was no schema to extract against), or
+            from the configuration, so there was no schema to extract against),
+            ``"extraction_failed"`` (the section's extraction step RAISED — the one
+            code here that reports a failure rather than flagging a result the
+            pipeline still accepted; see
+            ``idp_common.extraction.failure``), or
             ``"classification_failed"`` / ``"classification_page_no_content"`` /
             ``"classification_invalid_class_fallback"`` (classification produced no
             usable class for one or more of the section's pages).
@@ -172,6 +234,54 @@ class ProcessingIssue:
             chain) for the processing report / debugging.
     """
 
+    #: Byte ceilings on the two free-size fields, enforced in ``__post_init__`` so
+    #: they bind at EVERY construction site rather than at the ones that remembered.
+    #:
+    #: **The limit being defended is DynamoDB's 400 KB item ceiling**, and the
+    #: failure it produces is the worst available: the section write raises, the
+    #: extraction failure path swallows that deliberately so it cannot mask the
+    #: original exception, and the section is therefore left completely unmarked —
+    #: on precisely the large documents these issues exist to explain.
+    #:
+    #: Both fields reach that size from ordinary inputs. ``root_cause`` is
+    #: overwhelmingly ``f"{type(e).__name__}: {e}"`` from a broad ``except``, and a
+    #: Pydantic ``ValidationError`` over a merged long list renders one entry per
+    #: offending row echoing its ``input_value``. ``details`` gets there through
+    #: authored content rather than an exception: ``_build_extraction_issues``
+    #: stores the first five jsonschema messages, and jsonschema embeds
+    #: ``repr(instance)`` in each one, so **one** ``minItems`` failure on a 900-row
+    #: list is 57,592 characters (jsonschema 4.25.1). The count is bounded by
+    #: ``[:5]``; the size is not, and it is the ``[:5]`` that sets the scale — five
+    #: such messages, the shape that slice exists for, serialise to **281 KB, 70% of
+    #: the ceiling in a single field**, so two fields like it exceed the item limit.
+    #:
+    #: ``MAX_ROOT_CAUSE_BYTES`` is *not* generous against everything authored in the
+    #: tree. The classification site's worst case — three capped reasons, an "and N
+    #: more", then the section's whole page list — is 3,915 bytes at 500 page ids,
+    #: 96% of the ceiling, and elides somewhere between 530 and 540. That is
+    #: acceptable rather than accidental: the same page list is in
+    #: ``details["page_ids"]`` and in the unbounded ``message``, so nothing is lost,
+    #: and raising the ceiling to fit it would weaken the bound for the
+    #: exception-derived text it exists for. Both fields elide the MIDDLE — see
+    #: :func:`_elide_middle`, and note the caveat there about where the page list
+    #: actually sits at that site.
+    #:
+    #: ``message`` is a third free-size field and is deliberately left alone. It is
+    #: also written to DynamoDB, and the classification site embeds the page list in
+    #: it, but every writer composes it from a fixed template plus a page count or
+    #: page list — never from an exception — so it is bounded by the section's page
+    #: count rather than by document content, which is what makes the other two a
+    #: 400 KB risk and this one not.
+    MAX_ROOT_CAUSE_BYTES: ClassVar[int] = 4096
+    ROOT_CAUSE_TAIL_BYTES: ClassVar[int] = 512
+
+    #: Per-leaf bound on strings inside ``details``. Every oversized ``details``
+    #: observed is one long *string* leaf; the structure around it is small. So the
+    #: leaves are bounded rather than the payload reshaped, which keeps the keys a
+    #: consumer reads present and typed.
+    MAX_DETAIL_STRING_BYTES: ClassVar[int] = 1024
+    DETAIL_STRING_TAIL_BYTES: ClassVar[int] = 128
+
     stage: str
     severity: str
     code: str
@@ -179,6 +289,72 @@ class ProcessingIssue:
     root_cause: str = ""
     section_id: Optional[str] = None
     details: Dict[str, Any] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        """Bound the two free-size fields.
+
+        **Nothing is logged unless this construction actually shortened something
+        for the first time.** This runs on ``Section.from_dict`` and
+        ``Document.from_dict`` — the Step Functions state hand-offs — and on
+        ``get_document``'s reconstruction, so a log line here fires on every READ.
+        Warning once per read about work done once on write would point an operator
+        at a producing invocation they are not looking at.
+
+        Two separate things keep a read quiet, and the order matters. A value that
+        already fits comes back identical, so the ordinary read logs nothing without
+        needing to recognise anything. The marker check is the second line: it
+        suppresses the log, not the bound, for a value that arrives oversized *and*
+        already marked — so nothing escapes the ceiling on the strength of a
+        substring in it.
+        """
+        if self.root_cause:
+            bounded = _elide_middle(
+                self.root_cause, self.MAX_ROOT_CAUSE_BYTES, self.ROOT_CAUSE_TAIL_BYTES
+            )
+            if bounded != self.root_cause:
+                if not _already_elided(self.root_cause):
+                    logger.warning(
+                        "ProcessingIssue %s: root_cause was %d bytes, elided to %d. "
+                        "The unabridged text is in this invocation's log and, for an "
+                        "extraction issue, in the section's result.json.",
+                        self.code,
+                        len(self.root_cause.encode("utf-8")),
+                        len(bounded.encode("utf-8")),
+                    )
+                self.root_cause = bounded
+        if self.details:
+            self.details = self._bound_details(self.details)
+
+    @classmethod
+    def _bound_details(cls, value: Any) -> Any:
+        """Recursively bound every string leaf in ``details``.
+
+        Keys, nesting and scalar types are preserved; only oversized strings shrink,
+        so a consumer reading ``details["page_ids"]`` still finds a list of strings.
+        A string already within the bound is returned unchanged, which is what makes
+        a re-read free rather than merely quiet.
+
+        Two things it does change, neither exercised by any caller today and both
+        worth knowing before one relies on the opposite:
+
+        * A ``namedtuple`` comes back as a plain ``tuple``. Reconstructing it as
+          ``type(value)(...)`` is not an option — a namedtuple's constructor takes
+          positional fields, not one iterable — and ``details`` is JSON-serialised on
+          the way to DynamoDB, where the distinction does not survive anyway.
+        * The returned ``details`` is always a **new** dict, so mutating the dict
+          passed to the constructor no longer affects the issue.
+        """
+        if isinstance(value, str):
+            return _elide_middle(
+                value, cls.MAX_DETAIL_STRING_BYTES, cls.DETAIL_STRING_TAIL_BYTES
+            )
+        if isinstance(value, dict):
+            return {k: cls._bound_details(v) for k, v in value.items()}
+        if isinstance(value, tuple):
+            return tuple(cls._bound_details(v) for v in value)
+        if isinstance(value, list):
+            return [cls._bound_details(v) for v in value]
+        return value
 
     def to_dict(self) -> Dict[str, Any]:
         """Convert to a compact dict (omitting empty optional fields)."""

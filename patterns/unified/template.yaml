@@ -1487,7 +1487,7 @@ Resources:
                     dependsOn: { field: "enabled", value: true }
                   fail_action:
                     type: string
-                    description: "What to do when validation fails (in Advanced extraction, after the agent's own retries). 'warn': record the outcome in metadata and proceed. 'escalate': re-extract only the failing fields with the Escalation Model (roughly doubles that section's cost, still far cheaper than human review), then warn if still invalid. 'reject': mark the section as failed so downstream/HITL can act. Default: warn — it is free, whereas 'escalate' spends real money on every failure, so opt into it deliberately."
+                    description: "What to do when validation fails (in Advanced extraction, after the agent's own retries). 'warn': record the outcome in metadata and proceed. 'escalate': re-extract only the failing fields with the Escalation Model (roughly doubles that section's cost, still far cheaper than human review), then warn if still invalid. 'reject': record the result as not parsed, which makes the section's Processing Report read FAILED and raises the issue at error severity; the extracted values are still stored and the document's status is unchanged, so this is a visibility setting rather than a way to reject a section. Default: warn — it is free, whereas 'escalate' spends real money on every failure, so opt into it deliberately."
                     enum: ["warn", "escalate", "reject"]
                     order: 2
                     default: "warn"
