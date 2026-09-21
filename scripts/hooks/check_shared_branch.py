@@ -36,6 +36,13 @@ by a shell profile, an IDE or a CI runner persists and turns the check off for
 **every** command in that environment. Because that is invisible by construction,
 an honoured override prints a line to stderr saying which check it disabled.
 
+The two halves do not accept identical spellings, and the difference is in the
+safe direction. This one lower-cases and strips, so ``TrUe``, ``YeS`` and ``" 1"``
+count; ``pre-push`` matches eleven enumerated words and so does not. The stricter
+reader is the one that can still stop a push, so an override this half honours may
+be refused by the other -- a visible refusal with a remedy, rather than a check
+silently skipped.
+
 **What this does not cover.** Branch protection is a repository setting, and
 enabling it needs repository admin that no token here has (issue #933). Nothing
 running on a contributor's machine can stop a merge performed through GitHub's
@@ -48,15 +55,28 @@ required status checks, and these are the routes it does not see:
   here, and refusing those would block the only route they have).
 * ``git push --no-verify``, which also skips the companion ``pre-push`` hook.
 * Anything that reaches ``git`` other than as the first word of a segment: a
-  script file (``sh deploy.sh``), ``bash -c``, ``eval``, ``xargs``, a wrapper
-  such as ``env``/``nice``/``time``/``command``/``sudo``, an absolute path
+  script file (``sh deploy.sh``), ``bash -c``, ``eval``, ``xargs``, a wrapper that
+  takes options of its own (``env``/``nice``/``sudo``), an absolute path
   (``/usr/bin/git``), or a shell function shadowing ``git``. This reads the
   command text it is given, and none of those spell out what will run. They are
   not shapes anyone types by accident; the ``pre-push`` hook is what covers them.
+  A leading run of shell keywords, plus ``time`` and ``command``, *is* stripped --
+  see ``SHELL_KEYWORDS`` -- because ``if make test; then git push origin develop;
+  fi`` is an ordinary thing to type and puts ``then`` first in the segment.
+* A **git alias** that runs a shell command: ``git -c alias.p='!git push origin
+  develop' p`` has ``git`` as its first word and ``p`` as its subcommand, so
+  nothing here recognises a push. Reading aliases would mean resolving
+  configuration this does not read.
+* ``git checkout <branch> --`` with nothing after the ``--``. A trailing ``--``
+  normally introduces a pathspec, which makes the command a file restore, and
+  that reading is the useful one; git treats this particular spelling as a branch
+  switch, so a commit after it is judged against the branch HEAD was on.
 * ``cd -``, bare ``pushd`` and ``popd``. A plain ``cd <path>`` or ``pushd <path>``
   earlier in the same command *is* followed, but those three depend on a directory
   stack this does not keep, so a segment after one of them is judged against the
-  directory in force before it.
+  directory in force before it. That misses in **either** direction depending on
+  which way the stack was moving: returning to a shared-branch checkout is not
+  seen, and returning out of one refuses a commit that was fine.
 * History written onto a shared branch by anything other than ``git commit`` --
   ``merge``, ``cherry-pick``, ``revert``, ``rebase``, ``am``. Those are local
   until pushed, and the push is what this refuses.
@@ -177,6 +197,41 @@ GH_MERGE_FLAGS_WITH_VALUE = frozenset(
     }
 )
 
+#: Words a shell may put in front of a command without changing what runs. A
+#: compound statement's keywords land in the same segment as the command they
+#: introduce -- ``if make test; then git push origin develop; fi`` tokenizes with
+#: ``then`` as the segment's first word -- and a segment whose first word is not
+#: ``git`` was not examined at all. ``!``, ``{`` and ``}`` do the same.
+#:
+#: Stripping these can only ever *expose* a command, never hide one, because only
+#: a **leading** run of them is removed: ``echo if git push origin develop`` starts
+#: with ``echo`` and is left alone. ``time`` and ``command`` are here for the same
+#: reason; the wrappers that take options of their own (``env``, ``nice``,
+#: ``sudo``, ``xargs``, ``eval``) are not, and stay in the header's uncovered list.
+SHELL_KEYWORDS = frozenset(
+    {
+        "!",
+        "{",
+        "}",
+        "if",
+        "then",
+        "elif",
+        "else",
+        "fi",
+        "while",
+        "until",
+        "for",
+        "do",
+        "done",
+        "case",
+        "esac",
+        "select",
+        "coproc",
+        "time",
+        "command",
+    }
+)
+
 #: A bare ``VAR=value`` prefix, which shells apply to the command that follows.
 ASSIGNMENT = re.compile(r"^([A-Za-z_][A-Za-z0-9_]*)=(.*)$")
 
@@ -193,6 +248,13 @@ CREATE_FLAGS = frozenset(
     {"-c", "-C", "--create", "--force-create", "-b", "-B", "--orphan"}
 )
 
+#: Per-subprocess timeout. A single command can spend several of these -- one
+#: `git` call per reading, plus a `gh pr checks` -- so the total can exceed the
+#: 15 s the hook is given in ``.claude/settings.json``. Being killed there is not
+#: a hazard: the harness treats a hook that does not answer as no answer, which
+#: allows the command, the same direction every other unknown takes here. The
+#: numbers are deliberately not equal, because one subprocess hanging for the whole
+#: budget should still leave the hook able to print its reason.
 _TIMEOUT_SECONDS = 8
 
 
@@ -332,6 +394,14 @@ def _shlex_tokens(command: str) -> list[str] | None:
     # Newline is a separator here rather than whitespace, so that two commands on
     # two lines do not merge into one.
     lexer.whitespace = " \t\r"
+    # shlex treats `#` as a comment by default, and its skip consumes the
+    # *newline* as well -- so `git status  # note` followed by `git push origin
+    # develop` came back as ONE segment whose first word is `git status`'s, and the
+    # push went unexamined. It also fired mid-word, where no shell starts a
+    # comment: `echo v1.0#beta && git push origin develop` lost everything after
+    # `v1.0`. Leaving comments in costs nothing here: a `#` token is not a command
+    # and does not begin one, so it can only ever be an argument this ignores.
+    lexer.commenters = ""
     try:
         return list(lexer)
     except ValueError:
@@ -373,6 +443,19 @@ def segments(command: str) -> list[list[str]]:
         if pieces:
             out.append(pieces)
     return out
+
+
+def strip_shell_keywords(tokens: list[str]) -> list[str]:
+    """Drop a leading run of ``SHELL_KEYWORDS`` from a segment.
+
+    Applied before anything else reads the segment, so it helps the ``cd``, ``git``
+    and ``gh`` readings alike: ``if true; then cd /other; fi`` moves the directory
+    the rest of the command is judged against, just as it does in the shell.
+    """
+    index = 0
+    while index < len(tokens) and tokens[index] in SHELL_KEYWORDS:
+        index += 1
+    return tokens[index:]
 
 
 def split_assignments(tokens: list[str]) -> tuple[dict[str, str], list[str]]:
@@ -481,6 +564,11 @@ def switch_target(args: list[str]) -> tuple[bool, str | None]:
         # with nothing after it does switch branches, and is read here as a
         # restore; a bare trailing `--` is not a shape anyone types by accident.
         return False, None
+    if any(arg in ("--detach", "-d") for arg in rest):
+        # `git switch --detach develop` names a branch but lands on no branch, so a
+        # commit after it is not on develop. Reading the positional would refuse it
+        # -- a false refusal, and the kind that makes a guard look wrong.
+        return True, None
     tracks = any(arg == "-t" or arg.startswith("--track") for arg in rest)
     # A create option's *value* is the branch, so it is read from the option
     # wherever the option sits -- and the whole argument list is searched before
@@ -649,6 +737,14 @@ def gh_repo_selector(tokens: list[str]) -> str | None:
     request. Losing it means the checks are read for a pull request of that number
     in whatever repository the command happens to run in, which is a different
     question with the same shape of answer.
+
+    All four spellings count, including a short option with its value **attached**.
+    Measured on gh 2.88.1: ``gh -Rcli/cli pr view 1`` answers about ``cli/cli``, and
+    ``gh -Rowner/definitely-not-real pr view 1`` fails naming that repository, so
+    the value is parsed rather than discarded. An earlier reading of ``gh pr checks
+    -Rfoo/bar``'s "argument required when using the `--repo` flag" as a rejection of
+    the attached form was wrong: that message is about the missing pull request
+    argument, which ``gh pr checks`` requires as soon as ``--repo`` is given.
     """
     rest = list(tokens)
     while rest:
@@ -658,6 +754,12 @@ def gh_repo_selector(tokens: list[str]) -> str | None:
             return attached or None
         if arg in GH_GLOBAL_WITH_VALUE and len(rest) > 1:
             return rest[1]
+        if (
+            len(arg) > 2
+            and not arg.startswith("--")
+            and arg[:2] in GH_GLOBAL_WITH_VALUE
+        ):
+            return arg[2:]
         rest = rest[1:]
     return None
 
@@ -784,7 +886,9 @@ def decide(payload: dict[str, object], notices: list[str] | None = None) -> str 
             notices.append(line)
 
     for tokens in segments(command):
-        inline, argv = split_assignments(tokens)
+        # Keywords first, then assignments: a shell accepts them in that order
+        # (`then ALLOW_SHARED_BRANCH=1 git push ...`).
+        inline, argv = split_assignments(strip_shell_keywords(tokens))
         if not argv:
             continue
 

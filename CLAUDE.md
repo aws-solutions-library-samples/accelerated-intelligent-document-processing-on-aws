@@ -733,13 +733,25 @@ around it:
 - A pull request whose checks never ran (a fork PR gets no GitHub CI here).
 - `git push --no-verify`, which skips the `pre-push` hook outright.
 - Anything that reaches `git` other than as the first word of a segment: a script
-  file (`sh deploy.sh`), `bash -c`, `eval`, `xargs`, a wrapper such as
-  `env`/`nice`/`time`/`command`/`sudo`, an absolute path, or a shell function
-  shadowing `git`. The `PreToolUse` half reads the command text it is given, and
-  none of those spell out what will run. The `pre-push` hook is what catches them.
+  file (`sh deploy.sh`), `bash -c`, `eval`, `xargs`, a wrapper that takes options of
+  its own (`env`/`nice`/`sudo`), an absolute path, or a shell function shadowing
+  `git`. The `PreToolUse` half reads the command text it is given, and none of those
+  spell out what will run. The `pre-push` hook is what catches them. A leading run
+  of **shell keywords** is a different matter and *is* handled (`SHELL_KEYWORDS`,
+  plus `time` and `command`): `if make test; then git push origin develop; fi` is an
+  ordinary thing to type, and it puts `then` first in the segment.
+- A **git alias** that runs a shell command — `git -c alias.p='!git push origin
+  develop' p`. `git` is the first word, but the subcommand is `p`, and resolving
+  aliases would mean reading configuration the hook does not read.
+- `git checkout <branch> --` with nothing after the `--`. A trailing `--` normally
+  introduces a pathspec, which makes the command a file restore, and that is the
+  reading worth having; git treats this particular spelling as a branch switch, so a
+  commit after it is judged against the branch HEAD was on.
 - `cd -`, bare `pushd` and `popd`, which depend on a directory stack the hook does
   not keep. A segment after one of them is judged against the directory in force
-  before it, which over-refuses rather than under-refuses.
+  before it, and that misses in **either** direction depending on which way the
+  stack was moving: `cd -` back into a `develop` checkout is not seen, and `cd -`
+  back out of one refuses a commit that was fine.
 - History written onto a shared branch by anything other than `git commit` —
   `merge`, `cherry-pick`, `revert`, `rebase`, `am`. Those are local until pushed,
   and the push is what gets refused.
@@ -773,22 +785,28 @@ Four properties worth knowing before relying on it:
   arguments but **not its stdin**, so the hook receives no ref list — and exiting 0
   on an empty ref list is how a hook can be installed, reported successful, and
   refuse nothing. It therefore falls back to `HEAD` and its upstream, and says which
-  basis it used. **On a machine with that redirect, and only there, the fallback
-  trades a false refusal for a real gap in the same breath:** pushing a feature
-  branch, or making a no-op push, while `HEAD` sits on `develop` is refused although
-  nothing shared is being written, and a push whose destination *is* a shared branch
-  while `HEAD` is not on one (`HEAD:refs/heads/develop`, `HEAD:develop`, `origin
-  develop`, `--all`) goes through although all four are refused on the normal path.
-  The `PreToolUse` half resolves destinations from the command line and refuses all
-  four, so what stays uncovered on such a machine is a push typed into a plain shell
-  rather than one the assistant runs. The destination really is unknowable in that
-  state — with no ref list a `pre-push` hook is given only the remote's name and URL
-  — and refusing every push there would make the hook unusable. `make
-  install-git-hooks` prints the implication when it detects the redirect;
-  `test_pre_push_still_refuses_through_a_runner_that_drops_stdin` and
-  `test_the_head_fallback_is_wrong_in_both_directions` reproduce the shape and
-  measure both halves of the trade, because a suite that only points
-  `core.hooksPath` at the repository's own hooks cannot see either.
+  basis it used. **That substitution is wrong in both directions, and the two
+  directions arise on different machines.** The over-refusal is not confined to a
+  redirected machine: git supplies an empty ref list for any **up-to-date** push as
+  well, measured on the direct path with no runner involved, so a no-op push while
+  `HEAD` sits on `develop` is refused on an ordinary machine — which is why the
+  message names both possible causes rather than blaming a runner the user may not
+  have. The under-refusal *is* specific to the redirect: there the destination stops
+  being checked for pushes that do have work to send, so one whose destination *is*
+  a shared branch while `HEAD` is not on one (`HEAD:refs/heads/develop`,
+  `HEAD:develop`, `origin develop`, `--all`) goes through although all four are
+  refused where the ref list arrives. The `PreToolUse` half resolves destinations
+  from the command line and refuses all four, so what stays uncovered on such a
+  machine is a push typed into a plain shell rather than one the assistant runs. The
+  destination really is unknowable in that state — with no ref list a `pre-push`
+  hook is given only the remote's name and URL — and refusing every push there would
+  make the hook unusable. `make install-git-hooks` prints the implication when it
+  detects the redirect;
+  `test_pre_push_still_refuses_through_a_runner_that_drops_stdin`,
+  `test_the_head_fallback_is_wrong_in_both_directions` and
+  `test_an_up_to_date_push_supplies_no_refs_on_an_ordinary_machine` measure all
+  three claims, because a suite that only points `core.hooksPath` at the
+  repository's own hooks cannot see any of them.
 
 Run the tests for both halves with `make test-hooks`.
 

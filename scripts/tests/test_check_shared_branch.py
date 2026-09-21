@@ -64,6 +64,7 @@ from check_shared_branch import (  # noqa: E402
     segments,
     split_assignments,
     strip_heredocs,
+    strip_shell_keywords,
     subcommand,
     switch_target,
 )
@@ -312,6 +313,68 @@ def test_a_here_string_is_not_a_heredoc() -> None:
 
 
 @pytest.mark.unit
+@pytest.mark.parametrize(
+    "command",
+    [
+        "git status --short   # see what changed\ngit push origin develop",
+        "git status # look\ngit push origin develop",
+        "# a leading comment line\ngit push origin develop",
+        "git log --oneline # count them\ngit push origin develop",
+    ],
+)
+def test_a_comment_does_not_swallow_the_command_after_it(command: str) -> None:
+    """``shlex``'s comment skip consumes the newline as well as the comment.
+
+    That merged the next line into the commented segment, whose first word was then
+    the *earlier* command's — so ``git status  # note`` followed by ``git push
+    origin develop`` was one segment starting with ``git status``, the push was
+    never examined, and the identical command without the comment blocked. Comments
+    are therefore not stripped at all: a ``#`` token cannot be a command.
+    """
+    assert ["git", "push", "origin", "develop"] in segments(command)
+
+
+@pytest.mark.unit
+def test_a_hash_inside_a_word_is_not_a_comment() -> None:
+    """No shell starts a comment mid-word, and ``shlex`` did.
+
+    ``echo v1.0#beta && git push origin develop`` lost everything from the ``#``
+    onwards, so this was a divergence from the shell rather than a choice about
+    comments: bash runs both commands.
+    """
+    command = "echo v1.0#beta && git push origin develop"
+    assert segments(command) == [
+        ["echo", "v1.0#beta"],
+        ["git", "push", "origin", "develop"],
+    ]
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("tokens", "expected"),
+    [
+        (
+            ["then", "git", "push", "origin", "develop"],
+            ["git", "push", "origin", "develop"],
+        ),
+        (["do", "git", "commit"], ["git", "commit"]),
+        (["!", "git", "push"], ["git", "push"]),
+        (["{", "git", "push"], ["git", "push"]),
+        (["time", "git", "push"], ["git", "push"]),
+        (["command", "git", "push"], ["git", "push"]),
+        (["if", "true"], ["true"]),
+        (["}"], []),
+        # Only a LEADING run goes, so a keyword as an argument is untouched: this is
+        # what keeps the strip from ever hiding a command.
+        (["echo", "if", "git", "push"], ["echo", "if", "git", "push"]),
+        (["git", "commit", "-m", "do"], ["git", "commit", "-m", "do"]),
+    ],
+)
+def test_strip_shell_keywords(tokens: list[str], expected: list[str]) -> None:
+    assert strip_shell_keywords(tokens) == expected
+
+
+@pytest.mark.unit
 def test_an_escaped_quote_does_not_end_a_double_quoted_string() -> None:
     r"""``\"`` keeps the string open, so a ``<<`` after it is still quoted.
 
@@ -413,6 +476,11 @@ def test_split_assignments_tolerates_an_empty_segment() -> None:
         # Moves HEAD somewhere this cannot name: later segments are unjudgeable.
         (["switch", "-"], (True, None)),
         (["checkout", "--detach"], (True, None)),
+        # `--detach` with a branch named lands on no branch, so reading the
+        # positional would refuse a commit that is not going onto develop at all.
+        (["switch", "--detach", "develop"], (True, None)),
+        (["checkout", "--detach", "main"], (True, None)),
+        (["switch", "-d", "develop"], (True, None)),
         # Restores files; HEAD does not move.
         (["checkout", "develop", "--", "a.txt"], (False, None)),
     ],
@@ -464,6 +532,7 @@ def test_chdir_target_expands_a_home_relative_path() -> None:
         (["merge", "--repo", "owner/name", "1050"], "1050"),
         (["merge", "--repo=owner/name", "1050"], "1050"),
         (["merge", "-d", "-s", "1050"], "1050"),
+        (["merge", "-Rowner/name", "1050"], "1050"),
     ],
 )
 def test_merge_target(args: list[str], expected: str | None) -> None:
@@ -481,6 +550,14 @@ def test_merge_target(args: list[str], expected: str | None) -> None:
         # gh registers --repo on its root command, so it is valid here too.
         (["gh", "-R", "owner/name", "pr", "merge", "1050"], "owner/name"),
         (["gh", "--repo=owner/name", "pr", "merge", "1050"], "owner/name"),
+        # A short option's value may be ATTACHED, on either side of the subcommand.
+        # Measured on gh 2.88.1: `gh -Rcli/cli pr view 1` answers about cli/cli, and
+        # a bogus owner/name fails naming that repository — so the value is parsed,
+        # not discarded. This spelling was the one still losing the selector after
+        # the separated form was fixed.
+        (["gh", "-Rowner/name", "pr", "merge", "1050"], "owner/name"),
+        (["gh", "pr", "merge", "-Rowner/name", "1050"], "owner/name"),
+        (["gh", "pr", "merge", "-Rowner/name"], "owner/name"),
     ],
 )
 def test_gh_repo_selector(tokens: list[str], expected: str | None) -> None:
@@ -542,14 +619,17 @@ def test_a_merge_flags_value_is_not_read_as_the_pull_request(flag: str) -> None:
 GH_FLAG_LINE = re.compile(r"^\s+(?:(-\w), )?(--[\w-]+)(?: (?!\s)(\S+))?\s{2,}\S")
 
 
-def _gh_flags_taking_a_value() -> set[str] | None:
-    """Value-taking ``gh pr merge`` options, read from ``gh``'s own help.
+def _gh_flags_taking_a_value() -> tuple[set[str] | None, str]:
+    """Value-taking ``gh pr merge`` options read from gh's own help, and why not.
 
-    ``None`` when ``gh`` is not installed — which is the case in the CI container,
-    so the missing binary has to be caught as an **exception**: ``subprocess.run``
-    raises ``FileNotFoundError`` for a command that is not on ``PATH`` rather than
-    returning a non-zero code, and reading only the exit status turns "no gh here"
-    into a red gate.
+    The second element is the reason the set is ``None``, so a skip says what
+    actually happened. "gh is not installed" for a gh that exists and exits 3 sends
+    the reader to install something they have.
+
+    A missing binary has to be caught as an **exception**: ``subprocess.run`` raises
+    ``FileNotFoundError`` for a command that is not on ``PATH`` rather than
+    returning a non-zero code, and reading only the exit status turns "no gh in the
+    CI container" into a red gate, which is exactly how this failed once.
 
     The parse is asserted non-vacuous by the caller: silently matching nothing
     would make the comparison below pass for every possible value of the constant,
@@ -562,10 +642,15 @@ def _gh_flags_taking_a_value() -> set[str] | None:
             text=True,
             check=False,
         )
-    except (OSError, subprocess.SubprocessError):
-        return None
+    except FileNotFoundError:
+        return None, "gh is not installed"
+    except (OSError, subprocess.SubprocessError) as error:
+        return None, f"gh could not be run: {error!r}"
     if completed.returncode != 0:
-        return None
+        return None, (
+            f"`gh pr merge --help` exited {completed.returncode}: "
+            f"{completed.stderr.strip()[:200] or '(no stderr)'}"
+        )
     flags: set[str] = set()
     seen = 0
     for line in completed.stdout.splitlines():
@@ -584,7 +669,7 @@ def _gh_flags_taking_a_value() -> set[str] | None:
         f"take a value. Re-read the help and update GH_FLAG_LINE.\n"
         f"{completed.stdout}"
     )
-    return flags
+    return flags, ""
 
 
 @pytest.mark.unit
@@ -598,12 +683,12 @@ def test_every_value_taking_merge_flag_is_listed() -> None:
     value for is stale, and swallowing the following token could equally swallow
     the pull request number.
 
-    Skipped when ``gh`` is absent, which is the only reason this is not a hard
-    gate on every machine.
+    Skipped when ``gh`` cannot be read, which is the only reason this is not a hard
+    gate on every machine — the CI container has no ``gh``.
     """
-    derived = _gh_flags_taking_a_value()
+    derived, unreadable = _gh_flags_taking_a_value()
     if derived is None:
-        pytest.skip("gh is not installed")
+        pytest.skip(unreadable)
     listed = set(check_shared_branch.GH_MERGE_FLAGS_WITH_VALUE)
     assert derived == listed, (
         "GH_MERGE_FLAGS_WITH_VALUE does not match `gh pr merge --help`.\n"
@@ -779,6 +864,21 @@ def test_an_unresolvable_head_makes_a_bare_push_unknown(repo: Path) -> None:
         "git --namespace ns push origin develop",
         "(git push origin develop)",
         "git -c push.default=matching push origin",
+        # A comment earlier in the command used to swallow the line after it.
+        "git status --short   # see what changed\ngit push origin develop",
+        "echo v1.0#beta && git push origin develop",
+        # A compound statement's keyword lands in the same segment as the command
+        # it introduces, and a segment not starting with `git` went unexamined.
+        "{ git push origin develop; }",
+        "if true; then git push origin develop; fi",
+        "if make test; then git push origin develop; fi",
+        "for i in 1; do git push origin develop; done",
+        "while false; do git push origin develop; done",
+        "until false; do git push origin develop; done",
+        "! git push origin develop",
+        "time git push origin develop",
+        "command git push origin develop",
+        "if true; then git push origin develop; else echo no; fi",
     ],
 )
 def test_pushes_to_a_shared_branch_are_blocked(repo: Path, command: str) -> None:
@@ -877,6 +977,12 @@ def test_leaving_the_shared_branch_first_is_allowed(repo: Path, command: str) ->
         "git switch main && git commit -m x",
         # The same tracking applies to the push side.
         "git switch develop && git push",
+        # A comment before the switch used to merge the two into one segment whose
+        # first word was the earlier command's, hiding the switch.
+        "git status # look\ngit switch develop && git commit -m y",
+        # And a keyword before the switch hid it the same way.
+        "if true; then git switch develop; fi && git commit -m x",
+        "{ git switch develop; } && git commit -m x",
     ],
 )
 def test_switching_onto_a_shared_branch_first_is_blocked(
@@ -1595,6 +1701,48 @@ def test_pre_push_still_refuses_through_a_runner_that_drops_stdin(
         env={**os.environ, "ALLOW_SHARED_BRANCH": "1"},
     )
     assert allowed.returncode == 0, allowed.stderr
+
+
+@pytest.mark.unit
+def test_an_up_to_date_push_supplies_no_refs_on_an_ordinary_machine(
+    tmp_path: Path, repo: Path
+) -> None:
+    """The fallback is reached without any hook runner being involved.
+
+    An empty ref list was documented as what a stdin-dropping runner produces. git
+    also supplies one for a push with **nothing to send**, on a completely ordinary
+    machine — so the over-refusal half of the fallback's cost is not confined to a
+    redirected machine, and a message blaming a runner would send the reader looking
+    for a redirect they do not have. This measures the premise rather than restating
+    it: `core.hooksPath` points at the repository's own hooks, so git invokes the
+    hook directly.
+    """
+    bare = tmp_path / "remote.git"
+    subprocess.run(  # noqa: S603 - fixed argv, no shell
+        ["git", "init", "-q", "--bare", str(bare)], check=True, capture_output=True
+    )
+    _git_in(repo, "remote", "set-url", "origin", str(bare))
+    hook_dir = _install_hook_into(repo)
+    _git_in(repo, "config", "core.hooksPath", str(hook_dir))
+
+    # Get the branch onto the remote first, so the second push has nothing to send.
+    _checkout(repo, "feature/thing")
+    first = subprocess.run(  # noqa: S603 - fixed argv, no shell
+        ["git", "-C", str(repo), "push", "origin", "feature/thing"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert first.returncode == 0, first.stderr
+
+    # Same push again: up to date, so git runs the hook with no ref lines at all.
+    _checkout(repo, "develop", "origin/develop")
+    refused = _git_in(repo, "push", "origin", "feature/thing")
+    assert refused.returncode != 0, refused.stdout
+    assert "Refusing to push directly to" in refused.stderr
+    assert "the ref list was not supplied" in refused.stderr
+    # ...and the reason given must not pin it on a runner, since there is none here.
+    assert "nothing to send" in refused.stderr, refused.stderr
 
 
 @pytest.mark.unit

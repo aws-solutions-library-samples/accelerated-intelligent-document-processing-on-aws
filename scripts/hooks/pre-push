@@ -29,27 +29,28 @@
 #
 # So when there are no ref lines, this judges by HEAD and its upstream instead.
 #
-# ⚠️ On a machine with that system-wide redirect, and only there, substituting
-# that question trades a false refusal for a real gap in the same breath: a push
-# of a feature branch while HEAD sits on develop is refused although nothing
-# shared is being written, AND a push whose destination IS a shared branch while
-# HEAD is not on one goes through although the normal path refuses it. Spelled
-# out:
+# ⚠️ Substituting that question is wrong in BOTH directions, and the two
+# directions arise on DIFFERENT machines — which is why the message names the
+# basis it used rather than asserting a cause:
 #
-#   * Over-refusal: pushing a feature branch, or making a no-op push, while HEAD
-#     happens to sit on develop is refused even though nothing shared was being
-#     written.
-#   * Under-refusal: the destination stops being checked, so a push that DOES
-#     write to a shared branch goes through whenever HEAD is not on one.
-#     `git push origin HEAD:refs/heads/develop` from a feature branch is allowed
-#     here, and so are the `HEAD:develop`, `develop` and `--all` forms. All four
-#     are refused on the normal path.
+#   * Over-refusal, on ANY machine. An empty ref list is not only what a
+#     stdin-dropping runner produces: git also supplies one for a push with
+#     nothing to send. Measured on the direct path, with no runner involved
+#     (`parent=git`), an up-to-date push delivers 0 bytes. So a no-op push while
+#     HEAD happens to sit on develop is refused, on an ordinary machine, even
+#     though nothing shared was being written. Overridable in one keystroke; the
+#     alternative is exiting 0 and being inert where it matters.
+#   * Under-refusal, on a redirected machine only. There the destination stops
+#     being checked for pushes that do have work to send, so one that DOES write
+#     to a shared branch goes through whenever HEAD is not on one. `git push
+#     origin HEAD:refs/heads/develop` from a feature branch is allowed, and so are
+#     the `HEAD:develop`, `develop` and `--all` forms. All four are refused on the
+#     normal path, where the ref list arrives.
 #
 # The destination is genuinely unknowable in this state: with no ref list, a
 # pre-push hook is given only the remote's name and URL, never the refspec. The
 # alternative — refusing every push on such a machine — would make the hook
-# unusable. So the fallback is the weaker question asked honestly, and the message
-# names the basis it used.
+# unusable. So the fallback is the weaker question asked honestly.
 #
 # What covers the under-refusal, for commands the coding assistant runs, is the
 # PreToolUse half: it resolves destinations from the command line and refuses all
@@ -121,7 +122,11 @@ if [ "$saw_refs" -eq 0 ]; then
 	# No ref lines: either nothing to push, or a hook runner did not forward
 	# stdin. Fall back to HEAD and its upstream. Any git failure here leaves
 	# both empty, which allows the push.
-	basis='HEAD, because the ref list was not supplied to this hook'
+	#
+	# The basis says which two causes are possible rather than picking one.
+	# Blaming a runner for what is usually an up-to-date push sends the reader
+	# looking for a redirect they may not have.
+	basis='HEAD: the ref list was not supplied to this hook, so either this push had nothing to send or a hook runner did not forward it'
 	head_branch=$(git symbolic-ref --short HEAD 2>/dev/null) || head_branch=''
 	upstream=$(git rev-parse --abbrev-ref --symbolic-full-name '@{upstream}' \
 		2>/dev/null) || upstream=''
