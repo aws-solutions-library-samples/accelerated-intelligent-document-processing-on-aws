@@ -2170,7 +2170,7 @@ complete one, why neither status nor cost flagged it.
 | Value | Outcome |
 |---|---|
 | `warn` (default) | Record the issue and report success. |
-| `fail` | The rows that *were* extracted, the issue and the processing report are written to the section's `result.json` first; the section then fails with `ExtractionOutputIncomplete`, which is deterministic and in no `Retry` list, so it fails once and in seconds. The document's status is `FAILED` and the Step Functions cause is the sentence naming the rows extracted, the OCR row estimate and the remedy. |
+| `fail` | The rows that *were* extracted, the issue and the processing report are written to the section's `result.json` first; the section then fails with `ExtractionOutputIncomplete`, which is deterministic and in no `Retry` list, so it fails once and in seconds. The document's status is `FAILED`, the Step Functions cause is the sentence naming the rows extracted, the OCR row estimate and the remedy, and the section's own record carries both that shortfall issue and `extraction_failed` — see below. |
 
 It does not change **when** the shortfall is detected — the floor of 30 matching
 OCR rows and the "fewer than half" ratio are identical under both values, so the
@@ -2178,6 +2178,49 @@ sections that fail under `fail` are exactly the ones that warn under `warn`. And
 it is not Simple-mode-only: the check and the outcome are shared by both modes,
 because a truncated Advanced section tells the same lie. Advanced mode shards, so
 it reaches this far less often.
+
+##### Where a failed section shows up
+
+A section whose extraction **failed** is recorded on the section itself, so the
+document's Sections panel shows which section failed and why — as **Failed** in the
+Status column, distinct from the **Incomplete** a section that was flagged but
+accepted shows. That applies to every raising extraction failure, not only a row
+shortfall: `ExtractionInputTooLarge`, `ExtractionImageRejected`,
+`ModelInvalidToolUseSequence` and `ExtractionOutputIncomplete` all leave an
+error-severity `extraction_failed` issue whose `root_cause` is the exception's own
+explanation and remedy — the same sentence the Step Functions cause reports, which
+is unchanged.
+
+Two issues appear together under `row_shortfall_action: fail`, and they say
+different things. `extraction_rows_below_ocr_estimate` names what was lost and how
+to accept it; `extraction_failed` says the section did not succeed. The first
+cannot carry that on its own, because it is written at `warning` severity under
+`warn` — where the document completes — and at `error` under `fail`.
+
+The rows that were extracted are still in the section's `result.json` and the
+section still points at it, so a partial result stays readable in the Visual
+Editor rather than being discarded with the failure.
+
+**A transient failure is not marked.** A throttle or a read timeout is retried by
+the state machine, so flagging the section would show it failed for as long as that
+ladder runs and then clear itself. Only a failure that will not be retried is
+recorded. If a retry ladder exhausts every attempt, the document fails with the
+explanation in the Step Functions cause and the section is not flagged.
+
+**A very long explanation is abridged in the middle.** A processing issue's details
+are bounded (4 KB for the technical cause, 1 KB per value in its structured payload,
+both in bytes) because they all share one DynamoDB record with every other issue on
+the section, and some exceptions echo extracted document content — a schema-validation
+failure on a 900-row list renders the whole list into its message, about 57,000
+characters per failing field. What is removed is the middle, so the failure at the
+start and the remedy at the end both survive. The unabridged text is in the section's
+`result.json` and in the CloudWatch log for the step.
+
+One case is abridged from a place you might not expect. A classification issue puts
+the section's page list at the **end** of its technical cause, so on a section with
+more than about 530 pages the abridgement falls inside that list rather than after it.
+Nothing is lost: the same page ids are in the issue's structured payload and in its
+one-line message, both of which the Sections panel shows.
 
 ##### Why `fail` is opt-in, and what to check before turning it on
 

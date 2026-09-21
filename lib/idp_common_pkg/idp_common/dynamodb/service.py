@@ -650,23 +650,54 @@ class DocumentDynamoDBService:
         expression_names["#ConfidenceAlertCount"] = "ConfidenceAlertCount"
         expression_values[":ConfidenceAlertCount"] = document.confidence_alert_count
 
-        # Always persist processing-issue count (even 0) so the document list can
-        # show/filter on it, mirroring ConfidenceAlertCount (the authoritative
-        # filterable source of truth).
-        issue_count = document.processing_issue_count
-        set_expressions.append("#ProcessingIssueCount = :ProcessingIssueCount")
-        expression_names["#ProcessingIssueCount"] = "ProcessingIssueCount"
-        expression_values[":ProcessingIssueCount"] = issue_count
+        # Persist the processing-issue count (including 0) so the document list can
+        # show/filter on it, mirroring ConfidenceAlertCount — but ONLY when this
+        # document object carries the sections the count is derived from.
+        #
+        # `processing_issue_count` counts the sections' issues plus the
+        # document-level ones, so a Document with no sections has no *information*
+        # about the count and reports 0 by absence rather than by measurement.
+        # Writing that 0 asserts something the object does not know.
+        #
+        # `workflow_tracker.update_document_completion` is what does it, and by
+        # THREE routes rather than one: a FAILED/ABORTED/TIMED_OUT execution (its
+        # section-loading branch is gated on SUCCEEDED), a SUCCEEDED execution whose
+        # `output_data` is empty, and a raise anywhere inside the enrichment block —
+        # all three fall through to the same bare Document of status plus completion
+        # time. The `#Sections` attribute survives those writes because it is gated
+        # the same way three blocks above; the counter was not, so a section-level
+        # issue written by a processing Lambda moments earlier kept its `#Sections`
+        # entry while the document list's badge was stamped back to 0. The UI prefers
+        # the stored value whenever it is merely non-null (see
+        # `map-document-attributes.ts`), so the badge read a green 0 for a document
+        # whose own section said it had failed.
+        #
+        # Gated on the same condition as `#Sections` for the same reason: this
+        # writer only claims what the object it was handed can support.
+        if document.sections:
+            issue_count = document.processing_issue_count
+            set_expressions.append("#ProcessingIssueCount = :ProcessingIssueCount")
+            expression_names["#ProcessingIssueCount"] = "ProcessingIssueCount"
+            expression_values[":ProcessingIssueCount"] = issue_count
 
-        # Sparse GSI attribute for cheap "has processing issues" filtering — SET
-        # only when there ARE issues (mirrors the HITLPendingReview sparse pattern).
-        # Not proactively removed on issue-free writes: ProcessingIssueCount (always
-        # written, above) is the authoritative filter source, and avoiding a REMOVE
-        # here keeps the update-expression additive.
-        if issue_count > 0:
-            set_expressions.append("#HasProcessingIssues = :HasProcessingIssues")
-            expression_names["#HasProcessingIssues"] = "HasProcessingIssues"
-            expression_values[":HasProcessingIssues"] = "true"
+            # HasProcessingIssues currently has NO reader: it is not a GSI key, not
+            # projected, not queried, absent from the UI and absent from every Glue
+            # and Athena schema. ProcessingIssueCount, written above, is what the
+            # document list reads — on `list_documents_range_resolver` only. The fast
+            # `list_documents_gsi_resolver` path cannot see it either: the attribute
+            # is not in that GSI's INCLUDE projection and resolves to None there (its
+            # own note at the mapping site explains why the projection cannot be
+            # amended in place), so the badge on that path comes from the sections.
+            # This is written in the shape a
+            # sparse index attribute would need — SET only when there are issues,
+            # mirroring HITLPendingReview — so it is ready to back one, but do not
+            # build a filter on it without also handling the fact that it is never
+            # REMOVEd: a document that once carried an issue keeps the attribute
+            # after a later run clears it.
+            if issue_count > 0:
+                set_expressions.append("#HasProcessingIssues = :HasProcessingIssues")
+                expression_names["#HasProcessingIssues"] = "HasProcessingIssues"
+                expression_values[":HasProcessingIssues"] = "true"
 
         # Build update expression with optional REMOVE clause
         update_expression = "SET " + ", ".join(set_expressions)

@@ -1026,6 +1026,108 @@ The ExtractionService has built-in error handling:
 3. All errors are logged for debugging
 4. Few-shot example loading errors are handled gracefully with fallback to standard prompts
 
+### A raising failure still reaches the section's record — `idp_common.extraction.failure`
+
+Every extraction failure raises: `ExtractionInputTooLarge`,
+`ExtractionImageRejected`, `ModelInvalidToolUseSequence` and
+`ExtractionOutputIncomplete`. Both Lambda entry points persist the section to
+DynamoDB *after* the service call returns, so on a raise the write did not happen
+and the section's record still held whatever classification left there — nothing
+in the Sections panel identified the section that failed.
+
+`idp_common.extraction.failure` is the shared body of the fix. Each entry point
+wraps its service call and, in the `except` block, calls
+`persist_section_after_extraction_failure` before re-raising unchanged:
+
+- `patterns/unified/src/extraction_function/index.py` — the in-process path,
+  around `process_document_section`;
+- `patterns/unified/src/extraction_function/sfn_runtime_handler.py`, `mode="merge"`
+  — the Distributed Map shard merge, around `merge_section_shards`.
+
+Three properties it relies on, and one it deliberately does not do:
+
+- **The document carries the diagnosis on a raise.** Both service entry points
+  mutate the document they are given and return the same object, and the `section`
+  they operate on is the live object inside `document.sections`. So after a raise
+  the caller's handle still holds everything the service recorded — which for
+  `ExtractionOutputIncomplete` is the whole point, since `_save_results` finishes
+  writing the partial result and the error-severity
+  `extraction_rows_below_ocr_estimate` issue before the raise at its tail.
+- **Existing issues are preserved.** A *successful* run replaces the section's
+  extraction-stage issues; doing that here would delete the diagnosis. Only a
+  previous `extraction_failed` is replaced, so a retried section does not collect
+  one issue per attempt.
+- **The write cannot mask the original error.** It is swallowed and logged. The
+  original exception is what names the rows lost or the input that was too large,
+  and it is what the Step Functions cause reports. That swallowing is also why the
+  section map has to stay under DynamoDB's 400 KB item limit: a write that fails
+  here is not reported, so an oversized issue leaves the section unmarked. Both
+  free-size fields are bounded by `ProcessingIssue` itself — see
+  `MAX_ROOT_CAUSE_BYTES` and `MAX_DETAIL_STRING_BYTES` — which is what makes
+  `assessment/degradation.py` covered without a second copy of the rule.
+- **No metric.** Unlike `idp_common.assessment.degradation`, whose whole reason for
+  existing is that the document *completes* and trips no alarm, everything here
+  re-raises — the execution fails and the existing failure alarms already count it.
+- **A transient error records nothing.** `is_transient_error` is the same predicate
+  that decides whether the handler re-raises under the name `ExtractionStep` /
+  `ExtractionMergeStep` retries, so it reads as "a retry is coming". Marking the
+  section would show it failed for the length of the ladder — eight attempts at
+  2.5x backoff from a 10-second interval — and then clear itself. The residual is
+  that an exhausted ladder leaves the section unmarked; the execution still fails.
+
+### Who may delete a section's resume state, and when
+
+The whole-section checkpoint and the per-shard results exist so a Step Functions retry
+does not start from nothing. Whether deleting them is safe differs between the two
+runtimes, and the difference decides the rule:
+
+| | shard merge (`sfn_runtime_handler`, `mode="merge"`) | in-process (`index.py`) |
+|---|---|---|
+| What they are | a **precondition** — `merge_section_shards` re-loads every shard on entry and raises if one is absent | an **optimisation** — without them the retry re-runs extraction |
+| Cost of deleting too early | permanent `"shard(s) … have no persisted result"`, discarding every token of shard inference | re-inference: money, not correctness |
+| Rule | **never deleted from the handler** | deleted **last**, after the response is built |
+
+What makes "too early" reachable at all is the tail of both handlers:
+`serialize_document` defaults to `size_threshold_kb=0`, so it **always** performs an S3
+put, and it is not wrapped in `try`. A `SlowDown`, a `ServiceUnavailable` or a read
+timeout there is re-raised, classified `TransientError`, and retried — after the
+extraction has already succeeded and been paid for.
+
+For the merge path there is therefore **no safe point inside the Lambda**: whether the
+*state* succeeded is not observable from inside it, and that is what decides whether a
+retry follows. So nothing there deletes the shards and the working bucket's lifecycle
+rule reclaims them. Nothing else reads them, and a reprocess from the UI starts a new
+execution and so a new key prefix, which means "start clean" needs no deletion either.
+
+For the in-process path deleting is safe at any point, so it happens as late as
+possible — after `serialize_document` returns — which bounds the residual window's cost
+at one re-inference. `patterns/unified/tests/test_shard_retention.py` pins both rules,
+including the transient-tail reproduction.
+
+`ExtractionMergeStep` also has no `Catch` and no path back to `ExtractionShardMap`, so
+a *deterministic* merge failure is not retried at all; those kept objects simply
+expire.
+
+### Shard results are keyed by content, not by the section's ordinal id
+
+`shard_result_key` takes a **shard-persistence section id** —
+`{class_label}_{first_page}_{last_page}`, built by `shard_persistence_section_id` —
+rather than the `section_id` classification assigns, which is an ordinal (`"0"`,
+`"1"`, …) and is not stable across a reclassify.
+
+There are consequently two prefixes under `checkpoints/{safe_arn}/`: the
+whole-section checkpoint at `{section_id}/extraction_state.json` uses the ordinal,
+and the shard results at `{persist_section_id}/shards/` do not. Anything that
+addresses the `shards/` prefix must go through `shard_results_prefix`, which
+`shard_result_key` is itself built on so the two cannot diverge, and must derive its
+id through `shard_persistence_section_id`. Both cleanup callers
+(`delete_shard_results`, `_cleanup_shards`) therefore take the **section** rather
+than a section id, so a raw ordinal cannot be passed by mistake — which is what
+happened, leaving both listing a prefix nothing had ever been written to and
+deleting nothing while logging success.
+`tests/unit/extraction/test_shard_cleanup_prefix.py` drives the real service against
+both deployed handlers with a fake S3 that answers the correct prefix only.
+
 ### An empty effective schema: three causes, one of them a fault
 
 `_get_class_schema` returns `{}` both for a class the configuration contains and
@@ -1132,8 +1234,9 @@ The extraction service is designed to be thread-safe, supporting concurrent proc
 > (config-guidance §2.1). The cost delta is model-dependent: ~2.5× per 100-row document
 > at Sonnet 5, cheaper than the integrated call at Sonnet 4.6 (live pass 2026-09-09). Recorded
 > in `metadata.confidence_mode_effective` / `confidence_mode_downgraded_reason` and the
-> Processing Flow (`status: info`) — deliberately NOT a ProcessingIssue, because
-> `HasProcessingIssues` is severity-blind and would badge every document. Two class-level
+> Processing Flow (`status: info`) — deliberately NOT a ProcessingIssue, because the
+> document list's badge counts `ProcessingIssueCount`, which is severity-blind, and
+> would badge every document. Two class-level
 > opt-outs keep 1S-TopK: `x-aws-idp-extraction-task-prompt` (a user-controlled prompt is
 > never half-applied) and `x-aws-idp-allow-integrated-lists: true` (the author has
 > verified list completeness). `config.merge_utils._validate_simple_integrated_lists`

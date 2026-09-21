@@ -3642,7 +3642,7 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
         # 0) Integrated confidence downgraded to a separate pass for this
         # list-bearing class (see _simple_integrated_list_downgrade). Recorded in
         # metadata and the Processing Flow, deliberately NOT as a ProcessingIssue:
-        # the document-level HasProcessingIssues flag and the list-view badge are
+        # the list view's badge counts ProcessingIssueCount and is therefore
         # severity-blind, so even an `info` issue would mark every document of a
         # Simple + integrated deployment "Processing Issues: 1" for a routing
         # decision that produced a complete, scored section.
@@ -5802,10 +5802,7 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
                         context="Extraction",
                         checkpoint_callback=self._checkpoint_callback,
                         custom_instruction=shard_custom_instruction,
-                        section_id=(
-                            f"{section_info.class_label}_"
-                            f"{section_info.start_page}_{section_info.end_page}"
-                        ),
+                        section_id=self._persist_section_id(section_info),
                         persistence=self._shard_persistence,
                         runtime=runtime,
                         assess_runner=self._build_assess_runner(
@@ -7921,10 +7918,16 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
         return model_id, dynamic_model, shard_payloads, custom_instruction
 
     def _persist_section_id(self, section_info: SectionInfo) -> str:
-        """Deterministic per-section id used for shard persistence keys."""
-        return (
-            f"{section_info.class_label}_"
-            f"{section_info.start_page}_{section_info.end_page}"
+        """Deterministic per-section id used for shard persistence keys.
+
+        Delegates to ``runtime.shard_persistence_section_id`` so this value and the
+        prefix ``_cleanup_shards`` / ``delete_shard_results`` list have exactly one
+        definition between them.
+        """
+        from idp_common.extraction.runtime import shard_persistence_section_id
+
+        return shard_persistence_section_id(
+            section_info.class_label, section_info.sorted_page_ids
         )
 
     def run_one_section_shard(
