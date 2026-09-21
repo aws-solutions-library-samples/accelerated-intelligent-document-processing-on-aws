@@ -146,10 +146,16 @@ re-record, replace the commit label too, and check every figure was actually tak
 the commit you name — a column that mixes states under one label is worthless, because
 a reader can no longer treat a difference as signal.
 
-⚠️ **Two of these are not properties of the commit at all**, so the label above does
-not bound them: G2 reads a live *repository setting* and I2 reads the live issue and
-pull-request lists. Both move without any commit, so record a timestamp with them and
-do not treat a difference from the last run as a change in the tree.
+⚠️ **Three of these are not properties of the commit at all**, so the label above does
+not bound them. G2 reads a live *repository setting* and I2 reads the live issue and
+pull-request lists — both move without any commit, so record a timestamp with them and
+do not treat a difference from the last run as a change in the tree. And
+**basedpyright's warning count is a property of the working tree**, not of the commit:
+in a clean worktree it analyses 1272 files and reports 91 warnings, and in a populated
+checkout — one carrying staged library copies, a `.aws-sam/` build tree or an editable
+install resolving elsewhere — the same commit reports 173. Say which kind of checkout
+you measured in. The **error** count is the number that must stay at zero and it is
+stable across both.
 
 The measurements assume an **existing** dev environment with `ruff` on `PATH`
 (measurement B is the only one that needs a binary the shell does not already have —
@@ -272,18 +278,29 @@ for k in ('include', 'exclude'):
 ```
 
 Last measured: **1272** tracked `.py` files, of which `ruff check` reads **1241**;
-`basedpyright` 1.32.1 analyses all **1272** and reports **0 errors, 91 warnings**. What each
+`basedpyright` 1.32.1 in a clean worktree analyses all **1272** and reports **0 errors,
+91 warnings**. What each
 gate skips is a named list of individual files, not a tree — 85 files carrying 196
 pre-existing lint findings, 184 files `ruff format` has never run over, plus two scope
 entries (the vendored `pii-anonymizer` tree and `**/*.ipynb`). `python3
 scripts/check_lint_debt.py --summary` prints the split, and `make check-lint-debt`
 fails if a listed file gains a finding or has become clean.
 
-The basedpyright warning count moves with the pinned version (`package.json`'s
-`basedpyright` range), so read it off the run rather than from here, and record the
-version beside it: `basedpyright --outputjson | python3 -c "import json,sys;
-print(json.load(sys.stdin)['summary'])"`. The **error** count is the one that must
-stay at zero.
+⚠️ **basedpyright is not pinned**, unlike `cfn-lint`. `package.json` declares
+`"basedpyright": "^1.32.1"`, which is a caret range and in any case is not what gets
+run: all three install sites — the `Makefile` hint, `.github/workflows/developer-tests.yml`
+and `.gitlab-ci.yml` — run a bare `npm install -g basedpyright`, so the version is
+whatever was current that day. Read the version off the run and record it beside the
+counts, and treat a warning-count change as possibly-a-release rather than
+possibly-a-regression:
+
+```bash
+basedpyright --version
+basedpyright --outputjson | python3 -c "import json,sys; print(json.load(sys.stdin)['summary'])"
+```
+
+The **error** count is the one that must stay at zero, and it is the count that is
+stable across versions and across checkout states.
 
 Two things to know before reporting a coverage gap here. The **formatting** debt is
 deliberately unpaid and is not a new finding: reformatting those 184 files is a
@@ -399,22 +416,42 @@ PY
 ### E. IAM wildcard census
 
 **Parse the templates; do not grep the lines.** A line grep for these is wrong in
-three independent ways, and two of them make it *under*-report, which is the direction
-that loses findings. The `Resource:[[:space:]]*("\*"|'\*'|\*)` pattern is
-quoting-fragile — the same command that returns 143 under one shell returns 101 under
-another, because the nested quotes are re-interpreted before `grep` ever sees them. It
-matches only the **scalar** spelling, so the list-item form
+four independent ways, and three of them make it *under*-report, which is the direction
+that loses findings.
 
-```yaml
-Resource:
-  - "*"
-```
+1. **It is quoting-fragile.** The `Resource:[[:space:]]*("\*"|'\*'|\*)` pattern returns
+   143 under one shell and 101 under another, because the nested quotes are
+   re-interpreted before `grep` ever sees them. A figure you cannot reproduce on
+   another machine is not a measurement.
+2. **It sees only the spelling it was written for.** `Resource: "*"` on one line
+   matches; a scalar with a **trailing comment** does not
+   (`nested/bedrockkb/template.yaml:635`, `Resource: '*'   # no resource
+   specification applicable`), and neither does the list-item form:
 
-is missed outright. And an action pattern anchored to the end of the line cannot see
-`Action: "sqs:*"`, which is how most of them are actually written here — that one alone
-hides 34 of 80. A grep also counts wildcards inside embedded Lambda source in a
-`ZipFile:` block, and misses statements wrapped in `!If`, where the statement is a
-branch of the condition rather than a member of the `Statement` list.
+   ```yaml
+   Resource:
+     - "*"
+   ```
+
+   For actions the same anchoring is worse: a pattern requiring the wildcard alone on
+   its line cannot see `Action: "sqs:*"`, which is how most of them are written here.
+   The action grep finds **41** of the **80** that exist, and the same-line spelling is
+   why it misses 39.
+3. **It cannot tell a statement from a sentence about one.** `template.yaml:14036` is a
+   *comment* — "CloudWatch Logs actions for Step Functions logging require
+   `Resource: "*"`" — and the grep counts it as a statement.
+4. **It cannot see `Effect`.** This is the one that changes the conclusion rather than
+   the count, and the walk below is what makes it visible: a wildcard in a `Deny`
+   broadens a denial, which is the safe direction, and **34 of the 80** action
+   wildcards are exactly that.
+
+Two things a line grep is *not* wrong about, so do not repeat them as criticisms: it
+matches `!If`-wrapped statements perfectly well, because it reads lines and does not
+care that the statement is a branch of a condition rather than a member of the
+`Statement` list — all six such statements here have plain scalar lines and all six
+match. And only one template in the tree contains a `ZipFile:` block at all, with no
+wildcard line inside it, so embedded Lambda source is a hazard in principle and not a
+present source of error.
 
 ```bash
 python3 - <<'PY'
@@ -443,47 +480,72 @@ def as_list(v):
     return [] if v is None else (v if isinstance(v, list) else [v])
 
 
+# Resource types whose policy scopes `Resource` to the resource ITSELF, so `*`
+# there means "this key/bucket/queue", not "everything in the account".
+SELF_SCOPED = {"AWS::KMS::Key", "AWS::S3::BucketPolicy", "AWS::SQS::QueuePolicy",
+               "AWS::SNS::TopicPolicy"}
+
 res, act = {}, {}
 for t in subprocess.run(["scripts/discover_templates.sh", "cfn"],
                         capture_output=True, text=True, check=True).stdout.split():
     loaded = cfn_yaml.load(t)
     tpl = loaded if isinstance(loaded, dict) else loaded[0]
-    for s in statements(tpl):
-        # A wildcard in a Deny BROADENS the deny. Counting it as a finding is the
-        # third way the grep misleads, and it is the direction that invents work.
-        effect = "Allow" if str(s.get("Effect")) == "Allow" else "Deny"
-        if any(r == "*" for r in as_list(s.get("Resource")) if isinstance(r, str)):
-            res.setdefault(effect, {}).update(
-                {t: res.get(effect, {}).get(t, 0) + 1})
-        for a in as_list(s.get("Action")):
-            if isinstance(a, str) and a.endswith(":*"):
-                act.setdefault(effect, {}).update(
-                    {t: act.get(effect, {}).get(t, 0) + 1})
+    # Iterate RESOURCES, not the whole template, so each statement keeps the type
+    # of the resource enclosing it — which is what the self-scoped split needs.
+    for body in (tpl.get("Resources") or {}).values():
+        rtype = body.get("Type")
+        for s in statements(body):
+            # A wildcard in a Deny BROADENS the deny. Counting it as a finding is
+            # the way the grep misleads that invents work rather than losing it.
+            effect = "Allow" if str(s.get("Effect")) == "Allow" else "Deny"
+            bucket = (effect, "self-scoped" if rtype in SELF_SCOPED else "account")
+            if any(r == "*" for r in as_list(s.get("Resource")) if isinstance(r, str)):
+                res.setdefault(bucket, {})
+                res[bucket][t] = res[bucket].get(t, 0) + 1
+            for a in as_list(s.get("Action")):
+                if isinstance(a, str) and a.endswith(":*"):
+                    act.setdefault(bucket, {})
+                    act[bucket][t] = act[bucket].get(t, 0) + 1
 
 for title, rows in (('Resource: "*"', res), ("action wildcards service:*", act)):
-    for effect in ("Allow", "Deny"):
-        by_t = rows.get(effect, {})
-        print(f'--- {title} [{effect}] : {sum(by_t.values())} '
+    for bucket in sorted(rows):
+        by_t = rows[bucket]
+        print(f'--- {title} {bucket} : {sum(by_t.values())} '
               f'across {len(by_t)} template(s) ---')
         for path, n in sorted(by_t.items(), key=lambda kv: -kv[1]):
             print(f"{n:5d}  {path}")
 PY
 ```
 
-Last measured: **147** statements with `Resource: "*"` — **144 under `Allow`** across 14
-templates (50 in `template.yaml`, 40 in `patterns/unified/template.yaml`, 18 in
-`scripts/sdlc/cfn/codepipeline-s3.yml`) and 3 under `Deny`. And **80** `service:*`
-action wildcards, of which only **46 are `Allow`** (26 in
-`iam-roles/cloudformation-management/`, where a deployment service role legitimately
-needs breadth) — the other **34 are `Deny`**, almost all the `EnforceSSLOnly` bucket
-and queue resource policies in `template.yaml`, where the wildcard makes the denial
-broader and is the safe direction.
+Last measured, exactly as the snippet prints it:
 
-Report the `Allow` figures and the *unjustified* subset of them — cross-check each
-against a cfn-nag/checkov suppression carrying a `reason:`; a wildcard with a written
-reason is a decision, one without is a finding. Quote the `Deny` split explicitly when
-you report a total, because a single combined number reads as 80 over-broad grants when
-34 of them are the opposite.
+| | `Allow`, account-wide | `Allow`, self-scoped | `Deny` | total |
+|---|---|---|---|---|
+| `Resource: "*"` | **128** across 13 templates | 16 across 4 | 3 across 2 | **147** |
+| `service:*` actions | **40** across 4 templates | 6 across 4 | 34 across 5 | **80** |
+
+The account-wide `Allow` column is the one to report. The other two are the reason a
+single total misleads, in two different ways:
+
+- **`Deny`.** A wildcard in a denial makes the denial *broader*, which is the safe
+  direction. All 34 `Deny` action wildcards are the `EnforceSSLOnly` bucket and queue
+  resource policies (`Principal: "*"`, `Condition: aws:SecureTransport: false`), so
+  quoting "80 over-broad action grants" describes 34 statements as the opposite of what
+  they are.
+- **Self-scoped.** In a resource policy, `Resource: "*"` means *this* resource, not
+  every resource in the account — that is the only thing it can mean there. All 16 of
+  these are `AWS::KMS::Key` key policies, and 6 of the `Allow` action wildcards are
+  `kms:*` in the same place. ⚠️ **This is the `Deny` argument one level down**, and it
+  is easy to make the `Deny` split and then quote 144 as though every one of them were
+  account-wide. The snippet's `SELF_SCOPED` set also covers bucket, queue and topic
+  policies so the question gets asked of a new resource policy automatically; only KMS
+  keys hit it today.
+
+Within the account-wide column, report the *unjustified* ones — cross-check each against
+a cfn-nag/checkov suppression carrying a `reason:`; a wildcard with a written reason is a
+decision, one without is a finding. 26 of the 40 account-wide action wildcards are in
+`iam-roles/cloudformation-management/`, where a deployment service role legitimately
+needs breadth, so that is a decision rather than a finding too.
 
 ### F. Documentation-to-template drift, both directions
 
@@ -666,10 +728,11 @@ decision record. The condition under which it stops being a residual is a reposi
 **setting** changing, by one of two routes that are not the same permission — somebody
 with repository admin enabling protection, or an organization or enterprise owner
 publishing a **branch ruleset** targeting these branches, which needs no repository
-admin at all and is demonstrably available here given the five inherited rulesets. What
-the tree carries instead is a **client-side** guard against a direct write to a shared
-branch; a client-side guard cannot make a red check block a merge taken through
-GitHub's own Merge button, and the residual should be reported with that limit stated.
+admin at all and is demonstrably available here given the five inherited rulesets.
+Report the residual with its **structural** limit stated: nothing in the repository can
+substitute, because enforcement is server-side and a merge taken through GitHub's own
+Merge button runs no code from the tree. That is why this is the one Class 1 instance
+whose decision point cannot be brought inside the repository.
 
 It is still the flagship Class 1 instance — a control that exists and is consulted by
 nothing — and still worth leading the report with, as a statement of exposure rather
@@ -794,8 +857,8 @@ searches below instead, which are what would have found them.
 
 | Control | Decision point that should have read it | What was there, and the fix |
 |---|---|---|
-| Pipeline hook `onError: fail` (#919) | the state machine's error routing | PR **#953**. `pipeline_hooks_function/index.py` raised when `onError == "fail"` — and the ASL `Catch` on `States.ALL` routed **forward** to the next step at five sites in `patterns/unified/statemachine/workflow.asl.json`, so `onError: fail` could not fail the workflow. The routing now aborts the document |
-| DynamoDB `SubIndex`, granted in IAM | the Chat-with-Document processor queried it to resolve the caller's config-version scope | #970, PR **#1020**. No template ever declared it, so every query raised `ValidationException` and the `except` logged and returned `None` — fail-**open**. Config-version scoping on the chat path had never restricted anything. Two things make this the archetype: the gap was *documented* in the function's own docstring, which is honest and was still a finding; and the unit suite stubbed `table.query` without validating `IndexName`, so it passed on a query the service would reject. The fix resolves through the immutable Cognito `sub` with an `EmailIndex` fallback, raises on any lookup failure, and ties the index the code names to the one `template.yaml` declares |
+| Pipeline hook `onError: fail` (#919) | the state machine's error routing | PR **#953**. `pipeline_hooks_function/index.py` raised when `onError == "fail"` — and the ASL `Catch` on `States.ALL` routed **forward** to the next step at **six** of the seven hook points in `patterns/unified/statemachine/workflow.asl.json` — only `PreprocessingHook` caught to a `Fail` state — so `onError: fail` could not fail the workflow. The routing now aborts the document |
+| DynamoDB `SubIndex`, granted in IAM | the Chat-with-Document processor queried it to resolve the caller's config-version scope | #970, PR **#1020**. No template ever declared it, so every query raised `ValidationException` and the `except` logged and returned `None` — fail-**open**. Config-version scoping on the chat path had never restricted anything. Two things make this the archetype: the gap was *documented* in the function's own docstring, which is honest and was still a finding; and the unit suite stubbed `table.query` without validating `IndexName`, so it passed on a query the service would reject. **PR #1020** repointed the lookup at the `EmailIndex` that `template.yaml` actually declares, made any lookup failure deny rather than allow, and added a unit check tying the index the code names to the declared one. A later change (PR **#1038**) keyed the lookup on the immutable Cognito `sub` through a pointer item, because an email address that stops matching its record silently lifts the restriction; the `sub` route and the email join are deliberately **not** a fallback chain — the implementation's own docstring says so — so do not describe them as one |
 | 12 CloudWatch alarms (#922) | an SNS subscriber | PR **#941**. 11 of 12 published to `AlertsTopic`, which had zero subscriptions. `AlertsTopic` now carries an email subscription to `AdminEmail`; measurement D reads 15 alarms all reaching a subscribed topic |
 | `pyrightconfig.json` `include: idp_cli/idp_cli` (#923) | basedpyright's file walk | PR **#943**. The path did not exist, so a 6,800-line module was type-checked by nothing. `include` now covers every tree holding tracked Python and `test_pyright_config.py` derives that closure from `git ls-files` |
 | X-Ray `put_annotation` document id (#925) | the annotation value X-Ray records | PR **#943**. Written as a set literal `{document.id}` in four pipeline Lambdas, so the value was unusable in exactly the four places it mattered most |
@@ -832,11 +895,14 @@ of the bug across the whole tree and count how many places have it. Then check w
 prevents the next one: is the guard a **test that enumerates from the source**, or a
 **list someone has to remember to update**?
 
-A hand-maintained inventory in a repo that has already built content-discovery three
+A hand-maintained inventory in a repo that has already built content-discovery **four**
 times (`scripts/discover_templates.sh` for templates and state machines,
-`scripts/run_all_tests.py` for test roots, and `scripts/tests/repo_files.py`'s
-`tracked_paths` for tracked files of a given glob) is itself a Class 2 finding — the
-pattern for closing the class exists and was not reused.
+`scripts/run_all_tests.py` for test roots, `scripts/tests/repo_files.py`'s
+`tracked_paths` for tracked files of a given glob, and
+`scripts/tests/gate_premises.py`'s `tracked_files` for git pathspecs) is itself a
+Class 2 finding — the pattern for closing the class exists and was not reused. Four
+helpers with overlapping jobs may be worth a finding of its own, but that is a
+different one from a gate that reuses none of them.
 
 Be fair about the trade-off, though: `scripts/tests/test_state_machine_provisioning_retry.py`
 hardcodes its path list **on purpose**, and its header argues that "a discovery engine
@@ -889,12 +955,15 @@ python3 - <<'PY'
 import ast, pathlib, re
 ITEM = re.compile(r"^(?:[\w.*/-]+\.(?:py|ya?ml|json|ts|tsx|txt|sh|ipynb)"
                   r"|[\w.*/-]*/[\w.*/-]*|make [\w-]+)$")
-# Every content-discovery helper this repo has, plus the raw walk primitives. A
-# helper missing from here mislabels its callers `ONLY RECORD`, which is a false
-# positive in the expensive direction: it sends a reviewer to audit a list that a
-# universe-closure test already covers. `tracked_paths`/`repo_files` is the third
-# helper and was the one this pattern did not know about.
-WALKS = re.compile(r"discover_templates|run_all_tests|tracked_paths|repo_files"
+# The content-discovery helpers this repo has TODAY, plus the raw walk primitives
+# and `ls-files` for a gate that shells out to git itself. Keep this current: a
+# helper missing from here mislabels its callers `ONLY RECORD`, a false positive in
+# the expensive direction, since it sends a reviewer to audit a list that a
+# universe-closure test already covers. Re-derive the list each run rather than
+# trusting it — `grep -rln "def .*tracked\|discover" scripts/tests scripts/sdlc`
+# is a reasonable start.
+WALKS = re.compile(r"discover_templates|run_all_tests|tracked_paths|tracked_files"
+                   r"|repo_files|gate_premises|ls-files|ls_files"
                    r"|rglob|\.glob\(|iterdir|os\.walk")
 for f in sorted(p for r in ("scripts/tests", "scripts/sdlc")
                 for p in pathlib.Path(r).rglob("*.py")):
@@ -943,7 +1012,11 @@ also walks the tree somewhere, so a stale entry has a decent chance of being cau
 Read the `ONLY RECORD` rows; skim the rest. This is a heuristic on the file, not the
 assignment, so confirm by reading before you report.
 
-**Last measured: 30 inventories, 6 of them `ONLY RECORD`.** The one
+**Last measured at `bbf0dc9c9`: 30 inventories, 6 of them `ONLY RECORD`.** The
+previous run recorded 15 at `fac1c120b`; the doubling is tree drift over three days of
+heavy gate work rather than a change in the search, and it is not reconstructable from
+here — if a jump like that matters to you, check out the older commit and re-run. The
+one
 to lead with is `scripts/tests/test_ci_gate_parity.py:39` `SHARED_GATES`, an eight-entry
 list of the gates that must run in both CIs — and the file contains no walk, so the
 list is the only record. Its blind spot is live and specific: the test asserts each
@@ -968,9 +1041,12 @@ like sentences. And the second column is a **heuristic on the file**, so keep `W
 current: with `tracked_paths`/`repo_files` missing from it the search reported 8
 `ONLY RECORD` rather than 6, the two false positives being
 `scripts/tests/test_lambda_log_groups.py` and
-`scripts/tests/test_log_group_encryption.py`. Both discover templates through
-`tracked_paths` (3 and 4 call sites respectively) and both carry real universe-closure
-tests, so both were the opposite of an unchecked record.
+`scripts/tests/test_log_group_encryption.py`. Each discovers its templates through a
+**single** `tracked_paths` call (`:792` and `:514`) and each carries a real
+universe-closure test, so both were the opposite of an unchecked record. One call is all
+it takes, which is the trap: `grep -c tracked_paths` returns 3 and 4 for those files
+because it also counts the import and the comments, so do not read a grep count as a
+number of discovery sites.
 
 Then, for each fix landed since the last review (read `CHANGELOG.md`'s `### Fixed`
 entries and the PR numbers in them), do the same by hand: take the shape of that bug
@@ -990,7 +1066,7 @@ the pass in the date column and then withdrawn after investigation.
 | 2026-09 | `nested/bedrockkb/` declaring 5 Lambda functions and 0 `AWS::Logs::LogGroup` resources | Deliberate: those are custom-resource-only Lambdas that run during a stack operation and keep Lambda's auto-created log group, an accepted retention cost. `scripts/tests/test_lambda_log_groups.py` asserts exactly this shape |
 | 2026-09 | `last_exception` in `lib/idp_common_pkg/idp_common/bedrock/client.py` looks like a swallowed error | It is dead but harmless, and it is a **Python semantics trap a fresh reviewer will re-derive from scratch** — which is why it is here rather than left to be rediscovered. The three sites (`:1554`, `:2058`, `:2603`) are *function parameters*, not local variables, on the recursive retry helpers `_invoke_with_retry`, `_generate_embedding_with_retry` and `_invoke_lambda_hook_with_retry`; each is threaded down the recursion at the `last_exception=e` call sites and **never loaded** (verified by AST: zero `Name`-in-`Load` occurrences). Nothing is swallowed because every exhaustion path ends in a **bare `raise`** (`:1706` and `:1792` in the first helper, `:2165`, `:2746` and `:2768`), which re-raises the exception currently being handled in that frame — i.e. the most recent attempt's — which is what the parameter was presumably meant to supply. Dead code worth deleting; not an error-handling defect |
 | 2026-09 | "108 of 109 log groups are encrypted", i.e. one unencrypted log group | The **figure** is withdrawn as a conflation of two different statistics over the same population, and it carries a **scope trap** worth recording: 106 of 109 declare `KmsKeyId` and 108 of 109 take `RetentionInDays` from a parameter, and the denominator 109 only reproduces if you restrict to `template.yaml` (56), `patterns/unified/template.yaml` (20) and `nested/api-resolvers/template.yaml` (33). Against `scripts/discover_templates.sh cfn`'s **30** templates it is **158** log groups, 131 with `KmsKeyId` and 145 parameterised — so quoting "109" without naming the three-template scope is not reproducible. ⚠️ **Only the statistic is withdrawn, not the gap.** `HttpApiDispatcherLogGroup` (`nested/api-resolvers/template.yaml:2876`) is the sole exception on retention (hardcoded `30`) and one of *three* on encryption, and unlike the other two (`StacknameCheckFunctionLogGroup`, `ReadPreviousIDPPatternFunctionLogGroup`, which each carry a `cfn_nag` W84 suppression and a `checkov:skip` with a reason) it carries no suppression, comment or test saying the deviation is deliberate. That is a live finding, addressed by PR **#973** |
-| 2026-09 | `TEMPLATES` in `scripts/tests/test_lambda_log_groups.py:113` and `CMK_TEMPLATES` in `scripts/tests/test_log_group_encryption.py:143` are hardcoded template inventories with no cross-check | Both files **do** enumerate from the tree — through `scripts/tests/repo_files.py`'s `tracked_paths`, at 3 and 4 call sites respectively — and both carry universe-closure tests, so a template added to the repo and not to the list fails rather than being silently uncovered. The lists are a second filter on an already-derived set, not the record of what should be there. They were reported because the Class 2 inventory search's `WALKS` pattern did not know about `tracked_paths`, which is the repo's third content-discovery helper after `discover_templates.sh` and `run_all_tests.py`; the pattern now names it. If you see either of these come back `ONLY RECORD` again, the regex has gone stale, not the tests |
+| 2026-09 | `TEMPLATES` in `scripts/tests/test_lambda_log_groups.py:113` and `CMK_TEMPLATES` in `scripts/tests/test_log_group_encryption.py:143` are hardcoded template inventories with no cross-check | Both files **do** enumerate from the tree — each through one `scripts/tests/repo_files.py` `tracked_paths` call, at `:792` and `:514` — and both carry universe-closure tests, so a template added to the repo and not to the list fails rather than being silently uncovered. The lists are a second filter on an already-derived set, not the record of what should be there. They were reported because the Class 2 inventory search's `WALKS` pattern did not know about `tracked_paths`, which is the repo's third content-discovery helper after `discover_templates.sh` and `run_all_tests.py`; the pattern now names it. If you see either of these come back `ONLY RECORD` again, the regex has gone stale, not the tests |
 | 2026-09 | `scripts/tests/test_cfn_export_ownership.py` needs an append-only snapshot of host export names, so that withdrawing or moving one forces a deliberate acknowledgement | The property is already enforced, twice, and `PINNED_PRODUCERS` *is* that snapshot: `test_every_host_export_is_pinned` compares the produced suffixes against it **in both directions**, so a withdrawn name fails, and `test_host_exports_keep_their_pinned_producer` compares each name's producing template against the pin, so a move fails. Verified by probe — renaming one `Export.Name` in `feature-platform/main-stack-extensions/template.yaml` fails **three** tests. A second artifact would duplicate a passing check and add a third place to keep in step. ⚠️ **The gap the review actually found is a different one, and a snapshot does not close it:** `MARKETPLACE_EXTENSION_HOST_IMPORTS` records which *closed-source* extension imports which name, is a documented **lower bound** rather than a census, and is used only to cross-check manifest `featureId`s and to enrich a failure message — never to assert a template property. Those templates live in another repository, so nothing readable from here can enumerate them; an artifact that looked authoritative about consumers would be trusted more than it deserves. Leave the lower bound, labelled as one |
 
 When you withdraw a finding, **add a row here in the same PR as the report**, dated,

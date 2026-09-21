@@ -494,9 +494,9 @@ cfn-lint-warnings: ## Same as cfn-lint but lists every advisory warning (W*/I*) 
 #
 # That is an accepted residual, not pending work: enabling classic protection
 # needs repository ADMIN, which no contributor and no CI token here has, and the
-# decision to stop pursuing it from the tree is recorded in closed issue #933. The
-# tree's own mitigation is client-side, and a client-side guard cannot make a red
-# check block a merge taken through GitHub's Merge button.
+# decision to stop pursuing it from the tree is recorded in closed issue #933.
+# Nothing here can substitute -- enforcement is server-side, so a merge taken
+# through GitHub's Merge button runs no code from this tree.
 #
 # It becomes a required, blocking check when a repository SETTING changes — either
 # somebody with repository admin enables protection, or an organization/enterprise

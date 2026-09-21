@@ -146,10 +146,11 @@ contributor and no CI token here has, so it cannot be done from the tree or from
 tooling; the decision to stop pursuing it from inside the repository is recorded
 in closed issue #933:
 https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/933
-What the tree carries instead is a **client-side** guard against a direct write to
-a shared branch. That guard cannot make a red check block a merge, because a merge
-performed through GitHub's own Merge button runs no code on a contributor's
-machine.
+
+**Nothing in this repository can substitute.** Enforcement is server-side by
+construction: a merge taken through GitHub's own Merge button runs no code from
+this tree, so no hook, script or gate here can turn a red check into a refused
+merge. That is why the residual is reported rather than worked around.
 
 So the condition for making this a required, blocking check is a **repository
 setting changing**, by one of two routes — and it is worth separating them,
@@ -1302,7 +1303,10 @@ def evaluate(
                     f"GET .../branches/{branch}/protection returned "
                     f"{state.classic_status}. Every CI gate is therefore advisory: "
                     f"a pull request can be merged with all checks red, and a "
-                    f"direct push to {branch} runs no GitHub workflow at all. "
+                    f"direct push to {branch} runs no GATE workflow — the lint, "
+                    f"test and security workflows are pull_request-only. (The two "
+                    f"that do trigger on push are the path-filtered docs and "
+                    f"dependency-manifest publishers, which are not gates.) "
                     f"Expected required checks, derived from .github/workflows/: "
                     + _expected_list(expected)
                 ),
@@ -1591,6 +1595,8 @@ def print_report(
         "A branch ruleset published by an organization or enterprise owner reaches\n"
         "the same outcome and needs no repository admin — this check reads both\n"
         "mechanisms, so either would show up here.\n"
+        "Nothing in this repository can substitute: enforcement is server-side, so\n"
+        "a merge taken through GitHub's Merge button runs no code from this tree.\n"
         "This check is opt-in and gates nothing. The condition for making it a\n"
         "required, blocking check is one of those two settings actually changing."
     )
@@ -1742,10 +1748,15 @@ def main(argv: Optional[List[str]] = None) -> int:
                             "protection, or an organization or enterprise owner "
                             "publishes a branch ruleset targeting this branch"
                         ),
-                        "in_tree_mitigation": (
-                            "client-side only: a guard against a direct write to "
-                            "a shared branch, which cannot make a red check block "
-                            "a merge performed through GitHub's Merge button"
+                        # Deliberately a structural statement rather than an
+                        # inventory of guards. A consumer reads these values as
+                        # fact, so naming an artifact here would assert that it
+                        # exists; this says why no artifact in the tree could
+                        # close the gap whatever is added.
+                        "enforcement_is_server_side_only": (
+                            "a merge taken through GitHub's Merge button runs no "
+                            "code from this repository, so nothing in the tree can "
+                            "make a red check block one"
                         ),
                     },
                     "shared_branches": list(SHARED_BRANCHES),

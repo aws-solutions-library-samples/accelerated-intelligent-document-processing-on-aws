@@ -308,11 +308,11 @@ Enabling classic protection needs repository **admin**, which no contributor and
 CI token here has, so it cannot be done from the tree or from tooling; the decision
 to stop pursuing it from inside the repository is recorded in closed
 [issue #933](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/933).
-Cite that issue as the decision record; do not treat it as pending. What the tree
-carries instead is a **client-side** guard against a direct write to a shared
-branch, and a client-side guard cannot make a red check block a merge, because a
-merge taken through GitHub's own Merge button runs no code on a contributor's
-machine.
+Cite that issue as the decision record; do not treat it as pending. **Nothing in
+this repository can substitute**, and that is structural rather than a matter of
+effort: enforcement is server-side, so a merge taken through GitHub's own Merge
+button runs no code from this tree and no hook, script or gate here can turn a red
+check into a refused merge.
 
 The trigger for making this a required, blocking gate is therefore a repository
 setting changing, by one of two routes that are **not the same permission**: either
