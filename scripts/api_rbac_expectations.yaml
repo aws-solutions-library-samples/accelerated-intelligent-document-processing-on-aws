@@ -193,6 +193,20 @@ operations:
       offline, where the buckets and keys are knowable:
       get_file_contents_resolver/test_index.py and
       get_file_contents_resolver/test_key_scope.py.
+      ⚠️ `groups: ANY_GROUP` UNDERSTATES what this operation refuses for
+      Test-Set-bucket keys. The test-set axis is enforced with the canonical
+      `assert_can_access_test_set`, whose rule is Admin/Author unscoped, an
+      Annotator restricted to their `allowedTestSets`, and **every other role
+      refused outright** — so a Viewer or Reviewer is denied any
+      `<test_set_id>/…` key even though they hold a group. That is deliberate and
+      consistent rather than stricter than the rest: `getTestSetDocuments` is
+      `[Admin, Author, Annotator]`, so no other role has a route to discover such
+      a key, and serving the bytes to them would be the only one they had. It is
+      recorded here because the declared policy is a per-FIELD group floor and
+      cannot express a per-key role rule, so the manifest is not the place a
+      reader would learn it. The live matrix does not exercise it either: its
+      `args` bucket is substituted with the input bucket, which no axis
+      partitions.
   getFilePresignedUrl:
     groups: ANY_GROUP
     kind: read

@@ -37,23 +37,33 @@ choosing to widen it.
 
 from __future__ import annotations
 
-import re
-from pathlib import Path
-
 import pytest
-import yaml
+
+# The policy parser is shared with `test_iam_prose_consistency.py`, which cross-checks
+# the documents against the same derived set. Two copies of a policy reader diverge,
+# and the copy that diverges is the one nobody re-reads.
+from browser_s3_policy import ROLE, role_s3_statements
+from browser_s3_policy import buckets_named as _buckets_named
+from browser_s3_policy import is_wildcard_resource as _is_wildcard_resource
+from browser_s3_policy import resource_strings as _resource_strings
 
 pytestmark = pytest.mark.unit
 
-REPO_ROOT = Path(__file__).resolve().parents[2]
-TEMPLATE = REPO_ROOT / "template.yaml"
 
-ROLE = "CognitoAuthorizedRole"
+def _as_list(value):
+    if value is None:
+        return []
+    return value if isinstance(value, list) else [value]
+
 
 # Buckets the browser's own credentials may read, as CloudFormation logical ids. The
-# residual, named. Adding to this set is a decision about the security boundary above,
-# not a detail — see #1033 before you do.
-BROWSER_READABLE_BUCKETS = {"InputBucket", "OutputBucket"}
+# residual, named -- these two are exempt from the rule the rest of this file enforces,
+# which is why the constant is named to be found: `PINNED_` is in
+# `exemption_discovery.NAME_VOCABULARY`, so it is discovered and carries a registry
+# entry in `gate_exemptions.json` rather than sitting here as an unregistered
+# exclusion. Adding to this set is a decision about the security boundary above, not a
+# detail -- see #1033 before you do.
+PINNED_BROWSER_READABLE_BUCKETS = {"InputBucket", "OutputBucket"}
 
 # Buckets that must never be reachable with the browser's own credentials, and why.
 # One entry per bucket, each carrying the per-user axis that an IAM grant on a single
@@ -73,44 +83,6 @@ BROWSER_FORBIDDEN_BUCKETS = {
 }
 
 
-class _CfnLoader(yaml.SafeLoader):
-    """SafeLoader that tolerates CloudFormation short-form tags."""
-
-
-def _tag_to_python(loader, tag_suffix, node):
-    if isinstance(node, yaml.ScalarNode):
-        return {f"Fn::{tag_suffix}": loader.construct_scalar(node)}
-    if isinstance(node, yaml.SequenceNode):
-        return {f"Fn::{tag_suffix}": loader.construct_sequence(node, deep=True)}
-    return {f"Fn::{tag_suffix}": loader.construct_mapping(node, deep=True)}
-
-
-_CfnLoader.add_multi_constructor("!", _tag_to_python)
-
-
-def _as_list(value):
-    if value is None:
-        return []
-    return value if isinstance(value, list) else [value]
-
-
-def _resource_strings(statement: dict):
-    """Every ``Resource`` entry of a statement, as template text.
-
-    ``!Sub``, ``!GetAtt`` and plain strings all reduce to something a logical id can be
-    matched in, because the point is which bucket is named, not how.
-    """
-    for resource in _as_list(statement.get("Resource")):
-        if isinstance(resource, str):
-            yield resource
-        elif isinstance(resource, dict):
-            for value in resource.values():
-                if isinstance(value, str):
-                    yield value
-                elif isinstance(value, list):
-                    yield " ".join(str(v) for v in value)
-
-
 @pytest.fixture(scope="module")
 def s3_statements():
     """Every S3 statement in the authenticated role's inline policies.
@@ -119,19 +91,7 @@ def s3_statements():
     added under another policy name would be just as effective, and pinning only the
     policy that happens to hold them today is how a gate stops seeing its subject.
     """
-    doc = yaml.load(TEMPLATE.read_text(), Loader=_CfnLoader)
-    role = doc["Resources"][ROLE]
-    statements = []
-    for policy in _as_list(role["Properties"].get("Policies")):
-        for statement in _as_list(
-            (policy.get("PolicyDocument") or {}).get("Statement")
-        ):
-            if not isinstance(statement, dict):
-                continue
-            actions = [str(a) for a in _as_list(statement.get("Action"))]
-            if any(a.startswith("s3:") or a == "*" for a in actions):
-                statements.append((policy.get("PolicyName"), statement))
-    return statements
+    return role_s3_statements()
 
 
 def test_the_gate_sees_its_subject(s3_statements):
@@ -141,19 +101,6 @@ def test_the_gate_sees_its_subject(s3_statements):
         "S3 directly — in which case delete this gate and #1033 with it — or this "
         "test has stopped finding the policy it is meant to read."
     )
-
-
-def _buckets_named(s3_statements) -> set:
-    """Bucket logical ids appearing in any S3 resource of the role."""
-    named = set()
-    pattern = re.compile(r"\$\{([A-Za-z0-9]+)\}|^([A-Za-z0-9]+)\.Arn$")
-    for _policy, statement in s3_statements:
-        for text in _resource_strings(statement):
-            for match in pattern.finditer(text):
-                candidate = match.group(1) or match.group(2)
-                if candidate and candidate.endswith("Bucket"):
-                    named.add(candidate)
-    return named
 
 
 @pytest.mark.parametrize(
@@ -181,11 +128,73 @@ def test_the_set_of_browser_readable_buckets_has_not_grown(s3_statements):
     in BROWSER_FORBIDDEN_BUCKETS and the read belongs behind a resolver), then update
     this set and the note in `docs/rbac.md` together.
     """
-    assert _buckets_named(s3_statements) == BROWSER_READABLE_BUCKETS, (
+    assert _buckets_named(s3_statements) == PINNED_BROWSER_READABLE_BUCKETS, (
         "the buckets the browser can read directly have changed. See #1033: this set "
         "is the unclosed half of UI.T06 and every entry in it is outside every API "
         "authorization control this deployment has."
     )
+
+
+def test_no_s3_grant_on_this_role_uses_a_wildcard_resource(s3_statements):
+    """A wildcard names no bucket, so it evades every assertion above.
+
+    `Resource: "*"` (or `arn:*:s3:::*`) contributes no logical id, so the derived set
+    still compares equal to the pinned one, no forbidden bucket appears, and the
+    `ListBucket` check finds no `${Bucket}` to object to — while the grant reaches every
+    bucket in the account. It is the one shape that turns all three green assertions
+    into a false negative, so it gets its own.
+    """
+    for policy, statement in s3_statements:
+        for text in _resource_strings(statement):
+            assert not _is_wildcard_resource(text), (
+                f"{ROLE}.{policy} grants S3 on {text!r}, a wildcard. Every "
+                "authenticated user assumes this role with no resolver in the path, so "
+                "this reaches every bucket in the account — including the two whose "
+                "contents are partitioned per user. Name the buckets explicitly; the "
+                "other assertions in this file cannot see a wildcard."
+            )
+
+
+def test_the_resource_matcher_reads_every_cloudformation_idiom():
+    """The matcher's own coverage, asserted rather than assumed.
+
+    Each idiom below is a way `template.yaml` could name a bucket tomorrow. An idiom
+    the flattener drops reads as "no bucket named", which is the direction that fails
+    open — and two of these (the `Fn::GetAtt` list form and `Ref`) were dropped by the
+    first version of this gate, so this is not a hypothetical class.
+    """
+    cases = {
+        "sub-scalar": {
+            "Fn::Sub": "arn:${AWS::Partition}:s3:::${ConfigurationBucket}/*"
+        },
+        "sub-list": {"Fn::Sub": ["arn:aws:s3:::${ConfigurationBucket}/*", {"X": "y"}]},
+        "getatt-scalar": {"Fn::GetAtt": "ConfigurationBucket.Arn"},
+        "getatt-list": {"Fn::GetAtt": ["ConfigurationBucket", "Arn"]},
+        "ref": {"Ref": "ConfigurationBucket"},
+        "fn-ref": {"Fn::Ref": "ConfigurationBucket"},
+        "join-over-ref": {
+            "Fn::Join": ["", ["arn:aws:s3:::", {"Ref": "ConfigurationBucket"}, "/*"]]
+        },
+        "join-over-getatt-list": {
+            "Fn::Join": ["", [{"Fn::GetAtt": ["ConfigurationBucket", "Arn"]}, "/*"]]
+        },
+    }
+    for name, resource in cases.items():
+        found = _buckets_named([("Probe", {"Resource": resource})])
+        assert found == {"ConfigurationBucket"}, (
+            f"the {name} idiom is not read by browser_s3_policy.flatten_resource / "
+            f"buckets_named "
+            f"(got {found or 'nothing'}), so a bucket named that way would be "
+            "invisible to every assertion in this file"
+        )
+
+    for wildcard in ("*", "arn:aws:s3:::*", "arn:${AWS::Partition}:s3:::*/*"):
+        assert _is_wildcard_resource(wildcard), wildcard
+    for specific in (
+        "arn:${AWS::Partition}:s3:::${InputBucket}/*",
+        "arn:aws:s3:::my-bucket/*",
+    ):
+        assert not _is_wildcard_resource(specific), specific
 
 
 def test_list_bucket_is_confined_to_the_browser_readable_buckets(s3_statements):
@@ -199,9 +208,12 @@ def test_list_bucket_is_confined_to_the_browser_readable_buckets(s3_statements):
         actions = {str(a) for a in _as_list(statement.get("Action"))}
         if not ({"s3:ListBucket", "s3:*", "*"} & actions):
             continue
-        for text in _resource_strings(statement):
-            for bucket in BROWSER_FORBIDDEN_BUCKETS:
-                assert f"${{{bucket}}}" not in text, (
-                    f"{ROLE}.{policy} lets the browser enumerate {bucket}: "
-                    f"{BROWSER_FORBIDDEN_BUCKETS[bucket]}"
-                )
+        # Compared on the DERIVED reference set, not on a `${Bucket}` substring: the
+        # substring test saw only the `!Sub` spelling, so a `Ref` or a `Fn::GetAtt`
+        # list form granting ListBucket on a partitioned bucket read as clean.
+        enumerable = _buckets_named([(policy, statement)])
+        for bucket in sorted(BROWSER_FORBIDDEN_BUCKETS):
+            assert bucket not in enumerable, (
+                f"{ROLE}.{policy} lets the browser enumerate {bucket}: "
+                f"{BROWSER_FORBIDDEN_BUCKETS[bucket]}"
+            )

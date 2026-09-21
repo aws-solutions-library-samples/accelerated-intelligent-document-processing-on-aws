@@ -79,14 +79,35 @@ TEST_SET = "test-set"
 
 # `config_revisions/<profile>/…` — the profile is the second path segment. Anchored,
 # and the profile segment excludes `/`, so the captured name is exactly the one
-# `ConfigRevisionStore.body_key` writes. `_SAFE_PROFILE_RE` in that module restricts
-# a profile name to `[a-zA-Z0-9._-]`, which is why no traversal form can reach this.
+# `ConfigRevisionStore.body_key` writes.
 _REVISION_KEY_RE = re.compile(r"^config_revisions/([^/]+)/")
+
+# The S3 prefix the revision store writes under, on its own, for the near-miss check
+# in `_assert_canonical_key`.
+_REVISION_PREFIX = "config_revisions"
+
+# The character class `ConfigRevisionStore._safe_profile` enforces on every profile
+# name it writes into a key (`_SAFE_PROFILE_RE` in `idp_common/config/revisions.py`).
+# Duplicated as a literal rather than imported because this module ships in a bundle
+# with no `idp_common` layer — and deliberately re-stated rather than widened: a
+# captured profile segment outside this class is not a name that store ever wrote, so
+# it is not a revision body and must not be treated as one.
+_SAFE_PROFILE_RE = re.compile(r"^[a-zA-Z0-9._-]+$")
 
 # Every Test Set bucket key is `<test_set_id>/…`; the id is the first path segment
 # and the bucket holds nothing at its root. A key with no `/` names no test set, and
 # is refused rather than read as unscoped — see `scope_subject`.
+#
+# No character class is asserted on the id, unlike the profile above: a test set id is
+# derived from a user-supplied name (spaces to hyphens, lowercased) and is not
+# restricted to a safe set, so a class would refuse legitimate sets. The canonical-form
+# check below is what bounds this axis instead, and it is enough, because the id is
+# only ever *matched* against `allowedTestSets` — never used to build a path.
 _TEST_SET_KEY_RE = re.compile(r"^([^/]+)/")
+
+# Segments that make a key non-canonical: an empty one (from a leading `/` or an
+# internal `//`), or a relative-path segment.
+_NON_CANONICAL_SEGMENTS = frozenset({"", ".", ".."})
 
 # The one refusal message, for every denial on either axis. Deliberately says nothing
 # about which bucket, key, profile or test set was asked for, and nothing about
@@ -122,6 +143,41 @@ def _dynamodb_resource():
     return _dynamodb
 
 
+def _assert_canonical_key(key: str) -> None:
+    """Refuse a key in a partitioned bucket that is not in canonical form.
+
+    Raises ``ValueError`` — a 400 — for a leading ``/``, an internal ``//``, or a ``.``
+    or ``..`` segment.
+
+    **Why this is not merely tidiness.** Those spellings all *fail to match* the
+    prefixes below, so without this they would return "not scope-bearing" and the read
+    would proceed unchecked: ``//config_revisions/claims/000001.json.gz`` and
+    ``/config_revisions/claims/…`` and ``./config_revisions/claims/…`` all name the
+    same profile to a human and none of them matches ``^config_revisions/``. Today each
+    ends in a 400 anyway, because S3 keys are opaque byte strings and no such object
+    exists — but that makes the soundness of the whole check rest on nothing in the
+    path ever collapsing those forms. ``getFilePresignedUrl`` hands the signed key to a
+    client this deployment does not control, and any normalising intermediary — an HTTP
+    library collapsing ``//``, a proxy placed in front of the URL later — would turn
+    one of them into a real bypass, silently, because the resolver's own log line said
+    400. Refusing the non-canonical form keeps the check's correctness a property of
+    this function rather than of everything downstream of it.
+
+    Percent sequences are deliberately **not** rejected: S3 does not decode them, a
+    document name may legitimately contain ``%``, and a blanket refusal would break
+    real keys. The narrower guarantee that matters for the profile axis is made where
+    it can be made precisely — see ``_SAFE_PROFILE_RE`` in ``scope_subject`` — since a
+    profile name can never contain ``%`` in the first place.
+    """
+    for segment in key.split("/"):
+        if segment in _NON_CANONICAL_SEGMENTS:
+            logger.warning(
+                "Refusing a read in a per-user-partitioned bucket for a key that is "
+                "not in canonical form (empty, '.' or '..' path segment)."
+            )
+            raise ValueError("Invalid S3 URI: key is not in canonical form")
+
+
 def scope_subject(
     bucket: str,
     key: str,
@@ -141,21 +197,50 @@ def scope_subject(
     would do for a request naming a bucket the allow-list somehow admitted with no
     name configured.
 
-    ``ValueError`` — a 400, not a refusal — for a Test-Set-bucket key with no path
-    segment at all. Such a key names no test set and no object (the bucket stores
-    nothing at its root), so there is no scope question to answer and nothing to
-    disclose by saying the argument is malformed.
+    ``ValueError`` — a 400, not a refusal — for a key in a partitioned bucket that is
+    not in canonical form, for a Test-Set-bucket key with no path segment at all, and
+    for a near-miss of the revision prefix. None of those names an object this
+    deployment ever wrote, so there is no scope question to answer and saying the
+    argument is malformed discloses nothing about what exists.
     """
     if configuration_bucket and bucket == configuration_bucket:
+        _assert_canonical_key(key)
         match = _REVISION_KEY_RE.match(key)
         if match:
-            return CONFIG_PROFILE, match.group(1)
+            profile = match.group(1)
+            if not _SAFE_PROFILE_RE.match(profile):
+                # Inside the revision prefix but carrying a profile segment the store
+                # cannot have written. Refused rather than passed to the matcher: a
+                # scope entry is matched with `fnmatchcase`, so handing it a segment
+                # containing glob metacharacters or a percent sequence would be
+                # matching something other than a profile name.
+                logger.warning(
+                    "Refusing a configuration-revision read: the key's profile "
+                    "segment is outside the character class the revision store "
+                    "writes."
+                )
+                raise ValueError("Invalid S3 URI: key is not in canonical form")
+            return CONFIG_PROFILE, profile
+        first = key.split("/", 1)[0]
+        if first.lower() == _REVISION_PREFIX and not key.startswith(
+            _REVISION_PREFIX + "/"
+        ):
+            # A case variant of the prefix, or the prefix with nothing after it.
+            # S3 keys are case-sensitive, so this names no revision body — but it is
+            # also not a key any writer here produces, and reading it as merely
+            # "unpartitioned" is the shape this whole function exists to avoid.
+            logger.warning(
+                "Refusing a Configuration-bucket read for a near-miss of the "
+                "revision prefix that names no revision body."
+            )
+            raise ValueError("Invalid S3 URI: key is not in canonical form")
         # `config_library/`, `samples/` and anything else in this bucket is not
         # partitioned by profile. The bucket allow-list remains the control there,
         # exactly as before.
         return None
 
     if test_set_bucket and bucket == test_set_bucket:
+        _assert_canonical_key(key)
         match = _TEST_SET_KEY_RE.match(key)
         if match:
             return TEST_SET, match.group(1)

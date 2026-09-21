@@ -678,15 +678,15 @@ class TestScopeSubjectDerivation:
     @pytest.mark.parametrize(
         "key",
         [
-            # Anchored: the prefix must start the key, not appear in it.
+            # Anchored: the prefix must start the key, not appear in it. This is a
+            # genuinely different, canonical prefix in the same bucket.
             "backup/config_revisions/claims/000001.json.gz",
-            # A near-miss prefix is a different prefix.
+            # A near-miss prefix is a different prefix — and a real one, since
+            # `config_library/` and `samples/` live here too.
             "config_revisions_backup/claims/000001.json.gz",
-            # The prefix alone names no profile.
-            "config_revisions/",
         ],
     )
-    def test_a_key_that_is_not_a_revision_body_names_no_profile(self, key):
+    def test_a_canonical_key_outside_the_revision_prefix_names_no_profile(self, key):
         import key_scope
 
         assert (
@@ -714,3 +714,160 @@ class TestScopeSubjectDerivation:
                 configuration_bucket=CONFIG_BUCKET,
                 test_set_bucket=TEST_SET_BUCKET,
             )
+
+
+# Keys that name the same profile or test set as a canonical key would, while failing
+# to match the anchored prefixes — so "no subject, therefore unpartitioned" would let
+# them through unchecked.
+_NON_CANONICAL_CONFIG_KEYS = [
+    # The empty segment `[^/]+` cannot match.
+    "config_revisions//claims/000001.json.gz",
+    # A leading slash defeats the `^` anchor.
+    "/config_revisions/claims/000001.json.gz",
+    "//config_revisions/claims/000001.json.gz",
+    # Relative-path segments.
+    "./config_revisions/claims/000001.json.gz",
+    "config_revisions/./claims/000001.json.gz",
+    "config_revisions/../config_revisions/claims/000001.json.gz",
+    # The prefix with nothing after it — an empty trailing segment.
+    "config_revisions/",
+    # Case variants. S3 keys are case-sensitive so these name no revision body, but
+    # they are not keys any writer here produces either.
+    "CONFIG_REVISIONS/claims/000001.json.gz",
+    "Config_Revisions/claims/000001.json.gz",
+]
+
+_NON_CANONICAL_TEST_SET_KEYS = [
+    "/ts-theirs/input/statement.pdf",
+    "//ts-theirs/input/statement.pdf",
+    "./ts-theirs/input/statement.pdf",
+    "ts-theirs//input/statement.pdf",
+    "ts-theirs/../ts-theirs/input/statement.pdf",
+]
+
+
+@pytest.mark.unit
+class TestNonCanonicalKeysAreRejectedNotTreatedAsUnpartitioned:
+    """A key that misses the prefix must not thereby escape the check.
+
+    Each spelling below names the same profile or test set a canonical key would, and
+    each fails the anchored prefix match. Returning "not scope-bearing" for them makes
+    the correctness of the whole check depend on S3 treating keys as opaque bytes
+    *everywhere downstream* — including in whatever client consumes a presigned URL,
+    which this deployment does not control. A normalising intermediary would convert one
+    of these into a real bypass with no signal, because the resolver would have logged
+    an ordinary 400.
+
+    So they are refused here, before the subject is decided, and the tests assert the
+    refusal rather than the 404 that happens to follow today.
+    """
+
+    @pytest.mark.parametrize("key", _NON_CANONICAL_CONFIG_KEYS)
+    def test_a_non_canonical_configuration_key_is_refused(self, key):
+        import key_scope
+
+        with pytest.raises(ValueError, match="canonical|required"):
+            key_scope.scope_subject(
+                CONFIG_BUCKET,
+                key,
+                configuration_bucket=CONFIG_BUCKET,
+                test_set_bucket=TEST_SET_BUCKET,
+            )
+
+    @pytest.mark.parametrize("key", _NON_CANONICAL_TEST_SET_KEYS)
+    def test_a_non_canonical_test_set_key_is_refused(self, key):
+        import key_scope
+
+        with pytest.raises(ValueError, match="canonical|required"):
+            key_scope.scope_subject(
+                TEST_SET_BUCKET,
+                key,
+                configuration_bucket=CONFIG_BUCKET,
+                test_set_bucket=TEST_SET_BUCKET,
+            )
+
+    @pytest.mark.parametrize(
+        "profile_segment",
+        [
+            # A percent sequence a proxy might decode into a path separator. A profile
+            # name can never contain `%`, so this is not a name the store wrote.
+            "cl%2faims",
+            "claims%2f..",
+            # Glob metacharacters. `scope_allows` matches entries with `fnmatchcase`,
+            # so a segment carrying them is not a profile name being compared.
+            "*",
+            "?laims",
+            "[abc]",
+            # A space, which `_SAFE_PROFILE_RE` also excludes.
+            "my claims",
+        ],
+    )
+    def test_a_profile_segment_outside_the_writers_character_class_is_refused(
+        self, profile_segment
+    ):
+        import key_scope
+
+        with pytest.raises(ValueError, match="canonical"):
+            key_scope.scope_subject(
+                CONFIG_BUCKET,
+                f"config_revisions/{profile_segment}/000001.json.gz",
+                configuration_bucket=CONFIG_BUCKET,
+                test_set_bucket=TEST_SET_BUCKET,
+            )
+
+    def test_every_character_the_revision_store_can_write_is_still_accepted(self):
+        """The check must not refuse a profile name the product can actually create.
+
+        `ConfigRevisionStore._safe_profile` permits letters, digits, dot, dash and
+        underscore; a semver-style preset name uses three of those.
+        """
+        import key_scope
+
+        for profile in ("default", "lending-2", "usecase_A.v1", "sample-v0.1.6"):
+            assert key_scope.scope_subject(
+                CONFIG_BUCKET,
+                f"config_revisions/{profile}/000007.json.gz",
+                configuration_bucket=CONFIG_BUCKET,
+                test_set_bucket=TEST_SET_BUCKET,
+            ) == (key_scope.CONFIG_PROFILE, profile)
+
+    def test_a_non_canonical_key_in_an_unpartitioned_bucket_is_still_served(self):
+        """The canonical-form rule is scoped to the two partitioned buckets.
+
+        Document keys are caller-visible strings from the tracking table and are not
+        this function's business; refusing an odd one here would break reads that work
+        today for no security benefit, since no scope axis governs that bucket.
+        """
+        import key_scope
+
+        assert (
+            key_scope.scope_subject(
+                OUTPUT_BUCKET,
+                "//doc/sections/1/result.json",
+                configuration_bucket=CONFIG_BUCKET,
+                test_set_bucket=TEST_SET_BUCKET,
+            )
+            is None
+        )
+
+    @pytest.mark.parametrize("field", BOTH_FIELDS)
+    def test_the_handler_refuses_without_reading_s3(self, resolver, field, monkeypatch):
+        """End to end on the shipped bytes: refused before any S3 call.
+
+        The 400 these produced before this rule existed came *from S3* answering
+        NoSuchKey, which is exactly the dependency being removed. Proving no S3 call
+        happens is what makes the refusal this module's own property.
+        """
+        index, table = resolver
+        _put_user(table, "user@example.test", allowedConfigVersions=[MINE])
+
+        for operation in ("head_object", "get_object", "generate_presigned_url"):
+            monkeypatch.setattr(
+                index.s3_client,
+                operation,
+                lambda **kw: pytest.fail("read a non-canonical key"),
+            )
+
+        for key in _NON_CANONICAL_CONFIG_KEYS:
+            with pytest.raises(ValueError):
+                index.handler(_event(field, CONFIG_BUCKET, key), None)

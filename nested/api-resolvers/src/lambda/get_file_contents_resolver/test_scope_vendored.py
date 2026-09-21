@@ -75,18 +75,41 @@ def test_key_scope_imports_the_vendored_copies_and_not_the_layer():
     """`key_scope` must reach the copies that ship in this bundle.
 
     ``import idp_common.config_scope`` would work in a test environment that has the
-    library installed and fail at runtime in a function with no layer — a difference
-    a passing suite would hide entirely.
+    library installed and fail at runtime in a function with no layer — a difference a
+    passing suite would hide entirely, since the suite runs where the library IS
+    installed.
+
+    Asserted on the module's **import statements**, parsed, rather than on the presence
+    of the string ``idp_common`` anywhere in the file. The substring form was satisfied
+    by a docstring: ``key_scope`` legitimately cites
+    ``idp_common/config/revisions.py`` when explaining which character class a profile
+    segment must satisfy, and a citation is not a runtime dependency. A gate that
+    cannot tell those apart pushes the next person to delete the citation, which is the
+    opposite of what it is for.
     """
+    import ast
+
     source = (HERE / "key_scope.py").read_text()
+    tree = ast.parse(source)
+
+    imported: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            imported.update(alias.name for alias in node.names)
+        elif isinstance(node, ast.ImportFrom) and node.module:
+            imported.add(node.module)
+
     for name in sorted(VENDORED):
-        assert f"import {name}" in source, (
-            f"key_scope does not import the vendored {name}"
+        assert name in imported, (
+            f"key_scope does not import the vendored {name} (imports: "
+            f"{sorted(imported)})"
         )
-    assert "idp_common" not in source, (
-        "key_scope references idp_common, but this function carries no layer, so the "
-        "import would fail at runtime while passing in a test environment that has "
-        "the library installed"
+
+    from_layer = sorted(m for m in imported if m.split(".")[0] == "idp_common")
+    assert not from_layer, (
+        f"key_scope imports {from_layer} from the idp_common layer, but this function "
+        "carries no layer — the import would fail at runtime while passing in a test "
+        "environment that has the library installed. Use the vendored copy."
     )
 
 

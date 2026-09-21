@@ -11551,11 +11551,19 @@ Resources:
         # and which profiles a user may see is their `allowedConfigVersions`, a
         # per-user boundary no IAM grant on this shared role can express. Granted
         # here it was also `s3:ListBucket`, so the profile names did not have to be
-        # known in advance. No UI code path reads it: the bucket name is not
-        # referenced anywhere in `src/ui/`, the browser holds no S3 API client (only
-        # `S3RequestPresigner`, at four call sites that resolve to Input or Output),
-        # and the Configuration-bucket content the UI does display — bundled samples
-        # under `samples/`, the config library, profile bodies — is served by
+        # known in advance.
+        #
+        # No UI code path reads it. What that rests on is the **call sites**, not on
+        # the bucket name being unavailable: the browser holds no S3 API client at all
+        # (only `S3RequestPresigner`, at four call sites, every one of which resolves
+        # to the Input or Output bucket — and `presignForExport` refuses outright to
+        # client-sign anything else). ⚠️ The name IS available to the browser: it is
+        # one key of the settings blob the UI fetches from Parameter Store with these
+        # same credentials. So this grant's absence is what bounds the reach, and
+        # `scripts/tests/test_browser_s3_grants.py` is what keeps it absent.
+        #
+        # The Configuration-bucket content the UI does display — bundled samples under
+        # `samples/`, the config library, profile bodies — is served by
         # `getSampleDocumentUrl`, `getConfigurationLibraryFile` and
         # `getConfigVersion`, each of which applies the caller's scope. The reads that
         # remain go through `getFileContents` / `getFilePresignedUrl`, where
