@@ -88,6 +88,13 @@ RATCHETS = {
 #: less protected — an entry that read as ratcheted now reads as the gap it always was,
 #: which is the move this mechanism is supposed to make attractive. Raising the budget to
 #: absorb a NEW exemption is the thing it exists to refuse.
+#:
+#: The measurement that justifies that one increment, because the next person will want it
+#: rather than the argument: a scan consults **52 of the register's 111 entries**, and of
+#: the **49** Bandit entries whose `issue` text quotes the literal it matched, **24** name
+#: a line that no longer contains that literal. So the gap being declared is one the tree
+#: exhibits now, not a theoretical one — each of those 24 is a line-pinned suppression
+#: over whatever finding next lands at that path and line.
 MAX_UNRATCHETED = 59
 
 #: Entries whose premise is computable but whose gate does not yet call the predicate.
