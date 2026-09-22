@@ -22,7 +22,9 @@
     "**/build",
     "**/dist",
     "**/cdk.out",
-    "notebooks/**/*.ipynb"
+    "notebooks/**/*.ipynb",
+    "feature-platform/idp-data-generator/idp_common_pkg/**",
+    "feature-platform/idp-data-generator/bootstrap-processor/idp_common_pkg/**"
   ],
 
   "pythonVersion": "3.12",
