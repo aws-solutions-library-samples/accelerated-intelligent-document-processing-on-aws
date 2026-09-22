@@ -45,11 +45,45 @@ def _repo_root() -> Path:
 
 
 if _CANONICAL_SANITIZER not in sys.modules:
-    _path = (
-        _repo_root() / "lib/idp_common_pkg/idp_common/utils/log_sanitizer.py"
-    )
+    _path = _repo_root() / "lib/idp_common_pkg/idp_common/utils/log_sanitizer.py"
     _spec = importlib.util.spec_from_file_location(_CANONICAL_SANITIZER, _path)
     assert _spec is not None and _spec.loader is not None, f"cannot load {_path}"
     _module = importlib.util.module_from_spec(_spec)
     _spec.loader.exec_module(_module)
     sys.modules[_CANONICAL_SANITIZER] = _module
+
+
+FIRST_PARTY_UNDER_TEST = ("idp_common",)
+
+
+# Fail fast if a first-party package resolves outside this checkout. These tests import
+# the library as an external dependency, so nothing puts its source on `sys.path` and the
+# editable-install pointer alone decides which revision runs. On a machine sharing one
+# interpreter between checkouts that pointer is rewritten by whoever last ran
+# `make test-cicd`, and the wrong tree produces a green run describing other code.
+#
+# The imports sit inside the function deliberately: this block is appended after a
+# module's own imports, and module-level imports there are an E402 lint failure.
+#
+# Rationale, and the identity-vs-ancestry distinction:
+# scripts/tests/first_party_provenance.py
+def _assert_first_party_provenance(packages):
+    import pathlib as _pathlib
+    import sys as _sys
+
+    for ancestor in _pathlib.Path(__file__).resolve().parents:
+        gate = ancestor / "scripts" / "tests" / "first_party_provenance.py"
+        if not gate.is_file():
+            continue
+        _sys.path.insert(0, str(gate.parent))
+        try:
+            from first_party_provenance import assert_resolves_in
+
+            for package in packages:
+                assert_resolves_in(package, __file__)
+        finally:
+            _sys.path.pop(0)
+        return
+
+
+_assert_first_party_provenance(FIRST_PARTY_UNDER_TEST)

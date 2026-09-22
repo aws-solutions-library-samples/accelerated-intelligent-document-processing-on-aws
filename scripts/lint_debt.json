@@ -60,7 +60,7 @@
       "shields": {
         "files": 31,
         "lintFindings": 44,
-        "unformatted": 3
+        "unformatted": 2
       }
     }
   },
@@ -480,7 +480,6 @@
     "src/lambda/api_handler/models.py",
     "src/lambda/api_handler/test_index.py",
     "src/lambda/backfill_gsi_attributes/index.py",
-    "src/lambda/batch_pre_processor/conftest.py",
     "src/lambda/batch_pre_processor/index.py",
     "src/lambda/batch_pre_processor/test_index.py",
     "src/lambda/bda_ocr_project/tests/test_index.py",
@@ -514,7 +513,6 @@
     "src/lambda/finetuning_merge_data/index.py",
     "src/lambda/initialize_counter/index.py",
     "src/lambda/ipset_updater/index.py",
-    "src/lambda/job_tracker/conftest.py",
     "src/lambda/job_tracker/test_index.py",
     "src/lambda/lookup_function/index.py",
     "src/lambda/multi_doc_discovery/analyze_handler.py",
@@ -549,6 +547,6 @@
   "highWaterMark": {
     "lintDebtFiles": 84,
     "lintFindings": 193,
-    "formatDebtFiles": 182
+    "formatDebtFiles": 180
   }
 }
