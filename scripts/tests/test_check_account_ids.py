@@ -370,23 +370,100 @@ def test_the_gate_is_registered_as_an_exemption_surface() -> None:
         "ACCOUNT_ID_ALLOWLIST",
         "ACCOUNT_ID_EXEMPT_LINES",
         "ACCOUNT_ID_EXCLUDED_SHAPES",
+        "BINARY_EXTENSIONS_SKIPPED",
     ):
         key = f"scripts/check_account_ids.py::{name}"
         assert key in registry, f"{key} is not registered"
 
 
-def test_it_exits_nonzero_when_run_as_a_command(tmp_path: Path) -> None:
-    """End to end, including the exit code the Makefile depends on."""
-    subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True, capture_output=True)
-    (tmp_path / "doc.md").write_text(f"account {PLANTED}\n", encoding="utf-8")
+# --------------------------------------------------------------------------- #
+# Closure over the binary skip
+# --------------------------------------------------------------------------- #
+
+
+def test_an_undeclared_unreadable_file_is_reported(tmp_path: Path) -> None:
+    """A file the gate cannot read, in a format nothing declared, must fail.
+
+    This is the direction that matters. A skipped-file *count* would red-line the branch
+    on the next sample image; what needs to fail is coverage silently shrinking — a text
+    file that gains a NUL byte, or a new tree in some binary format nobody classified.
+    """
+    (tmp_path / "notes.md").write_bytes(f"account {PLANTED}\x00 trailing\n".encode())
+    result = gate.scan(paths=["notes.md"], root=tmp_path)
+    assert result.files_skipped_binary == 1
+    assert result.unaccounted_skips == ["notes.md"]
+    problems = gate._ratchet_problems(result)
+    assert any("notes.md" in p and "unaccounted" in p for p in problems), problems
+
+
+def test_a_declared_binary_extension_is_not_reported(tmp_path: Path) -> None:
+    """A genuine image is skipped silently, so the set does not become busywork."""
+    (tmp_path / "shot.png").write_bytes(b"\x89PNG\r\n\x1a\n\x00 " + PLANTED.encode())
+    result = gate.scan(paths=["shot.png"], root=tmp_path)
+    assert result.files_skipped_binary == 1
+    assert result.unaccounted_skips == []
+
+
+def test_every_skipped_file_in_the_real_tree_is_declared() -> None:
+    """Closure, against this checkout: 133 files today, every one a declared format."""
+    result = gate.scan()
+    assert result.files_skipped_binary > 100, (
+        f"only {result.files_skipped_binary} files skipped; if binary detection has "
+        "changed, re-measure the set rather than assuming it still holds"
+    )
+    assert result.unaccounted_skips == [], result.unaccounted_skips
+
+
+def test_the_command_form_exits_0_on_this_clean_checkout() -> None:
+    """End to end through the command form, asserting the exit code exactly.
+
+    The Makefile recipe branches on this value, so it is asserted as one number rather
+    than a set of acceptable ones — a test that accepts ``0 or 1`` passes whatever
+    happens and is indistinguishable from not testing it.
+
+    The two failing exit codes, 1 and 2, are covered by the ``main()`` cases below, which
+    can drive them without writing into the repository.
+    """
     proc = subprocess.run(
-        ["python3", str(GATE_PATH)],
-        cwd=tmp_path,
+        ["python3", str(GATE_PATH), "--summary"],
+        cwd=REPO_ROOT,
         capture_output=True,
         text=True,
-        env={"PATH": "/usr/bin:/bin", "HOME": str(tmp_path)},
     )
-    # The gate resolves REPO_ROOT from its own location, so running it from a throwaway
-    # checkout still scans this repository. What is asserted here is only that the
-    # command form works and reports through the exit code.
-    assert proc.returncode in (0, 1), proc.stderr[-2000:]
+    assert proc.returncode == 0, (
+        f"stdout:\n{proc.stdout}\nstderr:\n{proc.stderr[-2000:]}"
+    )
+    assert "binary skipped" in proc.stdout
+    assert "ACCOUNT_ID_EXEMPT_LINES" in proc.stdout
+
+
+def test_main_returns_1_on_an_unclassified_id(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """``main()`` must return 1, which is the value the Makefile recipe branches on.
+
+    Driven by pointing the gate's root and its discovery at a synthetic tree, so a
+    finding can be planted without writing into the repository.
+    """
+    (tmp_path / "doc.md").write_text(f"account {PLANTED}\n", encoding="utf-8")
+    monkeypatch.setattr(gate, "REPO_ROOT", tmp_path)
+    monkeypatch.setattr(gate, "tracked_files", lambda: ["doc.md"])
+
+    assert gate.main([]) == 1
+    err = capsys.readouterr().err
+    assert "unaccounted 12-digit account id" in err
+    assert "doc.md:1" in err
+
+
+def test_main_returns_2_when_it_cannot_measure_the_tree(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Discovery returning nothing is a distinct exit code, not a pass.
+
+    A gate that scans zero files and prints success is the failure mode two other gates
+    in this directory had from inside an agent worktree, so "I could not measure" must
+    not share an exit code with "I measured and it was clean".
+    """
+    monkeypatch.setattr(gate, "tracked_files", lambda: [])
+    assert gate.main([]) == 2
+    assert "no tracked files discovered" in capsys.readouterr().err

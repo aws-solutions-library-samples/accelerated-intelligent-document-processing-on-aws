@@ -7,11 +7,12 @@
 WHY THIS IS A CONTENT GATE. ``scripts/hooks/check_commit_text.py`` already denies a
 ``git commit`` or ``gh pr create`` whose *command text* carries an internal address,
 hostname or identifier. It could not have caught this class however good its patterns
-were: an account id inside a file never appears in the invocation that commits it. A
-12-digit id reached two published benchmark release pages, a published planning
-document, two skill files, three benchmark ``FINDINGS.md`` files, a unit-test fixture
-and four notebooks' saved cell outputs, and was found months later by accident
-(issue #1067). So this reads the files.
+were: an account id inside a file never appears in the invocation that commits it.
+Three private ids reached 17 tracked files in 175 places -- two published benchmark
+release pages, a published planning document, three benchmark ``FINDINGS.md`` files, two
+skill files, a unit-test fixture, a Makefile usage comment and six notebooks' saved cell
+outputs -- and were found months later by accident (issue #1067). So this reads the
+files.
 
 An account id is not a credential and knowing one grants nothing by itself. What it
 does is name a target: it is the input to ``arn:aws:iam::<id>:role/...`` guesses, to
@@ -21,9 +22,9 @@ attack surface for no reader benefit, and the reasoning ``CLAUDE.md`` already re
 for commit messages applies with more force to a tracked file, which everyone who
 clones reads.
 
-HOW A 12-DIGIT NUMBER IS JUDGED. ``\\b\\d{12}\\b`` alone is a weak signal and this tree
-contains ~716 of them, almost all benign. Each hit is resolved in three stages, and the
-gate fails only on what survives all three:
+HOW A 12-DIGIT NUMBER IS JUDGED. A bare 12-digit match is a weak signal: this tree holds
+954 such runs across 3,026 tracked text files, and all but a handful are benign. Each is
+resolved in three stages, and the gate fails only on what survives all three:
 
 1. :data:`ACCOUNT_ID_EXCLUDED_SHAPES` — the run is not a standalone 12-digit number at
    all. A decimal fraction (``1128.611111111111``, ``99.781982421875``: ``.`` is a word
@@ -41,6 +42,32 @@ gate fails only on what survives all three:
 Anything else is unaccounted for and fails. That last word is the design: the universe
 is derived from the tree rather than declared, so a brand-new id nobody has classified
 is a failure by default instead of joining the backlog.
+
+WHAT THIS DOES NOT CATCH. Read this before trusting a green run, because the gate is a
+detector for committed-by-accident ids and not a control against anyone who does not
+want to be caught:
+
+* **An id split across a concatenation** -- ``"487391" + "026584"`` -- is missed, and
+  this file's own test module uses exactly that construction to hold its probe values,
+  so the evasion is written down in the repository. It is deliberate there and there is
+  no way to have it both ways: the test needs a value the gate treats as unclassified,
+  and a literal would make the test module a finding.
+* **Binary files are skipped entirely**, decided by a NUL byte in the first 8 KiB. An id
+  inside a PDF, an image, a font or a parquet file is invisible here. Two tracked files
+  do contain 12-digit runs in content streams and glyph tables, which is why decoding
+  them is not worth it. The consequence of the heuristic also runs the other way: a
+  *text* file carrying a NUL byte in its first 8 KiB is silently classed as binary and
+  never read.
+* **Swapping an already-exempt line's id for a different private id** is undetected,
+  because the exempt entries deliberately name no id and so have no value to compare
+  against. Count pinning catches a new *site*, not a changed *value* on an existing one.
+* **A 12-digit id inside a hexadecimal run of 16 characters or more that contains a
+  letter** is excused by the digest rule. The bound is worth being precise about,
+  because it is narrower than it sounds: an id inside a 13-character hex run *is*
+  reported, and an id delimited by ``-`` or ``:`` -- a bucket name, an ARN, an ECR URI,
+  which is how essentially every real id appears -- has a maximal hex run of exactly the
+  12 digits with no letter in it and is *always* reported. Reaching this hole takes a
+  contrived surrounding string.
 
 Exit codes:
     0 — every 12-digit run in every tracked text file is accounted for
@@ -76,8 +103,8 @@ UUID_RE = re.compile(
 def _is_decimal_fraction(line: str, start: int, end: int) -> bool:
     """The run is the fractional part of a decimal number.
 
-    ``1128.611111111111`` and ``99.781982421875`` are OCR confidences and cache deltas,
-    and there are five such values in this tree. The test is deliberately narrower than
+    ``1128.611111111111`` and ``99.781982421875`` are OCR confidences and cache deltas;
+    this rule accounts for 11 occurrences today. The test is deliberately narrower than
     "preceded by a point": a point alone also precedes a version segment and a
     dotted path component, and requiring a digit *before* the point means only an
     arithmetic literal is judged benign here.
@@ -111,10 +138,10 @@ def _in_hex_digest(line: str, start: int, end: int) -> bool:
 
     This is the largest false-positive class in this tree and the least obvious one. The
     benchmark corpus names documents by MD5 --
-    ``033f718b16cb597c065930410752c294.pdf`` -- and one of those digests contains a
-    12-digit run bounded by hex letters on both sides. It appears in every per-document
-    row of every benchmark ``summary.csv`` and ``summary.json``, which is 380 of the 392
-    candidates a first version of this gate reported.
+    ``033f718b16cb597c065930410752c294.pdf`` -- and that digest contains a 12-digit run
+    bounded by hex letters on both sides. It appears in every per-document row of every
+    benchmark ``summary.csv`` and ``summary.json``: this rule accounts for 215
+    occurrences in total, and 125 of them are that one document name.
 
     The rule expands over hex characters in both directions and requires the maximal run
     to be long enough to be a digest AND to contain a hex *letter*. The letter is what
@@ -229,9 +256,17 @@ ACCOUNT_ID_ALLOWLIST = {
 #: ids behind a reason that was audited against one. Growth fails; shrinking to zero also
 #: fails, because a dead entry is a standing licence for whatever next occupies the line.
 #:
-#: Every one of these is a residual, not a resolution. Redacting any of them changes
-#: behaviour -- a CI default, an IAM trust principal, a model ARN in a shipped preset --
-#: so each needs an owner decision and its own change, and none belongs in a redaction.
+#: Every one of these is a residual, not a resolution. Nine lines over six files, 14
+#: occurrences: a CI variable's fallback and a bucket name derived from it, two of their
+#: tests, two IAM trust statements, and five Bedrock custom-model-deployment ARNs across
+#: three shipped presets. Each needs an owner decision and its own change, and none
+#: belongs in a redaction.
+#:
+#: ⚠️ What this list CANNOT ratchet: swapping an already-exempt line's id for a
+#: different private one is undetected, because a per-line pattern that deliberately
+#: names no id has no value to compare against. That is the direct price of not writing
+#: the ids down here, and count pinning is the whole of what is left -- it catches a new
+#: SITE, not a changed VALUE on an existing one.
 ACCOUNT_ID_EXEMPT_LINES = {
     ".gitlab-ci.yml:IDP_ACCOUNT_ID": {
         "sites": 2,
@@ -275,37 +310,90 @@ ACCOUNT_ID_EXEMPT_LINES = {
         "sites": 2,
         "reason": (
             "Two IAM trust statements name a role in the account that owns the shared "
-            "CI runners. The id IS the trust relationship -- a placeholder would grant "
-            "trust to a different account -- so it cannot be redacted at all. The same "
-            "two lines are exempted from the ARN-partition gate, for the related "
-            "reason that cross-partition IAM trust does not exist."
+            "CI runners. The id IS the trust relationship, so it cannot be replaced by "
+            "a placeholder -- that would grant trust to a different account. It could "
+            "be parameterised: this same file already has a Parameters block whose "
+            "SourceCodeBucket default is a YOUR_AWS_ACCOUNT-style template, so the "
+            "pattern is demonstrated here. Doing it is a deploy-process change for the "
+            "pipeline owner, because the value then has to be supplied at stack "
+            "creation, which is why it is out of scope here rather than impossible. "
+            "The same two lines are exempted from the ARN-partition gate, for the "
+            "related reason that cross-partition IAM trust does not exist."
         ),
     },
+    # The three preset entries below are a PRODUCT DEFECT, not a tolerable state, and
+    # issue #1093 tracks fixing it. These presets are shipped for customers to deploy
+    # and they name a Bedrock custom-model-deployment in one account, so they are
+    # already broken for every reader who is not in that account. Redacting the id
+    # would not fix that and would hide it: the ARN would then resolve nowhere at all
+    # rather than in one place, which is why the id stays until the model reference is
+    # replaced. Leaving it is the lesser of two bad states, not a good one.
     "config_library/unified/docsplit/docsplit_finedtuned_config.yaml:custom-model-deployment": {
         "sites": 1,
         "reason": (
-            "A Bedrock custom-model-deployment ARN in a shipped preset. The ARN only "
-            "resolves in the account that owns the deployment, so redacting the id "
-            "without also replacing the model reference leaves a preset that fails at "
-            "run time instead of one that fails for other readers only."
+            "A Bedrock custom-model-deployment ARN in a shipped preset. The ARN "
+            "resolves only in the account that owns the deployment, so this preset "
+            "does not work for any other customer today -- a product defect tracked "
+            "by #1093. Redacting the id alone would leave an ARN that resolves in no "
+            "account, so the fix is to replace the model reference, not the id."
         ),
     },
     "config_library/unified/ocr-benchmark/fine_tuned_config.yaml:custom-model-deployment": {
         "sites": 2,
         "reason": (
-            "Two more custom-model-deployment ARNs in the OCR benchmark preset, with "
-            "the same constraint as the docsplit preset above."
+            "Two more custom-model-deployment ARNs in the OCR benchmark preset, "
+            "unusable outside the owning account for the same reason and tracked by "
+            "the same issue."
         ),
     },
     "config_library/unified/ocr-benchmark/ocr_fine_tuned_config.yaml:custom-model-deployment": {
         "sites": 2,
         "reason": (
-            "The same two ARNs in the sibling OCR preset. Listed separately because a "
-            "reason bounded to one file is what makes a mismatch visible while it is "
-            "being written."
+            "The same two ARNs in the sibling OCR preset, with the same defect. Listed "
+            "separately because a reason bounded to one file is what makes a mismatch "
+            "visible while it is being written."
         ),
     },
 }
+
+
+#: File extensions whose contents this gate does not read, because they are not text.
+#:
+#: This is the gate's one scope exclusion, and it is expressed as a set of extensions
+#: rather than as a skipped-file count on purpose. A count would fail on the 87th sample
+#: PNG, which is friction for no safety; what actually needs to fail is a file the gate
+#: *stops* being able to read -- a text file that gains a NUL byte in its first 8 KiB, or
+#: a new tree in some binary format nobody classified. So the ratchet is closure over
+#: this set: any skipped file whose extension is not named here is unaccounted for and
+#: fails, in either direction.
+#:
+#: 133 tracked files are skipped today (86 .png, 36 .pdf, 5 .jpg, 2 .xls, and one each of
+#: .ttf, .xlsx, .docx, .ico). The residual was measured rather than assumed: none of the
+#: six private account ids known to this tree appears as raw bytes in any of the 133, and
+#: an independent review that went further -- unzipping the Office containers and
+#: zlib-decompressing the PDFs' FlateDecode streams -- also found none. So the skip is
+#: currently empty of substance. It is still a real hole for a future file.
+BINARY_EXTENSIONS_SKIPPED = frozenset(
+    {
+        ".png",
+        ".jpg",
+        ".jpeg",
+        ".gif",
+        ".ico",
+        ".pdf",
+        ".ttf",
+        ".woff",
+        ".woff2",
+        ".xls",
+        ".xlsx",
+        ".docx",
+        ".zip",
+        ".gz",
+        ".parquet",
+        ".onnx",
+        ".mp4",
+    }
+)
 
 
 @dataclass(frozen=True)
@@ -391,16 +479,21 @@ class Scan:
     exempt_hits: dict[str, int]
     files_read: int
     files_skipped_binary: int
+    #: Skipped files whose extension is not in BINARY_EXTENSIONS_SKIPPED. A file the gate
+    #: can no longer read, in a format nobody declared unreadable.
+    unaccounted_skips: list[str]
 
 
 def scan(paths: list[str] | None = None, root: Path | None = None) -> Scan:
     base = root or REPO_ROOT
     rels = paths if paths is not None else tracked_files()
-    result = Scan([], dict.fromkeys(ACCOUNT_ID_EXCLUDED_SHAPES, 0), {}, {}, 0, 0)
+    result = Scan([], dict.fromkeys(ACCOUNT_ID_EXCLUDED_SHAPES, 0), {}, {}, 0, 0, [])
     for rel in rels:
         text = _read_text(base / rel)
         if text is None:
             result.files_skipped_binary += 1
+            if Path(rel).suffix.lower() not in BINARY_EXTENSIONS_SKIPPED:
+                result.unaccounted_skips.append(rel)
             continue
         result.files_read += 1
         if not ACCOUNT_ID_RE.search(text):
@@ -436,6 +529,15 @@ def _ratchet_problems(result: Scan) -> list[str]:
     exemption this repository has had to unpick.
     """
     problems: list[str] = []
+    for rel in result.unaccounted_skips:
+        problems.append(
+            f"{rel} could not be read as text and its extension is not in "
+            "BINARY_EXTENSIONS_SKIPPED, so this file is unaccounted for: the gate is "
+            "not reading it and nothing says it should not. Either it is a text file "
+            "that has gained a NUL byte in its first 8 KiB -- fix the file -- or it is "
+            "a binary format nobody has declared, in which case name its extension "
+            "there with the reason."
+        )
     for name, hits in result.shape_hits.items():
         if hits == 0:
             problems.append(
