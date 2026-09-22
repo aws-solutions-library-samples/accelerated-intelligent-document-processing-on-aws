@@ -193,28 +193,77 @@ def test_the_rule_validation_service_classifies_before_it_swallows():
 # ``LLMComparator``, which ``idp_common.evaluation`` resolves behind a module-level
 # ``__getattr__`` — so a static import walk misses it too, and misses precisely the
 # lazy exports, which is where this package puts its heavy dependencies. Meanwhile
-# ``processresults_function`` carries two Bedrock mentions and is not affected. The
-# IAM grant is declarative and cannot be wrong without the deployment being wrong: a
-# Lambda can invoke a model iff its role permits it, and that is declared in the same
-# template as the code location.
+# ``processresults_function`` carries two Bedrock mentions and is not affected.
 #
-# Two properties of the predicate, both verified against this template rather than
-# assumed:
+# ⚠️ **The grants are read out of ``Action:`` position, never out of the block's raw
+# text.** A regex over the text matches an ARN as readily as an action, and this
+# template is full of ARNs whose REGION field is a wildcard —
+# ``arn:${AWS::Partition}:bedrock:*::foundation-model/*`` — twelve of them, and not one
+# ``bedrock:*`` action anywhere. Matching raw text put ``InvokeBDAFunction`` in this
+# universe on the strength of an ARN region, when its only Bedrock action is
+# ``bedrock:InvokeDataAutomationAsync`` and it cannot invoke a foundation model at all.
 #
-#   * Every function attaches permissions with inline ``Policies``; none uses
-#     ``Role: !GetAtt``. So reading the function's own resource block is complete, and
-#     there is no externally-defined role whose grants it would miss.
-#   * ``bedrock:*`` appears on some functions, so the predicate answers "permitted to
-#     invoke a model" rather than "does invoke one". That over-includes, which is the
-#     safe direction for a closure: an over-included state has to be named as an
-#     explicit exemption with a reason instead of passing by absence.
+# Two properties, each verified against this template rather than assumed:
+#
+#   * A function may attach permissions inline OR through ``Role: !GetAtt SomeRole``,
+#     and both occur: ``PipelineHooksDispatcherFunction`` uses an external role and
+#     backs seven task states. So the walk reads the referenced role's block too, and
+#     ``test_every_task_target_role_is_readable`` iterates EVERY task target rather
+#     than the selected universe — a function whose grants move out of reach must fail
+#     rather than leave the universe unexamined.
+#   * The predicate answers "permitted to invoke a model", which is what a closure
+#     wants; it is not "does invoke one". It is also looser than that in one direction
+#     recorded in the registry: it matches a model-invoking ACTION, so a grant of
+#     ``bedrock:*`` would qualify (correctly), but so would any future action whose
+#     name begins ``InvokeModel``. Over-inclusion is the safe direction — an
+#     over-included state must be named with a reason instead of passing by absence.
 #
 # The closure is ONE-directional on purpose. A state that is not Bedrock-capable may
 # still list ``TransientError`` legitimately — ``PolicyClassificationStep`` does, and
 # its function grants no Bedrock action at all and its handler references none, so it
 # converts DynamoDB and S3 transients rather than model ones. Requiring the converse
 # would delete that.
-MODEL_INVOKE_ACTION = re.compile(r"bedrock:(InvokeModel\w*|Converse\w*|\*)")
+MODEL_INVOKE_ACTION = re.compile(r"^bedrock:(InvokeModel\w*|Converse\w*|\*)$")
+
+
+def _granted_actions(body: str) -> set[str]:
+    """Bedrock actions in ``Action:`` position within one resource block.
+
+    Parsed rather than grepped: an ARN's wildcard region is not an action, and reading
+    it as one is what put a data-automation-only function in this universe.
+    """
+    found: set[str] = set()
+    in_action = False
+    for line in body.split("\n"):
+        stripped = line.strip()
+        if re.match(r"^-?\s*Action:\s*$", stripped):
+            in_action = True
+            continue
+        inline = re.match(r"^-?\s*Action:\s*(\S+)\s*$", stripped)
+        if inline:
+            found.update(re.findall(r"bedrock:[A-Za-z*]+", inline.group(1)))
+            in_action = False
+            continue
+        if in_action:
+            if stripped.startswith("- "):
+                found.update(re.findall(r"bedrock:[A-Za-z*]+", stripped))
+                continue
+            in_action = False
+    return found
+
+
+def _can_invoke_a_model(logical_id: str, blocks: dict) -> bool:
+    """Whether this function's own block, or a role it references, grants a model call."""
+    body = blocks.get(logical_id, "")
+    bodies = [body]
+    for role in re.findall(r"Role:\s*!GetAtt\s+([A-Za-z0-9]+)\.Arn", body):
+        bodies.append(blocks.get(role, ""))
+    return any(
+        MODEL_INVOKE_ACTION.match(action)
+        for one in bodies
+        for action in _granted_actions(one)
+    )
+
 
 #: Bedrock-capable states that deliberately do NOT convert transient failures yet.
 #: One entry per state, each with its own reason, because an absence is what let this
@@ -225,34 +274,36 @@ MODEL_INVOKE_ACTION = re.compile(r"bedrock:(InvokeModel\w*|Converse\w*|\*)")
 #: change.
 TRANSIENT_CONVERSION_EXEMPT = {
     "OCRStep": (
-        "Calls Bedrock only when ocr.backend is 'bedrock'; the handler raises rather "
-        "than swallowing, so a transient failure is visible and diagnosed, and what "
-        "is lost is the retry. Deferred with the other four in #1142 because the "
-        "handler and the Retry list have to change together."
+        "Calls Bedrock only when ocr.backend is 'bedrock'; on Textract it makes no "
+        "model call at all, so the conversion changes behaviour for one backend and "
+        "not the other and wants measuring per backend before it lands. Handler "
+        "raises rather than swallowing, so a throttle is visible and diagnosed and "
+        "what is lost is the retry. Deferred in #1142."
     ),
     "ClassificationStep": (
-        "Handler raises rather than swallowing. Deferred with the other four in "
-        "#1142; the handler and the Retry list have to change together."
+        "One model call per page on the page-level path and one per document on the "
+        "holistic one, so a throttle here costs a whole classification pass rather "
+        "than one section and the retry is worth more than on the per-section states. "
+        "Handler raises. Deferred in #1142 because the Retry entry and the handler's "
+        "raise_if_transient have to land together."
     ),
     "SummarizationStep": (
-        "Handler raises rather than swallowing. Deferred with the other four in "
-        "#1142; the handler and the Retry list have to change together."
+        "A single model call over the whole document at the end of the pipeline, so a "
+        "throttle wastes every stage before it. Handler raises. Deferred in #1142 "
+        "because the Retry entry and the handler's raise_if_transient have to land "
+        "together."
     ),
     "EvaluationStep": (
-        "Reaches Bedrock through the LLM-judge comparators rather than directly, "
-        "which is why a source grep does not see it. Handler raises. Deferred with "
-        "the other four in #1142."
+        "Reaches Bedrock through the LLM-judge comparators rather than directly, which "
+        "is why a source scan does not see it and why its conversion needs the "
+        "comparator path checked rather than just the handler. Evaluation is advisory, "
+        "so a lost retry costs a report rather than a document. Deferred in #1142."
     ),
     "RecordEvaluationFailure": (
-        "Same Lambda as EvaluationStep on a shorter transient tier (5/3/2.0). "
-        "Deferred with it in #1142."
-    ),
-    "BDA_InvokeDataAutomation": (
-        "Invokes the Bedrock Data Automation runtime, not bedrock-runtime: its own "
-        "grants are bedrock:InvokeDataAutomationAsync plus a bedrock:* wildcard, and "
-        "it is the wildcard that puts it in this universe. Same throttling exposure "
-        "as a model call but a different service surface, so #1142 says to decide it "
-        "as a separate tier rather than folding it in."
+        "Same Lambda as EvaluationStep but on a deliberately shorter transient tier "
+        "(5/3/2.0 against the 10/8/2.5 the others carry), because it runs on the "
+        "failure path and must not extend an already-failing execution. That shorter "
+        "ladder is the reason it is listed separately here. Deferred with it in #1142."
     ),
 }
 
@@ -319,9 +370,9 @@ def resource_blocks(template_text: str) -> dict:
 
 
 @pytest.fixture(scope="module")
-def bedrock_capable_states(states, substitutions, resource_blocks) -> dict:
-    """Task state -> logical id, for every state permitted to invoke a model."""
-    found = {}
+def task_targets(states, substitutions) -> dict:
+    """Every task state -> the Lambda logical id it invokes."""
+    targets = {}
     for name, defn in _walk(states):
         if defn.get("Type") != "Task":
             continue
@@ -329,11 +380,19 @@ def bedrock_capable_states(states, substitutions, resource_blocks) -> dict:
         if not placeholder:
             continue
         logical_id = substitutions.get(placeholder)
-        if not logical_id:
-            continue
-        if MODEL_INVOKE_ACTION.search(resource_blocks.get(logical_id, "")):
-            found[name] = logical_id
-    return found
+        if logical_id:
+            targets[name] = logical_id
+    return targets
+
+
+@pytest.fixture(scope="module")
+def bedrock_capable_states(task_targets, resource_blocks) -> dict:
+    """Task state -> logical id, for every state permitted to invoke a model."""
+    return {
+        name: logical_id
+        for name, logical_id in task_targets.items()
+        if _can_invoke_a_model(logical_id, resource_blocks)
+    }
 
 
 def test_every_task_state_resolves_to_a_lambda(states, substitutions, resource_blocks):
@@ -378,25 +437,63 @@ def test_the_predicate_excludes_a_state_that_cannot_invoke_a_model(
     assert "PolicyClassificationStep" in TASKS
 
 
-def test_every_function_attaches_its_grants_inline(
-    bedrock_capable_states, resource_blocks
-):
-    """The premise that makes reading the function's own block complete.
+def test_every_task_target_role_is_readable(task_targets, resource_blocks):
+    """Every task target's grants must be reachable — checked over ALL targets.
 
-    A function using ``Role: !GetAtt SomeRole.Arn`` would keep its grants in a
-    separate resource, and this predicate would report it as unable to call Bedrock.
-    None does today; if one appears, this fails rather than the closure quietly
-    shrinking.
+    Iterating the selected universe instead would be circular: a function whose grants
+    moved out of reach simply leaves the universe and is never examined, so the check
+    that makes the predicate safe would pass by not looking. Both attachment styles
+    occur here — ``PipelineHooksDispatcherFunction`` uses an external role and backs
+    seven task states — so what has to hold is that any role a target references is a
+    block this walk can read.
+    """
+    unreadable = []
+    for name, logical_id in sorted(task_targets.items()):
+        body = resource_blocks.get(logical_id)
+        if body is None:
+            unreadable.append((name, logical_id, "no resource block"))
+            continue
+        for role in re.findall(r"Role:\s*!GetAtt\s+([A-Za-z0-9]+)\.Arn", body):
+            if role not in resource_blocks:
+                unreadable.append((name, logical_id, f"role {role} not readable"))
+    assert not unreadable, (
+        "these task targets attach permissions this walk cannot read, so their Bedrock "
+        f"grants are invisible and they would drop out of the universe: {unreadable}"
+    )
+
+
+def test_an_external_role_is_followed(resource_blocks):
+    """Not vacuous: the role-following branch must actually be exercised.
+
+    If no target used an external role, the branch above would be dead code and the
+    predicate would be one template edit away from silently under-reporting.
     """
     external = [
-        name
-        for name, logical_id in bedrock_capable_states.items()
-        if re.search(r"Role:\s*!GetAtt", resource_blocks.get(logical_id, ""))
+        lid
+        for lid, body in resource_blocks.items()
+        if lid.endswith("Function")
+        and re.search(r"Role:\s*!GetAtt\s+[A-Za-z0-9]+\.Arn", body)
     ]
-    assert not external, (
-        "these functions attach a role defined elsewhere, so their Bedrock grants are "
-        f"not in their own block and the predicate cannot see them: {external}"
+    assert external, (
+        "no function attaches an external role, so _can_invoke_a_model's "
+        "role-following branch is untested"
     )
+
+
+def test_an_arn_region_wildcard_is_not_read_as_an_action(resource_blocks):
+    """The specific unsoundness this predicate was changed to avoid.
+
+    ``arn:${AWS::Partition}:bedrock:*::foundation-model/*`` is an ARN whose REGION is a
+    wildcard; there is no ``bedrock:*`` action in this template. A predicate matching
+    raw block text reads the former as the latter, which put a data-automation-only
+    function in the universe.
+    """
+    arn_carriers = [lid for lid, body in resource_blocks.items() if "bedrock:*" in body]
+    assert arn_carriers, "no ARN wildcard region present; this test is now vacuous"
+    for lid in arn_carriers:
+        assert "bedrock:*" not in _granted_actions(resource_blocks[lid]), (
+            f"{lid}: an ARN's wildcard region was read as a granted action"
+        )
 
 
 def test_every_bedrock_capable_state_converts_or_is_registered(
@@ -452,9 +549,18 @@ def test_no_exemption_is_dead(bedrock_capable_states, states):
 
 
 def test_every_exemption_carries_a_reason():
-    """A reason per member, not one attached to the set."""
+    """A reason per member, not one attached to the set wearing per-member clothing.
+
+    Length and a substring are not enough: six identical strings would satisfy both,
+    which is exactly the shape this registry exists to prevent. So distinctness is
+    asserted too.
+    """
     for name, reason in TRANSIENT_CONVERSION_EXEMPT.items():
         assert len(reason) > 60, f"{name}'s reason is too short to be one: {reason!r}"
-        assert "1142" in reason or "tier" in reason, (
-            f"{name}'s reason should say why it is deferred or how it differs"
-        )
+        assert "1142" in reason, f"{name}'s reason should say where it is tracked"
+    reasons = list(TRANSIENT_CONVERSION_EXEMPT.values())
+    assert len(set(reasons)) == len(reasons), (
+        "two members share a byte-identical reason, so it is a set-level justification "
+        "rather than a per-member one: "
+        + str(sorted({r for r in reasons if reasons.count(r) > 1}))
+    )
