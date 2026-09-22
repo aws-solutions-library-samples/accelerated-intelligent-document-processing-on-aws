@@ -92,6 +92,13 @@ PYTHON_PATHSPECS = (
 #: A gate exemption is not a Python idea; it lives wherever the gate does.
 #: Name fragments that mark a constant as an exemption candidate. The union of two
 #: independent surveys' vocabularies -- neither alone was sufficient.
+#:
+#: ``EXCLU``, not ``EXCLUD``. The longer fragment matches ``EXCLUDE``/``EXCLUDED`` and
+#: not ``EXCLUSION``, which is the ordinary English noun for one of these lists and the
+#: spelling ``TYPECHECK_SCOPE_EXCLUSIONS`` uses -- a live carve-out from the typecheck
+#: coverage gate that this scan therefore could not see, and that consequently sat
+#: unregistered while every meta-test passed. One letter of aperture, and it went the
+#: way a too-narrow aperture always goes here: quiet.
 NAME_VOCABULARY = (
     "EXEMPT",
     "ALLOW",
@@ -99,7 +106,7 @@ NAME_VOCABULARY = (
     "IGNORE",
     "QUARANTINE",
     "PRUNE",
-    "EXCLUD",
+    "EXCLU",
     "KNOWN_",
     "EXPECTED_",
     "WAIV",
