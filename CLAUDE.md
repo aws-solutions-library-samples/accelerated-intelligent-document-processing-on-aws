@@ -84,8 +84,10 @@ that nobody had counted. A clean `ruff check` on one of them meant the file was
 never opened. Issue #975.
 
 The exclusions are now per-file, generated from `scripts/lint_debt.json`, and
-ratcheted: `ruff.toml`'s `[lint] exclude` names 85 files holding 196 pre-existing
-findings, `[format] exclude` names 184 files `ruff format` has never run over, and
+ratcheted: `ruff.toml`'s `[lint] exclude` names the files that already carried
+findings, `[format] exclude` names the files `ruff format` has never run over —
+`python3 scripts/check_lint_debt.py --summary` prints both counts, which shrink as
+the debt is paid — and
 `make check-lint-debt` (in `lint`, `fastlint` **and** `lint-cicd`, so both CIs)
 re-measures every tracked file with the exclusions bypassed. It fails if a listed
 file *gained* a finding, if a listed file is now clean and should be delisted, if a
@@ -100,8 +102,8 @@ through it with every other check green.
 scripts/check_lint_debt.py --explain <path>`. Do not ask ruff.** Every ruff-native
 probe misreports at least one class of file: a plain `ruff check <path>` bypasses
 the exclusions, and `--force-exclude` restores only the *discovery* ones, so
-`ruff check --force-exclude <path>` prints `All checks passed!` and exits 0 for all
-85 lint-excluded files. `ruff check --show-files` does not honour `[lint] exclude`
+`ruff check --force-exclude <path>` prints `All checks passed!` and exits 0 for
+every lint-excluded file. `ruff check --show-files` does not honour `[lint] exclude`
 either. A misleading probe is the stated reason #975 survived inspection.
 
 Pay a file down by fixing its findings and running `python3
@@ -115,10 +117,10 @@ current split. Two `extend-exclude` entries are scope decisions rather than debt
 the vendored `pii-anonymizer` tree and `**/*.ipynb` — and each carries a premise
 the gate evaluates against the tree.
 
-The **formatting** debt is deliberately unpaid: `ruff format` over those 184 files
+The **formatting** debt is deliberately unpaid: `ruff format` over that whole list
 is a mechanical, conflict-generating sweep that belongs in its own change.
 
-`basedpyright` covers all 1230 tracked `.py` files (`pyrightconfig.json`'s `include`
+`basedpyright` covers every tracked `.py` file (`pyrightconfig.json`'s `include`
 previously named six paths and reached 432).
 `scripts/tests/test_pyright_config.py` derives that closure from `git ls-files`, so
 a new tree holding Python fails there rather than being silently uncovered.
@@ -293,10 +295,12 @@ Historically several gates ran on GitLab only, so a change merged via a GitHub P
 skipped them — the same class of gap as the SRT/dep-audit note below. Now on both:
 `make lint-cicd` (which itself covers `cfn-lint`, `validate-buildspec`,
 `check-arn-partitions`, filtered-scan and data-plane-tag checks),
-`make typecheck-pr`, `make api-test-static`, `make test-cicd -C lib/idp_common_pkg`,
+`make typecheck`, `make api-test-static`, `make test-cicd -C lib/idp_common_pkg`,
 `make test-packages-cicd`, the UI vitest suite,
-`scripts/check_first_party_deps.py` and
-`scripts/sdlc/validate_service_role_permissions.py`.
+`scripts/check_first_party_deps.py`,
+`scripts/sdlc/validate_service_role_permissions.py`, `make srt-scan` and
+`scripts/security/dep_audit.py`. The type gate is the whole-tree `make typecheck`;
+`make typecheck-pr` is a developer convenience and runs in neither CI.
 
 `make cfn-lint` and `make validate-buildspec` were in **neither** CI before — they
 sat in `lint`/`fastlint` but not `lint-cicd`, so a template or buildspec error
@@ -342,9 +346,11 @@ advisory: `build-docs.yml` and `generate-dep-manifest.yml` are path-filtered, an
 `Test Results` is an action-created check run behind an `if:`, so requiring any of
 them would leave a check pending forever and block every merge.
 
-Three things about what it reads. All eight shared gates are *steps* in one job
-(`developer_tests`), so they are **one** requireable context sharing one red mark,
-not three and not eight. It reads classic branch protection **and** rulesets,
+Three things about what it reads. Eight of the ten shared gates are *steps* in one
+job (`developer_tests`), so those eight are **one** requireable context sharing one
+red mark rather than one per gate; the SRT scan and the dependency audit are jobs of
+their own in `security-checks.yml`, so the ten shared gates produce three
+requireable contexts in total. It reads classic branch protection **and** rulesets,
 because a branch can be governed entirely by a ruleset while the classic endpoint
 reports nothing. And it separates "not protected" from "cannot see": the classic
 endpoint needs repository admin and answers 404 without it, so `GET
@@ -950,7 +956,9 @@ Testing samples available in `samples/`:
 
 - `scripts/sdlc/validate_buildspec.py` - Validates CodeBuild buildspec files
 - `scripts/sdlc/validate_service_role_permissions.py` - Verifies IAM service role permissions
-- `scripts/sdlc/typecheck_pr_changes.py` - Type checks only changed files in PRs
+- `scripts/sdlc/typecheck_pr_changes.py` - Type checks only the files a branch
+  changes (`make typecheck-pr`), for local latency. It is a developer command, not
+  a gate: the type gate both CIs run is the whole-tree `make typecheck`
 - `scripts/sdlc/check_branch_protection.py` - Checks that a branch's required
   status checks match the jobs the workflows actually run (`make
   check-branch-protection`; opt-in, read-only GitHub API, one branch per run).
