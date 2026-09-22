@@ -2838,7 +2838,10 @@ def estimate_review_effort(args):
             "config": "the profile's curve pooled across its revisions",
             "aggregate": "the set's aggregate curve",
         }.get(
-            curve.served_from,
+            # `served_from` is Optional on the dataclass; `get_curve` always sets
+            # it, using "none" for the no-stored-curve case, which is the default
+            # branch below.
+            curve.served_from or "none",
             "no stored curve at all (the estimate leans on the global prior)",
         )
         logger.warning(

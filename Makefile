@@ -518,9 +518,16 @@ check-retired-models: ## Ask Bedrock whether any model this repo offers has been
 # pyrightconfig.json's 12-entry `include`, whose closure over every tracked .py
 # file scripts/tests/test_pyright_config.py derives from `git ls-files` — so the
 # set it covers cannot silently shrink. A full run is ~1 minute through make
-# (48-60s measured; the bare binary is ~47s) over 1273 files, which is why there
+# over every tracked .py file, which is why there
 # is no cheaper CI variant: the PR-scoped form below narrows the file set and
 # therefore cannot see a break your change caused in a file it did not select.
+#
+# It needs NO environment: pyrightconfig.json's `extraPaths` puts the five
+# first-party package roots on the import path, so `idp_common` resolves whatever
+# PYTHONPATH says. Do NOT "fix" resolution by exporting PYTHONPATH here — this
+# machine carries editable installs pointing at a sibling worktree and another
+# project (#1094), so an environment-level answer can type-check somebody else's
+# copy of the library. See #1109 and scripts/tests/test_pyright_config.py.
 typecheck: ## Run type checks with basedpyright over the whole tree (the CI gate)
 	@echo "Running type checks..."
 	basedpyright

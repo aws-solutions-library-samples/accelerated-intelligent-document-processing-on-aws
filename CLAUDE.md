@@ -115,10 +115,43 @@ the gate evaluates against the tree.
 The **formatting** debt is deliberately unpaid: `ruff format` over those 184 files
 is a mechanical, conflict-generating sweep that belongs in its own change.
 
-`basedpyright` covers all 1230 tracked `.py` files (`pyrightconfig.json`'s `include`
-previously named six paths and reached 432).
-`scripts/tests/test_pyright_config.py` derives that closure from `git ls-files`, so
-a new tree holding Python fails there rather than being silently uncovered.
+`basedpyright` covers all 1,314 tracked `.py` files — the figure `git ls-files
+'*.py' | wc -l` and `filesAnalyzed` both report, so the closure is exact
+(`pyrightconfig.json`'s `include` previously named six paths and reached 432 of the
+1,230 tracked then). `scripts/tests/test_pyright_config.py` derives that closure
+from `git ls-files`, so a new tree holding Python fails there rather than being
+silently uncovered.
+
+⚠️ **Reading every file is not checking every call.** `basedpyright` honours
+`PYTHONPATH`, and `make typecheck` and both CIs invoke it without one; with
+`reportMissingImports` at `"none"`, `idp_common` did not resolve and **no call into
+the shared library could produce a diagnostic** — the boundary most of this
+repository uses to reach its own core. `filesAnalyzed` was 1,314 either way, so the
+gate read every file, matched `git ls-files`, reported zero errors, and proved far
+less than that looks like. Eleven errors were behind it, three of them statements
+that raise on every execution (a `Status.ERROR` that is not in the enum, a keyword
+no parameter matches, a required argument omitted). Issue #1109.
+
+`pyrightconfig.json`'s **`extraPaths`** now names the five first-party package
+roots, so resolution is a property of the configuration rather than of how the gate
+was invoked. The entries are **relative** on purpose: pyright resolves them against
+the directory holding the config, so they cannot name another checkout — which
+matters because this environment carries editable installs of `idp_common` and
+`idp_sdk` pointing at a sibling worktree and at a different project entirely
+(#1094), and an `extraPaths` naming one of those resolves perfectly while saying
+nothing about this tree. Confident wrong answers are worse than silent ones.
+`test_pyright_config.py` asserts both halves — the entries stay relative and inside
+the repo, and a 0.5s live basedpyright probe confirms all five actually resolve
+through the values the config carries — and fails on the specific combination of
+`reportMissingImports: "none"` plus unresolvable first-party packages.
+
+`reportMissingImports` **stays** at `"none"`, measured rather than assumed: raised to
+`"warning"` with `extraPaths` live it reports 44 findings over 25 modules and **none
+is first-party**. About 38 are sibling-module imports in script and Lambda trees that
+are not packages (`from index import ...`, `processors.pdf_image_processor`), correct
+at runtime because the handler's own directory is on `sys.path`; the rest are
+genuinely uninstalled third-party distributions. So the rule is unusable above
+`"none"` here, and the gap it leaves is covered by the resolution assertions instead.
 
 **`make cfn-lint`** discovers templates by **content** (anything declaring
 `AWSTemplateFormatVersion`), not by filename, so a new template cannot be added

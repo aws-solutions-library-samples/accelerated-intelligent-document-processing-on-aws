@@ -287,7 +287,7 @@ def main():
 
     # Initialize Bedrock client
     logger.info(f"Initializing Bedrock client in {args.region}...")
-    bedrock_client = BedrockClient(region_name=args.region)
+    bedrock_client = BedrockClient(region=args.region)
 
     # Test each model
     model_limits = {}

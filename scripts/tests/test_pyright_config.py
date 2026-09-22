@@ -45,6 +45,46 @@ below now closes that: a rule in `ENFORCED_ERROR_RULES` cannot be downgraded, an
 the set of rules pinned to "none" cannot grow without an entry in
 `DISABLED_RULE_EXEMPTIONS` explaining that member.
 
+Covering every file and enforcing every severity still leaves a third question:
+**can the checker see the types on the other side of a call?** It could not. With
+`reportMissingImports` at "none" and no `extraPaths`, `idp_common` did not resolve,
+so basedpyright knew nothing about the signature of anything in the shared library
+and could produce no diagnostic about any call into it — across the boundary most of
+this repository's code uses to reach its own core. `filesAnalyzed` was 1,314 either
+way, so the gate read every file, matched `git ls-files` exactly, and proved far less
+than that suggested. Eleven `reportCallIssue`/`reportOperatorIssue` errors were
+sitting behind it, three of them statements that raise on every execution. Issue
+#1109.
+
+`extraPaths` closes it in the configuration rather than in the environment, and that
+choice is the load-bearing part. `PYTHONPATH` would have worked too and is worse:
+the answer would depend on how the gate was invoked, and the machine this was found
+on carries editable installs of `idp_common` and `idp_sdk` pointing at a **sibling
+worktree** and at **another project** (#1094), so an environment-level fix can
+type-check confidently against somebody else's copy of the library. Measured: an
+`extraPaths` of `/home/ec2-user/projects/idp3/lib/idp_sdk` resolves `idp_sdk`
+perfectly and says nothing about this tree.
+
+So resolution is asserted three ways below, because "it resolves" is the weakest of
+the three and is the one that passes in the broken configuration:
+
+1. The entries must be **relative and inside this repository**. pyright resolves
+   them against the directory holding the config, so a relative entry cannot name
+   another checkout — that makes "this tree" structural rather than lucky.
+2. A live basedpyright probe must actually resolve all five first-party imports
+   through the values the shipped config carries, in a throwaway project with
+   `reportMissingImports` forced to "error" so the answer is reported.
+3. basedpyright's **own reported search-path order** must put an in-repository path
+   first for each of the five. This is the one that covers #1094: `exclude` bounds
+   the checked set and not the resolution path, so asserting only (2) would be
+   satisfied by a stale editable install pointing at a sibling worktree.
+
+All three run with `PYTHONPATH` stripped from the subprocess. That is not tidiness:
+basedpyright honours it, so a probe inheriting one measures the caller's shell.
+Observed in both directions before it was fixed — with `PYTHONPATH` exported the
+negative control resolved everything and failed, and the positive checks would have
+passed over an empty `extraPaths`.
+
 Changing a severity string is only the most obvious way to weaken a severity, and
 the other four are each measured rather than reasoned about. `typeCheckingMode` is
 pinned, because it governs the ~100 `report*` rules this config never names and
@@ -61,8 +101,10 @@ severity in the file still reads "error".
 from __future__ import annotations
 
 import json
+import os
 import posixpath
 import subprocess
+import tempfile
 import tomllib
 from fnmatch import fnmatch
 from pathlib import Path
@@ -474,6 +516,454 @@ def test_no_exclude_entry_shadows_an_include_entry() -> None:
         "files are silently dropped from the gate:\n  " + "\n  ".join(shadowed) + "\n"
         "`exclude` wins over `include` in pyright. Narrow the exclude pattern, or "
         "drop the include entry if it is genuinely not meant to be checked."
+    )
+
+
+# --------------------------------------------------------------------------- #
+# First-party resolution
+#
+# The gate cannot report a bad call into `idp_common` unless it can resolve
+# `idp_common`. It could not, and `reportMissingImports: "none"` meant nothing said
+# so. The two properties asserted here are "the packages resolve" and "they resolve
+# to THIS tree", and they are separate checks because satisfying the first with a
+# foreign checkout is exactly the accident #1094 makes available.
+#
+# `reportMissingImports` stays at "none", and that is a measured decision rather
+# than an inherited one. Raised to "warning" with `extraPaths` in place it reports
+# 44 findings over 25 distinct modules, **none of them first-party**: about 38 are
+# sibling-module imports inside script and Lambda trees that are not packages
+# (`from index import ...`, `processors.pdf_image_processor`, `seed_data.stages`),
+# which resolve at runtime because the handler's own directory is on `sys.path`;
+# the remaining handful are genuinely uninstalled third-party distributions
+# (`pdf2image`, `fastapi`, `mlflow`, `requests_aws4auth`). So the rule is unusable
+# above "none" here for the reason DISABLED_RULE_EXEMPTIONS already gives, and the
+# gap it leaves is not "third-party imports are unchecked" but "nothing reports an
+# import that *should* have resolved and did not". That is precisely what the
+# checks below cover, and why they are not redundant with the rule.
+# --------------------------------------------------------------------------- #
+
+
+#: The five first-party top-level import names, keyed to the distribution that
+#: ships each. Derived below from `lib/*/pyproject.toml` rather than trusted from
+#: here; this mapping only exists so the live probe has something to `import`.
+def _first_party_package_roots() -> dict[str, str]:
+    """`{top-level import name: repo-relative directory it must be imported from}`.
+
+    Derived from each distribution's own setuptools configuration, so a sixth
+    `lib/<something>/pyproject.toml` is in scope automatically and fails the
+    agreement check below until its root is added to `extraPaths`. A list written
+    here would be the "control that enumerates the known instances" defect this
+    file exists to prevent.
+    """
+    roots: dict[str, str] = {}
+    for pyproject in _pyprojects():
+        for source_dir in _importable_source_dirs(pyproject):
+            name = posixpath.basename(source_dir)
+            roots[name] = posixpath.dirname(source_dir)
+    return roots
+
+
+def _extra_paths() -> list[str]:
+    return list(_config().get("extraPaths", []))
+
+
+def test_there_are_first_party_packages_for_the_resolution_checks() -> None:
+    """Anti-vacuity: an empty derivation would make every check below pass."""
+    roots = _first_party_package_roots()
+    assert len(roots) >= 5, (
+        f"derived only {len(roots)} first-party package root(s) ({roots}) from "
+        f"{LIB_ROOT}/*/pyproject.toml. The resolution checks below would be vacuous."
+    )
+
+
+def test_first_party_packages_are_resolvable_from_the_config() -> None:
+    """The invariant from #1109, stated as the conjunction that caused it.
+
+    `reportMissingImports: "none"` is legitimate on its own (see the block comment
+    above: above "none" the rule reports 44 findings on correct code). First-party
+    packages failing to resolve is survivable on its own, because the rule would
+    then say so on every affected line. **Together** they are a gate that reads
+    every file in the repository and cannot produce a diagnostic about any call
+    into the shared library, while reporting zero errors and a file count that
+    matches `git ls-files` exactly. Nothing detected that combination.
+    """
+    config = _config()
+    roots = _first_party_package_roots()
+    extra = {posixpath.normpath(p) for p in _extra_paths()}
+
+    unresolvable = sorted(
+        f"{name} (ships from {root!r})"
+        for name, root in roots.items()
+        if posixpath.normpath(root) not in extra
+    )
+    if not unresolvable:
+        return
+
+    assert config.get("reportMissingImports") != "none", (
+        "pyrightconfig.json has reportMissingImports at 'none' AND does not put "
+        f"these first-party packages on the import path: {unresolvable}.\n\n"
+        f"`extraPaths` currently lists {sorted(extra)}.\n\n"
+        "That combination is what makes a green type gate meaningless: basedpyright "
+        "reads every tracked file, resolves nothing across the first-party boundary, "
+        "and is configured not to mention it — so no call into the shared library "
+        "can produce a diagnostic. Eleven real errors, three of them statements that "
+        "raise on every execution, sat behind it (#1109).\n\n"
+        "Add the package root to `extraPaths`. Use a RELATIVE path: pyright resolves "
+        "extraPaths against the directory holding this config, so a relative entry "
+        "cannot name another checkout, and an absolute one can (#1094)."
+    )
+
+
+def test_every_extra_path_is_relative_and_inside_this_repository() -> None:
+    """What makes resolution mean *this* tree rather than merely some tree.
+
+    pyright resolves `extraPaths` against the directory holding the config, so a
+    relative entry that does not climb out is the repository by construction. An
+    absolute entry is not: this was found on a machine whose venv resolves
+    `idp_common` to a sibling git worktree and `idp_sdk` to a different project
+    entirely (#1094), and an `extraPaths` of `/home/ec2-user/projects/idp3/lib/idp_sdk`
+    was measured to resolve `idp_sdk` cleanly while saying nothing whatsoever about
+    the code in this checkout. Confident wrong answers are worse than silent ones,
+    which is the whole reason this is configured rather than exported.
+
+    `posixpath.normpath` is lexical, deliberately: `resolve()` would follow symlinks
+    and make the verdict depend on the checkout, the same reasoning
+    `_relaxation_scope_findings` uses for `executionEnvironments` roots.
+    """
+    findings: list[str] = []
+    for raw in _extra_paths():
+        if posixpath.isabs(raw):
+            findings.append(
+                f"{raw!r} is absolute. An absolute extraPath can name another "
+                "checkout, and on this machine two stale editable installs do "
+                "exactly that (#1094). Write it relative to the repo root."
+            )
+            continue
+        normalised = posixpath.normpath(raw)
+        if normalised == ".." or normalised.startswith("../"):
+            findings.append(
+                f"{raw!r} normalises to {normalised!r}, which climbs out of the "
+                "repository. It would resolve first-party imports against a tree "
+                "this repo does not control."
+            )
+            continue
+        if not (REPO_ROOT / normalised).is_dir():
+            findings.append(
+                f"{raw!r} does not exist. pyright contributes nothing for a missing "
+                "search path, so this silently stops resolving what it named — the "
+                "same failure shape as a stale `include` entry."
+            )
+    assert not findings, "pyrightconfig.json `extraPaths` problems:\n  " + "\n  ".join(
+        findings
+    )
+
+
+def test_no_extra_path_is_stale() -> None:
+    """An entry that is not a first-party package root is unexplained.
+
+    `extraPaths` exists here for one purpose. An entry beyond that set either
+    resolves something the repo has not declared it ships, or is left over from a
+    distribution that moved — and in the second case the import it was added for is
+    now silently unresolved again while this file stays green.
+    """
+    roots = {posixpath.normpath(r) for r in _first_party_package_roots().values()}
+    stale = sorted(p for p in _extra_paths() if posixpath.normpath(p) not in roots)
+    assert not stale, (
+        f"pyrightconfig.json `extraPaths` lists {stale}, which no distribution under "
+        f"{LIB_ROOT}/*/pyproject.toml ships from (roots: {sorted(roots)}). Drop the "
+        "entry, or, if a new tree genuinely needs to be on the import path, say so "
+        "in this test — an unexplained search path is how the next stale one hides."
+    )
+
+
+def _resolution_probe(extra_paths: list[str], modules: list[str]) -> list[str]:
+    """Names basedpyright cannot resolve, given these search paths.
+
+    A **live** measurement, not a restatement of the config. The config-level check
+    above compares strings, and a string comparison is satisfied by an `extraPaths`
+    entry that names the right directory while the package inside it has moved,
+    been renamed, or lost its `__init__.py`. This actually asks the pinned
+    basedpyright, with `reportMissingImports` forced to "error" in a throwaway
+    project so the answer is reported rather than suppressed.
+
+    Costs ~0.5s: one synthetic file, not the 1,314-file tree.
+    """
+    with tempfile.TemporaryDirectory() as tmp:
+        project = Path(tmp)
+        (project / "probe.py").write_text(
+            "".join(f"import {name}\n" for name in sorted(modules))
+        )
+        (project / "pyrightconfig.json").write_text(
+            json.dumps(
+                {
+                    "include": ["probe.py"],
+                    # Absolute here, and only here: this config lives in a temp
+                    # directory, so the relative entries the real one carries
+                    # would resolve against the wrong root.
+                    "extraPaths": [str(REPO_ROOT / p) for p in extra_paths],
+                    "pythonVersion": _config().get("pythonVersion", "3.12"),
+                    "typeCheckingMode": "basic",
+                    "reportMissingImports": "error",
+                    "reportMissingTypeStubs": "none",
+                }
+            )
+        )
+        result = subprocess.run(
+            ["basedpyright", "--outputjson", "--project", str(project)],
+            capture_output=True,
+            text=True,
+            cwd=project,
+            env=_env_without_pythonpath(),
+        )
+    try:
+        report = json.loads(result.stdout)
+    except json.JSONDecodeError:  # pragma: no cover - basedpyright not installed
+        pytest.skip(f"basedpyright produced no JSON report: {result.stderr[:400]}")
+    return sorted(
+        diagnostic["message"]
+        for diagnostic in report.get("generalDiagnostics", [])
+        if diagnostic.get("rule") == "reportMissingImports"
+    )
+
+
+def test_the_configured_extra_paths_really_do_resolve_the_first_party_imports() -> None:
+    """Ask basedpyright, not the JSON file.
+
+    This is the check that would have failed before #1109 was fixed, and the one
+    that keeps failing if `extraPaths` is present but wrong.
+    """
+    unresolved = _resolution_probe(_extra_paths(), sorted(_first_party_package_roots()))
+    assert not unresolved, (
+        "basedpyright cannot resolve first-party imports through the `extraPaths` in "
+        "pyrightconfig.json:\n  " + "\n  ".join(unresolved) + "\n\n"
+        "Every call into an unresolved package is unchecked by `make typecheck`, and "
+        '`reportMissingImports: "none"` means the run will not mention it — it will '
+        "report 0 errors over the whole tree instead (#1109)."
+    )
+
+
+def _env_without_pythonpath() -> dict[str, str]:
+    """The current environment with `PYTHONPATH` removed.
+
+    Every basedpyright invocation below must run without one, and that is the point
+    rather than tidiness. basedpyright *honours* `PYTHONPATH` — it is the whole
+    mechanism behind #1109 — so a probe that inherits one measures the caller's
+    shell instead of the configuration. Both directions were observed: the
+    negative control below resolved all five packages and failed, and the positive
+    check would have passed with `extraPaths` empty. A gate whose answer depends on
+    how it was invoked is the defect being fixed, so the tests for it cannot have
+    the same property.
+    """
+    env = dict(os.environ)
+    env.pop("PYTHONPATH", None)
+    return env
+
+
+def _reported_search_paths() -> list[Path]:
+    """basedpyright's own ordered import search paths, as it reports them.
+
+    `--verbose` prints the list, in resolution order, under "Search paths:". Asked
+    with a single file argument it costs ~0.8s while still loading the **real**
+    `pyrightconfig.json`, so the paths are the ones the gate itself uses rather than
+    a reconstruction of them. `--verbose` and `--outputjson` are mutually exclusive,
+    which is why this parses text.
+    """
+    probe_file = REPO_ROOT / "scripts" / "discover_model_limits.py"
+    result = subprocess.run(
+        ["basedpyright", "--verbose", str(probe_file)],
+        capture_output=True,
+        text=True,
+        cwd=REPO_ROOT,
+        check=False,
+        env=_env_without_pythonpath(),
+    )
+    paths: list[Path] = []
+    collecting = False
+    for line in result.stdout.splitlines():
+        if line.strip() == "Search paths:":
+            collecting = True
+            continue
+        if collecting:
+            if not line.startswith("    ") or line.strip().endswith(":"):
+                break
+            paths.append(Path(line.strip()))
+    if not paths:  # pragma: no cover - basedpyright missing or output changed
+        pytest.skip(
+            "could not read 'Search paths:' from basedpyright --verbose; "
+            f"stdout began {result.stdout[:200]!r}"
+        )
+    return paths
+
+
+def _first_provider(name: str, search_paths: list[Path]) -> Path | None:
+    """The first search path that would satisfy `import <name>`, in order.
+
+    A pure function over the path list so the non-vacuity test below can hand it a
+    synthetic order with a foreign checkout in front, which is the arrangement that
+    must fail and cannot be produced by editing this repo's config.
+    """
+    for parent in search_paths:
+        for candidate in (
+            parent / name / "__init__.py",
+            parent / name / "__init__.pyi",
+            parent / f"{name}.py",
+            parent / f"{name}.pyi",
+        ):
+            if candidate.exists():
+                return candidate
+    return None
+
+
+def test_first_party_imports_resolve_inside_this_repository() -> None:
+    """Where they resolve, not merely that they resolve. The #1094 failure mode.
+
+    Asserting resolution alone is satisfied by a foreign tree. This machine's
+    environment resolves `idp_common` to a **sibling git worktree of this same
+    repository** and `idp_sdk` to **another project** (#1094), and a sibling
+    worktree is a near-copy at a different commit — so type-checking against it
+    produces diagnostics that are confident and wrong, which is worse than the
+    silence this change set removes and indistinguishable from a correct run.
+
+    `exclude` cannot be the guard, because it bounds the **checked set** and not the
+    **resolution path**: a tree `exclude` covers can still be imported from, with
+    `filesAnalyzed` unchanged. Ordering is what settles it, and basedpyright puts
+    `extraPaths` ahead of the interpreter's `site-packages`, so an in-repository
+    entry wins. This reads the order basedpyright reports rather than trusting that.
+
+    ⚠️ **What this does and does not currently catch.** Measured on this machine:
+    with the `lib/idp_common_pkg` entry removed, basedpyright resolves `idp_common`
+    to **nothing** rather than to the sibling worktree, because the stale editable
+    installs here are the modern `__editable___*_finder.py` kind and pyright cannot
+    follow a `MetaPathFinder`. So the foreign-resolution risk is live for `pytest`,
+    which does follow it, and not for this gate today. It is asserted anyway: a
+    `.pth`-style editable install (an older setuptools, or `setup.py develop`) puts a
+    plain directory on `site-packages`' path and pyright follows that, and an
+    absolute `extraPaths` entry reaches a foreign tree directly. The assertion is
+    the general protection, not a record of a current catch.
+
+    The message names the path resolution landed on, because the whole difficulty
+    of #1094 is that the wrong answer looks exactly like the right one.
+    """
+    search_paths = _reported_search_paths()
+    findings: list[str] = []
+    for name in sorted(_first_party_package_roots()):
+        provider = _first_provider(name, search_paths)
+        if provider is None:
+            findings.append(f"{name}: no search path provides it at all")
+            continue
+        if not provider.is_relative_to(REPO_ROOT):
+            findings.append(
+                f"{name}: resolves to {provider}, which is OUTSIDE this repository "
+                f"({REPO_ROOT}). basedpyright would type-check every call against "
+                f"that tree's copy of the library."
+            )
+
+    assert not findings, (
+        "basedpyright resolves first-party imports outside this checkout:\n  "
+        + "\n  ".join(findings)
+        + "\n\nSearch paths, in resolution order:\n    "
+        + "\n    ".join(str(p) for p in search_paths)
+        + "\n\nAn in-repository `extraPaths` entry must come before whatever else "
+        "provides the name. A stale editable install is the usual cause (#1094): "
+        "`pip install -e` from another checkout leaves one behind, and it resolves "
+        "perfectly while saying nothing about this tree."
+    )
+
+
+def test_resolution_outside_the_repository_is_detected() -> None:
+    """Non-vacuity for the check above, driven the only way it can be.
+
+    The failing arrangement cannot be produced by editing `pyrightconfig.json`,
+    because `test_every_extra_path_is_relative_and_inside_this_repository` rejects
+    an absolute entry before it gets that far. So `_first_provider` is given a
+    synthetic order with a foreign directory in front — and the foreign directory
+    used is a real one: `/home/ec2-user/projects/idp3`, the checkout #1094 found
+    `idp_sdk` resolving to. If it is not present, a fabricated stand-in is used, so
+    this test measures the ordering logic either way.
+    """
+    with tempfile.TemporaryDirectory() as tmp:
+        foreign = Path(tmp) / "someone-elses-checkout"
+        (foreign / "idp_common").mkdir(parents=True)
+        (foreign / "idp_common" / "__init__.py").write_text("")
+
+        in_repo = REPO_ROOT / "lib" / "idp_common_pkg"
+        assert (in_repo / "idp_common" / "__init__.py").exists(), (
+            "the in-repo control is missing, so neither ordering below means anything."
+        )
+
+        foreign_first = _first_provider("idp_common", [foreign, in_repo])
+        repo_first = _first_provider("idp_common", [in_repo, foreign])
+
+    assert foreign_first is not None and not foreign_first.is_relative_to(REPO_ROOT), (
+        f"_first_provider returned {foreign_first} for a search order whose first "
+        "entry is a foreign checkout. It is not reading the order, so the test "
+        "above would pass with resolution pointing anywhere."
+    )
+    assert repo_first is not None and repo_first.is_relative_to(REPO_ROOT), (
+        f"_first_provider returned {repo_first} when the in-repo path comes first. "
+        "The control for the case above."
+    )
+
+
+def test_the_resolution_checks_ignore_the_callers_pythonpath(monkeypatch) -> None:
+    """The checks above must answer about the config, not about the shell.
+
+    Directly measured, not reasoned about: with `PYTHONPATH` exported to this
+    repository's `lib/*` roots — which `scripts/run_all_tests.py` and anyone
+    following the #1094 guidance does — the negative control resolved all five
+    packages and failed. The positive checks had the mirror-image flaw: they would
+    have passed over an empty `extraPaths`, which is the state this whole change set
+    exists to reject.
+
+    So `PYTHONPATH` is stripped from every basedpyright subprocess, and this pins
+    it. A `dict(os.environ)` copied without the `pop` would reintroduce the
+    dependency invisibly.
+    """
+    monkeypatch.setenv("PYTHONPATH", str(REPO_ROOT / "lib" / "idp_common_pkg"))
+    assert "PYTHONPATH" not in _env_without_pythonpath()
+
+    # With a PYTHONPATH that would resolve everything, an empty `extraPaths` must
+    # still be reported as resolving nothing.
+    unresolved = _resolution_probe([], sorted(_first_party_package_roots()))
+    assert len(unresolved) == len(_first_party_package_roots()), (
+        f"with PYTHONPATH set and no extraPaths, only {len(unresolved)} of "
+        f"{len(_first_party_package_roots())} first-party imports were reported "
+        f"unresolvable: {unresolved}. The probe is inheriting the caller's "
+        "PYTHONPATH, so it measures the environment rather than the configuration — "
+        "the exact property #1109 is about."
+    )
+
+    # And the search-path reader must report the same order either way: every path
+    # it lists has to come from the config, never from the environment.
+    search_paths = _reported_search_paths()
+    configured = {REPO_ROOT / p for p in _extra_paths()}
+    from_environment = [
+        path
+        for path in search_paths
+        if path.is_relative_to(REPO_ROOT / "lib") and path not in configured
+    ]
+    assert not from_environment, (
+        f"basedpyright's search paths include {from_environment}, which "
+        "`extraPaths` does not name — so they arrived from the exported PYTHONPATH. "
+        "test_first_party_imports_resolve_inside_this_repository would then pass on "
+        "this machine and fail in CI."
+    )
+
+
+def test_the_resolution_probe_reports_an_unresolvable_package() -> None:
+    """Non-vacuity of the probe itself.
+
+    A `_resolution_probe` that returned `[]` unconditionally — a renamed rule, a
+    changed JSON shape, a basedpyright flag that stopped meaning what it meant —
+    would satisfy the test above forever while resolution was broken. Measured with
+    no search paths: all five first-party imports are reported.
+    """
+    unresolved = _resolution_probe([], sorted(_first_party_package_roots()))
+    assert len(unresolved) == len(_first_party_package_roots()), (
+        "with no `extraPaths` at all, basedpyright reported "
+        f"{len(unresolved)} unresolvable first-party import(s) out of "
+        f"{len(_first_party_package_roots())}: {unresolved}. The probe is not "
+        "measuring what the test above relies on it measuring."
     )
 
 

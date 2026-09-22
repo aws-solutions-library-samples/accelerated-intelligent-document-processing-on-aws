@@ -919,11 +919,13 @@ def handler(event: Dict[str, Any], context: Any) -> None:
                                     logger.info(
                                         f"Set use_bda=true on config version '{ver_name}'"
                                     )
-                                # Also set bdaSyncStatus to needs-sync
+                                # Also set bdaSyncStatus to needs-sync.
+                                # `set_bda_sync_status` is the method that writes
+                                # only that attribute; `set_bda_project_arn` also
+                                # requires the ARN, which this path does not have
+                                # and must not overwrite.
                                 try:
-                                    manager.set_bda_project_arn(
-                                        ver_name, sync_status="needs-sync"
-                                    )
+                                    manager.set_bda_sync_status(ver_name, "needs-sync")
                                     logger.info(
                                         f"Set bdaSyncStatus=needs-sync on config version '{ver_name}'"
                                     )

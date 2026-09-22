@@ -195,11 +195,23 @@ failure mode it claims, because a ratchet nobody has watched fail is not a
 ratchet. All three exist because every gap they cover was originally found by
 hand, months late.
 
-`make typecheck` reads every tracked `.py` file, which
+`make typecheck` reads every tracked `.py` file — 1,314 today, the same figure
+`git ls-files '*.py' | wc -l` and `filesAnalyzed` report — which
 `scripts/tests/test_pyright_config.py` asserts by deriving the set from
 `git ls-files` rather than from a list. Its `include` array named six paths and
-reached 432 of 1230 files, and two `NameError`-class defects reached `develop`
-through the gap.
+reached 432 of the 1,230 tracked at the time, and two `NameError`-class defects
+reached `develop` through the gap.
+
+Reading every file is a weaker property than it sounds, and the same suite now
+covers the difference. `basedpyright` honours `PYTHONPATH`, which neither the
+`make` target nor either CI sets, so with `reportMissingImports` configured `"none"`
+the shared `idp_common` library did not resolve and no call into it could produce a
+diagnostic — zero errors over a file count that matched `git ls-files` exactly,
+hiding eleven real ones ([#1109](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/1109)).
+`pyrightconfig.json`'s `extraPaths` fixes resolution in the configuration rather
+than the environment, using relative paths so it cannot resolve against another
+checkout, and the suite asserts that first-party imports really do resolve — by
+running basedpyright, not by inspecting the JSON.
 
 ### Whether any of this actually blocks a merge
 

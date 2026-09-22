@@ -133,9 +133,13 @@ class ConfigurationReader:
         self, *, as_model: Literal[True], version: Optional[str] = None, revision: Optional[int] = None
     ) -> IDPConfig: ...
 
+    # `as_model` carries its default here, matching the implementation below and
+    # the `get_config` overloads further down this file. Without it, neither
+    # overload accepts a call that omits `as_model`, so every caller relying on
+    # the documented dict default resolved to no overload at all.
     @overload
     def get_merged_configuration(
-        self, *, as_model: Literal[False], version: Optional[str] = None, revision: Optional[int] = None
+        self, *, as_model: Literal[False] = False, version: Optional[str] = None, revision: Optional[int] = None
     ) -> Dict[str, Any]: ...
 
     def get_merged_configuration(

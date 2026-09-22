@@ -201,15 +201,20 @@ def handler(event, context):
     except Exception as e:
         logger.error(f"Error in rule validation orchestration: {str(e)}")
         
-        # Update document status to error if possible
+        # Record the failure on the document if we got far enough to have one.
+        #
+        # `update_document` rather than `update_document_status`: the latter
+        # writes only ObjectStatus and takes no error text, so the message would
+        # be lost. `Status.FAILED` is the enum's failure member — there is no
+        # `Status.ERROR`.
         try:
             if 'document' in locals():
                 docs_service = create_document_service()
-                docs_service.update_document_status(
-                    document_id=document.id,
-                    status=Status.ERROR,
-                    error_message=str(e)
+                document.status = Status.FAILED
+                document.errors.append(
+                    f"Rule validation orchestration failed: {str(e)}"
                 )
+                docs_service.update_document(document)
         except Exception as status_error:
             logger.error(f"Failed to update document status: {str(status_error)}")
         
