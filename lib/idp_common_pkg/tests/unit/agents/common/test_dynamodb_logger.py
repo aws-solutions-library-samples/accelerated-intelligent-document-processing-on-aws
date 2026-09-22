@@ -38,16 +38,24 @@ before any of them writes, and by `TestConflictRetry`, which drives the retry
 mechanism with no threads at all. A concurrency regression has to fail one of those
 two; it will not fail any of the rest.
 
-**`TestConcurrentAppends._run` asserts that the pool it got is a real
-`ThreadPoolExecutor`, and that assertion is load-bearing rather than defensive.**
-Substituting the synchronous stand-in into that one method is the regression that
+**Both of `TestConcurrentAppends`' helpers assert that the pool they got is a real
+`ThreadPoolExecutor`, and those assertions are load-bearing rather than defensive.**
+Substituting the synchronous stand-in into one of them is the regression that
 *caused* #1098, it is a two-line edit, and without the check it leaves the whole
-module green except for a single test — so the control guarding the blind spot
-would itself be one test wide. With the check, all six tests in the class fail.
-Measured by writing the mutation into a throwaway copy of this file and running it:
-1 of 6 failed before, 6 of 6 after. The rejection count is asserted inside the
-parametrised test for the same reason, so every width carries it rather than one
-width carrying it for the others.
+module green except for a single test — so the control guarding the blind spot would
+itself be one test wide. With the check, every test built on the substituted helper
+fails. Measured by writing each mutation into a throwaway copy of this file: of the
+ten tests in the class, the stand-in in `_run` fails 6 and the stand-in in
+`_run_separate_loggers` fails 4, which between them is all ten. The rejection count
+is asserted inside the parametrised tests for the same reason, so every width
+carries it rather than one width carrying it for the others.
+
+The two helpers measure different defects and neither covers the other. `_run` puts
+`workers` threads in **one** logger's pool, which is the write race (#1098):
+overlapping appends on one record. `_run_separate_loggers` builds `count` **separate**
+loggers, which is the production shape — one per sub-agent — and is what #1106 was
+about, since an ordinal counted per instance came out unique within any single
+logger and so could only collide across them.
 """
 
 import json
@@ -126,6 +134,25 @@ def _written_messages(table: MagicMock) -> list[dict[str, Any]]:
     return json.loads(values[":messages"])
 
 
+def _accumulating_logger(item: dict[str, Any] | None = None):
+    """A logger over a table that *keeps* what is written to it.
+
+    `_logger` above answers every read with the same canned array, which is what
+    most assertions here want but cannot show anything about a value derived from
+    the stored transcript: every write would see the same length. `_ConditionalTable`
+    at one party is a real accumulating store with the version condition modelled,
+    and its barrier of one releases immediately, so no threads are involved.
+    """
+    table = _ConditionalTable(parties=1, item=item)
+    with (
+        patch(f"{MODULE}.boto3.resource") as resource,
+        patch(f"{MODULE}.ThreadPoolExecutor", _InlineExecutor),
+    ):
+        resource.return_value.Table.return_value = table
+        instance = DynamoDBMessageLogger("agent-table")
+    return instance, table
+
+
 @pytest.mark.unit
 class TestLoggerConstruction:
     """__init__: table binding and the worker pool."""
@@ -146,34 +173,71 @@ class TestLoggerConstruction:
             DynamoDBMessageLogger("agent-table", max_workers=7)
         assert pool.call_args.kwargs["max_workers"] == 7
 
-    def test_the_sequence_counter_starts_at_zero(self):
+    def test_no_ordinal_is_counted_on_the_instance(self):
+        # The absence is the fix for #1106. An ordinal counted here restarts at one
+        # for every logger, and each sub-agent in a turn builds its own on the same
+        # record, so the same value named several different messages in one
+        # transcript. Asserted rather than left implicit, because reinstating a
+        # counter is a one-line change that every other test in this file would
+        # tolerate.
         instance, _ = _logger()
-        assert instance.sequence_counter == 0
+        assert not hasattr(instance, "sequence_counter")
 
 
 @pytest.mark.unit
 class TestSequenceNumbering:
-    """log_message_async: the sequence number the UI orders by."""
+    """The ordinal each stored message carries, derived from the stored array."""
 
     def test_the_first_message_is_numbered_one(self):
         instance, table = _logger()
         instance.log_message_async("job-1", "user-1", {"role": "user"})
         assert _written_messages(table)[-1]["sequence_number"] == 1
 
-    def test_numbering_increments_per_message(self):
-        instance, table = _logger()
+    def test_numbering_follows_the_stored_position(self):
+        instance, table = _accumulating_logger()
         for _ in range(3):
             instance.log_message_async("job-1", "user-1", {"role": "user"})
-        assert instance.sequence_counter == 3
+        assert table.sequence_numbers() == [1, 2, 3]
 
-    def test_the_sequence_number_is_stamped_onto_the_callers_dict(self):
-        # The caller keeps a local copy of this dict (DynamoDBMessageTracker appends
-        # it to self.messages before the write), so the number has to land on the
-        # same object rather than on a copy, or the local transcript is unnumbered.
+    def test_the_ordinal_continues_from_an_existing_transcript(self):
+        # An ordinal derived from the array cannot restart, which is the whole
+        # point: a second logger joining a record part-way through picks up where
+        # the stored transcript leaves off rather than at one.
+        existing = [{"role": "user"}, {"role": "assistant"}]
+        instance, table = _accumulating_logger(
+            {"agent_messages": json.dumps(existing)}
+        )
+        instance.log_message_async("job-1", "user-1", {"role": "user"})
+        assert table.sequence_numbers()[-1] == 3
+
+    def test_the_callers_dict_is_left_alone(self):
+        # The ordinal is computed on a worker thread and recomputed if the append
+        # loses a conflict, so it must not be written onto the object the caller
+        # still holds -- DynamoDBMessageTracker keeps that object in self.messages.
         instance, _ = _logger()
         message = {"role": "user"}
         instance.log_message_async("job-1", "user-1", message)
-        assert message["sequence_number"] == 1
+        assert message == {"role": "user"}
+
+    def test_a_rebuilt_append_renumbers_rather_than_keeping_a_stale_ordinal(self):
+        # A rejected append re-reads, and the array it re-reads is one longer. The
+        # ordinal has to follow, or the winner's message and this one share a value.
+        instance, table = _logger()
+        table.get_item.side_effect = [
+            {"Item": {"agent_messages": "[]", "agent_messages_version": 0}},
+            {
+                "Item": {
+                    "agent_messages": json.dumps([{"role": "other"}]),
+                    "agent_messages_version": 1,
+                }
+            },
+        ]
+        table.update_item.side_effect = [
+            _client_error("ConditionalCheckFailedException"),
+            None,
+        ]
+        instance.log_message_async("job-1", "user-1", {"role": "user"})
+        assert [m["sequence_number"] for m in _written_messages(table)[-1:]] == [2]
 
 
 @pytest.mark.unit
@@ -662,11 +726,12 @@ class TestConcurrentAppends:
     There is no sleep, no wall-clock threshold and no dependence on the scheduler,
     so the only way to fail is for an append to actually be lost.
 
-    What is asserted is the *set* of messages stored, not their order. Under real
-    overlap the stored order is the order the writes committed in, which the
-    scheduler does decide; asserting it would be the flaky, timing-dependent
-    assertion this class exists to avoid. Order is not lost by that -- every
-    message carries the `sequence_number` the UI sorts on.
+    What is asserted is the *set* of messages stored, not which message got which
+    ordinal. Under real overlap the stored order is the order the writes committed
+    in, which the scheduler does decide; pinning a message to an ordinal would be the
+    flaky, timing-dependent assertion this class exists to avoid. What does not
+    depend on the scheduler is that the ordinals are 1..N with no duplicate, because
+    each is the length of the array its write committed against.
     """
 
     def _run(self, workers: int, item: dict[str, Any] | None = None):
@@ -687,6 +752,33 @@ class TestConcurrentAppends:
         for index in range(workers):
             instance.log_message_async("job-1", "user-1", {"role": f"r{index}"})
         instance.shutdown()  # drains the pool, so the assertions see every write
+        return table
+
+    def _run_separate_loggers(self, count: int):
+        """The production shape: one logger per sub-agent, all on one record.
+
+        `_run` above puts `count` threads in a single pool, which covers the write
+        race but not #1106 -- within one instance an ordinal counted on the instance
+        would still come out unique. Separate instances are what made the ordinals
+        collide, since each counted from zero. Same table, same barrier, same
+        real-pool assertion; the only difference is how many loggers there are.
+        """
+        table = _ConditionalTable(parties=count)
+        with patch(f"{MODULE}.boto3.resource") as resource:
+            resource.return_value.Table.return_value = table
+            instances = [
+                DynamoDBMessageLogger("agent-table") for _ in range(count)
+            ]
+        for instance in instances:
+            # Carried here too: a synchronous stand-in reduces this to `count`
+            # sequential writes, which cannot collide and so cannot fail.
+            assert isinstance(instance.executor, ThreadPoolExecutor), (
+                "these tests measure nothing unless the writes run on a real pool"
+            )
+        for index, instance in enumerate(instances):
+            instance.log_message_async("job-1", "user-1", {"role": f"agent{index}"})
+        for instance in instances:
+            instance.shutdown()
         return table
 
     @pytest.mark.parametrize("workers", [2, 4, 8])
@@ -719,10 +811,31 @@ class TestConcurrentAppends:
 
     def test_an_unversioned_record_keeps_its_history_through_the_overlap(self):
         # The upgrade case: existing transcripts carry no version attribute, and
-        # the appends that add it must not drop what is already stored.
+        # the appends that add it must not drop what is already stored. The stored
+        # message occupies position one, so the four appended ones take 2..5 -- an
+        # ordinal is a position in the array, and the pre-existing entry's `0` is a
+        # value this code would no longer write.
         existing = {"agent_messages": json.dumps([{"sequence_number": 0}])}
         table = self._run(4, item=existing)
-        assert sorted(table.sequence_numbers()) == [0, 1, 2, 3, 4]
+        assert sorted(table.sequence_numbers()) == [0, 2, 3, 4, 5]
+
+    @pytest.mark.parametrize("loggers", [2, 4, 12])
+    def test_separate_loggers_on_one_record_do_not_repeat_an_ordinal(self, loggers):
+        # #1106 itself. Every sub-agent in a turn builds its own logger on the same
+        # PK/SK, and an ordinal counted per instance gave all of them 1. Twelve is
+        # carried as the widest fan-out the module's measurement covers.
+        table = self._run_separate_loggers(loggers)
+        stored = table.sequence_numbers()
+        # Length first: an empty array has no duplicates either, so a run that
+        # stored nothing would pass the uniqueness assertion on its own.
+        assert len(stored) == loggers
+        assert sorted(stored) == list(range(1, loggers + 1))
+
+    def test_the_separate_loggers_really_overlapped(self):
+        # Without a rejection none of them raced, and unique ordinals would follow
+        # from the writes having been sequential rather than from the fix.
+        table = self._run_separate_loggers(4)
+        assert table.conditional_rejections >= 3
 
 
 @pytest.mark.unit
@@ -811,8 +924,9 @@ class TestThrottlingEventLogging:
         assert written["timestamp"]
 
     def test_a_supplied_timestamp_is_preferred_over_now(self):
-        # The event was detected earlier than it is logged, and the UI orders by
-        # this field.
+        # The event was detected earlier than it is logged, and this field is what
+        # says when -- both on screen and in the log line that names a message the
+        # write could not persist.
         instance, table = _logger()
         instance.log_throttling_event_async(
             "job-1", "user-1", {"timestamp": "2026-01-01T00:00:00"}
@@ -827,14 +941,75 @@ class TestThrottlingEventLogging:
 
 @pytest.mark.unit
 class TestShutdown:
-    """shutdown: the pool must drain, not be dropped."""
+    """shutdown: a bounded drain that reports what it could not finish.
 
-    def test_shutdown_waits_for_in_flight_writes(self):
-        # Returning before the queue drains loses the last messages of a
-        # conversation, which are the ones a user is waiting to see.
-        instance, _ = _logger()
+    These use a **real** pool, for the same reason `TestConcurrentAppends` does and
+    with a sharper edge: with a synchronous stand-in every write has already
+    happened by the time `shutdown` is called, so a `shutdown` that drained nothing
+    at all would pass. What is asserted is that a write which had *not* run did run,
+    which is the property #1110 is about.
+    """
+
+    def _real_pool_logger(self, gate: threading.Event | None = None):
+        """A logger on a real width-1 pool whose writes can be held open."""
+        table = MagicMock()
+        table.get_item.return_value = {"Item": {"agent_messages": "[]"}}
+        if gate is not None:
+            table.get_item.side_effect = lambda **_: (
+                gate.wait(timeout=30),
+                {"Item": {"agent_messages": "[]"}},
+            )[1]
+        with patch(f"{MODULE}.boto3.resource") as resource:
+            resource.return_value.Table.return_value = table
+            instance = DynamoDBMessageLogger("agent-table")
+        assert isinstance(instance.executor, ThreadPoolExecutor), (
+            "a drain test on a synchronous stand-in measures nothing"
+        )
+        return instance, table
+
+    def test_a_queued_write_runs_before_shutdown_returns(self):
+        # The assertion is on the write, not on shutdown having been called: a
+        # message still queued when the execution environment freezes is the loss.
+        gate = threading.Event()
+        instance, table = self._real_pool_logger(gate)
+        instance.log_message_async("job-1", "user-1", {"role": "user"})
+        gate.set()
+        assert instance.shutdown() == 0
+        assert table.update_item.called
+
+    def test_the_drain_is_bounded_and_reports_what_it_left(self):
+        # An unbounded wait here would hold a sub-agent's exit open behind a stuck
+        # write while the user waits on the orchestrator's answer.
+        gate = threading.Event()
+        instance, table = self._real_pool_logger(gate)
+        instance.log_message_async("job-1", "user-1", {"role": "user"})
+        try:
+            with patch("idp_common.metrics.put_metric") as put_metric:
+                assert instance.shutdown(timeout=0.05) == 1
+            assert not table.update_item.called
+            # Counted, not only logged: an operator cannot be paged on a log line,
+            # and this is the same metric the retry loop's own give-up path uses.
+            put_metric.assert_called_once_with("AgentTranscriptMessageDropped", 1)
+        finally:
+            gate.set()
+
+    def test_a_drain_with_nothing_queued_returns_immediately(self):
+        instance, _ = self._real_pool_logger()
+        assert instance.shutdown() == 0
+
+    def test_shutdown_is_repeatable(self):
+        # Called from IDPAgent.__exit__, which a caller may reach twice.
+        instance, _ = self._real_pool_logger()
         instance.shutdown()
-        assert instance.executor.shutdown_calls == [True]
+        assert instance.shutdown() == 0
+
+    def test_submitting_after_shutdown_raises_rather_than_silently_dropping(self):
+        # The submit-time failure the tracker's guards absorb. It is reachable
+        # precisely because shutdown now has a production caller.
+        instance, _ = self._real_pool_logger()
+        instance.shutdown()
+        with pytest.raises(RuntimeError):
+            instance.log_message_async("job-1", "user-1", {"role": "user"})
 
 
 @pytest.mark.unit
@@ -1068,10 +1243,9 @@ class TestTrackerThrottlingHandling:
         # frame: log_message_async submits to a thread pool, and the write's errors are
         # absorbed by _handle_write_result's own try around future.result(). So the
         # side effect below stands for a failure to *submit* — executor.submit raising
-        # after shutdown — which is the only exposure the missing guard had, and is
-        # unreachable today because nothing in production calls shutdown. Asserted
-        # anyway: the guard's value is that this handler behaves like the one it
-        # replaces, and that should not depend on shutdown staying uncalled.
+        # after shutdown — which is the exposure the missing guard had, and which
+        # IDPAgent.__exit__ calling shutdown makes reachable: a throttling event that
+        # arrives after the agent's context has closed lands here.
         tracker, db_logger = self._tracker()
         db_logger.log_message_async.side_effect = RuntimeError("boom")
         tracker._handle_throttling_with_agent_message(RuntimeError("throttled"))
@@ -1118,11 +1292,19 @@ class TestTrackerHooksAndShutdown:
         tracker = DynamoDBMessageTracker("job-1", "user-1", enabled=False)
         assert tracker.get_throttling_events() == []
 
-    def test_shutdown_drains_the_logger(self):
+    def test_shutdown_drains_the_logger_with_a_bound(self):
         with patch(f"{MODULE}.DynamoDBMessageLogger") as logger_cls:
             tracker = DynamoDBMessageTracker("job-1", "user-1", table_name="t")
         tracker.shutdown()
-        logger_cls.return_value.shutdown.assert_called_once()
+        # The bound is the part worth pinning. Passing no timeout through would
+        # restore an unbounded wait at a sub-agent's exit, with the user waiting.
+        assert logger_cls.return_value.shutdown.call_args.kwargs["timeout"] is not None
+
+    def test_shutdown_reports_what_the_drain_could_not_finish(self):
+        with patch(f"{MODULE}.DynamoDBMessageLogger") as logger_cls:
+            tracker = DynamoDBMessageTracker("job-1", "user-1", table_name="t")
+        logger_cls.return_value.shutdown.return_value = 3
+        assert tracker.shutdown() == 3
 
     def test_shutdown_is_safe_on_a_disabled_tracker(self):
-        DynamoDBMessageTracker("job-1", "user-1", enabled=False).shutdown()
+        assert DynamoDBMessageTracker("job-1", "user-1", enabled=False).shutdown() == 0

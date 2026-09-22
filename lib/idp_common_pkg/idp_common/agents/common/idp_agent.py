@@ -117,6 +117,11 @@ class IDPAgent(Agent):
         self.agent_id = agent_id
         self.sample_queries = sample_queries or []
         self.mcp_client = mcp_client
+        # The tracker _setup_monitoring registers, kept so that __exit__ can drain
+        # its write pool. Registering it as a hook does not give anything a handle on
+        # it: the hook registry dispatches events to it and has no teardown event, so
+        # without this reference nothing could reach its shutdown.
+        self.message_tracker: Optional[Any] = None
 
         # Set up automatic monitoring if job_id and user_id are provided
         self._setup_monitoring(job_id, user_id, enable_monitoring)
@@ -175,6 +180,7 @@ class IDPAgent(Agent):
                 enabled=enable_monitoring,
             )
             self.hooks.add_hook(message_tracker)
+            self.message_tracker = message_tracker
             logger.info(f"Agent monitoring enabled for job: {job_id}, user: {user_id}")
 
         except Exception as e:
@@ -189,7 +195,35 @@ class IDPAgent(Agent):
         return self
 
     def __exit__(self, exc_type, exc_val, exc_tb):
-        """Context manager exit - properly closes MCP client if present."""
+        """
+        Context manager exit - drains transcript writes, then closes the MCP client.
+
+        This is the boundary at which the agent is finished with, and it is the only
+        place a queued transcript write can be waited for. The tracker's messages are
+        written on a thread pool, and a Lambda invocation ends by the execution
+        environment being **frozen** rather than shut down: the process is not
+        signalled and does not exit, so an unfinished write is simply suspended, and
+        no interpreter-shutdown hook (``atexit``) gets a chance to flush it. See
+        ``DynamoDBMessageLogger.shutdown`` for the full account and for why the drain
+        is bounded rather than unconditional.
+
+        Every tracker built in production belongs to an agent that passes through
+        here. On the analytics path (``agent_processor``) the top-level agent is an
+        ``IDPAgent`` inside a ``with agent:``. On the chat path the top-level
+        conversational agent is a raw Strands agent and carries no tracker; the
+        trackers there belong to the sub-agents the orchestrator runs, each inside a
+        ``with specialized_agent:``. Draining before closing the MCP client, because
+        the two are unrelated and MCP teardown is the half that has been seen to
+        raise.
+        """
+        if self.message_tracker:
+            try:
+                self.message_tracker.shutdown()
+            except Exception as e:
+                logger.warning(f"Error draining agent transcript writes: {e}")
+                # Don't propagate monitoring cleanup errors: monitoring is
+                # best-effort and must not turn a completed agent run into a failure.
+
         if self.mcp_client:
             try:
                 self.mcp_client.__exit__(exc_type, exc_val, exc_tb)

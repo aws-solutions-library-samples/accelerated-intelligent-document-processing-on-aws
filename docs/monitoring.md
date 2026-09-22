@@ -398,8 +398,9 @@ One metric in the stack's own namespace (`<StackName>`):
 
 - **`AgentTranscriptMessageDropped`** — published (value `1`) with no dimensions by
   `DynamoDBMessageLogger` in `idp_common.agents.common`, once per message that could
-  not be stored. Both causes count: exhausting the conflict retries, and a read that
-  kept failing. It is emitted from `AgentProcessorFunction` and
+  not be stored. Three causes count: exhausting the conflict retries, a read that kept
+  failing, and a write still outstanding when the agent's bounded drain gave up on it.
+  It is emitted from `AgentProcessorFunction` and
   `AgentChatProcessorFunction`, both of which set `METRIC_NAMESPACE` to the root
   stack name and both of whose `cloudwatch:PutMetricData` grants permit that
   namespace alongside `IDPControlPlane`. **No data means no transcript entry was
@@ -414,31 +415,41 @@ One alarm publishes to `AlertsTopic`:
   costs a single transcript entry that nothing else depends on. A stream of them
   means transcripts are being recorded with gaps across the board.
 
-**Diagnosing.** The log line beside every emit names the job id and the
-`sequence_number` that was not persisted, at ERROR in the emitting function's log
-group. Which log group depends on the entry point, and neither is under a
-`/aws/lambda/<StackName>-` prefix you can guess: `AgentProcessorFunction` and
-`AgentChatProcessorFunction` both declare no `LogGroupName`, so they take
-CloudFormation's generated name and list on the `<StackName>-` prefix with **no
-leading slash**. The two causes read differently:
+**Diagnosing.** The log line beside every emit names the job id and the message's
+role and timestamp, at ERROR in the emitting function's log group. It does not name a
+`sequence_number`, because that value is the message's position in the *stored*
+transcript and a message that was never stored has none. Which log group depends on
+the entry point, and neither is under a `/aws/lambda/<StackName>-` prefix you can
+guess: `AgentProcessorFunction` and `AgentChatProcessorFunction` both declare no
+`LogGroupName`, so they take CloudFormation's generated name and list on the
+`<StackName>-` prefix with **no leading slash**. The three causes read differently:
 
 | Log line | Cause | Fix |
 |---|---|---|
-| `Gave up appending message ... after N attempts` | Sustained contention: many sub-agents writing one job record, or overlapping workflow retries doing so | Expected under a wide fan-out; if it is steady, look at how many agents the requests select. Selecting every available agent is one click in the UI |
+| `Gave up appending message ... after N attempts` | Sustained contention: many sub-agents writing one job record | Expected under a wide fan-out; if it is steady, look at how many agents the requests select. Selecting every available agent is one click in the UI |
 | `Could not read existing messages ... after N attempts` | The read itself kept failing — throughput on the agent table, or a transient service error | Check the agent table's throttling metrics. A read error that cannot succeed on retry (`AccessDeniedException`, `ValidationException`) is not retried and is logged once, so a single warning of that shape points at the grant or the request rather than at load |
+| `Agent transcript write for job ... did not finish within Ns` | The agent finished and the bounded drain at its exit could not complete this write in time — a write stuck in a long retry ladder, or a burst queued behind one | Check the agent table's latency and throttling metrics. Unlike the two above, this one does not mean the message is certainly gone: see below |
 
 **What is lost while it is firing:** entries in the stored conversation transcript,
 so a replayed conversation shows gaps. The agent's own answer to the user, the job's
 outcome and every extracted result are unaffected — this metric watches a path whose
 failure the workflow reports as success.
 
-⚠️ This metric does **not** cover every way a transcript entry can be lost. Writes
-are queued on a thread pool that nothing drains in production, so whatever is still
-queued when the Lambda execution environment freezes is abandoned without reaching
-the drop path or this metric
+**Read a data point as "the transcript may have a gap", not "a message was
+destroyed".** For the first two causes the message is gone. For the drain timeout it
+may not be: Lambda resumes unfinished background work if that execution environment is
+thawed for another invocation, so the write can still commit — just not in time for the
+session that is reading the transcript, and not at all if the environment is reclaimed
+instead of reused, which is the certain outcome for the last invocation before a
+scale-down. Either way the operational conclusion is the same, which is why the three
+causes share one metric.
+
+The drain itself is what keeps the third case bounded and visible. Transcript writes
+are queued on a thread pool, and a Lambda invocation ends with the execution
+environment being *frozen* rather than shut down, so nothing flushes that queue on its
+own — an agent's context-manager exit waits for it, for two seconds, and reports what
+it could not finish
 ([#1110](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/1110)).
-Treat "no data" as "no message was dropped by the retry loop", not as "the
-transcript is complete".
 
 ## Log Groups
 
