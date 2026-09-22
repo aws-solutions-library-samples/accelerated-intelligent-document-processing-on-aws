@@ -274,10 +274,19 @@ Historically several gates ran on GitLab only, so a change merged via a GitHub P
 skipped them — the same class of gap as the SRT/dep-audit note below. Now on both:
 `make lint-cicd` (which itself covers `cfn-lint`, `validate-buildspec`,
 `check-arn-partitions`, filtered-scan and data-plane-tag checks),
-`make typecheck-pr`, `make api-test-static`, `make test-cicd -C lib/idp_common_pkg`,
+`make typecheck`, `make api-test-static`, `make test-cicd -C lib/idp_common_pkg`,
 `make test-packages-cicd`, the UI vitest suite,
 `scripts/check_first_party_deps.py` and
 `scripts/sdlc/validate_service_role_permissions.py`.
+
+The type gate in both CIs is the **whole-tree** `make typecheck`, not
+`make typecheck-pr`. The PR-scoped form is a developer convenience and is in
+**neither** CI — a file-scoped check passes on a signature change whose broken caller
+sits in a file the diff did not touch, which is the ordinary shape of a type error.
+`scripts/sdlc/tests/test_typecheck_pr_changes.py::test_neither_ci_config_runs_this_script`
+asserts that, so naming it here as a CI gate would be a document contradicting a
+passing test; both CI configurations mention it only in comments recording that the
+whole-tree form replaced it.
 
 `make cfn-lint` and `make validate-buildspec` were in **neither** CI before — they
 sat in `lint`/`fastlint` but not `lint-cicd`, so a template or buildspec error

@@ -1061,18 +1061,28 @@ def test_first_party_imports_resolve_to_the_configured_package_roots() -> None:
       files under it — and that copy is inside the repository, so an
       `is_relative_to(REPO_ROOT)` test passes. Requiring the exact configured
       directory is what makes "inside the repo" mean "the library this repo ships".
+      This is also the only one of the two resolution checks that sees that
+      arrangement at all: it declares no `extraPaths`, so
+      `test_no_execution_environment_declares_its_own_extra_paths` has nothing to
+      look at and passes.
 
-    ⚠️ **What this does and does not currently catch.** Measured on this machine:
-    with the `lib/idp_common_pkg` entry removed, basedpyright resolves `idp_common`
-    to **nothing** rather than to the sibling worktree, because the stale editable
-    installs here are the modern `__editable___*_finder.py` kind and pyright cannot
-    follow a `MetaPathFinder`. So the foreign-resolution risk is live for `pytest`
-    — which does follow it, and which
-    `scripts/tests/test_first_party_provenance.py` covers — and not for this gate
-    today. It is asserted anyway: a `.pth`-style editable install (an older
-    setuptools, or `setup.py develop`) puts a plain directory on `site-packages`'
-    path and pyright follows that, and the staged-copy route above needs no
-    editable install at all.
+    ⚠️ **This is latent protection, not a currently exploitable hole — and saying so
+    is the honest framing.** In the staged-copy arrangement above the planted wrong
+    call still produces its error, because the shadowing root does not contain
+    `src/lambda/`. The blindness would apply to files *under* the staged copy, and
+    `exclude` already keeps those out of the checked set. So the useful property is
+    that **this check fires on the dangerous arrangement before that arrangement can
+    hide a diagnostic**, rather than that it is catching one today.
+
+    The same distinction applies to the editable-install route. Measured on this
+    machine: with the `lib/idp_common_pkg` entry removed, basedpyright resolves
+    `idp_common` to **nothing** rather than to the sibling worktree, because the
+    stale editable installs here are the modern `__editable___*_finder.py` kind and
+    pyright cannot follow a `MetaPathFinder`. So that risk is live for `pytest` —
+    which does follow it, and which `scripts/tests/test_first_party_provenance.py`
+    covers — and not for this gate today. It is asserted anyway, because a
+    `.pth`-style editable install (an older setuptools, or `setup.py develop`) puts a
+    plain directory on `site-packages`' path and pyright does follow that.
 
     The message names the path resolution landed on, because the whole difficulty
     of #1094 is that the wrong answer looks exactly like the right one.
