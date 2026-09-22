@@ -123,7 +123,8 @@
       "ratchet": "non-vacuity",
       "reason": "Cross-partition IAM trust does not exist, so the two statements trusting a named role in the commercial CI account cannot be parameterised. Not machine-checkable: whether a foreign account id has a counterpart in another partition is a fact about that account, not about this tree.",
       "crossReferences": [
-        "scripts/check_python_arn_partitions.py::EXCLUDE_FRAGMENTS"
+        "scripts/check_python_arn_partitions.py::EXCLUDE_FRAGMENTS",
+        "scripts/check_account_ids.py::ACCOUNT_ID_EXEMPT_LINES"
       ],
       "predicateConsidered": {
         "not_a_nested_stack_of_parent": "True of this template and irrelevant to the premise. The SDLC pipeline templates are not nested stacks of template.yaml and nothing claims they are; what makes the two exempt LINES unparameterisable is that they name a role in a specific foreign commercial account, which no predicate here can judge. The non-vacuity and one-file-per-entry ratchets bound it instead.",
@@ -495,6 +496,56 @@
       "issues": [
         "975",
         "1042"
+      ]
+    },
+    "scripts/check_account_ids.py::ACCOUNT_ID_EXCLUDED_SHAPES": {
+      "kind": "exemption",
+      "turnsOff": "the committed-account-id check, for one 12-digit run whose surrounding characters show it is not a standalone number",
+      "premise": [
+        "JUDGEMENT"
+      ],
+      "ratchet": "non-vacuity",
+      "reason": "Three shapes in this tree produce a 12-digit run that is not an identifier of any kind: the fractional part of a decimal literal (a point is a word boundary, so the run after it is bounded), the final group of an RFC-4122 UUID, and a slice of a longer hexadecimal digest. The gate evaluates all three per occurrence from the characters either side, so the verdict is computed rather than asserted; it is recorded as JUDGEMENT only because gate_premises.py holds no predicate for a textual shape and inventing one would give it a single caller. 252 of the tree's ~870 candidates are one of these three, the digest rule alone accounting for 213.",
+      "memberKind": "textual shape rule",
+      "ratchetEvidence": "scripts/check_account_ids.py",
+      "issues": [
+        "1067"
+      ]
+    },
+    "scripts/check_account_ids.py::ACCOUNT_ID_ALLOWLIST": {
+      "kind": "exemption",
+      "turnsOff": "the committed-account-id check, for every occurrence of one specific 12-digit value",
+      "premise": [
+        "JUDGEMENT"
+      ],
+      "ratchet": "non-vacuity",
+      "reason": "Whether a 12-digit value is a private account id, one of AWS's published example ids, an AWS-owned service account, or simply document content that happens to be twelve digits long (a bank account number in a synthetic statement, the digits of a CUSIP, a build timestamp) is a fact about the outside world and about what the containing document represents. Nothing in this tree can decide it, so each of the 15 entries carries the reason its value is not private. Keyed by VALUE rather than by path on purpose: publicness is a property of the id, so one entry states the claim once and a reviewer reads the claim instead of a list of files.",
+      "memberKind": "AWS account id",
+      "ratchetEvidence": "scripts/check_account_ids.py",
+      "issues": [
+        "1067"
+      ]
+    },
+    "scripts/check_account_ids.py::ACCOUNT_ID_EXEMPT_LINES": {
+      "kind": "exemption",
+      "turnsOff": "the committed-account-id check, for lines of one named file that match one named pattern",
+      "premise": [
+        "JUDGEMENT"
+      ],
+      "ratchet": "count-pinned",
+      "reason": "Nine lines still carry a real private account id because on those lines the id is consumed as a value at run time rather than being prose: the fallback of a CI variable and the bucket name derived from it, the fake caller identity in two of their tests, two IAM trust statements, and three Bedrock custom-model-deployment ARNs in shipped presets. Redacting any of them is a behaviour change needing the owning team, not a redaction, and the IAM pair cannot be redacted at all because there the id IS the trust relationship. Whether a given occurrence is read as a value is a judgement about the surrounding code that this tree cannot compute. Two properties bound it: no entry names an account id, so this registry and the gate are not themselves further occurrences, and each entry pins how many occurrences it shielded when written, so a new id on a different line of an already-exempt file still fails.",
+      "crossReferences": [
+        "Makefile::ARN_PARTITION_EXEMPT"
+      ],
+      "predicateConsidered": {
+        "not_a_nested_stack_of_parent": "True of all nine paths and irrelevant to the premise. None is a template the parent stack instantiates — they are a CI configuration, two deployment helpers, two of their tests, a credential-vendor template and three configuration presets — and nothing claims otherwise. What makes a line unredactable is that the id on it is read as a value, which is a fact about the surrounding code rather than about stack topology.",
+        "built_separately_from_main_stack": "True for the SDLC paths and the presets, and irrelevant for the same reason: whether one publish run builds a path says nothing about whether an account id inside it is consulted at run time. The count pin bounds the entry instead.",
+        "file_absent_or_untracked": "False for all nine — every path is tracked and present. The gate re-measures that on every run, because an entry whose line has moved or been redacted shields nothing and is failed as stale."
+      },
+      "memberKind": "deployable path",
+      "ratchetEvidence": "scripts/check_account_ids.py",
+      "issues": [
+        "1067"
       ]
     },
     "scripts/check_data_plane_tags.py::DATA_PLANE_ALLOWLIST": {
