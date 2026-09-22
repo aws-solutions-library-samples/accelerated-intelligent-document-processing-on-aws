@@ -1389,3 +1389,4 @@ class AttributeAssessment:
 class AssessmentResult:
     attributes: Dict[str, AttributeAssessment]
     metadata: Dict[str, Any]
+```

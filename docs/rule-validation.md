@@ -232,7 +232,26 @@ rule_validation:
 
 **Common Parameters** (top level):
 - `enabled`: Turns rule validation on or off
-- `semaphore`: Maximum number of concurrent API calls (default: 5)
+- `semaphore`: Maximum number of concurrent Bedrock calls **per document**, in both
+  the section-level fact-extraction step and the consolidation step (default: 5).
+  It is a per-invocation bound, and the account-level call rate is this value times
+  the number of documents in flight — so with `MaxConcurrentWorkflows` at its
+  default of 100, a `semaphore` of 5 permits up to 500 concurrent calls from the
+  consolidation step alone. That multiplier is the reason to be careful raising it.
+
+  ⚠️ **The consolidation step now honours it and previously did not**, so a
+  deployment that left the default at 5 will see that step issue fewer concurrent
+  calls and take longer. What bounded it before was the event loop's default thread
+  pool — `os.cpu_count() + 4` threads, capped at 32 — rather than this setting, so
+  the width it actually ran at depended on the container rather than on the
+  configuration. For the deployed 4,096 MB `RuleValidationOrchestrationFunction`
+  that is roughly 6 to 7, so a 14-rule document previously ran in about two waves
+  and now runs in three (`ceil(14 / 5)`). Raising the value is how to take that
+  throughput back deliberately, bearing the multiplier above in mind. The
+  end-to-end figures available are an **upper bound** on the change rather than the
+  deployed one: measured against Claude Sonnet 4.5 on a 16-CPU machine, where the
+  default pool is 20 threads wide and all 14 rules therefore ran at once,
+  consolidation took 16.9 s at `semaphore: 5` against 5.7 s unbounded.
 - `max_chunk_size`: Maximum **tokens** per chunk (default: 8000). Multiplied by
   `token_size`, the assumed characters per token (default: 4), to get the character
   budget a chunk is measured against — 32,000 characters with the defaults
@@ -644,7 +663,10 @@ so it survives the abridgement. The unabridged text is in the step's CloudWatch 
 - Use prompt caching effectively
 
 **Slow Processing**:
-- Increase `semaphore` value
+- Increase `semaphore` value — it bounds both the fact-extraction and the
+  consolidation step, so raising it shortens both. Watch for Bedrock throttling
+  as you do: the account-level call rate is this value times the number of
+  documents in flight.
 - Reduce number of rules
 - Use faster model (e.g., Claude Haiku)
 

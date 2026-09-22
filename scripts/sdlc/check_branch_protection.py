@@ -5,7 +5,7 @@
 """Measure whether this repo's CI gates actually *block* a merge.
 
 This repo has invested heavily in CI gates — ``make lint-cicd``, ``make
-typecheck-pr``, ``make cfn-lint``, ``make dep-audit``, the SRT security scan,
+typecheck``, ``make cfn-lint``, ``make dep-audit``, the SRT security scan,
 ``make api-test-static``, the CI parity guard — and every one of them is
 **advisory**. A GitHub pull request can be merged into ``develop`` with every
 check red, and a direct push to ``develop`` runs no GitHub workflow at all,
@@ -36,14 +36,16 @@ defect class this repo has hit repeatedly (see the parity gaps listed in
 
 A GitHub Actions status-check *context* is the job's ``name:`` if it declares
 one, otherwise the job **id**. So the mapping is per job, not per workflow and
-not per step. That matters here: the eight gates asserted by
-``test_ci_gate_parity.py``'s ``SHARED_GATES`` are all *steps* inside a **single**
+not per step. That matters here: eight of the ten gates asserted by
+``test_ci_gate_parity.py``'s ``SHARED_GATES`` are *steps* inside a **single**
 job — ``developer_tests`` in ``.github/workflows/developer-tests.yml`` — and
 GitHub can only require job-level contexts, never individual steps. So those
-eight gates collapse to exactly **one** requireable context, not three and not
-eight. The practical consequence is worth stating: because they share one
+eight collapse to exactly **one** requireable context rather than one per gate.
+The practical consequence is worth stating: because they share one
 context they also share one red mark, so a required-check failure does not say
-*which* of the eight failed — that needs the job log. This script prints which
+*which* of the eight failed — that needs the job log. The remaining two shared
+gates, the SRT scan and the dependency audit, are jobs of their own in
+``security-checks.yml`` and so carry a context each. This script prints which
 gate commands each context covers so the correspondence is at least visible.
 
 Check runs an action creates are **not** discoverable from job names

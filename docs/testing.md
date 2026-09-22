@@ -28,7 +28,7 @@ record of its last run.
 | Layer | Needs AWS? | Runs in CI? | Entry point |
 |---|---|---|---|
 | [1. Offline test suites](#1-offline-test-suites) | no | ✅ both CIs, but through two other targets — see below | `make test` |
-| [2. Static gates](#2-static-gates-lint-types-and-hand-written-scanners) | no | ✅ both CIs | `make lint-cicd` · `make typecheck-pr` |
+| [2. Static gates](#2-static-gates-lint-types-and-hand-written-scanners) | no | ✅ both CIs | `make lint-cicd` · `make typecheck` |
 | [3. Web UI unit tests](#3-web-ui-unit-tests) | no | ✅ both CIs | `make ui-test` |
 | [4. Security scanning](#4-security-scanning-sast-and-sca) | no | ✅ both CIs | `make srt-scan` · `make dep-audit` |
 | [5. Integration smoke suite](#5-integration-smoke-suite-ci-only) | **yes** | ⚠️ GitLab only | pipeline `integration_tests` |
@@ -153,8 +153,6 @@ that exists and never runs is otherwise indistinguishable from one that passes:
 |---|---|
 | `scripts` | `scripts/test_api_rbac.py` is the live RBAC harness driven by `make api-test` against a deployed stack (layer 6), not a pytest suite; collecting it picks up its `test_email()` helper as a test |
 | `src/lambda/ocr_benchmark_deployer` | `test_local.py` needs `huggingface_hub`, which is not a test dependency |
-| `nested/bedrockkb/src/s3_vectors_manager` | One stale assertion, not an environment problem. `conftest.py` in that directory stubs `cfnresponse` (a Lambda-runtime-only module) and supplies a region and placeholder credentials, so `handler.py` imports and four of `test_handler.py`'s five tests pass. The fifth mocks `get_index` and asserts `Status == 'Existing'`; `get_s3_vector_info` no longer consults `get_index` — it always attempts `create_index` and reports `Existing` only on `ConflictException` — so it reports `IndexCreated` and the assertion fails. `scripts/tests/test_run_all_tests_registry.py` computes both halves of that claim, so fixing the test fails the guard and asks for the root to be moved into `RUN_ROOTS` |
-| `nested/bedrockkb/src/s3_vectors_manager/tests` | Named separately now that an exclusion no longer covers what is nested under it. Not skipped in practice — `make test-packages-cicd` runs it directly, in both CI systems, so CI runs more than `make test` does |
 | `samples/lambda-hook-inference/GENAIIDP-chandra-ocr-hook` | `test_local.py` is a manual local-run script and collects zero pytest tests (measured) |
 | `lib/idp_sdk/idp_sdk/_core` | source, not tests: `test_studio_processor.py` is the Test Studio processor module, which the `test_` prefix makes look like a suite |
 | `lib/idp_common_pkg/manual_tests/agents` | operator-run scripts, not a suite: each one drives real Bedrock, Athena or DynamoDB against a deployed stack and bills model calls. Run by hand (`python manual_tests/agents/test_analytics.py -q "…"`); `norecursedirs` in `lib/idp_common_pkg/pytest.ini` keeps a bare `pytest` from collecting them |
@@ -207,9 +205,10 @@ hand-written scanners for classes of defect that have each shipped at least once
 | `make check-arn-partitions` | hardcoded `arn:aws:` / `amazonaws.com` instead of `${AWS::Partition}` / `${AWS::URLSuffix}` — GovCloud compatibility |
 | `make check-filtered-scans` | DynamoDB `Scan` with a filter expression that cannot see all matches |
 | `make check-data-plane-tags` | the `idp:plane=data` tag on the Lambdas that must carry it |
+| `make check-markdown-links` | a relative Markdown link that resolves to nothing, an `#anchor` naming a heading that has since been retitled, a **published** `docs/` page linking relatively to one `docs-site/setup.sh` does not symlink (resolves on GitHub, 404s on the site), and a code fence that swallows content, which would otherwise leave this gate blind to the rest of the file. Every tracked `.md` file, from `git ls-files`. Anchors are slugified by `github-slugger`'s rule, which `scripts/tests/test_markdown_links.py` verifies against the real package over every heading in the tree. External `http(s)` URLs are **not** fetched, so a green result says nothing about them ([#1068](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/1068)) |
 | `make validate-buildspec` | malformed CodeBuild buildspecs — otherwise a deploy-time failure |
 | `make codegen-check` | generated GraphQL types drifting from the schema |
-| `make typecheck` · `make typecheck-pr` | `basedpyright`; CI checks only files the PR changed |
+| `make typecheck` | `basedpyright` over every tracked `.py` file — this is what both CIs run. `make typecheck-pr` narrows it to the files a branch changes, for local latency, and is a gate in neither |
 | `make api-test-static` | an API operation added without authorization, and drift between the dispatcher's generated required-groups manifest and `scripts/api_rbac_expectations.yaml` — see [layer 6](#6-live-stack-tiers-manual) for the live half |
 | `python3 scripts/check_first_party_deps.py` | a first-party package in the **current environment** that came from a package index rather than from `lib/`, which on public PyPI is [somebody else's code](./dependency-confusion.md) |
 | `scripts/tests/test_doc_install_commands.py` (part of `make test-packages-cicd`) | a `pip install` **documented** in a fenced code block that could resolve a first-party name from an index — a bare name, or a path install missing a sibling the package requires by name. The environment checker above cannot see an instruction nobody has run yet |
@@ -256,10 +255,12 @@ path-filtered, and `Test Results` is a check run an action creates behind an `if
 so none of them reports on every PR and requiring one would leave a check pending
 forever and block every merge.
 
-Three details are worth knowing about what it reads. All eight shared gates are
-*steps* inside one job, so they collapse to a single requireable context and share
-a single red mark — a required-check failure does not say which of the eight
-failed. It reads **both** enforcement mechanisms, classic branch protection and
+Three details are worth knowing about what it reads. Eight of the ten shared gates
+are *steps* inside one job, so those eight collapse to a single requireable context
+and share a single red mark — a required-check failure does not say which of them
+failed. The remaining two, the SRT scan and the dependency audit, are jobs of their
+own, one context each. It reads **both** enforcement mechanisms, classic branch
+protection and
 rulesets, because a branch can be fully governed by a ruleset while the classic
 endpoint reports nothing. And it distinguishes "not protected" from "cannot see":
 the classic endpoint needs repository **admin** and answers 404 without it, so the

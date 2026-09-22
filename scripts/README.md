@@ -30,7 +30,7 @@ CloudFormation templates and scripts for CI/CD pipeline infrastructure.
 | `codebuild_deployment.py` | CodeBuild deployment automation | Used by CI/CD pipeline |
 | `integration_test_deployment.py` | Integration test deployment | Used by CI/CD pipeline |
 | `validate_buildspec.py` | Validate buildspec.yml files | See [sdlc/README_validate_buildspec.md](sdlc/README_validate_buildspec.md) |
-| `typecheck_pr_changes.py` | Type check Python files in PRs | Used by CI/CD pipeline |
+| `typecheck_pr_changes.py` | Type check only the Python files a branch changes | `make typecheck-pr` — a developer command; the CI type gate is the whole-tree `make typecheck` |
 | `validate_service_role_permissions.py` | Validate IAM service role permissions | `python scripts/sdlc/validate_service_role_permissions.py` |
 
 See [sdlc/cfn/README.md](sdlc/cfn/README.md) for CloudFormation templates.
@@ -126,7 +126,7 @@ python scripts/discover_model_limits.py --verbose
 
 **Requirements:** AWS credentials with Bedrock `InvokeModel` permissions
 
-**See also:** [Config Validation](../docs/config-validation.md)
+**See also:** [`idp-cli config-validate`](../docs/idp-cli.md#config-validate), which checks a configuration's `classification.max_tokens` and `summarization.max_tokens` against the verified limits this script writes
 
 ### API RBAC / Auth Test (`test_api_rbac.py`)
 

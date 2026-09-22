@@ -60,7 +60,7 @@
       "shields": {
         "files": 31,
         "lintFindings": 44,
-        "unformatted": 2
+        "unformatted": 3
       }
     }
   },
@@ -140,10 +140,6 @@
     },
     "nested/bedrockkb/src/s3_vectors_manager/handler.py": {
       "F841": 2,
-      "I001": 1
-    },
-    "nested/bedrockkb/src/s3_vectors_manager/test_handler.py": {
-      "F401": 2,
       "I001": 1
     },
     "patterns/unified/src/assessment_function/assessment_validator.py": {
@@ -411,7 +407,6 @@
     "nested/bedrockkb/src/opensearch_index_custom_resource/oss_handler.py",
     "nested/bedrockkb/src/opensearch_index_custom_resource/oss_utils.py",
     "nested/bedrockkb/src/s3_vectors_manager/handler.py",
-    "nested/bedrockkb/src/s3_vectors_manager/test_handler.py",
     "nested/bedrockkb/src/start_ingestion_job_custom_resource/handler.py",
     "nested/bedrockkb/src/start_ingestion_job_custom_resource/test_handler.py",
     "notebooks/_run_nb.py",
@@ -552,8 +547,8 @@
     "src/lambda/workflow_tracker/test_notify_circuit_breaker.py"
   ],
   "highWaterMark": {
-    "lintDebtFiles": 85,
-    "lintFindings": 196,
-    "formatDebtFiles": 183
+    "lintDebtFiles": 84,
+    "lintFindings": 193,
+    "formatDebtFiles": 182
   }
 }
