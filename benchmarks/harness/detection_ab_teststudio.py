@@ -200,11 +200,19 @@ def _docs_of_run(tracking, run_id):
 
 
 def _score(bucket, run_id, doc):
-    """The document's own weighted evaluation score, or None."""
-    d = lib.get_json(bucket, f"{run_id}/{doc}/evaluation/results.json")
+    """The document's own weighted evaluation score, and why there is none if so.
+
+    Returns ``(score, unread_reason)``. A report that is not there (evaluation off for
+    this run) and one that would not read are different facts, and the second is not a
+    document that scored nothing (GitHub #1079).
+    """
+    read = lib.read_json(bucket, f"{run_id}/{doc}/evaluation/results.json")
+    if read.is_failed:
+        return None, read.error
+    d = read.value_or(None)
     if not d:
-        return None
-    return (d.get("overall_metrics") or {}).get("weighted_overall_score")
+        return None, None
+    return (d.get("overall_metrics") or {}).get("weighted_overall_score"), None
 
 
 def _tokens(item):
@@ -272,9 +280,11 @@ def cmd_analyse(a):
             rows = {}
             for key, item in _docs_of_run(res["tracking_table"], r["run_id"]).items():
                 inp, outp = _tokens(item)
+                score, unread = _score(res["output_bucket"], r["run_id"], key)
                 rows[key] = {
                     "status": lib.ddb_to_py(item.get("ObjectStatus")),
-                    "score": _score(res["output_bucket"], r["run_id"], key),
+                    "score": score,
+                    "score_unread": unread,
                     "in_tok": inp,
                     "out_tok": outp,
                     "suspected": _suspected(item),
@@ -282,6 +292,15 @@ def cmd_analyse(a):
             data[arm] = rows
             done = sum(1 for v in rows.values() if v["status"] == "COMPLETED")
             print(f"  {arm:3s} run={r['run_id']}  docs={len(rows)}  completed={done}")
+            # A document whose evaluation report would not read drops out of the
+            # paired comparison below, exactly as an unscored one does. Naming it is
+            # what keeps the two apart (#1079).
+            unread_docs = [k for k, v in rows.items() if v["score_unread"]]
+            if unread_docs:
+                print(
+                    f"      ⚠ {len(unread_docs)} document(s) whose evaluation report "
+                    f"could not be READ (not absent): {rows[unread_docs[0]]['score_unread']}"
+                )
 
         common = sorted(set(data["off"]) & set(data["on"]))
         scored = [

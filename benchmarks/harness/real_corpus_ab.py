@@ -170,16 +170,32 @@ def _cost(item):
 
 
 def _score(bucket, run_id, doc):
-    d = lib.get_json(bucket, f"{run_id}/{doc}/evaluation/results.json")
+    """``(weighted_overall_score, unread_reason)``.
+
+    A report that is not there and one that would not read are different facts; only
+    the first is a document this A/B has nothing to say about (GitHub #1079).
+    """
+    read = lib.read_json(bucket, f"{run_id}/{doc}/evaluation/results.json")
+    if read.is_failed:
+        return None, read.error
+    d = read.value_or(None)
     if not d:
-        return None
-    return (d.get("overall_metrics") or {}).get("weighted_overall_score")
+        return None, None
+    return (d.get("overall_metrics") or {}).get("weighted_overall_score"), None
 
 
 def _counters_from_sections(bucket, run_id, doc, dotted_paths):
-    """``{path: (hits, seen)}`` over a document's section ``metadata`` blocks."""
+    """``({path: (hits, seen)}, unread_reason)`` over a document's ``metadata`` blocks.
+
+    ``seen`` is a denominator, so a section that would not read lowers it and makes the
+    hit RATE look better than it is. The reason comes back with the counters so the
+    caller can refuse the observation rather than average it in (GitHub #1079).
+    """
     out = {p: [0, 0] for p in dotted_paths}
-    for sec in lib.iter_section_results(bucket, f"{run_id}/{doc}/"):
+    read = lib.read_sections(bucket, f"{run_id}/{doc}/")
+    if not read.complete:
+        return {k: tuple(v) for k, v in out.items()}, read.why
+    for sec in read.sections:
         md = sec.get("metadata")
         if not isinstance(md, dict):
             continue
@@ -195,7 +211,7 @@ def _counters_from_sections(bucket, run_id, doc, dotted_paths):
             out[p][1] += 1
             if ok and node:
                 out[p][0] += 1
-    return {k: tuple(v) for k, v in out.items()}
+    return {k: tuple(v) for k, v in out.items()}, ""
 
 
 def _sign_test(better, worse):
@@ -253,9 +269,13 @@ def cmd_analyse(a):
         acc, cost, toks = [], [], {u: [] for u in UNITS}
         counters = {p: {"A": [0, 0], "B": [0, 0]} for p in (a.counter or [])}
         better = worse = same = 0
+        unread_notes = []
         for doc, arms in sorted(paired.items()):
-            sa = _score(res["output_bucket"], arms["A"][0], doc)
-            sb = _score(res["output_bucket"], arms["B"][0], doc)
+            sa, ua = _score(res["output_bucket"], arms["A"][0], doc)
+            sb, ub = _score(res["output_bucket"], arms["B"][0], doc)
+            for arm_name, why in (("A", ua), ("B", ub)):
+                if why:
+                    unread_notes.append(f"{doc} [{arm_name}] score: {why}")
             if sa is not None and sb is not None:
                 acc.append((sb, sa))  # B - A  (treatment minus control)
                 if sb > sa:
@@ -271,12 +291,26 @@ def cmd_analyse(a):
             for arm in ("A", "B"):
                 if not a.counter:
                     continue
-                got = _counters_from_sections(
+                got, why = _counters_from_sections(
                     res["output_bucket"], arms[arm][0], doc, a.counter
                 )
+                if why:
+                    # Not counted at all rather than counted short: a partial `seen`
+                    # inflates the hit rate this A/B is judged on (#1079).
+                    unread_notes.append(f"{doc} [{arm}] counters: {why}")
+                    continue
                 for p, (h, s) in got.items():
                     counters[p][arm][0] += h
                     counters[p][arm][1] += s
+
+        if unread_notes:
+            print(
+                f"\n  ⚠ {len(unread_notes)} observation(s) EXCLUDED because a read "
+                "failed, not because there was nothing there — the figures below are "
+                "over the remainder:"
+            )
+            for note in unread_notes[:5]:
+                print(f"      {note}")
 
         print(f"\n  ACCURACY (weighted_overall_score), paired over {len(acc)} docs")
         if acc:
