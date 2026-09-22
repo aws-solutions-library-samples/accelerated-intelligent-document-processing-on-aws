@@ -39,7 +39,14 @@ STUB_PAGE = {
         },
     ],
     "count": 2,
-    "next_token": "dG9rZW4=",
+    # Bandit flags `next_token` on sight. B105/B106 match the *identifier* —
+    # `RE_CANDIDATES` tests `_token$` against the dict key or keyword name — and
+    # never inspect the value, so no choice of literal here would quiet them. The
+    # name is the SDK's real pagination field: `list_documents` base64-encodes the
+    # tracking table's `LastEvaluatedKey` into it and `DocumentListResult`
+    # declares it, so renaming it would make this fixture a shape the operation
+    # never returns. Each flagged line carries a pragma instead.
+    "next_token": "dG9rZW4=",  # nosec B105 - page cursor, base64 of "token"
 }
 
 
@@ -64,7 +71,7 @@ class TestDocumentList:
         assert isinstance(result, DocumentListResult)
         assert result.count == 2
         assert result.count == len(result.documents)
-        assert result.next_token == "dG9rZW4="
+        assert result.next_token == "dG9rZW4="  # nosec B105 - stub cursor read back
 
     @patch("idp_sdk._core.document_processor.DocumentProcessor")
     def test_count_survives_model_dump(self, mock_processor):
