@@ -62,7 +62,7 @@ Verified locally against the actual scanner binaries (not assumed):
 | semgrep | `# nosemgrep: rule-id` | 43 already in use. |
 | grype / npm-audit | none exists | Must go in a config file. |
 
-Three traps that cost real time:
+Four traps that cost real time:
 
 1. **bandit's `# nosec` is line-scoped, and on a multi-line string the pragma
    must sit on a line INSIDE the string node.** The closing `"""` works; the
@@ -72,7 +72,29 @@ Three traps that cost real time:
 2. **detect-secrets dedupes by secret hash**, reporting one line per unique
    secret per file. Suppress the first occurrence and the next one surfaces — so
    annotate *every* occurrence of the pattern, then re-scan to confirm zero.
-3. **A semgrep rule can match your own justification comment.** Writing
+3. **`# nosec <id> - reason` has its prose tokenised and looked up as further
+   check ids.** Bandit's parser is `NOSEC_COMMENT` → `NOSEC_COMMENT_TESTS`
+   (`bandit/core/manager.py`), which feeds every word after the marker to the
+   plugin registry, logs `Test in comment: <word> is not a test name or id,
+   ignoring` for the ones that fail, and keeps the rest. Measured over all 310
+   markers in this tree: the 237 of that shape are all correct — the named id
+   survives and the scope is exactly what it says. Two ways it does bite, though,
+   and both are silent because those warnings go to **stderr**, which the scan
+   redirects to `/dev/null`:
+   - **A prose word that is also a plugin name widens the marker.** `# nosec B105 -
+     value is random, not real` suppresses B311 as well, because `random` is
+     B311's plugin name. The one-word names are `ciphers`, `eval`, `ftplib`,
+     `marshal`, `md5`, `pickle`, `random`, `telnetlib`, `trojansource`.
+   - **If nothing in the marker resolves, it suppresses everything on the line.**
+     An empty test set means "blanket" to bandit, so `# nosec - reason` and a
+     typo'd `# nosec B9999 - reason` both disable every check there. Six markers in
+     the tree name no id; each is broader than a scoped one and will absorb an
+     unrelated future finding on its line. The same reading applies to **prose
+     about** the pragma: a comment that merely quotes it is parsed as a live
+     blanket marker for that line.
+   So: always name the id, spell it correctly, and keep plugin words out of the
+   prose.
+4. **A semgrep rule can match your own justification comment.** Writing
    `min-release-age=0` inside an explanatory comment in `.npmrc` re-triggered the
    very rule the comment was explaining.
 
@@ -351,10 +373,19 @@ the check passes, then re-scan to confirm it flips to resolved.
   conditionally-set `AccessLogSetting`, `MethodSettings`, etc. read as absent.
   (SRT's security-matrix checks call a `resolveValue` that handles `Ref` but not
   `Fn::If` branches.)
-- **Tool heuristic false positive** — e.g. bandit **B105** "hardcoded password"
-  fires on any literal assigned near an identifier containing `token`/`secret`/
-  `password`/`pwd`/`pass`/`key`/`auth`. A variable/dict-key like
-  `shard_token_budget = 40000` trips it though `40000` is an LLM token budget.
+- **Tool heuristic false positive** — e.g. bandit **B105**/**B106** "hardcoded
+  password", which match an identifier's **name** against the wordlist
+  `pas+wo?r?d|pass(phrase)?|pwd|token|secrete?` (not `key`, not `auth`) wherever a
+  constant is assigned, compared or passed. `shard_token_budget = 40000`,
+  `pass_count`, `next_token` and `_COMPACT_TOKEN` all trip it.
+  ⚠️ **In test-only files these two no longer gate**, so there is nothing to
+  suppress and a per-line `# nosec` for one of them is the accretion that scope
+  decision replaced (#1086): three of them took `develop` red in one day and each
+  response added another marker. `make srt-scan` lists them under their own
+  non-blocking heading. In **shipped** code they still gate — fix the name, or
+  justify that one line. What decides which is
+  `ci_paths.is_test_only_path`, and its rationale (including why the scope cannot
+  live in Bandit's own configuration) is in `NAME_HEURISTIC_EXEMPT` there.
 - **Accepted architectural risk** — the flagged config is intentional and
   compensated. Example: `AuthorizationType: NONE` on the Web UI SPA static-asset
   routes (`WebUIRootMethod`, `WebUIProxyMethod`) — the browser must fetch

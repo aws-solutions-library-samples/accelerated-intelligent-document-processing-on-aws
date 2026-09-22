@@ -363,7 +363,10 @@ COMPACT_PAYLOAD_KEYS = ("calibration_curve", "calibration", "conf_coverage")
 # Named *PLACEHOLDER* rather than *TOKEN*: Bandit's B105 matches on the identifier, so a
 # module-level constant whose name contains "token" and whose value is a string literal is
 # reported as a hardcoded credential. Renaming removes a real false positive from a
-# blocking gate, which is better than carrying a `# nosec` that a reader has to evaluate.
+# blocking gate, which is better than carrying a per-line Bandit suppression that a
+# reader has to evaluate. (Spelling that pragma out here would not be inert: Bandit
+# reads any comment containing it, and one whose trailing words resolve to no check id
+# suppresses every check on its line.)
 _COMPACT_PLACEHOLDER = "@@compact-payload-{}@@"
 _COMPACT_PLACEHOLDER_RE = re.compile(r'"@@compact-payload-(\d+)@@"')
 

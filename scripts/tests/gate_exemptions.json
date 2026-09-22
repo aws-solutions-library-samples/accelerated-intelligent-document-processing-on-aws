@@ -868,12 +868,12 @@
     },
     "scripts/sdlc/retired_services.json::retired_services.json": {
       "kind": "exemption",
-      "turnsOff": "the retired-service documentation check, per (path, linePattern) pair and per excludedPaths glob",
+      "turnsOff": "the retired-service documentation check, per (path, linePattern) pair, per historicalMarkers pattern, and per excludedPaths glob",
       "premise": [
         "JUDGEMENT"
       ],
       "ratchet": "staleness",
-      "reason": "Triaged historical or vestigial mentions, each with a bucket and justification. This is the shape the ARN exemption was rebuilt on.",
+      "reason": "What is ratcheted is each individual | alternative of each pattern, on both exemption surfaces, not the entry it sits in: an entry counted as live as soon as any part of its compiled pattern matched, so a fragment pinned to a rewrapped sentence went dead in silence behind its siblings and the line it named stopped being excused (#1097). Triaged historical or vestigial mentions, each with a bucket and justification; whether a mention reads as historical is the judgement. historicalMarkers is named here because it is the heavier alternation surface and had no staleness check of any granularity before that. retiredServices[].pattern is deliberately outside the check: it detects rather than exempts, so its arms may legitimately match nothing.",
       "memberKind": "path + line pattern",
       "ratchetEvidence": "scripts/sdlc/check_retired_services.py"
     },
@@ -1112,6 +1112,24 @@
       "memberKind": "advisory id",
       "ratchetEvidence": "scripts/security/tests/test_dep_audit.py"
     },
+    "scripts/srt/ci_paths.py::NAME_HEURISTIC_EXEMPT": {
+      "kind": "exemption",
+      "turnsOff": "the SRT security gate for Bandit B105/B106 only, and only where is_test_only_path() answers true for the finding's path; both checks still gate in shipped code",
+      "premise": [
+        "JUDGEMENT"
+      ],
+      "ratchet": "universe-closure",
+      "reason": "What is ratcheted is the classification of every tracked Python file as test code or shipped code, not a count of demoted findings: the members are derived by is_test_only_path() rather than written down, so there is no entry that could go stale. B105/B106 match an identifier's NAME against a password wordlist, so `pass_count` and `next_token` arrive as HIGH; whether a constant in a test fixture is a real credential is the judgement, and it is not computable. The scope decision cannot live in Bandit's own configuration: SRT's promotion of these two checks to HIGH is compiled into its binary, a root `.bandit` file's `skips` applies repo-wide with per-path sections ignored, and neither check takes plugin configuration, so the alternative was to stop reporting them everywhere.",
+      "memberKind": "check id + path scope",
+      "ratchetEvidence": "scripts/srt/tests/test_name_heuristic_scope.py",
+      "crossReferences": [
+        "scripts/srt/issues.json::issues.json"
+      ],
+      "predicateConsidered": {
+        "file_absent_or_untracked": "Wrong axis, and the gate already applies the right one: partition_by_ci_visibility() runs first, so an untracked path is reported as local-only before this exemption is consulted. Every path this demotes is tracked and present.",
+        "collects_zero_tests": "Asks whether a directory yields any pytest cases, which is a fact about a suite. This exemption is about whether a *file* ships, and a test file that collects nothing still must not gate on a fixture identifier's name."
+      }
+    },
     "scripts/srt/issues.json::issues.json": {
       "kind": "exemption",
       "turnsOff": "the SRT security gate, per finding",
@@ -1121,7 +1139,10 @@
       "ratchet": "staleness",
       "reason": "SRT findings suppressed with a justification through `make srt-fix`.",
       "memberKind": "finding id",
-      "ratchetEvidence": "scripts/srt/tests/test_ci_paths.py"
+      "ratchetEvidence": "scripts/srt/tests/test_ci_paths.py",
+      "crossReferences": [
+        "scripts/srt/ci_paths.py::NAME_HEURISTIC_EXEMPT"
+      ]
     },
     "scripts/tests/exemption_discovery.py::EXEMPTION_PROSE": {
       "kind": "enforced-universe",

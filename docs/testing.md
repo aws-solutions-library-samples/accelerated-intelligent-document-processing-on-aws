@@ -108,7 +108,9 @@ correctly installed tree, and the enumerated list of accepted failures in
 [`full-test-battery`](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/blob/develop/.claude/skills/full-test-battery.md)
 is empty. So treat any failure as a real regression until proven otherwise.
 `scripts/tests/test_standing_failure_baseline.py` holds that claim, this page and the
-two skills that repeat it to the same number, so they cannot drift apart again.
+two skills that repeat it to the same number, so they cannot drift apart again, and
+`make test` itself compares the failures it observed against that table — a failure
+it does not declare and a declared row whose test passed both fail the run.
 
 Most surprising failures are still a stale virtualenv missing the pinned `[test]`
 extras — but **do not expect a broken install to announce itself as an

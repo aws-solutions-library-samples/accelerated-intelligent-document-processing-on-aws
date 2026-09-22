@@ -13,6 +13,7 @@ from ci_paths import (  # noqa: E402
     is_gating_status,
     is_in_ci_checkout,
     partition_by_ci_visibility,
+    partition_by_name_heuristic_scope,
     tracked_files,
 )
 from register import (  # noqa: E402
@@ -358,8 +359,31 @@ def main():
         high_open_issues, project_root
     )
 
+    # Bandit's identifier-name heuristics (B105/B106) arrive promoted to HIGH by
+    # SRT regardless of what they matched, so a fixture key named `pass_count`
+    # gates like a credential. In test-only files they are reported and do not
+    # gate; everywhere else they still do. See NAME_HEURISTIC_EXEMPT in
+    # ci_paths.py for why the scope decision cannot live in Bandit's own config.
+    gating_issues, name_scoped_issues = partition_by_name_heuristic_scope(gating_issues)
+
     if gating_issues:
         print_issue_table("🔴 OPEN HIGH PRIORITY SECURITY ISSUES", gating_issues)
+
+    if name_scoped_issues:
+        print_issue_table(
+            "ℹ️  IDENTIFIER-NAME FINDINGS IN TEST CODE (Bandit rates these LOW, "
+            "non-blocking)",
+            name_scoped_issues,
+        )
+        print(
+            "B105/B106 match an identifier's NAME against a password wordlist, not\n"
+            "its value. SRT promotes them to HIGH unconditionally; in test-only files\n"
+            "they are reported at Bandit's own severity instead of blocking. The same\n"
+            "name shape in shipped code still gates. Do NOT add a per-line '# nosec'\n"
+            "for one of these — that is the accretion this scope decision replaces.\n"
+            "If one of them is a REAL credential, it is not a false positive: remove\n"
+            "it from the fixture."
+        )
 
     if local_only_issues:
         print_issue_table(

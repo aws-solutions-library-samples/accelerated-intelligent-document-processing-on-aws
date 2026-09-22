@@ -96,6 +96,91 @@ def is_in_ci_checkout(path, tracked):
     return normalized in tracked
 
 
+#: Bandit's two hardcoded-credential heuristics, which gate everywhere EXCEPT in
+#: test-only files. Both fire on the *name* of an identifier: B105 on any
+#: assignment or comparison whose name matches a password-shaped wordlist
+#: (`pas+wo?r?d|pass(phrase)?|pwd|token|secrete?`) against a constant, B106 on any
+#: such keyword argument. `pass_count`, `next_token` and `_COMPACT_TOKEN` all match.
+#:
+#: Bandit rates both LOW. They reach this gate as HIGH because the SRT binary
+#: carries `priorityOverrides = {B105: "High", B106: "High"}` and applies it before
+#: its severity mapping, so a dict key named `pass_count` in a test fixture arrives
+#: at the same priority as a real credential. Three times in one day that took the
+#: gate red on `develop`, blocking every open pull request, and each response was
+#: another per-line `# nosec` (#1086).
+#:
+#: The scope decision has to live here because it is expressible nowhere else. The
+#: promotion is compiled into the SRT binary with no configuration surface. Bandit
+#: itself cannot scope a check to a subset of paths: the only config file the
+#: invocation auto-discovers is a root `.bandit`, whose `skips` is repo-global and
+#: whose per-path section spellings are silently ignored, and neither B105 nor B106
+#: takes plugin configuration, so the wordlist cannot be narrowed either. That
+#: leaves exactly two repo-side levers — stop reporting the check everywhere, or
+#: decide here which reports gate — and the first would hide a real hardcoded
+#: secret anywhere in the tree.
+#:
+#: What this gives up, stated plainly: a genuine credential pasted into a test
+#: fixture is reported at Bandit's own LOW severity and does not block the build.
+#: That is the cost of not blinding the check in shipped code, where the same name
+#: shape still gates. `make srt-scan` prints every demoted finding under its own
+#: heading rather than dropping it.
+NAME_HEURISTIC_EXEMPT = ("B105", "B106")
+
+#: Directory names that make everything below them test code.
+_TEST_ONLY_SEGMENTS = frozenset({"test", "tests", "manual_tests"})
+
+
+def is_test_only_path(path):
+    """True if this repo-relative path is test code rather than shipped code.
+
+    Whole path *segments* are matched, never prefixes:
+    `src/lambda/test_file_copier/`, `nested/api-resolvers/src/lambda/test_runner/`
+    and `nested/api-resolvers/src/lambda/test_set_resolver/` are Lambda handlers
+    that ship into a customer's account, and a hardcoded credential in any of them
+    must keep gating. The file-name shapes are checked as well as the directory,
+    because several suites here sit beside the code they cover rather than under a
+    `tests/` directory.
+
+    Fails closed in both senses that matter: a finding with no path, or one whose
+    path is not test code, keeps gating.
+    """
+    normalized = _normalize(path)
+    if normalized is None:
+        return False
+
+    parts = normalized.split("/")
+    if any(part in _TEST_ONLY_SEGMENTS for part in parts[:-1]):
+        return True
+
+    name = parts[-1]
+    return (
+        name == "conftest.py"
+        or (name.startswith("test_") and name.endswith(".py"))
+        or name.endswith("_test.py")
+    )
+
+
+def partition_by_name_heuristic_scope(issues):
+    """Split issues into (gating, name_heuristic_in_test_code).
+
+    See :data:`NAME_HEURISTIC_EXEMPT`. Every finding is in exactly one of the two
+    lists, and a finding reaches the second only if its check is one of those two
+    AND its path is test-only — so nothing is dropped and nothing shipped is
+    demoted.
+    """
+    gating = []
+    name_scoped = []
+
+    for issue in issues:
+        check_id = (issue.get("check_id") or "").upper()
+        if check_id in NAME_HEURISTIC_EXEMPT and is_test_only_path(issue.get("path")):
+            name_scoped.append(issue)
+        else:
+            gating.append(issue)
+
+    return gating, name_scoped
+
+
 def partition_by_ci_visibility(issues, project_root):
     """Split issues into (ci_visible, local_only) by path trackedness.
 
