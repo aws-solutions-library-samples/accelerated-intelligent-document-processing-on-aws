@@ -2226,8 +2226,18 @@ def _field_path(prefix, key):
 def _list_item_path(prefix, node, index):
     """Path for one member of a list.
 
-    A single-element list adds no level: ``explainability_info`` arrives wrapped in
-    one, and adding a level there would misalign it from ``inference_result``.
+    A single-element list adds no level, which keeps ``explainability_info``'s wrapper
+    list from adding a level that ``inference_result`` does not have.
+
+    ⚠️ **The rule is keyed off list LENGTH, and that is not how the rest of the
+    repository keys list paths.** ``curve_store.flatten_values`` always emits an index,
+    so a one-row table keys ``Transactions.Date`` here and ``Transactions[0].Date``
+    there — the paths from the two are not interchangeable even though both are
+    "the field path". Nothing crosses them today (this one is only ever compared against
+    :func:`_walk_confidence_named`, within a single request, so no user-visible value is
+    wrong), but a caller that mixed them would silently fail to match on exactly the
+    single-row documents. Replacing this with the now-public ``flatten_values`` is
+    [#1066](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/1066).
     """
     return prefix if len(node) == 1 else f"{prefix}[{index}]"
 
@@ -2241,8 +2251,16 @@ def _absent_field_paths(inference_result):
 
     Paths, not bare leaf names: one empty ``Description`` cell would otherwise
     exclude *every* Description score in a 200-row transaction table, understating
-    review need on exactly the table-heavy documents this feature targets. The path
-    shape matches :func:`_walk_confidence_named` and ``curve_store._flatten_values``.
+    review need on exactly the table-heavy documents this feature targets.
+
+    ⚠️ The path shape matches :func:`_walk_confidence_named`, which is what matters
+    here — the two are compared only against each other, within one request. It does
+    **not** match ``curve_store.flatten_values``: :func:`_list_item_path` keys a list
+    index off list *length*, so a one-row table keys ``Transactions.Date`` where
+    ``curve_store`` keys ``Transactions[0].Date``. No caller crosses the two, so there
+    is no user-visible defect, but a future one must not assume they interchange.
+    Unifying them by delegating to the now-public ``flatten_values`` is
+    [#1066](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/1066).
     """
     absent = set()
 
