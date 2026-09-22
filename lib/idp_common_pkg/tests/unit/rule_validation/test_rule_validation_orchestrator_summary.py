@@ -284,12 +284,6 @@ class TestGenerateConsolidatedSummary:
         assert "error" in summary
         assert summary["generated_at"]
 
-    @pytest.mark.xfail(
-        strict=True,
-        reason="Integer supporting_pages collapse the whole summary to ERROR: the "
-        "sort key calls x.isdigit(), which int does not have. See "
-        "https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/1052",
-    )
     def test_integer_supporting_pages_do_not_discard_the_summary(self):
         # An LLM returning "supporting_pages": [1, 2] rather than ["1", "2"] is
         # enough to lose every statistic in the report, because the AttributeError
