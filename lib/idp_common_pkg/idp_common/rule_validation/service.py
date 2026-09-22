@@ -224,17 +224,30 @@ class RuleValidationService:
         chunk_size_chars = max(1, max_chunk_size * token_size)
         overlap_chars = int(chunk_size_chars * (overlap_percentage / 100))
 
-        # Each pass advances `start` by chunk_size_chars - overlap_chars, so that
-        # stride has to be at least one character. overlap_percentage is allowed to
-        # be 100, which would otherwise make it zero and repeat a chunk forever.
-        bounded_overlap_chars = min(max(overlap_chars, 0), chunk_size_chars - 1)
+        # Each pass advances `start` by chunk_size_chars - overlap_chars, so the
+        # overlap is what sets the stride and the resulting number of model calls.
+        # It is bounded at half a chunk, for two reasons that need different bounds
+        # and get the stricter one:
+        #
+        #   - Termination needs a stride of at least one character. overlap_percentage
+        #     is documented as 0-100 and 100 asks for a stride of zero.
+        #   - Cost needs a stride that is a *fraction* of the chunk. A one-character
+        #     stride terminates and is still ruinous: it emits len(text) -
+        #     chunk_size_chars + 1 chunks, one model call each, which on a 46,000
+        #     character document at the shipped 32,000-character chunk is ~14,000
+        #     calls. Half a chunk caps the count at twice the no-overlap count for
+        #     any requested percentage.
+        #
+        # The bound lives here rather than as a tighter `le=` on the config field so
+        # that a configuration which is legal today does not start being rejected.
+        bounded_overlap_chars = min(max(overlap_chars, 0), chunk_size_chars // 2)
         if bounded_overlap_chars != overlap_chars:
             logger.warning(
-                f"overlap_percentage={overlap_percentage} asks for "
-                f"{overlap_chars} characters of overlap on a {chunk_size_chars}"
-                f"-character chunk, leaving no forward progress; using "
-                f"{bounded_overlap_chars} instead. Every chunk will repeat almost "
-                f"all of the one before it, so lower overlap_percentage."
+                f"overlap_percentage={overlap_percentage} asks to repeat "
+                f"{overlap_chars} of every {chunk_size_chars} characters, which "
+                f"would leave too little forward progress per chunk; using "
+                f"{bounded_overlap_chars} instead. Lower overlap_percentage to at "
+                f"most 50 to control how much each chunk repeats."
             )
         overlap_chars = bounded_overlap_chars
 
