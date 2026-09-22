@@ -204,9 +204,7 @@ class TestSequenceNumbering:
         # point: a second logger joining a record part-way through picks up where
         # the stored transcript leaves off rather than at one.
         existing = [{"role": "user"}, {"role": "assistant"}]
-        instance, table = _accumulating_logger(
-            {"agent_messages": json.dumps(existing)}
-        )
+        instance, table = _accumulating_logger({"agent_messages": json.dumps(existing)})
         instance.log_message_async("job-1", "user-1", {"role": "user"})
         assert table.sequence_numbers()[-1] == 3
 
@@ -766,9 +764,7 @@ class TestConcurrentAppends:
         table = _ConditionalTable(parties=count)
         with patch(f"{MODULE}.boto3.resource") as resource:
             resource.return_value.Table.return_value = table
-            instances = [
-                DynamoDBMessageLogger("agent-table") for _ in range(count)
-            ]
+            instances = [DynamoDBMessageLogger("agent-table") for _ in range(count)]
         for instance in instances:
             # Carried here too: a synchronous stand-in reduces this to `count`
             # sequential writes, which cannot collide and so cannot fail.

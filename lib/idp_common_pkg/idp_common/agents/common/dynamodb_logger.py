@@ -134,10 +134,12 @@ _PERMANENT_READ_ERRORS = frozenset(
 )
 
 
-# Emitted once per message that could not be stored. The log line names the job
-# and sequence number, but a log line is not alarmable, and not being alarmable is
-# how the original defect stayed invisible for as long as it did. Alarm on this in
-# the stack's own metric namespace.
+# Emitted once per message that could not be stored, by any of three paths: the
+# conflict retries running out, the read failing repeatedly, and the bounded drain in
+# `shutdown` giving up on a write. The log line beside each names the job and the
+# message, but a log line is not alarmable, and not being alarmable is how the
+# original defect stayed invisible for as long as it did. Alarm on this in the stack's
+# own metric namespace.
 _DROPPED_MESSAGE_METRIC = "AgentTranscriptMessageDropped"
 
 # How long `shutdown` waits for queued and in-flight writes before giving up on
@@ -440,10 +442,11 @@ class DynamoDBMessageLogger:
         """
         Record that a message could not be stored, on an alarmable metric.
 
-        The ``logger.error`` beside every call names the job and sequence number,
-        which is what an operator needs once they are already looking. It is not
-        something they can be paged on, and the transcript losing entries with
-        nothing to notice it is the whole reason #1098 survived as long as it did.
+        The ``logger.error`` beside every call names the job and identifies the
+        message by role and timestamp, which is what an operator needs once they are
+        already looking. It is not something they can be paged on, and the transcript
+        losing entries with nothing to notice it is the whole reason #1098 survived as
+        long as it did.
 
         Emitted with no dimensions and a value of 1, matching the convention of the
         other failure counters in the stack's namespace (``StaleOutputPurgeFailed``,
