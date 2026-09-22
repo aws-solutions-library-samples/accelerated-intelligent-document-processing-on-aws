@@ -66,13 +66,30 @@ make typecheck     # basedpyright
 
 `make typecheck` fails with `make: basedpyright: No such file or directory` if the
 tool is absent — it is not in the `[test]` extra. `pip install basedpyright` (CI
-installs it via `npm install -g basedpyright`). Compare its output against the
-baseline on `develop` rather than reading it absolutely: it reports **4 errors / 51
-warnings** on a clean tree (2026-09-11). Note **which files those errors land in
-shifts with the installed dependency set** — with `z3-solver` present they sit in
-`rule_validation/z3/z3_validator.py` and `calculate_capacity/index.py`, without it
-they move — so compare the **totals**, and check that no diagnostic names a file
-your change touched.
+installs it via `npm install -g basedpyright`).
+
+**`develop` is at zero errors, so any error is yours.** Measured **0 errors, 42
+warnings, exit 0** on `develop` (2026-09-22). That is the interesting fact about the
+baseline rather than the number: the eleven errors this page used to tell you to
+expect were resolvable-import failures, fixed once `pyrightconfig.json` gained
+`extraPaths` ([#1109](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/1109)),
+so an error no longer needs comparing against anything.
+
+The warning total does still want comparing, and nothing in the tree pins it, so
+**re-measure rather than trusting the figure above** — it is a literal in prose and
+goes stale exactly the way the error count did:
+
+```bash
+git worktree add -q /tmp/dev-typecheck github/develop && cd /tmp/dev-typecheck
+make typecheck 2>&1 | tail -1     # the "N errors, M warnings, K notes" line
+cd - && git worktree remove /tmp/dev-typecheck --force
+```
+
+Compare **totals**, not the list: which file a diagnostic lands in shifts with the
+installed dependency set (with `z3-solver` present, diagnostics sit in
+`rule_validation/z3/z3_validator.py` and `calculate_capacity/index.py`; without it
+they move), so the durable checks are that the error count is still zero and that no
+diagnostic names a file your change touched.
 
 Per-suite (isolated) — `PP=<checkout>/lib/idp_common_pkg`:
 
