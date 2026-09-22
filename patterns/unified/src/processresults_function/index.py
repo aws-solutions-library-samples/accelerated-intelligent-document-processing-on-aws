@@ -91,7 +91,6 @@ def handler(event, context):
     # Clear sections list to rebuild from extraction results
     document.sections = []
     validation_errors = []
-    validation_errors = []
     hitl_triggered = False
     # #1064: which section failed, and why, so the raise below can persist it on
     # the section rather than leaving it in the Step Functions cause alone.
@@ -239,9 +238,16 @@ def handler(event, context):
         logger.error(f"Error: {full_error_message}")
         failure = Exception(full_error_message)
         # #1064: persist before raising. This handler owns the whole-document
-        # write and already holds every section, so one `update_document` carries
+        # write and already holds every section, so ONE `update_document` can carry
         # both the FAILED status just assigned — which was previously computed and
         # thrown away — and a per-section issue for each section that failed.
+        #
+        # It writes only when there is at least one section diagnosis, which means
+        # the reachable path below does NOT write: `document.errors` is
+        # document-scope, produces no diagnosis, and `persist_failed_document`
+        # returns before writing, so neither the issues nor the FAILED status are
+        # persisted there. The terminal status still comes from `workflow_tracker`
+        # as it always did.
         #
         # `document.errors` is deliberately NOT given a home here. Those entries
         # are document-scope free text (OCR and classification append to it

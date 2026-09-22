@@ -359,7 +359,24 @@ def _pr_invoke(document: Document, results: list[dict]):
 
 @pytest.mark.unit
 def test_processresults_attributes_the_verdict_to_the_failed_section(pr_service):
-    """Which section failed, and why, on the section rather than only in the cause."""
+    """Which section failed, and why, on the section rather than only in the cause.
+
+    Snapshotted **at call time**, for the reason spelled out in
+    ``test_processresults_persists_the_failed_status_it_computes``: this handler is
+    the only one of the three that writes on its success path *before* the failure
+    write, so it is the only one where reading ``call_args`` afterwards can report
+    a state the write did not carry. The other two raise before any other write, so
+    there the existence of the call is itself the proof.
+    """
+    writes = []
+    pr_service.update_document.side_effect = lambda document: (
+        writes.append(
+            {s.section_id: [(i.code, i.root_cause) for i in s.processing_issues or []]
+             for s in document.sections}
+        ),
+        document,
+    )[1]
+
     with pytest.raises(Exception, match="Processing failed for 1 out of 2 sections"):
         _pr_invoke(
             _document(),
@@ -369,14 +386,16 @@ def test_processresults_attributes_the_verdict_to_the_failed_section(pr_service)
             ],
         )
 
-    # The last write is the failure write; the two before it are the existing
-    # POSTPROCESSING and final-status writes on the success path.
-    written = pr_service.update_document.call_args.args[0]
-    by_id = {s.section_id: s for s in written.sections}
-    assert _codes(by_id["2"]) == [SECTION_PROCESSING_FAILED_CODE]
-    assert "Schema mismatch on row 4" in _issues(by_id["2"])[0].root_cause
+    # Three writes: POSTPROCESSING, final status, then the failure write.
+    assert len(writes) == 3, "the failure write did not happen"
+    final = writes[-1]
+    assert [code for code, _ in final["2"]] == [SECTION_PROCESSING_FAILED_CODE]
+    assert "Schema mismatch on row 4" in final["2"][0][1]
     # The section that did not fail is not marked.
-    assert _codes(by_id["1"]) == []
+    assert final["1"] == []
+    # And the issue was not already on the section at the success-path writes, so
+    # this really is the failure write carrying it.
+    assert writes[1]["2"] == []
 
 
 @pytest.mark.unit
@@ -420,6 +439,12 @@ def test_processresults_document_scope_errors_record_no_section_issue(pr_service
     with pytest.raises(Exception, match="Page 7 not found"):
         _pr_invoke(document, [_section_result("1", failed=False)])
 
+    # Reading `call_args_list` afterwards is sound HERE, unlike in the two tests
+    # above, because this asserts an ABSENCE: the live reference means an issue
+    # attributed at any point during the handler — including after the last write —
+    # still shows up and still fails this. Do not copy the pattern to a test that
+    # asserts something WAS persisted.
+    assert pr_service.update_document.call_args_list, "no write happened at all"
     for call in pr_service.update_document.call_args_list:
         for section in call.args[0].sections:
             assert _codes(section) == []
@@ -569,6 +594,18 @@ def test_orchestration_exception_propagates_unchanged():
     assert caught.value is original
 
 
+#: A Bedrock throttle as botocore actually raises it. `botocore.errorfactory` names
+#: the dynamic class after the modeled error CODE, so the class name is
+#: `ThrottlingException` — which is what Step Functions matches against
+#: `RuleValidationOrchestration`'s `Retry.ErrorEquals`. Constructing a bare
+#: `ClientError` instead gives the class name `ClientError`, which that list does
+#: NOT contain: same error code, opposite retry outcome. See
+#: `test_a_transient_that_the_state_machine_will_not_retry_records_nothing`.
+_ModeledThrottlingException = type(
+    "ThrottlingException", (botocore.exceptions.ClientError,), {}
+)
+
+
 @pytest.mark.unit
 def test_orchestration_transient_failure_records_nothing():
     """The one site of the three where the transient carve-out is load-bearing.
@@ -577,14 +614,66 @@ def test_orchestration_transient_failure_records_nothing():
     retries the throttling family eight times at 2.5x backoff from ten seconds.
     Marking the sections would show them failed for most of three hours and then
     clear.
+
+    The error is shaped the way botocore raises a Bedrock throttle — a class *named*
+    after the modeled code — because that is what makes the premise hold: Step
+    Functions matches the class name, not the error code.
     """
     service = MagicMock()
-    throttle = botocore.exceptions.ClientError(
+    throttle = _ModeledThrottlingException(
         {"Error": {"Code": "ThrottlingException", "Message": "slow down"}}, "Converse"
     )
+    assert type(throttle).__name__ == "ThrottlingException", "fixture precondition"
     with pytest.raises(botocore.exceptions.ClientError):
         _orch_invoke(
             _document(Status.RULE_VALIDATION_ORCHESTRATOR), service, fails_with=throttle
+        )
+    service.update_document.assert_not_called()
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "error",
+    [
+        # Same throttling CODE, but the class name Step Functions sees is
+        # `ClientError`, which this task state does not list.
+        botocore.exceptions.ClientError(
+            {"Error": {"Code": "ThrottlingException", "Message": "slow down"}},
+            "Converse",
+        ),
+        botocore.exceptions.ReadTimeoutError(endpoint_url="https://bedrock"),
+    ],
+    ids=["bare-ClientError", "ReadTimeoutError"],
+)
+def test_a_transient_that_the_state_machine_will_not_retry_records_nothing(error):
+    """The known residual, pinned so it is visible rather than assumed away.
+
+    `is_transient_error` says these are transient, so the carve-out suppresses the
+    record — but `RuleValidationOrchestration`'s `Retry.ErrorEquals` lists neither
+    `ClientError` nor `ReadTimeoutError` nor `TransientError`, and this handler has
+    no `raise_if_transient` wrapper to convert them, so **no retry is coming
+    either**. The document fails with nothing on its record.
+
+    Extraction and assessment do not have this gap: their handlers wrap the whole
+    invocation in `raise_if_transient` and their task states list `TransientError`.
+
+    This test asserts today's behaviour, not desired behaviour. It is expected to
+    need changing when #1101 gives these handlers the wrapper and their task states
+    the name; a failure here after that work is the reminder to update the two
+    doc tiers that state the residual.
+    """
+    from idp_common.utils.transient_errors import is_transient_error
+
+    assert is_transient_error(error), "fixture precondition"
+    assert type(error).__name__ not in {
+        "TransientError",
+        "ThrottlingException",
+    }, "fixture precondition: a name the task state does not list"
+
+    service = MagicMock()
+    with pytest.raises(type(error)):
+        _orch_invoke(
+            _document(Status.RULE_VALIDATION_ORCHESTRATOR), service, fails_with=error
         )
     service.update_document.assert_not_called()
 

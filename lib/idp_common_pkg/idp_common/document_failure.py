@@ -39,7 +39,7 @@ signal ``ProcessingIssue`` was introduced to *replace*, and it is read today onl
 by ``processresults_function``'s own ``Status.FAILED`` branch. The alternative of
 a new document-level ``ProcessingIssues`` attribute was already considered and
 declined where classification faces the same choice (see
-``ClassificationService._record_page_classification_issues``): ``ProcessingIssues``
+``ClassificationService._record_unclassified_page_issues``): ``ProcessingIssues``
 is a **Section** field in the API schema, so a document-level issue would bump
 ``ProcessingIssueCount`` — which the document list does read — and then have no
 text to show behind the badge. Giving it text means a new DynamoDB attribute, a
@@ -49,7 +49,31 @@ that already has a working one.
 So each site names the section (or sections) the failure belongs to, and the
 diagnosis travels as an error-severity :class:`~idp_common.models.ProcessingIssue`
 down the path that is already persisted and already rendered: the Sections panel's
-status column and the document list's issue badge.
+status column on the document's own page, which reads the section's
+``ProcessingIssues`` directly.
+
+⚠️ **The document list's issue badge is only updated by the whole-document writer.**
+``ProcessingIssueCount`` is written by ``update_document``, which
+:func:`persist_failed_document` uses, and **not** by ``update_document_section``,
+which :func:`persist_failed_section` uses — that writer emits a single
+``SET Sections[i] = :section`` and touches no counter. So a failure recorded through
+the section path is visible on the document's page and may leave the list's badge
+reading its previous (often zero) value. Neither list resolver recovers it: the
+range resolver returns the stored value, the GSI resolver cannot return the counter
+at all (it is absent from that index's INCLUDE projection) and returns no
+``Sections`` either, and the UI prefers any non-null stored value over deriving one.
+
+That is deliberate rather than an oversight, and the reason is that the correct
+count is not knowable from that writer. ``update_document_section`` does not read the
+item, so it cannot compute a document-wide total; the per-section handler has
+narrowed ``document.sections`` to the single section it owns before it persists, so a
+locally derived count would be 1 and would **clobber a larger correct count** a
+sibling wrote; and it runs inside a ``Map`` at ``MaxConcurrency: 10``, so any total
+derived from its input snapshot is racy by construction. This is the same reason that
+writer already declines to write document-wide confidence-alert totals. Fixing the
+badge on this path needs an atomic counter increment, which is not idempotent across
+an eight-attempt retry ladder — a separate change, and one that has to cover
+``extraction_failed`` as well, which reaches the badge the same way.
 
 Four rules are bundled into :func:`persist_failed_section` and
 :func:`persist_failed_document` rather than left to each call site, because they
@@ -159,27 +183,40 @@ class SectionDiagnosis:
 
 
 def failure_is_transient(error: BaseException) -> bool:
-    """True when ``error`` is a failure the state machine is about to retry.
+    """True when ``error`` is a failure a retry could succeed at.
 
-    Marking a section for one of those shows it as failed for as long as the
-    ladder runs and then clears it, which is a false alarm rather than a
-    diagnosis. The transient tier on all three of these task states is eight
-    attempts at 2.5x backoff from a ten-second interval — most of three hours.
+    Recording for one of those shows the section failed for as long as the retry
+    ladder runs and then clears it, which is a false alarm rather than a diagnosis.
+    The transient tier on all three of these task states is eight attempts at 2.5x
+    backoff from a ten-second interval — most of three hours.
 
-    **Where this can actually fire is worth knowing, because it is one site of
-    the three.** ``rule-validation-function`` and ``processresults_function``
-    both raise an exception they *synthesise* from a status check, so it carries
-    no transient verdict and never will; their retry tiers do not list plain
-    ``Exception`` either, so no retry is coming and recording is always correct.
-    ``rule-validation-orchestration-function`` re-raises the caught exception
-    **unchanged**, so a ``ThrottlingException`` from Bedrock reaches here and is
-    genuinely inside that eight-attempt ladder. The check is applied uniformly at
-    all three anyway: the asymmetry is a property of today's error construction,
-    not something a future edit should have to rediscover.
+    ⚠️ **"Transient" and "will be retried" are not the same test, and at these three
+    sites they can disagree.** Step Functions matches a Lambda failure by
+    ``errorType``, which is the exception's **class name**;
+    :func:`is_transient_error` judges by error *code* and ``__cause__`` chain. The
+    two agree for extraction and assessment, because those handlers wrap the whole
+    invocation in ``raise_if_transient``, which re-raises any transient cause as
+    ``TransientError`` — the one name ``ExtractionStep``, ``ExtractionMergeStep`` and
+    the assessment task all list. **None of these three handlers has that wrapper,
+    and none of their task states lists ``TransientError``**: they list only the
+    ``Lambda.CodeArtifact*`` pair and a nine-name throttling family.
 
-    The residual, as in ``idp_common.extraction.failure``: a ladder that exhausts
-    every attempt leaves the sections unmarked. The execution still fails and the
-    failure alarms still see it.
+    So the class names that agree here are the ones botocore derives from a modeled
+    error code — a Bedrock ``ThrottlingException`` arrives as a class of that very
+    name and is retried. A transient that arrives under some *other* class name — a
+    bare ``ClientError`` carrying a throttling code, or a ``ReadTimeoutError`` — is
+    suppressed by this predicate and **not** retried by the state machine, so the
+    document fails with nothing on its record. That residual is pinned by
+    ``test_a_transient_that_the_state_machine_will_not_retry_records_nothing`` and
+    tracked in
+    `#1101 <https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/1101>`_;
+    closing it means giving these handlers the same ``raise_if_transient`` wrapper
+    and their task states the ``TransientError`` name, which is a state-machine
+    change rather than a library one.
+
+    The other residual is the same one ``idp_common.extraction.failure`` carries: a
+    ladder that exhausts every attempt leaves the sections unmarked. The execution
+    still fails and the failure alarms still see it.
     """
     return is_transient_error(error)
 

@@ -456,7 +456,7 @@ never persisted `errors`, and `errors` is the scattered free-text signal
 
 A new document-level `ProcessingIssues` attribute is also declined, for the reason
 already recorded where classification faced the same choice
-(`ClassificationService._record_page_classification_issues`): `ProcessingIssues` is
+(`ClassificationService._record_unclassified_page_issues`): `ProcessingIssues` is
 a **Section** field in the API schema, so a document-level issue bumps
 `ProcessingIssueCount` — which the document list does read — and then has no text to
 show behind the badge. Giving it text means a new DynamoDB attribute, a resolver
@@ -467,6 +467,19 @@ the path that is already persisted and already rendered. Where a diagnosis is
 genuinely document-scope and no section can be named, it is left in the exception
 and the log rather than attributed to a section by guess — `processresults_function`
 does exactly that with `document.errors`, and a test pins it.
+
+⚠️ **Which write you pick decides whether the document list's badge moves.**
+`ProcessingIssueCount` is written by `update_document` and **not** by
+`update_document_section`, so a failure recorded through `persist_failed_section`
+shows on the Sections panel but can leave the list badge at its previous value.
+Neither list resolver recovers it — the range resolver returns the stored value, and
+the counter is absent from the fast GSI's INCLUDE projection, which also returns no
+`Sections` to derive from. This is not an oversight to patch at that writer: it does
+not read the item, the per-section handler has already narrowed `document.sections`
+to its own section (so a local count would be 1 and would clobber a larger correct
+one), and ten sections are being written concurrently. Correcting it needs an atomic
+increment, which is not idempotent across an eight-attempt retry ladder, and it would
+have to cover `extraction_failed` too.
 
 ### Adding a new failure code
 
