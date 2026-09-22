@@ -576,9 +576,9 @@
         "Makefile::ARN_PARTITION_EXEMPT"
       ],
       "predicateConsidered": {
-        "not_a_nested_stack_of_parent": "True of all nine paths and irrelevant to the premise. None is a template the parent stack instantiates — they are a CI configuration, two deployment helpers, two of their tests, a credential-vendor template and three configuration presets — and nothing claims otherwise. What makes a line unredactable is that the id on it is read as a value, which is a fact about the surrounding code rather than about stack topology.",
+        "not_a_nested_stack_of_parent": "True of all nine paths and irrelevant to the premise. None is a template the parent stack instantiates \u2014 they are a CI configuration, two deployment helpers, two of their tests, a credential-vendor template and three configuration presets \u2014 and nothing claims otherwise. What makes a line unredactable is that the id on it is read as a value, which is a fact about the surrounding code rather than about stack topology.",
         "built_separately_from_main_stack": "True for the SDLC paths and the presets, and irrelevant for the same reason: whether one publish run builds a path says nothing about whether an account id inside it is consulted at run time. The count pin bounds the entry instead.",
-        "file_absent_or_untracked": "False for all nine — every path is tracked and present. The gate re-measures that on every run, because an entry whose line has moved or been redacted shields nothing and is failed as stale."
+        "file_absent_or_untracked": "False for all nine \u2014 every path is tracked and present. The gate re-measures that on every run, because an entry whose line has moved or been redacted shields nothing and is failed as stale."
       },
       "memberKind": "deployable path",
       "ratchetEvidence": "scripts/check_account_ids.py",
@@ -2176,6 +2176,34 @@
       "reason": "Each entry pairs a count with the code that derives it, so the risk is a count nobody registered rather than a member escaping a check. Which phrasings in English carry a count cannot be computed. Two mechanisms make an entry non-vacuous, and they cover different members. For an entry naming documents, test_every_document_making_a_count_claim_states_a_pinned_one requires each named document to still contain a statement some pattern reads, so a dead entry and a claim reworded out of reach both fail. For an entry naming NO documents -- a guard against a deleted figure being reintroduced, where matching nothing is the correct state -- that check can say nothing, so test_no_pattern_is_one_that_could_never_match fires every pattern at a sample statement of the shape it is for. That second mechanism exists because a pattern that compiles and has one capturing group can still be unable to match anything: the requireable-contexts pattern spelled a literal space where both real sentences wrap across lines, so a derived number was computed and compared against nothing. The file scan is NOT a list -- it runs over every tracked .md/.py/.mk/.yml/.yaml and the Makefile from git ls-files, so no file is carved out of it, and test_this_module_does_not_match_its_own_patterns keeps that true by asserting the module needs no exclusion for itself (which is why the probes hold a placeholder where the number goes rather than spelling one out).",
       "ratchetGap": "Three residuals. A NEW document inventing a phrasing none of the registered patterns match states an unchecked count; the per-document check closes this only for documents already registered. A registered pattern can still be narrower than the prose it is aimed at -- it is fired at a probe the same author wrote, so a shared misreading of the real sentence would satisfy both. And for an entry with no documents, nothing asserts the figure is actually absent from the tree: the patterns report a wrong one if it returns, but prose could state the count in an unregistered phrasing and go unseen.",
       "memberKind": "other"
+    },
+    "scripts/tests/test_first_party_provenance_closure.py::EXEMPT": {
+      "kind": "exemption",
+      "memberKind": "directory",
+      "turnsOff": "the requirement that a test directory importing a first-party package have a provenance guard reachable from an ancestor conftest, per directory",
+      "premise": [
+        "JUDGEMENT"
+      ],
+      "ratchet": "universe-closure",
+      "reason": "The single member is lib/idp_common_pkg/manual_tests/agents: operator-run scripts that drive real Bedrock, Athena and DynamoDB against a deployed stack and bill model calls, so they are never collected by a suite and no suite result can be attributed to the wrong checkout. The premise -- 'pytest never collects this' -- is computable and IS computed rather than trusted: test_every_exempt_directory_is_genuinely_uncollected runs a real collection from lib/idp_common_pkg and fails if any of the directory's test modules appear. It is recorded as JUDGEMENT rather than naming a gate_premises predicate only because the computation belongs to the owning gate, which is where it lives; no predicate in gate_premises.py expresses 'not collected by pytest from a given rootdir'. Membership of the universe this exempts from is derived from git ls-files, so a new test directory is enforced by default rather than needing to be added.",
+      "ratchetEvidence": "scripts/tests/test_first_party_provenance_closure.py",
+      "crossReferences": [
+        "scripts/tests/test_first_party_provenance_closure.py::EXEMPT_COLLECTION_ROOT"
+      ]
+    },
+    "scripts/tests/test_first_party_provenance_closure.py::EXEMPT_COLLECTION_ROOT": {
+      "kind": "fixture",
+      "memberKind": "directory",
+      "turnsOff": "nothing",
+      "premise": [
+        "JUDGEMENT"
+      ],
+      "ratchet": "staleness",
+      "reason": "Not a carve-out: it is the input to verifying the carve-out above. Each entry names the rootdir a real pytest invocation would use for that directory, because a collection started anywhere else proves nothing about what a real run collects. test_no_exempt_entry_is_stale fails if an EXEMPT entry has no collection root, so this mapping cannot fall behind EXEMPT.",
+      "ratchetEvidence": "scripts/tests/test_first_party_provenance_closure.py",
+      "crossReferences": [
+        "scripts/tests/test_first_party_provenance_closure.py::EXEMPT"
+      ]
     }
   }
 }
