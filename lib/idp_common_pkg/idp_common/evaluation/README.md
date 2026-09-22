@@ -60,12 +60,21 @@ Three things handle it:
 
 ## Confidence-curve keys (`curve_store.py`)
 
-⚠️ **Key-shape change.** `_flatten_confidences` / `_flatten_values` used to key the
+⚠️ **Key-shape change.** `flatten_confidences` / `flatten_values` used to key the
 list index off list *length* (`prefix if len(node) == 1 else prefix[i]`), so any
 single-element list lost its index: a one-row table keyed `Transactions.date`
 while a two-row table keyed `Transactions[0].date`. They now key off *depth* — only
 the outer `explainability_info` wrapper is un-indexed — so a list is always
 `Field[i].Sub`.
+
+Both are **public** and exported from `idp_common.evaluation`, because the join they
+make possible — a confidence keyed identically to the value it scores — is needed
+outside this module: by the HITL review function, and by the benchmark harness, which
+joins these paths to a synthetic corpus's per-cell ground truth to measure calibration
+(GitHub #935). Reach for these rather than writing a second walk; a private copy
+drifts from the shape stored curves are keyed by, and one already has —
+`test_set_resolver`'s `_list_item_path` still uses the length-keyed rule, which is
+[#1066](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/1066).
 
 Consequence to be honest about: a list whose length *varied* never joined and now
 does. But a list that was **always** single-element joined fine before, and its

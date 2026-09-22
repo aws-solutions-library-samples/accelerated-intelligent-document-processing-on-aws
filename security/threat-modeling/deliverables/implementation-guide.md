@@ -152,12 +152,12 @@ and mapped to the specific threats they address.
 
 > **Read-scoping gap (UI.T06).** Object reads are not scoped per **document**:
 > nothing records which documents belong to whom, so for the Input and Output
-> buckets a key is bounded only by the bucket allow-list and any authenticated
-> caller holding a group can read any document's bytes. The two per-user scope
-> axes are enforced (see **Read key scope** above) and the buckets they govern are
-> off the browser's Identity Pool role, so `allowedConfigVersions` and
-> `allowedTestSets` are real boundaries here. Closing the rest needs a document
-> ownership model — issue #1033. Open item.
+> buckets a key is bounded only by the bucket allow-list, and any authenticated
+> caller holding *any one of the five groups* can read any document's bytes. The
+> two per-user scope axes are enforced (see **Read key scope** above) and the
+> buckets they govern are off the browser's Identity Pool role, so
+> `allowedConfigVersions` and `allowedTestSets` are real boundaries here. Closing
+> the rest needs a document ownership model — issue #1033. Open item.
 
 ## 4. Data Protection
 

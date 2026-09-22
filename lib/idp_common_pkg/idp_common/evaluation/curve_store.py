@@ -413,12 +413,12 @@ def observations_from_baseline_review(
         return []
 
     explainability = before.get("explainability_info")
-    confidences = _flatten_confidences(explainability)
+    confidences = flatten_confidences(explainability)
     if not confidences:
         return []
 
-    before_values = _flatten_values(before.get("inference_result") or {})
-    after_values = _flatten_values(after.get("inference_result") or {})
+    before_values = flatten_values(before.get("inference_result") or {})
+    after_values = flatten_values(after.get("inference_result") or {})
 
     observations: List[Tuple[float, bool]] = []
     for path, confidence in confidences.items():
@@ -433,7 +433,7 @@ def observations_from_baseline_review(
 _MISSING = object()
 
 
-def _flatten_confidences(node: Any, prefix: str = "") -> Dict[str, float]:
+def flatten_confidences(node: Any, prefix: str = "") -> Dict[str, float]:
     """Map field path → confidence from an ``explainability_info`` payload."""
     found: Dict[str, float] = {}
     if isinstance(node, dict):
@@ -444,10 +444,10 @@ def _flatten_confidences(node: Any, prefix: str = "") -> Dict[str, float]:
             if key in ("confidence", "confidence_threshold", "geometry"):
                 continue
             path = f"{prefix}.{key}" if prefix else key
-            found.update(_flatten_confidences(child, path))
+            found.update(flatten_confidences(child, path))
     elif isinstance(node, list):
         for index, child in enumerate(node):
-            found.update(_flatten_confidences(child, _list_child_path(prefix, index)))
+            found.update(flatten_confidences(child, _list_child_path(prefix, index)))
     return found
 
 
@@ -477,16 +477,16 @@ def _list_child_path(prefix: str, index: int) -> str:
     return f"{prefix}[{index}]"
 
 
-def _flatten_values(node: Any, prefix: str = "") -> Dict[str, Any]:
-    """Map field path → scalar value, matching ``_flatten_confidences`` paths."""
+def flatten_values(node: Any, prefix: str = "") -> Dict[str, Any]:
+    """Map field path → scalar value, matching ``flatten_confidences`` paths."""
     found: Dict[str, Any] = {}
     if isinstance(node, dict):
         for key, child in node.items():
             path = f"{prefix}.{key}" if prefix else key
-            found.update(_flatten_values(child, path))
+            found.update(flatten_values(child, path))
     elif isinstance(node, list):
         for index, child in enumerate(node):
-            found.update(_flatten_values(child, _list_child_path(prefix, index)))
+            found.update(flatten_values(child, _list_child_path(prefix, index)))
     elif prefix:
         found[prefix] = node
     return found

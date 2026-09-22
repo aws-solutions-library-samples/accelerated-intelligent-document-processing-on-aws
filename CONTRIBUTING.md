@@ -262,6 +262,35 @@ Use the prefix that matches the change: `feature/`, `fix/`, or `docs/`. Keep a
 branch focused on one issue or feature — a reviewer can approve a small change
 quickly and cannot do much with a large mixed one.
 
+Install the push guard once per clone:
+
+```bash
+make install-git-hooks
+```
+
+It adds a `pre-push` hook that refuses a push whose destination is `develop` or
+`main`, so that a change reaching a shared branch without a pull request takes a
+deliberate act rather than a slip. Override it with `ALLOW_SHARED_BRANCH=1 git push
+…` — put the assignment in front of the command. git does not clone hooks, which is
+why this is a step rather than something the repository can do for you.
+
+It is a convention, not a control, and it is worth knowing where it stops.
+`git push --no-verify` skips it. Branch protection on this repository is off
+(enabling it needs repository admin), so nothing prevents a merge made through
+GitHub's web interface. And if your machine sets `core.hooksPath` system-wide — some
+managed developer machines point it at a directory of hook runners — git runs those
+instead, and this hook is reached only because they chain to it. They do not forward
+the ref list, so it falls back to judging by `HEAD`, and a push whose destination
+*is* `develop` or `main` while `HEAD` is on your feature branch is then allowed
+through. On such a machine, treat the hook as a reminder rather than a guard. `make
+install-git-hooks` tells you when it detects the redirect.
+
+One refusal you may see on any machine, with no redirect involved: git also supplies
+no ref list for a push that has **nothing to send**, so an up-to-date `git push` made
+while `HEAD` happens to sit on `develop` or `main` is refused. Every refusal says
+which basis it used, so you can tell that case from a real one — and the override
+gets you past it.
+
 ### Where the domain conventions live
 
 The per-domain conventions, checklists and gotchas are in **`.claude/skills/`**.

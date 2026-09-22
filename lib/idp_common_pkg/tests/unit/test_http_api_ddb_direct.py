@@ -243,11 +243,17 @@ def test_group_restricted_ops_enforce_groups(ddb_env):
     mod.dispatch("getDocument", _ev({"ObjectKey": "nope"}, groups=("Viewer",)))
     with pytest.raises(PermissionError, match="requires an assigned group"):
         mod.dispatch("getDocument", _ev({"ObjectKey": "nope"}, groups=()))
-    # listDocumentsDateHour stays open to any authenticated caller — it enumerates an
-    # index partition rather than returning content.
+    # listDocumentsDateHour is ANY_GROUP too: the index rows it returns carry
+    # ObjectKey with no filtering, which is where a caller gets the keys the rest of
+    # the chain in issue #1033 needs.
     mod.dispatch(
-        "listDocumentsDateHour", _ev({"date": "2024-01-01", "hour": 0}, groups=())
+        "listDocumentsDateHour",
+        _ev({"date": "2024-01-01", "hour": 0}, groups=("Viewer",)),
     )
+    with pytest.raises(PermissionError, match="requires an assigned group"):
+        mod.dispatch(
+            "listDocumentsDateHour", _ev({"date": "2024-01-01", "hour": 0}, groups=())
+        )
 
 
 # ----------------------------- agent jobs ---------------------------------- #

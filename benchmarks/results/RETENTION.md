@@ -57,7 +57,25 @@ with no overrides, i.e. on the committed `default_cell`.
 | Keep | Rule |
 |------|------|
 | `v<RELEASE>/corefast/` | The release-vs-release A/B grid backing `docs/benchmarking/releases/v<RELEASE>.md`. **One per release**, never overwritten. |
-| `baseline.json` | Promoted copy of the PREV release's `corefast/summary.json`. Byte-identical to it by construction — `aggregate.py --compare` defaults to this path. |
+| `baseline.json` | The PREV release's `corefast` grid, which `aggregate.py --compare` defaults to. See below: it is **not** a byte-identical copy of the committed `v<PREV>/corefast/summary.json`, and must not be assumed to be one. |
+
+### `baseline.json` is a separate artifact, not a copy
+
+It is promoted by copying a `corefast/summary.json`, but the file it is copied from is
+not necessarily the one committed under `v<PREV>/corefast/`, and it diverges afterwards.
+Today's `baseline.json` is a v0.6.8 `corefast` grid scored on stack `IDPUpg067to068`,
+while `v0.6.8/corefast/summary.json` is the same suite over the same three documents
+scored on `IDPRel068` — 171 rows and 19 cells on both sides, matching on every
+`(cell, doc, repeat)` key, and different data. It has also been `--augment`ed with the
+#935 calibration statistic, which the release directory's copy has not been, so it is
+larger as well: 533 KB before the backfill, 720 KB after, against 523 KB for the
+release-directory copy.
+
+Two consequences. **Verify the promotion rather than assuming it** — compare `meta.stack`
+and `meta.scored_at`, which identify the grid, instead of comparing file sizes or
+checksums against the release directory. And **a metric backfilled into one is not in the
+other**: `--augment` both, or `compare_cells` will report the metric as uncomparable on
+one side.
 
 ## What is not kept
 
@@ -67,8 +85,8 @@ repeated-measures hazard checks (`intconf`, `advverify`), and post-fix re-runs
 tables of a `docs/benchmarking/` page. The published page is the durable record.
 
 This is a deliberate trade: those pages cite their supporting data, and the data is no
-longer at the cited path. **It is not lost** — these files were committed, so git
-history is the archive. Recover any pruned set with:
+longer at the cited path. The committed **bytes** are not lost — recover any pruned set
+with:
 
 ```bash
 git show <SHA>:benchmarks/results/<dir>/summary.json
@@ -77,6 +95,23 @@ git checkout <SHA> -- benchmarks/results/<dir>/      # restore the whole set
 
 The commit holding the full pre-pruning set is recorded in each affected doc page and
 in the pruning commit message. Cite a commit, not a path, when referencing pruned data.
+
+⚠️ **Git history archives what was committed; it does not archive what those files were
+derived from.** A metric added after a grid was scored can only be backfilled by
+re-reading the run's output from S3, and that window closes on its own:
+
+- Three v0.6.x release stacks are gone outright, so nothing in their grids can gain a
+  new metric.
+- `IDPUpg068to069` still has its bucket and every object in it, and every object is
+  **unreadable** — the stack's KMS key is pending deletion, so `GetObject` answers
+  `KMS.KMSInvalidStateException`. An artifact's readable lifetime is the shorter of its
+  bucket's and its key's, and neither is under this repository's control.
+
+So the archive is only as complete as what each summary carried at commit time. The
+practical rule: **when a new per-run metric lands, backfill it into every grid whose
+stack is still readable, in the same change** — not only the grids the page being written
+happens to report. A grid left unbackfilled while it was recoverable cannot be recovered
+later, and the pruning policy above then removes the option entirely.
 
 ## Adding a release
 

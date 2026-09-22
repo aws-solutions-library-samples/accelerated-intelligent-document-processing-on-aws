@@ -191,6 +191,12 @@ EXEMPTION_PROSE = (
     "not covered",
     "deliberately not",
     "deliberately excludes",
+    # "X is deliberately absent" is how an exclusion reads when it is expressed as an
+    # omission from an inclusion list rather than as an entry on an exclusion list.
+    # Neither the constant's name nor any other phrase here reaches that spelling, so a
+    # gate whose scope is narrowed by leaving one member out went unregistered while
+    # this discovery module — which exists to catch exactly that — passed.
+    "deliberately absent",
     "never part of",
     "exempt",
     "exclusion",
