@@ -123,7 +123,8 @@
       "ratchet": "non-vacuity",
       "reason": "Cross-partition IAM trust does not exist, so the two statements trusting a named role in the commercial CI account cannot be parameterised. Not machine-checkable: whether a foreign account id has a counterpart in another partition is a fact about that account, not about this tree.",
       "crossReferences": [
-        "scripts/check_python_arn_partitions.py::EXCLUDE_FRAGMENTS"
+        "scripts/check_python_arn_partitions.py::EXCLUDE_FRAGMENTS",
+        "scripts/check_account_ids.py::ACCOUNT_ID_EXEMPT_LINES"
       ],
       "predicateConsidered": {
         "not_a_nested_stack_of_parent": "True of this template and irrelevant to the premise. The SDLC pipeline templates are not nested stacks of template.yaml and nothing claims they are; what makes the two exempt LINES unparameterisable is that they name a role in a specific foreign commercial account, which no predicate here can judge. The non-vacuity and one-file-per-entry ratchets bound it instead.",
@@ -519,6 +520,70 @@
       "issues": [
         "975",
         "1042"
+      ]
+    },
+    "scripts/check_account_ids.py::BINARY_EXTENSIONS_SKIPPED": {
+      "kind": "exemption",
+      "turnsOff": "reading one file's contents at all, for a file in a non-text format",
+      "premise": [
+        "JUDGEMENT"
+      ],
+      "ratchet": "universe-closure",
+      "reason": "WHAT IS RATCHETED HERE IS THE SET OF EXTENSIONS, NOT A COUNT OF SKIPPED FILES. The gate decides per file whether contents are text by looking for a NUL byte in the first 8 KiB, and this set records which formats are allowed to answer yes; the closure check fails on any skipped file whose extension is not named. Choosing extensions over a count is deliberate: a count would red-line the branch on the next sample PNG, which is friction for no safety, whereas what genuinely needs to fail is a file the gate STOPS being able to read -- a text file that gains a NUL byte in its first 8 KiB, or a new tree in an undeclared binary format. Both of those the closure catches; a hundred more images it does not. No file total is recorded here because it moves with every merge; the skipped set today is almost entirely images and PDFs, and `--summary` prints the live count. Whether a format is text is not something this tree computes, which is why the membership is authored. The residual was measured rather than assumed: none of the six private account ids known to this tree appears as raw bytes in any skipped file, and a review that also unzipped the Office containers and zlib-decompressed the PDFs' FlateDecode streams found none either, so the skip is currently empty of substance -- though it remains a real hole for a future file.",
+      "memberKind": "file extension",
+      "ratchetEvidence": "scripts/check_account_ids.py",
+      "issues": [
+        "1067"
+      ]
+    },
+    "scripts/check_account_ids.py::ACCOUNT_ID_EXCLUDED_SHAPES": {
+      "kind": "exemption",
+      "turnsOff": "the committed-account-id check, for one 12-digit run whose surrounding characters show it is not a standalone number",
+      "premise": [
+        "JUDGEMENT"
+      ],
+      "ratchet": "non-vacuity",
+      "reason": "Three shapes in this tree produce a 12-digit run that is not an identifier of any kind: the fractional part of a decimal literal (a point is a word boundary, so the run after it is bounded), the final group of an RFC-4122 UUID, and a slice of a longer hexadecimal digest. The gate evaluates all three per occurrence from the characters either side, so the verdict is computed rather than asserted; it is recorded as JUDGEMENT only because gate_premises.py holds no predicate for a textual shape and inventing one would give it a single caller. No per-rule totals are recorded here on purpose: they move with every merge (one study landing on develop took the decimal-fraction count from 11 to 76), so a figure written down would be stale within the week. `python3 scripts/check_account_ids.py --summary` prints the current split, and the non-vacuity ratchet is what asserts each rule still earns its place.",
+      "memberKind": "textual shape rule",
+      "ratchetEvidence": "scripts/check_account_ids.py",
+      "issues": [
+        "1067"
+      ]
+    },
+    "scripts/check_account_ids.py::ACCOUNT_ID_ALLOWLIST": {
+      "kind": "exemption",
+      "turnsOff": "the committed-account-id check, for every occurrence of one specific 12-digit value",
+      "premise": [
+        "JUDGEMENT"
+      ],
+      "ratchet": "non-vacuity",
+      "reason": "Whether a 12-digit value is a private account id, one of AWS's published example ids, an AWS-owned service account, or simply document content that happens to be twelve digits long (a bank account number in a synthetic statement, the digits of a CUSIP, a build timestamp) is a fact about the outside world and about what the containing document represents. Nothing in this tree can decide it, so every entry carries the reason its value is not private. Keyed by VALUE rather than by path on purpose: publicness is a property of the id, so one entry states the claim once and a reviewer reads the claim instead of a list of files.",
+      "memberKind": "AWS account id",
+      "ratchetEvidence": "scripts/check_account_ids.py",
+      "issues": [
+        "1067"
+      ]
+    },
+    "scripts/check_account_ids.py::ACCOUNT_ID_EXEMPT_LINES": {
+      "kind": "exemption",
+      "turnsOff": "the committed-account-id check, for lines of one named file that match one named pattern",
+      "premise": [
+        "JUDGEMENT"
+      ],
+      "ratchet": "count-pinned",
+      "reason": "Six lines over five files, 9 occurrences, still carry a real private account id, because on those lines the id is consumed as a value at run time rather than being prose: the fallback of a CI variable and the bucket name derived from it, the fake caller identity in two of their tests, and two IAM trust statements. Each is a behaviour change needing the owning team rather than a redaction. The IAM pair cannot be replaced by a PLACEHOLDER, since there the id is the trust relationship itself; it could be parameterised, which is a deploy-process change for the pipeline owner and is out of scope here rather than impossible. Whether a given occurrence is read as a value is a judgement about the surrounding code that this tree cannot compute. Three properties bound the list. No entry names an account id, so neither this registry nor the gate becomes a further occurrence. Each entry pins how many occurrences it shielded when written, so a new id on a different line of an already-exempt file still fails. And an entry that shields NOTHING fails, with no per-entry tolerance, because while it remains it would pre-exempt a future id on a matching line. The direct cost of naming no id is that swapping an exempt line's id for a DIFFERENT private one is undetected -- count pinning catches a new site, not a changed value -- and that is recorded in the gate's own docstring as an accepted residual.",
+      "crossReferences": [
+        "Makefile::ARN_PARTITION_EXEMPT"
+      ],
+      "predicateConsidered": {
+        "not_a_nested_stack_of_parent": "True of all nine paths and irrelevant to the premise. None is a template the parent stack instantiates — they are a CI configuration, two deployment helpers, two of their tests, a credential-vendor template and three configuration presets — and nothing claims otherwise. What makes a line unredactable is that the id on it is read as a value, which is a fact about the surrounding code rather than about stack topology.",
+        "built_separately_from_main_stack": "True for the SDLC paths and the presets, and irrelevant for the same reason: whether one publish run builds a path says nothing about whether an account id inside it is consulted at run time. The count pin bounds the entry instead.",
+        "file_absent_or_untracked": "False for all nine — every path is tracked and present. The gate re-measures that on every run, because an entry whose line has moved or been redacted shields nothing and is failed as stale."
+      },
+      "memberKind": "deployable path",
+      "ratchetEvidence": "scripts/check_account_ids.py",
+      "issues": [
+        "1067"
       ]
     },
     "scripts/check_data_plane_tags.py::DATA_PLANE_ALLOWLIST": {
