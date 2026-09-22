@@ -522,6 +522,21 @@ Each version item contains metadata as top-level DynamoDB attributes, plus the c
 | `LatestRevision` | Number | Highest revision number cut for this profile |
 | `PublishedRevision` | Number | Revision the profile's configuration currently reflects |
 
+⚠️ **Uninstalling a feature before v0.6.10 removed both of these from whichever
+profile was active at the time.** The feature platform's hook-registration Lambda
+rewrote the whole head item and did not carry them forward, so a feature uninstall —
+or the rollback of a failed feature install — left the profile with no revision
+counter and no published pointer. That is visible as a history whose numbering
+restarts, a **duplicated revision number**, and no *current* marker on any revision;
+`LatestRevision` is recomputable from the surviving revision index, but any revision
+cut after the loss reused a number and **overwrote the stored body of the earlier
+revision with that number**, which is not recoverable, and neither is
+`PublishedRevision`. The same write also cleared the profile's link to its Bedrock
+Data Automation project. Fixed in v0.6.10; the fix does not reconstruct what an
+affected profile already lost. If you have uninstalled a feature from a stack, treat
+that profile's revision history as incomplete and export the configuration you are
+running before relying on it.
+
 ### Compressed Storage
 
 Configuration data (ocr, classification, extraction, classes, assessment, summarization, etc.) is gzip-compressed into a single DynamoDB Binary attribute. This overcomes DynamoDB's 400KB item size limit, supporting configurations with **3,000+ document classes**.
@@ -588,7 +603,7 @@ To incorporate new defaults into an existing version:
 
 ### Best Practices
 
-1. **Export before upgrading**: Use the Export button to download your active profile's configuration before a stack upgrade (revision history also covers you, but an export is portable across stacks)
+1. **Export before upgrading**: Use the Export button to download your active profile's configuration before a stack upgrade (revision history also covers you, but an export is portable across stacks — and see the note on [`LatestRevision` and `PublishedRevision`](#item-structure) if you have ever uninstalled a feature from this stack)
 2. **Review default changes**: After upgrading, compare your version with the updated default to identify beneficial new settings
 3. **Profile naming**: Name profiles after the use case or environment they serve (e.g., `lending`, `production`, `experiment-nova2-lite`). You no longer need to encode iterations in the name (`usecaseA_v1`, `usecaseA_v2`) — that is what revisions are for
 4. **Document context**: Use version descriptions and test run context fields to record what each version is testing
