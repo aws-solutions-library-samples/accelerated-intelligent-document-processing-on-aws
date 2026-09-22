@@ -120,6 +120,14 @@ Document Data → [Path Extraction or LLM Extraction] → Parameter Values
    every document until the schema is edited. Prefer "Generate RuleJSON", or run a
    document through after pasting.
 
+   The `rule_id` inside the generated `RuleJSON` is a digest of the rule text alone,
+   so re-generating the same rule produces the same id and a regeneration shows no id
+   change in a config diff. Two rules whose text is byte-identical therefore share an
+   id; nothing keys on it — it identifies the rule in log lines and error context, and
+   the translation cache is keyed on the rule text. ⚠️ This is **not** the
+   `x-aws-idp-rule-id` schema field described above, which you author and which does
+   need to be unique.
+
 2. **Extraction**: In the orchestration step, an LLM call extracts typed parameter values from the collected facts (gathered per-section in the prior step).
 
 3. **Validation**: The Z3 solver checks whether the extracted values satisfy the constraints:

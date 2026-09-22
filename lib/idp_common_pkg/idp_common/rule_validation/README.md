@@ -714,6 +714,28 @@ exception's full log formatting — component, operation, rule id, message, cont
 dict and timestamp. That is the shape every Z3 error has had in that field; it is
 useful in logs and noisy in a compliance report.
 
+### The generated `RuleJSON`'s `rule_id`
+
+`RuleTranslator._generate_rule_id` is **deterministic and content-addressed**: the id
+is `"rule_"` plus the first eight hex characters of an MD5 digest of the rule text
+alone. So re-translating a rule keeps its id, which matters because the id is
+persisted — the configuration resolver's `handle_generate_rule_json` generates it when
+the caller supplies none, and the Config Editor stores the resulting `RuleJSON` inline
+under `x-aws-idp-rule-json`. A regeneration therefore produces no id churn in a config
+diff.
+
+It is **not unique**: two rules whose text is byte-identical share an id. Nothing here
+requires uniqueness, and that is worth stating rather than leaving to be assumed. The
+id reaches log lines, `TranslationError` context and the returned `RuleJSON.rule_id`;
+the translation cache is keyed on the rule *text*, both in memory
+(`Z3EngineAdapter._rule_cache`) and in S3 (`_s3_key`'s `sha256` of the description).
+Content-addressing the id is what makes it agree with the key its translation is
+already stored under.
+
+⚠️ Do not confuse it with `x-aws-idp-rule-id`, the schema field an author writes, which
+does identify a rule uniquely. If you ever do key storage on the generated id, make it
+unique first — the two properties are independent and only one of them holds.
+
 ## Performance Considerations
 
 ### Rate Limiting

@@ -362,19 +362,30 @@ class RuleTranslator:
 
     def _generate_rule_id(self, rule_text: str) -> str:
         """
-        Generate a rule ID from rule text.
+        Generate a deterministic rule ID from rule text.
+
+        Content-addressed: a function of ``rule_text`` alone, so re-translating the
+        same rule keeps its id. It is NOT unique across two rules whose text is
+        byte-identical, and nothing here requires that — the id reaches log lines,
+        ``TranslationError`` context and the returned ``RuleJSON.rule_id``, and the
+        rule cache is keyed on the rule text rather than on this
+        (``Z3EngineAdapter._rule_cache``, and ``_s3_key``'s ``sha256`` of the
+        description). Deriving it from the clock instead made it neither unique
+        (identical text inside one millisecond collided) nor stable (identical text a
+        moment later did not), and left the same rule holding two different ids
+        depending on whether its translation came from the cache.
+
+        Distinct from the user-authored ``x-aws-idp-rule-id`` schema field.
 
         Args:
             rule_text: Natural language rule text
 
         Returns:
-            Generated rule ID (e.g., "rule_1234567890")
+            Generated rule ID (e.g., "rule_f87f3ec5")
         """
         import hashlib
 
-        # Use hash of rule text + timestamp for uniqueness
-        timestamp = str(int(time.time() * 1000))
-        hash_input = f"{rule_text}{timestamp}".encode("utf-8")
+        hash_input = rule_text.encode("utf-8")
         hash_digest = hashlib.md5(hash_input, usedforsecurity=False).hexdigest()[:8]  # nosec B324 - non-security hash for rule ID generation
 
         return f"rule_{hash_digest}"
@@ -446,7 +457,7 @@ Do not extract paths from the data structure.
         self,
         prompt: str,
         rule_id: Optional[str] = None,
-        max_retries: int = 2,
+        max_attempts: int = 2,
         initial_backoff: float = 1.0,
         use_extraction_config: bool = False,
     ) -> str:
@@ -461,7 +472,11 @@ Do not extract paths from the data structure.
         Args:
             prompt: Complete prompt to send to LLM
             rule_id: Optional rule ID for error context
-            max_retries: Maximum number of retry attempts (default: 3)
+            max_attempts: Total number of attempts, including the first (default: 2),
+                so the default allows one retry. The loop, the log lines and the
+                error message all count attempts rather than retries. The
+                ``TranslationError`` context key stays spelled ``max_retries``,
+                since that field is observable and renaming it is a separate change.
             initial_backoff: Initial backoff delay in seconds (default: 1.0)
             use_extraction_config: If True, use extraction config; otherwise use translator config
 
@@ -492,7 +507,7 @@ Do not extract paths from the data structure.
         last_error = None
         backoff = initial_backoff
 
-        for attempt in range(max_retries):
+        for attempt in range(max_attempts):
             try:
                 # Prepare request body for Claude model
                 request_body = {
@@ -503,7 +518,7 @@ Do not extract paths from the data structure.
                 }
 
                 logger.debug(
-                    f"Attempt {attempt + 1}/{max_retries}: Sending request to Bedrock"
+                    f"Attempt {attempt + 1}/{max_attempts}: Sending request to Bedrock"
                 )
 
                 # Invoke Bedrock
@@ -568,7 +583,7 @@ Do not extract paths from the data structure.
                     "RequestTimeoutException",
                 }
 
-                if error_code in retryable_errors and attempt < max_retries - 1:
+                if error_code in retryable_errors and attempt < max_attempts - 1:
                     # Retry with exponential backoff
                     last_error = e
                     logger.info(f"Retrying after {backoff}s backoff...")
@@ -588,7 +603,7 @@ Do not extract paths from the data structure.
                             "error_code": error_code,
                             "error_message": error_message,
                             "attempt": attempt + 1,
-                            "max_retries": max_retries,
+                            "max_retries": max_attempts,
                         },
                     )
 
@@ -598,7 +613,7 @@ Do not extract paths from the data structure.
                     f"Bedrock connection error on attempt {attempt + 1}: {e}"
                 )
 
-                if attempt < max_retries - 1:
+                if attempt < max_attempts - 1:
                     last_error = e
                     logger.info(f"Retrying after {backoff}s backoff...")
                     time.sleep(backoff)
@@ -606,7 +621,7 @@ Do not extract paths from the data structure.
                     continue
                 else:
                     logger.error(
-                        f"Bedrock connection failed after {max_retries} attempts"
+                        f"Bedrock connection failed after {max_attempts} attempts"
                     )
                     raise TranslationError(
                         message=f"Bedrock connection error: {e}",
@@ -615,7 +630,7 @@ Do not extract paths from the data structure.
                         context={
                             "error_type": type(e).__name__,
                             "attempt": attempt + 1,
-                            "max_retries": max_retries,
+                            "max_retries": max_attempts,
                         },
                     )
 
@@ -642,12 +657,12 @@ Do not extract paths from the data structure.
                 )
 
         # Should not reach here, but just in case
-        logger.error(f"Failed after {max_retries} attempts")
+        logger.error(f"Failed after {max_attempts} attempts")
         raise TranslationError(
-            message=f"Failed after {max_retries} attempts: {last_error}",
+            message=f"Failed after {max_attempts} attempts: {last_error}",
             operation="invoke_bedrock",
             rule_id=rule_id,
-            context={"max_retries": max_retries},
+            context={"max_retries": max_attempts},
         )
 
     def _parse_llm_output(
