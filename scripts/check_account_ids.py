@@ -346,33 +346,69 @@ ACCOUNT_ID_EXEMPT_LINES = {
     # would not fix that and would hide it: the ARN would then resolve nowhere at all
     # rather than in one place, which is why the id stays until the model reference is
     # replaced. Leaving it is the lesser of two bad states, not a good one.
+    #
+    # And nobody outside the owning account can even tell which of those two states a
+    # given deployment is in: GetCustomModelDeployment on a cross-account ARN answers
+    # AccessDeniedException ("the provided resource ARN is from a different account")
+    # BEFORE it evaluates existence. So a deleted deployment and someone else's live one
+    # are indistinguishable from here, and the preset fails identically either way.
+    #
+    # All three carry `removedBy`, because PR #1107 repoints these five `model:` values
+    # at a generally available model and so removes the occurrences. See the note on
+    # REMOVAL_PENDING_LIMIT below for why that field exists and what bounds it.
     "config_library/unified/docsplit/docsplit_finedtuned_config.yaml:custom-model-deployment": {
         "sites": 1,
+        "removedBy": "#1107",
         "reason": (
-            "A Bedrock custom-model-deployment ARN in a shipped preset. The ARN "
-            "resolves only in the account that owns the deployment, so this preset "
-            "does not work for any other customer today -- a product defect tracked "
-            "by #1093. Redacting the id alone would leave an ARN that resolves in no "
-            "account, so the fix is to replace the model reference, not the id."
+            "One custom-model-deployment ARN, under `classification.model` -- this "
+            "preset pins no `extraction.model` at all. The ARN resolves only in the "
+            "account that owns the deployment, so the preset does not work for any "
+            "other customer today: a product defect tracked by #1093. Redacting the id "
+            "alone would leave an ARN that resolves in no account, so the fix is to "
+            "replace the model reference, which is what #1107 does."
         ),
     },
     "config_library/unified/ocr-benchmark/fine_tuned_config.yaml:custom-model-deployment": {
         "sites": 2,
+        "removedBy": "#1107",
         "reason": (
-            "Two more custom-model-deployment ARNs in the OCR benchmark preset, "
-            "unusable outside the owning account for the same reason and tracked by "
-            "the same issue."
+            "Two ARNs in the OCR benchmark preset, under `classification.model` and "
+            "`extraction.model`, both naming the SAME deployment id. Unusable outside "
+            "the owning account for the same reason and tracked by the same issue."
         ),
     },
     "config_library/unified/ocr-benchmark/ocr_fine_tuned_config.yaml:custom-model-deployment": {
         "sites": 2,
+        "removedBy": "#1107",
         "reason": (
-            "The same two ARNs in the sibling OCR preset, with the same defect. Listed "
-            "separately because a reason bounded to one file is what makes a mismatch "
-            "visible while it is being written."
+            "This file is byte-identical to fine_tuned_config.yaml above, so these are "
+            "the same two ARNs again -- across all three entries there are only TWO "
+            "distinct deployment ids. Listed separately anyway, because a reason bounded "
+            "to one file is what makes a mismatch visible while it is being written, and "
+            "because a duplicated file is exactly the kind of thing a per-file entry "
+            "surfaces and a per-directory one hides."
         ),
     },
 }
+
+#: How many entries may carry ``removedBy`` at once. May shrink, never grow.
+#:
+#: ``removedBy`` decouples two pull requests' merge order. An entry that names it is
+#: satisfied by shielding either its pinned count or **zero**, because the change it
+#: names removes the occurrences: without that, whichever of the two landed second went
+#: red — this gate's entries would be stale on arrival if the other merged first, and its
+#: staleness ratchet would fire if this one did — and the failure would read as a defect
+#: in the second pull request rather than as the coordination problem it is.
+#:
+#: It is deliberately NOT a general "may be absent" flag, and three things bound it.
+#: Shielding any count other than the pinned one or zero still fails, so a partial
+#: removal is caught. An entry at zero shields nothing by construction, so it cannot be
+#: hiding a finding today; what it could do is pre-exempt a *future* id on a matching
+#: line, which is why reaching zero prints a standing notice naming the entry to delete
+#: rather than passing silently. And this limit means adding a fourth is a deliberate
+#: edit a reviewer sees, on the same reasoning as ``MAX_UNRATCHETED`` in
+#: ``scripts/tests/test_gate_exemption_registry.py``.
+REMOVAL_PENDING_LIMIT = 3
 
 
 #: File extensions whose contents this gate does not read, because they are not text.
@@ -572,6 +608,13 @@ def _ratchet_problems(result: Scan) -> list[str]:
     for key, entry in ACCOUNT_ID_EXEMPT_LINES.items():
         seen = result.exempt_hits.get(key, 0)
         pinned = entry["sites"]
+        removed_by = entry.get("removedBy")
+        if seen == 0 and removed_by:
+            # Satisfied: the change named in `removedBy` has landed and taken the
+            # occurrences with it. Not a failure, because failing here is what would
+            # red-line whichever of the two pull requests merged second. The standing
+            # notice below is what stops the now-dead entry being left in place.
+            continue
         if seen == 0:
             problems.append(
                 f"ACCOUNT_ID_EXEMPT_LINES entry {key!r} shields nothing. The id was "
@@ -584,7 +627,40 @@ def _ratchet_problems(result: Scan) -> list[str]:
                 "exempt path is not covered by the audit that produced that number: "
                 "redact the new one, or re-pin deliberately and say why in the reason."
             )
+    if len(_removal_pending()) > REMOVAL_PENDING_LIMIT:
+        problems.append(
+            f"{len(_removal_pending())} ACCOUNT_ID_EXEMPT_LINES entries carry "
+            f"'removedBy', above the limit of {REMOVAL_PENDING_LIMIT}. That field exists "
+            "to decouple two pull requests' merge order, not to make an exemption "
+            "permitted to shield nothing: lower the limit as entries are deleted, and "
+            "raise it only as a deliberate edit with a reason."
+        )
     return problems
+
+
+def _removal_pending() -> list[str]:
+    return [k for k, v in ACCOUNT_ID_EXEMPT_LINES.items() if v.get("removedBy")]
+
+
+def _standing_notices(result: Scan) -> list[str]:
+    """Things that are not failures but must not pass silently either.
+
+    A ``removedBy`` entry that now shields nothing is dead. It is not hiding a finding —
+    with zero matches there is nothing to hide — but it would pre-exempt a *future* id on
+    a line matching its pattern, which is the standing-licence problem ``CLAUDE.md``
+    warns about. So it is named on every run until somebody deletes it.
+    """
+    notices: list[str] = []
+    for key, entry in ACCOUNT_ID_EXEMPT_LINES.items():
+        removed_by = entry.get("removedBy")
+        if removed_by and result.exempt_hits.get(key, 0) == 0:
+            notices.append(
+                f"{key!r} now shields nothing, because {removed_by} removed the "
+                "occurrences it covered. DELETE the entry (and lower "
+                "REMOVAL_PENDING_LIMIT): while it remains, it would pre-exempt a new id "
+                "on a line matching that pattern."
+            )
+    return notices
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -628,6 +704,9 @@ def main(argv: list[str] | None = None) -> int:
 
     problems = _ratchet_problems(result)
     exit_code = 0
+
+    for notice in _standing_notices(result):
+        print(f"NOTE: {notice}")
 
     if result.findings:
         exit_code = 1
