@@ -103,13 +103,28 @@ the same error in opposite directions: the first reads a non-result as a pass, t
 second reads one result as two.
 
 ⚠️ **A gate result is a count of passed tests plus zero failures. It is not an exit
-status.** Every suite here is longer than the assistant's 120-second Bash timeout, so
-they get wrapped — `timeout N ... > log 2>&1` in the background, then the log is
-tailed. A wrapper's exit code belongs to the **wrapper**: `timeout` returns its own
-status, and a shell pipeline returns the last command's. So a suite killed part-way
-reports success from the shell and its log tail looks exactly like a completed run —
-a column of dots, no failure section, nothing obviously wrong. Measured: `pytest
-scripts/tests/` killed by a 280-second `timeout` at **24%** of the way through,
+status.** The **long** suites — `idp_common` unit, `idp_sdk`, `scripts/tests`,
+`test-packages-cicd` — outrun the assistant's 120-second Bash timeout and have to be
+wrapped: `timeout N ... > log 2>&1` in the background, then the log is read. Several
+rows in the table above finish in under four seconds and need none of that.
+
+**Which wrapper you use decides whether the status means anything.** Measured:
+
+| form | exit code when the command is killed |
+|---|---|
+| `timeout 1 sleep 5` | **124** |
+| `timeout 1 sleep 5 > log 2>&1` | **124** |
+| `timeout 1 sleep 5 2>&1 \| tail -1` | **0** |
+
+So `timeout` reports a kill reliably, and **in the redirect-only form 124 is a usable
+signal — check it.** The misleading 0 comes from the **pipeline**, which returns the
+last command's status, so a trailing `| tail` throws the kill away. Prefer redirecting
+to a log and reading the file; if you do pipe, the status tells you nothing and only
+the summary line does.
+
+Either way the log of a killed run *looks* exactly like a completed one — a column of
+dots, no failure section, nothing obviously wrong. Measured: `pytest scripts/tests/`
+killed by a 280-second `timeout` at **24%** of the way through, read through a pipe,
 reported as exit 0.
 
 The check that actually distinguishes them is the **summary line**:
@@ -120,17 +135,21 @@ The check that actually distinguishes them is the **summary line**:
 ```
 
 So: read the totals, and treat a run that printed no summary line as not having run.
-Budget accordingly — `scripts/tests/` is ~8½ minutes and `test-packages-cicd` ~12, so
-a 600-second timeout is too small for either on a loaded machine.
+Budget for the **range** rather than one sample: `scripts/tests/` has been measured
+between **5.8 and 11.6 minutes** on this machine (347 s on a quiet one, 696 s loaded),
+and `test-packages-cicd` at about 12. A 600-second timeout is therefore too small for
+either whenever anything else is running, which on a shared machine is most of the
+time.
 
-**`make test-packages-cicd` already runs `pytest scripts/tests/`** as its penultimate
-step. Running both reruns roughly 8 minutes of work, and — more misleading than the
-cost — two passes of the same suite read as independent evidence when they are one
-measurement. If you want a readable failure list, run `scripts/tests/` on its own
-with `-q --tb=no -rf`; if you want the gate signal, it is already inside
-`test-packages-cicd`. Do not run the two concurrently over one worktree either: one
-asserts a clean checkout while the other writes coverage into it, which produces
-phantom failures.
+**`make test-packages-cicd` already runs `pytest scripts/tests/`** as one of its
+closing steps. Running both repeats the whole of that suite, and — more misleading than
+the cost — two passes of one suite read as independent evidence when they are a single
+measurement. If you want a readable failure list, run `scripts/tests/` on its own with
+`-q --tb=no -rf`; if you want the gate signal, it is already inside
+`test-packages-cicd`. Do not run the two concurrently over one worktree either: two
+pytest processes sharing a rootdir contend on its cache, which produces failures
+belonging to neither run. (`-p no:cacheprovider` removes that particular contention;
+the duplication argument stands regardless.)
 
 Two invocation corrections for the CI-equivalent gates:
 
@@ -140,10 +159,19 @@ Two invocation corrections for the CI-equivalent gates:
   warm tree does not mean the UI was linted. CI is unaffected: `.checksum` is
   gitignored, so a fresh checkout has none and the lint always runs. See
   [#1152](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/1152).
-- **Run `make typecheck` with `env -u PYTHONPATH`.** `pyrightconfig.json`'s
-  `extraPaths` already puts the first-party roots on the import path; exporting
-  `PYTHONPATH` changes what the type gate can see rather than making its answer
-  trustworthy.
+- **Do not reach for `PYTHONPATH` to make `make typecheck` resolve first-party
+  imports, and do not conclude from that that the tool ignores the environment.**
+  `pyrightconfig.json`'s `extraPaths` names the five first-party roots, so resolution
+  is a property of the configuration rather than of the invocation. Measured on the
+  current tree the two are identical — **0 errors, 42 warnings, exit 0** both with
+  `PYTHONPATH` exported and under `env -u PYTHONPATH`.
+
+  ⚠️ That equivalence is a **consequence of `extraPaths` being populated**, not a
+  property of `basedpyright`, which does honour `PYTHONPATH`. Before those entries
+  existed the gate resolved nothing first-party and so could not produce a diagnostic
+  for any call into the shared library, while reporting zero errors over every file
+  (#1109). So what matters is that `extraPaths` **stays** populated, which
+  `scripts/tests/test_pyright_config.py` asserts — not which way you invoke the gate.
 
 ⚠️ **`PYTHONPATH` for pytest has to name EVERY first-party root, not just
 `idp_common_pkg`.** The provenance guard (`scripts/tests/first_party_provenance.py`,
