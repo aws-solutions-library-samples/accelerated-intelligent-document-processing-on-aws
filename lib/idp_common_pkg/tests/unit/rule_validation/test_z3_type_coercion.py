@@ -470,13 +470,17 @@ class TestLlmRouteChecksItsOutput:
     """
 
     def _parse(self, values, parameters):
+        # The constraint is incidental to this method, which never reaches the
+        # solver, but it has to reference a declared name: RuleJSON rejects a
+        # constraint naming anything else. `(= x x)` is well-formed for any sort.
+        first = parameters[0].name
         rule = RuleJSON(
             rule_id="r",
             version="1.0",
             description="d",
             natural_language_rule="n <= 30",
             parameters=parameters,
-            constraints=["(<= n 30)"],
+            constraints=[f"(= {first} {first})"],
         )
         return RuleTranslator()._parse_extraction_output(
             json.dumps({"extracted_values": values}), rule

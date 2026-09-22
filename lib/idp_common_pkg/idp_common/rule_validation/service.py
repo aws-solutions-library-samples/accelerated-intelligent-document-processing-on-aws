@@ -31,6 +31,7 @@ from idp_common.config.schema_constants import (
     X_AWS_IDP_VALIDATION_ENGINE,
 )
 from idp_common.models import Document, RuleValidationResult, Status
+from idp_common.rule_validation.concurrency import resolve_semaphore
 from idp_common.rule_validation.models import FactExtractionResponse
 from idp_common.utils.transient_errors import reraise_if_transient
 
@@ -54,6 +55,12 @@ def _policy_type_of(policy_class: Dict[str, Any]) -> Optional[str]:
 
 class RuleValidationService:
     """Service for validating documents against rules using LLMs."""
+
+    # Declared on the class so the `semaphore` property below resolves on an
+    # instance built without __init__ as well: several suites construct one with
+    # `__new__` and assign `_semaphore` themselves to pin a limit.
+    _semaphore = None
+    _semaphore_loop = None
 
     def __init__(
         self,
@@ -117,15 +124,25 @@ class RuleValidationService:
         # Get async processing config from typed configuration
         self.semaphore_limit = self.config.rule_validation.semaphore
         self._semaphore = None
+        self._semaphore_loop = None
         self.max_chunk_size = self.config.rule_validation.max_chunk_size
         self.token_size = self.config.rule_validation.token_size
         self.overlap_percentage = self.config.rule_validation.overlap_percentage
 
     @property
     def semaphore(self):
-        """Lazy initialization of semaphore in current event loop."""
-        if self._semaphore is None:
-            self._semaphore = asyncio.Semaphore(self.semaphore_limit)
+        """
+        The one semaphore bounding this service's concurrent Bedrock calls.
+
+        Built lazily so it binds to the loop that runs the work, and cached, so
+        that the ``async with self.semaphore:`` at the call site contends a single
+        semaphore rather than one per task. See
+        :mod:`idp_common.rule_validation.concurrency`, which both rule-validation
+        services share.
+        """
+        self._semaphore, self._semaphore_loop = resolve_semaphore(
+            self._semaphore, self._semaphore_loop, lambda: self.semaphore_limit
+        )
         return self._semaphore
 
     def _get_policy_types(self, config: Dict[str, Any]) -> List[str]:
