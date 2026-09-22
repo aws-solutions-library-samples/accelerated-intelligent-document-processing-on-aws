@@ -391,3 +391,244 @@ def test_neither_ci_config_runs_this_script() -> None:
                 f"file-scoped check and cannot see a break in a file the diff did "
                 f"not touch. The CI type gate is `make typecheck`."
             )
+
+
+# --------------------------------------------------------------------------- #
+# Base ref resolution.
+#
+# The comparison base used to fall back to the LOCAL target branch, and this
+# repository's GitHub remote is not named `origin`, so that fallback was reached in
+# ordinary use. A local branch ref goes stale silently — measured 44 commits behind
+# `github/develop` in a clone shared by several working trees — and every commit
+# merged in between is then attributed to the current branch, so the script reports
+# other people's merged type errors as the developer's own.
+#
+# These run against a real throwaway repository rather than mocks, because what is
+# being asserted is how git answers `merge-base --is-ancestor` and `rev-parse`, not
+# how this module calls them.
+# --------------------------------------------------------------------------- #
+
+
+def _git(cwd: Path, *args: str) -> None:
+    subprocess.run(["git", *args], cwd=cwd, check=True, capture_output=True)
+
+
+def _make_hermetic(repo: Path, empty_hooks: Path) -> None:
+    """Detach a throwaway repo from this machine's git configuration.
+
+    A managed developer machine may set `core.hooksPath` system-wide to a directory
+    of hook runners belonging to a security tool. One such runner rejects a commit
+    whose author email is not the registered one, so a fixture that commits as a
+    placeholder identity fails on that machine and nowhere else. Pointing
+    `core.hooksPath` at an empty directory makes these tests measure git's
+    behaviour rather than the host's policy.
+    """
+    _git(repo, "config", "core.hooksPath", str(empty_hooks))
+    _git(repo, "config", "user.email", "t@example.invalid")
+    _git(repo, "config", "user.name", "T")
+    _git(repo, "config", "commit.gpgsign", "false")
+
+
+@pytest.fixture
+def stale_clone(tmp_path: Path):
+    """A clone whose local `develop` is one commit behind its `github/develop`.
+
+    Built the way the real drift happens: someone else pushes to the shared branch
+    and this clone fetches but never checks the branch out.
+    """
+    empty_hooks = tmp_path / "no-hooks"
+    empty_hooks.mkdir()
+
+    upstream = tmp_path / "upstream.git"
+    subprocess.run(
+        ["git", "init", "--bare", "-b", "develop", str(upstream)],
+        check=True,
+        capture_output=True,
+    )
+    _make_hermetic(upstream, empty_hooks)
+
+    seed = tmp_path / "seed"
+    subprocess.run(
+        ["git", "clone", "--origin", "github", str(upstream), str(seed)],
+        check=True,
+        capture_output=True,
+    )
+    _make_hermetic(seed, empty_hooks)
+    (seed / "base.py").write_text("x = 1\n")
+    _git(seed, "add", "base.py")
+    _git(seed, "commit", "-m", "base")
+    _git(seed, "push", "github", "develop")
+
+    work = tmp_path / "work"
+    subprocess.run(
+        ["git", "clone", "--origin", "github", str(upstream), str(work)],
+        check=True,
+        capture_output=True,
+    )
+    _make_hermetic(work, empty_hooks)
+
+    # Someone else advances the shared branch...
+    (seed / "theirs.py").write_text("def theirs() -> int:\n    return 'not an int'\n")
+    _git(seed, "add", "theirs.py")
+    _git(seed, "commit", "-m", "theirs")
+    _git(seed, "push", "github", "develop")
+
+    # ...and this clone fetches without checking `develop` out, so the local branch
+    # ref stays where it was. This is the state that produced the misreadings.
+    _git(work, "fetch", "github")
+    _git(work, "checkout", "-b", "feature/mine")
+    (work / "mine.py").write_text("y = 2\n")
+    _git(work, "add", "mine.py")
+    _git(work, "commit", "-m", "mine")
+
+    # Merge the shared branch, which is what a real branch does before review. This
+    # is load-bearing for `test_the_file_list_excludes_commits_merged_into_the_base`:
+    # without it `theirs.py` is absent from the working tree, and
+    # `_python_files`' `Path(f).exists()` filter drops it under EVERY base ref — so
+    # the test passed against the old, defective implementation and was measuring
+    # nothing. With the merge, `theirs.py` exists on disk and is excluded only
+    # because the base ref and the three-dot diff are right.
+    _git(work, "merge", "github/develop", "--no-edit")
+    assert (work / "theirs.py").exists(), (
+        "the fixture's merge did not bring the base branch's file into the working "
+        "tree, so the exclusion test below cannot distinguish a correct base ref "
+        "from a stale one."
+    )
+    return work
+
+
+@pytest.mark.unit
+def test_the_fixture_really_is_stale(stale_clone) -> None:
+    """Control: without this, every assertion below could pass on a fresh clone."""
+    behind = subprocess.run(
+        ["git", "rev-list", "--count", "develop..github/develop"],
+        cwd=stale_clone,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    assert behind.stdout.strip() == "1", (
+        "the fixture's local `develop` is not behind `github/develop`, so it is not "
+        "reproducing the condition these tests are about."
+    )
+
+
+@pytest.mark.unit
+def test_the_remote_tracking_ref_is_preferred_over_the_local_branch(
+    stale_clone, mod, monkeypatch
+) -> None:
+    monkeypatch.chdir(stale_clone)
+    ref, _ = mod.resolve_base_ref("develop")
+    assert ref == "github/develop", (
+        f"resolved the base ref to {ref!r}. The local branch is stale here; "
+        "preferring it is what attributed other people's commits to this branch."
+    )
+
+
+@pytest.mark.unit
+def test_a_stale_local_branch_is_reported_rather_than_used_silently(
+    stale_clone, mod, monkeypatch
+) -> None:
+    """Loudness is the point: a correct answer nobody can see is not enough."""
+    monkeypatch.chdir(stale_clone)
+    _, messages = mod.resolve_base_ref("develop")
+    joined = "\n".join(messages)
+    assert "github/develop" in joined, (
+        f"the chosen base ref is not named in the output: {messages}"
+    )
+    assert "behind" in joined, (
+        "nothing said the local branch is behind. The failure this fixes was "
+        f"silent, so saying which ref was used is half the fix: {messages}"
+    )
+
+
+@pytest.mark.unit
+def test_the_file_list_excludes_commits_merged_into_the_base(
+    stale_clone, mod, monkeypatch
+) -> None:
+    """The consequence, measured end to end.
+
+    `theirs.py` is on the shared branch and not on this one. It must not appear:
+    reporting a type error in it is exactly the false regression this fixes, and
+    the file is written with a genuine `reportReturnType` error so that a run which
+    did select it would also fail.
+    """
+    monkeypatch.chdir(stale_clone)
+    files = mod.get_changed_files("develop")
+    assert "mine.py" in files, f"the branch's own change was not selected: {files}"
+    assert "theirs.py" not in files, (
+        f"selected {files}, which includes a file only the base branch changed. "
+        "Its errors would be reported as this branch's."
+    )
+
+
+@pytest.mark.unit
+def test_the_replaced_ref_resolution_would_have_selected_the_base_branchs_file(
+    stale_clone, mod, monkeypatch
+) -> None:
+    """The back-reference, so the test above is a regression test and not a ratchet.
+
+    Without this, every assertion about `resolve_base_ref` fails against the previous
+    module only with `AttributeError: no attribute 'resolve_base_ref'` — which proves
+    the function is new, not that it fixed anything. This reimplements the ref
+    resolution that was replaced (``origin/<branch>...HEAD``, then
+    ``origin/<branch>``, then the local branch, two-dot) and measures it on the same
+    fixture: it selects `theirs.py`, a file only the base branch changed.
+
+    It is also the guard on the fixture. If someone removes the merge from
+    `stale_clone`, `theirs.py` stops existing on disk, `_python_files`' `exists()`
+    filter drops it under **every** base ref, and both this test and the one above
+    start passing for the wrong reason.
+    """
+    monkeypatch.chdir(stale_clone)
+
+    def replaced_resolution(target: str = "develop") -> tuple[list[str], str | None]:
+        for ref in (f"origin/{target}...HEAD", f"origin/{target}", target):
+            lines = mod._git_lines(["diff", "--name-only", ref])
+            if lines is None:
+                continue
+            return (
+                sorted(
+                    set(mod._python_files(lines)) | set(mod.get_uncommitted_files())
+                ),
+                ref,
+            )
+        return [], None
+
+    old_files, old_ref = replaced_resolution()
+    assert "theirs.py" in old_files, (
+        f"the replaced resolution selected {old_files} against {old_ref!r} and did "
+        "NOT include the base branch's file, so this fixture cannot tell the old "
+        "implementation from the new one. Check that `stale_clone` still merges the "
+        "shared branch — without that merge the file is absent from the working tree "
+        "and gets filtered out regardless of the base ref."
+    )
+    assert "theirs.py" not in mod.get_changed_files("develop"), (
+        "the current implementation selected the base branch's file too, so the fix "
+        "has regressed."
+    )
+
+
+@pytest.mark.unit
+def test_resolution_falls_back_to_the_local_branch_when_no_remote_has_it(
+    stale_clone, mod, monkeypatch
+) -> None:
+    """A clone with no remote-tracking ref for the branch must still work.
+
+    The preference is for a remote-tracking ref, not a requirement for one — a
+    fresh `git init` repository has none, and failing there would make the command
+    unusable rather than accurate.
+    """
+    _git(stale_clone, "remote", "remove", "github")
+    monkeypatch.chdir(stale_clone)
+    ref, _ = mod.resolve_base_ref("develop")
+    assert ref == "develop", f"resolved to {ref!r} with no remotes configured"
+
+
+@pytest.mark.unit
+def test_an_unknown_branch_resolves_to_nothing(stale_clone, mod, monkeypatch) -> None:
+    """No candidate must be reported as such, not silently treated as a base."""
+    monkeypatch.chdir(stale_clone)
+    ref, messages = mod.resolve_base_ref("no-such-branch")
+    assert ref is None, f"invented a base ref {ref!r} for a branch that does not exist"
+    assert messages == []

@@ -340,8 +340,11 @@ class ConfigOperation:
             reader = ConfigurationReader(
                 table_name=config_table, region=self._client._region
             )
+            # `as_dict=True` is the declared way to ask for the dict form. The
+            # implementation also takes an undeclared `as_model`, but it only has
+            # an effect when True, so `as_model=False` asked for nothing.
             config_data = reader.get_configuration(
-                "Config", version=config_version, as_model=False
+                "Config", version=config_version, as_dict=True
             )
 
         if format == "minimal":
