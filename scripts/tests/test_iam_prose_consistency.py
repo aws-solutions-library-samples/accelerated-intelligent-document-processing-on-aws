@@ -107,6 +107,9 @@ DOCUMENTS_STATING_THE_GRANT = (
     "security/threat-modeling/feature-threats/rbac-authentication.md",
     "security/threat-modeling/feature-threats/web-ui.md",
     "security/threat-modeling/feature-threats/reporting-analytics.md",
+    # Enumerates the grant to argue about narrowing it, so its statement of the
+    # current grant is the premise of the whole document rather than an aside.
+    "docs/planning/identity-pool-group-scoping-plan.md",
 )
 
 # Read, and compared, but not required to carry a *current* claim: this document's only
@@ -454,6 +457,7 @@ EXPECTED_CLAIM_COUNTS = {
     "security/threat-modeling/feature-threats/rbac-authentication.md": (1, 1),
     "security/threat-modeling/feature-threats/web-ui.md": (1, 1),
     "security/threat-modeling/feature-threats/reporting-analytics.md": (1, 0),
+    "docs/planning/identity-pool-group-scoping-plan.md": (1, 1),
     "security/threat-modeling/README.md": (0, 0),
 }
 

@@ -86,6 +86,12 @@ PYTHON_PATHSPECS = (
     "feature-platform/*/tests/*.py",
     "security/threat-modeling/scripts/*.py",
     "benchmarks/tests/*.py",
+    # config_library holds a gate of its own now — test_config_library.py checks the
+    # shipped presets, including that none pins a model to an account-scoped Bedrock
+    # ARN. Without this glob an exclusion list added to that gate would be invisible
+    # to test_gate_exemption_registry.py, which is the one place such a list is meant
+    # to be impossible to add unregistered.
+    "config_library/*.py",
 )
 
 #: Non-Python files that carry exemptions, and the pattern that finds one in each.
@@ -191,6 +197,12 @@ EXEMPTION_PROSE = (
     "not covered",
     "deliberately not",
     "deliberately excludes",
+    # "X is deliberately absent" is how an exclusion reads when it is expressed as an
+    # omission from an inclusion list rather than as an entry on an exclusion list.
+    # Neither the constant's name nor any other phrase here reaches that spelling, so a
+    # gate whose scope is narrowed by leaving one member out went unregistered while
+    # this discovery module — which exists to catch exactly that — passed.
+    "deliberately absent",
     "never part of",
     "exempt",
     "exclusion",
