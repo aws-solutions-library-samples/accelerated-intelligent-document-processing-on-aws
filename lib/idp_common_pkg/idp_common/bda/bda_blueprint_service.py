@@ -85,7 +85,7 @@ class BdaBlueprintService:
         """
         return sanitize_class_name(name)
 
-    def get_or_create_project_for_version(self, version_name: str) -> Optional[str]:
+    def get_or_create_project_for_version(self, version_name: str) -> str:
         """Get or create a BDA project for a specific config version.
 
         Each config version gets its own BDA project to enable isolated
@@ -96,16 +96,32 @@ class BdaBlueprintService:
             version_name: Config version name (e.g., 'default', 'v1', 'production')
 
         Returns:
-            BDA project ARN for this version
+            BDA project ARN for this version — always a string. Callers pass this
+            straight into BDA APIs that require one, so every failure here raises
+            rather than returning ``None``: there is no degraded mode in which a
+            caller can proceed without a project. ``_retrieve_all_blueprints``
+            would return ``None`` for an absent ARN and the caller would fail two
+            frames later on an unrelated ``TypeError``.
+
+        Raises:
+            RuntimeError: if the configuration table is not configured, or if the
+                project can be neither found nor created.
         """
         import boto3
 
         table_name = os.environ.get("CONFIGURATION_TABLE_NAME")
         if not table_name:
-            logger.warning(
-                "CONFIGURATION_TABLE_NAME not set, falling back to constructor ARN"
+            # Reaching this means the object was built without the table this
+            # method reads, which `__init__` already refuses: it constructs a
+            # `ConfigurationManager`, and that raises `ValueError` when
+            # CONFIGURATION_TABLE_NAME is unset and no table name is passed. So
+            # this is a guard on an invariant established at construction, kept
+            # because it is the one path that could otherwise hand a caller a
+            # `None` ARN.
+            raise RuntimeError(
+                "CONFIGURATION_TABLE_NAME is not set, so the BDA project for "
+                f"version '{version_name}' can be neither looked up nor recorded."
             )
-            return self.dataAutomationProjectArn
 
         # self.region, not boto3's default. This reads the ConfigurationTable
         # DIRECTLY rather than through ConfigurationManager, so it needs the region

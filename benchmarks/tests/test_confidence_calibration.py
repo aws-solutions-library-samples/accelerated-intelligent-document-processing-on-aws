@@ -57,15 +57,14 @@ test-packages-cicd`` invokes it (``.github/workflows/developer-tests.yml`` and
 holding a tracked ``test_*.py`` and fails if one reaches neither CI, so this directory
 cannot silently fall out of coverage again.
 
-⚠️ **Two things still bound what a green run here means, and neither is fixed by that.**
+The harness is reached through ``harness_import.harness_module``, whose path is derived
+from ``__file__``, so this file runs identically from any working directory and a
+bootstrap that cannot find the harness is an ERROR rather than a skip. That matters
+because a skipped module reports green: ``test_absence_versus_failure.py`` runs one test
+of itself from a foreign working directory and requires a pass.
 
-The ``sys.path.insert`` below is RELATIVE to the working directory, so running this file
-from anywhere but the repository root collapses the whole suite to ``1 skipped`` with no
-warning and a green exit. CI invokes it from the repository root so CI is unaffected; a
-developer running it from ``benchmarks/`` is not. Same absence-versus-failure shape as
-[#1079](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/1079).
-
-And whether a red gate can actually stop a merge is a repository setting rather than
+⚠️ **One thing still bounds what a green run here means.** Whether a red gate can
+actually stop a merge is a repository setting rather than
 anything in this tree: neither ``develop`` nor ``main`` currently carries branch
 protection, so every gate here is advisory in the sense that a pull request can be merged
 over it. That is an accepted residual with a recorded decision, not open work. Do not take
@@ -85,22 +84,20 @@ arithmetic, confirm they did not skip (``-rs``).
 
 A note on counting passes from this directory: four tests in ``test_typed_scoring.py``
 skip unless ``benchmarks/harness/gen_corpus.py --only kv_form`` has been run, so the same
-tree reports 238 passed with the corpus generated and 234 passed / 4 skipped without it.
-Quote the split, not the total.
+tree reports a different pass count with the corpus generated than without, and four
+skips in place of four passes. Quote the split, not the total.
 """
 
 from __future__ import annotations
 
 import json
-import sys
 
 import pytest
+from harness_import import harness_module
 
-sys.path.insert(0, "benchmarks/harness")
-
-analyze = pytest.importorskip("analyze")
-aggregate = pytest.importorskip("aggregate")
-lib = pytest.importorskip("lib")
+analyze = harness_module("analyze")
+aggregate = harness_module("aggregate")
+lib = harness_module("lib")
 
 
 LIST_KEY = "Transactions"

@@ -23,6 +23,7 @@ import z3
 
 from .exceptions import ValidationError
 from .models import Parameter, RuleJSON, ValidationResult
+from .smt_grammar import OPERATORS, tokenize
 from .type_coercion import exact_numeric_reading
 
 # Configure logging
@@ -415,69 +416,20 @@ class Z3Validator:
         Converts "(>= x 10)" into ["(", ">=", "x", "10", ")"]
         Handles quoted strings: '(= name "John Doe")' -> ["(", "=", "name", '"John Doe"', ")"]
 
+        The implementation lives in
+        :mod:`idp_common.rule_validation.z3.smt_grammar` because ``RuleJSON``
+        tokenises the same constraints at construction time, and a second
+        tokeniser there would mean a construction-time check that disagrees with
+        the solver about what a token is. That module imports no solver, which is
+        what lets ``RuleJSON`` use it where ``z3`` is not installed.
+
         Args:
             s: SMT-LIB expression string
 
         Returns:
             List of tokens
         """
-        tokens = []
-        i = 0
-
-        while i < len(s):
-            # Skip whitespace
-            if s[i].isspace():
-                i += 1
-                continue
-
-            # Handle opening parenthesis
-            if s[i] == "(":
-                tokens.append("(")
-                i += 1
-                continue
-
-            # Handle closing parenthesis
-            if s[i] == ")":
-                tokens.append(")")
-                i += 1
-                continue
-
-            # Handle quoted strings
-            if s[i] == '"':
-                # Find the closing quote
-                j = i + 1
-                while j < len(s) and s[j] != '"':
-                    # Handle escaped quotes if needed
-                    if s[j] == "\\" and j + 1 < len(s):
-                        j += 2
-                    else:
-                        j += 1
-
-                if j < len(s):
-                    # Include the quotes in the token
-                    tokens.append(s[i : j + 1])
-                    i = j + 1
-                else:
-                    # Unclosed quote - treat as regular token
-                    j = i + 1
-                    while j < len(s) and not s[j].isspace() and s[j] not in "()":
-                        j += 1
-                    tokens.append(s[i:j])
-                    i = j
-                continue
-
-            # Handle regular tokens (operators, variables, numbers)
-            j = i
-            while j < len(s) and not s[j].isspace() and s[j] not in '()"':
-                j += 1
-
-            if j > i:
-                tokens.append(s[i:j])
-                i = j
-            else:
-                i += 1
-
-        return tokens
+        return tokenize(s)
 
     def _parse_smt_expr(
         self, tokens: List[str], pos: int, z3_vars: Dict[str, Any]
@@ -601,6 +553,14 @@ class Z3Validator:
         Raises:
             ValueError: If operator is unsupported or argument count is wrong
         """
+        # The vocabulary is shared with RuleJSON's construction-time check rather
+        # than restated there, and gating on it here is what keeps the two from
+        # drifting: a name this method handles but that smt_grammar.OPERATORS
+        # omits is refused, so the omission shows up as a failure instead of as a
+        # constraint accepted by the solver and rejected at construction.
+        if op not in OPERATORS:
+            raise ValueError(f"Unsupported operator: {op}")
+
         # Arithmetic operators
         if op == "+":
             if len(args) < 2:
@@ -737,6 +697,13 @@ class Z3Validator:
             return z3.If(args[0], args[1], args[2])
 
         else:
+            # Unreachable while `OPERATORS` and the branches above name the same
+            # operators, and deliberately kept rather than cleaned away: it is what
+            # an operator added to `OPERATORS` with no branch here lands in, which
+            # is how that omission becomes a failure rather than a constraint the
+            # construction-time check accepts and the solver cannot evaluate.
+            # `test_z3_smt_grammar.py` exercises every member of the set to keep the
+            # two in step.
             raise ValueError(f"Unsupported operator: {op}")
 
     def _bind_values(

@@ -175,6 +175,25 @@ analytics UI replays. Written by `DynamoDBMessageLogger` in
 - **SK**: `job_id`
 - **Attributes**: `agent_messages` (JSON **string**, not a list), `agent_messages_version`
 
+Each message inside `agent_messages` carries a `sequence_number`, and it is the
+message's 1-based position in the stored array. The writer computes it as
+`len(stored) + 1` from the array it read, inside the same conditional write — so it
+costs no extra round trip, and the condition is what makes it exact: a write commits
+only if nothing appended in between, so no two stored messages can have computed the
+same length. It is unique across every logger writing the record, which matters
+because each sub-agent in a turn has its own.
+
+It is **not** a sort key: the writer appends, so the stored array is already in commit
+order and the UI renders that order as it is. What the ordinal is for is naming one
+message unambiguously. Two limits on how far to read it. Among messages written by this
+code the series is `1..N` with no duplicates and no gaps, but a transcript written
+before this behaviour existed keeps whatever its per-logger counters produced, and
+during the Lambda version rollover a writer still on pre-upgrade code appends without
+touching the version attribute, so the two can collide or skip — the same window the
+version guard itself cannot close. And a position in the stored array is not a row
+number on screen: the UI drops empty-content messages and splits a mixed
+text-plus-`toolUse` assistant message into several rows.
+
 `agent_messages` is the whole transcript held in one attribute, so appending a
 message means reading the array, growing it by one and writing it back.
 `agent_messages_version` guards that: each write is conditional on the value that
@@ -196,17 +215,49 @@ Two things differ from `IdHelperChatMemoryTable` above, and both raise the stake
 
 A message that still cannot be stored after the retry budget is dropped rather than
 forced through by overwriting the transcript, which would trade one lost message for
-all of them. The drop is logged with the job id and sequence number **and** counted
-on the `AgentTranscriptMessageDropped` CloudWatch metric in the stack's namespace,
-which `AgentTranscriptMessageDroppedAlarm` reads. The metric matters because a log
-line cannot be alarmed on, and invisibility is why the unguarded version of this
-append went unnoticed
+all of them. The drop is logged with the job id and the message's role and timestamp
+**and** counted on the `AgentTranscriptMessageDropped` CloudWatch metric in the
+stack's namespace, which `AgentTranscriptMessageDroppedAlarm` reads. The metric
+matters because a log line cannot be alarmed on, and invisibility is why the
+unguarded version of this append went unnoticed
 ([#1098](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/1098)).
+The log line names role and timestamp rather than a sequence number because a message
+that was never stored has no position in the transcript to name.
 
-⚠️ Nothing drains the logger's thread pool in production, so writes still queued
-when the Lambda execution environment freezes are abandoned — a separate way to
-lose a transcript entry, tracked in
-[#1110](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/1110).
+**The write pool is drained at `IDPAgent.__exit__`.** Writes are queued on a thread
+pool so a DynamoDB round trip stays off the agent's critical path, and a Lambda
+invocation ends with the execution environment being *frozen* rather than shut down —
+the process is not signalled and does not exit, so nothing flushes the queue on its own.
+An interpreter-exit hook is no substitute: the mechanism that would flush a pool is
+`threading._register_atexit(_python_exit)` in `concurrent/futures/thread.py`, which
+`join`s every worker with **no timeout**, and reaching it needs an orderly interpreter
+shutdown that neither a freeze nor Python's default `SIGTERM` disposition provides.
+`__exit__` calls the tracker's `shutdown`, and every logger built in production belongs
+to an agent that passes through it: `agent_processor`'s `with agent:` and a sub-agent's
+`with specialized_agent:` in the orchestrator.
+
+The drain is **bounded** (`_DRAIN_TIMEOUT_SECONDS`, two seconds) because for a
+sub-agent that exit happens mid-turn with the user waiting, and anything still
+outstanding when the bound expires is reported on a **second** metric,
+`AgentTranscriptDrainIncomplete`, rather than waited on indefinitely. It is a separate
+metric from `AgentTranscriptMessageDropped` because the two license different
+conclusions: a dropped message is gone, whereas `shutdown` stops waiting without
+cancelling, so an abandoned write frequently commits when that execution environment is
+next thawed — just after the session reading the transcript has moved on. It is lost
+only if the environment is reclaimed instead of reused. Closing the pool also releases
+its worker thread, which is not a daemon thread and otherwise idles for the remaining
+life of a warm execution environment — one per sub-agent.
+
+The drain is at `__exit__` rather than on the hook registry's own
+`AfterInvocationEvent`, which does exist for teardown, because `shutdown` closes the
+pool and `submit` then raises: an agent invoked twice would silently stop transcribing
+after the first call.
+
+⚠️ **Only the analytics agent records a transcript at all.** A tracker needs `job_id`
+and `user_id`, which agent chat does not pass, and `AGENT_TABLE`, which is set on
+`AgentProcessorFunction` and on `AgentCoreMCPHandlerFunction` (which builds no agent)
+and on nothing else. Agent chat's multi-turn history lives in
+`IdHelperChatMemoryTable` above, which is a different attribute with its own guard.
 
 ### 4. GraphQL API
 
@@ -335,7 +386,8 @@ This tests:
 - `BEDROCK_REGION`: AWS region for Bedrock/DynamoDB
 - `MEMORY_METHOD`: Memory storage method (default: "dynamodb")
 - `STREAMING_ENABLED`: Enable streaming (default: true)
-- `MAX_CONVERSATION_TURNS`: Max turns to load (default: 20)
+- `MAX_CONVERSATION_TURNS`: Max turns to load (default: 20). `0` loads no history at
+  all, which is how to turn conversation memory off
 - `MAX_MESSAGE_SIZE_KB`: Max message size (default: 8.5)
 - `APPSYNC_API_URL`: **Vestigial and always the empty string.** AppSync has been
   removed, but the root `template.yaml` still sets `APPSYNC_API_URL: ""` on about

@@ -31,7 +31,7 @@ SPDX-License-Identifier: MIT-0
 Copy everything between the `---BEGIN---` and `---END---` markers and paste it as the
 first message to your AI assistant.
 
-```
+````
 ---BEGIN---
 You are an IDP Deployment Assistant for the GenAI IDP Accelerator
 (https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws).
@@ -186,7 +186,7 @@ Does everything look correct? Reply **yes** to proceed or tell me what to change
 Only proceed with the deploy command after the user confirms.
 
 ---END---
-```
+````
 
 ---
 

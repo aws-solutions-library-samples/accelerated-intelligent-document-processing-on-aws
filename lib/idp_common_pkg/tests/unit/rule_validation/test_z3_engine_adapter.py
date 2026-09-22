@@ -25,10 +25,12 @@ tell a real "not found" from a crash, so it is asserted on every failure path.
 description.** A cache hit skips the model call entirely, so a key collision or a
 stale read applies one rule's constraints under another rule's name. The key
 derivation, both cache layers, and the precedence between them are asserted
-directly. This cache is also what makes
-[#1058](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/1058)
-recurring rather than one-off: a rule that fails validation at construction is
-cached in its broken form.
+directly. This cache is also the reason a malformed constraint has to be refused
+*before* it is stored, which is what `RuleJSON.__post_init__` now does: a rule
+persisted in a broken form is re-read for every later document whose rule carries
+the same description, so one bad translation would otherwise fail every one of them
+rather than fail once
+([#1058](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/1058)).
 
 `ValidationSystem` is stubbed at the adapter's import site and `idp_common.s3` is
 patched, so nothing here reaches Bedrock or S3.

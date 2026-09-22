@@ -116,6 +116,60 @@ a synthetic document with no `<id>.pdf.truth.json` beside its PDF is recorded in
 evaluation rather than exact local ground truth, which is a different scorer and
 not comparable.
 
+## Read failures do not silently become measurements either
+
+The scoring half has the same property as the launch half above, and for the same
+reason: **the harness may continue past a failure, but it may not record the failure
+as a value.** An artifact that cannot tell the two apart is not checkable afterwards,
+and these artifacts are published and long-lived.
+
+The concrete shape this takes is that every read distinguishes **three** states, not
+two. "Nothing there", "could not read it" and "read it, and the answer is zero" are all
+real and all different, and zero cannot be the sentinel for either of the first two
+because it is a legitimate answer for most of these metrics — no cost for a cached call,
+no corrections, no missing rows. `lib.Reading` carries the state, and it is built so the
+distinction cannot be dropped by accident: truth-testing one raises, `.value` raises
+unless the read happened, and `.value_or(default)` substitutes for an absence but
+refuses for a failure. `lib.SectionRead` does the same for a document's section objects,
+separating "this document has no sections" from "some of its sections would not read".
+
+What the callers do with that:
+
+- **`analyze.score_doc` refuses to price a metering row it did not read.** `cost` is
+  null and `cost_unread` names the state and the reason. An empty metering map still
+  prices to $0.00, because that is a real reading of a run that metered nothing — the
+  distinction is between that and a DynamoDB failure, which used to produce the same
+  `$0.00`. A null drops out of every mean; a zero would drag each of them down and make
+  the configuration look cheaper than it is.
+- **A document whose section objects did not all read contributes no metric at all.**
+  Not a set of nulls: `calibration_curve: null` already means "measured, and there was
+  nothing to join". The row carries `sections_unreadable` and `sections_unread` and
+  nothing else, so it falls out of every average instead of biasing one.
+- **`aggregate.cell_stats` counts the exclusions** (`n_cost_unread`,
+  `n_sections_unread`), so a mean taken over a thinned sample says that it was thinned.
+  `compare_cells` prints the same under `MEASURED OVER FEWER RUNS THAN IT LOOKS`.
+- **`aggregate.calibration_study` has an `unreadable` bucket** next to `no_confidence`
+  and `no_joinable_cell`, so an undecryptable grid is visibly different from an
+  unassessed one.
+- **`aggregate.augment_summary` asks every row** rather than probing the first empty
+  prefix, and leaves an unreadable row un-augmented.
+
+The failure that motivated all of this cost nothing only by luck. A release stack's KMS
+key entered pending deletion, so every object in its output bucket was present, listable
+and undecryptable; `GetObject` answered `KMS.KMSInvalidStateException`, the reader turned
+that into `None`, and the grid read as one that had recorded no confidence at all — which
+would have been written into a committed artifact and published as a fact about that
+release.
+
+**Expect that state, rather than treating it as exotic.** It is the ordinary end of a
+torn-down benchmark stack: ten of the twelve stacks named in the committed summaries'
+`meta.stack` no longer exist, and in the deployment region a large fraction of the
+customer-managed KMS keys are in `PendingDeletion` at any time — 57 of 125 when this was
+last measured. A stack deleted last month leaves a bucket that still lists and no longer
+decrypts, so **re-reading an old grid from S3 is the case to design for, not the
+exception.** This is also why `--calibration` prefers the sufficient statistic committed
+in the summary and only reads S3 when a row has none.
+
 ## 2. Test-set + config registration
 - Each synthetic doc is uploaded to `s3://<stack>-testsetbucket-*/bench-<id>/input/` and
   registered as a test set (a `testset#bench-<id>` metadata row with `filePattern`).
@@ -223,6 +277,10 @@ blind spot before it was closed.
   NEVER average accuracy over only the docs that completed without saying so.
 - Any cell that is capped/sampled/skipped for cost is logged in `meta.json`, not
   silently dropped.
+- A figure that could not be READ is null and carries a reason, never zero. Before
+  quoting a cost or an accuracy, check the row's `cost_unread` / `sections_unread` and
+  the cell's `n_cost_unread` / `n_sections_unread` — see "Read failures do not silently
+  become measurements either" above.
 - Costs are ESTIMATES from pricing.yaml (intro pricing may apply); state the rate date.
 
 ## 7. Cost/time budgeting

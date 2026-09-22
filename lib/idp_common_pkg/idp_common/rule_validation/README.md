@@ -7,9 +7,10 @@ The Rule Validation Service validates extracted document information against pre
 
 ## How a failure is recorded
 
-This service does not raise on failure. It records the reason in
+On a **deterministic** failure this service does not raise. It records the reason in
 `document.errors` and sets `Status.FAILED`, and the two rule-validation Lambdas
-check that status and raise. `document.errors` is persisted nowhere, so the
+check that status and raise. (A transient failure does raise, from the service — see
+the next section.) `document.errors` is persisted nowhere, so the
 handlers are what make the reason visible: both call
 [`idp_common.document_failure`](../README.md#-recording-a-document-level-failure)
 to attach an error-severity `ProcessingIssue` to the affected section(s) before
@@ -19,15 +20,57 @@ failed, so no section has a verdict. Read that section before changing either
 handler's `except` block — in particular, the original exception must propagate
 unchanged and a transient failure must record nothing.
 
-⚠️ `validate_document_async` wraps its whole body in a broad `except` that converts
-**every** failure, including a throttle or a read timeout, into `Status.FAILED`
-plus an `errors` entry and returns normally. The handler then raises a plain
-`Exception`, which matches none of the task state's `Retry` error names, so a
-transient Bedrock failure here permanently fails the document instead of being
-retried — unlike the extraction and assessment paths, which re-raise transient
-causes under the name the state machine retries
-(`idp_common.utils.transient_errors`). Worth knowing before relying on retry
-behaviour for this stage.
+## Transient failures are retried; deterministic ones are not
+
+This service and its orchestrator have many `except` blocks that deliberately do not
+raise — they return a fallback so one bad rule does not discard the others, or a
+document marked failed so the handler can record a diagnosis. Every one of them first
+asks `idp_common.utils.transient_errors` whether the failure is transient, and
+re-raises it under `TransientError` if it is. That is the one class name
+`PolicyClassificationStep`, `RuleValidationStep` and `RuleValidationOrchestration`
+list in `Retry.ErrorEquals`, so a throttle, read timeout, dropped connection or
+not-ready model is retried — eight attempts at 2.5× backoff from ten seconds — rather
+than becoming a permanent outcome (#1101).
+
+**The classification lives in one place on purpose.** A `Retry.ErrorEquals` entry can
+only match an exception's class name; transience is a property of the error code and
+the cause chain. Listing the transient *codes* in each state would be a second copy of
+the predicate that drifts, so the library decides and reports the answer under one
+name. Do not add a transient code to a rule-validation state's retry list, and do not
+add `TransientError` to a state whose handler cannot raise it —
+`patterns/unified/tests/test_workflow_transient_retry.py` checks both directions.
+
+⚠️ **Use `reraise_if_transient` in a block that swallows, not `raise_if_transient`.**
+The latter returns silently when the exception already *is* a `TransientError`,
+because it expects a bare `raise` to follow it. These blocks nest — a transient
+re-raised for one rule travels up through `asyncio.gather` into
+`validate_document_async`'s `except`, which returns — so using `raise_if_transient`
+there leaves each site correct in isolation and swallows the inner classification
+anyway. `test_a_transient_from_one_rule_is_not_swallowed_by_the_document_level_handler`
+is the test for that composition.
+
+The sites that classify, and what each returns for a deterministic failure:
+
+| Site | Deterministic result |
+|---|---|
+| `_process_rule_question` | the per-rule `Information Not Found` verdict, reason in `reasoning` |
+| `process_one_section`'s extraction-results load | empty results, so rules see no extracted data |
+| `validate_document_async` | `Status.FAILED` plus an `errors` entry, returned not raised |
+| `orchestrator._process_single_z3_rule` | the per-rule `Information Not Found` verdict |
+| `orchestrator._summarize_responses` and its per-rule gather | the unsummarised responses; a failed rule is dropped |
+| `orchestrator.load_section_results` | an empty mapping, read by the caller as "nothing to consolidate" |
+| `orchestrator.consolidate_and_save_all` | an empty `RuleValidationResult`, **returned normally** |
+| the policy-classification handler's page read and stale-result cleanup | the page is skipped / the cleanup is skipped |
+
+⚠️ Note what the last two rows in the orchestrator mean for anyone adding a failure
+path: `consolidate_and_save_all` returning normally is why the orchestration handler's
+`except` almost never runs. A deterministic consolidation failure does not reach it,
+so a diagnosis that must be recorded belongs inside the orchestrator, not in the
+handler's `except`.
+
+`Information Not Found` is a **verdict**, not an error channel — it is one of the
+configured `recommendation_options` and downstream features act on it — so it must
+never be returned because a service call failed transiently.
 
 ## Overview
 
@@ -51,7 +94,8 @@ The rule validation service uses a three-step approach:
 - **Rate Limiting**: Built-in semaphore-based rate limiting for API calls to prevent throttling
 - **Intelligent Text Chunking**: 
   - Page-aware chunking that preserves page boundaries
-  - Configurable overlap (default 10%) for context preservation
+  - Configurable overlap (default 10%) for context preservation. `0` repeats nothing;
+    values above 50 are bounded to 50 by the character chunker
   - Automatic fallback to character-based chunking
   - Chunking always occurs for fact extraction, orchestrator always runs
 - **Customizable Recommendations**: 
@@ -442,6 +486,70 @@ all_text += f"<page-number>{page_id}</page-number>\n{page_text}\n\n"
 "supporting_pages": ["1", "2", "3", "4", "5"]  # Sorted unique page IDs
 ```
 
+### The consolidated aggregate is always a list of strings
+
+The document-level `supporting_pages` in `consolidated_summary.json` holds `str`
+elements, deduplicated by that string and ordered by codepoint within two groups:
+numeric references first by numeric value, then everything else by its own text. That
+is the same element type `LLMResponse.supporting_pages` declares and coerces to.
+
+Its one consumer in this repository is the sample health-insurance review extension,
+whose claim-detail API serves it as `supportingPages` against a TypeScript interface
+declaring `string[]`. The Athena `supporting_pages` column is **not** fed from this
+list — it belongs to the per-rule `rule_details` rows, which are left as the responses
+delivered them.
+
+This matters because the two engines produce different shapes. The solver path builds
+its pages from `str(citation).split(",")` and always yields `str`; the model path
+passes a JSON array through unchanged and can yield `int`. A document routing some
+rules to each mixes both in one aggregate, and unnormalised that listed page `1` twice
+— once as `1` and once as `"1"`.
+
+The **per-rule** lists under `rule_details[<policy_type>]["rules"][*]`
+["supporting_pages"] are *not* normalised: they stay exactly as the response
+delivered them, and are what the Markdown table formats. So a value dropped from the
+aggregate — a `list`, a `dict`, a boolean, anything that is not text or a number — is
+still recorded there, with a warning naming it in the log.
+
+Two page shapes are worth knowing about because `int()` refuses them while
+`str.isdigit()` accepts them: the digit characters that are not decimal digits
+(`'²'`, `'₂'`, `'②'`), and a decimal string longer than
+`sys.get_int_max_str_digits()`. Both are kept as page references and ordered as text.
+`str.isdecimal()` — not `isdigit()` — is the predicate that matches what `int()`
+accepts. Note that a reference is not length-bounded: a model that returns a
+5,000-digit page reference puts a 5,000-character string in the artifact, which is
+better than losing the report to it but is not a validated page id.
+
+The solver path's **per-rule** page list (`_process_z3_cross_section_rule`) sorts with
+the same `int(x) if x.isdigit() else 0` key this aggregate used to. It cannot raise
+there, because it builds its elements with `str(citation).split(",")` so every one is
+a `str`, but non-numeric citations still share one key and so still have no defined
+order among themselves.
+
+### A consolidation that fails keeps its statistics
+
+`_generate_consolidated_summary` does not raise: the caller writes whatever it
+returns to S3 as the document's compliance report. On an unexpected failure it
+returns the summary built **so far** — the policy types already counted, their
+rules, the document-level counts and the pages collected — with `overall_status`
+`"ERROR"` and the reason in `error`, and `_format_summary_as_markdown` renders that
+reason as a banner above the statistics. A report carrying zero rules and no error is
+indistinguishable from a document on which nothing was evaluated, which is why the
+partial statistics are kept rather than discarded.
+
+Those figures are a floor on what was evaluated, and they are internally consistent:
+a rule is counted once its fields have been read, so `total_rules` never exceeds the
+rules the report details and `pass_percentage` is computed over the rules counted. A
+policy type whose responses failed part way through keeps the rules already read; one
+whose response list could not be read at all gets no entry, since there is nothing
+partial to report for it.
+
+Because nothing re-raises there, this path records **no** `ProcessingIssue`:
+`rule_validation_not_consolidated` is attached by the orchestration Lambda's handler,
+and only when the handler itself raises (see "How a failure is recorded" above). The
+surviving statistics, the `error` field, the rendered banner and a logged traceback
+are what make an instance of this visible.
+
 ## Intelligent Chunking
 
 ### Page-Aware Chunking
@@ -463,10 +571,20 @@ if previous_chunk_pages:
 
 ### Fallback Chunking
 
-If no page markers found:
+Taken only when the page parser finds **no** pages at all — not merely when a
+document carries no markers, which is parsed as a single page numbered `0`. The way
+in is `<page-number>` markers with no content between any of them, which a section of
+whitespace-only OCR text produces: the split pattern's trailing `\s*` consumes the
+whitespace, so every page strips to empty and is dropped while those characters still
+count toward the length that decides whether chunking is needed at all.
+
 - Falls back to character-based chunking
-- Uses configurable overlap percentage
-- Preserves word boundaries
+- Uses configurable overlap percentage, bounded at half a chunk so that the number
+  of chunks — and so of model calls — stays within twice the no-overlap count. A
+  request above that is reduced and logged
+- ⚠️ Slices at raw character offsets. It does **not** preserve word boundaries, so a
+  boundary can fall inside a word or a number; the overlap is what keeps a value
+  split that way readable in the following chunk
 
 ## Error Handling
 
@@ -488,6 +606,44 @@ response_dict = {
 - Invalid recommendations are caught by Pydantic validation
 - Custom recommendations must match configured options
 - Missing required fields trigger validation errors
+
+### Where a Z3 constraint is checked
+
+`RuleJSON.__post_init__` rejects a constraint that references a name the rule does
+not declare, and one whose head is not an operator the solver supports. Both raise
+`ValueError`, which `RuleTranslator.translate_rule` wraps as a `TranslationError`,
+so a bad translation fails at the point it is generated.
+
+Catching it there rather than leaving it to the solver is about the rule cache, not
+about strictness. A translated rule is persisted under a key derived from the rule
+**description** (`Z3RuleEngine._save_to_s3`), so a constraint that misspells a
+parameter is re-read and re-failed for every later document whose rule carries the
+same description, each one reporting *Information Not Found*. Rejecting it at
+construction costs one translation.
+
+The two checks read one vocabulary, in `z3/smt_grammar.py`:
+
+| | Checked at construction | Checked by the solver |
+|---|---|---|
+| A name that is not a declared parameter | yes | yes (`_parse_smt_atom`) |
+| An operator outside the supported set | yes | yes (`_apply_smt_operator`) |
+| A token that is neither a name nor a numeral (`3x`, `1/3`) | no | yes |
+| Parenthesis balance, arity, two expressions in one constraint | no | yes (`_parse_smt_constraint`) |
+
+`smt_grammar` holds the tokeniser and the operator vocabulary and imports **no
+solver**, which is what lets `RuleJSON` use it. `RuleJSON` is constructed on the
+configuration-resolver Lambda, whose layer ships `idp_common` without the
+`rule_validation` extra and therefore without `z3-solver` — the reason
+`idp_common.rule_validation.z3` imports its solver-dependent modules lazily. A
+check written against the parser instead of the tokeniser would break that Lambda.
+
+The three rows marked "no" are a deliberate bound rather than an oversight. The
+check reports a token that *looks like a name* — `[A-Za-z_][A-Za-z0-9_]*` — which
+keeps numerals out of its scope entirely, so it holds no second definition of what
+a numeral is to drift from the one `z3/type_coercion.py` applies to the
+constraint's own literals (see the next section). The one place the two shapes
+overlap is `nan`, `inf` and `infinity`, and both refuse them: Z3 has no sort for a
+non-finite value, so a constraint naming one could not be evaluated either way.
 
 ### Readings the Z3 engine refuses to evaluate
 
@@ -570,6 +726,42 @@ semaphore: 5  # Max 5 concurrent requests
 async with self.semaphore:
     response = await self._invoke_model_async(...)
 ```
+
+Both `RuleValidationService` (fact extraction) and
+`RuleValidationOrchestratorService` (consolidation and Z3 value extraction) read
+`rule_validation.semaphore` and expose it as a lazily built `semaphore` property.
+`concurrency.resolve_semaphore` is the single implementation behind both, and the
+reason it is shared is that the spelling above re-evaluates the property **once per
+task**: a property that returns a new `asyncio.Semaphore` each time gives every
+task its own and bounds nothing, which is what the orchestrator did before.
+
+Three properties of that helper matter if you write another service like these:
+
+- The semaphore is built lazily, because an `asyncio.Semaphore` binds to the loop
+  that first contends it and a service is normally constructed before that loop
+  exists. It must then be **cached**, and cached per service instance rather than
+  per call.
+- Staleness is decided by the loop the helper handed the semaphore out on, which it
+  records itself. A semaphore's own `_loop` attribute is `None` until an acquire
+  actually has to wait, so a guard that reads it discards a fresh semaphore on
+  every access.
+- ⚠️ It **writes on read**: reading the property records the current loop. One
+  service instance driven from two event loops in *different threads* would
+  therefore thrash that record and could rebuild the semaphore on each alternation.
+  No production path does that — a Lambda invocation builds its own service — and
+  the notebook case it does handle is two `asyncio.run` calls in sequence. A third
+  service that shares one instance across threads needs its own answer.
+
+What bounds the calls if this semaphore does not is the event loop's **default
+executor**: the Bedrock client call is blocking and goes through
+`loop.run_in_executor(None, ...)`, whose pool is `min(32, os.cpu_count() + 4)`
+threads wide. That is larger than 5 on any container with more than one CPU, so the
+effective width came from the container rather than from the configuration — about
+6 to 7 on the deployed 4,096 MB orchestration function, and 20 on a 16-CPU
+development machine. Throttling is the risk that bound exists to manage, but it was
+**not** the observed symptom: live runs at width 14 and unbounded both completed
+with no throttling errors. What the defect produced was a call rate nobody had
+chosen.
 
 ### Token Optimization
 

@@ -168,10 +168,19 @@ def score_run(res, run_id):
     cls_tokens = {"inputTokens": 0, "outputTokens": 0, "cacheReadInputTokens": 0}
     page_count = 0
 
+    unread = []
     for prefix in lib.list_doc_prefixes(bucket, run_id):
         doc_name = prefix[len(run_id) + 1 :].rstrip("/")
+        ev_read = lib.read_json(bucket, prefix + "evaluation/results.json")
+        if ev_read.is_failed:
+            # An evaluation report that would not read contributes no pages. Counting
+            # it among `n_docs` with zero scored pages would thin every pooled figure
+            # below without saying so, and a report that is merely ABSENT (evaluation
+            # not enabled) is a different and benign state (GitHub #1079).
+            unread.append(f"{doc_name}: eval report {ev_read.error}")
+            continue
         docs.append(doc_name)
-        ev = lib.get_json(bucket, prefix + "evaluation/results.json")
+        ev = ev_read.value_or(None)
         one = score_classification(ev)
         per_doc.append({"doc": doc_name, **one})
         ds = (ev or {}).get("doc_split_metrics") or {}
@@ -182,11 +191,18 @@ def score_run(res, run_id):
             c = row.get("predicted_confidence")
             if isinstance(c, (int, float)):
                 (pooled_right if row.get("correct") else pooled_wrong).append(c)
-        metering = lib.doc_metering(tracking, run_id, doc_name)
-        cost, tokens = classification_cost(metering)
-        cls_cost += cost
-        for k in cls_tokens:
-            cls_tokens[k] += tokens[k]
+        metering_read = lib.read_metering(tracking, run_id, doc_name)
+        if metering_read.is_present:
+            cost, tokens = classification_cost(metering_read.value)
+            cls_cost += cost
+            for k in cls_tokens:
+                cls_tokens[k] += tokens[k]
+        else:
+            # Adding nothing is the same arithmetic as adding zero, so the cost is
+            # reported as unpriced instead: `classification_cost_per_page` over a
+            # partially-read run understates the per-page cost in proportion to how
+            # much went unread (GitHub #1079).
+            unread.append(f"{doc_name}: metering {metering_read.state}")
         row = lib.doc_row(tracking, run_id, doc_name)
         try:
             page_count += int(row.get("PageCount") or 0)
@@ -197,9 +213,20 @@ def score_run(res, run_id):
     sep = None
     if pooled_right and pooled_wrong:
         sep = round(statistics.fmean(pooled_right) - statistics.fmean(pooled_wrong), 4)
+    if unread:
+        print(f"  ⚠ {len(unread)} read(s) FAILED on {run_id} — excluded, not zeroed:")
+        for note in unread[:5]:
+            print(f"      {note}")
     return {
         "run_id": run_id,
         "n_docs": len(docs),
+        # Reads that failed, so every figure below is over fewer documents than the
+        # run holds. Null on a clean run; a number here makes the cost and accuracy
+        # provisional rather than wrong-and-silent (#1079).
+        "unread": unread or None,
+        "classification_cost_unpriced_docs": (
+            sum(1 for n in unread if "metering" in n) or None
+        ),
         "pages_evaluated": pages_total,
         "pages_scored": len(scored),
         "class_accuracy": round(pages_correct / pages_total, 4)

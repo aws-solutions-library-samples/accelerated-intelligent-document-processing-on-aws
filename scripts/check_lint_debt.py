@@ -634,7 +634,7 @@ def explain(path: str) -> int:
     * ``--force-exclude`` restores only ``exclude``/``extend-exclude``, which are
       *discovery* settings. ``lint.exclude`` and ``format.exclude`` filter after
       discovery, so ``ruff check --force-exclude <path>`` prints
-      ``All checks passed!`` and exits 0 for all 85 lint-excluded files — the
+      ``All checks passed!`` and exits 0 for every lint-excluded file — the
       reassuring-and-false answer. For a format-excluded file
       ``ruff format --check --force-exclude`` prints *nothing at all*, not the
       ``No Python files found`` warning that the discovery-level exclusions give.

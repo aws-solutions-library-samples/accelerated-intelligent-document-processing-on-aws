@@ -261,7 +261,7 @@ release behind the repository's `VERSION`.
 If you believe you have found a security issue, please notify AWS/Amazon Security
 via the [vulnerability reporting page](http://aws.amazon.com/security/vulnerability-reporting/)
 rather than opening a public issue — see
-[Security issue notifications](./CONTRIBUTING.md#security-issue-notifications).
+[Reporting a security issue](./CONTRIBUTING.md#reporting-a-security-issue).
 
 ## Contributing
 
