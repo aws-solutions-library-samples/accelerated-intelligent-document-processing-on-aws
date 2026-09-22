@@ -516,6 +516,64 @@ Check CloudWatch logs for:
 - `rule-validation-function`: Section-level evaluation logs
 - `rule-validation-orchestration-function`: Orchestration logs
 
+### Where a failed rule validation shows up
+
+When rule validation fails, the failure is recorded **on the sections it affects**,
+so the document's Sections panel names them instead of leaving the explanation only
+in the Step Functions cause and the CloudWatch log. The Status column reads
+**Failed**, and hovering the status shows the issue with the technical cause behind
+it.
+
+Three codes are written, all at error severity, because they describe different
+situations:
+
+| Code | Written by | Meaning |
+|---|---|---|
+| `rule_validation_failed` | the per-section rule validation step | This section's own rule validation did not complete, so it has no compliance verdict. The cause is whatever the rule-validation service recorded — a missing page, a solver timeout, a model error. |
+| `rule_validation_not_consolidated` | the orchestration step | Every section was validated, but the step that turns those results into the document's single compliance decision failed. No section has a verdict, so every section carries this issue. |
+| `section_processing_failed` | the collate step | That step found this section's earlier processing had failed. |
+
+⚠️ **Look on the document's own page, not the document list.** The Sections panel
+always shows these, because it reads the section's issues directly. The document
+list's **Processing Issues** badge is only refreshed by the two steps that write the
+whole document — the orchestration and collate steps — so a `rule_validation_failed`
+recorded by the per-section step can leave that badge showing its previous value,
+commonly zero. The per-section write updates one section atomically and cannot know
+the document-wide total: it does not read the stored item, and ten sections are being
+written concurrently. `extraction_failed` reaches the badge the same way.
+
+The exception is unchanged by this: the Step Functions cause still carries the same
+message it always did. What changed is that the document's own record now carries it
+too.
+
+**A transient failure is not marked.** A throttle is retried by the state machine,
+so flagging the sections would show them failed for as long as that ladder runs —
+eight attempts at 2.5x backoff from ten seconds — and then clear itself. If a ladder
+exhausts every attempt, the document fails with the explanation in the Step Functions
+cause and the sections are not flagged.
+
+⚠️ There is a gap in that behaviour for this stage, tracked in
+[#1101](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/1101).
+Step Functions decides whether to retry from the Python exception's **class name**,
+while the check that suppresses the record judges by error **code**. For a Bedrock
+throttle those agree. For a transient that arrives under a different class name — a
+generic client error carrying a throttling code, or a read timeout — the record is
+suppressed and the step is *not* retried either, so the document fails with nothing on
+its record. Extraction and assessment do not have this gap, because those steps
+convert every transient cause to a single error name their state machine retries.
+
+**A document-scope explanation has no section to attach to, and is not invented
+one.** The collate step also collects free-text errors that belong to the document
+as a whole rather than to any one section — page-level OCR problems, for example.
+Those are not attributed to a section, because picking one would be a claim the
+pipeline cannot support; they remain in the Step Functions cause and the step's log.
+Per-page classification failures behind them are separately recorded on their own
+sections by the classification stage.
+
+**A very long explanation is abridged in the middle**, on the same 4 KB bound every
+processing issue's technical cause carries, with the error count written at the front
+so it survives the abridgement. The unabridged text is in the step's CloudWatch log.
+
 ### Common Issues
 
 **High Token Usage**: 

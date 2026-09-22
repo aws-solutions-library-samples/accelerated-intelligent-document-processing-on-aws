@@ -430,23 +430,34 @@ class DynamoDBMemoryHookProvider(HookProvider):
         Args:
             event: Message added event containing the agent and message
         """
-        messages = event.agent.messages
-
-        # Extract message content and role
-        message_content = messages[-1].get("content", "")
-        message_role = messages[-1]["role"]
-
-        # Calculate message size (serialize to JSON for accurate size)
-        message_json = json.dumps(message_content)
-        size_bytes = len(message_json.encode("utf-8"))
-        size_kb = size_bytes / 1024
-        logger.info(
-            f"Agent Memory: Message size: {size_bytes} bytes ({size_kb:.2f} KB), role: {message_role}"
-        )
-
-        # Check if message is larger than the configured limit
-        max_size_bytes = self.max_message_size_kb * 1024
+        # Everything this hook does is inside the try, including reading the
+        # message. Memory is best-effort — losing a turn of history is acceptable,
+        # aborting the caller's turn is not — so a malformed message is dropped and
+        # logged rather than raised out of the hook. Three reads below can raise on
+        # one: `messages[-1]` (IndexError, empty list), `["role"]` (KeyError), and
+        # `json.dumps` (TypeError, content json cannot encode). The role is read by
+        # subscript deliberately: a message with no role cannot be stored usefully,
+        # because turn grouping in `_load_conversation_history` keys on the role and
+        # discards any value it does not recognise, so substituting a sentinel would
+        # spend a write on a record that can never be read back into context.
         try:
+            messages = event.agent.messages
+
+            # Extract message content and role
+            message_content = messages[-1].get("content", "")
+            message_role = messages[-1]["role"]
+
+            # Calculate message size (serialize to JSON for accurate size)
+            message_json = json.dumps(message_content)
+            size_bytes = len(message_json.encode("utf-8"))
+            size_kb = size_bytes / 1024
+            logger.info(
+                f"Agent Memory: Message size: {size_bytes} bytes ({size_kb:.2f} KB), role: {message_role}"
+            )
+
+            # Check if message is larger than the configured limit
+            max_size_bytes = self.max_message_size_kb * 1024
+
             if size_bytes > max_size_bytes:
                 # Truncate the message
                 logger.info("Agent Memory: Message too large, truncating")

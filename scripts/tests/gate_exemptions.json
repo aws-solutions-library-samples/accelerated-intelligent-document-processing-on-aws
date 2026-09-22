@@ -204,6 +204,24 @@
       "reason": "Build packaging rather than a gate assertion. Registered because scripts/tests/test_package_discovery.py's wheel-contents check reads the built wheel, so an exclusion here narrows what that gate can see.",
       "ratchetGap": "test_package_discovery.py checks that every source package IS in the wheel, which is the opposite direction; nothing checks an exclusion here still corresponds to something intentionally unshipped."
     },
+    "lib/idp_common_pkg/pytest.ini::norecursedirs": {
+      "kind": "exemption",
+      "memberKind": "path",
+      "turnsOff": "pytest collection entirely, for the directories named, in every invocation rooted at lib/idp_common_pkg",
+      "premise": [
+        "JUDGEMENT"
+      ],
+      "ratchet": "non-vacuity",
+      "reason": "One added entry, `manual_tests`, holding operator-run scripts that drive real Bedrock, Athena and DynamoDB against a deployed stack and bill model calls. It is JUDGEMENT because 'these scripts must not run unattended' is a fact about what they do at runtime, not about the tree. What IS computable is checked: the entry shields at least one test_*.py (so it is not dead and pre-exempting), the restated pytest default is complete (setting norecursedirs replaces the default rather than extending it, so dropping `build` or `node_modules` would start walking them), and every directory it hides is also registered in scripts/run_all_tests.py -- without which the exclusion would be recorded in one file and invisible to the test-root guard and docs/testing.md.",
+      "predicateConsidered": {
+        "collects_zero_tests": "Does not apply, and its inverse is what matters here. That predicate justifies excluding a directory because pytest finds nothing in it; this exclusion exists because pytest finds five test_*.py modules and must not run them. Asserting zero collection would fail, and asserting non-zero is the non-vacuity ratchet above."
+      },
+      "crossReferences": [
+        "scripts/run_all_tests.py::QUARANTINE"
+      ],
+      "ratchetEvidence": "scripts/tests/test_pytest_norecursedirs_registry.py",
+      "ratchetGap": "A new test_*.py added DIRECTLY into an already-registered excluded directory is absorbed silently: the non-vacuity ratchet is already satisfied and the directory is already in QUARANTINE, so nothing fires. A new SUBdirectory does fail, because nesting under a QUARANTINE entry does not inherit the exclusion. Count-pinning would close the residual and is deliberately not used: it would fire on the intended case, an operator adding a sixth script to a directory whose whole purpose is operator scripts."
+    },
     "lib/idp_common_pkg/tests/unit/bedrock/test_long_context_metering_key.py::METERING_KEY_EXEMPT": {
       "kind": "exemption",
       "turnsOff": "the 'metering key strips the :1m suffix' check for one file",
@@ -637,6 +655,18 @@
       "reason": "A run-time tally, reported rather than a decision recorded in source.",
       "ratchetGap": "A document that becomes unreadable is counted and reported but does not fail the gate, so a parse regression degrades coverage quietly.",
       "memberKind": "path"
+    },
+    "scripts/deploy-vpc-endpoints.py::REQUIRED_ENDPOINTS": {
+      "kind": "fixture",
+      "turnsOff": "nothing. It is the work list of VPC endpoints this deploy helper creates and reports on; it gates no check. Discovery matches it on the comment above it, which explains why two retired CreateAppSyncApiEndpoint / CreateAppSyncControlEndpoint parameters are deliberately absent.",
+      "memberKind": "CloudFormation parameter name mapped to an AWS service endpoint short name",
+      "premise": [
+        "JUDGEMENT"
+      ],
+      "reason": "Not a gate. scripts/deploy-vpc-endpoints.py is an operator helper for PRIVATE deployments. The two absent members are AppSync endpoint parameters that scripts/vpc-endpoints.yaml -- the endpoint template this helper deploys, NOT the root template.yaml -- still declares so an older parameter file keeps deploying, both defaulting to \"false\"; listing them would make the script report 'missing -- will create' for endpoints it never creates. They are deprecated but not inert: that template still defines their conditions and two real AWS::EC2::VPCEndpoint resources gated on them, so a caller whose old parameter file sets one to \"true\" still gets the endpoint from CloudFormation. That is what makes the helper's omission correct rather than lossy. JUDGEMENT applies only to 'an operator helper should not offer to create a retired endpoint'; the membership rule itself is computed, below.",
+      "ratchet": "universe-closure",
+      "ratchetEvidence": "scripts/tests/test_vpc_endpoint_parameter_coverage.py",
+      "ratchetGap": "Parameter NAMES are closed; the service short name each maps to is not checked against anything, so a member pointing at the wrong com.amazonaws.<region>.<service> would deploy the wrong endpoint with every assertion green."
     },
     "scripts/deploy-vpc-endpoints.py::skip_list": {
       "kind": "enforced-universe",
@@ -1169,6 +1199,18 @@
       "memberKind": "path",
       "ratchetEvidence": "scripts/tests/exemption_discovery.py"
     },
+    "scripts/tests/gate_premises.py::PREDICATES": {
+      "kind": "enforced-universe",
+      "turnsOff": "nothing. It is the lookup table this registry resolves a premise name through, so a member ENABLES an entry to name a computable premise. Discovery matches it on the docstring above it, which explains why JUDGEMENT is deliberately absent.",
+      "memberKind": "predicate name, as the exact string a registry entry names it with",
+      "premise": [
+        "JUDGEMENT"
+      ],
+      "reason": "The absence the docstring argues for is JUDGEMENT, which is not a predicate: it is the recorded admission that there is no predicate, and the registry handles it as a separate branch that additionally requires a reason. Putting it in this table would let an entry name it as though something were computed. Registered as a non-exemption so that reading is recorded rather than re-derived by the next person to hit this line. Ratchet: scripts/tests/test_gate_exemption_registry.py::test_entry_is_well_formed resolves every entry's premise against PREDICATES | {JUDGEMENT} and fails on an unknown name, so the set of nameable premises is closed and a member cannot be REMOVED while an entry names it.",
+      "ratchet": "universe-closure",
+      "ratchetEvidence": "scripts/tests/test_gate_exemption_registry.py",
+      "ratchetGap": "Closure runs one way only: nothing fails for a DEAD member. Two of the five -- collects_zero_tests and file_absent_or_untracked -- are named by zero entries' `premise` fields today, so nothing in this registry rests on either, and this table can carry a predicate no registry entry uses. (That is a weaker statement than 'nothing calls them': collects_zero_tests is called by scripts/tests/test_run_all_tests_registry.py, and the CLAUDE.md rule about an uncalled predicate bites on one an ENTRY names -- enforced by test_a_computable_premise_is_actually_computed -- not on an unnamed table member.) For reference, the live premise distribution is JUDGEMENT x137, not_a_nested_stack_of_parent x4, built_separately_from_main_stack x2, installer_manifest_pins_parameter x1. Note also that the ratchetEvidence above is the meta-test itself, and the marker the evidence check greps for is in that file's own RATCHET_EVIDENCE_MARKERS table, so for THIS entry the marker is self-satisfying: read the named test, not the marker."
+    },
     "scripts/tests/repo_files.py::FALLBACK_PRUNE_DIRS": {
       "kind": "prune",
       "memberKind": "path",
@@ -1198,6 +1240,55 @@
       ],
       "memberKind": "path",
       "ratchetEvidence": "scripts/tests/test_api_adapter_identity_provenance.py"
+    },
+    "scripts/tests/test_api_policy_counts_in_docs.py::ALL_DOCS": {
+      "kind": "enforced-universe",
+      "turnsOff": "nothing. It is SCANNED_DOCS plus the partially-excluded documents, and it exists so the per-document comparison runs over an excluded page too — for the measures its exclusion does not name. A member adds coverage. Discovery matches it on the prose of the comment above it, which explains that an excluded document is still compared.",
+      "memberKind": "repo-relative path to a Markdown document",
+      "premise": [
+        "JUDGEMENT"
+      ],
+      "reason": "Registered as a non-exemption so the widening is on record. There is nothing to compute: the tuple is derived, being the concatenation of SCANNED_DOCS with the sorted keys of EXCLUDED_DOCS, so it cannot disagree with either. It is named here because the previous shape of this module compared only SCANNED_DOCS and skipped an excluded page entirely, which is what made a whole-page exclusion look harmless.",
+      "ratchet": "universe-closure",
+      "ratchetEvidence": "scripts/tests/test_api_policy_counts_in_docs.py"
+    },
+    "scripts/tests/test_api_policy_counts_in_docs.py::EXCLUDED_DOCS": {
+      "kind": "exemption",
+      "turnsOff": "the API-policy-count comparison in test_api_policy_counts_in_docs.py, per (document, measure) pair. For a listed page, only the measures its entry names are left uncompared against scripts/api_rbac_expectations.yaml; every other measure on that page is still read and compared here.",
+      "memberKind": "(Markdown document path, one derived measure name) pair",
+      "premise": [
+        "JUDGEMENT"
+      ],
+      "reason": "One document, docs/well-architected.md, for five of the nine measures. Those five are read instead by test_well_architected_doc.py::test_api_authorization_counts_match_the_expectations_file, which derives them from the same YAML and ASSERTS each against that page with phrase templates fitted to its wording; two gates reading one page in two ways is how they come to disagree about what each requires, so those five have one owner. The exclusion stops at five rather than covering the page because deriving a number is not asserting it: explicit_list is derived in that module, as group_restricted - len(any_group), but only inside a failure message's f-string, so naming it would defer a measure to a check that is not there -- and a page-scope exclusion would additionally cover the three narrowing measures (scope_checked, scope_filtered, ownership) that module does not read at all. JUDGEMENT applies to 'these two gates should not both own the page'; the mechanical half of the premise IS computed, per member. Ratchets: test_the_sibling_gate_still_asserts_each_measure_it_is_trusted_for PARSES the sibling module and requires each measure to appear as the first argument of an _assert_count_phrase call inside that one function, so a deleted assertion, a deleted measure or an emptied function all fail -- a substring search over the module was defeated by all three, because four of the five expressions also occur in a sibling test that asserts nothing about this page; test_excluded_document_still_states_counts asserts the page still states at least one of the EXEMPTED measures, so the entry cannot stay alive on a count it is not about; and universe closure is enforced by test_no_document_states_counts_unread, which derives every tracked .md and fails on one in neither SCANNED_DOCS nor here.",
+      "ratchet": "non-vacuity",
+      "ratchetEvidence": "scripts/tests/test_api_policy_counts_in_docs.py",
+      "ratchetGap": "Two residuals. (1) The per-(document, measure) grain is BEHAVIOURALLY INERT today: docs/well-architected.md yields exactly one count to this module's shapes, ('any_group', 18), which is exempt -- so the set of unexempted measures actually compared on that page is empty. The narrowing of the exclusion removed a false statement and closed no live hole; what it buys is prospective, a wrong unexempted count on that page failing here rather than being pre-exempted. (2) This grain is one COARSER than the sibling's, which is (document, measure, phrase template). A second, differently-worded statement of an EXEMPTED measure on that page escapes both gates -- the sibling's template does not match the new phrasing and this gate does not read the measure at all -- so one page can state one measure as two different values with every check green. Pre-existing at page scope and not introduced here, but this reason must not be read as ruling it out. A third residual, static-versus-executed, is CLOSED rather than declared: test_the_sibling_test_is_collected_and_not_skipped asks pytest to collect the deferred-to test by node id and reads its decorators for skip/xfail, so assertions that exist in source but never run fail here."
+    },
+    "scripts/tests/test_api_policy_counts_in_docs.py::SHAPES": {
+      "kind": "enforced-universe",
+      "turnsOff": "nothing. SHAPES is the set of regular expressions this gate reads counts WITH, not a set of things it skips; a member adds coverage rather than removing it. Discovery matches it on the prose of the comment above it, which explains why a bare 'the N operations' form is deliberately absent from the total shape.",
+      "memberKind": "(measure, view, compiled regular expression) triple",
+      "premise": [
+        "JUDGEMENT"
+      ],
+      "reason": "Registered as a non-exemption so the decision is on record rather than inferred. The one absence the comment argues for is a pattern that would read 'The two operations are not equivalent' as a claim about the size of the operation universe; that is ordinary English about a pair, and the count it would report is wrong every time. Dropping it costs no coverage: the sentence that motivated it ('8 of the 118 declared operations are ANY') is read by the `any` shape, which captures its own number. Ratchets: scripts/tests/test_api_policy_counts_in_docs.py::test_every_shape_is_live is parametrised over every index of SHAPES and fails on any pattern that matches nothing in any scanned document, so a member cannot be added speculatively or left behind after a rewording; and test_document_still_states_its_counts pins a per-document floor on how many counts are read, so a rewording that slips past every shape fails even when some sibling shape keeps the same measure alive.",
+      "ratchet": "non-vacuity",
+      "ratchetEvidence": "scripts/tests/test_api_policy_counts_in_docs.py"
+    },
+    "scripts/tests/test_api_policy_counts_in_docs.py::SIBLING_GATE_MEASURES": {
+      "kind": "enforced-universe",
+      "turnsOff": "nothing on its own. It is the set the one EXCLUDED_DOCS entry is BOUNDED to -- the measures test_well_architected_doc.py provably ASSERTS -- so a member is what makes that exclusion narrow rather than whole-page. Removing a member widens this gate's coverage; adding one narrows it, which is why each member carries the expression it must be asserted as. Discovery matches it on the prose of the comment above it, which argues about what the exclusion must NOT cover.",
+      "memberKind": "derived measure name, mapped to the expression it must appear as in the first argument of an _assert_count_phrase call in the sibling test",
+      "premise": [
+        "JUDGEMENT"
+      ],
+      "reason": "JUDGEMENT covers only the design call that one page should have one owner for these counts. Everything else is computed per member: scripts/tests/test_api_policy_counts_in_docs.py::test_the_sibling_gate_still_asserts_each_measure_it_is_trusted_for parses test_well_architected_doc.py and fails unless each measure appears as the first argument of an _assert_count_phrase call INSIDE the one function named. That distinction -- asserted, not merely derived -- is the whole reason the set is bounded: it originally named explicit_list, which that module derives as group_restricted - len(any_group) but only inside a failure message's f-string, so one member deferred to a check that is not there. The three narrowing measures (scope_checked, scope_filtered, ownership) are absent because that module does not read them at all; membership here is what keeps this gate reading them for that page's siblings.",
+      "ratchet": "non-vacuity",
+      "ratchetEvidence": "scripts/tests/test_api_policy_counts_in_docs.py",
+      "ratchetGap": "Non-vacuity holds for the SET, not per member: the owning check requires each measure to be asserted in the sibling, but nothing requires docs/well-architected.md to state each of them, so a member covering a measure that page no longer mentions stays green. See the EXCLUDED_DOCS entry's ratchetGap for the consequence -- on today's tree only one of the five is actually stated on that page, so four members shield nothing.",
+      "predicateConsidered": {
+        "file_absent_or_untracked": "Matched on the phrase 'a check that is not there', which is about an absent ASSERTION inside a present, tracked file, not about an absent file. scripts/tests/test_well_architected_doc.py is tracked and present, and answering True for it settles nothing: the question is whether one named function in it still asserts each measure, which is a property of its contents and is what the owning gate parses for."
+      }
     },
     "scripts/tests/test_asl_placeholder_substitution.py::_SKIP_DIRS": {
       "kind": "prune",
@@ -1420,6 +1511,17 @@
       "reason": "Enforced expectation, not an exemption.",
       "memberKind": "CloudFormation logical id",
       "ratchetEvidence": "scripts/tests/test_data_plane_component_labels.py"
+    },
+    "scripts/tests/test_doc_install_commands.py::_VALUE_OPTIONS": {
+      "kind": "fixture",
+      "memberKind": "pip option",
+      "turnsOff": "nothing; the pip flags whose NEXT token is a value rather than a requirement",
+      "premise": [
+        "JUDGEMENT"
+      ],
+      "ratchet": "none",
+      "reason": "Not a carve-out, and the one omission its comment argues for widens the gate rather than narrowing it. Membership makes the parser SKIP the following token, so `-e` being deliberately absent is what makes `-e <path>` read as a requirement and get checked -- the behaviour the comment records an early draft of the gate getting wrong. Discovered through the prose phrase \"deliberately absent\", which reads as an exclusion argument and here is an argument for the opposite.",
+      "ratchetGap": "Not an exemption, so no ratchet applies. The failure this table could cause is an option wrongly ADDED to it, which would skip a requirement token; that is a defect in the gate's own parser and is covered by its acceptance tests, not by this registry."
     },
     "scripts/tests/test_discover_templates.py::_ARN_GATE_CHECKS": {
       "kind": "enforced-universe",
@@ -1985,6 +2087,20 @@
       ],
       "memberKind": "path"
     },
+    "scripts/tests/test_xray_tracing.py::GLOBALS_TRACING_REMOVED": {
+      "kind": "exemption",
+      "turnsOff": "the strict per-function tracing rule in test_xray_tracing.py::test_every_function_here_declares_a_tracing_mode, by INCLUSION: only templates listed here have every function checked for an explicit Tracing mode. A template not listed may hold silently untraced functions, which rule 1 reads as 'not traced by this stack' rather than as a finding.",
+      "memberKind": "repo-relative path to a CloudFormation/SAM template",
+      "premise": [
+        "JUDGEMENT"
+      ],
+      "reason": "The two templates deliberately absent are template.yaml and patterns/unified/template.yaml, on the stated grounds that neither ever carried a Globals tracing default, so a function without the line inherits nothing it used to inherit, and many of their functions are legitimately untraced. That premise IS computable -- whether a template declares Globals.Function.Tracing is a parse away -- and is recorded as JUDGEMENT here only because a predicate the owning gate never calls is itself a failure, so adding one belongs in a change to that gate rather than in this one. Ratchet: scripts/tests/test_xray_tracing.py::test_every_function_here_declares_a_tracing_mode is parametrised over sorted(GLOBALS_TRACING_REMOVED), so a listed template that no longer exists or holds no functions fails there. What is NOT ratcheted is the absence: nothing derives the universe of templates and fails on one in neither set, which is why the premise above is worth computing.",
+      "ratchet": "non-vacuity",
+      "ratchetEvidence": "scripts/tests/test_xray_tracing.py",
+      "predicateConsidered": {
+        "file_absent_or_untracked": "Matched on 'no longer exists', which describes the ratchet on the LISTED member, not the premise. Both templates the entry is about -- template.yaml and patterns/unified/template.yaml -- are tracked and present, so this predicate answers True for them and settles nothing: the question is whether either declares a Globals.Function.Tracing default, which is a property of a template's contents rather than of its existence. No predicate in gate_premises.py reads template contents today."
+      }
+    },
     "scripts/tests/test_xray_tracing.py::HARDCODED_WITHOUT_PARAMETER": {
       "kind": "exemption",
       "turnsOff": "the 'EnableXRayTracing controls tracing' check for seven extension templates",
@@ -2021,24 +2137,6 @@
       "ratchet": "none",
       "reason": "Enforced vocabulary.",
       "ratchetGap": "An unrecognised status would be silently uncounted."
-    },
-    "lib/idp_common_pkg/pytest.ini::norecursedirs": {
-      "kind": "exemption",
-      "memberKind": "path",
-      "turnsOff": "pytest collection entirely, for the directories named, in every invocation rooted at lib/idp_common_pkg",
-      "premise": [
-        "JUDGEMENT"
-      ],
-      "ratchet": "non-vacuity",
-      "reason": "One added entry, `manual_tests`, holding operator-run scripts that drive real Bedrock, Athena and DynamoDB against a deployed stack and bill model calls. It is JUDGEMENT because 'these scripts must not run unattended' is a fact about what they do at runtime, not about the tree. What IS computable is checked: the entry shields at least one test_*.py (so it is not dead and pre-exempting), the restated pytest default is complete (setting norecursedirs replaces the default rather than extending it, so dropping `build` or `node_modules` would start walking them), and every directory it hides is also registered in scripts/run_all_tests.py -- without which the exclusion would be recorded in one file and invisible to the test-root guard and docs/testing.md.",
-      "predicateConsidered": {
-        "collects_zero_tests": "Does not apply, and its inverse is what matters here. That predicate justifies excluding a directory because pytest finds nothing in it; this exclusion exists because pytest finds five test_*.py modules and must not run them. Asserting zero collection would fail, and asserting non-zero is the non-vacuity ratchet above."
-      },
-      "crossReferences": [
-        "scripts/run_all_tests.py::QUARANTINE"
-      ],
-      "ratchetEvidence": "scripts/tests/test_pytest_norecursedirs_registry.py",
-      "ratchetGap": "A new test_*.py added DIRECTLY into an already-registered excluded directory is absorbed silently: the non-vacuity ratchet is already satisfied and the directory is already in QUARANTINE, so nothing fires. A new SUBdirectory does fail, because nesting under a QUARANTINE entry does not inherit the exclusion. Count-pinning would close the residual and is deliberately not used: it would fire on the intended case, an operator adding a sixth script to a directory whose whole purpose is operator scripts."
     }
   }
 }
