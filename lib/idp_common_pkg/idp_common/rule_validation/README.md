@@ -7,9 +7,10 @@ The Rule Validation Service validates extracted document information against pre
 
 ## How a failure is recorded
 
-This service does not raise on failure. It records the reason in
+On a **deterministic** failure this service does not raise. It records the reason in
 `document.errors` and sets `Status.FAILED`, and the two rule-validation Lambdas
-check that status and raise. `document.errors` is persisted nowhere, so the
+check that status and raise. (A transient failure does raise, from the service — see
+the next section.) `document.errors` is persisted nowhere, so the
 handlers are what make the reason visible: both call
 [`idp_common.document_failure`](../README.md#-recording-a-document-level-failure)
 to attach an error-severity `ProcessingIssue` to the affected section(s) before
@@ -19,15 +20,57 @@ failed, so no section has a verdict. Read that section before changing either
 handler's `except` block — in particular, the original exception must propagate
 unchanged and a transient failure must record nothing.
 
-⚠️ `validate_document_async` wraps its whole body in a broad `except` that converts
-**every** failure, including a throttle or a read timeout, into `Status.FAILED`
-plus an `errors` entry and returns normally. The handler then raises a plain
-`Exception`, which matches none of the task state's `Retry` error names, so a
-transient Bedrock failure here permanently fails the document instead of being
-retried — unlike the extraction and assessment paths, which re-raise transient
-causes under the name the state machine retries
-(`idp_common.utils.transient_errors`). Worth knowing before relying on retry
-behaviour for this stage.
+## Transient failures are retried; deterministic ones are not
+
+This service and its orchestrator have many `except` blocks that deliberately do not
+raise — they return a fallback so one bad rule does not discard the others, or a
+document marked failed so the handler can record a diagnosis. Every one of them first
+asks `idp_common.utils.transient_errors` whether the failure is transient, and
+re-raises it under `TransientError` if it is. That is the one class name
+`PolicyClassificationStep`, `RuleValidationStep` and `RuleValidationOrchestration`
+list in `Retry.ErrorEquals`, so a throttle, read timeout, dropped connection or
+not-ready model is retried — eight attempts at 2.5× backoff from ten seconds — rather
+than becoming a permanent outcome (#1101).
+
+**The classification lives in one place on purpose.** A `Retry.ErrorEquals` entry can
+only match an exception's class name; transience is a property of the error code and
+the cause chain. Listing the transient *codes* in each state would be a second copy of
+the predicate that drifts, so the library decides and reports the answer under one
+name. Do not add a transient code to a rule-validation state's retry list, and do not
+add `TransientError` to a state whose handler cannot raise it —
+`patterns/unified/tests/test_workflow_transient_retry.py` checks both directions.
+
+⚠️ **Use `reraise_if_transient` in a block that swallows, not `raise_if_transient`.**
+The latter returns silently when the exception already *is* a `TransientError`,
+because it expects a bare `raise` to follow it. These blocks nest — a transient
+re-raised for one rule travels up through `asyncio.gather` into
+`validate_document_async`'s `except`, which returns — so using `raise_if_transient`
+there leaves each site correct in isolation and swallows the inner classification
+anyway. `test_a_transient_from_one_rule_is_not_swallowed_by_the_document_level_handler`
+is the test for that composition.
+
+The sites that classify, and what each returns for a deterministic failure:
+
+| Site | Deterministic result |
+|---|---|
+| `_process_rule_question` | the per-rule `Information Not Found` verdict, reason in `reasoning` |
+| `process_one_section`'s extraction-results load | empty results, so rules see no extracted data |
+| `validate_document_async` | `Status.FAILED` plus an `errors` entry, returned not raised |
+| `orchestrator._process_single_z3_rule` | the per-rule `Information Not Found` verdict |
+| `orchestrator._summarize_responses` and its per-rule gather | the unsummarised responses; a failed rule is dropped |
+| `orchestrator.load_section_results` | an empty mapping, read by the caller as "nothing to consolidate" |
+| `orchestrator.consolidate_and_save_all` | an empty `RuleValidationResult`, **returned normally** |
+| the policy-classification handler's page read and stale-result cleanup | the page is skipped / the cleanup is skipped |
+
+⚠️ Note what the last two rows in the orchestrator mean for anyone adding a failure
+path: `consolidate_and_save_all` returning normally is why the orchestration handler's
+`except` almost never runs. A deterministic consolidation failure does not reach it,
+so a diagnosis that must be recorded belongs inside the orchestrator, not in the
+handler's `except`.
+
+`Information Not Found` is a **verdict**, not an error channel — it is one of the
+configured `recommendation_options` and downstream features act on it — so it must
+never be returned because a service call failed transiently.
 
 ## Overview
 

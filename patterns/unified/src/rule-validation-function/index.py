@@ -22,6 +22,7 @@ from idp_common.document_failure import (
     summarize_errors,
 )
 from idp_common.utils import calculate_lambda_metering, merge_metering_data
+from idp_common.utils.transient_errors import raise_if_transient
 
 # X-Ray tracing
 from aws_xray_sdk.core import xray_recorder
@@ -38,6 +39,26 @@ logging.getLogger('idp_common.bedrock.client').setLevel(os.environ.get("BEDROCK_
 
 @xray_recorder.capture('rule_validation_function')  # pyright: ignore[reportCallIssue] - aws-xray-sdk types capture() as the wrapped function, not the decorator factory
 def handler(event, context):
+    """Validate one section. See ``_handle``.
+
+    #1101: Step Functions retries by the exception's CLASS NAME, so a transient
+    failure that arrives here under any other name failed the document outright
+    while the eight-attempt ladder RuleValidationStep carries sat unused. The whole
+    handler is wrapped, not just the service call, so the document and config loads
+    and the status write are covered too — each of those is an S3 or DynamoDB call
+    that can throttle. Transient causes are re-raised under the one name that state
+    lists; deterministic failures keep their own name and are not retried.
+    """
+    try:
+        return _handle(event, context)
+    except Exception as e:
+        raise_if_transient(
+            e, where=f"rule validation section {(event or {}).get('section_id')}"
+        )
+        raise
+
+
+def _handle(event, context):
     """
     Process a single section of a document for rule validation
     """

@@ -576,21 +576,53 @@ The exception is unchanged by this: the Step Functions cause still carries the s
 message it always did. What changed is that the document's own record now carries it
 too.
 
-**A transient failure is not marked.** A throttle is retried by the state machine,
-so flagging the sections would show them failed for as long as that ladder runs —
-eight attempts at 2.5x backoff from ten seconds — and then clear itself. If a ladder
-exhausts every attempt, the document fails with the explanation in the Step Functions
-cause and the sections are not flagged.
+**A transient failure is not marked, and it is retried.** A throttle, a read
+timeout, a dropped connection or a model that is not ready is retried by the state
+machine — eight attempts at 2.5× backoff from ten seconds, about 2.8 hours of
+backoff, on both the per-section and orchestration steps — so flagging the sections
+would show them failed for as long as that ladder runs and then clear itself.
 
-⚠️ There is a gap in that behaviour for this stage, tracked in
-[#1101](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/1101).
-Step Functions decides whether to retry from the Python exception's **class name**,
-while the check that suppresses the record judges by error **code**. For a Bedrock
-throttle those agree. For a transient that arrives under a different class name — a
-generic client error carrying a throttling code, or a read timeout — the record is
-suppressed and the step is *not* retried either, so the document fails with nothing on
-its record. Extraction and assessment do not have this gap, because those steps
-convert every transient cause to a single error name their state machine retries.
+The two decisions come from the same place, which is what makes the suppression
+trustworthy. Step Functions decides whether to retry from the Python exception's
+**class name**, while transience is a property of the error **code** and the
+exception's cause chain — a question no retry list can ask. So rule validation
+classifies the failure once, in `idp_common.utils.transient_errors`, and re-raises
+every transient cause under one class name that all three rule-validation states
+list. A record is withheld exactly when a retry is genuinely coming.
+
+If a ladder exhausts every attempt, the document fails with the explanation in the
+Step Functions cause and the sections are **not** flagged. A step cannot tell its
+last attempt from its first — Step Functions does not tell it which attempt it is
+on — so the final one suppresses the record for the same reason the first did. The
+failure is still counted by the failure alarms and the dead-letter queue; what is
+missing is the per-section diagnosis. Extraction and assessment behave identically.
+
+### A transient fault is never answered with a verdict
+
+`Information Not Found` is a **verdict**: it is one of the configured
+`recommendation_options`, it is counted in the document's rule-validation summary,
+and downstream consumers act on it — the sample health-insurance review feature reads
+a document made mostly of them as *insufficient documentation*. So it has to mean
+"the document does not evidence this rule", and not "we could not reach the model".
+
+Rule validation therefore separates the two everywhere it could previously conflate
+them. A deterministic failure for one rule still yields `Information Not Found` with
+the reason in its `reasoning` field, which is what keeps one unparseable rule from
+discarding every other rule's answer. A transient failure raises instead, so the step
+is retried and the rule gets a real answer. The same split applies to the Z3 engine's
+value-extraction call, to the summarisation step that turns per-section facts into the
+document's decision, and to the consolidation step — which previously returned an
+empty result rather than failing, so a throttle could finish a document with **no**
+verdicts, no failed status and nothing recorded anywhere.
+
+Two related faults are handled the same way, because both silently changed a result
+rather than reporting a failure. A page whose text could not be read is a page whose
+policy-matching regexes never ran, so a policy type evidenced only on that page went
+unmatched and none of its rules were validated. And the cleanup that removes the
+previous run's per-section results is not best-effort: the orchestrator reads exactly
+the prefix it clears, so a cleanup that silently did not happen meant last run's
+verdicts were consolidated as if they were this run's. Both are now retried rather
+than absorbed.
 
 **A document-scope explanation has no section to attach to, and is not invented
 one.** The collate step also collects free-text errors that belong to the document

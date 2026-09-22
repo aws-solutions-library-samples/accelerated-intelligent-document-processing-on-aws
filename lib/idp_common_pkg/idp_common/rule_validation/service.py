@@ -32,6 +32,7 @@ from idp_common.config.schema_constants import (
 )
 from idp_common.models import Document, RuleValidationResult, Status
 from idp_common.rule_validation.models import FactExtractionResponse
+from idp_common.utils.transient_errors import reraise_if_transient
 
 logger = logging.getLogger(__name__)
 
@@ -695,6 +696,24 @@ class RuleValidationService:
 
             except Exception as e:
                 logger.error(f"Error processing rule question: {str(e)}")
+                # #1101: a TRANSIENT fault must not be answered with a verdict.
+                # The dict below is a real answer to every downstream reader:
+                # "Information Not Found" is one of the configured
+                # ``recommendation_options``, it is counted in the document's
+                # rule-validation summary, and a feature hook turns a document made
+                # of them into INSUFFICIENT_DOCUMENTATION. Returning it because
+                # Bedrock throttled reports "this document does not evidence the
+                # rule" when what happened is "the model was busy" — and because it
+                # is not an exception, the document COMPLETES, so nothing retries
+                # and no failure is ever surfaced to anyone.
+                #
+                # Re-raise a transient cause under the one name RuleValidationStep
+                # retries. A DETERMINISTIC failure keeps the per-rule fallback: one
+                # unparseable response or schema violation should not discard the
+                # other rules' answers, which is the partial-failure tolerance the
+                # surrounding ``asyncio.gather`` was built for and which a retry
+                # could not improve on.
+                reraise_if_transient(e, where=f"rule validation rule '{rule[:60]}'")
                 return {
                     "policy_type": policy_type,
                     "rule": rule,
@@ -1019,6 +1038,16 @@ class RuleValidationService:
                         logger.warning(
                             f"Failed to load extraction results for section {section.section_id}: {e}"
                         )
+                        # #1101: falling through leaves `extraction_results` empty,
+                        # so every rule for this section is evaluated against a
+                        # prompt with no extracted data in it — and the degraded
+                        # verdicts flow onward as real answers behind one WARNING.
+                        # A missing or unparseable object is worth continuing on; a
+                        # transient S3 fault is worth re-reading the same key for.
+                        reraise_if_transient(
+                            e,
+                            where=f"rule validation extraction results {section.section_id}",
+                        )
                 else:
                     logger.debug(
                         f"No extraction_result_uri found for section {section.section_id}"
@@ -1188,6 +1217,30 @@ class RuleValidationService:
         except Exception as e:
             error_msg = f"Error validating document {document.id}: {str(e)}"
             logger.error(error_msg)
+            # #1101: recording a TRANSIENT fault here made it permanent. This
+            # ``except`` returns normally, so the caller sees a document that is
+            # simply FAILED; ``rule-validation-function`` then raises a bare
+            # ``Exception`` built from that status, and by then the original
+            # exception — the only thing that carried the transient classification —
+            # no longer exists. Step Functions matches a Lambda failure by the
+            # exception's class NAME, ``Exception`` is in no ``Retry.ErrorEquals``
+            # list, and so the eight-attempt ladder RuleValidationStep already
+            # carries never fired for the one class of failure it was provisioned
+            # for. The document finished failed and had to be re-uploaded.
+            #
+            # Classification has to happen here, where the exception object is still
+            # in hand. Transient causes surface under ``TransientError``, the single
+            # name that state lists; deterministic failures keep today's behaviour —
+            # recorded in ``document.errors``, status FAILED, returned — because
+            # eight more attempts cannot validate a document that fails the same way
+            # every time.
+            #
+            # ``reraise_if_transient``, not ``raise_if_transient``: this block
+            # RETURNS, and the per-rule and per-section blocks above re-raise
+            # through ``asyncio.gather`` into here, so a plain
+            # ``raise_if_transient`` would return silently for an exception already
+            # surfaced under the name and swallow it — undoing their classification.
+            reraise_if_transient(e, where=f"rule validation document {document.id}")
             document.errors.append(error_msg)
             return self._update_document_status(
                 document, success=False, error_message=error_msg
