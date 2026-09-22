@@ -313,7 +313,7 @@ formatting). And when you demonstrate that a file is excluded, use
 this correctly.** A plain `ruff check <path>` bypasses the exclusions, and
 `--force-exclude` restores only `exclude`/`extend-exclude` — `[lint] exclude` and
 `[format] exclude` filter after discovery, so `ruff check --force-exclude <path>`
-prints `All checks passed!` and exits 0 for every one of the 85 lint-excluded files.
+prints `All checks passed!` and exits 0 for every lint-excluded file.
 `ruff check --show-files` does not honour `[lint] exclude` either.
 
 Pair the coverage number with the largest uncovered files:

@@ -427,7 +427,7 @@ Two practical consequences:
   `--force-exclude` restores only `exclude`/`extend-exclude`, which are
   *discovery* settings, while `[lint] exclude` and `[format] exclude` filter after
   discovery — so `ruff check --force-exclude <file>` prints `All checks passed!`
-  and exits 0 for all 85 lint-excluded files, and
+  and exits 0 for every lint-excluded file, and
   `ruff format --check --force-exclude <file>` prints **nothing at all** for a
   format-excluded one rather than the `No Python files found` warning that a
   discovery-level exclusion produces. `ruff check --show-files` does not honour

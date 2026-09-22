@@ -143,8 +143,8 @@ setup-venv: ## Create .venv and install all packages into it
 	@echo -e "$(YELLOW)   'basedpyright' is separate again: npm install -g basedpyright$(NC)"
 
 ##@ Code Quality
-lint: ruff-lint format check-lint-debt check-arn-partitions check-filtered-scans check-data-plane-tags check-retired-services check-threat-model-currency validate-buildspec cfn-lint ui-lint codegen-check ## Run all linting (ruff, format, ARN checks, filtered scans, retired-service docs, threat-model currency, buildspec, UI, codegen). Use FORCE=1 to force UI lint re-run despite checksum match.
-fastlint: ruff-lint format check-lint-debt check-arn-partitions check-filtered-scans check-data-plane-tags check-retired-services check-threat-model-currency validate-buildspec ## Quick lint without UI checks
+lint: ruff-lint format check-lint-debt check-arn-partitions check-account-ids check-filtered-scans check-data-plane-tags check-retired-services check-threat-model-currency validate-buildspec cfn-lint ui-lint codegen-check ## Run all linting (ruff, format, ARN checks, account-id scan, filtered scans, retired-service docs, threat-model currency, buildspec, UI, codegen). Use FORCE=1 to force UI lint re-run despite checksum match.
+fastlint: ruff-lint format check-lint-debt check-arn-partitions check-account-ids check-filtered-scans check-data-plane-tags check-retired-services check-threat-model-currency validate-buildspec ## Quick lint without UI checks
 
 ruff-lint: ## Run ruff linting with auto-fix
 	ruff check --fix
@@ -207,6 +207,12 @@ lint-cicd: ## CI/CD lint — checks only, no modifications
 		exit 1; \
 	fi
 
+	@echo "Committed AWS account id check"
+	@if ! make check-account-ids; then \
+		echo -e "$(RED)ERROR: a private AWS account id is committed in a tracked file (see issue #1067)$(NC)"; \
+		exit 1; \
+	fi
+
 	@echo "DynamoDB filtered-scan pagination check"
 	@if ! make check-filtered-scans; then \
 		echo -e "$(RED)ERROR: Filtered DynamoDB scan(s) cannot see all their matches (see issue #599)$(NC)"; \
@@ -241,6 +247,14 @@ check-lint-debt: ## Ratchet ruff's per-file exclusions: fail if an excluded file
 	@# quietly accumulate more. Regenerate with --write after fixing findings.
 	@$(PYTHON) scripts/check_lint_debt.py || \
 		(echo -e "$(RED)ERROR: ruff exclusion baseline is out of date (see issue #975)$(NC)" && exit 1)
+
+check-account-ids: ## Fail if a private AWS account id is committed in a tracked file's contents (issue #1067)
+	@# The PreToolUse hook scripts/hooks/check_commit_text.py inspects the COMMAND
+	@# text of a commit or a PR creation. A 12-digit id inside a file never appears
+	@# there, so no pattern could have caught the 175 occurrences this gate was
+	@# written for. This one reads the files instead.
+	@$(PYTHON) scripts/check_account_ids.py || \
+		(echo -e "$(RED)ERROR: an unaccounted AWS account id is committed in a tracked file!$(NC)" && exit 1)
 
 check-filtered-scans: ## Check for DynamoDB filtered Scans that can't see all matches (issue #599)
 	@$(PYTHON) scripts/check_filtered_scans.py || \
@@ -1349,7 +1363,7 @@ endif
 
 # Usage:
 #   make seller-entitlement-service PRODUCT_REGISTRY='{"prod-xxx":{"productCode":"yyy","allowFreeTier":true}}'
-#   make seller-entitlement-service PRODUCT_REGISTRY='{...}' SELLER_ACCOUNT_ID=145026617366 YES=1
+#   make seller-entitlement-service PRODUCT_REGISTRY='{...}' SELLER_ACCOUNT_ID=123456789012 YES=1
 seller-entitlement-service: ## Preflight + deploy the Seller Entitlement Service into the SELLER account (Usage: make seller-entitlement-service PRODUCT_REGISTRY='{...}' [STACK_NAME=...] [SELLER_ACCOUNT_ID=...] [REGION=...] [YES=1])
 ifndef PRODUCT_REGISTRY
 	$(error PRODUCT_REGISTRY is not set. Usage: make seller-entitlement-service PRODUCT_REGISTRY='{"prod-xxx":{"productCode":"yyy","allowFreeTier":true}}')

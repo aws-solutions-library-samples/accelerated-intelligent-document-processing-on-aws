@@ -194,7 +194,8 @@ class RuleValidationOrchestratorService:
 
             # Convert supporting pages set to sorted list
             summary["supporting_pages"] = sorted(
-                list(all_supporting_pages), key=lambda x: int(x) if x.isdigit() else 0
+                list(all_supporting_pages),
+                key=lambda x: int(x) if str(x).isdigit() else 0,
             )
 
             # Add generation timestamp

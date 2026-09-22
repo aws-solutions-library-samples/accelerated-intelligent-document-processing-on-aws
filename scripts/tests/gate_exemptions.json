@@ -123,7 +123,8 @@
       "ratchet": "non-vacuity",
       "reason": "Cross-partition IAM trust does not exist, so the two statements trusting a named role in the commercial CI account cannot be parameterised. Not machine-checkable: whether a foreign account id has a counterpart in another partition is a fact about that account, not about this tree.",
       "crossReferences": [
-        "scripts/check_python_arn_partitions.py::EXCLUDE_FRAGMENTS"
+        "scripts/check_python_arn_partitions.py::EXCLUDE_FRAGMENTS",
+        "scripts/check_account_ids.py::ACCOUNT_ID_EXEMPT_LINES"
       ],
       "predicateConsidered": {
         "not_a_nested_stack_of_parent": "True of this template and irrelevant to the premise. The SDLC pipeline templates are not nested stacks of template.yaml and nothing claims they are; what makes the two exempt LINES unparameterisable is that they name a role in a specific foreign commercial account, which no predicate here can judge. The non-vacuity and one-file-per-entry ratchets bound it instead.",
@@ -402,9 +403,14 @@
         "JUDGEMENT"
       ],
       "ratchet": "staleness",
-      "reason": "Generated, vendored and build-output trees. scripts/tests/test_pyright_config.py asserts every include path exists and every first-party distribution is covered, which is the closure half.",
+      "reason": "Generated, vendored and build-output trees. Members split by why they are here rather than sharing one reason: the cache and artifact directory names (**/build, **/dist, **/.venv, **/.aws-sam, **/cdk.out, **/node_modules, **/__pycache__) are bare on purpose, since such a directory is build output wherever it sits, while the two named paths under feature-platform/idp-data-generator are specific staged trees and each carries its own reason and its own computed premise in scripts/tests/test_pyright_config.py::STAGED_BUILD_OUTPUT_EXEMPT. notebooks/**/*.ipynb is a scope decision recorded in TYPECHECK_SCOPE_EXCLUSIONS in the same file. What makes the array as a whole trustworthy is not this reason but the closure tests around it: every include path must exist, every first-party distribution must be covered, no exclude may shadow an include, every tracked .py must be reached, and the walk must reach nothing an ignore rule covers.",
       "memberKind": "path",
-      "ratchetEvidence": "scripts/tests/test_pyright_config.py"
+      "ratchetEvidence": "scripts/tests/test_pyright_config.py",
+      "crossReferences": [
+        "scripts/tests/test_pyright_config.py::STAGED_BUILD_OUTPUT_EXEMPT",
+        "scripts/tests/test_pyright_config.py::TYPECHECK_SCOPE_EXCLUSIONS",
+        "ruff.toml::exclude"
+      ]
     },
     "ruff.toml::exclude": {
       "kind": "exemption",
@@ -416,7 +422,8 @@
       "reason": "Bare directory names, and the one array here where that is the correct spelling: a `build/`, `.venv/` or `node_modules/` at any depth is build output wherever it sits, and `scratch/` and `.claude/worktrees/` routinely hold whole copies of this repository. It restates ruff's own defaults and adds those four. Because the names ARE bare, check_lint_debt.py's bare-name check does not read this array and asserts a property of the walk instead, in both directions: the walk must reach nothing git ignores, and it must reach every tracked .py or .ipynb that no `scope` entry accounts for. That is what closes issue #975 here rather than a list of forbidden names -- the array was otherwise re-openable with every per-file check green, since putting `scripts` back in it drops the walk by 135 files while `ruff check` still prints 'All checks passed!'.",
       "ratchet": "universe-closure",
       "crossReferences": [
-        "ruff.toml::extend-exclude"
+        "ruff.toml::extend-exclude",
+        "pyrightconfig.json::exclude"
       ],
       "issues": [
         "975",
@@ -513,6 +520,70 @@
       "issues": [
         "975",
         "1042"
+      ]
+    },
+    "scripts/check_account_ids.py::BINARY_EXTENSIONS_SKIPPED": {
+      "kind": "exemption",
+      "turnsOff": "reading one file's contents at all, for a file in a non-text format",
+      "premise": [
+        "JUDGEMENT"
+      ],
+      "ratchet": "universe-closure",
+      "reason": "WHAT IS RATCHETED HERE IS THE SET OF EXTENSIONS, NOT A COUNT OF SKIPPED FILES. The gate decides per file whether contents are text by looking for a NUL byte in the first 8 KiB, and this set records which formats are allowed to answer yes; the closure check fails on any skipped file whose extension is not named. Choosing extensions over a count is deliberate: a count would red-line the branch on the next sample PNG, which is friction for no safety, whereas what genuinely needs to fail is a file the gate STOPS being able to read -- a text file that gains a NUL byte in its first 8 KiB, or a new tree in an undeclared binary format. Both of those the closure catches; a hundred more images it does not. No file total is recorded here because it moves with every merge; the skipped set today is almost entirely images and PDFs, and `--summary` prints the live count. Whether a format is text is not something this tree computes, which is why the membership is authored. The residual was measured rather than assumed: none of the six private account ids known to this tree appears as raw bytes in any skipped file, and a review that also unzipped the Office containers and zlib-decompressed the PDFs' FlateDecode streams found none either, so the skip is currently empty of substance -- though it remains a real hole for a future file.",
+      "memberKind": "file extension",
+      "ratchetEvidence": "scripts/check_account_ids.py",
+      "issues": [
+        "1067"
+      ]
+    },
+    "scripts/check_account_ids.py::ACCOUNT_ID_EXCLUDED_SHAPES": {
+      "kind": "exemption",
+      "turnsOff": "the committed-account-id check, for one 12-digit run whose surrounding characters show it is not a standalone number",
+      "premise": [
+        "JUDGEMENT"
+      ],
+      "ratchet": "non-vacuity",
+      "reason": "Three shapes in this tree produce a 12-digit run that is not an identifier of any kind: the fractional part of a decimal literal (a point is a word boundary, so the run after it is bounded), the final group of an RFC-4122 UUID, and a slice of a longer hexadecimal digest. The gate evaluates all three per occurrence from the characters either side, so the verdict is computed rather than asserted; it is recorded as JUDGEMENT only because gate_premises.py holds no predicate for a textual shape and inventing one would give it a single caller. No per-rule totals are recorded here on purpose: they move with every merge (one study landing on develop took the decimal-fraction count from 11 to 76), so a figure written down would be stale within the week. `python3 scripts/check_account_ids.py --summary` prints the current split, and the non-vacuity ratchet is what asserts each rule still earns its place.",
+      "memberKind": "textual shape rule",
+      "ratchetEvidence": "scripts/check_account_ids.py",
+      "issues": [
+        "1067"
+      ]
+    },
+    "scripts/check_account_ids.py::ACCOUNT_ID_ALLOWLIST": {
+      "kind": "exemption",
+      "turnsOff": "the committed-account-id check, for every occurrence of one specific 12-digit value",
+      "premise": [
+        "JUDGEMENT"
+      ],
+      "ratchet": "non-vacuity",
+      "reason": "Whether a 12-digit value is a private account id, one of AWS's published example ids, an AWS-owned service account, or simply document content that happens to be twelve digits long (a bank account number in a synthetic statement, the digits of a CUSIP, a build timestamp) is a fact about the outside world and about what the containing document represents. Nothing in this tree can decide it, so every entry carries the reason its value is not private. Keyed by VALUE rather than by path on purpose: publicness is a property of the id, so one entry states the claim once and a reviewer reads the claim instead of a list of files.",
+      "memberKind": "AWS account id",
+      "ratchetEvidence": "scripts/check_account_ids.py",
+      "issues": [
+        "1067"
+      ]
+    },
+    "scripts/check_account_ids.py::ACCOUNT_ID_EXEMPT_LINES": {
+      "kind": "exemption",
+      "turnsOff": "the committed-account-id check, for lines of one named file that match one named pattern",
+      "premise": [
+        "JUDGEMENT"
+      ],
+      "ratchet": "count-pinned",
+      "reason": "Six lines over five files, 9 occurrences, still carry a real private account id, because on those lines the id is consumed as a value at run time rather than being prose: the fallback of a CI variable and the bucket name derived from it, the fake caller identity in two of their tests, and two IAM trust statements. Each is a behaviour change needing the owning team rather than a redaction. The IAM pair cannot be replaced by a PLACEHOLDER, since there the id is the trust relationship itself; it could be parameterised, which is a deploy-process change for the pipeline owner and is out of scope here rather than impossible. Whether a given occurrence is read as a value is a judgement about the surrounding code that this tree cannot compute. Three properties bound the list. No entry names an account id, so neither this registry nor the gate becomes a further occurrence. Each entry pins how many occurrences it shielded when written, so a new id on a different line of an already-exempt file still fails. And an entry that shields NOTHING fails, with no per-entry tolerance, because while it remains it would pre-exempt a future id on a matching line. The direct cost of naming no id is that swapping an exempt line's id for a DIFFERENT private one is undetected -- count pinning catches a new site, not a changed value -- and that is recorded in the gate's own docstring as an accepted residual.",
+      "crossReferences": [
+        "Makefile::ARN_PARTITION_EXEMPT"
+      ],
+      "predicateConsidered": {
+        "not_a_nested_stack_of_parent": "True of all nine paths and irrelevant to the premise. None is a template the parent stack instantiates — they are a CI configuration, two deployment helpers, two of their tests, a credential-vendor template and three configuration presets — and nothing claims otherwise. What makes a line unredactable is that the id on it is read as a value, which is a fact about the surrounding code rather than about stack topology.",
+        "built_separately_from_main_stack": "True for the SDLC paths and the presets, and irrelevant for the same reason: whether one publish run builds a path says nothing about whether an account id inside it is consulted at run time. The count pin bounds the entry instead.",
+        "file_absent_or_untracked": "False for all nine — every path is tracked and present. The gate re-measures that on every run, because an entry whose line has moved or been redacted shields nothing and is failed as stale."
+      },
+      "memberKind": "deployable path",
+      "ratchetEvidence": "scripts/check_account_ids.py",
+      "issues": [
+        "1067"
       ]
     },
     "scripts/check_data_plane_tags.py::DATA_PLANE_ALLOWLIST": {
@@ -1774,6 +1845,45 @@
       ],
       "issues": [
         "975"
+      ]
+    },
+    "scripts/tests/test_pyright_config.py::STAGED_BUILD_OUTPUT_EXEMPT": {
+      "kind": "exemption",
+      "turnsOff": "basedpyright's walk of one named tree, and with it the 'the typecheck walk reaches no ignored Python' closure check for that tree. The exclusion is total for the CHECKED SET -- exclude beats include in pyright, so no file under it is analysed and no diagnostic is left behind to count -- which is why the premise is what bounds it rather than a finding count. It does NOT remove the tree from the RESOLUTION path: measured, an excluded directory named in extraPaths still resolves, and its types still produce diagnostics in included files. So this entry must not be read as protection against a stale copy being imported from -- that is the #1094 shape, and #1109 is where the resolution path gets asserted",
+      "premise": [
+        "vcs_ignored_build_output"
+      ],
+      "reason": "Two trees under feature-platform/idp-data-generator, each a copy of lib/idp_common_pkg that the feature's packaging step stages beside a build context: one at the AgentCore image root, one inside the bootstrap-processor Lambda's CodeUri. They are two entries and not one spanning pattern because each has its own ignore rule and its own reason to exist, and the one-pattern spelling would also pre-exempt whatever third copy the build stages next. basedpyright discovers files by walking the filesystem and has no ignore-file support at all -- no config key, no CLI option, and the string occurs in none of the 5,032 files the 1.32.1 npm package ships -- so an exclude entry is the only mechanism available; ruff needs no equivalent because respect-gitignore defaults to true and it never sees these trees. Excluding them costs no coverage: the library they copy is read at its tracked location, lib/idp_common_pkg.",
+      "memberKind": "path",
+      "ratchet": "staleness",
+      "ratchetEvidence": [
+        "scripts/tests/test_pyright_config.py"
+      ],
+      "predicateConsidered": {
+        "file_absent_or_untracked": "The closest existing predicate, and it does not settle this. It asks whether git tracks EXACTLY the named path, so for any directory it answers True whatever the directory contains -- including a directory holding tracked source, which is the one case this exemption must not cover. It also says nothing about the ignore rule, which is the durable half: while the rule stands a file under the path cannot become tracked without the rule being edited. vcs_ignored_build_output measures both, per member.",
+        "built_separately_from_main_stack": "Would be answered False and the question is the wrong one. The publisher does build the idp-data-generator feature in a publish run -- that is precisely how these trees come to exist -- and nothing here claims otherwise. The claim is about the staged copies, not the feature."
+      },
+      "crossReferences": [
+        "pyrightconfig.json::exclude"
+      ]
+    },
+    "scripts/tests/test_pyright_config.py::TYPECHECK_SCOPE_EXCLUSIONS": {
+      "kind": "exemption",
+      "turnsOff": "the 'every tracked .py file is inside make typecheck' closure check, for files matched by the named pyrightconfig exclude pattern. Those files are then read by neither basedpyright nor the test that would have noticed",
+      "premise": [
+        "JUDGEMENT"
+      ],
+      "reason": "One member, notebooks/**/*.ipynb, and it is a scope decision rather than deferred work: of the 10 diagnostics it shields, 6 are false positives of a mechanism specific to notebooks. basedpyright resolves a notebook's cells in document order while Python looks a global up when the function runs, so a name assigned at column 0 in a later cell and referenced inside a function defined in an earlier cell reads as undefined and is correct at runtime. The two e2e notebooks where assignment and first use share a cell are not flagged, which is the control for that explanation. The remaining 4 (2 reportOperatorIssue, 2 reportOptionalOperand) are untriaged and are the honest residual. Not computable: whether a diagnostic is a false positive of cell ordering is a judgement about each diagnostic, and no predicate here reads notebook cell order. scripts/lint_debt.json records the same carve-out for ruff with its own premise. This entry exists because discovery could not previously see the constant's name -- NAME_VOCABULARY matched EXCLUD and not EXCLUSION -- so a live carve-out sat unregistered with every meta-test green.",
+      "memberKind": "pyrightconfig exclude pattern",
+      "ratchet": "non-vacuity",
+      "ratchetEvidence": [
+        "scripts/tests/test_pyright_config.py"
+      ],
+      "predicateConsidered": {
+        "file_absent_or_untracked": "False for these files and the reason does not rest on it: the notebooks are tracked and present, which is why they are inside the closure check at all. What is claimed is that 6 of the 10 diagnostics are artefacts of how a notebook is read, and the non-vacuity ratchet -- the pattern must still match a file under notebooks/ -- is what bounds it."
+      },
+      "crossReferences": [
+        "pyrightconfig.json::exclude"
       ]
     },
     "scripts/tests/test_pyright_config.py::VENDORED_SEVERITY_EXEMPTIONS": {
