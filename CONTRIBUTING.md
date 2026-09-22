@@ -608,9 +608,9 @@ make typecheck-pr    # fast local check of only the files changed vs TARGET_BRAN
 `pyrightconfig.json`'s `include` — whose closure over every tracked `.py` file
 `scripts/tests/test_pyright_config.py` derives from `git ls-files`. The property to
 rely on is that identity: **`filesAnalyzed` equals `git ls-files '*.py' | wc -l`
-exactly**, and the suite asserts it, so measure the count rather than reading one
-here — it was 1,330 when this paragraph was written and moves with almost every
-merge. A run takes **about a minute** through `make`.
+exactly**, and the suite asserts it. That is roughly 1,300 files today, but run the
+two commands rather than trusting a figure written here — the count moves with almost
+every merge. A run takes **about a minute** through `make`.
 
 It also resolves this repository's own packages, via `pyrightconfig.json`'s
 `extraPaths`. That matters more than it sounds: without it `idp_common` did not

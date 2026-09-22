@@ -228,10 +228,11 @@ hand, months late.
 `make typecheck` reads every tracked `.py` file — `git ls-files '*.py' | wc -l` and
 `basedpyright`'s `filesAnalyzed` agree exactly, and that identity, rather than any
 particular count, is what `scripts/tests/test_pyright_config.py` asserts by deriving
-the set from `git ls-files` rather than from a list. (It was 1,330 when this was
-written, and it moves with almost every merge.) The `include` array once named six
-paths and reached 432 of the 1,230 tracked at the time, and two `NameError`-class
-defects reached `develop` through the gap.
+the set from `git ls-files` rather than from a list. Run those two commands for
+today's figure rather than looking for one on this page: it changes with almost every
+merge, and a written-down count has gone stale in three separate documents at once.
+The `include` array once named six paths and reached 432 of the 1,230 tracked at the
+time, and two `NameError`-class defects reached `develop` through the gap.
 
 Reading every file is a weaker property than it sounds, and the same suite now
 covers the difference. `basedpyright` honours `PYTHONPATH`, which neither the

@@ -120,9 +120,19 @@ the identity rather than the number: `git ls-files '*.py' | wc -l` and
 `filesAnalyzed` agree exactly, which is what
 `scripts/tests/test_pyright_config.py` asserts by deriving the closure from `git
 ls-files` — so a new tree holding Python fails there rather than being silently
-uncovered. The figure was 1,330 when this paragraph was written and moves with
-almost every merge; measure it rather than quoting it. (`include` previously named
-six paths and reached 432 of the 1,230 tracked at that time.)
+uncovered.
+
+**No count is quoted here on purpose.** The identity is the durable fact and any
+figure is stale within a day: it moved four times (1,314 → 1,318 → 1,330 → 1,333)
+across four `develop` merges during a single change, and three documents were
+carrying three different wrong numbers when that was noticed. Measure it:
+
+```bash
+git ls-files '*.py' | wc -l          # must equal basedpyright's filesAnalyzed
+```
+
+(For scale, `include` once named six paths and reached 432 of the 1,230 tracked at
+that time — a historical measurement, not a current one.)
 
 ⚠️ **Reading every file is not checking every call.** `basedpyright` honours
 `PYTHONPATH`, and `make typecheck` and both CIs invoke it without one; with
