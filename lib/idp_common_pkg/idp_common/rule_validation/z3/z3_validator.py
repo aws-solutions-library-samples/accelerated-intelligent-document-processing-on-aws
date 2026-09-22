@@ -697,6 +697,13 @@ class Z3Validator:
             return z3.If(args[0], args[1], args[2])
 
         else:
+            # Unreachable while `OPERATORS` and the branches above name the same
+            # operators, and deliberately kept rather than cleaned away: it is what
+            # an operator added to `OPERATORS` with no branch here lands in, which
+            # is how that omission becomes a failure rather than a constraint the
+            # construction-time check accepts and the solver cannot evaluate.
+            # `test_z3_smt_grammar.py` exercises every member of the set to keep the
+            # two in step.
             raise ValueError(f"Unsupported operator: {op}")
 
     def _bind_values(

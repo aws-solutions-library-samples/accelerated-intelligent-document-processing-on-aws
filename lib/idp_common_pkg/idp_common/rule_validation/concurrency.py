@@ -51,6 +51,15 @@ def resolve_semaphore(
     its own ``_semaphore`` attribute and stays inspectable (and assignable) by
     its tests.
 
+    ⚠️ A caller **writes on read**: storing the returned loop is what makes the
+    next call able to tell a changed loop from a first sighting. One service
+    instance driven from two event loops in *different threads* would therefore
+    thrash that record and could rebuild the semaphore on each alternation. No
+    production path does that — a Lambda invocation builds its own service — and
+    the notebook case this exists for is two ``asyncio.run`` calls in sequence,
+    where rebuilding is the correct answer. A caller that does share one instance
+    across threads needs a lock of its own.
+
     Args:
         semaphore: The caller's cached semaphore, or ``None`` if it has none yet.
         bound_loop: The loop that semaphore was handed out on, as recorded by a

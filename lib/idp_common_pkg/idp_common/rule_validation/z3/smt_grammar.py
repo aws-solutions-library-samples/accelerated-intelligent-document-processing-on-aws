@@ -190,8 +190,9 @@ def constraint_problems(constraint: str, declared: Iterable[str]) -> List[str]:
         A list of one-line problem descriptions, empty when nothing is wrong.
         Each names the offending token, because the whole value of catching this
         at construction time is being told which token to fix. The list is in
-        token order and reports every occurrence once, so a constraint with two
-        distinct misspellings names both rather than only the first.
+        token order and holds each **distinct problem** once, so a constraint with
+        two different misspellings names both rather than only the first, while one
+        misspelling used twice is reported once.
     """
     names = set(declared)
     tokens = tokenize(constraint)
