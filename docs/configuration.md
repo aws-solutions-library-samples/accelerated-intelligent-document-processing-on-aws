@@ -478,7 +478,7 @@ The solution provides built-in cost estimation capabilities:
 - Historical cost analysis and trends
 - Budget alerts and threshold monitoring
 
-See [COST_CALCULATOR.md](../COST_CALCULATOR.md) for detailed cost analysis across different processing volumes.
+See [the cost considerations guide](./cost-calculator.md) for the cost drivers of each processing mode, the optimization levers, what the built-in estimate cannot express, and how to attribute Bedrock spend with an application inference profile.
 
 ## Bedrock Guardrail Integration
 

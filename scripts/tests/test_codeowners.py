@@ -16,6 +16,11 @@ file existed, so two things could rot silently:
    cannot cover these: ``docs-site/setup.sh`` symlinks content only from ``docs/``
    and ``images/``, so the root-level governance files are not in the Starlight
    content collection at all and ``make docs-build`` never reads them.
+   ``scripts/check_markdown_links.py`` now reads every tracked Markdown file, so
+   this check is the narrower of the two; what it still adds is the **root-absolute**
+   form (``](/path)``), which is correct on the published site and broken on GitHub
+   and which the repo-wide gate therefore leaves alone. Heading anchors come from
+   that gate rather than from a copy here.
 
 Both were verified by hand when the files were added, and a one-off manual
 verification is exactly what this file exists to replace.
@@ -41,29 +46,17 @@ from __future__ import annotations
 
 import re
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
 
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
+import check_markdown_links as link_gate  # noqa: E402
+
 REPO_ROOT = Path(__file__).resolve().parents[2]
 CODEOWNERS = Path(".github/CODEOWNERS")
-
-# Root-level Markdown files reached by the closure below but deliberately left
-# out of the link check, each with the reason. Both are asserted to still exist
-# and to still be reachable, so an exclusion cannot go stale unnoticed.
-LINK_CHECK_EXCLUDED = {
-    "CHANGELOG.md": (
-        "append-only historical record: released entries link to docs that were "
-        "later renamed or removed, and repointing a frozen release note at a "
-        "different file would misrepresent what shipped. Three such links are "
-        "broken today, identically on develop."
-    ),
-    "CONTRIBUTING.md": (
-        "predates the governance file set and is being rewritten separately; its "
-        "two root-absolute /.github/ISSUE_TEMPLATE/ links are a pre-existing "
-        "defect that belongs with that rewrite, not here."
-    ),
-}
 
 # Owner forms this gate understands. A team (@org/team) or a bare email address is
 # valid CODEOWNERS syntax but would need different handling, so encountering one is
@@ -73,7 +66,6 @@ OWNER_TOKEN = re.compile(rf"^@{_HANDLE}$")
 
 MD_LINK = re.compile(r"\[[^\]]*\]\(\s*(<[^>]+>|[^)\s]+)")
 EXTERNAL = re.compile(r"^(?:[a-z][a-z0-9+.\-]*:|//)", re.IGNORECASE)
-HEADING = re.compile(r"^(#{1,6})\s+(.*?)\s*#*\s*$")
 GLOB_UNSUPPORTED = "?[]!\\"
 
 
@@ -154,25 +146,17 @@ def _matcher(pattern: str) -> re.Pattern[str]:
     return re.compile(f"^{prefix}{core}{suffix}$")
 
 
-def _slug(heading: str) -> str:
-    """GitHub's heading-anchor slug: strip markup, lowercase, spaces to hyphens.
-
-    Each space becomes its own hyphen, so "A & B" -> "a--b". Collapsing runs of
-    whitespace here silently reports working anchors as broken.
-    """
-    text = re.sub(r"\[([^\]]*)\]\([^)]*\)", r"\1", heading)
-    text = text.replace("`", "").replace("*", "").replace("_", "")
-    text = re.sub(r"<[^>]+>", "", text).lower()
-    text = re.sub(r"[^\w\s-]", "", text)
-    return text.replace(" ", "-").replace("\t", "-")
-
-
 def _anchors(rel: Path) -> set[str]:
-    return {
-        _slug(m.group(2))
-        for line in _strip_code(_read(rel)).splitlines()
-        if (m := HEADING.match(line))
-    }
+    """The fragment ids a Markdown file exposes, from the repo-wide link gate.
+
+    ``scripts/check_markdown_links.py`` owns this, and owning it in one place is
+    the point. A local copy here read headings with inline code spans already
+    blanked, so ``### `LogLevel` — what `WARN` turns off`` reduced to
+    ``--what-turns-off`` and ten working ``CHANGELOG.md`` anchors read as broken —
+    which is why that file sat outside this check rather than the slugifier being
+    fixed. It also dropped ``_``, which GitHub keeps.
+    """
+    return link_gate.anchors(_read(rel))
 
 
 def _relative_links(rel: Path) -> list[str]:
@@ -219,7 +203,7 @@ def _governance_docs() -> list[Path]:
             ):
                 seen.add(dest)
                 queue.append(dest)
-    return sorted(seen - {Path(n) for n in LINK_CHECK_EXCLUDED})
+    return sorted(seen)
 
 
 def _normalise(source: Path, path_part: str) -> str | None:
@@ -295,25 +279,16 @@ def test_governance_document_set_is_derived_not_empty() -> None:
 
 
 @pytest.mark.unit
-@pytest.mark.parametrize("excluded", sorted(LINK_CHECK_EXCLUDED))
-def test_link_check_exclusions_are_not_stale(excluded: str) -> None:
-    """An exclusion for a file no longer in scope hides nothing and misleads."""
-    assert (REPO_ROOT / excluded).is_file(), (
-        f"{excluded} is excluded from the link check but no longer exists; drop "
-        "the entry from LINK_CHECK_EXCLUDED"
-    )
-    seed = {CODEOWNERS, *(Path(n) for n in _root_markdown_mentions(_read(CODEOWNERS)))}
-    reachable = {
-        _normalise(doc, link.partition("#")[0])
-        for doc in set(_governance_docs()) | seed
-        for link in _relative_links(doc)
-        if link.partition("#")[0]
-    }
-    assert excluded in reachable, (
-        f"{excluded} is excluded from the link check but nothing in the "
-        "governance set links to it any more; drop the entry from "
-        "LINK_CHECK_EXCLUDED"
-    )
+def test_the_closure_covers_the_changelog_and_contributing() -> None:
+    """Both are in the checked set, and both pass in it.
+
+    They are read by ``scripts/check_markdown_links.py`` as well, which covers
+    every tracked Markdown file rather than the root-level closure — so a link in
+    either one is checked by both gates and held out of neither.
+    """
+    docs = set(_governance_docs())
+    assert Path("CHANGELOG.md") in docs
+    assert Path("CONTRIBUTING.md") in docs
 
 
 @pytest.mark.unit
@@ -341,7 +316,7 @@ def test_every_relative_link_in_the_governance_docs_resolves() -> None:
                     broken.append(f"{doc}: {target} -> no such path")
                     continue
             if anchor and dest.endswith(".md"):
-                if _slug(anchor) not in _anchors(Path(dest)):
+                if anchor not in _anchors(Path(dest)):
                     broken.append(f"{doc}: {target} -> no such heading in {dest}")
 
     assert checked >= 20, (

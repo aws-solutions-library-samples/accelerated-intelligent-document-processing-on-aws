@@ -248,6 +248,16 @@ CSV_COLS = [
     "class_calibration_separation",
     "wall_s",
     "cost",
+    # Why a figure above is missing, when it is missing because it could not be READ
+    # rather than because there was nothing there (GitHub #1079). All four are null
+    # on a healthy row. They are in the CSV as well as the JSON because a reader
+    # comparing two grids in a spreadsheet is exactly the reader who would otherwise
+    # take a blank cost cell for a cheap run: `DictWriter(extrasaction="ignore")`
+    # drops any row key absent from this list without a word.
+    "cost_unread",
+    "sections_unreadable",
+    "sections_unread",
+    "eval_unread",
 ]
 
 
@@ -293,6 +303,14 @@ def cell_stats(rows):
             "n_runs": len(rs),
             "n_success": len(succ),
             "n_fail": len(rs) - len(succ),
+            # Successful runs whose metering could not be READ, so their cost is null
+            # and `cost` below is a mean over fewer runs than `n_success` (#1079).
+            # Without this the shrinking denominator is the only trace, and `_stats`
+            # reports it as `n` without saying why it is short.
+            "n_cost_unread": sum(1 for r in succ if r.get("cost_unread")),
+            # Successful runs whose section objects could not all be read, so they
+            # contribute to none of the quality statistics below.
+            "n_sections_unread": sum(1 for r in succ if r.get("sections_unread")),
             "max_repeat": max((r.get("repeat", 0) for r in rs), default=0) + 1,
             "cost": _stats([r.get("cost") for r in succ]),
             "completeness_recall": _stats([r.get("completeness_recall") for r in succ]),
@@ -866,12 +884,28 @@ def compare_cells(summary_path, baseline_path):
     paired = _paired_quality_deltas(cur_summary, base_summary)
     reg, imp, weak = [], [], []
     unread = {}
+    unread_runs = []
     for cell, c in cur.items():
         b = base.get(cell)
         if not b:
             continue
         for note_key in _missing_metric_notes(c, b):
             unread.setdefault(note_key, []).append(cell)
+        # Runs that were EXCLUDED from this cell's numbers because a read failed,
+        # rather than because the run failed (#1079). The comparison above is still
+        # made — a mean over the runs that did read is the best available reading —
+        # but it is made over a smaller sample than `n_runs` suggests and the
+        # exclusion is not visible in any figure it prints.
+        for side, stats in (("baseline", b), ("current", c)):
+            for what, key in (
+                ("cost", "n_cost_unread"),
+                ("quality", "n_sections_unread"),
+            ):
+                n = stats.get(key) or 0
+                if n:
+                    unread_runs.append(
+                        (cell, side, what, n, stats.get("n_success") or 0)
+                    )
         cc, bc = c["cost"], b["cost"]
         if cc["mean"] is not None and bc["mean"] and bc["mean"] > 0:
             delta = cc["mean"] - bc["mean"]
@@ -985,6 +1019,14 @@ def compare_cells(summary_path, baseline_path):
                 f"  {label}: {missing} carry it, for {len(cells)} cell(s) — this "
                 f"gate is INERT {fix} "
                 f"(e.g. {', '.join(sorted(cells)[:3])})"
+            )
+    if unread_runs:
+        print(f"\n=== MEASURED OVER FEWER RUNS THAN IT LOOKS ({len(unread_runs)}) ===")
+        for cell, side, what, n, n_success in sorted(unread_runs):
+            print(
+                f"  {cell} [{side}]: {n} of {n_success} successful run(s) contribute "
+                f"no {what} figure — the read failed, the run did not. The {what} "
+                "comparison above is over the remainder."
             )
     return reg, imp, weak
 
@@ -1191,25 +1233,37 @@ def augment_summary(path, corpus_dir, dry_run=False):
         print(f"⚠ {path}: no output bucket for stack {stack!r} — cannot augment")
         return 0, len(summary.get("rows") or [])
     updated = 0
-    reasons = {"not_success": 0, "no_sections": 0}
-    unreadable = None
+    reasons = {"not_success": 0, "no_sections": 0, "unreadable": 0}
+    # Every row is asked, and every failure is counted. The reason it is per row
+    # rather than a single first-error probe: a grid where one section decrypts and
+    # the next does not is a real state, and a probe that stops at the first object
+    # that reads reports it as clean. `lib.read_sections` classifies each object as
+    # it reads it, so "this grid is readable" is now something the backfill
+    # establishes rather than something a `None` from a partial probe implies.
+    unreadable_errors = []
     for row in summary.get("rows") or []:
         if not row.get("run_id") or not row.get("success"):
             reasons["not_success"] += 1
             continue
         doc = row.get("sub_doc") or row.get("doc") or ""
         prefix = f"{row['run_id']}/{doc}/"
-        sections = list(lib.iter_section_results(bucket, prefix))
+        read = lib.read_sections(bucket, prefix)
+        if not read.complete:
+            # LISTED and would not read is a read failure, not an absence. The case
+            # that prompted this was a stack whose KMS key had entered
+            # pending-deletion, so every object was present, listable and
+            # undecryptable — which read as "this grid recorded no confidence" and
+            # would have been written into the artifact as exactly that. The row is
+            # left un-augmented: it keeps no `calibration_curve` key at all, which is
+            # how `calibration_study` tells "never measured" from "measured, nothing
+            # to join".
+            reasons["unreadable"] += 1
+            if len(unreadable_errors) < 3:
+                unreadable_errors.append(f"{prefix}: {read.why}")
+            continue
+        sections = read.sections
         if not sections:
             reasons["no_sections"] += 1
-            # A section that is LISTED but does not parse is a read failure, not an
-            # absence, and `lib.get_json` returns None for both. Surface the
-            # underlying error once: the case that prompted this was a stack whose KMS
-            # key had entered pending-deletion, so every object was present, listable
-            # and undecryptable — which without this reads as "this grid recorded no
-            # confidence" and would be written into the artifact as exactly that.
-            if unreadable is None:
-                unreadable = _first_read_error(bucket, prefix)
             continue
         row.update(analyze.score_confidence_coverage(sections))
         truth = _truth_for(corpus_dir, row.get("doc") or "")
@@ -1227,11 +1281,11 @@ def augment_summary(path, corpus_dir, dry_run=False):
         f"{path}: {updated} row(s) augmented, {skipped} skipped"
         + (f" ({detail})" if detail else "")
     )
-    if unreadable:
+    if reasons["unreadable"]:
         print(
-            f"  ⚠ a section object under this grid could not be READ, not merely "
-            f"found missing: {unreadable}. Its rows are recorded as un-augmented "
-            "rather than as having no confidence."
+            f"  ⚠ {reasons['unreadable']} row(s) had section objects that could not "
+            "be READ, not merely found missing. They are left un-augmented rather "
+            "than recorded as having no confidence: " + "; ".join(unreadable_errors)
         )
     if not updated:
         # Nothing to record. Writing `meta.augmented` here would claim a backfill that
@@ -1253,39 +1307,6 @@ def augment_summary(path, corpus_dir, dry_run=False):
     if os.path.basename(path) == "summary.json":
         _write_summary_csvs(summary.get("rows") or [], summary["cell_stats"], out_dir)
     return updated, skipped
-
-
-def _first_read_error(bucket, prefix):
-    """The error behind an empty section list, or None if the prefix is genuinely empty.
-
-    ``lib.get_json`` returns None for a missing object and for an unreadable one alike,
-    which is convenient for scoring and indistinguishable for diagnosis.
-
-    ⚠️ This is a **partial** probe, and a ``None`` from it does not mean "everything
-    under this grid is readable". It examines the first empty prefix only, looks only
-    under ``sections/``, stops at the first ``result.json`` it finds, and returns
-    ``None`` as soon as one object reads — so a grid where one section decrypts and the
-    next does not still reports no error. It exists to name the cause of a
-    whole-grid-wide failure (a pending-deletion KMS key, a bucket that has gone), which
-    is the shape actually encountered, not to audit per-object readability.
-    Generalising it is part of the absence-versus-failure class in
-    [#1079](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/1079).
-    """
-    try:
-        listing = lib.s3().list_objects_v2(
-            Bucket=bucket, Prefix=prefix + "sections/", MaxKeys=25
-        )
-    except Exception as exc:  # noqa: BLE001 - reporting, not handling
-        return f"cannot list {prefix}sections/: {exc}"
-    for obj in listing.get("Contents", []):
-        if not obj["Key"].endswith("result.json"):
-            continue
-        try:
-            lib.s3().get_object(Bucket=bucket, Key=obj["Key"])["Body"].read()
-        except Exception as exc:  # noqa: BLE001 - reporting, not handling
-            return f"{obj['Key']}: {exc}"
-        return None
-    return None
 
 
 def _resolve_output_bucket(stack):
@@ -1340,18 +1361,30 @@ def calibration_study(
     total. The arms are NOT equally powered — the published study has arms at 112, 102
     and 58 runs over 7, 7 and 6 documents — so a reader given only a grid-level
     denominator would credit the thin arms with the thick ones' sample.
+
+    ``excluded`` carries five buckets and one of them is not a fact about the run:
+    ``unreadable`` counts rows whose section objects were listed and would not read
+    (GitHub #1079). Four buckets say what the run did; that one says the harness could
+    not look, and a row in it is not evidence that the arm emitted no confidence.
     """
     group_by = list(group_by or CALIBRATION_GROUP_DEFAULT)
     arms: dict[tuple, dict] = {}
     # `no_observations` is split in two because the two halves mean opposite things
     # and pooling them produced a note that fired on its own benign output. See
     # `_print_calibration`.
+    # `unreadable` is the one bucket that is NOT a measurement. The other four say
+    # something about the run; this one says the harness could not look (#1079). A row
+    # counted here used to land in `no_confidence`, i.e. alongside the cells
+    # deliberately configured `confidence.mode: off` — so an undecryptable grid and an
+    # unassessed one produced the same report.
     skipped = {
         "no_truth": 0,
         "no_confidence": 0,
         "no_joinable_cell": 0,
         "not_success": 0,
+        "unreadable": 0,
     }
+    unreadable_errors: list[str] = []
 
     def arm_for(resolved):
         key = tuple(str(resolved.get(k)) for k in group_by)
@@ -1367,6 +1400,7 @@ def calibration_study(
                     "no_truth": 0,
                     "no_confidence": 0,
                     "no_joinable_cell": 0,
+                    "unreadable": 0,
                 },
                 "sources": set(),
                 "suites": set(),
@@ -1439,9 +1473,19 @@ def calibration_study(
                 skipped["no_truth"] += 1
                 arm["excluded"]["no_truth"] += 1
                 continue
-            sections = list(
-                lib.iter_section_results(bucket, f"{row['run_id']}/{row['doc']}/")
-            )
+            prefix = f"{row['run_id']}/{row['doc']}/"
+            read = lib.read_sections(bucket, prefix)
+            if not read.complete:
+                # The read failed. Scoring the sections that happened to decrypt
+                # would pool a curve derived from part of a document as though it
+                # were the document, and an EMPTY result would be counted below as a
+                # run that emitted no confidence. Neither is a reading of this row.
+                skipped["unreadable"] += 1
+                arm["excluded"]["unreadable"] += 1
+                if len(unreadable_errors) < 3:
+                    unreadable_errors.append(f"{prefix}: {read.why}")
+                continue
+            sections = read.sections
             scored = analyze.score_calibration(
                 sections, truth.get("rows_typed"), truth.get("list_key")
             )
@@ -1459,7 +1503,12 @@ def calibration_study(
             arm["docs"].add(row["doc"])
             arm["runs"] += 1
 
-    report = {"group_by": group_by, "skipped": skipped, "arms": []}
+    report = {
+        "group_by": group_by,
+        "skipped": skipped,
+        "unreadable_errors": unreadable_errors,
+        "arms": [],
+    }
     for _key, arm in sorted(arms.items()):
         pooled = analyze.pool_calibration(arm["payloads"])
         if not pooled:
@@ -1542,6 +1591,12 @@ def _print_calibration(report):
             verdict.append("OVERCONFIDENT")
         if arm["undiscriminating"]:
             verdict.append("UNDISCRIMINATING")
+        # Per ARM, not only in the grid total. `excl` next to it pools five buckets, of
+        # which four are facts about the runs; this one says the arm's figures rest on
+        # whatever could be read, so it belongs where a reader meets that arm's
+        # numbers rather than only in the trailing summary (#1079).
+        if arm["excluded"].get("unreadable"):
+            verdict.append(f"UNREAD {arm['excluded']['unreadable']}")
         print(
             f"{name:34s} {arm['runs']:>5d} {len(arm['documents']):>5d} "
             f"{arm.get('excluded_total', 0):>5d} {arm['observations']:>7d} "
@@ -1554,7 +1609,8 @@ def _print_calibration(report):
     print(
         f"skipped: {s['not_success']} unsuccessful, {s['no_truth']} without exact "
         f"per-cell truth, {s['no_confidence']} with no confidence at all, "
-        f"{s['no_joinable_cell']} with confidence but no joinable cell"
+        f"{s['no_joinable_cell']} with confidence but no joinable cell, "
+        f"{s.get('unreadable', 0)} UNREAD"
     )
     # The two are separated, and each carries its own reading, because pooling them
     # under "no joinable confidence" produced a count whose only escalation rule fired
@@ -1582,6 +1638,19 @@ def _print_calibration(report):
             "present. Read it as an EXTRACTION completeness figure, and expect it to "
             "be concentrated in the weak-extraction arms: the arms' own `excl` column "
             "is where to look)"
+        )
+    if s.get("unreadable"):
+        # The one bucket that is not a fact about the runs. Printed in upper case and
+        # last because it invalidates a reading of the four above it: an arm with
+        # unread rows is an arm whose pooled figures rest on whatever decrypted.
+        print(
+            f"  ({s['unreadable']} UNREAD: these rows were not measured at all — "
+            "their section objects were listed and would not read. NOT a run that "
+            "emitted no confidence, which is what this count used to be folded into. "
+            "An arm carrying any of these is pooled over the rows that did read, so "
+            "read its figures as provisional: "
+            + ("; ".join(report.get("unreadable_errors") or []) or "no detail captured")
+            + ")"
         )
 
 

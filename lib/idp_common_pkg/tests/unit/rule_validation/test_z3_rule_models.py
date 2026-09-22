@@ -396,28 +396,22 @@ class TestRuleJSONSerialisation:
 @pytest.mark.unit
 class TestConstraintParameterReferences:
     """
-    RuleJSON._validate_constraint_parameters: what it does and does not catch.
+    RuleJSON._validate_constraint_parameters: a name a constraint cannot resolve.
 
-    The method is documented as validating that every parameter referenced in a
-    constraint is declared, and as raising ValueError when one is not. It does
-    neither: the loop over candidate tokens has no raise, so the whole method can
-    be replaced with `return` without any test noticing. That is issue #1058.
+    A rule whose constraint misspells a parameter is rejected at construction. The
+    reason the check is worth having at all, given that
+    `Z3Validator._parse_smt_atom` refuses the same atom at solve time, is the S3
+    rule cache: a translated rule is persisted under a key derived from the rule
+    *description*, so one bad translation is re-read and re-failed for every later
+    document whose rule has that description, while rejecting it here fails exactly
+    one translation.
 
-    The cost is deferred detection rather than a missing check outright --
-    Z3Validator._parse_smt_atom does reject the unknown atom -- but by then the
-    rule has been translated and persisted, so one bad translation becomes an
-    error on every document evaluated against the cached rule. These tests pin the
-    current behaviour so this suite is honest about where the error is caught, and
-    the xfail below is the signal for #1058.
-
-    Note for whoever fixes #1058: a fix reds **two** tests here, not one. The strict
-    xfail is the intended signal, and
-    `test_an_undeclared_reference_is_not_rejected_at_construction_time` goes red with
-    it, because its whole subject is that the rejection does not happen. Delete that
-    one and drop the marker from its neighbour. Under option 2 in #1058 -- remove the
-    method and its `Raises:` clause --
-    `test_smt_keywords_in_a_constraint_are_not_mistaken_for_parameters` goes too,
-    since it names a keyword-filtering behaviour that would no longer exist.
+    What is rejected is what the solver rejects, because both read the same
+    tokeniser and the same operator vocabulary out of `smt_grammar`. The shapes
+    this check deliberately says nothing about -- a token that is neither
+    identifier-shaped nor a numeral, unbalanced parentheses, operator arity -- are
+    covered on the solver side in test_z3_validator_smt.py, including one test
+    whose whole subject is that the backstop still fires.
     """
 
     def test_a_constraint_referencing_only_declared_parameters_is_accepted(self):
@@ -432,24 +426,108 @@ class TestConstraintParameterReferences:
         )
         assert rule.constraints == ["(and (not flag) true)"]
 
-    def test_an_undeclared_reference_is_not_rejected_at_construction_time(self):
-        # "incom" is a misspelling of "income" and no parameter declares it. The
-        # rule is still built; Z3Validator raises when it cannot resolve the atom.
-        # See test_z3_validator_smt.py::TestValidateFacade for that side.
-        rule = RuleJSON(**_rule_kwargs(constraints=["(> incom 0)"]))
-        assert rule.constraints == ["(> incom 0)"]
-
-    @pytest.mark.xfail(
-        strict=True,
-        reason="_validate_constraint_parameters cannot raise: its loop body is "
-        "`continue` plus two comments, so a misspelled parameter name is accepted "
-        "at construction and first fails at solve time, after the rule has been "
-        "translated and persisted. See "
-        "https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/1058",
+    @pytest.mark.parametrize(
+        "constraint",
+        [
+            "(mod income 2)",
+            "(distinct coverage income)",
+            "(=> (> income 0) (> coverage 0))",
+            "(ite (>= income 600) 0.05 0.02)",
+            "(!= coverage income)",
+            "(% income 2)",
+        ],
     )
-    def test_an_undeclared_reference_should_be_rejected_at_construction_time(self):
-        with pytest.raises(ValueError, match="incom"):
+    def test_every_word_shaped_operator_the_solver_supports_is_accepted(
+        self, constraint
+    ):
+        # `mod` and `distinct` are word-shaped operators that no keyword list in
+        # this file ever mentioned, so a check built on such a list would reject a
+        # legal constraint. These are read out of the same vocabulary the solver
+        # dispatches on.
+        assert RuleJSON(**_rule_kwargs(constraints=[constraint])).constraints == [
+            constraint
+        ]
+
+    def test_a_word_inside_a_string_literal_is_not_a_parameter_reference(self):
+        # The translator's own few-shot examples teach the model to emit
+        # `(= property_type "condo")`. A check that tokenised the raw text with a
+        # regular expression would read `condo` as an undeclared parameter and
+        # reject the output it asked for.
+        constraint = '(= property_type "condo")'
+        rule = RuleJSON(
+            **_rule_kwargs(
+                parameters=[Parameter(name="property_type", type="String")],
+                constraints=[constraint],
+            )
+        )
+        assert rule.constraints == [constraint]
+
+    def test_numerals_are_not_parameter_references(self):
+        constraint = "(and (>= income 0.05) (<= income 1.5e3) (> income -3))"
+        assert RuleJSON(**_rule_kwargs(constraints=[constraint])).constraints == [
+            constraint
+        ]
+
+    def test_an_undeclared_reference_is_rejected_at_construction_time(self):
+        # "incom" is a misspelling of "income" and no parameter declares it.
+        with pytest.raises(ValueError) as excinfo:
             RuleJSON(**_rule_kwargs(constraints=["(> incom 0)"]))
+        assert "incom" in str(excinfo.value)
+        assert "not a declared parameter" in str(excinfo.value)
+
+    def test_the_message_names_the_constraint_and_the_declared_names(self):
+        # Being told which token to fix, and what was available, is the whole
+        # value of catching this at translation time rather than at solve time.
+        with pytest.raises(ValueError) as excinfo:
+            RuleJSON(**_rule_kwargs(constraints=["(> income 0)", "(> incom 0)"]))
+        message = str(excinfo.value)
+        assert "constraints[1]" in message
+        assert "coverage, income" in message
+
+    def test_every_undeclared_reference_is_reported_not_only_the_first(self):
+        with pytest.raises(ValueError) as excinfo:
+            RuleJSON(**_rule_kwargs(constraints=["(> (+ incom asssets) 0)"]))
+        message = str(excinfo.value)
+        assert "incom" in message
+        assert "asssets" in message
+
+    def test_an_unsupported_operator_is_rejected_at_construction_time(self):
+        # `sqrt` is not in the solver's dispatch table, so a constraint using it
+        # can never be evaluated. It used to be accepted here and reported as
+        # "Unsupported operator" per document.
+        with pytest.raises(ValueError) as excinfo:
+            RuleJSON(**_rule_kwargs(constraints=["(sqrt income)"]))
+        assert "sqrt" in str(excinfo.value)
+        assert "not a supported operator" in str(excinfo.value)
+
+    def test_a_declared_parameter_used_as_an_operator_is_rejected(self):
+        with pytest.raises(ValueError) as excinfo:
+            RuleJSON(**_rule_kwargs(constraints=["(income 3)"]))
+        assert "not a supported operator" in str(excinfo.value)
+
+    @pytest.mark.parametrize("spelling", ["nan", "inf", "infinity"])
+    def test_a_non_finite_spelling_is_not_admitted_as_a_numeral(self, spelling):
+        # These are the one place identifier shape and numeral spelling overlap.
+        # Rejecting them agrees with the numeric contract every reading goes
+        # through, which refuses a non-finite value because the solver has no sort
+        # for one.
+        with pytest.raises(ValueError):
+            RuleJSON(**_rule_kwargs(constraints=[f"(> income {spelling})"]))
+
+    def test_an_optional_parameter_declared_as_a_constant_is_a_declaration(self):
+        # A `required: false` parameter with no path mapping is how the translator
+        # spells a constant used only inside the constraints, so it counts as
+        # declared even though nothing extracts it.
+        rule = RuleJSON(
+            **_rule_kwargs(
+                parameters=[
+                    Parameter(name="income", type="Real"),
+                    Parameter(name="margin", type="Real", required=False),
+                ],
+                constraints=["(= margin 0.05)", "(> income margin)"],
+            )
+        )
+        assert len(rule.constraints) == 2
 
 
 @pytest.mark.unit

@@ -607,6 +607,44 @@ response_dict = {
 - Custom recommendations must match configured options
 - Missing required fields trigger validation errors
 
+### Where a Z3 constraint is checked
+
+`RuleJSON.__post_init__` rejects a constraint that references a name the rule does
+not declare, and one whose head is not an operator the solver supports. Both raise
+`ValueError`, which `RuleTranslator.translate_rule` wraps as a `TranslationError`,
+so a bad translation fails at the point it is generated.
+
+Catching it there rather than leaving it to the solver is about the rule cache, not
+about strictness. A translated rule is persisted under a key derived from the rule
+**description** (`Z3RuleEngine._save_to_s3`), so a constraint that misspells a
+parameter is re-read and re-failed for every later document whose rule carries the
+same description, each one reporting *Information Not Found*. Rejecting it at
+construction costs one translation.
+
+The two checks read one vocabulary, in `z3/smt_grammar.py`:
+
+| | Checked at construction | Checked by the solver |
+|---|---|---|
+| A name that is not a declared parameter | yes | yes (`_parse_smt_atom`) |
+| An operator outside the supported set | yes | yes (`_apply_smt_operator`) |
+| A token that is neither a name nor a numeral (`3x`, `1/3`) | no | yes |
+| Parenthesis balance, arity, two expressions in one constraint | no | yes (`_parse_smt_constraint`) |
+
+`smt_grammar` holds the tokeniser and the operator vocabulary and imports **no
+solver**, which is what lets `RuleJSON` use it. `RuleJSON` is constructed on the
+configuration-resolver Lambda, whose layer ships `idp_common` without the
+`rule_validation` extra and therefore without `z3-solver` — the reason
+`idp_common.rule_validation.z3` imports its solver-dependent modules lazily. A
+check written against the parser instead of the tokeniser would break that Lambda.
+
+The three rows marked "no" are a deliberate bound rather than an oversight. The
+check reports a token that *looks like a name* — `[A-Za-z_][A-Za-z0-9_]*` — which
+keeps numerals out of its scope entirely, so it holds no second definition of what
+a numeral is to drift from the one `z3/type_coercion.py` applies to the
+constraint's own literals (see the next section). The one place the two shapes
+overlap is `nan`, `inf` and `infinity`, and both refuse them: Z3 has no sort for a
+non-finite value, so a constraint naming one could not be evaluated either way.
+
 ### Readings the Z3 engine refuses to evaluate
 
 A parameter value reaches the Z3 solver by one of three routes — path-based
@@ -676,6 +714,28 @@ exception's full log formatting — component, operation, rule id, message, cont
 dict and timestamp. That is the shape every Z3 error has had in that field; it is
 useful in logs and noisy in a compliance report.
 
+### The generated `RuleJSON`'s `rule_id`
+
+`RuleTranslator._generate_rule_id` is **deterministic and content-addressed**: the id
+is `"rule_"` plus the first eight hex characters of an MD5 digest of the rule text
+alone. So re-translating a rule keeps its id, which matters because the id is
+persisted — the configuration resolver's `handle_generate_rule_json` generates it when
+the caller supplies none, and the Config Editor stores the resulting `RuleJSON` inline
+under `x-aws-idp-rule-json`. A regeneration therefore produces no id churn in a config
+diff.
+
+It is **not unique**: two rules whose text is byte-identical share an id. Nothing here
+requires uniqueness, and that is worth stating rather than leaving to be assumed. The
+id reaches log lines, `TranslationError` context and the returned `RuleJSON.rule_id`;
+the translation cache is keyed on the rule *text*, both in memory
+(`Z3EngineAdapter._rule_cache`) and in S3 (`_s3_key`'s `sha256` of the description).
+Content-addressing the id is what makes it agree with the key its translation is
+already stored under.
+
+⚠️ Do not confuse it with `x-aws-idp-rule-id`, the schema field an author writes, which
+does identify a rule uniquely. If you ever do key storage on the generated id, make it
+unique first — the two properties are independent and only one of them holds.
+
 ## Performance Considerations
 
 ### Rate Limiting
@@ -688,6 +748,42 @@ semaphore: 5  # Max 5 concurrent requests
 async with self.semaphore:
     response = await self._invoke_model_async(...)
 ```
+
+Both `RuleValidationService` (fact extraction) and
+`RuleValidationOrchestratorService` (consolidation and Z3 value extraction) read
+`rule_validation.semaphore` and expose it as a lazily built `semaphore` property.
+`concurrency.resolve_semaphore` is the single implementation behind both, and the
+reason it is shared is that the spelling above re-evaluates the property **once per
+task**: a property that returns a new `asyncio.Semaphore` each time gives every
+task its own and bounds nothing, which is what the orchestrator did before.
+
+Three properties of that helper matter if you write another service like these:
+
+- The semaphore is built lazily, because an `asyncio.Semaphore` binds to the loop
+  that first contends it and a service is normally constructed before that loop
+  exists. It must then be **cached**, and cached per service instance rather than
+  per call.
+- Staleness is decided by the loop the helper handed the semaphore out on, which it
+  records itself. A semaphore's own `_loop` attribute is `None` until an acquire
+  actually has to wait, so a guard that reads it discards a fresh semaphore on
+  every access.
+- ⚠️ It **writes on read**: reading the property records the current loop. One
+  service instance driven from two event loops in *different threads* would
+  therefore thrash that record and could rebuild the semaphore on each alternation.
+  No production path does that — a Lambda invocation builds its own service — and
+  the notebook case it does handle is two `asyncio.run` calls in sequence. A third
+  service that shares one instance across threads needs its own answer.
+
+What bounds the calls if this semaphore does not is the event loop's **default
+executor**: the Bedrock client call is blocking and goes through
+`loop.run_in_executor(None, ...)`, whose pool is `min(32, os.cpu_count() + 4)`
+threads wide. That is larger than 5 on any container with more than one CPU, so the
+effective width came from the container rather than from the configuration — about
+6 to 7 on the deployed 4,096 MB orchestration function, and 20 on a 16-CPU
+development machine. Throttling is the risk that bound exists to manage, but it was
+**not** the observed symptom: live runs at width 14 and unbounded both completed
+with no throttling errors. What the defect produced was a call rate nobody had
+chosen.
 
 ### Token Optimization
 

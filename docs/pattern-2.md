@@ -40,8 +40,7 @@ For the current architecture diagram, see the unified architecture in [architect
 - [Customizing Classification](#customizing-classification)
 - [Few Shot Example Feature](#few-shot-example-feature)
 - [Customizing Extraction](#customizing-extraction)
-- [Assessment Feature](#assessment-feature)
-- [Testing](#testing)
+- [Confidence (Assessment)](#confidence-assessment)
 - [Best Practices](#best-practices)
 
 ## Architecture Overview

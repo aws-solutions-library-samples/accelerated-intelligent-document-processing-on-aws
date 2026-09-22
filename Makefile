@@ -143,8 +143,8 @@ setup-venv: ## Create .venv and install all packages into it
 	@echo -e "$(YELLOW)   'basedpyright' is separate again: npm install -g basedpyright$(NC)"
 
 ##@ Code Quality
-lint: ruff-lint format check-lint-debt check-arn-partitions check-account-ids check-filtered-scans check-data-plane-tags check-retired-services check-threat-model-currency validate-buildspec cfn-lint ui-lint codegen-check ## Run all linting (ruff, format, ARN checks, account-id scan, filtered scans, retired-service docs, threat-model currency, buildspec, UI, codegen). Use FORCE=1 to force UI lint re-run despite checksum match.
-fastlint: ruff-lint format check-lint-debt check-arn-partitions check-account-ids check-filtered-scans check-data-plane-tags check-retired-services check-threat-model-currency validate-buildspec ## Quick lint without UI checks
+lint: ruff-lint format check-lint-debt check-arn-partitions check-account-ids check-filtered-scans check-data-plane-tags check-retired-services check-threat-model-currency check-markdown-links validate-buildspec cfn-lint ui-lint codegen-check ## Run all linting (ruff, format, ARN checks, account-id scan, filtered scans, retired-service docs, threat-model currency, Markdown links, buildspec, UI, codegen). Use FORCE=1 to force UI lint re-run despite checksum match.
+fastlint: ruff-lint format check-lint-debt check-arn-partitions check-account-ids check-filtered-scans check-data-plane-tags check-retired-services check-threat-model-currency check-markdown-links validate-buildspec ## Quick lint without UI checks
 
 ruff-lint: ## Run ruff linting with auto-fix
 	ruff check --fix
@@ -237,7 +237,21 @@ lint-cicd: ## CI/CD lint — checks only, no modifications
 		exit 1; \
 	fi
 
+	@echo "Markdown link check"
+	@if ! make check-markdown-links; then \
+		echo -e "$(RED)ERROR: A Markdown link does not resolve (see issue #1068)$(NC)"; \
+		exit 1; \
+	fi
+
 	@echo -e "$(GREEN)All code quality checks passed!$(NC)"
+
+# Deliberately NOT a prerequisite of `lint` or `fastlint`: it reads the coverage
+# report that `make test-cicd -C lib/idp_common_pkg` writes, and the lint targets
+# never build one. Wired there it would find no report, exit 0, and pass vacuously --
+# a gate that cannot fail is worse than an absent one, because it reads as coverage.
+# Both CI configurations invoke it immediately after the test step instead.
+check-coverage-debt: ## Ratchet idp_common per-file coverage: fail if a file loses coverage, or a new module arrives unratcheted
+	@python3 scripts/check_coverage_debt.py
 
 check-lint-debt: ## Ratchet ruff's per-file exclusions: fail if an excluded file gains a finding, or is now clean (issue #975)
 	@# ruff.toml used to exclude five BARE directory names, which match at any
@@ -281,6 +295,15 @@ check-threat-model-currency: ## Fail if security/threat-modeling/ is >1 release 
 		(echo -e "$(RED)ERROR: threat-model.tc.json is stale, or a document's counts disagree with it$(NC)" && \
 		 echo -e "$(YELLOW)  regenerate: python3 security/threat-modeling/scripts/build_threat_model.py$(NC)" && \
 		 echo -e "$(YELLOW)  a count mismatch is fixed in the DOCUMENT, not the export$(NC)" && exit 1)
+
+check-markdown-links: ## Resolve every relative Markdown link, anchor, and published-page target offline (issue #1068)
+	@# Discovery is `git ls-files '*.md'` at run time, not a glob list: the glob
+	@# list in the template gates missed five directories, and a docs gate that
+	@# reads only docs/ misses the CHANGELOG, every README under nested/ and
+	@# feature-platform/, and the skill files. External http(s) URLs are never
+	@# fetched -- a blocking gate must not depend on egress.
+	@$(PYTHON) scripts/check_markdown_links.py || \
+		(echo -e "$(RED)ERROR: broken Markdown link(s) found!$(NC)" && exit 1)
 
 check-retired-services: ## Fail if documentation presents a retired service (AppSync) as current (issue #929)
 	@$(PYTHON) scripts/sdlc/check_retired_services.py || \
@@ -532,8 +555,8 @@ check-retired-models: ## Ask Bedrock whether any model this repo offers has been
 # pyrightconfig.json's 12-entry `include`, whose closure over every tracked .py
 # file scripts/tests/test_pyright_config.py derives from `git ls-files` — so the
 # set it covers cannot silently shrink. A full run is ~1 minute through make
-# (48-60s measured; the bare binary is ~47s) over 1273 files, which is why there
-# is no cheaper CI variant: the PR-scoped form below narrows the file set and
+# (48-60s measured; the bare binary is ~47s) over every tracked .py file, which is
+# why there is no cheaper CI variant: the PR-scoped form below narrows the file set and
 # therefore cannot see a break your change caused in a file it did not select.
 typecheck: ## Run type checks with basedpyright over the whole tree (the CI gate)
 	@echo "Running type checks..."
@@ -674,8 +697,11 @@ test-packages-cicd: ## CI-safe: run the package/Lambda suites NOT covered by idp
 	cd src/lambda/chat_stream_processor && $(PYTEST_HERMETIC) tests -q -p no:cacheprovider
 	@echo "Running BDA OCR project custom-resource tests (incl. library drift guard)..."
 	cd src/lambda/bda_ocr_project && $(PYTEST_HERMETIC) tests -q -p no:cacheprovider
-	@echo "Running S3 Vectors custom-resource tests (IAM scope vs sanitized bucket name)..."
-	cd nested/bedrockkb/src/s3_vectors_manager && $(PYTEST_HERMETIC) tests -q -p no:cacheprovider
+	@echo "Running S3 Vectors custom-resource tests (handler behaviour + IAM scope)..."
+	@# The directory, not just its `tests` subdirectory: test_handler.py sits beside
+	@# handler.py and covers the custom resource's own behaviour, so naming `tests`
+	@# ran the IAM-scope suite and skipped the handler's.
+	cd nested/bedrockkb/src/s3_vectors_manager && $(PYTEST_HERMETIC) . -q -p no:cacheprovider
 	@echo "Running fine-tuning job creator tests (ARN partition passthrough)..."
 	cd src/lambda/finetuning_job_creator && $(PYTEST_HERMETIC) tests -q -p no:cacheprovider
 	@echo "Running the remaining API resolver suites (download allow-list, upload target, filtered scans)..."

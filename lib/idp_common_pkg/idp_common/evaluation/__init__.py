@@ -29,19 +29,27 @@ from idp_common.evaluation.confidence_curve import (
     ReviewEstimate,
     estimate_for_target,
 )
+
+# ``flatten_confidences`` / ``flatten_values`` are the path-aligned pair: the first
+# keys an ``explainability_info`` payload by field path and the second keys an
+# ``inference_result`` by the SAME path, so a confidence can be joined to the cell it
+# describes. Exported because that join is what turns a confidence score into a
+# calibration observation, and every caller that needs it is outside this module: the
+# HITL review function, and the benchmark harness, which joins these paths to the
+# synthetic corpus's per-cell ground truth (GitHub #935). A second private traversal
+# in each of those places would drift from the one the stored curve is keyed by.
+#
+# ``field_child_path`` / ``list_child_path`` are the two path-segment rules that pair
+# is built from, exported for a caller whose traversal cannot be one of those two
+# functions but whose paths must still key identically — the test-set resolver needs
+# the threshold beside each confidence, and needs an empty list to count as an absent
+# field, so it keeps its own walk and takes only the rule (#1066).
 from idp_common.evaluation.curve_store import (
     CurveStore,
-    # The path-aligned pair. ``flatten_confidences`` keys an
-    # ``explainability_info`` payload by field path and ``flatten_values`` keys an
-    # ``inference_result`` by the SAME path, so a confidence can be joined to the
-    # cell it describes. Exported because that join is what turns a confidence
-    # score into a calibration observation, and every caller that needs it is
-    # outside this module: the HITL review function, and the benchmark harness,
-    # which joins these paths to the synthetic corpus's per-cell ground truth
-    # (GitHub #935). A second private traversal in each of those places would
-    # drift from the one the stored curve is keyed by.
+    field_child_path,
     flatten_confidences,
     flatten_values,
+    list_child_path,
 )
 from idp_common.evaluation.intervals import (
     AccuracyInterval,
@@ -107,6 +115,8 @@ __all__ = [
     # Field-path flattening: the join between a confidence and the cell it scores
     "flatten_confidences",
     "flatten_values",
+    "field_child_path",
+    "list_child_path",
     # Sampling uncertainty on a measured accuracy
     "AccuracyInterval",
     "accuracy_interval",

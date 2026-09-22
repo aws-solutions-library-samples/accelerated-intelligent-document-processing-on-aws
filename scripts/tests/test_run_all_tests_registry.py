@@ -144,31 +144,107 @@ def test_a_root_quarantined_for_collecting_nothing_really_collects_nothing(
 # ---------------------------------------------------------------------------
 #
 # A root kept out of `make test` because a single test in it fails is the most
-# perishable reason in the registry: the day somebody fixes that test, the reason is
-# stale and nothing says so, and the root then sits outside the gate on the strength of
-# a sentence that is no longer true. That is how the cfnresponse reason on
-# `nested/bedrockkb/src/s3_vectors_manager` outlived its own remedy -- a `cfnresponse`
-# stub had been written one directory down, and the entry above it still named the
-# missing module as the obstruction.
+# perishable reason in the registry: the day somebody fixes that test the reason is
+# stale and nothing says so, and the root then sits outside the gate on the strength
+# of a sentence that is no longer true. Worse, the tests that already pass in that
+# file stay ungated, which is the cost nobody notices -- five tests on the S3 Vectors
+# custom resource sat outside both CIs that way, four of them passing.
 #
-# So the claim is computed instead of believed, in three directions: the named test must
-# still EXIST, it must still fail, and everything else in its file must still pass.
+# So a reason of that shape is not believed. It has to name a pytest node id, and the
+# claim is then computed in three directions: the named test must still EXIST, it must
+# still fail, and everything else in its file must still pass. Fixing, renaming or
+# deleting it all invalidate the entry rather than leaving it standing.
 #
-# Existence is not redundant with failure, and leaving it out was a real hole. `pytest
-# <path>::<name>` for a name that is gone exits 4 (usage error, "no match in any of
-# ...") rather than 0, so a `returncode != 0` check alone is satisfied by DELETING or
-# renaming the test. The entry would then stand forever naming a node id nothing can
-# resolve, and the file's four passing tests would stay outside the gate with nothing
-# prompting a revisit -- the same "reason that outlived its subject" failure this whole
-# section exists to stop, reached by a different route. So the first check requires
-# `--collect-only` to find exactly one item.
+# Existence is not redundant with failure. `pytest <path>::<name>` for a name that is
+# gone exits 4 (usage error) rather than 0, so a `returncode != 0` check alone is
+# satisfied by DELETING the test -- the entry would then stand forever naming a node
+# id nothing resolves, with the file's passing tests still outside the gate.
+#
+# :data:`_ROOTS_HELD_BACK_BY_ONE_TEST` is EMPTY today, because no root is in that
+# state. That is why the detector below exists and is the live control: it reads the
+# QUARANTINE reasons and requires any that makes this kind of claim to be registered
+# here, so the next one cannot be added without the ratchet. Registering it is what
+# switches the three checks below on.
 
 #: root -> the one pytest node id whose failure holds the root back.
-_ROOTS_HELD_BACK_BY_ONE_TEST = {
-    "nested/bedrockkb/src/s3_vectors_manager": (
-        "test_handler.py::test_get_s3_vector_info_function"
-    ),
-}
+_ROOTS_HELD_BACK_BY_ONE_TEST: dict[str, str] = {}
+
+#: Substrings that mark a QUARANTINE reason as claiming that ONE named test, or one
+#: assertion, holds an otherwise-passing root out of the gate.
+_ONE_TEST_CLAIMS = (
+    "::test_",
+    "one test",
+    "single test",
+    "one failing test",
+    "one assertion",
+    "stale assertion",
+    "one stale",
+)
+
+
+def _reasons_claiming_one_failing_test(
+    quarantine: dict[str, str],
+) -> list[str]:
+    """Roots whose reason blames a single test or assertion."""
+    return sorted(
+        root
+        for root, reason in quarantine.items()
+        if any(claim in reason.lower() for claim in _ONE_TEST_CLAIMS)
+    )
+
+
+@pytest.mark.unit
+def test_a_root_held_back_by_one_test_is_registered_for_the_ratchet() -> None:
+    """The live control, and the reason the empty registry above is not a hole.
+
+    Deleting the ratchet when its last subject was fixed would have left nothing to
+    prompt the next author to add one -- the registry would simply stay empty while a
+    new one-test quarantine went unchecked. This reads the reasons instead, so the
+    prompt arrives when the wording appears.
+    """
+    quarantine = _run_all_tests_module().QUARANTINE
+    unregistered = [
+        root
+        for root in _reasons_claiming_one_failing_test(quarantine)
+        if root not in _ROOTS_HELD_BACK_BY_ONE_TEST
+    ]
+    assert not unregistered, (
+        f"QUARANTINE reasons for {unregistered} blame a single test or assertion, but "
+        "those roots are not in _ROOTS_HELD_BACK_BY_ONE_TEST, so nothing recomputes "
+        "the claim and nothing will notice when it stops being true. Add an entry "
+        "mapping each root to the pytest node id (`<file>::<test>`) that holds it "
+        "back; the three checks below then verify that the test exists, still fails, "
+        "and is the only failure in its file.\n\n"
+        + "\n".join(f"  {root}: {quarantine[root]}" for root in unregistered)
+    )
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "reason",
+    [
+        # The wording the S3 Vectors entry actually used before it was fixed.
+        (
+            "test_handler.py::test_get_s3_vector_info_function asserts a Status the "
+            "handler stopped returning; the other four tests pass."
+        ),
+        "Held back by one failing test; the rest of the file passes.",
+        "One stale assertion, not an environment problem.",
+        "A single test in it fails.",
+    ],
+)
+def test_the_one_test_detector_recognises_the_wording_it_is_for(reason: str) -> None:
+    """Anti-vacuity for a detector with no live subject.
+
+    With the registry empty there is nothing in the tree for the check above to
+    match, so on its own it passes without exercising anything -- the shape this
+    whole file exists to reject. Feeding it the wordings it is meant to catch proves
+    it works now rather than the next time somebody needs it.
+    """
+    assert _reasons_claiming_one_failing_test({"some/root": reason}) == ["some/root"], (
+        f"a QUARANTINE reason reading {reason!r} would not be recognised as blaming "
+        "one test, so it could be added without the ratchet. Extend _ONE_TEST_CLAIMS."
+    )
 
 
 def _pytest(root: str, *arguments: str) -> subprocess.CompletedProcess[str]:

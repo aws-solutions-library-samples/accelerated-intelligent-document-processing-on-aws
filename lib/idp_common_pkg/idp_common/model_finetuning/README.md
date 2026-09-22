@@ -527,6 +527,6 @@ For end-to-end workflows, dataset preparation, and comprehensive examples, see:
   - `scripts/model_finetuning/create_provisioned_throughput.py`: Provisioned throughput management
   - `scripts/model_finetuning/inference_example.py`: Model inference and evaluation
 - **Notebooks**:
-  - [Dataset Preparation Notebook](../../../../notebooks/finetuning_dataset_prep.ipynb)
-  - [Fine-tuning Service Demo Notebook](../../../../notebooks/finetuning_model_service_demo.ipynb)
-  - [Model Evaluation Notebook](../../../../notebooks/finetuning_model_document_classification_evaluation.ipynb)
+  - [Dataset Preparation Notebook](../../../../notebooks/misc/finetuning_dataset_prep.ipynb)
+  - [Fine-tuning Service Demo Notebook](../../../../notebooks/misc/finetuning_model_service_demo.ipynb)
+  - [Model Evaluation Notebook](../../../../notebooks/misc/finetuning_model_document_classification_evaluation.ipynb)

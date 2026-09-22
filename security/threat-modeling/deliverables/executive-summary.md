@@ -92,7 +92,7 @@ so both threats stay Open after it merges; HOOK.T07 is addressed by **issue
 **issue #928** (a default-deny gate at the API dispatcher, AUTH.T16) and **issue
 #921** (consistent log redaction, AUTH.T15). Read every one of those as
 *pending*, and read #920 as *partial even once merged* — see
-[companion-chat CHAT.T06](../feature-threats/companion-chat.md#chatt06-caller-identity-on-the-streaming-transport-is-not-a-verified-subject)
+[companion-chat CHAT.T06](../feature-threats/companion-chat.md#chatt06-client-supplied-caller-identity-on-the-agent-streaming-route)
 for the accounting. The
 status columns in this model deliberately do not credit an unmerged fix, because a
 threat model that counts intentions as controls is worse than one that is merely

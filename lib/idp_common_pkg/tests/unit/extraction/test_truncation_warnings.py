@@ -1200,18 +1200,33 @@ class TestMinItemsIsAHardFloorInAdvancedMode:
     def test_each_shard_agent_gets_the_whole_sections_floor(self):
         """The case the guidance turns on: the floor is PER SHARD, not at the merge.
 
-        Both fan-out sites pass the whole-section transport model as ``data_format``
-        and ``_run_shard_agent`` forwards it unmodified, so
-        ``structured_output_async`` builds each shard's ``extraction_tool`` from it.
-        A section-sized floor is then unsatisfiable by a shard covering part of the
-        pages — which is why the docs say not to put ``minItems`` on a list whose
-        section shards.
+        Both fan-out sites pass the **shard** transport model
+        (``_shard_transport_model``) as ``data_format`` and ``_run_shard_agent``
+        forwards it unmodified, so ``structured_output_async`` builds each shard's
+        ``extraction_tool`` from it. That model relaxes presence for a required
+        container (#1078) and **keeps every row-count bound**, so a section-sized
+        floor is still unsatisfiable by a shard covering part of the pages — which is
+        why the docs say not to put ``minItems`` on a list whose section shards.
+
+        The floor's survival is asserted here and not left to the relaxation's own
+        tests, because it is the one property of the shard model the guidance in both
+        doc tiers depends on: a future decision to strip bounds for the shard tool
+        would make those pages wrong with nothing else noticing.
 
         Driven through the real ``_run_shard_agent`` with a spy on the tool builder,
         stopping at agent construction: the identity of the model the tool is built
         from is the whole contract, and going further would need Bedrock.
         """
-        model = self._model()
+        import pydantic
+
+        model = _svc(agentic=True, schema=self._SCHEMA)._shard_transport_model(
+            self._SCHEMA, "Statement"
+        )
+        # The floor reaches the shard's tool: a short list is still rejected there.
+        assert "minItems" in json.dumps(model.model_json_schema())
+        with pytest.raises(pydantic.ValidationError) as floor:
+            model(**{"Account Number": "1", "Transactions": _rows(43)})
+        assert any(e["type"] == "too_short" for e in floor.value.errors())
         seen: dict[str, Any] = {}
         real = agentic_idp.create_dynamic_extraction_tool_and_patch_tool
 
@@ -1252,9 +1267,10 @@ class TestMinItemsIsAHardFloorInAdvancedMode:
 
         asyncio.run(drive())
         assert seen.get("tool_model") is model, (
-            "the shard's extraction_tool must be built from the whole-section "
-            "transport model — if this changes to a per-shard model, the per-shard "
-            "floor warning in both doc tiers is no longer true and should go"
+            "the shard's extraction_tool must be built from the model the fan-out "
+            "site passes — if a shard ever gets a model with the row-count bounds "
+            "stripped, the per-shard floor warning in both doc tiers is no longer "
+            "true and should go"
         )
 
     def test_the_shipped_default_makes_the_per_shard_floor_the_default_case(self):
@@ -1397,6 +1413,249 @@ class TestMinItemsIsAHardFloorInAdvancedMode:
             for i in written["metadata"]["processing_issues"]
             if i["code"] == CODE and i["severity"] == "error"
         ]
+
+
+class TestARequiredContainerIsSatisfiableByAShard:
+    """#1078: the two shard-scoped boundaries agree about presence.
+
+    ``shard_validation_schema`` drops ``required`` because a shard sees only its own
+    pages, and ``_run_shard_agent`` tells it "if a field does not appear in your
+    pages, leave it null — another shard will provide it". For a required **array**
+    or **nested object** that instruction used to name the one answer the shard's own
+    ``extraction_tool`` rejected: ``nullable_leaves_for_transport`` widens scalar
+    *leaves*, so a required scalar was rescued and a required container was not. The
+    shard therefore spent a correction round discovering it had to emit ``[]`` or
+    ``{}``, while the in-loop feedback validator reported the same payload as
+    satisfying every constraint — so the feedback did not point at the cause.
+
+    The fix scopes the **tool boundary** per shard rather than propagating ``required``
+    into the feedback validator, because dropping ``required`` there was deliberate
+    and correct. What must NOT relax is the structural half: an omitted key, an empty
+    tool call and a misspelled key set still fail per shard, and row-count bounds
+    still reach the tool.
+    """
+
+    _SCHEMA = {
+        "type": "object",
+        "$id": "Statement",
+        "properties": {
+            "Account Number": {"type": "string"},
+            "Transactions": {"type": "array", "items": ROW},
+            "Summary": {
+                "type": "object",
+                "properties": {"Total": {"type": "number"}},
+                "required": ["Total"],
+            },
+            "Notes": {"type": "string"},
+        },
+        "required": ["Account Number", "Transactions", "Summary"],
+    }
+
+    _FULL = {
+        "Account Number": "1",
+        "Transactions": [{"Date": "2024-01-01", "Description": "x", "Amount": 1.0}],
+        "Summary": {"Total": 1.0},
+    }
+
+    def _svc(self):
+        return _svc(agentic=True, schema=self._SCHEMA)
+
+    def _section_model(self):
+        return self._svc()._transport_model(self._SCHEMA, "Statement")
+
+    def _shard_model(self):
+        return self._svc()._shard_transport_model(self._SCHEMA, "Statement")
+
+    @pytest.mark.parametrize(
+        "label,field,value",
+        [
+            ("required array", "Transactions", None),
+            ("required nested object", "Summary", None),
+        ],
+    )
+    def test_the_whole_section_model_rejects_what_a_shard_is_told_to_send(
+        self, label, field, value
+    ):
+        """The measurement the round cost comes from.
+
+        Kept as its own assertion because the relaxation is only worth having while
+        this is true: the whole-section model — which a single agent that saw every
+        page is still held to — refuses the null a shard is instructed to produce.
+        """
+        import pydantic
+
+        with pytest.raises(pydantic.ValidationError) as ei:
+            self._section_model()(**{**self._FULL, field: value})
+        assert {e["type"] for e in ei.value.errors()} <= {"list_type", "model_type"}, (
+            label
+        )
+
+    @pytest.mark.parametrize(
+        "label,payload_key",
+        [
+            ("required array", "Transactions"),
+            ("required nested object", "Summary"),
+            ("required scalar, already rescued by #782", "Account Number"),
+        ],
+    )
+    def test_the_shard_model_accepts_null_for_a_field_outside_its_pages(
+        self, label, payload_key
+    ):
+        self._shard_model()(**{**self._FULL, payload_key: None})
+
+    @pytest.mark.parametrize(
+        "label,payload",
+        [
+            ("an empty tool call", {}),
+            (
+                "a misspelled key set",
+                {"Acount Number": "1", "Transactons": None, "Summry": None},
+            ),
+            (
+                "an omitted required array",
+                {"Account Number": "1", "Summary": {"Total": 1.0}},
+            ),
+            (
+                "an omitted required object",
+                {
+                    "Account Number": "1",
+                    "Transactions": [
+                        {"Date": "2024-01-01", "Description": "x", "Amount": 1.0}
+                    ],
+                },
+            ),
+        ],
+    )
+    def test_the_shard_model_still_refuses_a_missing_key(self, label, payload):
+        """``required`` still means the key must be PRESENT, only not populated.
+
+        This is the half that must not relax. Dropping ``required`` from the shard
+        model — the other way to make the two boundaries agree — would render every
+        field ``Optional[...] = None``, so ``{}`` becomes a valid tool call and a
+        shard that answered nothing merges as a success: the #666 whole-list loss,
+        once per shard.
+        """
+        import pydantic
+
+        with pytest.raises(pydantic.ValidationError) as ei:
+            self._shard_model()(**payload)
+        assert any(e["type"] == "missing" for e in ei.value.errors()), label
+
+    def test_the_shard_model_still_enforces_a_row_count_floor(self):
+        """``minItems`` is untouched, so the documented per-shard floor is unchanged.
+
+        Relaxing presence and relaxing row counts are different decisions with
+        different consequences — a required array is satisfiable by a shard holding
+        none of its rows (``[]`` and ``null`` are both fine), a section-sized
+        ``minItems`` is satisfiable by no payload a short shard can produce. Only the
+        first is relaxed here.
+        """
+        import pydantic
+
+        schema = json.loads(json.dumps(self._SCHEMA))
+        schema["properties"]["Transactions"]["minItems"] = 100
+        model = _svc(agentic=True, schema=schema)._shard_transport_model(
+            schema, "Statement"
+        )
+        model(**{**self._FULL, "Transactions": None})  # out-of-shard: fine
+        for rows in (0, 43):
+            with pytest.raises(pydantic.ValidationError) as ei:
+                model(**{**self._FULL, "Transactions": _rows(rows)})
+            assert any(e["type"] == "too_short" for e in ei.value.errors()), rows
+
+    def test_the_relaxation_is_confined_to_required_containers(self):
+        """An optional container and a row's own required scalars are untouched.
+
+        The transform is applied at every level a ``required`` list appears, so a
+        row's required scalars are in its scope — they are already nullable from
+        ``nullable_leaves_for_transport`` and must not become optional.
+        """
+        import pydantic
+
+        model = self._shard_model()
+        # Every top-level field still has to be present except the one the class
+        # schema never required.
+        required_names = {n for n, f in model.model_fields.items() if f.is_required()}
+        assert "Notes" not in required_names
+        assert len(required_names) == 3
+
+        # A row whose own schema requires its keys still cannot omit them, and a
+        # required scalar inside it takes null rather than becoming optional.
+        schema = json.loads(json.dumps(self._SCHEMA))
+        schema["properties"]["Transactions"]["items"]["required"] = [
+            "Date",
+            "Description",
+            "Amount",
+        ]
+        strict_rows = _svc(agentic=True, schema=schema)._shard_transport_model(
+            schema, "Statement"
+        )
+        strict_rows(
+            **{
+                **self._FULL,
+                "Transactions": [
+                    {"Date": "2024-01-01", "Description": None, "Amount": None}
+                ],
+            }
+        )
+        with pytest.raises(pydantic.ValidationError) as ei:
+            strict_rows(**{**self._FULL, "Transactions": [{"Date": "2024-01-01"}]})
+        assert any(e["type"] == "missing" for e in ei.value.errors())
+
+    def test_both_shard_fan_out_sites_take_the_shard_model(self):
+        """One rule, both routes. The in-process runtime and the Step Functions shard
+        plan are separate code paths, and a fix applied to one of them is the defect
+        class this repository keeps finding.
+        """
+        import inspect
+
+        from idp_common.extraction import service as svc_mod
+
+        src = inspect.getsource(svc_mod)
+        assert src.count("self._shard_transport_model(") == 2
+        assert "data_format=shard_model," in src
+        plan = inspect.getsource(svc_mod.ExtractionService._build_agentic_shard_plan)
+        assert "self._shard_transport_model(" in plan
+        assert (
+            "return model_id, shard_model, shard_payloads, custom_instruction" in plan
+        )
+
+    def test_the_merge_still_judges_the_section_by_the_real_rules(self):
+        """Presence moves to the merge, it does not disappear.
+
+        The shard relaxation would be a hole rather than a fix if the merged section
+        were also judged by it. Two things keep that from happening: the merge
+        normalises a list field to ``[]`` whatever the shards returned, and
+        ``extraction.validation`` validates the merged result against the **real**
+        class schema, where a null property reads as absent.
+        """
+        from idp_common.extraction.runtime import _merge_shard_results
+        from idp_common.extraction.validation import validate_extraction
+
+        shard_model = self._shard_model()
+        cover_page = shard_model(
+            **{"Account Number": None, "Transactions": None, "Summary": None}
+        )
+        rows_page = shard_model(
+            **{
+                "Account Number": "1",
+                "Transactions": [
+                    {"Date": "2024-01-01", "Description": "x", "Amount": 1.0}
+                ],
+                "Summary": None,
+            }
+        )
+        merged, _metering, _conflicts = _merge_shard_results(
+            [(cover_page, {}), (rows_page, {})], shard_model
+        )
+        # A list field merges to a real list even though a shard answered null.
+        assert merged["Transactions"] == [
+            {"Date": "2024-01-01", "Description": "x", "Amount": 1.0}
+        ]
+        # The required object no shard saw is REPORTED against the real schema.
+        report = validate_extraction(merged, self._SCHEMA)
+        assert not report.valid
+        assert any("Summary" in e.message for e in report.errors)
 
 
 class TestSiblingsRefsAndWrappers:
