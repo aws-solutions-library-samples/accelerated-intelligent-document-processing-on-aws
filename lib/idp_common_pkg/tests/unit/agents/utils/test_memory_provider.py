@@ -510,7 +510,23 @@ class TestOnMessageAdded:
             provider.on_message_added(
                 self._event([{"role": "user", "content": [{"text": "y" * 10000}]}])
             )
-        assert len(store.call_args.args[0][0]["text"]) < 700
+        preserved = store.call_args.args[0][0]["text"]
+        assert len(preserved) < 700
+        # Bounded from below too: the sibling test's rationale is that "the head is
+        # kept so the turn is still recognisable", and only an upper bound would let
+        # the head shrink to nothing while the test stayed green.
+        assert len(preserved) > 400
+
+    def test_a_message_exactly_at_the_size_limit_is_not_truncated(self):
+        # Strictly greater than, so the limit itself is allowed through. Pinned
+        # because flipping it to >= would truncate a message that fits.
+        provider, _ = _provider(max_message_size_kb=1.0)
+        exact = "y" * (1024 - len('[{"text": ""}]'))
+        with patch.object(provider, "_store_message_to_dynamodb") as store:
+            provider.on_message_added(
+                self._event([{"role": "user", "content": [{"text": exact}]}])
+            )
+        assert "too large" not in str(store.call_args.args[0])
 
     def test_the_role_survives_truncation(self):
         provider, _ = _provider(max_message_size_kb=0.1)

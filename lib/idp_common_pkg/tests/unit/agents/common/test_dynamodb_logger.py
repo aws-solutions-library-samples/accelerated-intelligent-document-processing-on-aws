@@ -252,11 +252,19 @@ class TestWriteFailuresAreSwallowed:
         future.result.side_effect = RuntimeError("write failed")
         instance._handle_write_result(future)
 
-    def test_the_done_callback_is_quiet_on_success(self):
+    def test_the_done_callback_logs_nothing_on_success(self, caplog):
+        # Asserting the absence, not just the absence of a crash: this method's only
+        # job on the happy path is to stay silent, and an ERROR per successful write
+        # would bury the real failures it exists to report.
+        import logging
+
         instance, _ = _logger()
         future = MagicMock()
         future.result.return_value = None
-        instance._handle_write_result(future)
+        caplog.clear()  # drop the constructor's own INFO record
+        with caplog.at_level(logging.WARNING):
+            instance._handle_write_result(future)
+        assert [r for r in caplog.records if r.levelno >= logging.WARNING] == []
 
 
 @pytest.mark.unit

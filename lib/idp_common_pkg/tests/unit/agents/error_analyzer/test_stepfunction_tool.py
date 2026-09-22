@@ -305,6 +305,68 @@ class TestAnalyzeExecutionTimelineReverseOrder:
             )["timeline"]
         assert "Extraction" in [entry["state"] for entry in timeline]
 
+    @pytest.mark.xfail(
+        strict=True,
+        reason="End-to-end across the fetch-to-analyse seam: the history is fetched "
+        "newest-first and analysed as oldest-first, so the tool reports no failing "
+        "state. This is the marker that trips when #1081 is fixed at the CALLER, "
+        "which is where the fix belongs — the three markers above pin "
+        "_analyze_execution_timeline directly and stay green for that fix. See "
+        "https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/1081",
+    )
+    def test_the_tool_identifies_the_failing_state_from_a_real_fetch(self):
+        # Stubs the Step Functions CLIENT rather than _get_execution_data, so the
+        # reverseOrder=True fetch actually runs and its output reaches the analyser.
+        # Nothing else in this suite observes that boundary.
+        start = datetime(2026, 1, 1, 10, 0, 0, tzinfo=timezone.utc)
+        with (
+            patch(f"{MODULE}.boto3.client") as factory,
+            patch(
+                f"{MODULE}._get_execution_arn_from_document", return_value=EXECUTION_ARN
+            ),
+            _fixed_timeline_cap(),
+        ):
+            client = factory.return_value
+            client.describe_execution.return_value = {
+                "status": "FAILED",
+                "startDate": start,
+                "stopDate": start + timedelta(seconds=30),
+            }
+            # What AWS returns for reverseOrder=True: newest event first.
+            client.get_execution_history.return_value = {
+                "events": list(reversed(CHRONOLOGICAL_HISTORY))
+            }
+            result = analyze_workflow_execution("report.pdf")
+
+        assert result["timeline_analysis"]["failure_point"]["state"] == "Extraction"
+        assert "Extraction" in result["analysis_summary"]
+
+    def test_the_tool_reports_no_failing_state_today_across_that_seam(self):
+        # The companion to the xfail above, asserting what actually happens now so
+        # the defect is visible in a passing run rather than only as a marker: the
+        # published summary reads "at state 'None'".
+        start = datetime(2026, 1, 1, 10, 0, 0, tzinfo=timezone.utc)
+        with (
+            patch(f"{MODULE}.boto3.client") as factory,
+            patch(
+                f"{MODULE}._get_execution_arn_from_document", return_value=EXECUTION_ARN
+            ),
+            _fixed_timeline_cap(),
+        ):
+            client = factory.return_value
+            client.describe_execution.return_value = {
+                "status": "FAILED",
+                "startDate": start,
+                "stopDate": start + timedelta(seconds=30),
+            }
+            client.get_execution_history.return_value = {
+                "events": list(reversed(CHRONOLOGICAL_HISTORY))
+            }
+            result = analyze_workflow_execution("report.pdf")
+
+        assert result["timeline_analysis"]["failure_point"]["state"] is None
+        assert "at state 'None'" in result["analysis_summary"]
+
     def test_the_failure_details_themselves_survive_the_wrong_order(self):
         # The error and cause come from the failure event itself rather than from
         # surrounding context, so they are correct in either order. Worth pinning:

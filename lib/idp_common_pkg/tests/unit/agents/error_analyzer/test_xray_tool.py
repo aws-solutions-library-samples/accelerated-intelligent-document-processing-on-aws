@@ -735,16 +735,19 @@ class TestAnalyzeServicePerformance:
         assert analysis["edges"] == 2
 
     def test_a_service_over_the_error_rate_threshold_is_flagged(self):
-        with _fixed_thresholds(xray_error_rate_threshold=0.05):
+        # 0.02, not the code's own 0.05 default: a test that overrides a threshold to
+        # the value already hardcoded cannot distinguish "reads the config" from
+        # "ignores it".
+        with _fixed_thresholds(xray_error_rate_threshold=0.02):
             result = _analyze_service_performance(
-                self._client([self._service(error_rate=0.10)]),
+                self._client([self._service(error_rate=0.03)]),
                 datetime.now(timezone.utc) - timedelta(hours=1),
                 datetime.now(timezone.utc),
             )
         assert result["high_error_services"] == ["OCR"]
 
     def test_a_service_under_the_error_rate_threshold_is_not_flagged(self):
-        with _fixed_thresholds(xray_error_rate_threshold=0.05):
+        with _fixed_thresholds(xray_error_rate_threshold=0.02):
             result = _analyze_service_performance(
                 self._client([self._service(error_rate=0.01)]),
                 datetime.now(timezone.utc) - timedelta(hours=1),
@@ -755,16 +758,36 @@ class TestAnalyzeServicePerformance:
     def test_a_slow_service_is_flagged_and_the_threshold_is_in_milliseconds(self):
         # TotalTime is seconds and the threshold is ms; a service at 12s must be
         # flagged against a 10,000 ms threshold, not compared as 12 vs 10000.
-        with _fixed_thresholds(xray_response_time_threshold_ms=10000):
+        with _fixed_thresholds(xray_response_time_threshold_ms=4000):
             result = _analyze_service_performance(
-                self._client([self._service(total_time=12.0)]),
+                self._client([self._service(total_time=5.0)]),
                 datetime.now(timezone.utc) - timedelta(hours=1),
                 datetime.now(timezone.utc),
             )
         assert result["slow_services"] == ["OCR"]
 
+    def test_a_service_exactly_at_the_error_rate_threshold_is_not_flagged(self):
+        # Strictly greater than. Pinned because flipping it to >= would flag every
+        # service whose error rate happens to equal a round configured value.
+        with _fixed_thresholds(xray_error_rate_threshold=0.02):
+            result = _analyze_service_performance(
+                self._client([self._service(error_rate=0.02)]),
+                datetime.now(timezone.utc) - timedelta(hours=1),
+                datetime.now(timezone.utc),
+            )
+        assert result["high_error_services"] == []
+
+    def test_a_service_exactly_at_the_response_time_threshold_is_not_slow(self):
+        with _fixed_thresholds(xray_response_time_threshold_ms=4000):
+            result = _analyze_service_performance(
+                self._client([self._service(total_time=4.0)]),
+                datetime.now(timezone.utc) - timedelta(hours=1),
+                datetime.now(timezone.utc),
+            )
+        assert result["slow_services"] == []
+
     def test_a_fast_service_is_not_flagged_as_slow(self):
-        with _fixed_thresholds(xray_response_time_threshold_ms=10000):
+        with _fixed_thresholds(xray_response_time_threshold_ms=4000):
             result = _analyze_service_performance(
                 self._client([self._service(total_time=1.0)]),
                 datetime.now(timezone.utc) - timedelta(hours=1),

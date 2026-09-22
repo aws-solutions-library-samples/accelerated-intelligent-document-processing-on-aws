@@ -384,6 +384,23 @@ class TestAgentMonitorModelExceptions:
         monitor._handle_model_exception(RuntimeError(text))
         callback.assert_called_once()
 
+    def test_a_non_throttling_code_whose_message_mentions_throttling_is_not_retried(
+        self,
+    ):
+        # The two routes inside AgentMonitor disagree on exactly this input: a
+        # ClientError whose error CODE is not a throttle but whose MESSAGE mentions
+        # one. The code is authoritative, so the callback must not fire — otherwise a
+        # ServiceUnavailableException whose cause text says "throttling" would tell
+        # the user to wait for a rate limit that is not the problem.
+        monitor, callback = self._monitor()
+        monitor._handle_model_exception(
+            _client_error(
+                "ServiceUnavailableException",
+                message="upstream reported throttling of a dependency",
+            )
+        )
+        callback.assert_not_called()
+
     def test_an_unrelated_exception_does_not_invoke_the_callback(self):
         monitor, callback = self._monitor()
         monitor._handle_model_exception(RuntimeError("connection reset"))
