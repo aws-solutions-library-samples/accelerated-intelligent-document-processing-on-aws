@@ -392,23 +392,58 @@ class TestExtractValues:
 
 @pytest.mark.unit
 class TestExtractionCache:
-    """The path cache, and why it has to be clearable."""
+    """The path cache, its key, and why it has to be clearable.
 
-    def test_the_same_path_twice_gives_the_same_value(self):
+    `_cache_key` returns `(id(data), path)` — document **identity** paired with the
+    path, not the path alone. That distinction is the whole behaviour of this class, and
+    it has a consequence filed as
+    [#1115](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/1115):
+    CPython recycles addresses, so two successive short-lived documents can be allotted
+    the same `id`, and the second then receives the first's readings. Those readings are
+    what get bound into the solver, so the failure mode is a compliance verdict computed
+    against another document's data, reported at normal confidence with no signal.
+
+    The recycling half is not asserted here, because forcing an address to be reused is
+    allocator-dependent and a test that waits for it would be flaky. What is asserted is
+    the premise it rests on — that equal content in two different objects produces two
+    different keys — which is deterministic and is what a fix for #1115 must change.
+    """
+
+    def test_a_repeated_read_is_served_from_the_cache(self):
+        # Proven by mutating the document in place between the two reads: if the second
+        # read returned the NEW value the cache was not consulted at all. Comparing two
+        # calls on the same unmodified object, which this test used to do, passes
+        # identically with and without a cache and so established nothing.
         extractor = DataExtractor()
         rule = _rule(
             [Parameter(name="coverage", type="Real")], [("coverage", "doc.coverage")]
         )
         data = {"doc": {"coverage": 1.0}}
-        assert extractor.extract_values(rule, data) == extractor.extract_values(
-            rule, data
+        first = extractor.extract_values(rule, data)
+        data["doc"]["coverage"] = 99.0
+        second = extractor.extract_values(rule, data)
+        assert first == {"coverage": 1.0}
+        assert second == {"coverage": 1.0}, (
+            "the second read saw the mutated value, so nothing was cached"
         )
 
+    def test_the_cache_key_is_document_identity_not_content(self):
+        # The premise of #1115. Two documents with identical content get different keys,
+        # which is why the cache is safe for equal-but-distinct documents and unsafe for
+        # distinct documents that happen to reuse an address.
+        extractor = DataExtractor()
+        one = {"doc": {"coverage": 1.0}}
+        two = {"doc": {"coverage": 1.0}}
+        assert one == two
+        assert extractor._cache_key(one, "doc.coverage") != extractor._cache_key(
+            two, "doc.coverage"
+        ), "equal content shares a key, so the key is no longer identity-based"
+
     def test_clearing_the_cache_lets_new_data_be_read(self):
-        # The cache is keyed by path, not by document, so reusing an extractor across
-        # documents without clearing would return the first document's readings for
-        # the second. ValidationSystem.validate_batch clears between rules for
-        # exactly this reason.
+        # ValidationSystem.validate_batch clears between rules. Note what this test does
+        # and does not establish: both documents here are live at once only briefly, so
+        # it passes whether or not the addresses differ, and it is load-bearing for the
+        # `clear_cache()` call rather than for the keying. The keying is covered above.
         extractor = DataExtractor()
         rule = _rule(
             [Parameter(name="coverage", type="Real")], [("coverage", "doc.coverage")]
@@ -418,6 +453,7 @@ class TestExtractionCache:
         second = extractor.extract_values(rule, {"doc": {"coverage": 2.0}})
         assert first == {"coverage": 1.0}
         assert second == {"coverage": 2.0}
+        assert extractor._cache, "a read should repopulate the cache after clearing"
 
     def test_clearing_an_empty_cache_is_safe(self):
         DataExtractor().clear_cache()

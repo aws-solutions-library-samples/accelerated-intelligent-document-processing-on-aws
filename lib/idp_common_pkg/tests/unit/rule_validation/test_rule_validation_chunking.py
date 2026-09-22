@@ -64,7 +64,7 @@ import pytest
 
 from idp_common.rule_validation.service import RuleValidationService
 
-#: Address-space cap and wall-clock budget for the isolated calls. 512 MiB is far
+#: Address-space cap and wall-clock budget for the isolated calls. 256 MiB is far
 #: more than any correct chunking of these inputs needs, and small enough that a
 #: runaway is killed quickly. The chunker's own working set for these inputs is
 #: a few kilobytes, so this is generous by four orders of magnitude.
@@ -235,7 +235,7 @@ class TestChunkTextNonTermination:
     def test_a_ragged_length_with_overlap_terminates(
         self, text_length, max_chunk_size, token_size, overlap
     ):
-        # Run in a subprocess with a 512 MiB address-space cap: the loop allocates a
+        # Run in a subprocess with a 256 MiB address-space cap: the loop allocates a
         # tail slice per iteration, so it dies on MemoryError or is killed at the
         # timeout. Either way this process is unaffected.
         outcome, _ = _run_isolated(
@@ -250,6 +250,7 @@ class TestChunkTextNonTermination:
         # terminate: the stride is 36, so `end` clamps to len(text) anyway and
         # `start` is recomputed to len(text) - 4. Pinned because "it only breaks on
         # ragged lengths" is the intuitive and wrong reading of #1090.
+        #
         outcome, _ = _run_isolated("x" * 4000, 10, 4, 10)
         assert outcome == "did-not-return"
 
@@ -371,8 +372,22 @@ class TestChunkPagesGrouping:
     def test_an_empty_page_is_skipped_rather_than_emitted_bare(self):
         # A marker with no content would spend prompt tokens and could read as a
         # blank page in the document.
+        #
+        # The budget has to sit BELOW the whole input's estimated token count or the
+        # skipping code never runs: `_chunk_pages_with_overlap` returns `[text]`
+        # unchanged when the document already fits, and this input is 63 characters,
+        # so at `token_size` 4 it estimates 15 tokens. The earlier budget of 1000 took
+        # that early return, and `== [text]` was then satisfied by the text simply
+        # coming back untouched — the assertion held without the behaviour it names
+        # ever being exercised. 10 forces the real path.
         text = "<page-number>1</page-number>\n\n<page-number>2</page-number>\nreal"
-        assert _service()._chunk_pages_with_overlap(text, 1000, 4, 10) == [text]
+        chunks = _service()._chunk_pages_with_overlap(text, 10, 4, 10)
+        assert chunks != [text], "expected the real chunking path, not the early return"
+        joined = "".join(chunks)
+        assert "1" not in _markers(joined), (
+            f"page 1 is empty and should not be emitted, got {chunks!r}"
+        )
+        assert "real" in joined, "page 2's content must survive"
 
 
 @pytest.mark.unit
@@ -425,6 +440,7 @@ class TestChunkPagesOverlap:
         # The monotonic relationship holds everywhere except at zero, which is what
         # makes #1091 surprising rather than merely wrong: 1% repeats 12 characters
         # of a 1,205-character page and 0% repeats all 1,205.
+        #
         text = _paged(*[(n, f"PAGE{n}" + "z" * 1200) for n in range(1, 4)])
         one_percent = _service()._chunk_pages_with_overlap(text, 200, 4, 1)
         zero = _service()._chunk_pages_with_overlap(text, 200, 4, 0)
