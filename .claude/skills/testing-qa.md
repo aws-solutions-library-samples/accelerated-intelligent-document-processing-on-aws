@@ -97,6 +97,41 @@ def test_specific_function():
     assert result == expected
 ```
 
+## Proving a test is load-bearing: break the code and watch it go red
+
+A test that passes tells you nothing about whether it *can* fail. Where it matters —
+a test you have just corrected, or one whose assertion you are relying on — mutate
+the production code, confirm that test and only that test goes red, then restore.
+Restore from a **copy you made under `/tmp`**, never with `git checkout --` or
+`git restore`: those discard uncommitted work in the same file and have cost real
+edits here. Run the matrix in the **foreground**, one mutation at a time.
+
+⚠️ **Clear `__pycache__` and run pytest with `-B`, or a same-length mutation can
+give you a false result.** CPython decides a cached `.pyc` is still valid by
+comparing the source's `(mtime, size)`. Plenty of useful mutations change neither:
+swapping the two arms of a ternary, `>` for `<`, one status string for another of
+equal length. Write such a mutation and restore it inside the same clock second and
+the stale `.pyc` is still considered valid, so pytest runs bytecode that no longer
+matches the file on disk — which shows up as a mutation that "changed nothing", or,
+worse, a *baseline* failure after you have restored the original. Nothing about the
+tree looks wrong at that point, so the failure is easy to misread as a real defect
+in the code you just put back. In a harness:
+
+```python
+for cache in package_dir.rglob("__pycache__"):
+    shutil.rmtree(cache, ignore_errors=True)
+subprocess.run([sys.executable, "-B", "-m", "pytest", "-q", ...], cwd=package_dir)
+```
+
+`-p no:cacheprovider` is a different thing and does not help: it disables pytest's
+own `.pytest_cache`, not CPython's bytecode cache.
+
+Two shapes worth mutating for specifically, because both pass while asserting
+nothing: an expectation table that a loop only `print`s rather than compares, and a
+predicate that is a tautology against a mock (`hasattr(mock, anything)`,
+`assert mock.attr is not None`, `assert isinstance(mock, Mock)`). A `Mock` answers
+to every attribute name, so a claim about one is a claim about your own fixture.
+
 ## Moto Usage
 Always use `@mock_aws` decorator:
 ```python

@@ -2,6 +2,14 @@
 """
 Test script for S3 Vectors custom resource handler.
 This script validates the API calls and logic without requiring CloudFormation.
+
+Every test here was checked by mutating ``handler.py`` and confirming that it, and
+only it, went red. If you re-run that check, clear ``__pycache__`` and pass ``-B``:
+several of the useful mutations here are the same LENGTH as the code they replace
+(swapping the arms of the status ternary, one ARN path segment for another), and
+CPython keys ``.pyc`` invalidation on ``(mtime, size)``, so a same-length edit and
+restore inside one clock second leaves stale bytecode considered valid. See
+"Proving a test is load-bearing" in ``.claude/skills/testing-qa.md``.
 """
 
 import logging
