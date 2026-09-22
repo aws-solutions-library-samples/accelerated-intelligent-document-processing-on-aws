@@ -576,9 +576,9 @@
         "Makefile::ARN_PARTITION_EXEMPT"
       ],
       "predicateConsidered": {
-        "not_a_nested_stack_of_parent": "True of all nine paths and irrelevant to the premise. None is a template the parent stack instantiates — they are a CI configuration, two deployment helpers, two of their tests, a credential-vendor template and three configuration presets — and nothing claims otherwise. What makes a line unredactable is that the id on it is read as a value, which is a fact about the surrounding code rather than about stack topology.",
+        "not_a_nested_stack_of_parent": "True of all nine paths and irrelevant to the premise. None is a template the parent stack instantiates \u2014 they are a CI configuration, two deployment helpers, two of their tests, a credential-vendor template and three configuration presets \u2014 and nothing claims otherwise. What makes a line unredactable is that the id on it is read as a value, which is a fact about the surrounding code rather than about stack topology.",
         "built_separately_from_main_stack": "True for the SDLC paths and the presets, and irrelevant for the same reason: whether one publish run builds a path says nothing about whether an account id inside it is consulted at run time. The count pin bounds the entry instead.",
-        "file_absent_or_untracked": "False for all nine — every path is tracked and present. The gate re-measures that on every run, because an entry whose line has moved or been redacted shields nothing and is failed as stale."
+        "file_absent_or_untracked": "False for all nine \u2014 every path is tracked and present. The gate re-measures that on every run, because an entry whose line has moved or been redacted shields nothing and is failed as stale."
       },
       "memberKind": "deployable path",
       "ratchetEvidence": "scripts/check_account_ids.py",
@@ -2176,6 +2176,51 @@
       "reason": "Each entry pairs a count with the code that derives it, so the risk is a count nobody registered rather than a member escaping a check. Which phrasings in English carry a count cannot be computed. Two mechanisms make an entry non-vacuous, and they cover different members. For an entry naming documents, test_every_document_making_a_count_claim_states_a_pinned_one requires each named document to still contain a statement some pattern reads, so a dead entry and a claim reworded out of reach both fail. For an entry naming NO documents -- a guard against a deleted figure being reintroduced, where matching nothing is the correct state -- that check can say nothing, so test_no_pattern_is_one_that_could_never_match fires every pattern at a sample statement of the shape it is for. That second mechanism exists because a pattern that compiles and has one capturing group can still be unable to match anything: the requireable-contexts pattern spelled a literal space where both real sentences wrap across lines, so a derived number was computed and compared against nothing. The file scan is NOT a list -- it runs over every tracked .md/.py/.mk/.yml/.yaml and the Makefile from git ls-files, so no file is carved out of it, and test_this_module_does_not_match_its_own_patterns keeps that true by asserting the module needs no exclusion for itself (which is why the probes hold a placeholder where the number goes rather than spelling one out).",
       "ratchetGap": "Three residuals. A NEW document inventing a phrasing none of the registered patterns match states an unchecked count; the per-document check closes this only for documents already registered. A registered pattern can still be narrower than the prose it is aimed at -- it is fired at a probe the same author wrote, so a shared misreading of the real sentence would satisfy both. And for an entry with no documents, nothing asserts the figure is actually absent from the tree: the patterns report a wrong one if it returns, but prose could state the count in an unregistered phrasing and go unseen.",
       "memberKind": "other"
+    },
+    "scripts/tests/test_preset_keys_are_read.py::PRESET_SCAN_EXCLUDED_LOOKUP_TABLES": {
+      "kind": "prune",
+      "memberKind": "file name under config_library/",
+      "turnsOff": "the requirement that every top-level key in a config_library YAML be one IDPConfig reads, for three files that are lookup tables rather than deployable configurations",
+      "premise": [
+        "JUDGEMENT"
+      ],
+      "ratchet": "non-vacuity",
+      "ratchetEvidence": "scripts/tests/test_preset_keys_are_read.py",
+      "issues": [
+        1145
+      ],
+      "reason": "pricing.yaml maps a model id to a rate, model_config_limits.yaml maps one to a context window, and finetuning_models.yaml lists fine-tunable base models. None is installed by `idp-cli deploy --custom-config` and none is an IDPConfig document, so their top-level keys -- model ids and their own section names -- are not keys IDPConfig could read or discard. Whether a given YAML is a deployable configuration or a lookup table is a judgement about what the file is for, which no predicate here computes; what IS computed is that each named file still exists (test_the_excluded_lookup_tables_are_present), so the entry cannot outlive its members.",
+      "ratchetGap": "A NEW lookup table added under config_library/ is scanned as a preset and will fail this gate until it is named here, which is the safe direction. The count of keys each excluded file holds is not pinned, so a lookup table growing a key that IDPConfig would have read is not detected."
+    },
+    "scripts/tests/test_preset_keys_are_read.py::PRESET_SCAN_EXCLUDED_NON_CONFIGS": {
+      "kind": "prune",
+      "memberKind": "file name under config_library/",
+      "turnsOff": "the same top-level-key requirement, for the two feature-platform extension manifests, which are not IDPConfig documents at all",
+      "premise": [
+        "JUDGEMENT"
+      ],
+      "ratchet": "non-vacuity",
+      "ratchetEvidence": "scripts/tests/test_preset_keys_are_read.py",
+      "issues": [
+        1145
+      ],
+      "reason": "extensions-marketplace.yaml and extensions-oss.yaml carry their own schema (`schemaVersion`, `features`) and are read by the feature platform; IDPConfig never sees either, so 'IDPConfig discards this key' is not a statement about them. They sit under config_library/ for distribution rather than because they are configurations, which is the judgement here. test_the_excluded_extension_manifests_are_present computes that both files still exist, so neither name can pre-exempt a future file that takes it.",
+      "ratchetGap": "Their own schema is not validated by this gate; a malformed extension manifest is a different gate's finding."
+    },
+    "scripts/tests/test_preset_keys_are_read.py::TOP_LEVEL_KEY_EXEMPT": {
+      "kind": "exemption",
+      "memberKind": "top-level YAML key, paired with the path of its reader",
+      "turnsOff": "the requirement that a preset's top-level key be one IDPConfig models, for one key that a DIFFERENT consumer reads",
+      "premise": [
+        "JUDGEMENT"
+      ],
+      "ratchet": "non-vacuity",
+      "ratchetEvidence": "scripts/tests/test_preset_keys_are_read.py",
+      "issues": [
+        1145
+      ],
+      "reason": "`description` is a human-readable label the managed-configuration path carries for its catalogue. IDPConfig does not model it, so the gate's own question answers 'discarded' -- and that answer is wrong, because the managed-config reader consumes it before IDPConfig is involved. This is the one entry that exists because the gate's premise (IDPConfig is the only consumer) is false for a specific key, so it is recorded per key with its reader named rather than as a blanket allowance. Which consumers exist for a key is not computable from the tree; that the named reader still mentions the key IS, and test_every_read_elsewhere_key_really_is_read asserts exactly that per member, so an entry whose reader is deleted or stops naming the key fails.",
+      "ratchetGap": "The reader is matched by substring, not by resolving a read at runtime, so a reader that merely mentions the key in a comment would satisfy the premise. Bounding it to one key with one named path is what keeps that cheap to review."
     }
   }
 }

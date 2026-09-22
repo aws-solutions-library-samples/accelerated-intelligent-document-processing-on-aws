@@ -394,9 +394,10 @@ def _decompress_config_item(item):
         # pinned revision: this config is written straight into the run's
         # DynamoDB item, and the resource client rejects Python floats ("Float
         # types are not supported. Use Decimal types instead."). A compressed
-        # config carrying any non-integer number (the shipped `ocr-benchmark`
-        # preset has `criteria_validation.temperature: 0.0`) failed every
-        # startTestRun at submit until this matched the revision path.
+        # config carrying any non-integer number failed every startTestRun at
+        # submit until this matched the revision path. No shipped preset carries
+        # one today, so the reproduction is a customer config or the fixture in
+        # test_compressed_config_floats.py rather than anything in the tree.
         config_data = json.loads(
             gzip.decompress(raw_bytes).decode("utf-8"), parse_float=Decimal
         )
