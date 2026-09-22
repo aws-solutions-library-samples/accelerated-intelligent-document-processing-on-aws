@@ -983,9 +983,41 @@ class TestShutdown:
             with patch("idp_common.metrics.put_metric") as put_metric:
                 assert instance.shutdown(timeout=0.05) == 1
             assert not table.update_item.called
-            # Counted, not only logged: an operator cannot be paged on a log line,
-            # and this is the same metric the retry loop's own give-up path uses.
-            put_metric.assert_called_once_with("AgentTranscriptMessageDropped", 1)
+            # Counted, not only logged: an operator cannot be paged on a log line.
+            put_metric.assert_called_once_with("AgentTranscriptDrainIncomplete", 1)
+        finally:
+            gate.set()
+
+    def test_an_unfinished_drain_is_not_counted_as_a_dropped_message(self):
+        # The metric the retry loop uses means "this message is gone". Stopping the
+        # wait does not cancel the write -- the assertion below shows it committing
+        # after the hold is lifted -- so counting it there would page whoever alarmed
+        # on a destroyed transcript every time an environment froze and thawed.
+        gate = threading.Event()
+        instance, table = self._real_pool_logger(gate)
+        instance.log_message_async("job-1", "user-1", {"role": "user"})
+        with patch("idp_common.metrics.put_metric") as put_metric:
+            instance.shutdown(timeout=0.05)
+        published = {call.args[0] for call in put_metric.call_args_list}
+        assert "AgentTranscriptMessageDropped" not in published
+        gate.set()
+        # The write the drain gave up on: it was abandoned, not cancelled.
+        instance.executor.shutdown(wait=True)
+        assert table.update_item.called
+
+    def test_one_datum_carries_the_count_rather_than_one_call_per_message(self):
+        # Reporting is on the far side of the deadline, and `put_metric` is a
+        # synchronous CloudWatch call under a module lock, so a call per message
+        # would add to the latency the bound exists to cap. Sum is the same either
+        # way.
+        gate = threading.Event()
+        instance, _ = self._real_pool_logger(gate)
+        for _ in range(3):
+            instance.log_message_async("job-1", "user-1", {"role": "user"})
+        try:
+            with patch("idp_common.metrics.put_metric") as put_metric:
+                assert instance.shutdown(timeout=0.05) == 3
+            put_metric.assert_called_once_with("AgentTranscriptDrainIncomplete", 3)
         finally:
             gate.set()
 
@@ -998,6 +1030,21 @@ class TestShutdown:
         instance, _ = self._real_pool_logger()
         instance.shutdown()
         assert instance.shutdown() == 0
+
+    def test_a_second_shutdown_does_not_re_report_the_same_write(self):
+        # `shutdown` is public and is now the call people reach for, so a repeat is
+        # plausible -- and double-counting would inflate the one number that is meant
+        # to say how many transcripts are at risk.
+        gate = threading.Event()
+        instance, _ = self._real_pool_logger(gate)
+        instance.log_message_async("job-1", "user-1", {"role": "user"})
+        try:
+            with patch("idp_common.metrics.put_metric") as put_metric:
+                assert instance.shutdown(timeout=0.05) == 1
+                assert instance.shutdown(timeout=0.05) == 0
+            assert put_metric.call_count == 1
+        finally:
+            gate.set()
 
     def test_submitting_after_shutdown_raises_rather_than_silently_dropping(self):
         # The submit-time failure the tracker's guards absorb. It is reachable

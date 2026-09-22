@@ -44,15 +44,27 @@ _VERSION_ATTRIBUTE = "agent_messages_version"
 # condition is what makes the length exact: a write commits only if nobody appended
 # between the read and the write, so no two committed messages can compute the same
 # length. A rejected append recomputes it on the fresh read, and a dropped message
-# consumes no ordinal -- so the stored series is 1..N with no duplicates and no gaps.
+# consumes no ordinal -- so among messages written by *this* code the stored series is
+# 1..N with no duplicates and no gaps.
+#
+# Two ways a stored transcript can still hold a duplicate or a gap, neither of them a
+# defect in the derivation. A transcript written before this change carries whatever
+# its per-logger counters produced, and appends continue from its length rather than
+# repairing it. And during the Lambda version rollover -- the same window the
+# conditional write's own guard cannot close -- a writer still running pre-upgrade code
+# appends without touching the version attribute, so the condition still holds for a
+# new writer and the two can land on the same ordinal or skip one. That window closes
+# without intervention.
 #
 # This is deliberately *not* a total order the transcript is sorted by. Nothing
 # sorts on it: the writer appends, so the stored array is already in commit order,
 # and the UI renders that order as it is (`AgentMessagesDisplay.tsx` maps over the
 # parsed array). What the field is for is naming one message unambiguously -- in a
-# log line, in a support question, or by a future consumer -- and the position it
-# now holds is the strongest available version of that, since it also matches where
-# the message appears on screen.
+# log line, in a support question, or by a future consumer -- and a position in the
+# stored array is the strongest available version of that. It is a position in the
+# stored array and not a row number on screen: the UI drops messages with empty
+# content and splits a mixed text-plus-tool-use assistant message into several rows,
+# so rendered rows and stored entries are not in general one to one.
 _SEQUENCE_ATTRIBUTE = "sequence_number"
 
 # How many times one message may rebuild its append after losing a conflict.
@@ -101,11 +113,12 @@ _MAX_APPEND_ATTEMPTS = 15
 #
 # The cap is deliberately short, and it is what makes the bounded drain below
 # affordable. A retrying write is only safe for as long as something waits for it:
-# `shutdown` waits `_DRAIN_TIMEOUT_SECONDS`, and a full ladder of fifteen attempts
-# has to fit inside that with room for the queue behind it. At this cap the whole
-# ladder sleeps at most 15 * 0.050 s, so it does. Trading a longer tail for a lower
-# conflict rate would buy the lower rate with writes the drain then abandons, which
-# is paying in the currency the retry is trying to save.
+# `shutdown` waits `_DRAIN_TIMEOUT_SECONDS`, and a full ladder of fifteen attempts has
+# to fit inside that with room for the queue behind it. Summing the per-attempt bounds
+# over the fourteen conflict attempts that sleep -- the fifteenth does not -- gives
+# 0.575 s, so it does. Trading a longer tail for a lower conflict rate would buy the
+# lower rate with writes the drain then abandons, which is paying in the currency the
+# retry is trying to save.
 _BACKOFF_BASE_SECONDS = 0.005
 _BACKOFF_CAP_SECONDS = 0.050
 
@@ -134,13 +147,25 @@ _PERMANENT_READ_ERRORS = frozenset(
 )
 
 
-# Emitted once per message that could not be stored, by any of three paths: the
-# conflict retries running out, the read failing repeatedly, and the bounded drain in
-# `shutdown` giving up on a write. The log line beside each names the job and the
-# message, but a log line is not alarmable, and not being alarmable is how the
-# original defect stayed invisible for as long as it did. Alarm on this in the stack's
-# own metric namespace.
+# Emitted once per message the append gave up on: the conflict retries running out,
+# or the read failing repeatedly. In both cases the message is gone. The log line
+# beside each names the job and the message, but a log line is not alarmable, and not
+# being alarmable is how the original defect stayed invisible for as long as it did.
+# Alarm on this in the stack's own metric namespace.
 _DROPPED_MESSAGE_METRIC = "AgentTranscriptMessageDropped"
+
+# Emitted for writes the bounded drain in `shutdown` could not finish, and kept
+# **separate** from the metric above rather than folded into it, because the two do
+# not mean the same thing and one alarm cannot carry both.
+#
+# `shutdown` stops waiting; it does not cancel. `executor.shutdown(wait=False)` leaves
+# queued work in place, and Lambda resumes unfinished background work if that
+# execution environment is thawed for another invocation -- so a write counted here
+# frequently *does* commit, just later than the session reading the transcript. It is
+# lost only if the environment is reclaimed instead of reused. Counting that on
+# `AgentTranscriptMessageDropped` would page whoever alarmed on "messages were
+# destroyed" every time an environment froze and thawed.
+_DRAIN_INCOMPLETE_METRIC = "AgentTranscriptDrainIncomplete"
 
 # How long `shutdown` waits for queued and in-flight writes before giving up on
 # them and reporting what is left. A bound rather than `wait=True`, because this
@@ -155,9 +180,16 @@ _DROPPED_MESSAGE_METRIC = "AgentTranscriptMessageDropped"
 # consumer is the faster of the two by orders of magnitude, so the steady-state
 # queue is empty and what a drain waits for is the write in flight plus anything
 # that arrived during it. Two seconds covers a full contended ladder for that write
-# (fifteen attempts, at most 0.75 s of jittered backoff plus fifteen round trips)
-# with room for a few queued behind it, and caps the worst case any one agent exit
-# can add at two seconds against a 600-900 s invocation budget.
+# -- fifteen attempts is thirty round trips (each attempt reads and writes) and at
+# most 0.590 s of jittered backoff, being the sum of the per-attempt bounds for the
+# fourteen conflict attempts that sleep plus the two read attempts that do -- with
+# room for a few queued behind it.
+#
+# ⚠️ Two seconds bounds the *wait*, not the whole call. Reporting what the wait left
+# behind publishes one metric datum, and `metrics.put_metric` is a synchronous
+# `put_metric_data` under a module lock, so a drain that times out costs the two
+# seconds plus that one CloudWatch round trip. It is one call and not one per message
+# deliberately: the value published is the count, which the alarm sums identically.
 _DRAIN_TIMEOUT_SECONDS = 2.0
 
 
@@ -263,16 +295,24 @@ class DynamoDBMessageLogger:
                 and so drain on the way out (see ``shutdown``), which is what stops
                 a later attempt's loggers contending with an earlier attempt's.
 
+                ⚠️ **Only the analytics path has loggers at all.** A tracker needs
+                ``job_id`` and ``user_id`` -- ``_setup_monitoring`` returns early
+                without them -- and ``AGENT_TABLE`` to write to. Agent chat passes
+                neither identifier, and ``AGENT_TABLE`` is set on exactly two
+                functions in ``template.yaml``: ``AgentProcessorFunction``, which is
+                this path, and ``AgentCoreMCPHandlerFunction``, which builds no agent.
+                So everything here concerns ``agent_processor`` -- its top-level agent
+                and the sub-agents the orchestrator runs for it -- and agent chat
+                stores no transcript to lose.
+
                 The pool is drained at the boundary where the agent is finished
                 with: ``IDPAgent.__exit__`` calls the tracker's ``shutdown``, which
-                calls this class's. Every logger built in production belongs to an
-                agent that passes through there -- the ``with agent:`` in
-                ``agent_processor``, and a sub-agent's ``with specialized_agent:``
-                in the orchestrator, which is where the chat path's loggers all
-                live. The drain is **bounded**
-                (``_DRAIN_TIMEOUT_SECONDS``), and anything still outstanding when
-                the bound expires is reported on the
-                ``AgentTranscriptMessageDropped`` metric rather than waited on
+                calls this class's. Both places an ``IDPAgent`` is entered on the
+                analytics path reach it -- the ``with agent:`` in ``agent_processor``
+                and a sub-agent's ``with specialized_agent:`` in the orchestrator. The
+                drain is **bounded** (``_DRAIN_TIMEOUT_SECONDS``), and anything still
+                outstanding when the bound expires is reported on the
+                ``AgentTranscriptDrainIncomplete`` metric rather than waited on
                 indefinitely.
         """
         self.table_name = table_name
@@ -438,9 +478,9 @@ class DynamoDBMessageLogger:
                 return False
             raise
 
-    def _count_dropped_message(self, job_id: str) -> None:
+    def _publish_failure_metric(self, metric: str, job_id: str, count: int = 1) -> None:
         """
-        Record that a message could not be stored, on an alarmable metric.
+        Record a transcript-write failure on an alarmable metric.
 
         The ``logger.error`` beside every call names the job and identifies the
         message by role and timestamp, which is what an operator needs once they are
@@ -448,24 +488,39 @@ class DynamoDBMessageLogger:
         losing entries with nothing to notice it is the whole reason #1098 survived as
         long as it did.
 
-        Emitted with no dimensions and a value of 1, matching the convention of the
-        other failure counters in the stack's namespace (``StaleOutputPurgeFailed``,
+        Emitted with no dimensions, matching the convention of the other failure
+        counters in the stack's namespace (``StaleOutputPurgeFailed``,
         ``AssessmentConfidenceUnavailable``). Swallows everything: this runs on the
-        drop path of a best-effort logger, and a telemetry failure here must not add
+        failure path of a best-effort logger, and a telemetry failure here must not add
         a second failure to the one being reported.
 
         Args:
-            job_id: The analytics job the dropped message belonged to
+            metric: ``_DROPPED_MESSAGE_METRIC`` for a message the append gave up on,
+                ``_DRAIN_INCOMPLETE_METRIC`` for one the drain could not finish. They
+                are separate because only the first means the message is gone.
+            job_id: The analytics job the affected message belonged to
+            count: How many messages this datum stands for. One call carrying the
+                count rather than ``count`` calls carrying 1, because ``put_metric``
+                is synchronous and the alarm sums the datum either way.
         """
         try:
             from idp_common import metrics
 
-            metrics.put_metric(_DROPPED_MESSAGE_METRIC, 1)
+            metrics.put_metric(metric, count)
         except Exception as e:
             logger.warning(
-                f"Could not publish {_DROPPED_MESSAGE_METRIC} for job {job_id}: {e}. "
-                f"The message is still dropped and still logged above."
+                f"Could not publish {metric} for job {job_id}: {e}. "
+                f"The outcome it reports is unchanged and is logged above."
             )
+
+    def _count_dropped_message(self, job_id: str) -> None:
+        """
+        Record that a message could not be stored at all.
+
+        Args:
+            job_id: The analytics job the dropped message belonged to
+        """
+        self._publish_failure_metric(_DROPPED_MESSAGE_METRIC, job_id)
 
     def _write_message_to_dynamodb(
         self, job_id: str, user_id: str, message_data: Dict[str, Any]
@@ -640,16 +695,31 @@ class DynamoDBMessageLogger:
         """
         Stop accepting writes and wait, for a bounded time, for the queued ones.
 
-        This is the only thing that makes a queued write reliable. Writes are handed
-        to a thread pool so that a DynamoDB round trip is not on the agent's critical
-        path, and when a Lambda invocation returns, the execution environment is
-        **frozen** rather than shut down: the process is not signalled and does not
-        exit, so nothing runs at that point on its own. An ``atexit`` handler is not
-        an alternative -- it would need interpreter shutdown, which a freeze does not
-        cause, and when the environment is finally reclaimed the runtime is sent
-        ``SIGTERM`` only for functions with a registered **external extension**.
-        Neither agent function has one, so the shutdown phase has a 0 ms budget and
-        the process ends on ``SIGKILL``, which runs no Python.
+        This is the only thing that waits for a queued write. Writes are handed to a
+        thread pool so that a DynamoDB round trip is not on the agent's critical path,
+        and when a Lambda invocation returns the execution environment is **frozen**
+        rather than shut down: the process is not signalled and does not exit, so
+        nothing runs at that point on its own.
+
+        **Why an interpreter-exit hook is not an alternative.** The mechanism that
+        would flush the pool is not ``atexit.register`` but
+        ``threading._register_atexit(_python_exit)`` in
+        ``concurrent/futures/thread.py``, whose comment says it is used *instead of*
+        ``atexit.register``; ``_python_exit`` wakes every live pool and then ``join``s
+        every worker **with no timeout at all**. So the stdlib's own answer to this
+        problem is an unbounded join, which is precisely what must not happen at an
+        agent boundary. Reaching it needs an orderly interpreter shutdown, and neither
+        end of a Lambda environment's life provides one: a freeze is not a process
+        exit, and Python's *default* ``SIGTERM`` disposition terminates without running
+        exit hooks of any kind -- so even a function whose extension earns it a
+        ``SIGTERM`` would flush nothing without installing a handler.
+
+        That last point is what makes the argument independent of which functions carry
+        an extension, and worth keeping that way: ``AgentProcessorFunction`` carries one
+        plain library layer today, but ``ChatStreamProcessorFunction`` attaches the AWS
+        Lambda Web Adapter, which *is* an external extension, so a transcript logger
+        extended onto the streaming chat path would get a ``SIGTERM`` and a 2000 ms
+        shutdown budget. It still would not flush this pool.
 
         A frozen write is not immediately destroyed -- Lambda resumes unfinished
         background work if that environment is thawed for another invocation -- but
@@ -658,13 +728,14 @@ class DynamoDBMessageLogger:
         outright if the environment is reclaimed instead of reused, which is the
         certain outcome for the last invocation before a scale-down.
 
-        Bounded rather than ``wait=True``, because the caller is
-        ``IDPAgent.__exit__`` and for a sub-agent that is mid-turn, with the user
-        waiting on the orchestrator's answer. What is left when the bound expires is
-        logged and counted on ``AgentTranscriptMessageDropped``, so a drain that
-        could not finish is as visible as a message the retry loop gave up on. Those
-        messages may still commit if the write is thawed later; the metric says the
-        transcript may have a gap, which is the operational fact either way.
+        Bounded rather than ``wait=True``, because the caller is ``IDPAgent.__exit__``
+        and for a sub-agent that is mid-turn, with the user waiting on the
+        orchestrator's answer. What is left when the bound expires is logged and
+        counted on ``AgentTranscriptDrainIncomplete`` -- **not** on
+        ``AgentTranscriptMessageDropped``, because this call stops waiting without
+        cancelling and those writes often commit on the next thaw, so counting them as
+        dropped messages would page whoever alarmed on a destroyed transcript every
+        time an environment froze.
 
         Closing the pool is the second thing this does, and it matters even when
         nothing is queued: a ``ThreadPoolExecutor``'s worker threads are not daemon
@@ -675,7 +746,10 @@ class DynamoDBMessageLogger:
         After this returns, ``executor.submit`` raises ``RuntimeError``, which is the
         submit-time failure the guards in ``DynamoDBMessageTracker`` absorb. A
         message emitted by an agent after its context has exited is therefore logged
-        and kept in the tracker's local list rather than raised into the agent.
+        and kept in the tracker's local list rather than raised into the agent. That
+        is also why the drain is here and not on ``AfterInvocationEvent``, which the
+        hook registry does offer for teardown: an agent that is called twice would
+        have its transcript silently stop after the first call.
 
         Args:
             timeout: Seconds to wait for outstanding writes. ``None`` waits
@@ -684,7 +758,8 @@ class DynamoDBMessageLogger:
 
         Returns:
             The number of writes still outstanding when the wait ended -- 0 for a
-            complete drain.
+            complete drain. Each is reported once: a second ``shutdown`` returns 0
+            rather than re-reporting the same writes.
         """
         logger.info("Shutting down DynamoDB message logger")
 
@@ -701,7 +776,13 @@ class DynamoDBMessageLogger:
                     if remaining <= 0:
                         break
                 self._pending_changed.wait(remaining)
+            # Taken out of `_pending` under the same lock that read it, so that a
+            # second shutdown neither re-logs nor re-counts these. `shutdown` is
+            # public and is now the thing callers reach for, and a write reported
+            # twice would inflate the alarm that is supposed to say how many
+            # transcripts are at risk.
             unfinished = list(self._pending.values())
+            self._pending.clear()
 
         for job_id, message_data in unfinished:
             logger.error(
@@ -709,7 +790,13 @@ class DynamoDBMessageLogger:
                 f"{timeout}s of the agent closing; message "
                 f"({_describe(message_data)}) may not be persisted"
             )
-            self._count_dropped_message(job_id)
+        if unfinished:
+            # One datum carrying the count, published after the log lines: the wait is
+            # what the timeout bounds, and a synchronous CloudWatch call per message
+            # would add to the very latency the bound exists to cap.
+            self._publish_failure_metric(
+                _DRAIN_INCOMPLETE_METRIC, unfinished[0][0], len(unfinished)
+            )
 
         return len(unfinished)
 

@@ -4,19 +4,25 @@
 """
 Tests for IDPAgent's context-manager boundary.
 
-The subject here is narrow and is the reason this file exists: `__exit__` is the
-only place a queued agent-transcript write can be waited for. The writes go to a
-thread pool so a DynamoDB round trip stays off the agent's critical path, and a
-Lambda invocation ends with the execution environment being **frozen** rather than
-shut down -- the process is not signalled and does not exit, so no interpreter
-shutdown hook runs and an unfinished write is simply suspended. The tracker doing
-the writing is registered as a Strands hook, and a hook registry has no teardown
-event, so nothing else in the system has a route to it.
+The subject here is narrow and is the reason this file exists: `__exit__` is where a
+queued agent-transcript write is waited for. The writes go to a thread pool so a
+DynamoDB round trip stays off the agent's critical path, and a Lambda invocation ends
+with the execution environment being **frozen** rather than shut down -- the process is
+not signalled and does not exit, so no interpreter shutdown hook runs and an unfinished
+write is simply suspended.
+
+Two things about the boundary, since both are easy to get wrong from the outside. The
+registry *does* keep the tracker alive -- it stores the bound method
+`on_message_added`, whose `__self__` is the tracker -- so the defect was not a dead
+object but the absence of any named route to it, which is what
+`test_the_kept_tracker_is_the_one_that_was_registered_as_a_hook` pins by finding it the
+hard way. And the registry *does* offer a teardown event, `AfterInvocationEvent`;
+draining there would be wrong rather than unavailable, because `shutdown` closes the
+pool and a twice-invoked agent would stop transcribing after its first call.
 
 The assertions therefore go all the way to the logger rather than stopping at
-`tracker.shutdown`. A mutation anywhere along `__exit__` -> tracker -> logger --
-including the one that caused the defect, which is `_setup_monitoring` registering
-the tracker as a hook and keeping no reference to it -- has to fail one of these.
+`tracker.shutdown`. A mutation anywhere along `__exit__` -> tracker -> logger has to
+fail one of these.
 """
 
 import os
