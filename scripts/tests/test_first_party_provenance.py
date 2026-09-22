@@ -110,6 +110,41 @@ class TestAssertResolvesIn:
         pin_import(worktree / "lib" / "idp_common_pkg" / "idp_common" / "__init__.py")
         fpp.assert_resolves_in("idp_common", worktree / "tests" / "conftest.py")
 
+    def test_a_worktree_NESTED_INSIDE_the_checkout_is_still_foreign(
+        self, tmp_path, pin_import
+    ):
+        """The case an ancestry test accepts and an identity test rejects.
+
+        A git worktree lives at ``<root>/.claude/worktrees/<name>/`` — the path
+        ``.gitignore`` reserves and that tooling here creates. Asking only whether the
+        module's path is *under* the checkout root accepts a module from such a
+        worktree, although it is a different revision of the library. This is not a
+        corner case: it is the layout the live foreign tree had on the machine this
+        guard was written on.
+        """
+        root = _fake_checkout(tmp_path / "repo")
+        nested = _fake_checkout(
+            root / ".claude" / "worktrees" / "agent-x", git_is_file=True
+        )
+        pin_import(nested / "lib" / "idp_common_pkg" / "idp_common" / "__init__.py")
+        with pytest.raises(fpp.ForeignCheckoutError) as excinfo:
+            fpp.assert_resolves_in("idp_common", root / "tests" / "conftest.py")
+        assert str(nested) in str(excinfo.value)
+
+    def test_the_primary_checkout_is_foreign_to_a_nested_worktree(
+        self, tmp_path, pin_import
+    ):
+        # The same pair in the other direction, which an ancestry test already got
+        # right. Kept so the two are asserted as a matched set rather than leaving the
+        # fix above able to pass by refusing everything.
+        root = _fake_checkout(tmp_path / "repo")
+        nested = _fake_checkout(
+            root / ".claude" / "worktrees" / "agent-x", git_is_file=True
+        )
+        pin_import(root / "lib" / "idp_common_pkg" / "idp_common" / "__init__.py")
+        with pytest.raises(fpp.ForeignCheckoutError):
+            fpp.assert_resolves_in("idp_common", nested / "tests" / "conftest.py")
+
     def test_the_escape_hatch_warns_instead_of_raising(
         self, tmp_path, pin_import, monkeypatch
     ):
@@ -178,14 +213,43 @@ class TestGuardIsWiredIn:
 
     REPO_ROOT = Path(__file__).resolve().parents[2]
 
-    @pytest.mark.parametrize(
-        "conftest",
-        [
-            "lib/idp_common_pkg/tests/conftest.py",
-            "feature-platform/main-stack-extensions/tests/conftest.py",
-        ],
+    CONFTESTS = (
+        "lib/idp_common_pkg/tests/conftest.py",
+        "feature-platform/main-stack-extensions/tests/conftest.py",
     )
+
+    @pytest.mark.parametrize("conftest", CONFTESTS)
     def test_conftest_calls_the_guard(self, conftest):
         source = (self.REPO_ROOT / conftest).read_text(encoding="utf-8")
         assert "from first_party_provenance import assert_resolves_in" in source
         assert 'assert_resolves_in("idp_common", __file__)' in source
+
+    @pytest.mark.parametrize("conftest", CONFTESTS)
+    def test_the_guard_is_not_wrapped_in_a_blanket_import_suppressor(self, conftest):
+        """Wired and *working*, which a source grep alone cannot establish.
+
+        The call used to sit inside ``try: ... except ImportError: pass``. That made the
+        two assertions above satisfiable by a conftest in which the guard never runs:
+        rename the helper's exported symbol and the import fails, the clause swallows it,
+        both suites lose the guard silently, and every test in this file still passes.
+        A guard whose own wiring test cannot tell "consulted" from "skipped" is the
+        defect this module exists to catch, so the suppressor's absence is asserted
+        rather than its presence being assumed.
+        """
+        source = (self.REPO_ROOT / conftest).read_text(encoding="utf-8")
+
+        # Only the window between the helper import and the call, not the whole file.
+        # `lib/idp_common_pkg/tests/conftest.py` has a legitimate `except ImportError`
+        # in `_stub_if_absent`, hundreds of lines earlier and about something else
+        # entirely, so a file-wide search reports a finding that is not one.
+        start = source.index("from first_party_provenance import assert_resolves_in")
+        end = source.index('assert_resolves_in("idp_common", __file__)')
+        window = source[start:end]
+        assert "except ImportError" not in window, (
+            "the guard is inside an ImportError suppressor, so a renamed symbol would "
+            "disable it silently; gate on the helper file existing instead"
+        )
+        assert '"first_party_provenance.py").is_file()' in source, (
+            "the guard should be gated on the helper FILE existing, which is the only "
+            "condition its skip actually claims to cover"
+        )

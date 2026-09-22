@@ -105,7 +105,18 @@ def assert_resolves_in(module_name: str, anchor: str | Path) -> None:
 
     ``anchor`` is the calling file's ``__file__``. Raises
     :class:`ForeignCheckoutError` on a mismatch, unless :data:`ESCAPE_HATCH` is set
-    affirmatively, in which case it warns on stderr and returns.
+    affirmatively, in which case it warns through ``warnings.warn`` and returns.
+
+    **The comparison is checkout identity, not ancestry.** An earlier version asked
+    whether the module's path was *under* ``root``, which is a different and weaker
+    question: a git worktree lives at ``<root>/.claude/worktrees/<name>/`` — a path
+    ``.gitignore`` reserves and that tooling here creates — so a module from a worktree
+    nested inside the checkout under test satisfied ancestry and was accepted, although
+    it is a different revision. That is the layout the foreign tree on the machine this
+    was written on actually had, one checkout over, so the hole was in the case most
+    likely to occur rather than a corner. Deriving the module's OWN checkout root and
+    requiring the two to be equal answers the intended question, and reuses the walk
+    above rather than adding a second rule.
 
     A module that cannot be imported at all is left alone: that is an environment
     problem this function has nothing useful to add to, and raising here would mask the
@@ -127,7 +138,7 @@ def assert_resolves_in(module_name: str, anchor: str | Path) -> None:
         return
 
     resolved = Path(source).resolve()
-    if resolved.is_relative_to(root):
+    if checkout_root(resolved) == root:
         return
 
     message = (

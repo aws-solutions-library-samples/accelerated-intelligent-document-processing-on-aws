@@ -92,16 +92,20 @@ _stub_if_absent(
 # PACKAGE ROOT on sys.path and the local idp_common wins. That is luck, not a control --
 # it disappears if those files go away or import mode changes -- so the check is stated
 # explicitly here instead of being left to infer.
-sys.path.insert(0, str(Path(__file__).resolve().parents[3] / "scripts" / "tests"))
-try:
-    from first_party_provenance import assert_resolves_in
+# The guard is skipped only when the helper is genuinely ABSENT -- an export with no
+# scripts/ tree. A blanket `except ImportError` around the import and the call was
+# broader than that claim: it also swallowed a renamed symbol, or any ImportError raised
+# from inside the helper, either of which turned the guard into a no-op in this suite
+# with nothing printed and every test still green.
+_GATE_DIR = Path(__file__).resolve().parents[3] / "scripts" / "tests"
+if (_GATE_DIR / "first_party_provenance.py").is_file():
+    sys.path.insert(0, str(_GATE_DIR))
+    try:
+        from first_party_provenance import assert_resolves_in
 
-    assert_resolves_in("idp_common", __file__)
-except ImportError:
-    # Running against an export with no scripts/ tree. Nothing to assert.
-    pass
-finally:
-    sys.path.pop(0)
+        assert_resolves_in("idp_common", __file__)
+    finally:
+        sys.path.pop(0)
 
 
 @pytest.fixture(scope="session", autouse=True)
