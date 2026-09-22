@@ -131,8 +131,23 @@ CHRONOLOGICAL_HISTORY = [
 ]
 
 
-def _fixed_timeline_cap(cap: int = 50):
-    return patch(f"{MODULE}.get_ea_param", side_effect=lambda field, default: cap)
+def _fixed_timeline_cap(cap: int = 50, pages: int | None = None):
+    """Pin the timeline cap without pinning anything else.
+
+    `get_ea_param` serves several fields, so a stand-in that ignores its argument
+    also sets the history page cap — which made a test asserting the timeline cap
+    quietly fetch 50 pages. Every other field falls through to its real default
+    unless `pages` names one.
+    """
+
+    def _param(field: str, default: Any):
+        if field == "max_stepfunction_timeline_events":
+            return cap
+        if field == "max_stepfunction_history_pages" and pages is not None:
+            return pages
+        return default
+
+    return patch(f"{MODULE}.get_ea_param", side_effect=_param)
 
 
 @pytest.mark.unit
@@ -497,7 +512,7 @@ class TestAnalyzeExecutionTimelineReverseOrder:
             patch(
                 f"{MODULE}._get_execution_arn_from_document", return_value=EXECUTION_ARN
             ),
-            _fixed_timeline_cap(),
+            _fixed_timeline_cap(pages=2),
         ):
             client = factory.return_value
             client.describe_execution.return_value = {
@@ -505,7 +520,8 @@ class TestAnalyzeExecutionTimelineReverseOrder:
                 "startDate": start,
                 "stopDate": start + timedelta(seconds=30),
             }
-            # The window reached the failure but not the StateEntered before it.
+            # The window reached the failure but not the StateEntered before it, and
+            # every page looks the same, so the walk stops at its cap.
             client.get_execution_history.return_value = {
                 "events": [_execution_failed(900), _task_failed(899)],
                 "nextToken": "opaque",
@@ -513,10 +529,10 @@ class TestAnalyzeExecutionTimelineReverseOrder:
             result = analyze_workflow_execution("report.pdf")
 
         assert result["timeline_analysis"]["failure_point"]["state"] is None
-        assert result["timeline_analysis"]["history_truncated"] is True
+        assert result["timeline_analysis"]["state_unresolved_due_to_truncation"] is True
         assert "could not be identified" in result["analysis_summary"]
         assert any(
-            "100 execution history events" in r for r in result["recommendations"]
+            "longer than this tool reads" in r for r in result["recommendations"]
         )
 
     def test_an_untruncated_null_state_is_not_explained_away_as_truncation(self):
@@ -758,14 +774,20 @@ class TestGetExecutionData:
                 "events": [_task_failed(1)],
                 "nextToken": "opaque",
             }
-            assert _get_execution_data(EXECUTION_ARN)["history_truncated"] is True
+            assert (
+                _get_execution_data(EXECUTION_ARN)["state_unresolved_due_to_truncation"]
+                is True
+            )
 
     def test_a_complete_history_is_not_reported_as_truncated(self):
         with patch(f"{MODULE}.boto3.client") as factory:
             client = factory.return_value
             client.describe_execution.return_value = {}
             client.get_execution_history.return_value = {"events": [_task_failed(1)]}
-            assert _get_execution_data(EXECUTION_ARN)["history_truncated"] is False
+            assert (
+                _get_execution_data(EXECUTION_ARN)["state_unresolved_due_to_truncation"]
+                is False
+            )
 
 
 @pytest.mark.unit
@@ -1105,3 +1127,151 @@ class TestTheMisattributionPopulationIsDerivedFromTheWorkflow:
             "no recovery catches found; if every catch now ends the execution, the "
             "distinction this class draws no longer exists"
         )
+
+
+@pytest.mark.unit
+class TestTheHistoryWalkPaginatesBackwardsFromTheFailure:
+    """#1127: one page holds the failure; the failing state can be further back.
+
+    `reverseOrder=True` guarantees the failure event is in the first page, which is
+    why a single page was a defensible starting point. It does not guarantee the
+    `StateEntered` that names the failing state, and that event is the earlier of the
+    two. The walk therefore follows `nextToken` — but backwards from the failure and
+    only as far as it needs, because the whole history of a large document is
+    thousands of events, nearly all irrelevant.
+    """
+
+    @staticmethod
+    def _client(factory, pages: list[dict]):
+        client = factory.return_value
+        client.describe_execution.return_value = {"status": "FAILED"}
+        client.get_execution_history.side_effect = pages
+        return client
+
+    def test_it_follows_next_token_until_the_state_is_reachable(self):
+        """The defect: the state sits on the second page, so one page cannot name it."""
+        with patch(f"{MODULE}.boto3.client") as factory, _fixed_timeline_cap():
+            client = self._client(
+                factory,
+                [
+                    # Newest page: the failure, and the handler it was caught by.
+                    {
+                        "events": [_execution_failed(900), _task_failed(899)],
+                        "nextToken": "page2",
+                    },
+                    # Older page: the transition that names the failing state.
+                    {"events": [_entered("Extraction", 898)]},
+                ],
+            )
+            data = _get_execution_data(EXECUTION_ARN)
+
+        assert client.get_execution_history.call_count == 2
+        assert data["state_unresolved_due_to_truncation"] is False
+        with _fixed_timeline_cap():
+            assert (
+                _analyze_execution_timeline(data["events"])["failure_point"]["state"]
+                == "Extraction"
+            )
+
+    def test_it_stops_as_soon_as_the_state_is_reachable(self):
+        """Bounded cost: the first page already explains the failure, so stop there.
+
+        Asserted on the call count rather than on the result, because a walk that
+        fetched the whole history would produce the same answer and a much larger bill
+        on a document with thousands of events.
+        """
+        with patch(f"{MODULE}.boto3.client") as factory, _fixed_timeline_cap():
+            client = self._client(
+                factory,
+                [
+                    {
+                        "events": [
+                            _execution_failed(900),
+                            _task_failed(899),
+                            _entered("Extraction", 898),
+                        ],
+                        "nextToken": "more-exists-but-is-not-needed",
+                    },
+                    {"events": [_entered("OCR", 1)]},
+                ],
+            )
+            data = _get_execution_data(EXECUTION_ARN)
+
+        assert client.get_execution_history.call_count == 1
+        assert data["state_unresolved_due_to_truncation"] is False
+
+    def test_more_pages_existing_is_not_reported_as_a_limitation(self):
+        """The reason the flag is not `history_truncated` any more.
+
+        After pagination, "a nextToken came back" is true of almost every large
+        execution, and one consumer reads the flag unconditionally — so the old
+        meaning would attach a truncation warning to runs whose state was identified
+        perfectly well. The flag now means the walk could not resolve the state.
+        """
+        with patch(f"{MODULE}.boto3.client") as factory, _fixed_timeline_cap():
+            self._client(
+                factory,
+                [
+                    {
+                        "events": [
+                            _execution_failed(900),
+                            _task_failed(899),
+                            _entered("Extraction", 898),
+                        ],
+                        "nextToken": "opaque",
+                    }
+                ],
+            )
+            data = _get_execution_data(EXECUTION_ARN)
+        assert data["state_unresolved_due_to_truncation"] is False
+
+    def test_the_page_cap_bounds_the_walk_and_is_reported(self):
+        """A history that never yields the transition stops, and says it stopped."""
+        with patch(f"{MODULE}.boto3.client") as factory, _fixed_timeline_cap(pages=3):
+            client = factory.return_value
+            client.describe_execution.return_value = {"status": "FAILED"}
+            client.get_execution_history.return_value = {
+                "events": [_task_failed(899)],
+                "nextToken": "always-more",
+            }
+            data = _get_execution_data(EXECUTION_ARN)
+
+        assert client.get_execution_history.call_count == 3
+        assert data["state_unresolved_due_to_truncation"] is True
+
+    def test_a_history_read_to_completion_is_not_reported_as_unresolved(self):
+        """No nextToken means nothing was withheld, so an unnamed state is a fact about
+        the execution rather than about the window — and must not be explained away as
+        truncation."""
+        with patch(f"{MODULE}.boto3.client") as factory, _fixed_timeline_cap():
+            self._client(factory, [{"events": [_task_failed(899)]}])
+            data = _get_execution_data(EXECUTION_ARN)
+        assert data["state_unresolved_due_to_truncation"] is False
+
+    def test_an_execution_with_no_failure_fetches_one_page(self):
+        """Nothing is being explained, so there is nothing further back worth paying
+        for. A succeeded execution is the common case for this."""
+        with patch(f"{MODULE}.boto3.client") as factory, _fixed_timeline_cap():
+            client = self._client(
+                factory,
+                [
+                    {
+                        "events": [_exited("WorkflowComplete", 900)],
+                        "nextToken": "older",
+                    },
+                    {"events": [_entered("OCR", 1)]},
+                ],
+            )
+            _get_execution_data(EXECUTION_ARN)
+        assert client.get_execution_history.call_count == 1
+
+    def test_the_first_page_carries_no_next_token_parameter(self):
+        """`nextToken` is only sent once one has been received; sending an empty one is
+        an API error rather than a first page."""
+        with patch(f"{MODULE}.boto3.client") as factory, _fixed_timeline_cap():
+            client = self._client(factory, [{"events": [_task_failed(1)]}])
+            _get_execution_data(EXECUTION_ARN)
+        first_call = client.get_execution_history.call_args_list[0]
+        assert "nextToken" not in first_call.kwargs
+        assert first_call.kwargs["reverseOrder"] is True
+        assert first_call.kwargs["maxResults"] == 100

@@ -100,18 +100,22 @@ def analyze_workflow_execution(document_id: str = "") -> Dict[str, Any]:
             execution_data["execution_response"]
         )
 
-        history_truncated = bool(execution_data.get("history_truncated"))
-        if history_truncated:
-            timeline_analysis["history_truncated"] = True
+        state_unresolved_due_to_truncation = bool(
+            execution_data.get("state_unresolved_due_to_truncation")
+        )
+        if state_unresolved_due_to_truncation:
+            timeline_analysis["state_unresolved_due_to_truncation"] = True
 
         # Build analysis summary
         analysis_summary = _build_analysis_summary(
-            execution_metadata["status"], timeline_analysis, history_truncated
+            execution_metadata["status"],
+            timeline_analysis,
+            state_unresolved_due_to_truncation,
         )
 
         # Generate recommendations
         recommendations = _generate_recommendations(
-            timeline_analysis, history_truncated
+            timeline_analysis, state_unresolved_due_to_truncation
         )
 
         return _build_response(
@@ -158,7 +162,7 @@ def _get_execution_data(execution_arn: str) -> Dict[str, Any]:
     them irrelevant, so the walk stops as soon as the state can be resolved and is
     capped besides.
 
-    ``history_truncated`` reports that the walk stopped **without** being able to
+    ``state_unresolved_due_to_truncation`` reports that the walk stopped **without** being able to
     resolve the state — the cap was reached and more pages remain. It is deliberately
     not "more pages exist": after pagination that is true of almost every large
     execution and would fire the warning on runs whose state was identified perfectly
@@ -199,7 +203,7 @@ def _get_execution_data(execution_arn: str) -> Dict[str, Any]:
     return {
         "execution_response": execution_response,
         "events": events,
-        "history_truncated": bool(next_token) and not resolvable,
+        "state_unresolved_due_to_truncation": bool(next_token) and not resolvable,
     }
 
 
@@ -253,7 +257,7 @@ def _extract_execution_metadata(execution_response: Dict[str, Any]) -> Dict[str,
 def _build_analysis_summary(
     execution_status: str,
     timeline_analysis: Dict[str, Any],
-    history_truncated: bool = False,
+    state_unresolved_due_to_truncation: bool = False,
 ) -> str:
     """
     Build human-readable analysis summary.
@@ -270,7 +274,7 @@ def _build_analysis_summary(
         analysis_summary += f" at state '{state}'"
         if failure_point.get("details", {}).get("error"):
             analysis_summary += f": {failure_point['details']['error']}"
-        if state is None and history_truncated:
+        if state is None and state_unresolved_due_to_truncation:
             analysis_summary += (
                 " (the failing state could not be identified: the history walk "
                 "reached its page limit before finding the transition into it)"
@@ -280,7 +284,7 @@ def _build_analysis_summary(
 
 
 def _generate_recommendations(
-    timeline_analysis: Dict[str, Any], history_truncated: bool = False
+    timeline_analysis: Dict[str, Any], state_unresolved_due_to_truncation: bool = False
 ) -> List[str]:
     """
     Generate actionable recommendations based on analysis.
@@ -292,7 +296,7 @@ def _generate_recommendations(
         "Consider timeout adjustments if execution timed out",
     ]
 
-    if history_truncated:
+    if state_unresolved_due_to_truncation:
         recommendations.insert(
             0,
             "The execution history was longer than this tool reads, so an "
