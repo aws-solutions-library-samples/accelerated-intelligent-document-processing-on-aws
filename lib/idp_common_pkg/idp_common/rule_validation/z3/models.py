@@ -345,51 +345,44 @@ class RuleJSON:
 
     def _validate_constraint_parameters(self):
         """
-        Validate that all parameters referenced in constraints are declared.
+        Validate that every name a constraint references is declared.
 
         Property 5: Constraint Parameter Reference Validity
 
-        Note: This is a basic validation that checks for parameter names as tokens.
-        Full SMT-LIB parsing would be more comprehensive but is complex.
+        A constraint is tokenised with the same tokeniser the solver uses
+        (:func:`idp_common.rule_validation.z3.smt_grammar.tokenize`) and each token
+        is checked against the same operator and boolean-literal vocabularies, so
+        what is rejected here is what ``Z3Validator._parse_smt_atom`` and
+        ``_apply_smt_operator`` reject at solve time. Catching it here is what makes
+        the difference: a rule whose constraint misspells a parameter is otherwise
+        translated, persisted to the S3 rule cache under a key derived from the
+        rule *description*, and re-read for every later document with that
+        description, failing each one. Rejecting it at construction fails exactly
+        one translation.
+
+        The claim is bounded to names. Parenthesis balance, a constraint holding
+        more than one S-expression, and operator arity are checked by
+        ``Z3Validator._parse_smt_constraint`` at solve time; see
+        :mod:`idp_common.rule_validation.z3.smt_grammar` for the reasoning and for
+        the one token shape the two checks treat differently.
 
         Raises:
-            ValueError: If validation fails
+            ValueError: If a constraint references a name that is neither a
+                declared parameter nor part of the constraint language.
         """
+        from .smt_grammar import constraint_problems
+
         param_names = {param.name for param in self.parameters}
 
-        # Check each constraint for parameter references
         for i, constraint in enumerate(self.constraints):
-            # Extract potential parameter names (alphanumeric + underscore tokens)
-            import re
-
-            tokens = re.findall(r"\b[a-zA-Z_][a-zA-Z0-9_]*\b", constraint)
-
-            # Filter out SMT-LIB keywords and operators
-            smt_keywords = {
-                "and",
-                "or",
-                "not",
-                "implies",
-                "ite",
-                "assert",
-                "declare-const",
-                "Int",
-                "Real",
-                "Bool",
-                "String",
-                "true",
-                "false",
-            }
-
-            potential_params = [t for t in tokens if t not in smt_keywords]
-
-            # Check if potential parameters are declared
-            for token in potential_params:
-                if token in param_names:
-                    continue  # Valid parameter reference
-                # Token might be a function or other SMT-LIB construct, which is okay
-                # We only raise error if it looks like it should be a parameter
-                # but isn't declared (heuristic: used in multiple places or in comparison)
+            problems = constraint_problems(constraint, param_names)
+            if problems:
+                raise ValueError(
+                    f"constraints[{i}] {constraint!r} cannot be resolved against "
+                    f"the declared parameters "
+                    f"({', '.join(sorted(param_names)) or 'none'}): "
+                    + "; ".join(problems)
+                )
 
     def to_dict(self) -> dict:
         """

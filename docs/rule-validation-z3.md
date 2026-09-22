@@ -101,6 +101,16 @@ Document Data → [Path Extraction or LLM Extraction] → Parameter Values
 
 1. **Translation**: An LLM converts the natural-language rule into a `RuleJSON` structure containing typed parameters and SMT-LIB constraints. Translation is triggered via the "Generate RuleJSON" button in the Config Editor; the result is stored inline in the config under `x-aws-idp-rule-json`.
 
+   A translation whose constraints reference a name the rule does not declare is
+   **rejected at this point**, and the "Generate RuleJSON" button reports which
+   token could not be resolved — so a misspelled parameter (`incom` for `income`)
+   costs one translation to retry rather than one failed rule per document. The
+   same check applies to a rule pasted directly into `x-aws-idp-rule-json`. What it
+   covers is names: an undeclared parameter reference and an operator outside the
+   supported set. Parenthesis balance, operator arity and a token that is neither a
+   name nor a numeral are still reported by the solver at step 3, as
+   *Information Not Found* for that rule.
+
 2. **Extraction**: In the orchestration step, an LLM call extracts typed parameter values from the collected facts (gathered per-section in the prior step).
 
 3. **Validation**: The Z3 solver checks whether the extracted values satisfy the constraints:
@@ -127,7 +137,7 @@ The `z3-solver` package (~50 MB native shared object) is included in the `rule_v
 ## Limitations
 
 - Z3 results include `supporting_pages` collected from the extracted facts' page citations. These indicate which pages contained the evidence used for parameter extraction.
-- The SMT-LIB constraint language supports: arithmetic (`+`, `-`, `*`, `/`), comparison (`=`, `<`, `>`, `<=`, `>=`), logical (`and`, `or`, `not`, `=>`, `ite`), and type coercion for Int/Real/Bool/String.
+- The SMT-LIB constraint language supports: arithmetic (`+`, `-`, `*`, `/`, `mod`/`%`), comparison (`=`, `<`, `>`, `<=`, `>=`, `distinct`/`!=`), logical (`and`, `or`, `not`, `implies`/`=>`, `ite`), and type coercion for Int/Real/Bool/String. An operator outside that set is rejected when the rule is generated rather than when a document is processed.
 - String equality checks are exact (case-sensitive). For fuzzy matching, use the LLM engine.
 
 ## Demo

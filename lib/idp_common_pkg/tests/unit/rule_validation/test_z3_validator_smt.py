@@ -853,14 +853,26 @@ class TestValidateFacade:
     def test_an_undeclared_parameter_in_a_constraint_surfaces_as_a_validation_error(
         self,
     ):
-        # RuleJSON construction does not catch this (see
-        # test_rule_json_models.py::TestConstraintParameterReferences), so the
-        # solver layer is where a translation typo is first detected.
+        # RuleJSON construction now rejects this outright (see
+        # test_z3_rule_models.py::TestConstraintParameterReferences), which is why
+        # the constraint is assigned after construction here: the solver layer is
+        # the backstop for the token shapes the construction-time check leaves to
+        # it, and that backstop has to keep working.
+        rule = _rule_json()
+        rule.constraints = ["(> incom 0)"]
         with pytest.raises(ValidationError):
-            _validator().validate(
-                _rule_json(constraints=["(> incom 0)"]),
-                {"coverage": 1.0, "income": 1.0},
-            )
+            _validator().validate(rule, {"coverage": 1.0, "income": 1.0})
+
+    def test_a_token_the_construction_check_passes_is_still_rejected_by_the_solver(
+        self,
+    ):
+        # `3x` is neither identifier-shaped nor a numeral, so RuleJSON accepts it
+        # -- smt_grammar deliberately says nothing about that shape -- and
+        # _parse_smt_atom is what refuses it. Constructing the rule here rather
+        # than mutating it is the point of the test.
+        rule = _rule_json(constraints=["(> 3x 0)"])
+        with pytest.raises(ValidationError):
+            _validator().validate(rule, {"coverage": 1.0, "income": 1.0})
 
     def test_the_declared_timeout_is_applied_to_the_solver(self):
         # The timeout is what bounds a pathological constraint set inside a Lambda

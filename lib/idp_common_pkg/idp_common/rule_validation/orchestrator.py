@@ -13,6 +13,7 @@ from typing import Any, Dict, List, Optional
 
 from idp_common import bedrock, s3, utils
 from idp_common.models import Document, RuleValidationResult
+from idp_common.rule_validation.concurrency import resolve_semaphore
 from idp_common.rule_validation.models import LLMResponse
 
 logger = logging.getLogger(__name__)
@@ -20,6 +21,12 @@ logger = logging.getLogger(__name__)
 
 class RuleValidationOrchestratorService:
     """Service containing existing summarization methods from service.py."""
+
+    # Declared on the class so the `semaphore` property below resolves on an
+    # instance built without __init__ as well: several suites construct one with
+    # `__new__` and assign `_semaphore` themselves to pin a limit.
+    _semaphore = None
+    _semaphore_loop = None
 
     def __init__(self, config: Dict[str, Any] = None):
         # Convert dict to IDPConfig if needed (same as extraction/service pattern)
@@ -40,26 +47,22 @@ class RuleValidationOrchestratorService:
         # Initialize semaphore for async concurrency control (Pydantic already converted string to int)
         self.semaphore_limit = self.config.rule_validation.semaphore
         self._semaphore = None
+        self._semaphore_loop = None
 
     @property
     def semaphore(self):
-        """Lazy initialization of semaphore in current event loop."""
-        import asyncio
+        """
+        The one semaphore bounding this service's concurrent Bedrock calls.
 
-        try:
-            loop = asyncio.get_running_loop()
-            # Reset semaphore if bound to different event loop (notebook rerun scenario)
-            if (
-                self._semaphore is not None
-                and hasattr(self._semaphore, "_loop")
-                and self._semaphore._loop != loop
-            ):
-                self._semaphore = None
-        except RuntimeError:
-            pass
-
-        if self._semaphore is None:
-            self._semaphore = asyncio.Semaphore(self.semaphore_limit)
+        Built lazily so it binds to the loop that runs the work, and cached, so
+        that the ``async with self.semaphore:`` at both call sites contends a
+        single semaphore rather than one per task. See
+        :mod:`idp_common.rule_validation.concurrency`, which both rule-validation
+        services share.
+        """
+        self._semaphore, self._semaphore_loop = resolve_semaphore(
+            self._semaphore, self._semaphore_loop, lambda: self.semaphore_limit
+        )
         return self._semaphore
 
     def _generate_consolidated_summary(

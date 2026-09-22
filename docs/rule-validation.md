@@ -232,7 +232,19 @@ rule_validation:
 
 **Common Parameters** (top level):
 - `enabled`: Turns rule validation on or off
-- `semaphore`: Maximum number of concurrent API calls (default: 5)
+- `semaphore`: Maximum number of concurrent Bedrock calls **per document**, in both
+  the section-level fact-extraction step and the consolidation step (default: 5).
+  It is a per-invocation bound: the account-level call rate is this value times the
+  number of documents in flight, which the stack's own workflow concurrency limit
+  governs separately.
+
+  ⚠️ **The consolidation step now honours it and previously did not**, so a
+  deployment that left the default at 5 will see that step get slower and issue
+  fewer concurrent calls. Consolidation used to make one concurrent call per rule,
+  bounded only by the Lambda's default thread-pool width rather than by this
+  setting. Raising the value is how to take that throughput back deliberately;
+  measured against Claude Sonnet 4.5, consolidating a 14-rule document took 16.9 s
+  at `semaphore: 5` and 5.7 s with the bound at the rule count.
 - `max_chunk_size`: Maximum characters per chunk (default: 8000)
 - `overlap_percentage`: Percentage of overlap between chunks to preserve context (default: 10%)
 - `recommendation_options`: Custom recommendation categories for your use case
@@ -582,7 +594,10 @@ so it survives the abridgement. The unabridged text is in the step's CloudWatch 
 - Use prompt caching effectively
 
 **Slow Processing**:
-- Increase `semaphore` value
+- Increase `semaphore` value — it bounds both the fact-extraction and the
+  consolidation step, so raising it shortens both. Watch for Bedrock throttling
+  as you do: the account-level call rate is this value times the number of
+  documents in flight.
 - Reduce number of rules
 - Use faster model (e.g., Claude Haiku)
 
