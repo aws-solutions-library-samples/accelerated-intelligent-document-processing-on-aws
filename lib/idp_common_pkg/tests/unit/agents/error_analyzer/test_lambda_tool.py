@@ -287,10 +287,9 @@ class TestExtractLambdaRequestIds:
         assert result["function_request_map"] == {}
 
     def test_a_malformed_lambda_arn_is_skipped_rather_than_raising(self):
-        # The fallback ARN split is reached only when the resource has no
-        # ":function:" marker, `name` is empty, and the third ARN segment is
-        # "lambda". A six-segment ARN cannot supply the segment the fallback reads,
-        # so the event contributes nothing.
+        # A resource with no ":function:" marker and an empty `name` yields no
+        # function name, and the event contributes nothing rather than raising
+        # inside `retrieve_document_context`'s try (#1061).
         result = extract_lambda_request_ids(
             [
                 _lambda_event(
@@ -300,6 +299,32 @@ class TestExtractLambdaRequestIds:
             ]
         )
         assert result["failed_functions"] == []
+
+    @pytest.mark.parametrize(
+        "resource",
+        [
+            "arn:aws:lambda:us-east-1:123456789012:layer:mylayer:3",
+            f"arn:aws:lambda:us-east-1:123456789012:event-source-mapping:{UUID_B}",
+        ],
+    )
+    def test_a_lambda_arn_that_is_not_a_function_arn_names_no_function(self, resource):
+        # These carry seven or more segments with "lambda" in the third, so a
+        # positional read of segment six succeeds and returns something plausible --
+        # the layer NAME (not its version) or the mapping uuid. Reporting either as
+        # the function that failed is worse than reporting nothing, because it also
+        # selects the log group the agent goes on to search.
+        result = extract_lambda_request_ids(
+            [
+                _lambda_event(
+                    "LambdaFunctionFailed",
+                    resource=resource,
+                    extra={"cause": f"RequestId: {UUID_A}"},
+                )
+            ]
+        )
+        assert result["failed_functions"] == []
+        assert result["primary_failed_function"] is None
+        assert result["function_request_map"] == {}
 
     def test_one_unparseable_arn_does_not_discard_the_other_events(self):
         # The distinguishing case, and the reason the severity is not merely "one

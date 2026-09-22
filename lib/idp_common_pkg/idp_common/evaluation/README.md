@@ -72,9 +72,21 @@ make possible — a confidence keyed identically to the value it scores — is n
 outside this module: by the HITL review function, and by the benchmark harness, which
 joins these paths to a synthetic corpus's per-cell ground truth to measure calibration
 (GitHub #935). Reach for these rather than writing a second walk; a private copy
-drifts from the shape stored curves are keyed by, and one already has —
-`test_set_resolver`'s `_list_item_path` still uses the length-keyed rule, which is
-[#1066](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/1066).
+drifts from the shape stored curves are keyed by.
+
+**When your traversal cannot be one of those two functions, take the rule and not
+the walk.** `field_child_path(prefix, key)` and `list_child_path(prefix, index)` are
+the two path-segment rules the pair is built from, and they are exported for that
+case. `test_set_resolver`'s two confidence walkers are the worked example: one needs
+the `confidence_threshold` sitting beside each score, which `flatten_confidences`
+skips, and the other needs an **empty list** to count as an absent field, which
+`flatten_values` cannot report because an empty list has no scalar leaf. Both keep
+their own traversal and import the two rules, so the keys stay interchangeable with a
+stored curve's while the payload-specific parts stay where they belong. A second copy
+of the *rule* is what went wrong before
+([#1066](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/1066)):
+the resolver carried the length-keyed version, so a one-row table keyed
+`Transactions.Date` there and `Transactions[0].Date` here.
 
 Consequence to be honest about: a list whose length *varied* never joined and now
 does. But a list that was **always** single-element joined fine before, and its

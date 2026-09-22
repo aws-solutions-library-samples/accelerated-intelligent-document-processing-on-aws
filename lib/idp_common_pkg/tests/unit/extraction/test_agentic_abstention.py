@@ -694,8 +694,25 @@ def test_service_source_has_no_transport_or_shard_site_outside_the_helpers():
     from idp_common.extraction import service as svc_mod
 
     src = inspect.getsource(svc_mod)
-    # The transform is called exactly once — inside _transport_model.
-    assert src.count("nullable_leaves_for_transport(") == 1
+    # The leaf transform is called in exactly the two model helpers, and nowhere
+    # else: `_transport_model` (whole section) and `_shard_transport_model` (one
+    # shard, which layers the container transform on top).
+    assert src.count("nullable_leaves_for_transport(") == 2
+    assert (
+        inspect.getsource(svc_mod.ExtractionService._transport_model).count(
+            "nullable_leaves_for_transport("
+        )
+        == 1
+    )
+    shard_helper = inspect.getsource(svc_mod.ExtractionService._shard_transport_model)
+    assert shard_helper.count("nullable_leaves_for_transport(") == 1
+    # The container transform belongs to the shard helper alone: applying it to a
+    # whole-section model would let a single agent that saw every page answer null
+    # for a required list, which is the #666 loss rather than a shard boundary.
+    assert src.count("nullable_required_containers_for_shard(") == 1
+    assert shard_helper.count("nullable_required_containers_for_shard(") == 1
+    # Both shard fan-out sites take their model from the shard helper.
+    assert src.count("self._shard_transport_model(") == 2
     # The shard-scoped validator is built exactly once — inside
     # _shard_schema_validator — and no fan-out site builds its own.
     assert src.count("return self._build_schema_validator(shard_scoped=True)") == 1
