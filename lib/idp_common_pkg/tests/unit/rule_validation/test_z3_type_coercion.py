@@ -38,7 +38,10 @@ from idp_common.rule_validation.z3.exceptions import (
 )
 from idp_common.rule_validation.z3.models import Parameter, RuleJSON
 from idp_common.rule_validation.z3.rule_translator import RuleTranslator
-from idp_common.rule_validation.z3.type_coercion import coerce_numeric_reading
+from idp_common.rule_validation.z3.type_coercion import (
+    coerce_numeric_reading,
+    exact_numeric_reading,
+)
 from idp_common.rule_validation.z3.z3_validator import Z3Validator
 
 # A reading that is a whole number, spelled six ways. Every one of these is
@@ -249,16 +252,147 @@ class TestEveryRouteAgrees:
         assert self._path_route(reading, "Int") == "refused"
         assert self._bind_route(reading, "Int") == "refused"
 
-    def test_an_integer_read_for_a_bool_is_the_one_remaining_route_divergence(self):
+    # The full width of the divergence, which is wider than the 0/1 case it is
+    # tempting to describe it as: `bool(37)` is True, so path extraction maps
+    # EVERY non-zero integer to True. For 1 that loses nothing; for 37 it is a
+    # guess, which is the behaviour this change removes everywhere else.
+    @pytest.mark.parametrize("reading", [1, 0, 2, -1, 37, 10**9])
+    def test_an_integer_read_for_a_bool_is_the_one_remaining_route_divergence(
+        self, reading
+    ):
         # Bool and String are outside the shared numeric contract, and this is
-        # the one case where the routes still differ: path extraction maps 1 to
-        # True, while binding refuses a non-bool, non-string reading outright.
-        # It is not the #1057 defect class -- neither route produces a wrong
-        # verdict from it, because `bool(1)` loses nothing and the strict route
-        # refuses rather than guessing -- so it is pinned rather than changed.
-        # Unifying the two is a deliberate decision that should land here.
-        assert self._path_route(1, "Bool") is True
-        assert self._bind_route(1, "Bool") == "refused"
+        # the one case where the routes still differ: path extraction truthies
+        # the integer, while binding refuses a non-bool, non-string reading
+        # outright. It is not the #1057 defect class, because the strict route
+        # refuses rather than guessing and so no verdict is derived from the
+        # guess -- which is why it is pinned here rather than changed. Unifying
+        # the two is a deliberate decision that should land on this test.
+        assert self._path_route(reading, "Bool") is bool(reading)
+        assert self._bind_route(reading, "Bool") == "refused"
+
+
+@pytest.mark.unit
+class TestRealReadingsReachTheSolverExactly:
+    """
+    A `Real` reading is bound as an exact rational, not as the nearest double.
+
+    Rounding it first is a wrong-verdict path of its own, and a narrow one that an
+    inequality cannot expose: a double holds about 17 significant digits, so the
+    error is invisible to `<=` at any threshold, and decides an `=` below that.
+    A `Decimal` read from DynamoDB carries up to 38 significant digits.
+    """
+
+    # 22 significant digits: equal to 0.1 as a double, not equal as a number.
+    BELOW_ULP = Decimal("0.1000000000000000000001")
+
+    def _outcome(self, reading, constraint):
+        return Z3Validator().validate(_rule(constraint, "Real"), {"n": reading}).outcome
+
+    def test_a_reading_that_is_not_the_literal_does_not_report_a_pass(self):
+        # The reading differs from 0.1 in the 22nd digit, so `(= n 0.1)` is false.
+        # Collapsing it to a double first makes it exactly 0.1 and reports `sat`.
+        assert self._outcome(self.BELOW_ULP, "(= n 0.1)") == "unsat"
+
+    def test_a_reading_that_is_the_literal_does_report_a_pass(self):
+        # The other direction, and the reason the constraint's own literals are
+        # parsed exactly too: an exact reading compared against a literal that was
+        # collapsed to a double is `unsat` for a rule that is true.
+        assert self._outcome(self.BELOW_ULP, f"(= n {self.BELOW_ULP})") == "sat"
+
+    def test_an_inequality_is_unaffected_either_way(self):
+        # Stated so the bound on the claim is in the suite: this is why the
+        # rounding was invisible in every threshold rule.
+        assert self._outcome(self.BELOW_ULP, "(<= n 1)") == "sat"
+        assert self._outcome(self.BELOW_ULP, "(>= n 1)") == "unsat"
+
+    @pytest.mark.parametrize(
+        "reading",
+        [BELOW_ULP, Decimal("1E-30"), Fraction(1, 3), Decimal("30.9"), 30.9, "30.9"],
+    )
+    def test_the_value_the_solver_holds_is_the_reading_itself(self, reading):
+        params = [Parameter(name="n", type="Real")]
+        validator = Z3Validator()
+        z3_vars = validator._create_z3_variables(params, "r1")
+        solver = z3.Solver()
+        validator._bind_values(solver, z3_vars, {"n": reading}, params, "r1")
+        assert solver.check() == z3.sat
+        bound = solver.model()[z3_vars["n"]].as_fraction()
+        assert bound == exact_numeric_reading(reading, "Real")
+        # ... and for a Decimal or a Fraction reading that is the reading exactly,
+        # not a rounding of it. A float reading is already a binary rational, so
+        # `Fraction(30.9)` is what 30.9 *is*, not what it was written as.
+        if isinstance(reading, (Decimal, Fraction)):
+            assert bound == Fraction(reading)
+
+    def test_a_tiny_magnitude_is_exact_in_the_verdict_and_rounded_in_the_record(self):
+        # `extracted_values` and `model` are JSON, so they carry doubles; the
+        # verdict does not. 1e-400 is below the smallest double, so the recorded
+        # value underflows to 0.0 while the rule is still decided on the reading.
+        tiny = Decimal("1e-400")
+        assert coerce_numeric_reading(tiny, "Real") == 0.0
+        assert exact_numeric_reading(tiny, "Real") == Fraction(1, 10**400)
+        assert self._outcome(tiny, "(> n 0)") == "sat"
+
+    def test_the_model_reports_the_nearest_double_in_one_rounding_step(self):
+        # Dividing a separately-rounded numerator by a separately-rounded
+        # denominator rounds twice, and reported an exactly-bound 1e-30 as
+        # 9.999999999999999e-31.
+        result = Z3Validator().validate(
+            _rule("(> n 0)", "Real"), {"n": Decimal("1E-30")}
+        )
+        assert result.outcome == "sat"
+        assert result.model["n"] == 1e-30
+
+    @pytest.mark.parametrize(
+        "reading,declared",
+        [
+            (Decimal("1e400"), "Real"),
+            (Decimal("-1e400"), "Real"),
+        ],
+    )
+    def test_a_magnitude_with_no_double_is_refused_by_both_entry_points(
+        self, reading, declared
+    ):
+        # The exact entry point applies the same magnitude check even though a
+        # Fraction could hold it, because every route records the reading next to
+        # the verdict and there is nowhere to record this one.
+        with pytest.raises(ValueError, match="too large"):
+            exact_numeric_reading(reading, declared)
+        with pytest.raises(ValueError, match="too large"):
+            coerce_numeric_reading(reading, declared)
+
+    @pytest.mark.parametrize("declared", ["Int", "Real"])
+    @pytest.mark.parametrize(
+        "reading",
+        WHOLE_NUMBER_SPELLINGS
+        + FRACTIONAL_SPELLINGS
+        + [True, None, "abc", "", "1/3", float("nan"), float("inf"), Decimal("1e400")],
+    )
+    def test_the_two_entry_points_accept_and_refuse_the_same_readings(
+        self, reading, declared
+    ):
+        # They differ in representation only. Asserted over the whole table
+        # because a second entry point is a second place for the contract to
+        # drift, and the drift would be silent.
+        def verdict(fn):
+            try:
+                return "accepted", fn(reading, declared)
+            except ValueError:
+                return "refused", None
+
+        exact_verdict, exact_value = verdict(exact_numeric_reading)
+        coerce_verdict, coerce_value = verdict(coerce_numeric_reading)
+        assert exact_verdict == coerce_verdict, reading
+        if exact_verdict == "accepted":
+            if declared == "Int":
+                # Int is exact in both, including a magnitude no float can hold.
+                assert exact_value == coerce_value
+            else:
+                assert float(exact_value) == pytest.approx(coerce_value)
+
+    def test_the_exact_entry_point_returns_an_exact_type(self):
+        assert isinstance(exact_numeric_reading(42, "Int"), int)
+        assert isinstance(exact_numeric_reading(30.9, "Real"), Fraction)
 
 
 @pytest.mark.unit

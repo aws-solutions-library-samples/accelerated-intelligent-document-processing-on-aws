@@ -33,6 +33,13 @@ A float that is merely *close* to a whole number, such as ``29.999999999999996``
 is likewise refused rather than nudged. Nothing in a reading says which whole
 number the model meant, and guessing is the behaviour this module exists to
 remove.
+
+`Real` readings are **not** rounded to a double on the way to the solver. There are
+two entry points for that reason: `exact_numeric_reading` returns the exact
+rational and is what the binding site and the constraint parser use, and
+`coerce_numeric_reading` returns the `float` that goes into `extracted_values`,
+which is serialised to JSON in the result. They accept and refuse exactly the same
+readings, because the second is written in terms of the first.
 """
 
 from decimal import Decimal
@@ -42,12 +49,22 @@ from typing import Any
 
 NUMERIC_TYPES = ("Int", "Real")
 
-__all__ = ["NUMERIC_TYPES", "coerce_numeric_reading"]
+__all__ = ["NUMERIC_TYPES", "coerce_numeric_reading", "exact_numeric_reading"]
 
 
-def coerce_numeric_reading(value: Any, expected_type: str) -> int | float:
+def exact_numeric_reading(value: Any, expected_type: str) -> int | Fraction:
     """
-    Convert a reading to its declared numeric type, refusing any lossy conversion.
+    The reading as an exact number, for binding to a solver variable.
+
+    `Real` comes back as a `Fraction` rather than a `float` because `z3.RealVal`
+    accepts one and Z3's Real sort is exact rationals. Collapsing the reading to a
+    double first would be its own wrong-verdict path: `Decimal("0.1000000000000000000001")`
+    becomes `0.1` as a double, and `(= n 0.1)` then reports a Pass for a reading
+    that is not equal to the literal. A double holds ~17 significant digits and a
+    `Decimal` read from DynamoDB carries up to 38. `Z3Validator._parse_smt_atom`
+    parses the constraint's own literals through here for the same reason — an
+    exact reading compared against a collapsed literal is wrong in the other
+    direction.
 
     Args:
         value: The reading, as extracted. `int`, `float`, `Decimal`, `Fraction`
@@ -55,7 +72,7 @@ def coerce_numeric_reading(value: Any, expected_type: str) -> int | float:
         expected_type: `"Int"` or `"Real"`.
 
     Returns:
-        An `int` for `"Int"`, a `float` for `"Real"`.
+        An `int` for `"Int"`, an exact `Fraction` for `"Real"`.
 
     Raises:
         ValueError: If the reading does not denote a value of that type, or
@@ -74,6 +91,40 @@ def coerce_numeric_reading(value: Any, expected_type: str) -> int | float:
             )
         return int(exact)
 
+    # Refused here and not only in `coerce_numeric_reading`, so that both agree:
+    # every route records the reading alongside the verdict, and a magnitude no
+    # float can hold has no place to be recorded.
+    _as_float(exact, value)
+    return exact
+
+
+def coerce_numeric_reading(value: Any, expected_type: str) -> int | float:
+    """
+    The reading in its declared type, for recording alongside the verdict.
+
+    Accepts and refuses exactly what `exact_numeric_reading` does — it is the same
+    code — and differs only in representation: a `Real` comes back as a `float`,
+    because the value is stored in `extracted_values` and serialised to JSON in
+    the result. Use `exact_numeric_reading` for anything handed to the solver.
+
+    Args:
+        value: The reading, as extracted.
+        expected_type: `"Int"` or `"Real"`.
+
+    Returns:
+        An `int` for `"Int"`, a `float` for `"Real"`.
+
+    Raises:
+        ValueError: As `exact_numeric_reading`.
+    """
+    exact = exact_numeric_reading(value, expected_type)
+    if isinstance(exact, int):
+        return exact
+    return _as_float(exact, value)
+
+
+def _as_float(exact: Fraction, value: Any) -> float:
+    """The nearest double to an exact reading, or a refusal if there is none."""
     try:
         return float(exact)
     except OverflowError:

@@ -474,30 +474,65 @@ when path extraction fails), and the orchestrator's production fact-extraction
 call, which hands parsed JSON straight to `Z3Validator.validate`. All three end at
 `Z3Validator._bind_values`.
 
-For the numeric types all three go through `coerce_numeric_reading`
-(`z3/type_coercion.py`), so what counts as a valid reading has one definition
-rather than one per route:
+For the numeric types all three go through `z3/type_coercion.py`, so what counts
+as a valid reading has one definition rather than one per route:
 
 | Declared | Accepted | Refused |
 |---|---|---|
-| `Int` | any reading that denotes a whole number, whatever its Python type or spelling — `42`, `42.0`, `Decimal("42.0")`, `Fraction(42)`, `"42"`, `"42.0"` | a fractional reading (`30.9`, `Decimal("30.9")`, `"30.9"`), a `bool`, a non-numeral, infinity, NaN |
-| `Real` | any finite numeral, whole or fractional | a `bool`, a non-numeral, infinity, NaN, a magnitude no `float` can hold |
+| `Int` | any reading that denotes a whole number, whatever its Python type or spelling — `42`, `42.0`, `Decimal("42.0")`, `Fraction(42)`, `"42"`, `"42.0"`, `"1.5e3"`. Arbitrary precision: an exact 401-digit integer binds | a fractional reading (`30.9`, `Decimal("30.9")`, `Fraction(309,10)`, `"30.9"`), a reading merely *close* to whole (`29.999999999999996`), a `bool`, a non-numeral, infinity, NaN |
+| `Real` | any numeral, whole or fractional, that has a `float` to be recorded as. **Bound to the solver exactly**, as a rational — `Decimal("0.1000000000000000000001")` is not equal to `0.1` | a `bool`, a non-numeral, infinity, NaN, a magnitude larger than any `float` |
 
 An `Int` reading is refused rather than truncated because `int()` rounds toward
 zero, moving the reading by up to a whole unit. That is enough to flip the verdict
 of any rule with an integer threshold, and to flip it in either direction
 depending on the comparator, so no rounding rule is sound: `days_late <= 30` read
 as 30.9 would report a Pass if truncated to 30, and `days_late >= 31` would report
-a Pass if rounded to 31. A refusal raises `ValidationError`, which every caller
-renders as **Information Not Found** for that one rule — the orchestrator's
-`_run_z3_validation` and `Z3RuleEngine.validate_rule` both put the reason in the
-rule's `reasoning`, and `ValidationSystem.validate_batch` records an error
-`ValidationResult` and carries on with the remaining rules.
+a Pass if rounded to 31.
+
+**Exact is not the same as recorded.** There are two entry points, and the
+difference matters when reading a result:
+
+- `exact_numeric_reading` returns an `int` or a `Fraction` and is what
+  `Z3Validator._bind_values` binds and what `_parse_smt_atom` parses the
+  constraint's own decimal literals with. Rounding either operand to a double
+  first decides an equality constraint below the 17th significant digit, and a
+  `Decimal` from DynamoDB carries up to 38. Both operands go through it, because
+  making one exact and leaving the other collapsed is wrong in the other
+  direction.
+- `coerce_numeric_reading` returns an `int` or a `float` and is what goes into
+  `extracted_values` and `model`, which are serialised to JSON. A `Real` there is
+  the nearest double to the reading, so a magnitude below the smallest double is
+  recorded as `0.0` while the verdict is still decided on the reading. The two
+  accept and refuse identically — the second is written in terms of the first —
+  and differ only in representation.
+
+A refusal raises `ValidationError`. What that means for the rule depends on where
+it happens:
+
+- **At binding**, it is terminal for that rule, and every caller renders it as
+  **Information Not Found**: the orchestrator's `_run_z3_validation` and
+  `Z3RuleEngine.validate_rule` put the reason in the rule's `reasoning`, and
+  `ValidationSystem.validate_batch` records an error `ValidationResult` and carries
+  on with the remaining rules.
+- **At LLM extraction**, `RuleTranslator._parse_extraction_output` raises
+  `TranslationError` instead, and `Z3RuleEngine._extract_values` treats that as one
+  failed attempt: it retries extraction against the document text. So a refused
+  reading there costs a second Bedrock call, and the rule still gets a verdict if
+  the retry answers a whole number. The verdict is derived from whatever reading
+  the solver actually saw, and that reading is the one reported.
 
 `Bool` and `String` keep their per-route conversions. They agree on everything
-except an integer read for a `Bool`, which path extraction maps to `True` and
-binding refuses; `tests/unit/rule_validation/test_z3_type_coercion.py` pins that
-difference so closing it stays a deliberate change.
+except an integer read for a `Bool`: path extraction truthies it, so **every**
+non-zero integer becomes `True` — lossless for `1`, a guess for `37` — while
+binding refuses a non-bool, non-string reading outright. No verdict is derived
+from the guess, because the strict route refuses, which is why this is pinned
+rather than changed; `tests/unit/rule_validation/test_z3_type_coercion.py` records
+its full width so closing it stays a deliberate change.
+
+One rough edge worth knowing: the `reasoning` a refused rule carries is the
+exception's full log formatting — component, operation, rule id, message, context
+dict and timestamp. That is the shape every Z3 error has had in that field; it is
+useful in logs and noisy in a compliance report.
 
 ## Performance Considerations
 

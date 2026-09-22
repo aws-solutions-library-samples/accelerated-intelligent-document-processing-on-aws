@@ -23,7 +23,7 @@ import z3
 
 from .exceptions import ValidationError
 from .models import Parameter, RuleJSON, ValidationResult
-from .type_coercion import coerce_numeric_reading
+from .type_coercion import exact_numeric_reading
 
 # Configure logging
 logger = logging.getLogger(__name__)
@@ -553,14 +553,17 @@ class Z3Validator:
         if token == "false":  # nosec B105 - SMT-LIB boolean literal, not a password
             return z3.BoolVal(False)
 
-        # Check if it's a number
+        # Check if it's a number. A decimal literal is parsed EXACTLY, through the
+        # same numeral rules a reading gets: `float("0.1000000000000000000001")`
+        # is 0.1, so a collapsed literal compared against an exact reading is a
+        # wrong verdict at an equality constraint in the other direction from the
+        # one issue #1057 describes. Going through `exact_numeric_reading` rather
+        # than handing the token to `z3.RealVal` also keeps the grammar as it was:
+        # `RealVal` would accept "1/3", which is an expression, not a literal.
         try:
-            # Try integer first
             if "." not in token:
                 return z3.IntVal(int(token))
-            else:
-                # Parse as real (float)
-                return z3.RealVal(float(token))
+            return z3.RealVal(exact_numeric_reading(token, "Real"))
         except ValueError:
             pass
 
@@ -789,7 +792,7 @@ class Z3Validator:
                             },
                         )
                     z3_value = z3.IntVal(
-                        self._as_number(value, param, rule_id, extracted_values)
+                        self._as_exact_number(value, param, rule_id, extracted_values)
                     )
 
                 elif param.type == "Real":
@@ -806,7 +809,7 @@ class Z3Validator:
                             },
                         )
                     z3_value = z3.RealVal(
-                        self._as_number(value, param, rule_id, extracted_values)
+                        self._as_exact_number(value, param, rule_id, extracted_values)
                     )
 
                 elif param.type == "Bool":
@@ -876,7 +879,7 @@ class Z3Validator:
                     },
                 )
 
-    def _as_number(
+    def _as_exact_number(
         self,
         value: Any,
         param: Parameter,
@@ -895,9 +898,15 @@ class Z3Validator:
         truncating is no better, because it is wrong for the opposite comparator
         (`days_late >= 31` would report a PASS). See GitHub issue #1057.
 
-        A refusal surfaces as a `ValidationError`, which callers already treat as
-        "this rule could not be evaluated" — `Z3RuleEngine` reports the rule as
-        *Information Not Found* — rather than as a verdict.
+        The value returned is **exact** — a `Fraction` for a `Real` — because Z3's
+        Real sort is exact rationals and rounding the reading to a double first
+        loses a verdict of its own at an equality constraint.
+
+        A refusal surfaces as a `ValidationError`, which callers treat as "this
+        rule could not be evaluated": the orchestrator and `Z3RuleEngine` report
+        the rule as *Information Not Found* with the reason, and
+        `ValidationSystem.validate_batch` records an error result and carries on
+        with the remaining rules.
 
         Args:
             value: The reading, known to be non-None.
@@ -906,14 +915,14 @@ class Z3Validator:
             extracted_values: All readings, for error context.
 
         Returns:
-            An `int` for an `Int` parameter, a `float` for a `Real` one.
+            An `int` for an `Int` parameter, an exact `Fraction` for a `Real` one.
 
         Raises:
             ValidationError: If the reading is not a value of that type, or
                 cannot be converted to it without losing information.
         """
         try:
-            return coerce_numeric_reading(value, param.type)
+            return exact_numeric_reading(value, param.type)
         except ValueError as e:
             raise ValidationError(
                 message=f"Cannot bind parameter '{param.name}': {e}",
@@ -954,10 +963,13 @@ class Z3Validator:
                     if z3.is_int_value(value):
                         model[var_name] = value.as_long()
                     elif z3.is_rational_value(value):
-                        # Convert rational to float
-                        model[var_name] = float(value.numerator_as_long()) / float(
-                            value.denominator_as_long()
-                        )
+                        # Rendered as the nearest double to the exact rational, in
+                        # one rounding step. Dividing two separately-rounded
+                        # floats rounds twice — it reported an exactly-bound 1e-30
+                        # as 9.999999999999999e-31 — and overflows for a magnitude
+                        # either side of the double range, losing the value
+                        # entirely where `float(Fraction)` returns 0.0.
+                        model[var_name] = float(value.as_fraction())
                     elif z3.is_true(value):
                         model[var_name] = True
                     elif z3.is_false(value):
