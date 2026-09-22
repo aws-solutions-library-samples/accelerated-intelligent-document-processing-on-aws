@@ -219,10 +219,17 @@ class ProcessingIssue:
             from the document, so their values were scored without their evidence),
             ``"extraction_class_not_configured"`` (the section's class is absent
             from the configuration, so there was no schema to extract against),
-            ``"extraction_failed"`` (the section's extraction step RAISED — the one
-            code here that reports a failure rather than flagging a result the
-            pipeline still accepted; see
-            ``idp_common.extraction.failure``), or
+            ``"extraction_failed"`` (the section's extraction step RAISED — see
+            ``idp_common.extraction.failure``),
+            ``"rule_validation_failed"`` (the section's rule validation raised, so
+            it has no compliance verdict),
+            ``"rule_validation_not_consolidated"`` (the section was validated but
+            consolidating the document's results into one compliance decision
+            failed) and ``"section_processing_failed"`` (the collate step found
+            this section's processing had failed) — the four codes that report a
+            failure rather than flagging a result the pipeline still accepted; the
+            last three are written by ``idp_common.document_failure``, and all four
+            are the set the UI renders as "Failed" rather than "Incomplete", or
             ``"classification_failed"`` / ``"classification_page_no_content"`` /
             ``"classification_invalid_class_fallback"`` (classification produced no
             usable class for one or more of the section's pages).

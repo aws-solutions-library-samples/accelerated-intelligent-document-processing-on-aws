@@ -19,6 +19,7 @@ The IDP Common library provides these main modules:
 - **[Summarization](summarization/README.md)**: Document summarization services
 - **[BDA](bda/README.md)**: Bedrock Data Automation integration
 - **[Document Service Factory](docs_service_README.md)**: The `create_document_service()` entry point Lambdas use to record document state (always DynamoDB-backed)
+- **Document Failure** (`document_failure.py`): recording *why* a document failed before the handler re-raises — see [Recording a document-level failure](#-recording-a-document-level-failure) below
 - **[Reporting](reporting/README.md)**: Analytics data storage
 - **[Assessment](assessment/README.md)**: Confidence scoring and bounding boxes
 - **[Discovery](discovery/README.md)**: Document class and schema discovery
@@ -379,6 +380,103 @@ schema = result["schema"]  # JSON Schema dict
 document_service = create_document_service()
 document = document_service.update_document(document)
 ```
+
+## 🧯 Recording a document-level failure
+
+`document_failure.py` is what a Lambda handler calls in the `except` block it is
+about to re-raise from, so the document's own record carries the explanation. It
+exists because a raise is invisible to a reader: none of the pipeline's task states
+has a `Catch`, and `workflow_tracker` writes only a bare `Document` of status plus
+completion time for a FAILED execution, so the pre-raise write is the only
+opportunity there is.
+
+```python
+from idp_common.document_failure import (
+    RULE_VALIDATION_FAILED_CODE, RULE_VALIDATION_FAILED_MESSAGE,
+    RULE_VALIDATION_STAGE, SectionDiagnosis,
+    persist_failed_section, persist_failed_document, summarize_errors,
+)
+
+try:
+    document = service.do_work(document)
+except Exception as error:
+    persist_failed_section(            # one section, atomic — use inside a Map
+        document_service=document_service,
+        document=document,
+        error=error,
+        diagnosis=SectionDiagnosis(
+            section_id=section_id,
+            stage=RULE_VALIDATION_STAGE,
+            code=RULE_VALIDATION_FAILED_CODE,
+            message=RULE_VALIDATION_FAILED_MESSAGE,        # fixed template
+            root_cause=summarize_errors(document.errors,   # variable text
+                                        fallback=f"{type(error).__name__}: {error}"),
+        ),
+        section_index=section_index,
+    )
+    raise                              # unchanged: same type, message, traceback
+```
+
+Pick the writer by what the handler owns. `persist_failed_section` issues
+`SET Sections[i] = :section`, which is what a handler running inside a `Map` needs
+— concurrent iterations do not read-modify-write over each other.
+`persist_failed_document` issues one whole-document `update_document`, for a handler
+that already owns that write and holds every section.
+
+### The rules it holds, and why they are here rather than at each call site
+
+1. **The original exception propagates unchanged.** Every failure inside the persist
+   is logged and swallowed, and neither function ever raises. A DynamoDB write that
+   fails while trying to make an exception more visible must not surface in its
+   place, or the Step Functions cause reports an unavailable table instead of the
+   actual failure.
+2. **Only an issue with the same `code` is replaced.** A retried document does not
+   collect one issue per attempt, and a diagnosis another stage wrote — the thing a
+   reader most needs alongside this one — is not deleted.
+3. **A transient failure records nothing**, because the state machine is about to
+   retry it and a marked section would show red for the length of the ladder (eight
+   attempts at 2.5x backoff from ten seconds) and then clear. `failure_is_transient`
+   is the same predicate the extraction and assessment handlers use. Of the three
+   call sites this is load-bearing at exactly one — the rule-validation orchestrator,
+   which re-raises the caught exception unchanged; the other two raise an exception
+   they synthesise from a status check, which carries no transient verdict. The
+   residual is that an exhausted ladder leaves the sections unmarked.
+4. **Variable-length text goes in `root_cause`.** `ProcessingIssue.__post_init__`
+   bounds that field (and every string leaf of `details`) because they share one
+   DynamoDB item with a 400 KB ceiling. `message` is written to DynamoDB and is
+   **not** bounded, so every `*_MESSAGE` constant here is a fixed template with no
+   interpolation — a test asserts that.
+
+### Why the diagnosis goes on a section, never on the document
+
+The obvious alternative is to persist `document.errors`, which is what these stages
+actually write. It is the wrong answer twice: `_document_to_update_expressions` has
+never persisted `errors`, and `errors` is the scattered free-text signal
+`ProcessingIssue` was introduced to replace.
+
+A new document-level `ProcessingIssues` attribute is also declined, for the reason
+already recorded where classification faced the same choice
+(`ClassificationService._record_page_classification_issues`): `ProcessingIssues` is
+a **Section** field in the API schema, so a document-level issue bumps
+`ProcessingIssueCount` — which the document list does read — and then has no text to
+show behind the badge. Giving it text means a new DynamoDB attribute, a resolver
+shaping it, a schema type and a UI surface.
+
+So each call site names the section or sections the failure belongs to, and travels
+the path that is already persisted and already rendered. Where a diagnosis is
+genuinely document-scope and no section can be named, it is left in the exception
+and the log rather than attributed to a section by guess — `processresults_function`
+does exactly that with `document.errors`, and a test pins it.
+
+### Adding a new failure code
+
+The codes meaning "the stage raised" are declared in `FAILURE_CODES` here and in
+`EXTRACTION_FAILED_CODE` in `extraction/failure.py`. The UI renders those as
+**Failed** and every other error-severity code as **Incomplete**, from a hand-written
+literal in `src/ui/src/components/common/processing-issues-utils.ts`. That is a
+different language, so nothing about adding a code here would make it appear there —
+`scripts/tests/test_failure_code_ui_parity.py` fails when the two disagree in either
+direction. Add the code to the `ProcessingIssue` docstring's inventory too.
 
 ## 📝 Best Practices
 

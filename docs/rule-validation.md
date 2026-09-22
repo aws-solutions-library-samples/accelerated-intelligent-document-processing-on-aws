@@ -516,6 +516,46 @@ Check CloudWatch logs for:
 - `rule-validation-function`: Section-level evaluation logs
 - `rule-validation-orchestration-function`: Orchestration logs
 
+### Where a failed rule validation shows up
+
+When rule validation fails, the failure is recorded **on the sections it affects**,
+so the document's Sections panel names them instead of leaving the explanation only
+in the Step Functions cause and the CloudWatch log. The Status column reads
+**Failed**, and hovering the status shows the issue with the technical cause behind
+it. The document list's processing-issue badge counts the same issues.
+
+Two codes are written, because they describe different situations:
+
+| Code | Meaning |
+|---|---|
+| `rule_validation_failed` | This section's own rule validation did not complete, so it has no compliance verdict. The cause is whatever the rule-validation service recorded — a missing page, a solver timeout, a model error. |
+| `rule_validation_not_consolidated` | Every section was validated, but the orchestration step that turns those results into the document's single compliance decision failed. No section has a verdict, so every section carries this issue. |
+
+The collate step writes a third code, `section_processing_failed`, when it finds
+that a section's earlier processing failed. All three are error severity.
+
+The exception is unchanged by this: the Step Functions cause still carries the same
+message it always did. What changed is that the document's own record now carries it
+too.
+
+**A transient failure is not marked.** A throttle or a read timeout is retried by
+the state machine, so flagging the sections would show them failed for as long as
+that ladder runs and then clear itself. Only a failure that will not be retried is
+recorded. If a ladder exhausts every attempt, the document fails with the
+explanation in the Step Functions cause and the sections are not flagged.
+
+**A document-scope explanation has no section to attach to, and is not invented
+one.** The collate step also collects free-text errors that belong to the document
+as a whole rather than to any one section — page-level OCR problems, for example.
+Those are not attributed to a section, because picking one would be a claim the
+pipeline cannot support; they remain in the Step Functions cause and the step's log.
+Per-page classification failures behind them are separately recorded on their own
+sections by the classification stage.
+
+**A very long explanation is abridged in the middle**, on the same 4 KB bound every
+processing issue's technical cause carries, with the error count written at the front
+so it survives the abridgement. The unabridged text is in the step's CloudWatch log.
+
 ### Common Issues
 
 **High Token Usage**: 
