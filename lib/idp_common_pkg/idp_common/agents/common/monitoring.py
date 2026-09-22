@@ -182,7 +182,19 @@ class AgentMonitor(HookProvider):
 
         self.monitor_logger.info(f"🔧 Invoking tool: {tool_name} --> {event}")
         if self.enable_detailed_logging:
-            self.monitor_logger.debug(f"Tool input: {json.dumps(tool_input, indent=2)}")
+            # default=str so a tool input holding a value json cannot encode is
+            # rendered rather than raising TypeError out of the hook. This callback runs
+            # on the agent's tool-call path and produces only a debug line, so there is
+            # nothing here worth failing a tool call for.
+            #
+            # The f-string is evaluated as an argument, so the serialisation happens
+            # before logger.debug is called and therefore runs at **any** log level —
+            # the exception did not depend on DEBUG being enabled, and the line it was
+            # raised for was usually discarded. Of the three unguarded paths fixed with
+            # this change, this one had the widest exposure for that reason.
+            self.monitor_logger.debug(
+                f"Tool input: {json.dumps(tool_input, indent=2, default=str)}"
+            )
 
     def on_after_tool_invocation(self, event) -> None:
         """Handle after tool invocation event."""
