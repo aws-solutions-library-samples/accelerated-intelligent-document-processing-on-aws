@@ -39,10 +39,12 @@ value against its declared `type` and refuses a lossy reading; the refusal is
 retries extraction against the raw document text, which is a second model call. So an
 over-strict check here shows up as doubled cost on a correct answer rather than as an
 outright failure, and both directions are asserted for that reason. And
-`_generate_rule_id` is not unique despite its comment saying so — see
-[#1118](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/1118).
+`_generate_rule_id` is deterministic rather than unique: it is a digest of the rule
+text alone, so two rules with byte-identical text share an id and re-translating one
+rule keeps its id. `TestGenerateRuleId` pins both halves of that.
 """
 
+import hashlib
 import io
 import json
 from typing import Any
@@ -241,38 +243,41 @@ class TestConstruction:
 
 @pytest.mark.unit
 class TestGenerateRuleId:
-    """_generate_rule_id: a stable prefix and a unique suffix."""
+    """_generate_rule_id: a stable prefix and a deterministic, content-addressed suffix."""
 
     def test_the_id_has_the_documented_prefix(self):
         assert _translator()._generate_rule_id("some rule").startswith("rule_")
 
-    def test_ids_for_the_same_text_collide_within_a_millisecond(self):
-        """The id is not unique, despite the code saying it is. See #1118.
+    def test_the_id_does_not_depend_on_the_clock(self):
+        """The load-bearing assertion, and the one that fails if the clock returns.
 
-        `_generate_rule_id` hashes the rule text plus `int(time.time() * 1000)`, and its
-        comment reads "Use hash of rule text + timestamp for uniqueness". Millisecond
-        resolution is far coarser than the call rate: 2,000 back-to-back calls on
-        identical text produced **3** distinct ids.
+        Deriving the suffix from `int(time.time() * 1000)` made the id neither unique
+        (identical text inside one millisecond collided — 2,000 back-to-back calls
+        produced 3 distinct ids) nor stable (identical text a moment later differed).
+        Two calls under clocks seventeen years apart must now agree.
 
-        This is asserted in the direction that is TRUE rather than as a strict xfail on
-        the direction that is wanted, because "unique" is not in fact the requirement
-        anywhere — every consumer traced (`rule_translator.py` lines 164-299) uses the
-        id for log and error context and to populate the returned rule object, and
-        nothing keys a cache or an S3 object on it. So there is no current defect to
-        pin, only a comment that promises a property the code does not have and that a
-        future caller could reasonably rely on.
-
-        An earlier version of this test asserted `first != second or len(first) ==
-        len(second)`, whose second disjunct is unconditionally true for a `"rule_"`
-        prefix plus 8 hex characters. It could not fail, and it stated the opposite of
-        what the code does.
+        Do NOT weaken this to "two back-to-back calls are equal": under a
+        clock-derived suffix those usually *are* equal, because they land in the same
+        millisecond, so such an assertion passes against both implementations.
         """
         translator = _translator()
-        ids = [translator._generate_rule_id("same text") for _ in range(500)]
-        assert len(set(ids)) < len(ids), (
-            "ids no longer collide, so #1118 may be fixed; if the generator is now "
-            "genuinely unique, assert that instead and update the docstring"
-        )
+        with patch(f"{MODULE}.time.time", return_value=0.0):
+            first = translator._generate_rule_id("same text")
+        with patch(f"{MODULE}.time.time", return_value=1_700_000_000.123):
+            second = translator._generate_rule_id("same text")
+        assert first == second
+
+    def test_the_id_is_the_digest_of_the_rule_text_alone(self):
+        """Content-addressed, so it agrees with the key the translation is cached under.
+
+        `Z3EngineAdapter` keys its memory cache on the rule description and its S3
+        object on a `sha256` of it, so an id derived from anything else made the
+        RuleJSON's own identifier disagree with where the RuleJSON lives.
+        """
+        expected = hashlib.md5(  # noqa: S324 - mirrors the non-security id hash
+            b"same text", usedforsecurity=False
+        ).hexdigest()[:8]
+        assert _translator()._generate_rule_id("same text") == f"rule_{expected}"
 
     def test_different_text_gives_different_ids(self):
         # The property that does hold and that the id is actually used for: two
@@ -865,7 +870,7 @@ class TestInvokeBedrockRetryLadder:
     This is the one Bedrock-facing method in the translator, and every call into the
     model goes through it, so an error classified wrongly here either burns attempts on
     something that will never succeed or gives up on something transient. It had no
-    tests: `for attempt in range(max_retries)` never executed, so the whole ladder --
+    tests: `for attempt in range(max_attempts)` never executed, so the whole ladder --
     both retry branches, the exhaustion paths and the classification set -- was
     unexercised.
 
@@ -935,10 +940,10 @@ class TestInvokeBedrockRetryLadder:
         assert excinfo.value.context["error_code"] == "AccessDeniedException"
 
     def test_the_default_allows_two_attempts_not_three(self):
-        # `max_retries: int = 2` with `range(max_retries)` is TWO attempts in total,
-        # i.e. one retry. The docstring says "default: 3". Pinned at the observable
-        # count so the mismatch is visible to whoever reconciles them; if the default
-        # is raised to 3 this test is the one that says so.
+        # `max_attempts: int = 2` with `range(max_attempts)` is TWO attempts in
+        # total, i.e. one retry, which is what the signature and the docstring both
+        # now say. This is the regression guard for that default: it asserts the
+        # OBSERVABLE call count, so raising the default to 3 fails here.
         translator = self._translator_with(
             self._client_error("ThrottlingException"),
             self._client_error("ThrottlingException"),
@@ -955,7 +960,7 @@ class TestInvokeBedrockRetryLadder:
         )
         with patch(f"{MODULE}.time.sleep") as sleep:
             with pytest.raises(TranslationError):
-                translator._invoke_bedrock("p", max_retries=4, initial_backoff=0.5)
+                translator._invoke_bedrock("p", max_attempts=4, initial_backoff=0.5)
         assert [call.args[0] for call in sleep.call_args_list] == [0.5, 1.0, 2.0]
 
     def test_exhausting_the_retries_reports_the_attempt_count(self):
@@ -964,7 +969,7 @@ class TestInvokeBedrockRetryLadder:
         )
         with patch(f"{MODULE}.time.sleep"):
             with pytest.raises(TranslationError) as excinfo:
-                translator._invoke_bedrock("p", rule_id="r1", max_retries=3)
+                translator._invoke_bedrock("p", rule_id="r1", max_attempts=3)
         assert excinfo.value.context["max_retries"] == 3
         assert excinfo.value.rule_id == "r1"
 
