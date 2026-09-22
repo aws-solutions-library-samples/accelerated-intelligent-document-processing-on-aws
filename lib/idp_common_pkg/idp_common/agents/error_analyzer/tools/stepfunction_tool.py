@@ -132,11 +132,22 @@ def _get_execution_data(execution_arn: str) -> Dict[str, Any]:
     Consumers must therefore not assume chronological order --
     ``_analyze_execution_timeline`` orders the events it is given.
 
-    The page is **not** paginated, so a long execution is analysed from its newest
-    100 events only. ``history_truncated`` reports that, because the truncation is
-    not harmless: the failure event survives the window but the failing state's
-    ``StateEntered`` may not, and the analysis then reports no state at all. Without
-    the flag that is indistinguishable from an execution where nothing failed.
+    Pages are followed **backwards from the failure** rather than to the beginning of
+    the history. One page is enough to contain the failure event, but the failing
+    state's ``StateEntered`` is the earlier of the two and can sit outside it: the
+    unified workflow has 55 states and three inline ``Map`` states whose iterations
+    share one history, so at five to seven events per task invocation a document with
+    more than a couple of sections exceeds 100 events comfortably. Fetching the
+    *whole* history instead would be thousands of events on a large document, most of
+    them irrelevant, so the walk stops as soon as the state can be resolved and is
+    capped besides.
+
+    ``history_truncated`` reports that the walk stopped **without** being able to
+    resolve the state — the cap was reached and more pages remain. It is deliberately
+    not "more pages exist": after pagination that is true of almost every large
+    execution and would fire the warning on runs whose state was identified perfectly
+    well. The flag is read only to explain an unidentified state, so narrowing it to
+    exactly that case keeps the explanation and drops the noise.
     """
     stepfunctions_client = boto3.client("stepfunctions")
 
@@ -144,17 +155,68 @@ def _get_execution_data(execution_arn: str) -> Dict[str, Any]:
         executionArn=execution_arn
     )
 
-    history_response = stepfunctions_client.get_execution_history(
-        executionArn=execution_arn,
-        maxResults=100,
-        reverseOrder=True,  # Most recent events first; see the docstring above.
-    )
+    max_pages = get_ea_param("max_stepfunction_history_pages", 10)
+
+    events: List[Dict[str, Any]] = []
+    next_token: Optional[str] = None
+    resolvable = False
+
+    for _page in range(max(1, int(max_pages))):
+        kwargs: Dict[str, Any] = {
+            "executionArn": execution_arn,
+            "maxResults": 100,
+            "reverseOrder": True,  # Most recent events first; see the docstring above.
+        }
+        if next_token:
+            kwargs["nextToken"] = next_token
+        history_response = stepfunctions_client.get_execution_history(**kwargs)
+        events.extend(history_response.get("events", []))
+        next_token = history_response.get("nextToken")
+
+        # Stop as soon as the window explains the failure. Checked after each page
+        # rather than by counting events, because how many events back the state sits
+        # depends on the shape of the execution, not on a number.
+        resolvable = _failing_state_is_resolvable(events)
+        if resolvable or not next_token:
+            break
 
     return {
         "execution_response": execution_response,
-        "events": history_response.get("events", []),
-        "history_truncated": bool(history_response.get("nextToken")),
+        "events": events,
+        "history_truncated": bool(next_token) and not resolvable,
     }
+
+
+def _failing_state_is_resolvable(events: List[Dict[str, Any]]) -> bool:
+    """Can the failing state be named from the events fetched so far?
+
+    ``events`` is newest-first, which is how the history is requested, so "older than"
+    means "at a higher index".
+
+    The analysis attributes a failure to the state that was entered before it, and
+    prefers a **task-level** failure over the execution-level one (see
+    ``_analyze_execution_timeline``). So the window is sufficient once it holds the
+    failure the analysis will pick AND a state transition older than it.
+
+    Returns True when there is no failure at all: nothing is being explained, so there
+    is nothing further back worth fetching.
+    """
+    failure_index = None
+    for index, event in enumerate(events):
+        if event.get("type", "") in _TASK_LEVEL_FAILURE_EVENTS:
+            failure_index = index
+            break
+    if failure_index is None:
+        for index, event in enumerate(events):
+            if event.get("type", "") in _FAILURE_EVENTS:
+                failure_index = index
+                break
+    if failure_index is None:
+        return True
+    return any(
+        event.get("type", "").endswith("StateEntered")
+        for event in events[failure_index + 1 :]
+    )
 
 
 def _extract_execution_metadata(execution_response: Dict[str, Any]) -> Dict[str, Any]:
@@ -180,7 +242,7 @@ def _build_analysis_summary(
     """
     Build human-readable analysis summary.
 
-    When the state could not be identified and the history window was truncated, the
+    When the state could not be identified and the history walk hit its page cap, the
     summary says so. "at state 'None'" on its own reads as a finding; the two facts
     together read as the measurement limit it actually is.
     """
@@ -194,8 +256,8 @@ def _build_analysis_summary(
             analysis_summary += f": {failure_point['details']['error']}"
         if state is None and history_truncated:
             analysis_summary += (
-                " (the failing state could not be identified: only the most recent "
-                "100 history events were read, and the state was entered before them)"
+                " (the failing state could not be identified: the history walk "
+                "reached its page limit before finding the transition into it)"
             )
 
     return analysis_summary
@@ -217,9 +279,10 @@ def _generate_recommendations(
     if history_truncated:
         recommendations.insert(
             0,
-            "Only the most recent 100 execution history events were read, so an "
-            "unidentified state means the window did not reach it rather than that "
-            "no state failed -- inspect the full execution history in the console",
+            "The execution history was longer than this tool reads, so an "
+            "unidentified state means the walk did not reach the transition into it "
+            "rather than that no state failed -- inspect the full execution history "
+            "in the console",
         )
 
     return recommendations
