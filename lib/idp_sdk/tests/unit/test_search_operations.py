@@ -128,16 +128,33 @@ class TestSearchQuery:
 
     @patch("idp_sdk._core.search_processor.SearchProcessor")
     def test_next_token_is_carried_through_on_both_paths(self, mock_processor):
-        populated = dict(STUB_RESPONSE, next_token="dG9rZW4=")
+        # Bandit flags every `next_token` in this method and in the one below.
+        # B105 and B106 match the *identifier* — `RE_CANDIDATES` tests `_token$`
+        # against the dict key or keyword name — and never inspect the value, so
+        # no choice of literal would quiet them. The name is the SDK's real
+        # pagination field: `SearchProcessor.query` accepts `next_token=` and
+        # base64-re-encodes what it gets back, and `SearchResult` declares the
+        # attribute, so renaming it here would stop these tests checking the
+        # contract they exist for. Each flagged line carries a pragma instead.
+        populated = dict(
+            STUB_RESPONSE,
+            next_token="dG9rZW4=",  # nosec B106 - page cursor, base64 of "token"
+        )
         mock_processor.return_value = _client_with(query_return=populated)
 
         client = IDPClient(stack_name="test-stack")
-        assert client.search.query(question="q").next_token == "dG9rZW4="
+        result = client.search.query(question="q")
+        assert result.next_token == "dG9rZW4="  # nosec B105 - cursor read back
 
         mock_processor.return_value = _client_with(
-            query_return={"question": "q", "results": [], "next_token": "dG9rZW4="}
+            query_return={
+                "question": "q",
+                "results": [],
+                "next_token": "dG9rZW4=",  # nosec B105 - cursor on an empty page
+            }
         )
-        assert client.search.query(question="q").next_token == "dG9rZW4="
+        result = client.search.query(question="q")
+        assert result.next_token == "dG9rZW4="  # nosec B105 - cursor read back
 
     @patch("idp_sdk._core.search_processor.SearchProcessor")
     def test_query_passes_its_arguments_through(self, mock_processor):
@@ -146,11 +163,17 @@ class TestSearchQuery:
 
         client = IDPClient(stack_name="test-stack")
         client.search.query(
-            question="q", document_ids=["a.pdf"], limit=5, next_token="tok"
+            question="q",
+            document_ids=["a.pdf"],
+            limit=5,
+            next_token="tok",  # nosec B106 - opaque cursor, checked for pass-through
         )
 
         instance.query.assert_called_once_with(
-            question="q", document_ids=["a.pdf"], limit=5, next_token="tok"
+            question="q",
+            document_ids=["a.pdf"],
+            limit=5,
+            next_token="tok",  # nosec B106 - the same cursor, as the processor saw it
         )
 
     @patch("idp_sdk._core.search_processor.SearchProcessor")
