@@ -84,13 +84,19 @@ def analyze_workflow_execution(document_id: str = "") -> Dict[str, Any]:
             execution_data["execution_response"]
         )
 
+        history_truncated = bool(execution_data.get("history_truncated"))
+        if history_truncated:
+            timeline_analysis["history_truncated"] = True
+
         # Build analysis summary
         analysis_summary = _build_analysis_summary(
-            execution_metadata["status"], timeline_analysis
+            execution_metadata["status"], timeline_analysis, history_truncated
         )
 
         # Generate recommendations
-        recommendations = _generate_recommendations(timeline_analysis)
+        recommendations = _generate_recommendations(
+            timeline_analysis, history_truncated
+        )
 
         return _build_response(
             execution_status=execution_metadata["status"],
@@ -124,7 +130,13 @@ def _get_execution_data(execution_arn: str) -> Dict[str, Any]:
     workflow and might not reach the failure at all.
 
     Consumers must therefore not assume chronological order --
-    ``_analyze_execution_timeline`` normalises the order it is given.
+    ``_analyze_execution_timeline`` orders the events it is given.
+
+    The page is **not** paginated, so a long execution is analysed from its newest
+    100 events only. ``history_truncated`` reports that, because the truncation is
+    not harmless: the failure event survives the window but the failing state's
+    ``StateEntered`` may not, and the analysis then reports no state at all. Without
+    the flag that is indistinguishable from an execution where nothing failed.
     """
     stepfunctions_client = boto3.client("stepfunctions")
 
@@ -141,6 +153,7 @@ def _get_execution_data(execution_arn: str) -> Dict[str, Any]:
     return {
         "execution_response": execution_response,
         "events": history_response.get("events", []),
+        "history_truncated": bool(history_response.get("nextToken")),
     }
 
 
@@ -160,32 +173,56 @@ def _extract_execution_metadata(execution_response: Dict[str, Any]) -> Dict[str,
 
 
 def _build_analysis_summary(
-    execution_status: str, timeline_analysis: Dict[str, Any]
+    execution_status: str,
+    timeline_analysis: Dict[str, Any],
+    history_truncated: bool = False,
 ) -> str:
     """
     Build human-readable analysis summary.
+
+    When the state could not be identified and the history window was truncated, the
+    summary says so. "at state 'None'" on its own reads as a finding; the two facts
+    together read as the measurement limit it actually is.
     """
     analysis_summary = f"Step Function execution {execution_status}"
 
     if timeline_analysis.get("failure_point"):
         failure_point = timeline_analysis["failure_point"]
-        analysis_summary += f" at state '{failure_point.get('state', 'Unknown')}'"
+        state = failure_point.get("state", "Unknown")
+        analysis_summary += f" at state '{state}'"
         if failure_point.get("details", {}).get("error"):
             analysis_summary += f": {failure_point['details']['error']}"
+        if state is None and history_truncated:
+            analysis_summary += (
+                " (the failing state could not be identified: only the most recent "
+                "100 history events were read, and the state was entered before them)"
+            )
 
     return analysis_summary
 
 
-def _generate_recommendations(timeline_analysis: Dict[str, Any]) -> List[str]:
+def _generate_recommendations(
+    timeline_analysis: Dict[str, Any], history_truncated: bool = False
+) -> List[str]:
     """
     Generate actionable recommendations based on analysis.
     """
-    return [
+    recommendations = [
         "Check the failure point state for specific error details",
         "Review Lambda function logs if failure occurred in Lambda task",
         "Verify input data format if failure occurred early in workflow",
         "Consider timeout adjustments if execution timed out",
     ]
+
+    if history_truncated:
+        recommendations.insert(
+            0,
+            "Only the most recent 100 execution history events were read, so an "
+            "unidentified state means the window did not reach it rather than that "
+            "no state failed -- inspect the full execution history in the console",
+        )
+
+    return recommendations
 
 
 def _build_response(
@@ -305,28 +342,40 @@ def _get_execution_arn_from_document(document_id: str) -> Optional[str]:
 
 def _to_chronological(events: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     """
-    Return one page of Step Functions history events oldest-first.
+    Return Step Functions history events oldest-first, whatever order they arrive in.
 
-    ``get_execution_history`` returns a page in either direction depending on
-    ``reverseOrder``, and the page is totally ordered either way, so the direction
-    can be read off the two ends and corrected by reversing. Reversing rather than
-    sorting on the timestamp matters: event timestamps have millisecond resolution
-    and adjacent events routinely share one, and a stable sort would leave every
-    such tie in the order it arrived -- backwards, for a newest-first page.
+    ``get_execution_history`` returns a page newest-first or oldest-first depending
+    on ``reverseOrder``, and every consumer here wants chronological. The ordering
+    key is the event ``id``, which the history API documents as a required integer
+    numbered sequentially from one, so it is a total order with no ties and no
+    direction to infer. ``timestamp`` is deliberately *not* used: it has millisecond
+    resolution, adjacent events routinely share a value, and any tie-prone key
+    leaves a sort dependent on the arrival order it is supposed to be correcting.
 
-    A list whose ends carry no comparable timestamp is returned untouched; there is
-    nothing to read the direction from, and guessing would be worse than leaving it.
+    A list whose events do not all carry an integer ``id`` is not a history page
+    from the API. The direction is then read from the two ends and corrected by
+    reversing, which is exact when it applies but cannot see a tie between them --
+    so the fallback is logged rather than silent.
     """
     if len(events) < 2:
         return events
+
+    if all(isinstance(event.get("id"), int) for event in events):
+        return sorted(events, key=lambda event: event["id"])
 
     first = events[0].get("timestamp")
     last = events[-1].get("timestamp")
     try:
         newest_first = first is not None and last is not None and first > last
     except TypeError:
-        return events
+        newest_first = False
 
+    logger.debug(
+        "Step Functions history events carry no usable 'id'; ordering was inferred "
+        "from the first and last timestamps (newest_first=%s). A page whose two "
+        "ends share a timestamp cannot be told apart this way.",
+        newest_first,
+    )
     return list(reversed(events)) if newest_first else events
 
 
@@ -337,10 +386,14 @@ def _analyze_execution_timeline(events: List[Dict[str, Any]]) -> Dict[str, Any]:
     and identify the exact point of failure with context.
 
     Events may arrive in either direction -- the caller fetches them newest-first so
-    that a capped page covers the failure -- and are normalised to oldest-first here.
-    The chronological walk is what makes the analysis correct: the failing state is
-    the state most recently entered *before* the failure event, so seeing the failure
+    that a capped page covers the failure -- and are ordered oldest-first here. The
+    chronological walk is what makes the analysis correct: the failing state is the
+    state most recently entered *before* the failure event, so seeing the failure
     first would report no state at all.
+
+    The failure reported is the **last** one in the history, not the first. Retries
+    mean an execution can survive several failure events, and the terminal one is the
+    only one that explains why it ended.
 
     Args:
         events: List of Step Function execution events, in either direction
@@ -363,8 +416,12 @@ def _analyze_execution_timeline(events: List[Dict[str, Any]]) -> Dict[str, Any]:
         timestamp = event.get("timestamp")
         event_type = event.get("type", "")
 
-        # Track state transitions
-        if event_type == "StateEntered":
+        # Track state transitions. The history API prefixes every transition with
+        # the state's own type -- TaskStateEntered, ChoiceStateEntered,
+        # MapStateExited and six more -- and never emits a bare "StateEntered";
+        # that spelling belongs to the *detail* field, stateEnteredEventDetails.
+        # Matching the suffix covers all of them, including any the service adds.
+        if event_type.endswith("StateEntered"):
             state_name = event.get("stateEnteredEventDetails", {}).get(
                 "name", "Unknown"
             )
@@ -377,7 +434,7 @@ def _analyze_execution_timeline(events: List[Dict[str, Any]]) -> Dict[str, Any]:
             )
             last_successful_state = state_name
 
-        elif event_type == "StateExited":
+        elif event_type.endswith("StateExited"):
             state_name = event.get("stateExitedEventDetails", {}).get("name", "Unknown")
             timeline.append(
                 {
@@ -387,9 +444,16 @@ def _analyze_execution_timeline(events: List[Dict[str, Any]]) -> Dict[str, Any]:
                 }
             )
 
-        # Identify failure point
+        # Identify the failure point. The LAST failure in the walk wins, not the
+        # first: the workflow retries throttles, service exceptions and timeouts in
+        # 25 places, so a recovered attempt leaves a TaskFailed in the history that
+        # the execution went on to survive. Reporting the earliest one names a state
+        # that succeeded and an error nobody needs to act on. The terminal failure is
+        # the one the execution actually ended on, and because ExecutionFailed is the
+        # last event of a failed execution, taking the last failure prefers it
+        # naturally.
         failure_details = _extract_failure_details(event)
-        if failure_details and not failure_point:
+        if failure_details:
             failure_point = {
                 "timestamp": timestamp,
                 "event_type": event_type,

@@ -11,17 +11,30 @@ human to read — `failure_point["state"]` is interpolated straight into the
 look at that state. So the tests assert the identified state, not merely that some
 analysis came back.
 
-The central thing these tests establish is a **direction-of-order** contract, and
-the defect filed as #1081 lived entirely in it. `_analyze_execution_timeline`'s walk
-is only correct oldest-first — the failing state is the state most recently entered
-before the failure event — while its caller fetches newest-first
-(`reverseOrder=True`) so that a capped page covers the failure. Read in isolation the
-function looked right; read with its caller it reported `None` as the failing state
-and the *first* state of the execution as the last successful one. The analyser now
-normalises the direction it is given, so both orders are exercised explicitly here
-and must agree: the chronological class pins the walk itself, and the reverse-order
-class pins what the caller actually supplies, including the tie case a
-sort-by-timestamp would get wrong.
+Three properties carry the weight here, and #1081 needed all three to be wrong
+before the tool could name the failing state.
+
+**The event type names.** A `HistoryEvent`'s `type` is always prefixed with the
+state's own type — `TaskStateEntered`, `ChoiceStateExited`, and six more — and is
+never a bare `StateEntered`; that spelling belongs to the `stateEnteredEventDetails`
+field. Matching the bare form against `type` reads no transition on any real
+execution, so the failing state is `None` whatever the order. This is asserted over
+the prefixed forms the service sends, because fixtures built on the bare spelling
+cannot see it — a test suite validating against an input that cannot occur.
+
+**The direction of the walk.** The walk is only correct oldest-first — the failing
+state is the state most recently entered *before* the failure — while the caller
+fetches newest-first (`reverseOrder=True`) so a capped page covers the failure. Both
+directions are exercised and must agree. Ordering keys off the event `id`, which the
+API documents as a required sequential integer, so the tie and direction-inference
+cases a timestamp key would be exposed to are pinned too.
+
+**Which failure is the failure.** An execution can survive several failure events,
+because the workflow retries throttles, service exceptions and timeouts in 25 places.
+The terminal failure is the one that explains the outcome; the earliest is often a
+recovered attempt, and naming it gives a state that went on to succeed. So the
+retry shape is pinned explicitly rather than relying on a single-failure fixture,
+which cannot tell first-wins from last-wins.
 
 Everything is offline; the Step Functions client is stubbed and the DynamoDB lookup
 is patched at its import site.
@@ -49,24 +62,33 @@ MODULE = "idp_common.agents.error_analyzer.tools.stepfunction_tool"
 EXECUTION_ARN = "arn:aws:states:us-east-1:123456789012:execution:idp-sm:abc123"
 
 
-def _entered(name: str, timestamp: int) -> dict[str, Any]:
+# The `type` field of a Step Functions HistoryEvent never carries a bare
+# "StateEntered"/"StateExited" -- every transition is prefixed with the state's own
+# type, and it is the *detail* field that is unprefixed. Fixtures that used the bare
+# spelling matched nothing in production and so could not see whether the analyser
+# read state transitions at all. `id` is a required sequential integer on every real
+# event and is what the ordering keys off, so fixtures carry it too.
+def _entered(name: str, timestamp: int, kind: str = "Task") -> dict[str, Any]:
     return {
+        "id": timestamp,
         "timestamp": timestamp,
-        "type": "StateEntered",
+        "type": f"{kind}StateEntered",
         "stateEnteredEventDetails": {"name": name},
     }
 
 
-def _exited(name: str, timestamp: int) -> dict[str, Any]:
+def _exited(name: str, timestamp: int, kind: str = "Task") -> dict[str, Any]:
     return {
+        "id": timestamp,
         "timestamp": timestamp,
-        "type": "StateExited",
+        "type": f"{kind}StateExited",
         "stateExitedEventDetails": {"name": name},
     }
 
 
 def _task_failed(timestamp: int, error: str = "Boom") -> dict[str, Any]:
     return {
+        "id": timestamp,
         "timestamp": timestamp,
         "type": "TaskFailed",
         "taskFailedEventDetails": {
@@ -74,6 +96,16 @@ def _task_failed(timestamp: int, error: str = "Boom") -> dict[str, Any]:
             "cause": "stack trace",
             "resource": "lambda:invoke",
         },
+    }
+
+
+def _execution_failed(timestamp: int, error: str = "Boom") -> dict[str, Any]:
+    """The terminal event of a failed execution; always the newest in the history."""
+    return {
+        "id": timestamp,
+        "timestamp": timestamp,
+        "type": "ExecutionFailed",
+        "executionFailedEventDetails": {"error": error, "cause": "propagated"},
     }
 
 
@@ -225,20 +257,74 @@ class TestAnalyzeExecutionTimelineChronological:
         assert result["failure_point"] is None
         assert result["last_successful_state"] == "OCR"
 
-    def test_only_the_first_failure_is_recorded(self):
-        # Later failures are usually consequences of the first, and the summary
-        # names exactly one state.
+    @pytest.mark.parametrize(
+        "kind",
+        ["Task", "Choice", "Pass", "Map", "Parallel", "Wait", "Succeed", "Fail"],
+    )
+    def test_every_real_state_transition_type_is_recognised(self, kind):
+        # The history API prefixes each transition with the state's own type and never
+        # emits a bare "StateEntered". Matching the bare spelling against `type` reads
+        # no transition at all, which reports the failing state as None on every real
+        # execution -- so this is parametrised over the prefixed forms the service
+        # actually sends rather than over the one the fixtures used to build.
+        with _fixed_timeline_cap():
+            result = _analyze_execution_timeline(
+                [_entered("Extraction", 1, kind=kind), _task_failed(2)]
+            )
+        assert result["last_successful_state"] == "Extraction"
+        assert result["failure_point"]["state"] == "Extraction"
+        assert [entry["state"] for entry in result["timeline"]] == ["Extraction"]
+
+    def test_a_non_transition_event_type_is_not_read_as_a_transition(self):
+        # The other direction of the suffix match: "ExecutionStarted" and
+        # "TaskScheduled" end in neither suffix and must not enter the timeline.
+        with _fixed_timeline_cap():
+            result = _analyze_execution_timeline(
+                [
+                    {"id": 1, "timestamp": 1, "type": "ExecutionStarted"},
+                    {"id": 2, "timestamp": 2, "type": "TaskScheduled"},
+                ]
+            )
+        assert result["timeline"] == []
+        assert result["last_successful_state"] is None
+
+    def test_the_terminal_failure_is_reported_not_a_recovered_retry(self):
+        # An execution can survive several failure events. `workflow.asl.json` has 25
+        # Retry blocks covering Lambda throttles, service exceptions and timeouts, so
+        # a recovered throttle in the history is routine on a Bedrock-heavy workload.
+        # Naming the earliest failure points at a state that went on to succeed, with
+        # an error nobody needs to act on -- so the summary would be confidently
+        # wrong rather than merely unhelpful.
         with _fixed_timeline_cap():
             result = _analyze_execution_timeline(
                 [
                     _entered("OCR", 1),
-                    _task_failed(2, error="First"),
-                    _entered("Retry", 3),
-                    _task_failed(4, error="Second"),
+                    # Throttled, retried in place, succeeded: a Retry does not
+                    # re-enter the state, so the history keeps the failed attempt.
+                    _task_failed(2, error="Lambda.TooManyRequestsException"),
+                    _exited("OCR", 3),
+                    _entered("Extraction", 4),
+                    _task_failed(5, error="ValidationException"),
+                    _execution_failed(6, error="ValidationException"),
                 ]
             )
-        assert result["failure_point"]["details"]["error"] == "First"
-        assert result["failure_point"]["state"] == "OCR"
+        assert result["failure_point"]["state"] == "Extraction"
+        assert result["failure_point"]["details"]["error"] == "ValidationException"
+
+    def test_the_terminal_execution_failed_event_is_what_the_walk_ends_on(self):
+        # Taking the last failure prefers ExecutionFailed for free, because it is the
+        # final event of a failed execution. Pinned so that a future change back to
+        # first-failure-wins cannot look correct on a single-failure fixture.
+        with _fixed_timeline_cap():
+            result = _analyze_execution_timeline(
+                [
+                    _entered("Extraction", 1),
+                    _task_failed(2, error="ValidationException"),
+                    _execution_failed(3, error="States.TaskFailed"),
+                ]
+            )
+        assert result["failure_point"]["event_type"] == "ExecutionFailed"
+        assert result["failure_point"]["state"] == "Extraction"
 
     def test_the_timeline_is_truncated_to_the_configured_cap(self):
         history = [_entered(f"S{i}", i) for i in range(10)]
@@ -267,8 +353,10 @@ class TestAnalyzeExecutionTimelineReverseOrder:
 
     `_get_execution_data` passes `reverseOrder=True`, so this is the direction the
     analyser actually receives in production. Each case here is one of the three
-    answers that came out wrong while the order went uncorrected (issue #1081): the
-    failing state, the last successful state, and which events survive truncation.
+    answers the direction decides (issue #1081): the failing state, the last
+    successful state, and which events survive truncation. The ordering and the
+    ordering *key* are covered separately, because a key that ties is a way of
+    getting the direction wrong again.
     """
 
     def test_the_failing_state_is_identified_from_a_newest_first_history(self):
@@ -324,36 +412,109 @@ class TestAnalyzeExecutionTimelineReverseOrder:
         # the order went uncorrected.
         assert "at state 'Extraction'" in result["analysis_summary"]
 
-    def test_tied_timestamps_in_a_newest_first_page_do_not_reorder(self):
-        # Step Functions timestamps have millisecond resolution and adjacent events
-        # routinely share one, so a fix that sorted on the timestamp would leave
-        # every tie in arrival order -- backwards, for a newest-first page. Here the
-        # Extraction entry and the failure share a timestamp, and a stable sort of
-        # the newest-first list would put the failure first again and report no
-        # state. Reversing the page cannot get a tie wrong.
+    def test_tied_timestamps_do_not_disturb_the_order(self):
+        # Timestamps have millisecond resolution and adjacent events routinely share
+        # one, so ordering on the timestamp would be tie-prone: a stable sort leaves a
+        # tie in arrival order, which for a newest-first page is backwards, and reading
+        # the direction off the two ends cannot see a tie between them at all. The
+        # event id is sequential and unique, so neither failure mode applies. Here
+        # every event shares one timestamp and only the ids distinguish them --
+        # including the two ends, which is the case a two-ended heuristic misses.
         tied = [
             _entered("OCR", 1),
             _exited("OCR", 2),
             _entered("Extraction", 3),
-            _task_failed(3),
+            _task_failed(4),
         ]
+        for event in tied:
+            event["timestamp"] = 7
         with _fixed_timeline_cap():
             result = _analyze_execution_timeline(list(reversed(tied)))
         assert result["failure_point"]["state"] == "Extraction"
         assert result["last_successful_state"] == "Extraction"
 
-    def test_a_page_with_no_readable_timestamps_is_left_alone(self):
-        # Direction is read off the two ends, so a page that carries no comparable
-        # timestamp there has nothing to read. Leaving the order untouched keeps the
-        # chronological contract for the ordinary caller instead of guessing.
+    def test_the_id_order_is_used_even_when_the_timestamps_disagree(self):
+        # If the two keys ever disagree the id is authoritative: it is the field the
+        # API documents as sequential, and this repo's execution-history resolver
+        # already correlates steps by it. Timestamps here descend as the ids ascend,
+        # so anything ordering on the timestamp reports OCR rather than Extraction.
+        events = [
+            _entered("OCR", 1),
+            _exited("OCR", 2),
+            _entered("Extraction", 3),
+            _task_failed(4),
+        ]
+        for offset, event in enumerate(events):
+            event["timestamp"] = 100 - offset
         with _fixed_timeline_cap():
-            result = _analyze_execution_timeline(
-                [
-                    {"type": "StateEntered", "stateEnteredEventDetails": {"name": "A"}},
-                    {"type": "TaskFailed", "taskFailedEventDetails": {"error": "E"}},
-                ]
-            )
-        assert result["failure_point"]["state"] == "A"
+            result = _analyze_execution_timeline(events)
+        assert result["failure_point"]["state"] == "Extraction"
+
+    def test_events_without_an_id_still_get_the_direction_corrected(self):
+        # Not a shape the API produces -- id is required on a HistoryEvent -- but the
+        # analyser is reachable from anywhere, so the fallback is exercised rather
+        # than assumed. Descending timestamps at the two ends identify a newest-first
+        # page without any id, and it is corrected. The fallback's own blind spot (two
+        # ends sharing a timestamp) is why it logs; the id path above is what
+        # production actually takes.
+        newest_first = [
+            {"timestamp": 3, "type": "TaskFailed", "taskFailedEventDetails": {}},
+            {
+                "timestamp": 2,
+                "type": "TaskStateEntered",
+                "stateEnteredEventDetails": {"name": "Extraction"},
+            },
+            {
+                "timestamp": 1,
+                "type": "TaskStateEntered",
+                "stateEnteredEventDetails": {"name": "OCR"},
+            },
+        ]
+        with _fixed_timeline_cap():
+            result = _analyze_execution_timeline(newest_first)
+        assert result["failure_point"]["state"] == "Extraction"
+
+    def test_a_truncated_window_says_so_rather_than_reporting_a_null_state_bare(self):
+        # The residual the 100-event cap leaves: a newest-first window always keeps
+        # the failure event, but on a long execution the failing state was entered
+        # before the window and cannot be named. Reporting "at state 'None'" with
+        # nothing else is the same confidently-wrong shape as the ordering defect --
+        # it reads as a finding. Saying the window was truncated makes it a
+        # measurement limit, which is what it is.
+        start = datetime(2026, 1, 1, 10, 0, 0, tzinfo=timezone.utc)
+        with (
+            patch(f"{MODULE}.boto3.client") as factory,
+            patch(
+                f"{MODULE}._get_execution_arn_from_document", return_value=EXECUTION_ARN
+            ),
+            _fixed_timeline_cap(),
+        ):
+            client = factory.return_value
+            client.describe_execution.return_value = {
+                "status": "FAILED",
+                "startDate": start,
+                "stopDate": start + timedelta(seconds=30),
+            }
+            # The window reached the failure but not the StateEntered before it.
+            client.get_execution_history.return_value = {
+                "events": [_execution_failed(900), _task_failed(899)],
+                "nextToken": "opaque",
+            }
+            result = analyze_workflow_execution("report.pdf")
+
+        assert result["timeline_analysis"]["failure_point"]["state"] is None
+        assert result["timeline_analysis"]["history_truncated"] is True
+        assert "could not be identified" in result["analysis_summary"]
+        assert any(
+            "100 execution history events" in r for r in result["recommendations"]
+        )
+
+    def test_an_untruncated_null_state_is_not_explained_away_as_truncation(self):
+        # The other direction: without a nextToken the analysis must not offer the
+        # truncation explanation, or every unidentified state acquires a false cause.
+        assert "could not be identified" not in _build_analysis_summary(
+            "FAILED", {"failure_point": {"state": None, "details": {}}}, False
+        )
 
     def test_the_failure_details_themselves_survive_the_order_correction(self):
         # The error and cause come from the failure event itself rather than from
@@ -574,6 +735,27 @@ class TestGetExecutionData:
             client.describe_execution.return_value = {}
             client.get_execution_history.return_value = {}
             assert _get_execution_data(EXECUTION_ARN)["events"] == []
+
+    def test_a_nextToken_in_the_response_is_reported_as_truncation(self):
+        # The fetch is a single un-paginated page, so a nextToken means the execution
+        # had more history than was read. That has to reach the caller: the failure
+        # event survives a newest-first window but the failing state's StateEntered
+        # need not, and an unidentified state then looks like a clean execution.
+        with patch(f"{MODULE}.boto3.client") as factory:
+            client = factory.return_value
+            client.describe_execution.return_value = {}
+            client.get_execution_history.return_value = {
+                "events": [_task_failed(1)],
+                "nextToken": "opaque",
+            }
+            assert _get_execution_data(EXECUTION_ARN)["history_truncated"] is True
+
+    def test_a_complete_history_is_not_reported_as_truncated(self):
+        with patch(f"{MODULE}.boto3.client") as factory:
+            client = factory.return_value
+            client.describe_execution.return_value = {}
+            client.get_execution_history.return_value = {"events": [_task_failed(1)]}
+            assert _get_execution_data(EXECUTION_ARN)["history_truncated"] is False
 
 
 @pytest.mark.unit
