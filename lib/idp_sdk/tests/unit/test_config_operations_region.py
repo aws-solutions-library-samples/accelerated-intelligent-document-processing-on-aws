@@ -86,15 +86,25 @@ def test_the_module_under_test_is_the_one_in_this_checkout():
     the rootdir insertion makes `idp_sdk` resolve to this checkout, but that is a
     property of how the suite is invoked, not a guarantee — so assert it, because
     every assertion in this file reads module source.
+
+    Routed through `scripts/tests/first_party_provenance.py` rather than hand-rolled.
+    The local version derived the root as `parents[4]` and asked whether the module sat
+    UNDER it, which accepts a git worktree nested at `.claude/worktrees/` — the very
+    "test run from a git worktree" this docstring names as the hazard.
     """
     import pathlib
+    import sys
 
-    repo_root = pathlib.Path(__file__).resolve().parents[4]
-    module_path = pathlib.Path(inspect.getsourcefile(config_ops)).resolve()
-    assert module_path.is_relative_to(repo_root), (
-        f"this test is inspecting {module_path}, which is outside the checkout "
-        f"under test ({repo_root}). Set PYTHONPATH to this checkout's lib/idp_sdk."
-    )
+    gate_dir = pathlib.Path(__file__).resolve().parents[4] / "scripts" / "tests"
+    if not (gate_dir / "first_party_provenance.py").is_file():
+        pytest.skip("shared provenance helper is not present in this tree")
+    sys.path.insert(0, str(gate_dir))
+    try:
+        from first_party_provenance import assert_resolves_in
+
+        assert_resolves_in(config_ops.__name__, __file__)
+    finally:
+        sys.path.pop(0)
 
 
 @pytest.mark.unit
