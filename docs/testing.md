@@ -165,6 +165,36 @@ Adding an exclusion, or lifting one of these, fails that guard until this table 
 the registry agree — it is checked in both directions, so a row that outlives the
 exclusion it describes fails too.
 
+### A run can measure the wrong checkout, and two suites refuse to
+
+`idp_common` and the SDKs are **editable installs**, so `import idp_common` reads
+whatever pointer is in the active interpreter's `site-packages` — not necessarily this
+checkout. Where more than one checkout is worked on at once and `python3` resolves to a
+shared interpreter rather than a per-project virtualenv, that directory is shared and the
+last `pip install -e` wins for all of them. `make test-cicd` is itself a writer: its
+`test-unit-cicd` target runs `pip install -e ".[test]"` unless `SKIP_INSTALL=1` is set,
+so running the gate repoints the pointer as a side effect.
+
+Nothing raises when this happens. The imported package is real and self-consistent, just
+a different revision, so it shows up as an unrelated-looking assertion failure or as a
+**green run whose coverage number describes another tree**. `scripts/tests/first_party_provenance.py`
+turns that into an immediate, explanatory failure, and is called from
+`lib/idp_common_pkg/tests/conftest.py`,
+`feature-platform/main-stack-extensions/tests/conftest.py`,
+`scripts/tests/test_model_surface_consistency.py` and
+`lib/idp_sdk/tests/unit/test_config_operations_region.py`.
+
+It compares **checkout identity**, deriving each side's root by walking up to `.git`, so
+a git worktree validates against itself and passes while a worktree *nested inside*
+another checkout is correctly refused. Pin a one-off run with
+`PYTHONPATH=lib/idp_common_pkg`; fix it durably by installing with the interpreter you
+actually want (`<your-venv>/bin/python -m pip install -e "lib/idp_common_pkg[test]"`, by
+path and never by bare name — see [dependency-confusion.md](dependency-confusion.md)).
+`IDP_ALLOW_FOREIGN_FIRST_PARTY=1` downgrades the failure to a warning when you are
+deliberately testing an installed copy; it is a per-invocation switch, so it is not in
+`scripts/tests/gate_exemptions.json`, for the reason that file records for
+`ALLOW_SHARED_BRANCH`.
+
 ## 2. Static gates (lint, types, and hand-written scanners)
 
 `make lint` is the local gate; `make lint-cicd` is the same set in check-only mode
