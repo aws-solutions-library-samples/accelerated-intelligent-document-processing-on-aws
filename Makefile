@@ -245,6 +245,13 @@ lint-cicd: ## CI/CD lint — checks only, no modifications
 
 	@echo -e "$(GREEN)All code quality checks passed!$(NC)"
 
+coverage: ## Measure idp_common coverage and print a table, worst-covered first
+	@$(MAKE) --no-print-directory -C lib/idp_common_pkg test-cicd SKIP_INSTALL=1 COV_FLOOR= >/dev/null 2>&1 || true
+	@python3 scripts/coverage_table.py $(COVERAGE_ARGS)
+
+coverage-table: ## Print the coverage table from the last run, without re-measuring
+	@python3 scripts/coverage_table.py $(COVERAGE_ARGS)
+
 # Deliberately NOT a prerequisite of `lint` or `fastlint`: it reads the coverage
 # report that `make test-cicd -C lib/idp_common_pkg` writes, and the lint targets
 # never build one. Wired there it would find no report, exit 0, and pass vacuously --
