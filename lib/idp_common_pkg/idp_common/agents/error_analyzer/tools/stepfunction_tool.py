@@ -116,6 +116,15 @@ def analyze_workflow_execution(document_id: str = "") -> Dict[str, Any]:
 def _get_execution_data(execution_arn: str) -> Dict[str, Any]:
     """
     Retrieve execution details and history from Step Functions.
+
+    The history is requested newest-first and returned newest-first. That order is
+    deliberate rather than incidental: a single un-paginated page is capped at 100
+    events, and on a long execution the newest 100 are the ones around the failure,
+    which is the half worth having. Oldest-first would keep the beginning of the
+    workflow and might not reach the failure at all.
+
+    Consumers must therefore not assume chronological order --
+    ``_analyze_execution_timeline`` normalises the order it is given.
     """
     stepfunctions_client = boto3.client("stepfunctions")
 
@@ -126,7 +135,7 @@ def _get_execution_data(execution_arn: str) -> Dict[str, Any]:
     history_response = stepfunctions_client.get_execution_history(
         executionArn=execution_arn,
         maxResults=100,
-        reverseOrder=True,  # Most recent events first
+        reverseOrder=True,  # Most recent events first; see the docstring above.
     )
 
     return {
@@ -294,20 +303,55 @@ def _get_execution_arn_from_document(document_id: str) -> Optional[str]:
         return None
 
 
+def _to_chronological(events: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """
+    Return one page of Step Functions history events oldest-first.
+
+    ``get_execution_history`` returns a page in either direction depending on
+    ``reverseOrder``, and the page is totally ordered either way, so the direction
+    can be read off the two ends and corrected by reversing. Reversing rather than
+    sorting on the timestamp matters: event timestamps have millisecond resolution
+    and adjacent events routinely share one, and a stable sort would leave every
+    such tie in the order it arrived -- backwards, for a newest-first page.
+
+    A list whose ends carry no comparable timestamp is returned untouched; there is
+    nothing to read the direction from, and guessing would be worse than leaving it.
+    """
+    if len(events) < 2:
+        return events
+
+    first = events[0].get("timestamp")
+    last = events[-1].get("timestamp")
+    try:
+        newest_first = first is not None and last is not None and first > last
+    except TypeError:
+        return events
+
+    return list(reversed(events)) if newest_first else events
+
+
 def _analyze_execution_timeline(events: List[Dict[str, Any]]) -> Dict[str, Any]:
     """
     Analyze Step Function execution timeline to identify failure patterns and state transitions.
     Processes execution events chronologically to build a timeline of state transitions
     and identify the exact point of failure with context.
 
+    Events may arrive in either direction -- the caller fetches them newest-first so
+    that a capped page covers the failure -- and are normalised to oldest-first here.
+    The chronological walk is what makes the analysis correct: the failing state is
+    the state most recently entered *before* the failure event, so seeing the failure
+    first would report no state at all.
+
     Args:
-        events: List of Step Function execution events
+        events: List of Step Function execution events, in either direction
 
     Returns:
         Dict containing timeline analysis, failure point, and state information
     """
     if not events:
         return {"error": "No execution events available"}
+
+    events = _to_chronological(events)
 
     max_timeline_events = get_ea_param("max_stepfunction_timeline_events", 50)
 

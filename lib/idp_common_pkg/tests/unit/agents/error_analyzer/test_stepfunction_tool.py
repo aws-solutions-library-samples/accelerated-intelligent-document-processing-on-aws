@@ -11,15 +11,17 @@ human to read — `failure_point["state"]` is interpolated straight into the
 look at that state. So the tests assert the identified state, not merely that some
 analysis came back.
 
-The central thing these tests establish is a **direction-of-order** defect, filed as
-#1081. `_analyze_execution_timeline` is correct when fed events oldest-first, and its
-caller fetches them newest-first (`reverseOrder=True`). Read in isolation the
-function is right; read with its caller it reports `None` as the failing state and
-the *first* state of the execution as the last successful one. Both orders are
-therefore exercised explicitly here: the chronological cases pin the logic that
-works, and the reverse-order cases are strict `xfail`s that pin what the caller
-actually produces. That pairing is what makes the defect legible rather than looking
-like a flaky assertion.
+The central thing these tests establish is a **direction-of-order** contract, and
+the defect filed as #1081 lived entirely in it. `_analyze_execution_timeline`'s walk
+is only correct oldest-first — the failing state is the state most recently entered
+before the failure event — while its caller fetches newest-first
+(`reverseOrder=True`) so that a capped page covers the failure. Read in isolation the
+function looked right; read with its caller it reported `None` as the failing state
+and the *first* state of the execution as the last successful one. The analyser now
+normalises the direction it is given, so both orders are exercised explicitly here
+and must agree: the chronological class pins the walk itself, and the reverse-order
+class pins what the caller actually supplies, including the tie case a
+sort-by-timestamp would get wrong.
 
 Everything is offline; the Step Functions client is stubbed and the DynamoDB lookup
 is patched at its import site.
@@ -263,57 +265,35 @@ class TestAnalyzeExecutionTimelineReverseOrder:
     """
     The same function fed newest-first, which is what the caller actually supplies.
 
-    `_get_execution_data` passes `reverseOrder=True`, so these three cases describe
-    the values the agent reports today. All are wrong, and all are issue #1081.
+    `_get_execution_data` passes `reverseOrder=True`, so this is the direction the
+    analyser actually receives in production. Each case here is one of the three
+    answers that came out wrong while the order went uncorrected (issue #1081): the
+    failing state, the last successful state, and which events survive truncation.
     """
 
-    @pytest.mark.xfail(
-        strict=True,
-        reason="The history is fetched newest-first and analysed as if oldest-first, "
-        "so the failure event is seen before any StateEntered and the failing state "
-        "is reported as None. See "
-        "https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/1081",
-    )
     def test_the_failing_state_is_identified_from_a_newest_first_history(self):
         with _fixed_timeline_cap():
             result = _analyze_execution_timeline(list(reversed(CHRONOLOGICAL_HISTORY)))
         assert result["failure_point"]["state"] == "Extraction"
 
-    @pytest.mark.xfail(
-        strict=True,
-        reason="With a newest-first history the reversed walk ends on the FIRST state "
-        "of the execution, so last_successful_state reports OCR rather than "
-        "Extraction. See "
-        "https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/1081",
-    )
     def test_the_last_successful_state_is_correct_from_a_newest_first_history(self):
+        # "OCR" is the distinguishing wrong answer here: walking a newest-first list
+        # ends on the FIRST state of the execution, so this reads as a plausible
+        # early-stage failure rather than as a parse error.
         with _fixed_timeline_cap():
             result = _analyze_execution_timeline(list(reversed(CHRONOLOGICAL_HISTORY)))
         assert result["last_successful_state"] == "Extraction"
 
-    @pytest.mark.xfail(
-        strict=True,
-        reason="timeline[-N:] takes the tail of a newest-first list, which is the "
-        "BEGINNING of the execution, so a truncated timeline contains nothing near "
-        "the failure. See "
-        "https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/1081",
-    )
     def test_truncation_keeps_the_events_near_the_failure(self):
+        # `timeline[-N:]` is only the most recent N if the walk was chronological.
+        # A cap of 2 is what makes this distinguishing: it is small enough that the
+        # beginning and the end of the execution share no entries.
         with _fixed_timeline_cap(2):
             timeline = _analyze_execution_timeline(
                 list(reversed(CHRONOLOGICAL_HISTORY))
             )["timeline"]
         assert "Extraction" in [entry["state"] for entry in timeline]
 
-    @pytest.mark.xfail(
-        strict=True,
-        reason="End-to-end across the fetch-to-analyse seam: the history is fetched "
-        "newest-first and analysed as oldest-first, so the tool reports no failing "
-        "state. This is the marker that trips when #1081 is fixed at the CALLER, "
-        "which is where the fix belongs — the three markers above pin "
-        "_analyze_execution_timeline directly and stay green for that fix. See "
-        "https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/1081",
-    )
     def test_the_tool_identifies_the_failing_state_from_a_real_fetch(self):
         # Stubs the Step Functions CLIENT rather than _get_execution_data, so the
         # reverseOrder=True fetch actually runs and its output reaches the analyser.
@@ -339,38 +319,47 @@ class TestAnalyzeExecutionTimelineReverseOrder:
             result = analyze_workflow_execution("report.pdf")
 
         assert result["timeline_analysis"]["failure_point"]["state"] == "Extraction"
-        assert "Extraction" in result["analysis_summary"]
+        # The exact interpolation, not merely the substring: this string is the
+        # headline the operator reads, and "at state 'None'" is what it said while
+        # the order went uncorrected.
+        assert "at state 'Extraction'" in result["analysis_summary"]
 
-    def test_the_tool_reports_no_failing_state_today_across_that_seam(self):
-        # The companion to the xfail above, asserting what actually happens now so
-        # the defect is visible in a passing run rather than only as a marker: the
-        # published summary reads "at state 'None'".
-        start = datetime(2026, 1, 1, 10, 0, 0, tzinfo=timezone.utc)
-        with (
-            patch(f"{MODULE}.boto3.client") as factory,
-            patch(
-                f"{MODULE}._get_execution_arn_from_document", return_value=EXECUTION_ARN
-            ),
-            _fixed_timeline_cap(),
-        ):
-            client = factory.return_value
-            client.describe_execution.return_value = {
-                "status": "FAILED",
-                "startDate": start,
-                "stopDate": start + timedelta(seconds=30),
-            }
-            client.get_execution_history.return_value = {
-                "events": list(reversed(CHRONOLOGICAL_HISTORY))
-            }
-            result = analyze_workflow_execution("report.pdf")
+    def test_tied_timestamps_in_a_newest_first_page_do_not_reorder(self):
+        # Step Functions timestamps have millisecond resolution and adjacent events
+        # routinely share one, so a fix that sorted on the timestamp would leave
+        # every tie in arrival order -- backwards, for a newest-first page. Here the
+        # Extraction entry and the failure share a timestamp, and a stable sort of
+        # the newest-first list would put the failure first again and report no
+        # state. Reversing the page cannot get a tie wrong.
+        tied = [
+            _entered("OCR", 1),
+            _exited("OCR", 2),
+            _entered("Extraction", 3),
+            _task_failed(3),
+        ]
+        with _fixed_timeline_cap():
+            result = _analyze_execution_timeline(list(reversed(tied)))
+        assert result["failure_point"]["state"] == "Extraction"
+        assert result["last_successful_state"] == "Extraction"
 
-        assert result["timeline_analysis"]["failure_point"]["state"] is None
-        assert "at state 'None'" in result["analysis_summary"]
+    def test_a_page_with_no_readable_timestamps_is_left_alone(self):
+        # Direction is read off the two ends, so a page that carries no comparable
+        # timestamp there has nothing to read. Leaving the order untouched keeps the
+        # chronological contract for the ordinary caller instead of guessing.
+        with _fixed_timeline_cap():
+            result = _analyze_execution_timeline(
+                [
+                    {"type": "StateEntered", "stateEnteredEventDetails": {"name": "A"}},
+                    {"type": "TaskFailed", "taskFailedEventDetails": {"error": "E"}},
+                ]
+            )
+        assert result["failure_point"]["state"] == "A"
 
-    def test_the_failure_details_themselves_survive_the_wrong_order(self):
+    def test_the_failure_details_themselves_survive_the_order_correction(self):
         # The error and cause come from the failure event itself rather than from
-        # surrounding context, so they are correct in either order. Worth pinning:
-        # it is why the reported summary looks plausible despite naming no state.
+        # surrounding context, so they are correct in either direction. Worth pinning
+        # separately: it is why the summary read as plausible while it named no
+        # state, and so why the defect was not obvious from the output.
         with _fixed_timeline_cap():
             result = _analyze_execution_timeline(list(reversed(CHRONOLOGICAL_HISTORY)))
         assert result["failure_point"]["details"]["error"] == "Boom"
