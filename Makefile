@@ -741,9 +741,10 @@ test-config-library: ## Run only config library validation tests
 	@echo "Validating config library YAML/JSON files..."
 	$(PYTEST_HERMETIC) config_library/test_config_library.py -v
 
-test-hooks: ## Run only the Claude PreToolUse hook tests (commit/PR text guard)
+test-hooks: ## Run only the hook tests (commit/PR text guard, shared-branch guard)
 	@echo "Running Claude hook tests..."
-	$(PYTEST_HERMETIC) scripts/tests/test_check_commit_text.py -v
+	$(PYTEST_HERMETIC) scripts/tests/test_check_commit_text.py \
+		scripts/tests/test_check_shared_branch.py -v
 
 test-capacity: ## Run only capacity planning tests
 	@echo "Running capacity planning Lambda tests..."
@@ -1055,6 +1056,57 @@ classes-from-bda: ## Generate standard class catalog from BDA blueprints
 	@echo -e "$(GREEN)✅ Standard class catalog updated! Review changes in src/ui/src/data/standard-classes.json$(NC)"
 
 ##@ Git Workflow
+# `install-git-hooks` installs scripts/hooks/pre-push, which refuses a push whose
+# destination is develop or main (override: ALLOW_SHARED_BRANCH=1). git does not
+# clone hooks, so this is a per-checkout step; the tracked script is the shared
+# copy. The assistant-side half of the same guard needs no install — it is a
+# PreToolUse hook in .claude/settings.json. Neither is a substitute for branch
+# protection, which is a repository setting and needs admin (issue #933).
+#
+# The destination is $(git rev-parse --git-common-dir)/hooks, NOT `git rev-parse
+# --git-path hooks`: the latter honours core.hooksPath, and a managed developer
+# machine may set that system-wide (in /etc/gitconfig) to a root-owned directory
+# of hook runners belonging to a security tool, so it resolves to a path this
+# must never write to. The common dir is also the right answer inside a worktree,
+# where hooks are shared with the main checkout.
+#
+# When core.hooksPath does point elsewhere, the repository's own hook is reached
+# only if that runner chains to it. The runners seen here do chain, and forward
+# the hook's arguments, but not its stdin — so the pre-push hook gets no ref list
+# and falls back to judging by HEAD. This target says so rather than printing an
+# unqualified success, because "installed" and "effective" are different claims.
+#
+# Note the redirect is not the only way the hook sees no ref list: git supplies
+# none for an up-to-date push either, on any machine. That is why the warning below
+# is about what the fallback costs and the hook's own refusal names both causes.
+.PHONY: install-git-hooks
+install-git-hooks: ## Install the shared-branch pre-push guard into this checkout
+	@set -e; \
+	COMMON_DIR=$$(git rev-parse --git-common-dir); \
+	HOOK_DIR="$$COMMON_DIR/hooks"; \
+	mkdir -p "$$HOOK_DIR"; \
+	if [ -e "$$HOOK_DIR/pre-push" ] && ! cmp -s scripts/hooks/pre-push "$$HOOK_DIR/pre-push"; then \
+		BACKUP="$$HOOK_DIR/pre-push.bak"; N=1; \
+		while [ -e "$$BACKUP" ]; do BACKUP="$$HOOK_DIR/pre-push.bak.$$N"; N=$$((N+1)); done; \
+		echo -e "$(YELLOW)$$HOOK_DIR/pre-push exists and differs — copying it to $$BACKUP$(NC)"; \
+		echo -e "$(YELLOW)   The guard REPLACES that hook rather than chaining to it, so whatever it did stops happening.$(NC)"; \
+		cp "$$HOOK_DIR/pre-push" "$$BACKUP"; \
+	fi; \
+	cp scripts/hooks/pre-push "$$HOOK_DIR/pre-push"; \
+	chmod +x "$$HOOK_DIR/pre-push"; \
+	HOOKS_PATH=$$(git config --get core.hooksPath || true); \
+	if [ -n "$$HOOKS_PATH" ] && [ "$$(cd "$$HOOKS_PATH" 2>/dev/null && pwd -P)" != "$$(cd "$$HOOK_DIR" && pwd -P)" ]; then \
+		echo -e "$(GREEN)✅ Installed $$HOOK_DIR/pre-push$(NC)"; \
+		echo -e "$(YELLOW)⚠️  core.hooksPath is set to $$HOOKS_PATH, outside this repository.$(NC)"; \
+		echo -e "$(YELLOW)   git runs that directory's hooks, so this one is reached only if they chain to it.$(NC)"; \
+		echo -e "$(YELLOW)   A chaining runner may not forward the ref list; the hook then judges by HEAD,$(NC)"; \
+		echo -e "$(YELLOW)   which refuses any push made while HEAD is on develop or main AND allows one$(NC)"; \
+		echo -e "$(YELLOW)   whose destination IS develop or main while HEAD is not. Treat it as a reminder$(NC)"; \
+		echo -e "$(YELLOW)   rather than a guard here. Override a refusal: ALLOW_SHARED_BRANCH=1$(NC)"; \
+	else \
+		echo -e "$(GREEN)✅ Installed $$HOOK_DIR/pre-push (override a refusal with ALLOW_SHARED_BRANCH=1)$(NC)"; \
+	fi
+
 commit: lint test ## Lint, test, auto-generate commit message, commit, and push
 	@echo "Generating commit message via Bedrock..."
 	@git add . && \

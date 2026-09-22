@@ -324,6 +324,13 @@ available here — the repository already inherits five enterprise rulesets, fou
 route is actionable from this tree, and neither announces itself: running the
 command is how either would be noticed.
 
+What the tree *can* do, and does, is make a direct write to a shared branch a
+deliberate act on the machine it is typed on — see
+[the shared-branch guard](#the-check-shared-branch-guard) below. Read it against
+the paragraph above rather than as a weaker form of it: it refuses an accidental
+`git commit`, `git push` or red `gh pr merge` from a checkout, and it changes
+nothing about what GitHub will accept.
+
 ### Testing
 
 **Every test layer and tier in this repo — what it proves, its `make` entry point,
@@ -675,6 +682,156 @@ judgment above to you. The patterns live in the script itself rather than being
 restated here. If it blocks a string that is legitimately public, add that string
 to the allowlist in the script with a comment saying why, rather than loosening the
 pattern. Run its tests with `make test-hooks`.
+
+#### The `check-shared-branch` guard
+
+Changes reach `develop` and `main` through a pull request. Nothing on GitHub
+enforces that (see [Visible is not blocking](#visible-is-not-blocking--make-check-branch-protection)),
+so two client-side halves do, and they are deliberately separate because they cover
+different routes:
+
+| Half | Covers | Install |
+|---|---|---|
+| `scripts/hooks/check_shared_branch.py` — a second `PreToolUse` hook on `Bash` | `git commit` and `git push` run **through the assistant's Bash tool**, plus `gh pr merge` | none; registered in `.claude/settings.json` |
+| `scripts/hooks/pre-push` — a real git `pre-push` hook | pushes the first half never sees: a plain shell, an IDE button, and the `git push` inside `make commit` | `make install-git-hooks`, once per clone |
+
+The `PreToolUse` half refuses a `git commit` whose commit would land on a shared
+branch, and a `git push` whose destination resolves to one. Both questions are
+answered about the *whole* command rather than the state it started in, so `git
+switch -c fix/x && git commit` is allowed and `git switch develop && git commit` is
+refused — which matters because the remedy the refusal prints is usually typed as
+one line. A `cd <path>` or `pushd <path>` earlier in the command is followed too, so
+`cd ../other && git commit` is judged against `other`.
+
+Destination resolution is the load-bearing part: it covers the forms that
+never name the branch (a bare `git push` with an upstream, `git push origin HEAD`,
+`git push origin @`), the delete form `git push origin :develop`, `--all`/`--mirror`,
+and a bare push under `push.default=matching`, which sends every same-named branch.
+A bare push is read **through `push.default`** rather than as the union of the
+branch name and the upstream: `current` targets the branch name and
+`upstream`/`tracking` the upstream, so taking both would be a false refusal under
+either. `--tags` with no refspec writes no branch and is allowed; `--follow-tags`
+sends the branch as well and is not. `git switch --track origin/develop` and `git
+checkout -t origin/develop` name no new branch — git takes the remote ref's leaf —
+so HEAD lands on local `develop` and a commit after one of them is refused.
+
+It also refuses `gh pr merge` when a check has **concluded** as failing. Two ways of
+misreading that command are silent, so both are guarded and tested: an option that
+takes a separate value must not have its value read as the pull request number
+(`gh pr merge --subject "x" 1055`), and `--repo` is accepted on **either** side of
+the subcommand, because gh registers it on the root command — `gh -R owner/name pr
+merge 1055` is valid, and reading `owner/name` as the subcommand leaves the command
+unrecognised so no check runs at all. In both cases `gh pr checks` then errors or
+answers about the wrong pull request, which reads as "cannot tell" and allows the
+merge with nothing printed.
+
+A commit on a branch that merely *tracks* `origin/develop` is allowed. `git
+checkout -b fix/x origin/develop` sets that upstream, so refusing it would refuse
+the ordinary way of starting work; the bare `git push` from such a branch is the
+thing that would reach `develop`, and that is refused.
+
+Overrides, one per decision: `ALLOW_SHARED_BRANCH=1` for a commit or push,
+`ALLOW_RED_MERGE=1` for a merge. Put the assignment in front of the command
+(`ALLOW_SHARED_BRANCH=1 git push origin develop`). The environment is read too, and
+that is the form to be careful with: a variable exported in one tool call is gone by
+the next, but one exported by a shell profile, an IDE or a CI runner persists and
+turns the check off for **every** command in that environment. Because that is
+invisible by construction, both halves print one line to stderr naming the check an
+honoured override disabled. Only an affirmative value (`1`, `true`, `yes`, `y`, `on`)
+counts: `ALLOW_SHARED_BRANCH=0` leaves the guard on.
+
+Neither variable is registered in `scripts/tests/gate_exemptions.json`, and that is
+a decision rather than an oversight — the reasoning is written out in the hook's
+header. That registry governs a **gate** turned off for a file, a line or a rule,
+because such a reason is written once and outlives what it described. These are
+per-invocation switches on a local convention, decided by whoever runs the command
+and recorded nowhere, so an entry would be one no ratchet can test and no audit can
+act on. What they can do quietly — be exported once and disable everything
+afterwards — is handled where it happens, by the stderr line above.
+
+**What neither half covers.** The claim is bounded, and these are the routes
+around it:
+
+- A merge performed through GitHub's own Merge button, which runs no code here.
+- A pull request whose checks never ran (a fork PR gets no GitHub CI here).
+- `git push --no-verify`, which skips the `pre-push` hook outright.
+- Anything that reaches `git` other than as the first word of a segment: a script
+  file (`sh deploy.sh`), `bash -c`, `eval`, `xargs`, a wrapper that takes options of
+  its own (`env`/`nice`/`sudo`), an absolute path, or a shell function shadowing
+  `git`. The `PreToolUse` half reads the command text it is given, and none of those
+  spell out what will run. The `pre-push` hook is what catches them. A leading run
+  of **shell keywords** is a different matter and *is* handled (`SHELL_KEYWORDS`,
+  plus `time` and `command`): `if make test; then git push origin develop; fi` is an
+  ordinary thing to type, and it puts `then` first in the segment.
+- A **git alias** that runs a shell command — `git -c alias.p='!git push origin
+  develop' p`. `git` is the first word, but the subcommand is `p`, and resolving
+  aliases would mean reading configuration the hook does not read.
+- `git checkout <branch> --` with nothing after the `--`. A trailing `--` normally
+  introduces a pathspec, which makes the command a file restore, and that is the
+  reading worth having; git treats this particular spelling as a branch switch, so a
+  commit after it is judged against the branch HEAD was on.
+- `cd -`, bare `pushd` and `popd`, which depend on a directory stack the hook does
+  not keep. A segment after one of them is judged against the directory in force
+  before it, and that misses in **either** direction depending on which way the
+  stack was moving: `cd -` back into a `develop` checkout is not seen, and `cd -`
+  back out of one refuses a commit that was fine.
+- History written onto a shared branch by anything other than `git commit` —
+  `merge`, `cherry-pick`, `revert`, `rebase`, `am`. Those are local until pushed,
+  and the push is what gets refused.
+
+Neither half looks at *which* remote, so pushing `develop` to a personal fork is
+refused too, and both key on the branch *name*, so a commit onto `main` in an
+unrelated repository visited in the same session is refused. Both are overridable.
+
+Four properties worth knowing before relying on it:
+
+- **It fails open.** An unparseable command, `git` or `gh` unavailable, a network
+  failure — all allow the command. A guard that wedges the session is worse than one
+  that misses a case, which is the same choice `check_commit_text.py` makes. Failing
+  open is about what cannot be *read*, though, not about where the command runs: an
+  explicit refspec names its destination on the command line, so `git push origin
+  develop` is refused even in a directory that is not a repository.
+- **Only *concluded* failures block a merge.** `pending` is the steady state for the
+  two path-filtered workflows and the one conditional check, so refusing on pending
+  would refuse every merge. A pull request whose checks **never ran** — a fork PR
+  gets no GitHub CI here — is not refused either, since refusing it would block the
+  only route a fork contribution has.
+- **`make install-git-hooks` writes to `$(git rev-parse --git-common-dir)/hooks`,
+  not `git rev-parse --git-path hooks`.** The latter honours `core.hooksPath`, and a
+  managed developer machine may set that system-wide (in `/etc/gitconfig`) to a
+  root-owned directory of hook runners belonging to a security tool, so it resolves
+  to a path the target must never write to. The common dir is also the right answer
+  inside a worktree, where hooks are shared with the main checkout.
+- ⚠️ **Under a system-wide `core.hooksPath`, the `pre-push` hook judges by `HEAD`
+  rather than by the refs.** git runs the *runner's* hooks, and the repository's own
+  hook is reached only because those runners chain to it. They forward the hook's
+  arguments but **not its stdin**, so the hook receives no ref list — and exiting 0
+  on an empty ref list is how a hook can be installed, reported successful, and
+  refuse nothing. It therefore falls back to `HEAD` and its upstream, and says which
+  basis it used. **That substitution is wrong in both directions, and the two
+  directions arise on different machines.** The over-refusal is not confined to a
+  redirected machine: git supplies an empty ref list for any **up-to-date** push as
+  well, measured on the direct path with no runner involved, so a no-op push while
+  `HEAD` sits on `develop` is refused on an ordinary machine — which is why the
+  message names both possible causes rather than blaming a runner the user may not
+  have. The under-refusal *is* specific to the redirect: there the destination stops
+  being checked for pushes that do have work to send, so one whose destination *is*
+  a shared branch while `HEAD` is not on one (`HEAD:refs/heads/develop`,
+  `HEAD:develop`, `origin develop`, `--all`) goes through although all four are
+  refused where the ref list arrives. The `PreToolUse` half resolves destinations
+  from the command line and refuses all four, so what stays uncovered on such a
+  machine is a push typed into a plain shell rather than one the assistant runs. The
+  destination really is unknowable in that state — with no ref list a `pre-push`
+  hook is given only the remote's name and URL — and refusing every push there would
+  make the hook unusable. `make install-git-hooks` prints the implication when it
+  detects the redirect;
+  `test_pre_push_still_refuses_through_a_runner_that_drops_stdin`,
+  `test_the_head_fallback_is_wrong_in_both_directions` and
+  `test_an_up_to_date_push_supplies_no_refs_on_an_ordinary_machine` measure all
+  three claims, because a suite that only points `core.hooksPath` at the
+  repository's own hooks cannot see any of them.
+
+Run the tests for both halves with `make test-hooks`.
 
 ## Important Implementation Details
 
