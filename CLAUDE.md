@@ -153,6 +153,16 @@ at runtime because the handler's own directory is on `sys.path`; the rest are
 genuinely uninstalled third-party distributions. So the rule is unusable above
 `"none"` here, and the gap it leaves is covered by the resolution assertions instead.
 
+⚠️ **basedpyright has no ignore-file support**, so its walk reads gitignored build
+output — the one asymmetry with ruff, which honours the ignore file natively. `exclude`
+is the only mechanism available, so the same file asserts the other direction too: the
+walk must reach **nothing an ignore rule covers**, and a tree that appears inside it
+fails there naming the directory. Two staged copies of `lib/idp_common_pkg` under
+`feature-platform/idp-data-generator/` are excluded on that basis, one entry each in
+`STAGED_BUILD_OUTPUT_EXEMPT` with a premise `gate_premises.vcs_ignored_build_output`
+computes per path. Before that check existed those copies put 20 errors on
+`make typecheck` for anyone who had packaged that feature locally, and none in CI.
+
 **`make cfn-lint`** discovers templates by **content** (anything declaring
 `AWSTemplateFormatVersion`), not by filename, so a new template cannot be added
 without being covered. `make check-arn-partitions` uses the **same** discovery

@@ -13,6 +13,13 @@ import time
 from idp_common import get_config, rule_validation
 from idp_common.models import Document, Status
 from idp_common.docs_service import create_document_service
+from idp_common.document_failure import (
+    RULE_VALIDATION_NOT_CONSOLIDATED_CODE,
+    RULE_VALIDATION_NOT_CONSOLIDATED_MESSAGE,
+    RULE_VALIDATION_STAGE,
+    SectionDiagnosis,
+    persist_failed_document,
+)
 from idp_common.utils import calculate_lambda_metering, merge_metering_data
 
 # X-Ray tracing
@@ -198,24 +205,42 @@ def handler(event, context):
         
         return response
         
-    except Exception as e:
-        logger.error(f"Error in rule validation orchestration: {str(e)}")
-        
-        # Record the failure on the document if we got far enough to have one.
+    except Exception as error:
+        logger.error(f"Error in rule validation orchestration: {str(error)}")
+
+        # #1064: this recorder had never recorded anything. It referenced
+        # `Status.ERROR`, which is not a member of `Status` (the member is
+        # `FAILED`), so evaluating the argument raised AttributeError before the
+        # call was made; it also passed an `error_message=` keyword
+        # `update_document_status` does not accept, and a `document_id` taken from
+        # `document.id` where every other call site in this pattern passes
+        # `input_key` — which is the attribute the tracking table is keyed on.
+        # All three faults landed in the surrounding `except`, which logged
+        # "Failed to update document status" and swallowed them, so the only
+        # symptom was a line that reads like a transient DynamoDB problem.
         #
-        # `update_document` rather than `update_document_status`: the latter
-        # writes only ObjectStatus and takes no error text, so the message would
-        # be lost. `Status.FAILED` is the enum's failure member — there is no
-        # `Status.ERROR`.
-        try:
-            if 'document' in locals():
-                docs_service = create_document_service()
-                document.status = Status.FAILED
-                document.errors.append(
-                    f"Rule validation orchestration failed: {str(e)}"
-                )
-                docs_service.update_document(document)
-        except Exception as status_error:
-            logger.error(f"Failed to update document status: {str(status_error)}")
-        
-        raise e
+        # The consolidation step is what turns every section's validated facts
+        # into the document's single compliance decision, so when it fails no
+        # section has a verdict — which is why the issue goes on all of them.
+        # A document whose load failed before `document` was bound, or that
+        # carries no sections, records nothing and takes its terminal status from
+        # `workflow_tracker` as before.
+        if "document" in locals():
+            document.status = Status.FAILED
+            persist_failed_document(
+                document_service=create_document_service(),
+                document=document,
+                error=error,
+                diagnoses=[
+                    SectionDiagnosis(
+                        section_id=section.section_id,
+                        stage=RULE_VALIDATION_STAGE,
+                        code=RULE_VALIDATION_NOT_CONSOLIDATED_CODE,
+                        message=RULE_VALIDATION_NOT_CONSOLIDATED_MESSAGE,
+                        root_cause=f"{type(error).__name__}: {error}",
+                    )
+                    for section in document.sections or []
+                ],
+            )
+
+        raise

@@ -390,6 +390,57 @@ def file_absent_or_untracked(member: str) -> Verdict:
     return (True, f"git does not track {member}")
 
 
+def vcs_ignored_build_output(member: str) -> Verdict:
+    """An ignore rule covers this path and git tracks nothing under it.
+
+    The premise for an exemption covering a tree that only exists after a local
+    build: a gate that walks the filesystem reaches it, a gate that asks git never
+    does, and nothing shipped from this repository lives there. Two things are
+    measured, and the exemption is only sound with both:
+
+    * **An ignore rule covers the path**, reported with the file and line that
+      states it. That is the durable half — while the rule stands, a file under
+      this path cannot become tracked without the rule being edited, so the
+      exclusion cannot silently grow to hide real code.
+    * **Git tracks no file under it**, which is what makes the exclusion cost
+      nothing today. This is a prefix question, not a question about one path, and
+      that is why :func:`file_absent_or_untracked` does not answer it: that
+      predicate asks whether git tracks *exactly* the named path, so for any
+      directory it returns True whatever the directory contains.
+
+    ⚠️ The ignore query is made with a **trailing slash**. An ignore pattern
+    written ``build/`` matches directories only, and ``git check-ignore`` cannot
+    tell that a path is a directory when the path is not on disk — so probing the
+    bare path answers "not ignored" on a clean checkout and "ignored" on a machine
+    that has run the build. A premise whose verdict depends on whether you have
+    built locally is the shape of gate this module exists to stop.
+    """
+    target = _normalise(member)
+    tracked = tracked_files(target, prune_local_work=False)
+    if tracked:
+        return (
+            False,
+            f"git tracks {len(tracked)} file(s) under {member} (e.g. {tracked[0]}), "
+            "so this exclusion hides code that ships from this repository",
+        )
+    probed = subprocess.run(
+        ["git", "-C", str(REPO_ROOT), "check-ignore", "-v", "--no-index", target + "/"],
+        capture_output=True,
+        text=True,
+    )
+    if probed.returncode != 0:
+        return (
+            False,
+            f"no ignore rule covers {member}, so a tracked file can appear under it "
+            "without any edit to an ignore file and this exclusion would hide it",
+        )
+    rule = probed.stdout.split("\t", 1)[0].strip()
+    return (
+        True,
+        f"{rule} ignores {member} and git tracks no file under it",
+    )
+
+
 def installer_manifest_pins_parameter(
     member: str, parameter: str, allowed: Collection[object] | None = None
 ) -> Verdict:
@@ -536,6 +587,7 @@ PREDICATES = {
     "not_a_nested_stack_of_parent": not_a_nested_stack_of_parent,
     "built_separately_from_main_stack": built_separately_from_main_stack,
     "file_absent_or_untracked": file_absent_or_untracked,
+    "vcs_ignored_build_output": vcs_ignored_build_output,
     "installer_manifest_pins_parameter": installer_manifest_pins_parameter,
     "collects_zero_tests": collects_zero_tests,
 }

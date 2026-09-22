@@ -109,6 +109,7 @@ import tomllib
 from fnmatch import fnmatch
 from pathlib import Path
 
+import gate_premises
 import pytest
 from setuptools import find_packages
 
@@ -355,6 +356,180 @@ TYPECHECK_SCOPE_EXCLUSIONS: dict[str, str] = {
         "of the 10 errors are that, 4 are untriaged"
     ),
 }
+
+
+#: Trees that hold Python only after a local build, and that basedpyright's walk
+#: would otherwise read. One entry per tree, keyed by the directory, with the reason
+#: for **that** directory — the pyrightconfig `exclude` pattern is derived from the
+#: key below rather than authored, so the two cannot drift apart.
+#:
+#: basedpyright discovers files by walking the filesystem and has no notion of an
+#: ignore file: there is no such setting in `pyrightconfig.json`, no such command-line
+#: option, and the string does not occur anywhere in the 5,032 files the 1.32.1 npm
+#: package ships. So an `exclude` entry is the only mechanism available, and each one
+#: is a claim that has to be checked — which is what the tests below do, per entry.
+#:
+#: What makes this class of path safe to exclude is not that it is currently absent
+#: from a clean checkout; it is that an ignore rule covers it, so a file under it
+#: cannot become tracked without that rule being edited.
+#: `gate_premises.vcs_ignored_build_output` measures both halves per member.
+STAGED_BUILD_OUTPUT_EXEMPT: dict[str, str] = {
+    "feature-platform/idp-data-generator/idp_common_pkg": (
+        "the accelerator library copied into the AgentCore image build context by "
+        "feature-platform/idp-data-generator/package_agent_source.sh at package "
+        "time; ignored at feature-platform/idp-data-generator/.gitignore line 5. It "
+        "is a snapshot of lib/idp_common_pkg, which the gate already reads at its "
+        "tracked location, so checking the copy adds no coverage and pins the gate "
+        "to whichever revision the last local build happened to stage"
+    ),
+    "feature-platform/idp-data-generator/bootstrap-processor/idp_common_pkg": (
+        "the same library staged a second time, into the bootstrap-processor "
+        "Lambda's CodeUri so the function can be packaged with it; ignored at "
+        "feature-platform/idp-data-generator/.gitignore line 6. Same snapshot, same "
+        "reasoning — and being a second copy is exactly why this is two entries "
+        "rather than one pattern spanning both: each has its own ignore rule and "
+        "its own reason to exist"
+    ),
+}
+
+
+def _staged_copy_pattern(rel: str) -> str:
+    """The pyrightconfig `exclude` pattern that covers one staged tree.
+
+    A trailing `/**` rather than the bare directory, for a reason that has nothing to
+    do with glob semantics — both forms exclude the tree, measured against
+    basedpyright 1.32.1. It is that `test_exclude_paths_that_look_concrete_exist`
+    treats a slash-free, star-free entry as a concrete path and calls it stale when it
+    is absent, which for build output is its normal state. A pattern is the honest
+    spelling of "this may or may not be here".
+    """
+    return f"{rel}/**"
+
+
+@pytest.mark.parametrize("rel", sorted(STAGED_BUILD_OUTPUT_EXEMPT))
+def test_staged_build_output_is_still_excluded(rel: str) -> None:
+    """The exclude entry this reason justifies must still be in the config.
+
+    Staleness in the direction that matters: the reason outliving the exclusion reads
+    as a live decision about a carve-out that no longer exists, and the next person
+    believes the list describes the config.
+    """
+    pattern = _staged_copy_pattern(rel)
+    assert pattern in _config().get("exclude", []), (
+        f"STAGED_BUILD_OUTPUT_EXEMPT justifies {rel!r}, but pyrightconfig.json "
+        f"`exclude` no longer contains {pattern!r}. Either restore the pattern or "
+        "drop the entry — and if the tree is genuinely gone, drop both."
+    )
+
+
+@pytest.mark.parametrize("rel", sorted(STAGED_BUILD_OUTPUT_EXEMPT))
+def test_staged_build_output_premise_holds(rel: str) -> None:
+    """Per member: an ignore rule covers it and git tracks nothing under it.
+
+    The premise, computed rather than asserted in prose. The failure this catches is
+    an exclusion that starts out over build output and ends up over committed code,
+    which is the direction that costs coverage: `exclude` beats `include`, so a
+    tracked file appearing under one of these paths would leave the gate silently
+    quieter with every other test here still green.
+    """
+    holds, why = gate_premises.vcs_ignored_build_output(rel)
+    assert holds, (
+        f"STAGED_BUILD_OUTPUT_EXEMPT excludes {rel!r} from `make typecheck` as "
+        f"ignored build output, and that is not true of it: {why}. An exclusion over "
+        "tracked code has to justify itself some other way — or, better, stop "
+        "excluding it."
+    )
+
+
+@pytest.mark.parametrize("rel", sorted(STAGED_BUILD_OUTPUT_EXEMPT))
+def test_staged_build_output_names_the_tree_that_holds_the_python(rel: str) -> None:
+    """Non-vacuity, where it can be measured: the tree holds Python when present.
+
+    This one is conditional by nature and says so rather than pretending otherwise.
+    On a clean checkout the directory does not exist, and its absence is the normal
+    state — so there is nothing to be non-vacuous about, and the staleness check above
+    is the unconditional half. When the directory *is* present, an entry naming a
+    tree with no `.py` in it is pointing at the wrong place: the errors are somewhere
+    else and this pattern is shielding whatever next occupies the path.
+    """
+    target = REPO_ROOT / rel
+    if not target.is_dir():
+        pytest.skip(
+            f"{rel} is absent, which is its state on any checkout where the "
+            "idp-data-generator feature has not been packaged locally"
+        )
+    assert next(target.rglob("*.py"), None) is not None, (
+        f"{rel} exists but holds no .py file, so excluding it removes nothing from "
+        "`make typecheck`. Either the staging location moved — find it, because the "
+        "walk is reading it — or this entry is pre-exempting a path for whatever "
+        "lands there next."
+    )
+
+
+def _ignored_python() -> list[str]:
+    """Every `.py` file an ignore rule covers, from git.
+
+    Untracked-but-*not*-ignored files are deliberately not here. A file you have
+    written and not yet committed is a file you want type-checked, and failing on it
+    would make the gate's answer change at `git add` time.
+    """
+    result = subprocess.run(
+        [
+            "git",
+            "ls-files",
+            "-z",
+            "--others",
+            "--ignored",
+            "--exclude-standard",
+            "--",
+            "*.py",
+        ],
+        cwd=REPO_ROOT,
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    return sorted(p for p in result.stdout.split("\0") if p)
+
+
+def test_the_typecheck_walk_reaches_no_ignored_python() -> None:
+    """Nothing an ignore rule covers may be inside the gate's walk.
+
+    This is the class-level half, and it is the one that would have turned the
+    incident this check was added for into a local test failure naming the directory
+    instead of 20 `make typecheck` errors on everybody's machine at once.
+
+    basedpyright discovers files by walking the filesystem, so `include` naming
+    `feature-platform` reaches every staged copy, cache and build tree under it. The
+    consequences run in both directions and both are bad. Type errors appear in code
+    that is not part of this repository — a staged snapshot of `lib/idp_common_pkg`
+    was one revision behind, so the gate reported 20 errors nobody could fix by
+    editing a tracked file. And the answer depends on what you have built locally: the
+    same commit is green on a clean checkout and in CI, red for anyone who has
+    packaged the feature. A gate with that property cannot be used to decide anything.
+
+    The remedy for a failure here is an `exclude` pattern plus an entry in
+    `STAGED_BUILD_OUTPUT_EXEMPT` with the reason for that path — not a wider
+    `exclude`, and not a bare directory name, which would match at every depth.
+    """
+    includes = _include_paths()
+    reached = [
+        rel
+        for rel in _ignored_python()
+        if _is_covered(rel, includes)
+        if _excluded_by(rel) is None
+    ]
+    trees = sorted({str(Path(rel).parent) for rel in reached})
+    assert not reached, (
+        f"{len(reached)} ignored .py file(s) are inside basedpyright's walk, in "
+        f"{len(trees)} director(ies):\n  "
+        + "\n  ".join(trees[:10])
+        + "\n\nThese are not part of this repository — an ignore rule covers them — "
+        "and basedpyright has no way to know that: it has no ignore-file support, so "
+        "`exclude` is the only mechanism. Add a `<path>/**` entry to pyrightconfig "
+        "`exclude` and register the path in STAGED_BUILD_OUTPUT_EXEMPT in this file "
+        "with the reason for that one path."
+    )
 
 
 def _tracked_python() -> list[str]:
