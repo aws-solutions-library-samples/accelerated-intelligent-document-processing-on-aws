@@ -461,7 +461,9 @@ class TestConsolidatedPageReferences:
         "pages",
         [pytest.param(7, id="bare-int"), pytest.param("1,2", id="bare-string")],
     )
-    def test_supporting_pages_that_is_not_a_list_does_not_decide_the_report(self, pages):
+    def test_supporting_pages_that_is_not_a_list_does_not_decide_the_report(
+        self, pages
+    ):
         # The field itself is model output too: a bare int is not iterable and a
         # bare string iterates into characters, and neither should reach the
         # aggregate or discard the statistics.
@@ -552,6 +554,21 @@ class TestConsolidationFailureKeepsItsStatistics:
         assert summary["overall_statistics"]["total_rules"] == 0
         assert summary["overall_statistics"]["pass_percentage"] == 0.0
         assert summary["rule_details"] == {}
+
+    @pytest.mark.parametrize(
+        "responses",
+        [pytest.param(None, id="none"), pytest.param(7, id="not-a-mapping")],
+    )
+    def test_a_responses_argument_that_cannot_even_be_measured_does_not_raise(
+        self, responses
+    ):
+        # `len(all_responses)` is caller input like any other, so it is measured
+        # inside the guarded region: this method's contract is that it returns
+        # something writable to S3 whatever it is handed.
+        summary = _service()._generate_consolidated_summary(responses)
+        assert summary["overall_status"] == "ERROR"
+        assert summary["total_policy_types"] == 0
+        assert summary["generated_at"]
 
 
 def _summary_for_markdown(**overrides):

@@ -451,10 +451,12 @@ class DataExtractor:
 
     def clear_cache(self):
         """
-        No-op, retained because callers exist.
+        No-op, kept on this class's public surface for existing callers.
 
-        There is no longer any cross-call state to clear: ``extract_values``
-        memoizes path readings in a dict it owns for the duration of one call, so a
-        fresh call already reads fresh data and no document's values are retained
-        after it returns. Calling this is harmless and changes nothing.
+        There is no cross-call state to clear: ``extract_values`` memoizes path
+        readings in a dict it owns for the duration of one call, so a later call
+        already reads fresh data and no document's values are retained after one
+        returns. Calling this is harmless and changes no reading — correctness
+        across documents is a property of the extractor rather than something a
+        caller has to remember to do.
         """

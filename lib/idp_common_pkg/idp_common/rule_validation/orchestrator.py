@@ -153,10 +153,15 @@ class RuleValidationOrchestratorService:
         the ``error`` field, the banner ``_format_summary_as_markdown`` renders from
         it and a logged traceback are what make an instance visible.
         """
+        # Built before the `try` so the failure path below has something to return,
+        # and deliberately with nothing in it that can raise: `all_responses` is
+        # measured as the first statement *inside* the try, because it is caller
+        # input and `len()` of the wrong type must be caught like any other defect
+        # here rather than escaping a method that does not raise.
         summary = {
             "document_id": None,  # Will be set when we have access to document
             "overall_status": "COMPLETE",
-            "total_policy_types": len(all_responses),
+            "total_policy_types": 0,
             "rule_summary": {},
             "overall_statistics": {
                 "total_rules": 0,
@@ -173,6 +178,8 @@ class RuleValidationOrchestratorService:
         recommendation_counts = {}
 
         try:
+            summary["total_policy_types"] = len(all_responses)
+
             # Process each policy type
             for policy_type, responses in all_responses.items():
                 rule_stats = {
@@ -1284,7 +1291,7 @@ tr:hover {
                 .replace("\n", " ")
             )
             md_parts.append(
-                '> ⚠️ **Consolidation did not complete.** The statistics below cover '
+                "> ⚠️ **Consolidation did not complete.** The statistics below cover "
                 "only the rules counted before it failed, so they may be "
                 "incomplete. Each policy type's own section is unaffected.\n>\n"
                 f"> Reason: {escaped_error}\n\n"
