@@ -132,13 +132,17 @@ jobs:
       # the changed files — so it cannot see a break the change caused in a file
       # the diff did not include, which is the ordinary shape of a type error.
       # It also meant nothing ever ran the check that pyrightconfig.json's
-      # `include` closure is a closure OF. A full run is ~1 minute over 1273 files.
+      # `include` closure is a closure OF. A full run is ~1 minute over the whole
+      # tracked tree.
       - name: Run type checking
         run: make typecheck
 
       - name: Run tests
         id: run-tests
         run: make test-cicd -C lib/idp_common_pkg
+
+      - name: Coverage ratchet (per-file, reads the report the step above writes)
+        run: make check-coverage-debt
         continue-on-error: false
 
       # `make test-cicd -C lib/idp_common_pkg` above covers only idp_common_pkg.

@@ -49,9 +49,9 @@ combined = merge_metering_data(
 ### Transient-error classification (`transient_errors`)
 
 Step Functions retries a Lambda task by the reported error *name*. The extraction,
-shard-runtime and assessment handlers therefore classify a failure with
-`is_transient_error(exc)` and re-raise a transient cause as `TransientError`, the one
-name `workflow.asl.json` lists for those five tasks (#787). Rules: the exception's own
+shard-runtime, assessment and rule-validation handlers therefore classify a failure
+with `is_transient_error(exc)` and re-raise a transient cause as `TransientError`, the
+one name `workflow.asl.json` lists for those eight tasks (#787, #1101). Rules: the exception's own
 verdict first (a `ClientError` is judged by its code alone — `ValidationException`
 and `ModelErrorException` are deterministic at the task level, the Bedrock retry
 codes, S3's `SlowDown` / `ServiceUnavailable` / `InternalError` and the stream error
@@ -83,6 +83,29 @@ except Exception as e:
     raise_if_transient(e, where="extraction section 3")  # TransientError when transient
     raise  # hard errors keep their own name and are not retried
 ```
+
+**Two entry points, and picking the wrong one fails silently.** `raise_if_transient`
+returns without raising when the exception *already is* a `TransientError`, because it
+is written for the block above — the bare `raise` is what keeps the name. An `except`
+that instead **returns** a value has no such `raise`, so with `raise_if_transient`
+alone an exception another site had already classified gets swallowed there and the
+classification is undone. Use `reraise_if_transient` at any site that swallows:
+
+```python
+from idp_common.utils.transient_errors import reraise_if_transient
+
+try:
+    ...
+except Exception as e:
+    reraise_if_transient(e, where="rule validation rule 'must be employed'")
+    return fallback_result  # reached only for a DETERMINISTIC failure
+```
+
+Neither ever wraps a `TransientError` in another one, so a failure that passes through
+several nested handlers still reports one name and one cause. Rule validation is where
+this matters most, because its blocks nest: a transient re-raised for one rule travels
+up through `asyncio.gather` into a document-level `except` that returns a document
+marked failed (#1101).
 
 ### The shard invocation's time budget (`idp_common.timeout_budget`)
 

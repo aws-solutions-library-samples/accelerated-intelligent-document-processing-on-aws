@@ -255,7 +255,7 @@ logging.getLogger('idp_common.bedrock.client').setLevel(logging.DEBUG)
 ```
 
 ### Example CachePoint Processing
-See notebook [Bedrock Client Prompt Cache Testing Notebook](../../../../notebooks/bedrock_client_cachepoint_test.ipynb)
+See notebook [Bedrock Client Prompt Cache Testing Notebook](../../../../notebooks/misc/bedrock_client_cachepoint_test.ipynb)
 
 ## OpenAI GPT-5.x Models (bedrock-mantle Responses API)
 

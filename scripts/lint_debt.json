@@ -142,10 +142,6 @@
       "F841": 2,
       "I001": 1
     },
-    "nested/bedrockkb/src/s3_vectors_manager/test_handler.py": {
-      "F401": 2,
-      "I001": 1
-    },
     "patterns/unified/src/assessment_function/assessment_validator.py": {
       "F401": 1,
       "I001": 1
@@ -411,7 +407,6 @@
     "nested/bedrockkb/src/opensearch_index_custom_resource/oss_handler.py",
     "nested/bedrockkb/src/opensearch_index_custom_resource/oss_utils.py",
     "nested/bedrockkb/src/s3_vectors_manager/handler.py",
-    "nested/bedrockkb/src/s3_vectors_manager/test_handler.py",
     "nested/bedrockkb/src/start_ingestion_job_custom_resource/handler.py",
     "nested/bedrockkb/src/start_ingestion_job_custom_resource/test_handler.py",
     "notebooks/_run_nb.py",
@@ -485,7 +480,6 @@
     "src/lambda/api_handler/models.py",
     "src/lambda/api_handler/test_index.py",
     "src/lambda/backfill_gsi_attributes/index.py",
-    "src/lambda/batch_pre_processor/conftest.py",
     "src/lambda/batch_pre_processor/index.py",
     "src/lambda/batch_pre_processor/test_index.py",
     "src/lambda/bda_ocr_project/tests/test_index.py",
@@ -519,7 +513,6 @@
     "src/lambda/finetuning_merge_data/index.py",
     "src/lambda/initialize_counter/index.py",
     "src/lambda/ipset_updater/index.py",
-    "src/lambda/job_tracker/conftest.py",
     "src/lambda/job_tracker/test_index.py",
     "src/lambda/lookup_function/index.py",
     "src/lambda/multi_doc_discovery/analyze_handler.py",
@@ -552,8 +545,8 @@
     "src/lambda/workflow_tracker/test_notify_circuit_breaker.py"
   ],
   "highWaterMark": {
-    "lintDebtFiles": 85,
-    "lintFindings": 196,
-    "formatDebtFiles": 183
+    "lintDebtFiles": 84,
+    "lintFindings": 193,
+    "formatDebtFiles": 180
   }
 }

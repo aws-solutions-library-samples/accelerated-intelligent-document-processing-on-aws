@@ -21,6 +21,7 @@ from idp_common.document_failure import (
     persist_failed_document,
 )
 from idp_common.utils import calculate_lambda_metering, merge_metering_data
+from idp_common.utils.transient_errors import raise_if_transient
 
 # X-Ray tracing
 from aws_xray_sdk.core import xray_recorder
@@ -242,5 +243,18 @@ def handler(event, context):
                     for section in document.sections or []
                 ],
             )
+
+        # #1101: surface a transient cause under the one name
+        # RuleValidationOrchestration retries. This runs AFTER the recorder above,
+        # and the two agree by construction because both ask
+        # `idp_common.utils.transient_errors.is_transient_error`: whatever the
+        # recorder declined to mark as failed is exactly what this re-raises as
+        # retryable, so a section is never left showing red through a ladder that is
+        # about to clear it, and a transient fault is never recorded as terminal.
+        # Before this, the bare `raise` below reported the cause's own class name —
+        # `ClientError` for a throttle botocore did not model, `ReadTimeoutError` for
+        # a dropped read — neither of which this state lists, so the document failed
+        # on the first attempt with nothing on its record.
+        raise_if_transient(error, where="rule validation orchestration")
 
         raise

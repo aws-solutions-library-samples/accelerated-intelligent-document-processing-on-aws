@@ -11,6 +11,7 @@ from pydantic import BaseModel, ValidationError
 from idp_common.schema.pydantic_generator import (
     clean_schema_for_generation,
     create_pydantic_model_from_json_schema,
+    nullable_required_containers_for_shard,
     validate_json_schema_for_pydantic,
 )
 
@@ -1461,6 +1462,121 @@ class TestNestedObjectAliases:
         # at runtime, as these are JSON Schema validation constraints. The test verifies that
         # the schema can be converted to a Pydantic model without errors, even if the constraints
         # aren't enforced during validation.
+
+
+class TestNullableRequiredContainersForShard:
+    """The shard-scoped half of the transport transform (#1078).
+
+    ``nullable_leaves_for_transport`` widens scalar leaves; this widens a **required**
+    array or nested object as well, for the one caller that needs it — a shard agent
+    that is told to leave an out-of-shard field null. Its contract as a pure schema
+    function is pinned here; what the service does with it is in
+    ``tests/unit/extraction/test_truncation_warnings.py``.
+    """
+
+    _SCHEMA = {
+        "type": "object",
+        "properties": {
+            "Scalar": {"type": "string"},
+            "Rows": {"type": "array", "minItems": 5, "items": {"type": "string"}},
+            "Group": {"type": "object", "properties": {"A": {"type": "string"}}},
+            "OptionalRows": {"type": "array", "items": {"type": "string"}},
+        },
+        "required": ["Scalar", "Rows", "Group"],
+    }
+
+    def test_only_required_containers_gain_a_null_branch(self):
+        out = nullable_required_containers_for_shard(self._SCHEMA)
+        props = out["properties"]
+        assert props["Rows"]["type"] == ["array", "null"]
+        assert props["Group"]["type"] == ["object", "null"]
+        # A scalar is this transform's business only through the other one.
+        assert props["Scalar"]["type"] == "string"
+        # Already optional: nothing to relax.
+        assert props["OptionalRows"]["type"] == "array"
+        # required itself is untouched — the key must still be present.
+        assert out["required"] == ["Scalar", "Rows", "Group"]
+
+    def test_row_count_bounds_are_left_alone(self):
+        """Presence and row counts are separate decisions; only presence relaxes."""
+        out = nullable_required_containers_for_shard(self._SCHEMA)
+        assert out["properties"]["Rows"]["minItems"] == 5
+
+    def test_the_input_is_not_mutated(self):
+        """The caller keeps validating the merged section against the real schema."""
+        import copy
+
+        before = copy.deepcopy(self._SCHEMA)
+        nullable_required_containers_for_shard(self._SCHEMA)
+        assert self._SCHEMA == before
+
+    def test_it_is_idempotent(self):
+        once = nullable_required_containers_for_shard(self._SCHEMA)
+        assert nullable_required_containers_for_shard(once) == once
+
+    def test_it_reaches_required_lists_at_every_level(self):
+        """One rule for the whole schema, including ``$defs`` and ``items``."""
+        schema = {
+            "type": "object",
+            "$defs": {
+                "Item": {
+                    "type": "object",
+                    "properties": {"Tags": {"type": "array", "items": {}}},
+                    "required": ["Tags"],
+                }
+            },
+            "properties": {
+                "Items": {"type": "array", "items": {"$ref": "#/$defs/Item"}},
+                "Nested": {
+                    "type": "object",
+                    "properties": {"Inner": {"type": "array", "items": {}}},
+                    "required": ["Inner"],
+                },
+            },
+            "required": ["Items", "Nested"],
+        }
+        out = nullable_required_containers_for_shard(schema)
+        assert out["properties"]["Items"]["type"] == ["array", "null"]
+        assert out["properties"]["Nested"]["type"] == ["object", "null"]
+        assert out["properties"]["Nested"]["properties"]["Inner"]["type"] == [
+            "array",
+            "null",
+        ]
+        assert out["$defs"]["Item"]["properties"]["Tags"]["type"] == ["array", "null"]
+
+    def test_a_container_with_no_declared_type_is_recognised_by_shape(self):
+        schema = {
+            "type": "object",
+            "properties": {
+                "Group": {"properties": {"A": {"type": "string"}}},
+                "Rows": {"items": {"type": "string"}},
+            },
+            "required": ["Group", "Rows"],
+        }
+        out = nullable_required_containers_for_shard(schema)
+        assert out["properties"]["Group"]["type"] == ["object", "null"]
+        assert out["properties"]["Rows"]["type"] == ["array", "null"]
+
+    def test_a_bare_ref_property_is_the_documented_residual(self):
+        """A required property that is only a ``$ref`` is NOT widened.
+
+        There is no keyword to widen without resolving the reference, and the
+        ``anyOf`` form the generator would need turns an array field into a wrapper
+        model — which breaks the shard merge's list detection, a worse outcome than
+        the one correction round this leaves in place. Pinned so the limitation is a
+        recorded decision rather than an accident, and so a later fix has a test to
+        flip.
+        """
+        schema = {
+            "type": "object",
+            "$defs": {
+                "Sum": {"type": "object", "properties": {"T": {"type": "number"}}}
+            },
+            "properties": {"G": {"$ref": "#/$defs/Sum"}},
+            "required": ["G"],
+        }
+        out = nullable_required_containers_for_shard(schema)
+        assert out["properties"]["G"] == {"$ref": "#/$defs/Sum"}
 
 
 if __name__ == "__main__":

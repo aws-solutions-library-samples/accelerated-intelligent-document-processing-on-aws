@@ -97,6 +97,67 @@ def test_specific_function():
     assert result == expected
 ```
 
+## Proving a test is load-bearing: break the code and watch it go red
+
+A test that passes tells you nothing about whether it *can* fail. Where it matters —
+a test you have just corrected, or one whose assertion you are relying on — mutate
+the production code, confirm that test and only that test goes red, then restore.
+Restore from a **copy you made under `/tmp`**, never with `git checkout --` or
+`git restore`: those discard uncommitted work in the same file and have cost real
+edits here. Run the matrix in the **foreground**, one mutation at a time.
+
+⚠️ **Delete `__pycache__` between mutations, or a same-length mutation can run
+bytecode that no longer matches the file on disk.** CPython decides a cached `.pyc`
+is still valid by comparing the source's `(mtime, size)` — so a mutation that changes
+*neither* can be written, and the stale `.pyc` still used. Plenty of the most useful
+mutations are exactly that shape: swapping the two arms of a ternary, `>` for `<`,
+one status string for another of equal length.
+
+**Clearing the cache is what fixes this. `-B` does not.** `-B` suppresses *writing*
+`.pyc` files and does nothing about *reading* one that already exists. Measured, with
+a 59-character mutation replacing 59 characters and the mtime held back:
+
+| | cleared | `-B` | result |
+|---|---|---|---|
+| nothing done | no | no | **stale** |
+| `-B` alone | no | yes | **stale** |
+| clear alone | yes | no | correct |
+| clear and `-B` | yes | yes | correct |
+
+So use both, but know which does the work: the clear is the fix, and `-B`'s narrower
+job is to stop a *new* stale `.pyc` being written for the next mutation in the loop.
+Reading "run it with `-B`" as the remedy and skipping the clear reproduces the bug.
+
+⚠️ **The hazard is intermittent, which is worse than deterministic.** Whether it
+bites depends on whether the clock second ticked between the compile and the rewrite.
+In a tight loop it bites every time; insert a pause and the same mutation reports
+correctly. So a matrix can give a true result on one run and a false one on the next
+with nothing visible distinguishing them — which is why this is a thing to do
+unconditionally rather than when you suspect it.
+
+Two presentations, neither of which looks like a caching problem:
+
+- A mutation that appears to **change nothing**, which reads as "this test is
+  vacuous" — the opposite of the truth.
+- A **baseline** failure *after* you have restored the original, because the stale
+  `.pyc` from the mutated version is still considered valid. Nothing about the tree
+  looks wrong at that point, so it reads as a real defect in code you just put back.
+
+```python
+for cache in package_dir.rglob("__pycache__"):
+    shutil.rmtree(cache, ignore_errors=True)
+subprocess.run([sys.executable, "-B", "-m", "pytest", "-q", ...], cwd=package_dir)
+```
+
+`-p no:cacheprovider` is a different thing and does not help at all: it disables
+pytest's own `.pytest_cache`, not CPython's bytecode cache.
+
+Two shapes worth mutating for specifically, because both pass while asserting
+nothing: an expectation table that a loop only `print`s rather than compares, and a
+predicate that is a tautology against a mock (`hasattr(mock, anything)`,
+`assert mock.attr is not None`, `assert isinstance(mock, Mock)`). A `Mock` answers
+to every attribute name, so a claim about one is a claim about your own fixture.
+
 ## Moto Usage
 Always use `@mock_aws` decorator:
 ```python

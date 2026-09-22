@@ -466,7 +466,7 @@ class TestValidateWithLlmExtraction:
 
 @pytest.mark.unit
 class TestValidateBatch:
-    """validate_batch(): one result per rule, and the cache discipline."""
+    """validate_batch(): one result per rule, each read from the batch's data."""
 
     def _batch_system(self):
         system = _system(real_solver=True)
@@ -482,13 +482,18 @@ class TestValidateBatch:
         results = system.validate_batch(rules, {})
         assert [r.rule_id for r in results] == ["r0", "r1", "r2"]
 
-    def test_the_extraction_cache_is_cleared_once_per_rule(self):
-        # The cache is keyed by data path, and the same path means different things
-        # for different rules, so a cache carried across rules would return one
-        # rule's reading for another's parameter.
+    def test_every_rule_reads_the_document_the_batch_was_given(self):
+        # There is no cache discipline to get right between rules: DataExtractor
+        # memoizes path readings inside one extract_values call and keeps nothing
+        # afterwards, so what makes each rule read this document is that each rule
+        # is handed it. `clear_cache()` remains callable and does nothing, so
+        # counting calls to it would assert nothing about the readings.
         system = self._batch_system()
-        system.validate_batch([_rule(with_paths=True) for _ in range(3)], {})
-        assert system.extractor.clear_cache.call_count == 3
+        data = {"doc": {"coverage": 1.0}}
+        system.validate_batch([_rule(with_paths=True) for _ in range(3)], data)
+        calls = system.extractor.extract_values.call_args_list
+        assert len(calls) == 3
+        assert all(call.kwargs["data"] is data for call in calls)
 
     def test_a_failing_rule_becomes_an_error_result_and_the_batch_continues(self):
         # Positional correspondence is what callers rely on; a shorter list would

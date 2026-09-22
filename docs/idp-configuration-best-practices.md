@@ -24,7 +24,7 @@ SPDX-License-Identifier: MIT-0
 ### Part II: IDP Configuration Best Practices
 - [Configuration Architecture Overview](#configuration-architecture-overview)
 - [Advanced Image Processing](#advanced-image-processing)
-- [Assessment and Quality Assurance](#assessment-and-quality-assurance)
+- [Confidence (Assessment) and Quality Assurance](#confidence-assessment-and-quality-assurance)
 - [Evaluation and Analytics](#evaluation-and-analytics)
 - [Advanced Configuration Management](#advanced-configuration-management)
 - [Testing and Validation](#testing-and-validation)

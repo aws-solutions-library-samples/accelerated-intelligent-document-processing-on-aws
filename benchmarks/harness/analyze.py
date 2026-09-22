@@ -761,15 +761,47 @@ def score_audit_metadata(sections):
     }
 
 
+def unread_sections_row(read):
+    """The row keys a document whose sections could not all be READ contributes.
+
+    Deliberately only these two, and deliberately NOT a set of ``None`` metrics
+    (GitHub #1079). Every metric key is omitted, because a key that is present and
+    null already means something else here: ``calibration_curve: None`` is the
+    established signal for "measured, and there was nothing to join", which is what
+    ``aggregate.calibration_study`` and ``augment_summary`` both read. Writing nulls
+    for an unread document would claim a measurement that never happened, in the one
+    encoding downstream code trusts.
+
+    Absent keys, by contrast, are what ``aggregate._stats`` drops and what
+    ``calibration_study`` re-reads, so an unread document falls out of every average
+    instead of pulling it toward zero — and ``sections_unread`` says why in the row
+    and in the CSV.
+    """
+    return {
+        "sections_unreadable": read.unreadable or None,
+        "sections_unread": read.why,
+    }
+
+
 def score_synthetic(bucket, doc_prefix, truth):
-    """Exact completeness + accuracy from SEQ tags and known field values."""
+    """Exact completeness + accuracy from SEQ tags and known field values.
+
+    Returns :func:`unread_sections_row` and no metric at all when any section object
+    under the prefix would not read. An accuracy computed over the sections that
+    happened to decrypt is not a weaker reading of this document, it is a wrong one,
+    and it is wrong in a direction that flatters or damns the configuration
+    depending on what was in the sections that went missing.
+    """
+    read = lib.read_sections(bucket, doc_prefix)
+    if not read.complete:
+        return unread_sections_row(read)
     seqs, confs = [], []
     scalar_hits = scalar_tot = 0
     typed_hits = typed_tot = 0
     fields = truth.get("fields") or {}
     fields_typed = truth.get("fields_typed") or {}
     got_fields = {}
-    sections = list(lib.iter_section_results(bucket, doc_prefix))
+    sections = read.sections
     for sec in sections:
         ir = sec.get("inference_result", {}) or {}
         blob = json.dumps(ir)
@@ -904,8 +936,21 @@ def score_classification(ev):
 
 
 def score_reference(bucket, doc_prefix):
-    """Weighted accuracy + parse failures + calibration from the stack eval."""
-    ev = lib.get_json(bucket, doc_prefix + "evaluation/results.json")
+    """Weighted accuracy + parse failures + calibration from the stack eval.
+
+    Two reads can come back empty for two different reasons each, so both are
+    classified rather than collapsed (GitHub #1079): the sections, as in
+    :func:`score_synthetic`, and the stack's own evaluation report, whose absence
+    (evaluation not enabled for this run) is an ordinary state while a failure to
+    read it is not. ``eval_unread`` carries the second; an unreadable report leaves
+    ``weighted_accuracy`` and ``parse_failures`` null rather than reporting a
+    zero-failure run that was never scored.
+    """
+    read = lib.read_sections(bucket, doc_prefix)
+    if not read.complete:
+        return unread_sections_row(read)
+    ev_read = lib.read_json(bucket, doc_prefix + "evaluation/results.json")
+    ev = None if ev_read.is_failed else ev_read.value_or(None)
     acc = pf = None
     sep = None
     if ev:
@@ -924,11 +969,12 @@ def score_reference(bucket, doc_prefix):
                 sum(corr_conf) / len(corr_conf) - sum(wrong_conf) / len(wrong_conf), 4
             )
     confs = []
-    sections = list(lib.iter_section_results(bucket, doc_prefix))
+    sections = read.sections
     for sec in sections:
         confs += lib.confidence_values(sec.get("explainability_info"))
     return {
         **score_audit_metadata(sections),
+        "eval_unread": ev_read.error if ev_read.is_failed else None,
         "weighted_accuracy": acc,
         "parse_failures": pf,
         "calibration_separation": sep,
@@ -948,9 +994,23 @@ def score_doc(bucket, tracking, run_id, doc_name, truth=None):
     doc_prefix = f"{run_id}/{doc_name}/"
     row = lib.doc_row(tracking, run_id, run_id and doc_name)
     status = row.get("ObjectStatus", "?")
-    metering = lib.doc_metering(tracking, run_id, doc_name)
-    cost, by = lib.price_metering(metering)
-    by_phase = {}
+    # The cost path REFUSES to price a metering row it did not read (GitHub #1079).
+    # An empty metering map prices to $0.00, which is a real and correct figure for a
+    # run that metered nothing — and the same $0.00 is what a deleted tracking table,
+    # a throttle and a missing tracking row used to produce. So `cost` is null unless
+    # the read is `present`, and `cost_unread` names the state and the reason. A null
+    # cost drops out of every mean (`aggregate._stats`, `_mean`, `_spread` all skip
+    # non-numeric values); a zero would drag each of them down and make the
+    # configuration look cheaper than it is.
+    metering_read = lib.read_metering(tracking, run_id, doc_name)
+    metering = metering_read.value if metering_read.is_present else None
+    cost_unread = (
+        None
+        if metering_read.is_present
+        else f"{metering_read.state}: {metering_read.error}"
+    )
+    cost, by = lib.price_metering(metering) if metering is not None else (None, None)
+    by_phase = {} if metering is not None else None
     for k, units in (metering or {}).items():
         phase = k.split("/")[0]
         c, _ = lib.price_metering({k: units})
@@ -970,8 +1030,8 @@ def score_doc(bucket, tracking, run_id, doc_name, truth=None):
         "cacheReadInputTokens",
         "cacheWriteInputTokens",
     )
-    tok = {}
-    tok_by_phase = {}
+    tok = {} if metering is not None else None
+    tok_by_phase = {} if metering is not None else None
     for k, units in (metering or {}).items():
         if isinstance(units, dict):
             phase = k.split("/")[0]
@@ -986,9 +1046,12 @@ def score_doc(bucket, tracking, run_id, doc_name, truth=None):
         "success": status == "COMPLETED",
         "page_count": row.get("PageCount"),
         "wall_s": _wall(row),
-        "cost": round(cost, 4),
+        "cost": round(cost, 4) if cost is not None else None,
+        "cost_unread": cost_unread,
         "cost_by_phase": by_phase,
-        "cost_by_key": {k: round(v, 5) for k, v in (by or {}).items()},
+        "cost_by_key": (
+            {k: round(v, 5) for k, v in (by or {}).items()} if by is not None else None
+        ),
         "tokens": tok,
         "tokens_by_phase": tok_by_phase,
     }

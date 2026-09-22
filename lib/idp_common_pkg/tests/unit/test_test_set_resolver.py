@@ -8397,3 +8397,149 @@ def test_publish_snapshot_records_the_drafting_configuration(publish_table):
         "Item"
     ]
     assert written["configVersion"] == "prof-A"
+
+
+class TestResolverPathsKeyLikeTheStoredCurve:
+    """#1066: the resolver's field paths use ``curve_store``'s list-index rule.
+
+    Every case here is one where a length-keyed index rule (``prefix if
+    len(node) == 1 else f"{prefix}[{index}]"``) and a depth-keyed one give
+    **different** answers. A suite that only used multi-element lists would pass
+    against either and prove nothing, so each test below names a single-element
+    list or a multi-element outer wrapper.
+    """
+
+    def test_a_one_row_table_keys_its_index_like_the_curve_does(self):
+        """The shape that moved. A one-row table is indexed, same as a two-row one.
+
+        Under a length-keyed rule the single row lost its index, so the same field
+        keyed ``Transactions.Amount`` on a one-row document and
+        ``Transactions[0].Amount`` on a two-row one — a key that depends on the data.
+        """
+        one_row = [{"Transactions": [{"Amount": {"confidence": 0.9}}]}]
+        assert test_set_index._walk_confidence_named(one_row) == [
+            (0.9, None, "Transactions[0].Amount")
+        ]
+        assert test_set_index._absent_field_paths(
+            {"Transactions": [{"Amount": None}]}
+        ) == {"Transactions[0].Amount"}
+
+    def test_the_paths_are_the_same_strings_curve_store_produces(self):
+        """The unification claim itself, on the single-element shape that moved.
+
+        ``flatten_confidences`` and ``flatten_values`` are what a stored confidence
+        curve is keyed by, so a path that differs from theirs silently fails to join.
+        """
+        from idp_common.evaluation import flatten_confidences, flatten_values
+
+        explainability = [
+            {
+                "Transactions": [{"Amount": {"confidence": 0.9}}],
+                "Holder": {"City": {"confidence": 0.7}},
+            }
+        ]
+        inference = {
+            "Transactions": [{"Amount": "-44.00"}],
+            "Holder": {"City": "Seattle"},
+        }
+        resolver_paths = {
+            name
+            for _c, _t, name in test_set_index._walk_confidence_named(explainability)
+        }
+        assert resolver_paths == set(flatten_confidences(explainability))
+        assert resolver_paths == {"Transactions[0].Amount", "Holder.City"}
+        # The value side keys identically, which is what makes the two joinable.
+        assert set(flatten_values(inference)) == resolver_paths
+
+    def test_a_multi_element_outer_wrapper_still_adds_no_path_level(self):
+        """The wrapper is un-indexed because it is the outermost list, not because
+        it holds one element.
+
+        ``explainability_info`` is written as a one-element list today, and a
+        length-keyed rule got the un-indexed answer only from that. Should a payload
+        ever carry two, that rule prefixes every path with ``[0]`` / ``[1]`` while
+        ``_absent_field_paths`` walks a plain ``inference_result`` dict and produces
+        no such prefix — so the intersection matches nothing and absent-field
+        exclusion silently switches off for the whole document.
+        """
+        two_element_wrapper = [
+            {"name": {"confidence": 0.95}},
+            {"other": {"confidence": 0.1}},
+        ]
+        assert {
+            name
+            for _c, _t, name in test_set_index._walk_confidence_named(
+                two_element_wrapper
+            )
+        } == {"name", "other"}
+        # And exclusion still works through it.
+        assert (
+            test_set_index._min_confidence(two_element_wrapper, {"other": None}) == 0.95
+        )
+
+    def test_exclusion_still_lines_up_on_a_one_row_table(self):
+        """Both sides moved together, so the intersection is unaffected.
+
+        This is the migration risk the change carries: ``_min_confidence`` and
+        ``_alert_counts`` exclude absent fields by intersecting two path sets, and a
+        one-row table is exactly the shape whose keys changed. An off-by-one would
+        stop excluding absent fields, inflating the alert count and the review
+        estimate on short documents.
+        """
+        explainability = [
+            {
+                "Transactions": [
+                    {
+                        "Description": {"confidence": 0.0, "confidence_threshold": 0.8},
+                        "Amount": {"confidence": 0.99, "confidence_threshold": 0.8},
+                    }
+                ]
+            }
+        ]
+        inference = {"Transactions": [{"Description": None, "Amount": "-44.00"}]}
+        assert test_set_index._min_confidence(explainability, inference) == 0.99
+        assert test_set_index._alert_counts(explainability, inference) == (0, 1)
+
+    def test_a_null_row_marks_the_row_absent_not_the_whole_list(self):
+        """A list-level score against null rows is NOT excluded, at any list length.
+
+        The exclusion answer no longer depends on how many rows the list holds: a
+        length-keyed rule put the single null row's absence at ``rows``, which
+        matched the list-level confidence and excluded it, while the same payload
+        with two null rows produced ``rows[0]``/``rows[1]`` and excluded nothing.
+        Keying by depth gives the two-row answer in both cases. An *empty* list is
+        still absent at its own path — that is a different observation, and the case
+        ``flatten_values`` cannot report.
+        """
+        explainability = [{"rows": {"confidence": 0.0}, "name": {"confidence": 0.95}}]
+        one_null_row = {"rows": [None], "name": "Acme"}
+        two_null_rows = {"rows": [None, None], "name": "Acme"}
+        assert test_set_index._absent_field_paths(one_null_row) == {"rows[0]"}
+        assert test_set_index._min_confidence(explainability, one_null_row) == 0.0
+        assert test_set_index._min_confidence(
+            explainability, two_null_rows
+        ) == test_set_index._min_confidence(explainability, one_null_row)
+        # An empty list, by contrast, is absent at its own path and IS excluded.
+        assert test_set_index._absent_field_paths({"rows": []}) == {"rows"}
+        assert (
+            test_set_index._min_confidence(explainability, {"rows": [], "name": "Acme"})
+            == 0.95
+        )
+
+    def test_the_resolver_holds_no_second_copy_of_the_index_rule(self):
+        """The rule has one implementation, imported rather than restated.
+
+        A reintroduced private helper would pass every behavioural test above on the
+        day it was written and drift afterwards, which is how the first copy
+        survived.
+        """
+        source = pathlib.Path(test_set_index.__file__).read_text(encoding="utf-8")
+        assert "len(node) == 1" not in source
+        assert "def _list_item_path" not in source
+        assert "def _field_path" not in source
+        assert (
+            test_set_index.list_child_path
+            is importlib.import_module(
+                "idp_common.evaluation.curve_store"
+            ).list_child_path
+        )
