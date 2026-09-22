@@ -213,9 +213,12 @@ def extract_lambda_request_ids(
 
                 # Also check for function name in resource ARN without :function: prefix
                 if not function_name and resource:
-                    # Handle cases like arn:aws:lambda:region:account:function:FunctionName
+                    # Reading arn_parts[6] needs seven segments, so the guard is
+                    # >= 7. A shorter Lambda ARN falls through with function_name
+                    # still None, which the code below already handles: the event
+                    # contributes nothing rather than aborting the whole analysis.
                     arn_parts = resource.split(":")
-                    if len(arn_parts) >= 6 and arn_parts[2] == "lambda":
+                    if len(arn_parts) >= 7 and arn_parts[2] == "lambda":
                         function_name = arn_parts[6]
 
                 # Extract request ID from multiple fields
