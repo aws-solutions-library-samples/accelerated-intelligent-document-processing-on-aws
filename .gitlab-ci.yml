@@ -168,9 +168,13 @@ code_checks:
     # expectations drift and missing server-side group checks).
     - make api-test-static
     # SKIP_INSTALL=1: idp_common[test] already installed via uv above (avoids a
-    # redundant plain-pip resolve that recompiled numpy from source). PYTEST_ARGS
-    # `-n auto` parallelizes the suite across the runner's cores (pytest-xdist).
-    - make test-cicd -C lib/idp_common_pkg SKIP_INSTALL=1 PYTEST_ARGS="-n auto"
+    # redundant plain-pip resolve that recompiled numpy from source).
+    #
+    # `-n auto` is no longer passed here: it is the Makefile's own default
+    # (PYTEST_PARALLEL), so GitHub gets it too. Passing it again would put `-n auto`
+    # on the command line twice, which pytest answers by collecting NOTHING and
+    # exiting 5 -- loud rather than silent, but a broken job either way.
+    - make test-cicd -C lib/idp_common_pkg SKIP_INSTALL=1
     # Package/Lambda suites not covered by idp_common_pkg (idp_cli, idp_sdk,
     # idp_feature_sdk, feature-platform, capacity, circuit-breaker, chat,
     # config_library) — all green headless, previously CI-untested.
