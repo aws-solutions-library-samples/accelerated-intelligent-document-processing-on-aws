@@ -27,6 +27,7 @@ from idp_common.schema.multi_instance import INSTANCES_KEY
 
 from .exceptions import ExtractionError
 from .models import RuleJSON
+from .type_coercion import NUMERIC_TYPES, coerce_numeric_reading
 
 logger = logging.getLogger(__name__)
 
@@ -370,10 +371,15 @@ class DataExtractor:
         Convert extracted value to declared parameter type.
 
         Type conversions:
-        - Int: Convert string/number to integer
+        - Int: Convert string/number to integer, if it denotes a whole number
         - Real: Convert string/number to float
         - Bool: Convert string ("Yes"/"No", "true"/"false") or bool to boolean
         - String: Keep as string (no conversion needed)
+
+        `Int` and `Real` are handled by `coerce_numeric_reading`, shared with
+        `Z3Validator._bind_values`, so the numeric contract is the same whichever
+        route a reading arrives by. A reading that cannot be represented in its
+        declared type without loss is refused rather than truncated.
 
         Preserves type information:
         - Integer values remain integers
@@ -398,40 +404,8 @@ class DataExtractor:
             return None
 
         try:
-            if expected_type == "Int":
-                # Convert to integer
-                if isinstance(value, int):
-                    return value
-                elif isinstance(value, float):
-                    # Check if float is actually an integer value
-                    if value.is_integer():
-                        return int(value)
-                    else:
-                        raise ValueError(
-                            f"Float value {value} cannot be converted to Int without loss"
-                        )
-                elif isinstance(value, str):
-                    # Remove whitespace and convert
-                    value_str = value.strip()
-                    if not value_str:
-                        raise ValueError("Empty string cannot be converted to Int")
-                    # Try to parse as integer
-                    return int(value_str)
-                else:
-                    raise ValueError(f"Cannot convert {type(value).__name__} to Int")
-
-            elif expected_type == "Real":
-                # Convert to float
-                if isinstance(value, (int, float)):
-                    return float(value)
-                elif isinstance(value, str):
-                    # Remove whitespace and convert
-                    value_str = value.strip()
-                    if not value_str:
-                        raise ValueError("Empty string cannot be converted to Real")
-                    return float(value_str)
-                else:
-                    raise ValueError(f"Cannot convert {type(value).__name__} to Real")
+            if expected_type in NUMERIC_TYPES:
+                return coerce_numeric_reading(value, expected_type)
 
             elif expected_type == "Bool":
                 # Convert to boolean

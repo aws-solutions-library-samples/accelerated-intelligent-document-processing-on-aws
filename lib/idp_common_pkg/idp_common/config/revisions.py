@@ -61,6 +61,8 @@ from typing import Any, Dict, List, Optional, Tuple
 import boto3
 from botocore.exceptions import ClientError
 
+from idp_common.ddb_numbers import coerce_int
+
 logger = logging.getLogger(__name__)
 
 # DynamoDB key prefix for the per-profile revision index item. Chosen so it does
@@ -181,14 +183,6 @@ def confidence_fingerprint(config_dict: Dict[str, Any]) -> str:
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()[:16]
 
 
-def _coerce_int(value: Any, default: int = 0) -> int:
-    """DynamoDB returns numbers as Decimal; normalize to int for callers/JSON."""
-    try:
-        return int(value)
-    except (TypeError, ValueError):
-        return default
-
-
 class ConfigRevisionStore:
     """
     Reads and writes Configuration Profile revisions.
@@ -219,7 +213,7 @@ class ConfigRevisionStore:
             bucket if bucket is not None else os.environ.get("CONFIGURATION_BUCKET", "")
         )
         if cap is None:
-            cap = _coerce_int(
+            cap = coerce_int(
                 os.environ.get("CONFIG_REVISION_CAP"), DEFAULT_REVISION_CAP
             )
         self.cap = max(1, cap)
@@ -280,7 +274,7 @@ class ConfigRevisionStore:
             ExpressionAttributeValues={":one": 1},
             ReturnValues="UPDATED_NEW",
         )
-        return _coerce_int(response.get("Attributes", {}).get("LatestRevision"), 1)
+        return coerce_int(response.get("Attributes", {}).get("LatestRevision"), 1)
 
     def set_published(self, profile: str, revision: int) -> None:
         """Point the profile head at the revision that reflects its content."""
@@ -367,12 +361,12 @@ class ConfigRevisionStore:
     @staticmethod
     def _normalize(entry: Dict[str, Any]) -> Dict[str, Any]:
         return {
-            "revision": _coerce_int(entry.get("revision")),
+            "revision": coerce_int(entry.get("revision")),
             "createdAt": entry.get("createdAt"),
             "createdBy": entry.get("createdBy"),
             "label": entry.get("label"),
             "notes": entry.get("notes"),
-            "sizeBytes": _coerce_int(entry.get("sizeBytes")),
+            "sizeBytes": coerce_int(entry.get("sizeBytes")),
             "classFingerprint": entry.get("classFingerprint"),
             "confidenceFingerprint": entry.get("confidenceFingerprint"),
             "pinned": bool(entry.get("pinned", False)),
@@ -417,7 +411,7 @@ class ConfigRevisionStore:
         for attempt in (1, 2):
             item = self._read_index_item(profile)
             entries = list(item.get("Revisions", []))
-            seq = _coerce_int(item.get("IndexSeq"))
+            seq = coerce_int(item.get("IndexSeq"))
             updated = mutate(entries)
             if updated is None:
                 return False
@@ -458,7 +452,7 @@ class ConfigRevisionStore:
         def mutate(entries):
             found = False
             for entry in entries:
-                if _coerce_int(entry.get("revision")) == target:
+                if coerce_int(entry.get("revision")) == target:
                     entry.update(changes)
                     found = True
             return entries if found else None
@@ -478,7 +472,7 @@ class ConfigRevisionStore:
         target = int(revision)
 
         def mutate(entries):
-            remaining = [e for e in entries if _coerce_int(e.get("revision")) != target]
+            remaining = [e for e in entries if coerce_int(e.get("revision")) != target]
             return remaining if len(remaining) != len(entries) else None
 
         return self._rewrite_index(profile, mutate)

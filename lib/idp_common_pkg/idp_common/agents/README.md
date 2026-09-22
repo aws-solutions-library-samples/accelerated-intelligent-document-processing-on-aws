@@ -153,7 +153,60 @@ Stores conversation history for agent memory.
 **Schema**:
 - **PK**: `conversation#{session_id}`
 - **SK**: `timestamp` (ISO-8601 format)
-- **Attributes**: conversation_history (JSON), message_count, last_updated
+- **Attributes**: conversation_history (JSON), message_count, last_updated,
+  conversation_version
+
+Appending a message rewrites the whole newest item, so `conversation_version`
+guards it: the write is conditional on the value that was read and advances it in
+the same call, and a rejected write is rebuilt on a fresh read rather than
+replacing the message another writer appended in between. Two invocations serving
+one session — a resubmitted request, or a retried Lambda — are what make that
+overlap possible. Items written before the guard existed carry no version
+attribute; the first append to one adds it, so no migration is needed.
+
+#### AgentTable (DynamoDB)
+
+Stores the analytics agent's job records, including the conversation transcript the
+analytics UI replays. Written by `DynamoDBMessageLogger` in
+`agents/common/dynamodb_logger.py`.
+
+**Schema**:
+- **PK**: `agent#{user_id}`
+- **SK**: `job_id`
+- **Attributes**: `agent_messages` (JSON **string**, not a list), `agent_messages_version`
+
+`agent_messages` is the whole transcript held in one attribute, so appending a
+message means reading the array, growing it by one and writing it back.
+`agent_messages_version` guards that: each write is conditional on the value that
+was read and advances it in the same call, so an append that overlapped another
+writer's is rejected by DynamoDB and rebuilt on a fresh read instead of replacing
+the other writer's message. Items written before the guard existed carry no version
+attribute; the first append to one adds it, so no migration is needed.
+
+Two things differ from `IdHelperChatMemoryTable` above, and both raise the stakes:
+
+- **The overlap is the normal case, not an edge case.** Every sub-agent in a turn
+  builds its own logger on the *same* `PK`/`SK`, and nothing caps how many
+  sub-agents a turn may use, so several writers on one record is the ordinary
+  shape rather than something a retry has to produce.
+- **A rejected append is retried with jittered backoff**, because re-reading alone
+  paces the loop without lowering the collision rate — the losers simply re-enter
+  the same race in phase. The measured retention across writer counts is recorded
+  in the module beside `_MAX_APPEND_ATTEMPTS`.
+
+A message that still cannot be stored after the retry budget is dropped rather than
+forced through by overwriting the transcript, which would trade one lost message for
+all of them. The drop is logged with the job id and sequence number **and** counted
+on the `AgentTranscriptMessageDropped` CloudWatch metric in the stack's namespace,
+which `AgentTranscriptMessageDroppedAlarm` reads. The metric matters because a log
+line cannot be alarmed on, and invisibility is why the unguarded version of this
+append went unnoticed
+([#1098](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/1098)).
+
+⚠️ Nothing drains the logger's thread pool in production, so writes still queued
+when the Lambda execution environment freezes are abandoned — a separate way to
+lose a transcript entry, tracked in
+[#1110](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/1110).
 
 ### 4. GraphQL API
 

@@ -30,6 +30,7 @@ from botocore.exceptions import BotoCoreError, ClientError
 from .config_loader import ConfigLoader
 from .exceptions import TranslationError
 from .models import Parameter, PathMapping, RuleJSON
+from .type_coercion import NUMERIC_TYPES, coerce_numeric_reading
 
 if TYPE_CHECKING:
     from .models import RuleWithValues
@@ -975,7 +976,16 @@ Do not extract paths from the data structure.
                 llm_response=llm_response,
             )
 
-        # Validate required parameters are present
+        # Validate required parameters are present, and check every present
+        # reading against the type it was declared as.
+        #
+        # Nothing else on this route does: a model asked for an Int is free to
+        # answer 30.9, and an unchecked 30.9 used to reach the solver as 30 and
+        # turn a `days_late <= 30` FAIL into a PASS (GitHub issue #1057). The
+        # check is the same one path-based extraction applies, so the two routes
+        # agree on what a reading of a given type may be. Coercing here also
+        # normalises the reading -- a model answering "42" for an Int yields 42 --
+        # so the value recorded in the result is the one the solver saw.
         validation_errors = []
         for param in rule_json.parameters:
             if param.required and param.name not in extracted_values:
@@ -986,10 +996,20 @@ Do not extract paths from the data structure.
                 and param.required
             ):
                 validation_errors.append(f"Required parameter '{param.name}' is null")
+            elif (
+                param.type in NUMERIC_TYPES
+                and extracted_values.get(param.name) is not None
+            ):
+                try:
+                    extracted_values[param.name] = coerce_numeric_reading(
+                        extracted_values[param.name], param.type
+                    )
+                except ValueError as e:
+                    validation_errors.append(f"Parameter '{param.name}': {e}")
 
         if validation_errors:
             raise TranslationError(
-                message="Extracted values missing required parameters",
+                message="Extracted values are missing or untypeable",
                 operation="parse_extraction_output",
                 rule_id=rule_json.rule_id,
                 llm_response=llm_response,
