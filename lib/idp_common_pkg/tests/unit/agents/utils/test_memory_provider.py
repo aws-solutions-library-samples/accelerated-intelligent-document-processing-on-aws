@@ -580,6 +580,20 @@ class TestLoadConversationHistory:
         table.query.return_value = {"Items": [_item("t1", [_message("user", "q")])]}
         assert len(provider._load_conversation_history()) == 1
 
+    def test_a_limit_of_zero_turns_loads_no_history(self):
+        # Zero is the obvious way to turn conversation memory off, and it arrives
+        # unvalidated from the MAX_CONVERSATION_TURNS environment variable. The
+        # truncating slice cannot express it — turns[-0:] is turns[0:], i.e. every
+        # turn ever stored — so the setting has to be handled before the slice or it
+        # produces the maximum history rather than none.
+        provider, table = _provider(max_history_turns=0)
+        messages = []
+        for i in range(5):
+            messages.append(_message("user", f"q{i}"))
+            messages.append(_message("assistant", f"a{i}"))
+        table.query.return_value = {"Items": [_item("t1", messages)]}
+        assert provider._load_conversation_history() == []
+
     def test_one_malformed_item_is_skipped_and_the_others_read(self):
         provider, table = _provider()
         table.query.return_value = {

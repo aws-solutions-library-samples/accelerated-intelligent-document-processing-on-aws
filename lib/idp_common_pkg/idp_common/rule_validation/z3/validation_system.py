@@ -618,7 +618,8 @@ class ValidationSystem:
 
         Batch validation features:
         - Validates all rules against the same data document
-        - Clears extraction cache between rules for correctness
+        - Each rule's extraction reads the data afresh; the extractor keeps no
+          readings between calls, so nothing has to be cleared between rules
         - Provides progress logging
         - Optionally stops on first error or continues through all rules
         - Returns results for all rules (including errors)
@@ -651,8 +652,9 @@ class ValidationSystem:
             logger.info(f"Validating rule {i}/{len(rules)}: {rule_json.rule_id}")
 
             try:
-                # Clear cache before each rule to ensure fresh extraction
-                self.extractor.clear_cache()
+                # No cache to clear: DataExtractor memoizes path readings within
+                # one extract_values call and keeps nothing afterwards, so each
+                # rule below already reads this document's data directly.
 
                 # Validate the rule
                 result = self.validate_with_rule_json(

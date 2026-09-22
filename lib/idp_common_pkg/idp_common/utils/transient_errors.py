@@ -274,3 +274,31 @@ def raise_if_transient(exc: BaseException, where: str = "") -> None:
         return  # already surfaced under the name; the caller's bare `raise` keeps it
     if is_transient_error(exc):
         raise TransientError(exc, where) from exc
+
+
+def reraise_if_transient(exc: BaseException, where: str = "") -> None:
+    """Surface ``exc`` as :class:`TransientError` — for an ``except`` that does NOT
+    end in a bare ``raise``.
+
+    :func:`raise_if_transient` returns silently when ``exc`` already IS a
+    ``TransientError``, because it is written for the pattern ::
+
+        except Exception as e:
+            raise_if_transient(e, where="...")
+            raise               # keeps the name in the already-surfaced case
+
+    An ``except`` that instead RETURNS — a fallback result, a document marked
+    failed, an empty consolidation — has no such ``raise``, so with
+    :func:`raise_if_transient` alone an exception that was already classified
+    further in gets swallowed there and the inner classification is undone. That is
+    not hypothetical: rule validation composes exactly that way, a transient
+    re-raised for one rule travelling up through ``asyncio.gather`` into a
+    document-level ``except`` that returns a FAILED document (#1101).
+
+    So: use this wherever the ``except`` swallows, and :func:`raise_if_transient`
+    where a bare ``raise`` follows. Neither ever wraps a ``TransientError`` in
+    another one, so a chain of nested handlers reports one name and one cause.
+    """
+    if isinstance(exc, TransientError):
+        raise exc
+    raise_if_transient(exc, where)
