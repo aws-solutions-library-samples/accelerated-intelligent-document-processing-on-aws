@@ -180,8 +180,11 @@ installed**.
 
 ## Deploy (separate step, when asked to update the stack)
 
-Active test stack: **IDPUpgradeTest2**, account **912625584728**, region
-**us-west-2**, publish bucket basename `idp-accelerator-artifacts-912625584728`.
+Active test stack: **IDPUpgradeTest2**, region **us-west-2**, publish bucket
+basename `idp-accelerator-artifacts-<ACCOUNT_ID>`. Resolve `<ACCOUNT_ID>` at run
+time — `AWS_PROFILE=default aws sts get-caller-identity --query Account --output
+text` — rather than carrying it in this file; the expected account is recorded in
+the `idpagentic-deploy-target` memory.
 Use `AWS_PROFILE=default` for all AWS calls (see `.claude/skills/live-eval-and-cost.md`
 and the deploy-target memory). Build (clean env, above) → `aws cloudformation
 update-stack` with `--parameters UsePreviousValue` → wait. Container-image Lambda
