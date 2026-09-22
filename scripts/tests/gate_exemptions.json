@@ -2232,6 +2232,21 @@
       "crossReferences": [
         "scripts/check_coverage_debt.py::NOT_MEASURED"
       ]
+    },
+    "patterns/unified/tests/test_workflow_transient_retry.py::TRANSIENT_CONVERSION_EXEMPT": {
+      "kind": "exemption",
+      "memberKind": "Step Functions task state name",
+      "turnsOff": "the requirement that a task state permitted to invoke a Bedrock model retry TransientError, for six named states",
+      "premise": [
+        "JUDGEMENT"
+      ],
+      "ratchet": "universe-closure",
+      "ratchetEvidence": "patterns/unified/tests/test_workflow_transient_retry.py",
+      "issues": [
+        1142
+      ],
+      "reason": "Five of the six are deferred rather than exempt in principle, and the reason each is deferred is the same order-sensitivity: adding raise_if_transient to a handler CONVERTS a modeled ThrottlingException into TransientError, so doing that without adding the name to the state's Retry list would REMOVE retryability that exists today. Both halves have to land per state and neither is in this change; none of the five handlers swallows, so what is lost meanwhile is the retry rather than the diagnosis. The sixth, BDA_InvokeDataAutomation, is a different service surface: it invokes the Bedrock Data Automation runtime, and it is in this universe only because its policy carries a bedrock:* wildcard alongside InvokeDataAutomationAsync. #1142 says to decide that tier separately rather than folding it in. Whether a handler SHOULD convert is a judgement about its failure modes, which no predicate computes; what the gate does compute is membership of the universe, from the ASL Resource placeholder through DefinitionSubstitutions to the Lambda's own IAM grants, with every leg asserted to resolve.",
+      "ratchetGap": "The predicate answers 'permitted to invoke a model', not 'does invoke one', because a bedrock:* wildcard cannot be read more precisely. That over-includes, which is the safe direction for a closure -- an over-included state has to be named here with a reason rather than passing by absence -- but it means an entry can be justified by a grant the handler never uses. The closure is also one-directional by design: a state that is NOT Bedrock-capable may still list TransientError legitimately (PolicyClassificationStep does, for DynamoDB and S3 transients), so nothing here detects a listing that is no longer needed."
     }
   }
 }
