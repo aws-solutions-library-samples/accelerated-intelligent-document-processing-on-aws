@@ -53,6 +53,44 @@ Evaluated on the full 293-document dataset using IDP Accelerator v0.5.0 (pattern
 
 To use Sonnet 4.6 for extraction, change `extraction.model` to `us.anthropic.claude-sonnet-4-6-20250929-v1:0`.
 
+## Configuration Variants In This Directory
+
+`config.yaml` is the preset. It is the only file the `ocr-benchmark` value of the
+**Configuration Preset** stack parameter resolves to, and the only one the web UI's
+*Import from library* offers. The others are benchmark arms, installed by naming them
+explicitly — `idp-cli config-upload -f <path>`, `idp-cli deploy --custom-config
+<path>`, or a **Custom Configuration Path** S3 URI.
+
+| File | Purpose |
+|---|---|
+| `config.yaml` | The selectable preset, and the most current of these files |
+| `ocr_config.yaml` | Base-model arm of the fine-tuning A/B |
+| `fine_tuned_config.yaml` | Fine-tuned arm of the A/B |
+| `ocr_fine_tuned_config.yaml` | Byte-identical duplicate of `fine_tuned_config.yaml` |
+
+### Running the fine-tuned arm
+
+`fine_tuned_config.yaml` exists to measure a **fine-tuned** Nova 2 Lite against the
+base model, on both `classification.model` and `extraction.model`. A fine-tuned model
+is reached through a Bedrock `custom-model-deployment` ARN, which is account-scoped: it
+resolves only in the account that owns the deployment, and from anywhere else Bedrock
+answers `AccessDeniedException` — *"the provided resource ARN is from a different
+account"* — so the stage fails outright rather than degrading. The file therefore
+cannot ship a working one.
+
+Both `model` values ship as `us.amazon.nova-2-lite-v1:0`, the base model the fine-tune
+was derived from, so the file runs as-is and is priced and limit-checked correctly. To
+run the fine-tuned arm:
+
+1. Fine-tune `amazon.nova-2-lite-v1:0` on your own data.
+2. Create a custom model deployment for the result and note its ARN.
+3. Replace both `model` values in your copy with that ARN. Each line is marked with a
+   comment showing the shape:
+   `arn:aws:bedrock:<region>:<your-account-id>:custom-model-deployment/<deployment-id>`.
+4. Add a `bedrock/<that ARN>` entry to your pricing configuration if you want cost
+   reporting for the run — a model with no pricing entry records a NULL cost rather
+   than a wrong one, so the run's spend is reported as incomplete.
+
 ## Processing Mode
 
 **Default Mode**: Pipeline (use_bda: false). Set use_bda: true for BDA mode.

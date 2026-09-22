@@ -9,6 +9,43 @@ This configuration is designed for the DocSplit-Poly-Seq test set and handles 13
 
 **Default Mode**: Pipeline (use_bda: false) — Uses Amazon Textract for OCR, then Bedrock LLM (Nova/Claude) for classification, extraction, assessment, and summarization. Set use_bda: true for BDA mode.
 
+## Configuration Variants In This Directory
+
+`config.yaml` is the preset. It is the only file the `docsplit` value of the
+**Configuration Preset** stack parameter resolves to, and the only one the web UI's
+*Import from library* offers. The other two files are the two arms of a
+classification A/B benchmark, and they are installed by naming them explicitly —
+`idp-cli config-upload -f <path>`, `idp-cli deploy --custom-config <path>`, or a
+**Custom Configuration Path** S3 URI.
+
+| File | `classification.model` | Purpose |
+|---|---|---|
+| `config.yaml` | preset default | The selectable preset |
+| `docsplit_base_model_config.yaml` | `us.amazon.nova-2-lite-v1:0` | Base-model arm of the A/B |
+| `docsplit_finedtuned_config.yaml` | `us.amazon.nova-2-lite-v1:0`, for you to replace | Fine-tuned arm of the A/B |
+
+### Running the fine-tuned arm
+
+`docsplit_finedtuned_config.yaml` exists to measure a **fine-tuned** Nova 2 Lite
+against the base model, and a fine-tuned model is reached through a Bedrock
+`custom-model-deployment` ARN. Such an ARN is account-scoped: it resolves only in the
+account that owns the deployment, and from anywhere else Bedrock answers
+`AccessDeniedException` — *"the provided resource ARN is from a different account"* —
+so the classification stage fails outright rather than degrading. The file therefore
+cannot ship a working one.
+
+It ships with `classification.model` set to the base model, so it runs as-is and is
+priced and limit-checked correctly. To run the fine-tuned arm:
+
+1. Fine-tune `amazon.nova-2-lite-v1:0` on your own classification data.
+2. Create a custom model deployment for the result and note its ARN.
+3. Replace `classification.model` in your copy of the file with that ARN. The line is
+   marked with a comment showing the shape:
+   `arn:aws:bedrock:<region>:<your-account-id>:custom-model-deployment/<deployment-id>`.
+4. Add a `bedrock/<that ARN>` entry to your pricing configuration if you want cost
+   reporting for the run — a model with no pricing entry records a NULL cost rather
+   than a wrong one, so the run's spend is reported as incomplete.
+
 ## Test Set Compatibility
 
 **Compatible Test Set**: DocSplit-Poly-Seq
