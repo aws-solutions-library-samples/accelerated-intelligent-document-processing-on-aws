@@ -151,6 +151,23 @@ CHECK_SHAPED_NAME_SUFFIXES = ("-check", "-checks", "-lint", "-test", "-tests")
 #: that CI has since started running must be deleted, or it pre-exempts whatever next
 #: takes the name) and :func:`test_every_registered_target_still_exists` (staleness).
 GATES_DELIBERATELY_OUT_OF_CI = {
+    # `coverage` and `coverage-table` print a coverage table for a human to read.
+    # Neither asserts anything and neither can fail on a regression, so wiring them
+    # into CI would add runtime and produce output nobody reads. The gate that does
+    # assert coverage is `check-coverage-debt`, which is wired into both.
+    "coverage": (
+        "runs the idp_common suite under coverage and prints a per-file table, "
+        "worst-covered first, for a human to read. It asserts nothing and has no "
+        "failure condition, so in CI it would add several minutes and produce "
+        "output nobody reads. check-coverage-debt is the target that asserts "
+        "coverage and it is wired into both CIs."
+    ),
+    "coverage-table": (
+        "re-prints the table from the coverage data an earlier run already wrote, "
+        "without re-running any test. It cannot fail and cannot be stale-checked, "
+        "because a missing coverage file makes it print nothing rather than "
+        "error. Nothing about a pull request is decided by it."
+    ),
     # --- aggregates whose CI form is a different target -------------------------
     "lint": (
         "Developer aggregate. Its CI form is `lint-cicd`, and that lint-cicd is not "

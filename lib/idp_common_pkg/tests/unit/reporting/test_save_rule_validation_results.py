@@ -87,7 +87,7 @@ def _payload(**overrides) -> dict:
         "overall_statistics": {
             "total_rules": 5,
             "recommendation_counts": {
-                "Pass": 3,
+                "Pass": 3,  # nosec B105 - a verdict tally key, not a credential
                 "Fail": 1,
                 "Information Not Found": 1,
             },
