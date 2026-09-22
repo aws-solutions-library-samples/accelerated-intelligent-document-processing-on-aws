@@ -238,25 +238,36 @@ token until the app has loaded. Those routes serve static files only; see
 Authorization on the `/op` route is not uniform, and the difference matters when you
 classify your data. `scripts/api_rbac_expectations.yaml` is the declared source of truth
 for it and `make api-test-static` fails if the code and that file drift apart. It covers
-118 operations. 101 of them require Cognito group membership and 2
+118 operations. 108 of them require Cognito group membership and 2
 (`updateDiscoveryJobStatus`, `updateAgentJobStatus`) are reachable only by IAM
-principals, rejecting every Cognito caller. 11 of those accept any assigned group
+principals, rejecting every Cognito caller. 18 of those accept any assigned group
 rather than a named subset — they are declared `ANY_GROUP`, which the build resolves into
 the full list of groups `template.yaml` creates, so what they refuse is a caller an
-administrator has not placed in any group. That set is the document-content reads
-(`getDocument`, `listDocuments`, `listDocumentsByDateRange`, `getDocumentVersion`,
-`compareDocumentVersions`, `getFileContents`, `getFilePresignedUrl`, `queryKnowledgeBase`)
-plus three mutations (`deleteAgentJob`, `deleteChatSession`, `sendChatDocumentMessage`).
+administrator has not placed in any group. That set is every document read
+(`getDocument`, `listDocuments`, `listDocumentsByDateRange`, `getDocumentCount`,
+`listDocumentsDateHour`, `listDocumentsDateShard`, `listDocumentVersions`,
+`getDocumentVersion`, `compareDocumentVersions`, `getStepFunctionExecution`,
+`getFileContents`, `getFilePresignedUrl`, `queryKnowledgeBase`), the chat transcript read
+`getChatMessages`, the processing-breaker badge `getCircuitBreakerStatus` (whose
+`lastError` carries the pausing administrator's email address after a manual pause), and
+three mutations (`deleteAgentJob`, `deleteChatSession`, `sendChatDocumentMessage`). The
+document reads include the ones that return no extracted
+value themselves, because an object key, a section's `s3://` URI, a state machine execution
+ARN and a model-written description of a page's contents are each a step of one chain that
+ends in extracted data, and that chain was measured composing end to end for a caller in no
+group.
 
-The remaining 15 are declared `groups: ANY`, which that file defines as any authenticated
+The remaining 8 are declared `groups: ANY`, which that file defines as any authenticated
 Cognito user — including one in no group, which self-service sign-up produces when you set
-`AllowedSignUpEmailDomain`. Four of those 15 are narrowed further, by record ownership or
-by the caller's allowed configuration versions; the other 11 are not, so a valid session is
-the whole check. They are enumeration, platform and profile reads —
-`listDocumentsDateHour`, `listDocumentsDateShard`, `listDocumentVersions`, `getMyProfile`,
-`getLatestPublishedVersion`, `getCircuitBreakerStatus`, the two fine-tuning job reads and
-the three feature-catalog reads — so they disclose the existence, volume and timing of
-processed documents, and what this deployment has installed, rather than document content.
+`AllowedSignUpEmailDomain`. Two of those 8 narrowed further, by record ownership —
+`getMyProfile` returns only the caller's own row, resolved from their token claims with no
+argument, and `listChatSessions` can only address the caller's own DynamoDB partition. The
+other 6 are not, so a valid session is the whole check: `getLatestPublishedVersion` (the
+published release number, which is public), the two fine-tuning job reads and the three
+feature-platform reads (`listInstalledFeatures`, `listCatalogFeatures`,
+`checkFeatureEntitlement`) — so they disclose a public version number, what models this
+deployment has trained and what optional features it has installed or is entitled to,
+rather than anything derived from a document.
 
 Three caveats on what the group floor does and does not buy you, and the third is the one
 that bounds the other two. It is a check on *who may ask*, not on *which document they may
@@ -277,11 +288,13 @@ and that role — `CognitoAuthorizedRole` — grants `s3:GetObject`, `s3:GetObje
 customer-managed key to every authenticated user, group or no group. The web UI uses that
 path deliberately: the file viewer defaults to signing in the browser, as do the page
 thumbnails, the page-image viewer and the document export. So a caller who is refused
-`getFileContents` can still read a **document** object, and the pair that remain
-`groups: ANY` — `listDocumentsDateHour` and `listDocumentsDateShard` — return the object
-keys needed to do it. Narrowing this is a change to the document-viewing data path —
-group-scoped identity pool role mappings, or a resolver-only read path — and it has not
-been made ([issue #1033](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/1033)).
+`getFileContents` can still read a **document** object. No `ANY` operation hands over an
+object key any more, but that is not what bounds the role: `s3:ListBucket` on it enumerates
+the buckets directly, with no API call at all. Narrowing this is a change to the
+document-viewing data path — group-scoped identity pool role mappings, or a resolver-only
+read path — and it has not been made; the two candidate shapes and their obstacles are set
+out in
+[Identity Pool group scoping](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/blob/develop/docs/planning/identity-pool-group-scoping-plan.md).
 The buckets the per-user scope axes partition — Configuration and Test Set — are
 deliberately **not** on that role, so `allowedConfigVersions` and `allowedTestSets` are not
 reachable around; those objects are served only by resolvers that check the key against the
@@ -348,7 +361,7 @@ justification in `scripts/security/dep_audit_allowlist.json`.
 |---|---|---|---|
 | Who is allowed to create an account? Is `AllowedSignUpEmailDomain` still empty, keeping sign-up administrator-only, and if you have set it, do you control every domain listed? A self-registered user is in no group, so the API refuses them the document-content operations — but `CognitoAuthorizedRole` still grants them `s3:GetObject`/`ListBucket` on the document buckets directly | | | |
 | Is MFA enabled on the Cognito user pool? The pool sets no `MfaConfiguration`, so a default deployment has it off | | | |
-| Do you accept that the 11 `groups: ANY` operations carrying no ownership or scope check are reachable by any authenticated user, including one in no group? They are enumeration, platform and profile reads rather than document content — but two of them (`listDocumentsDateHour`, `listDocumentsDateShard`) return object keys, and `CognitoAuthorizedRole` grants every authenticated user `s3:GetObject`/`ListBucket` on the document buckets, so key enumeration plus a direct S3 read reaches document bytes without an API call. Does that meet your data classification? | | | |
+| Do you accept that the 6 `groups: ANY` operations carrying no ownership or scope check are reachable by any authenticated user, including one in no group? They are a public version number, the two fine-tuning job reads and the three feature-platform reads — nothing derived from a document. Separately, and not fixed by any of these declarations: `CognitoAuthorizedRole` grants every authenticated user `s3:GetObject`/`ListBucket` on the document buckets, so a direct S3 read reaches document bytes with no API call and no key from an API. Does that meet your data classification? | | | |
 | Have you restricted `WAFAllowedIPv4Ranges`, and if the API is reachable from the internet, have you added AWS Managed Rules and a rate-based rule beyond the IP allow-list? | | | |
 | Have you supplied a `PermissionsBoundaryArn`, and does your organization require one? | | | |
 | Is the 123-statement `Resource: "*"` surface acceptable under your service control policies, and have you reviewed the statements that are not forced by an account-scoped API? | | | |

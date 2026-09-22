@@ -126,15 +126,19 @@ The GraphQL/REST API exposes:
 
 | Field | Type | Access |
 |-------|------|--------|
-| `listDocumentVersions(objectKey)` | query | any authenticated user — run ids and timestamps only |
-| `getDocumentVersion(objectKey, runId)` | query | any **assigned group** (a caller in no group is refused) |
+| `listDocumentVersions(objectKey)` | query | any **assigned group** (a caller in no group is refused) |
+| `getDocumentVersion(objectKey, runId)` | query | any **assigned group** |
 | `compareDocumentVersions(objectKey, runIdA, runIdB)` | query | any **assigned group** |
 | `deleteDocumentVersion(objectKey, runId)` | mutation | **Admin only** |
 
-The split is deliberate: listing the runs for a key the caller already has discloses
-no extracted values, while reading or diffing a run returns the content. See
-[RBAC](./rbac.md) for the full policy, including why a group check is not a
-per-document check.
+All three reads take the same floor, because they return the same fields: the list
+shapes every run through the same helper as `getDocumentVersion`, so it carries each
+run's section output URIs, page image and text URIs, the confidence alerts naming
+every extracted attribute, and the model-written page classification reasons — for
+all runs rather than one. It returns no extracted *value*, but it is the step that
+tells a caller where the values are and what they are about. Deleting a run is
+narrower still, because it destroys history. See [RBAC](./rbac.md) for the full
+policy, including why a group check is not a per-document check.
 
 ## Caveats
 
