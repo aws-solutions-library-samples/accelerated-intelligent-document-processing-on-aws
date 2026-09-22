@@ -852,6 +852,31 @@ class TestTrackerThrottlingHandling:
         assert details["job_id"] == "job-1"
         assert details["user_id"] == "user-1"
 
+    def test_a_failure_submitting_the_write_does_not_propagate(self):
+        # This handler is installed over ThrottlingMonitor._handle_model_exception,
+        # which wraps its own DynamoDB write in try/except. Without the same guard,
+        # attaching the DynamoDB logger would *remove* one.
+        #
+        # Note what is being simulated. The DynamoDB write itself cannot reach this
+        # frame: log_message_async submits to a thread pool, and the write's errors are
+        # absorbed by _handle_write_result's own try around future.result(). So the
+        # side effect below stands for a failure to *submit* — executor.submit raising
+        # after shutdown — which is the only exposure the missing guard had, and is
+        # unreachable today because nothing in production calls shutdown. Asserted
+        # anyway: the guard's value is that this handler behaves like the one it
+        # replaces, and that should not depend on shutdown staying uncalled.
+        tracker, db_logger = self._tracker()
+        db_logger.log_message_async.side_effect = RuntimeError("boom")
+        tracker._handle_throttling_with_agent_message(RuntimeError("throttled"))
+
+    def test_the_event_is_kept_locally_even_when_the_submit_fails(self):
+        # get_messages is the only copy of the transcript if DynamoDB is unavailable,
+        # and the append happens before the write.
+        tracker, db_logger = self._tracker()
+        db_logger.log_message_async.side_effect = RuntimeError("boom")
+        tracker._handle_throttling_with_agent_message(RuntimeError("throttled"))
+        assert len(tracker.get_messages()) == 1
+
 
 @pytest.mark.unit
 class TestTrackerHooksAndShutdown:

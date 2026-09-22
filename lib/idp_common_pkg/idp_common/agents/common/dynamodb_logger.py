@@ -467,11 +467,29 @@ class DynamoDBMessageTracker:
             # Store locally
             self.messages.append(throttling_message_data)
 
-            # Log to DynamoDB asynchronously
+            # Log to DynamoDB asynchronously. Guarded, because this handler is
+            # installed over ThrottlingMonitor._handle_model_exception, which guards
+            # its own write: without this, attaching the DynamoDB logger would remove
+            # a guard rather than add a feature.
+            #
+            # What the guard covers is failure to *submit* the write, not the write
+            # itself: log_message_async hands the work to a ThreadPoolExecutor, and the
+            # write's own errors are already absorbed by _handle_write_result, which
+            # calls future.result() inside its own try. So the exposure is
+            # executor.submit raising — after shutdown, say — and since
+            # DynamoDBMessageTracker.shutdown has no production caller today, that is
+            # currently unreachable. The guard is here for symmetry with the method it
+            # replaces rather than for a failure anyone has seen. The local append
+            # above is the copy that matters and has already happened.
             if self.db_logger:
-                self.db_logger.log_message_async(
-                    self.job_id, self.user_id, throttling_message_data
-                )
+                try:
+                    self.db_logger.log_message_async(
+                        self.job_id, self.user_id, throttling_message_data
+                    )
+                except Exception as e:
+                    self.logger.error(
+                        f"Failed to log throttling event to DynamoDB for job {self.job_id}: {e}"
+                    )
 
             # Log to CloudWatch
             self.logger.warning(

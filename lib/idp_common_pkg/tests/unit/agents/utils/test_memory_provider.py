@@ -681,13 +681,43 @@ class TestOnMessageAdded:
             provider.on_message_added(self._event([{"role": "user"}]))
         assert store.call_args.args[0] == ""
 
-    def test_a_message_with_no_role_raises_before_the_size_check(self):
-        # The role is read by subscripting rather than .get, and that read is
-        # OUTSIDE the try. Pinned because it means a malformed message aborts the
-        # hook rather than being logged like every other failure here.
+    def test_a_message_with_no_role_is_dropped_rather_than_aborting_the_turn(self):
+        # Memory is best-effort: every other failure in this module is logged and
+        # swallowed, because losing a turn of history is acceptable and aborting
+        # the user's chat turn is not. A message with no role is unusable — the
+        # role is what turn grouping keys on when the history is read back — so it
+        # is dropped, not stored under a substituted role.
         provider, _ = _provider()
-        with pytest.raises(KeyError):
+        with patch.object(provider, "_store_message_to_dynamodb") as store:
             provider.on_message_added(self._event([{"content": [{"text": "hi"}]}]))
+        store.assert_not_called()
+
+    def test_an_empty_message_list_does_not_abort_the_turn(self):
+        # messages[-1] on an empty list raises IndexError by the same route as the
+        # missing role, so it is covered by the same guard.
+        provider, _ = _provider()
+        with patch.object(provider, "_store_message_to_dynamodb") as store:
+            provider.on_message_added(self._event([]))
+        store.assert_not_called()
+
+    def test_content_that_cannot_be_serialised_does_not_abort_the_turn(self):
+        # The size check serialises the content with json.dumps, which raises
+        # TypeError on anything json does not know. That read sits on the same
+        # lines as the two above and needs the same guard.
+        provider, _ = _provider()
+        unserialisable = [{"text": object()}]
+        with patch.object(provider, "_store_message_to_dynamodb") as store:
+            provider.on_message_added(
+                self._event([{"role": "user", "content": unserialisable}])
+            )
+        store.assert_not_called()
+
+    def test_a_malformed_message_is_logged_at_error_level(self):
+        # Dropping it silently would make a lost turn of history undiagnosable.
+        provider, _ = _provider()
+        with patch(f"{MODULE}.logger") as log:
+            provider.on_message_added(self._event([{"content": [{"text": "hi"}]}]))
+        assert log.error.called
 
 
 @pytest.mark.unit
