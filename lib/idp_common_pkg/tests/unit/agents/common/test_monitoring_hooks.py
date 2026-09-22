@@ -631,3 +631,24 @@ class TestHookRegistration:
         # exposes the experimental model-invocation events, so the assertion is
         # only that registration is safe either way.
         ThrottlingMonitor(job_id="j", user_id="u").register_hooks(MagicMock())
+
+
+@pytest.mark.unit
+class TestAgentMonitorToolInvocationLogging:
+    """on_before_tool_invocation: a debug log line must not abort the tool call."""
+
+    def test_tool_input_that_json_cannot_encode_is_still_logged(self, monkeypatch):
+        # The detailed-logging branch serialises the tool input with json.dumps, in
+        # a hook callback with nothing to catch a TypeError, so an input value json
+        # does not know would abort the tool call for the sake of a debug line.
+        # enable_detailed_logging defaults to True, so this is the default path.
+        monkeypatch.setattr(
+            "idp_common.agents.common.monitoring.EXPERIMENTAL_EVENTS_AVAILABLE", True
+        )
+        monitor = AgentMonitor(enable_detailed_logging=True)
+        monitor.monitor_logger = MagicMock()
+        event = _event(
+            tool_use={"name": "read_file", "input": {"handle": object()}},
+        )
+        monitor.on_before_tool_invocation(event)
+        assert monitor.monitor_logger.debug.called
