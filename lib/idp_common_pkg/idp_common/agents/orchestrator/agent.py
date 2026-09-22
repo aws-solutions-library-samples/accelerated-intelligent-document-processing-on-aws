@@ -88,22 +88,24 @@ def create_orchestrator_agent(
                         for k, v in kwargs.items()
                         if k not in ("session_id", "hooks")
                     }
-                    specialized_agent = agent_factory.create_agent(
-                        agent_id=aid,
-                        config=config,
-                        session=sub_session,  # Use fresh session per sub-agent
-                        **sub_kwargs,
-                    )
-
                     # Stream sub-agent events with timeout per event
                     timeout_seconds = int(
                         os.environ.get("SUBAGENT_TIMEOUT_SECONDS", "120")
                     )
-                    logger.info(
-                        f"Starting sub-agent {aid} with {timeout_seconds}s timeout"
-                    )
 
-                    with specialized_agent:
+                    # Entered on the same statement that creates it. `create_agent`
+                    # builds a transcript-write thread pool that `__exit__` drains and
+                    # closes, so any work between construction and `with` is work
+                    # during which a raise leaks an undrained pool and a live thread.
+                    with agent_factory.create_agent(
+                        agent_id=aid,
+                        config=config,
+                        session=sub_session,  # Use fresh session per sub-agent
+                        **sub_kwargs,
+                    ) as specialized_agent:
+                        logger.info(
+                            f"Starting sub-agent {aid} with {timeout_seconds}s timeout"
+                        )
                         stream = specialized_agent.stream_async(query)
                         last_event_time = asyncio.get_event_loop().time()
 

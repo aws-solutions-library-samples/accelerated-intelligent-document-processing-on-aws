@@ -24,6 +24,7 @@ from idp_common.config.schema_constants import (
 )
 from idp_common.models import Document
 from idp_common.rule_validation.models import PolicyClass, PolicyClassificationResult
+from idp_common.utils.transient_errors import reraise_if_transient
 
 logger = logging.getLogger(__name__)
 
@@ -263,6 +264,17 @@ class PolicyClassificationService:
                         pages_checked += 1
                     except Exception as e:
                         logger.warning(f"Failed to read page {page_id}: {e}")
+                        # #1101: a page this loop could not read is a page whose
+                        # regexes never ran, so a policy type evidenced only on that
+                        # page goes unmatched and none of its rules are ever
+                        # validated. For a MISSING or unparseable object that is the
+                        # right answer — skip it and classify on what is there. For a
+                        # transient S3 fault it silently changes the classification,
+                        # and re-reading the same key would have worked, so surface
+                        # it under the name PolicyClassificationStep retries.
+                        reraise_if_transient(
+                            e, where=f"policy classification page {page_id}"
+                        )
 
                 logger.info(f"Page content regex: Checked {pages_checked} page(s)")
         else:

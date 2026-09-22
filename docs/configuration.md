@@ -532,17 +532,29 @@ The solution tracks metrics for throttling events and successful retries, viewab
 The state machine retries each processing task on **transient** failures only. Step
 Functions matches the error *name* the Lambda reports (the Python exception class),
 so each task lists the Lambda service errors and the Bedrock throttling /
-availability codes. The five
-extraction and assessment task states (in-process extraction, shard plan, shard,
-shard merge, assessment) additionally list `TransientError` — the one name their
-handlers re-raise a transient cause under when it arrives as an ordinary Python
-exception (a botocore read or connect timeout, a dropped connection, a Strands
-wrapper around one). The classification lives in
+availability codes. Eight task states additionally list `TransientError` — the five
+extraction and assessment states (in-process extraction, shard plan, shard, shard
+merge, assessment) and the three rule-validation states (policy classification,
+per-section rule validation, orchestration). That is the one name their handlers
+re-raise a transient cause under when it arrives as an ordinary Python exception (a
+botocore read or connect timeout, a dropped connection, a Strands wrapper around
+one). The classification lives in
 `idp_common.utils.transient_errors`. It judges an exception by its own error
 code first (a `ValidationException` is deterministic whatever its message says),
 and looks through only explicit `raise ... from` wrappers, so a wrapper cannot
 hide a transient root and a swallowed transient error cannot lend its transience
 to an unrelated failure raised after it.
+
+**Why the name rather than the codes.** A `Retry.ErrorEquals` entry can only match a
+class name, so it matches a Bedrock throttle only because botocore names the
+exception class after the modeled error code. Most transient failures do not arrive
+that way — a read timeout is a `ReadTimeoutError`, a throttling code that is not
+modeled on the operation arrives as a bare `ClientError`, and `ModelTimeoutException`
+and `InternalServerException` are modeled but were never in the shorter lists. Listing
+every such name in every state would be a second, drifting copy of the
+classification, so the library answers the question once and reports the answer under
+one name. A state whose handler does **not** re-raise that name must not list it, and
+`patterns/unified/tests/test_workflow_transient_retry.py` checks both directions.
 
 Deterministic failures — a malformed request (`ValidationException`), a schema
 violation, an unparseable document, missing input — keep their own names and are
@@ -589,7 +601,7 @@ what is retried, it does not weaken retrying for genuinely transient faults.
 }
 ```
 
-Per-state values differ (the shard and rule-validation states use shorter
+Per-state values differ (the shard-plan and policy-classification states use shorter
 intervals and 6 attempts on the transient ladder, and `Lambda.Unknown` appears only
 where a state already listed it), but the shape above holds everywhere: one
 single-attempt timeout retrier, one generous transient retrier, and no
