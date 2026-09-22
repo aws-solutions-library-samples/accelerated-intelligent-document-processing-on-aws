@@ -1,0 +1,309 @@
+{
+  "Comment": "DataMartMigrationStateMachine — retry-safe, chunked, resumable schema-migration of the four per-document rollup tables to the widened (document_class) grain. Orchestrated as a Step Functions state machine so per-chunk retries have their own Lambda budget instead of sharing one 15-min invocation. Replaces the earlier Lambda-only backfill_migrate design that thrashed on real-volume stacks. See docs/reporting-sql-layer.md §Track A and the CHANGELOG entry for the design rationale.",
+  "StartAt": "CheckMarker",
+  "States": {
+    "CheckMarker": {
+      "Type": "Task",
+      "Comment": "Read the SSM migration marker and return a routing decision (short_circuit | skip_purge | full_flow). Compares marker against BOTH days AND version — a future MigrationVersion bump for a new schema change must NOT short-circuit against a completed marker from the prior version. See _check_marker_state in the rollup Lambda for the backward-compat rule that treats a marker with no version= segment as matching (one-time transition).",
+      "Resource": "arn:aws:states:::lambda:invoke",
+      "Parameters": {
+        "FunctionName": "${DataMartRollupFunctionArn}",
+        "Payload": {
+          "mode": "check_marker_state",
+          "days.$": "$.days",
+          "version.$": "$.version"
+        }
+      },
+      "ResultSelector": {
+        "should_short_circuit.$": "$.Payload.should_short_circuit",
+        "should_skip_purge.$": "$.Payload.should_skip_purge",
+        "state.$": "$.Payload.state"
+      },
+      "ResultPath": "$.marker_check",
+      "Retry": [
+        {
+          "ErrorEquals": [
+            "Lambda.ServiceException",
+            "Lambda.AWSLambdaException",
+            "Lambda.SdkClientException",
+            "Lambda.TooManyRequestsException"
+          ],
+          "MaxAttempts": 6,
+          "IntervalSeconds": 30,
+          "BackoffRate": 2
+        }
+      ],
+      "Next": "RouteOnMarkerState"
+    },
+    "RouteOnMarkerState": {
+      "Type": "Choice",
+      "Comment": "Route based on the marker check. Completed → done (no work). In-progress from prior run → skip purge, only re-run backfill. Otherwise → full flow starting with purge.",
+      "Choices": [
+        {
+          "Variable": "$.marker_check.should_short_circuit",
+          "BooleanEquals": true,
+          "Next": "MigrationAlreadyDone"
+        },
+        {
+          "Variable": "$.marker_check.should_skip_purge",
+          "BooleanEquals": true,
+          "Next": "PlanChunks"
+        }
+      ],
+      "Default": "InitialPurge"
+    },
+    "MigrationAlreadyDone": {
+      "Type": "Succeed",
+      "Comment": "Marker says state=completed for the current days value. Migration was already run cleanly on a previous invocation; nothing to do."
+    },
+    "InitialPurge": {
+      "Type": "Task",
+      "Comment": "Delete every S3 object under the four per-document rollup prefixes so we can repopulate at the widened (document_class) grain without colliding with pre-widening parquet. Idempotent — a re-run on an already-empty prefix is fast.",
+      "Resource": "arn:aws:states:::lambda:invoke",
+      "Parameters": {
+        "FunctionName": "${DataMartRollupFunctionArn}",
+        "Payload": {
+          "mode": "purge_rollup_prefixes"
+        }
+      },
+      "Retry": [
+        {
+          "ErrorEquals": [
+            "Lambda.ServiceException",
+            "Lambda.AWSLambdaException",
+            "Lambda.SdkClientException",
+            "Lambda.TooManyRequestsException",
+            "States.Timeout"
+          ],
+          "MaxAttempts": 2,
+          "IntervalSeconds": 30,
+          "BackoffRate": 2
+        }
+      ],
+      "ResultPath": "$.purge_result",
+      "Next": "WriteInProgressMarker"
+    },
+    "WriteInProgressMarker": {
+      "Type": "Task",
+      "Comment": "Write the SSM marker as state=in_progress IMMEDIATELY after purge, BEFORE any backfill chunk runs. This is load-bearing: any state-machine restart (via CustomResource re-fire, operator intervention, etc.) will read this marker and SKIP the purge — chunks already written survive. Includes 'version' so CheckMarker on a future run can compare it against the request's MigrationVersion.",
+      "Resource": "arn:aws:states:::lambda:invoke",
+      "Parameters": {
+        "FunctionName": "${DataMartRollupFunctionArn}",
+        "Payload": {
+          "mode": "write_marker",
+          "state": "in_progress",
+          "days.$": "$.days",
+          "version.$": "$.version"
+        }
+      },
+      "Retry": [
+        {
+          "ErrorEquals": [
+            "Lambda.ServiceException",
+            "Lambda.AWSLambdaException",
+            "Lambda.SdkClientException",
+            "Lambda.TooManyRequestsException"
+          ],
+          "MaxAttempts": 6,
+          "IntervalSeconds": 30,
+          "BackoffRate": 2
+        }
+      ],
+      "ResultPath": "$.marker_write_in_progress",
+      "Next": "PlanChunks"
+    },
+    "PlanChunks": {
+      "Type": "Task",
+      "Comment": "Compute the list of (start, end) time ranges to iterate. Each chunk is 24 h by default — a size that fits comfortably in one 900 s Lambda invocation of mode: backfill with margin for the doc_class CTE + 4 rollup arms per hour.",
+      "Resource": "arn:aws:states:::lambda:invoke",
+      "Parameters": {
+        "FunctionName": "${DataMartRollupFunctionArn}",
+        "Payload": {
+          "mode": "plan_migration_chunks",
+          "days.$": "$.days",
+          "chunk_hours.$": "$.chunk_hours"
+        }
+      },
+      "ResultSelector": {
+        "chunks.$": "$.Payload.chunks",
+        "count.$": "$.Payload.count"
+      },
+      "ResultPath": "$.plan",
+      "Retry": [
+        {
+          "ErrorEquals": [
+            "Lambda.ServiceException",
+            "Lambda.AWSLambdaException",
+            "Lambda.SdkClientException",
+            "Lambda.TooManyRequestsException"
+          ],
+          "MaxAttempts": 6,
+          "IntervalSeconds": 30,
+          "BackoffRate": 2
+        }
+      ],
+      "Next": "MigrateChunks"
+    },
+    "MigrateChunks": {
+      "Type": "Map",
+      "Comment": "Iterate each 1 h chunk, invoking mode: backfill per chunk. MaxConcurrency=8 in 2.1.6 (was 1) — pairs with the rollup Lambda's ReservedConcurrentExecutions=12 to run 8 chunks in parallel × 2 Athena INSERTs each = 16 concurrent DML queries, leaving 4 slots under Athena's default 20-per-workgroup DML concurrency for the scheduled crons that share this Lambda. Cuts a 720-hour migration from ~2 h serial → ~20 min. Idempotency guards (HeadObject-skip per partition + Athena ClientRequestToken dedup) make the parallel writes safe. SFN-native Retry replaces the async Lambda retries the earlier design relied on.",
+      "ItemsPath": "$.plan.chunks",
+      "MaxConcurrency": 8,
+      "ItemProcessor": {
+        "ProcessorConfig": {
+          "Mode": "INLINE"
+        },
+        "StartAt": "BackfillChunk",
+        "States": {
+          "BackfillChunk": {
+            "Type": "Task",
+            "Resource": "arn:aws:states:::lambda:invoke",
+            "Comment": "2.1.5: arms restricted to metering_hourly + metering_docs_hourly. Those are the ONLY two rollup tables the widening deploy changed the schema of; control_plane_hourly and data_plane_lambda_hourly (a) don't have document_class, (b) were never purged, (c) are already populated by the routine :05 hourly cron. Including them here was scope creep that (a) doubles per-chunk time and (b) surfaced empty-CW-hour 'no rows' partial failures that blocked WriteCompletedMarker on qs1 execution cc6b01b3.",
+            "Parameters": {
+              "FunctionName": "${DataMartRollupFunctionArn}",
+              "Payload": {
+                "mode": "backfill",
+                "start.$": "$.start",
+                "end.$": "$.end",
+                "arms": ["metering_hourly", "metering_docs_hourly"]
+              }
+            },
+            "Retry": [
+              {
+                "ErrorEquals": [
+                  "Lambda.ServiceException",
+                  "Lambda.AWSLambdaException",
+                  "Lambda.SdkClientException",
+                  "Lambda.TooManyRequestsException",
+                  "States.Timeout"
+                ],
+                "MaxAttempts": 3,
+                "IntervalSeconds": 60,
+                "BackoffRate": 2
+              }
+            ],
+            "ResultSelector": {
+              "backfill.$": "$.Payload"
+            },
+            "End": true
+          }
+        }
+      },
+      "ResultPath": "$.chunk_results",
+      "Next": "BackfillDailyRange"
+    },
+    "BackfillDailyRange": {
+      "Type": "Task",
+      "Comment": "Iterate each day in the retention window and invoke the daily-rollup INSERTs. Runs AFTER MigrateChunks so metering_hourly / metering_docs_hourly are fully populated (the daily rollups aggregate from those). Single Lambda invocation because per-day daily rollup work is small (~5-10 s per day × 30 days ≈ 150-300 s, fits in Lambda's 900 s budget). Without this task, metering_daily and metering_docs_daily stay empty for 30 days waiting for the scheduled 00:15 UTC daily rollup to catch up one day at a time.",
+      "Resource": "arn:aws:states:::lambda:invoke",
+      "Parameters": {
+        "FunctionName": "${DataMartRollupFunctionArn}",
+        "Payload": {
+          "mode": "backfill_daily_range",
+          "days.$": "$.days"
+        }
+      },
+      "ResultSelector": {
+        "daily.$": "$.Payload"
+      },
+      "ResultPath": "$.daily_result",
+      "Retry": [
+        {
+          "ErrorEquals": [
+            "Lambda.ServiceException",
+            "Lambda.AWSLambdaException",
+            "Lambda.SdkClientException",
+            "Lambda.TooManyRequestsException",
+            "States.Timeout"
+          ],
+          "MaxAttempts": 3,
+          "IntervalSeconds": 60,
+          "BackoffRate": 2
+        }
+      ],
+      "Next": "CheckMigrationSuccess"
+    },
+    "CheckMigrationSuccess": {
+      "Type": "Task",
+      "Comment": "Aggregate the Map state's per-chunk results PLUS the daily-backfill result. Returns all_hours_clean=true only if EVERY chunk AND the daily backfill reported hours_failed=0. Partial-hour failures (some rollup arms succeeded, others didn't for one hour) don't block completion — the scheduled hourly + reconciler will fill those arms later. Passes chunk_results and daily_result as separate fields because ASL has no ArrayConcat intrinsic; the aggregator in the Lambda handles the union.",
+      "Resource": "arn:aws:states:::lambda:invoke",
+      "Parameters": {
+        "FunctionName": "${DataMartRollupFunctionArn}",
+        "Payload": {
+          "mode": "check_hours_failed",
+          "chunk_results.$": "$.chunk_results",
+          "daily_result.$": "$.daily_result.daily"
+        }
+      },
+      "ResultSelector": {
+        "all_hours_clean.$": "$.Payload.all_hours_clean",
+        "total_failed.$": "$.Payload.total_failed",
+        "total_succeeded.$": "$.Payload.total_succeeded",
+        "total_partial.$": "$.Payload.total_partial",
+        "failing_chunks.$": "$.Payload.failing_chunks"
+      },
+      "ResultPath": "$.migration_check",
+      "Retry": [
+        {
+          "ErrorEquals": [
+            "Lambda.ServiceException",
+            "Lambda.AWSLambdaException",
+            "Lambda.SdkClientException",
+            "Lambda.TooManyRequestsException"
+          ],
+          "MaxAttempts": 6,
+          "IntervalSeconds": 30,
+          "BackoffRate": 2
+        }
+      ],
+      "Next": "MigrationOutcome"
+    },
+    "MigrationOutcome": {
+      "Type": "Choice",
+      "Comment": "If every chunk was clean, mark migration completed; otherwise fail explicitly (marker stays in_progress so operator can restart the state machine and it resumes from where it left off, skipping the purge).",
+      "Choices": [
+        {
+          "Variable": "$.migration_check.all_hours_clean",
+          "BooleanEquals": true,
+          "Next": "WriteCompletedMarker"
+        }
+      ],
+      "Default": "MigrationHadFailures"
+    },
+    "WriteCompletedMarker": {
+      "Type": "Task",
+      "Comment": "Migration succeeded end-to-end: write the SSM marker as state=completed so future state-machine invocations short-circuit at CheckMarker. This is the ONLY completion signal customers should watch — CFN UPDATE_COMPLETE fires immediately after the CustomResource dispatcher returns and is decoupled from actual migration completion. Includes 'version' so a future migration for a different schema change routes to full flow instead of short-circuiting against this one.",
+      "Resource": "arn:aws:states:::lambda:invoke",
+      "Parameters": {
+        "FunctionName": "${DataMartRollupFunctionArn}",
+        "Payload": {
+          "mode": "write_marker",
+          "state": "completed",
+          "days.$": "$.days",
+          "version.$": "$.version"
+        }
+      },
+      "Retry": [
+        {
+          "ErrorEquals": [
+            "Lambda.ServiceException",
+            "Lambda.AWSLambdaException",
+            "Lambda.SdkClientException",
+            "Lambda.TooManyRequestsException"
+          ],
+          "MaxAttempts": 6,
+          "IntervalSeconds": 30,
+          "BackoffRate": 2
+        }
+      ],
+      "ResultPath": "$.marker_write_completed",
+      "End": true
+    },
+    "MigrationHadFailures": {
+      "Type": "Fail",
+      "Comment": "At least one chunk reported hours_failed > 0. The marker stays state=in_progress so restarting the state machine (via CustomResource re-fire or manual StartExecution) will resume from the failed chunks — the Purge is skipped, already-written chunks are HeadObject-skipped, only the failing hours are retried. Alarm on this failure via SFN's built-in CloudWatch integration.",
+      "Error": "MigrationIncomplete",
+      "Cause": "One or more chunks reported hours_failed > 0. Marker left as state=in_progress. Restart the state machine (or wait for the next CustomResource fire) to resume."
+    }
+  }
+}

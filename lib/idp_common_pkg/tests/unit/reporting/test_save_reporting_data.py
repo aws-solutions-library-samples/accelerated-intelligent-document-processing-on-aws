@@ -634,3 +634,151 @@ class TestMeteringWriteTimePartitioning:
     # `MeteringTable`). The partition-keys invariant is now guarded by
     # CloudFormation lint on the template rather than by a Python-side unit
     # test. See docs/reporting-database.md for the authoritative shape.
+
+
+# ---------------------------------------------------------------------------
+# document_class column on metering rows (docs/reporting-sql-layer.md §10)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.unit
+class TestMeteringDocumentClass:
+    """save_metering_data derives ``document_class`` from ``document.sections``
+    using the same 0/1/N rule the read-side widget previously computed at
+    query time from ``document_sections_*``, with one improvement:
+    ``Section.excluded`` sections (instruction/legal boilerplate) are
+    filtered out so a W2 with an instructions page does not read as 'mixed'.
+    """
+
+    @pytest.fixture
+    def reporting(self):
+        with patch("boto3.client"):
+            return SaveReportingData(reporting_bucket="test-bucket")
+
+    def _doc(self, sections):
+        doc = Document(id="doc-x", input_key="test/doc-x.pdf", sections=sections)
+        doc.initial_event_time = "2026-09-21T00:00:00Z"
+        doc.metering = {"ocr/textract/analyze_document": {"pages": 1.0}}
+        doc.num_pages = 1
+        return doc
+
+    def _write(self, reporting, doc):
+        with patch.object(reporting, "_save_records_as_parquet") as mock_save:
+            reporting.save_metering_data(doc)
+        assert mock_save.called
+        return mock_save.call_args[0][0]
+
+    def test_no_sections_gives_unknown(self, reporting):
+        """FAILED or in-flight docs with no sections bucket as 'unknown' —
+        matches the current read-side LEFT JOIN semantics."""
+        from idp_common.models import Document
+
+        doc = Document(id="doc-failed", input_key="test/failed.pdf", sections=[])
+        doc.initial_event_time = "2026-09-21T00:00:00Z"
+        doc.metering = {"ocr/textract/analyze_document": {"pages": 1.0}}
+        doc.num_pages = 1
+        records = self._write(reporting, doc)
+        assert all(r["document_class"] == "unknown" for r in records)
+
+    def test_single_class_gives_that_class(self, reporting):
+        """A doc whose sections are all one class reads as that class."""
+        from idp_common.models import Section
+
+        sections = [
+            Section(section_id="s1", classification="w2", page_ids=["p1"]),
+            Section(section_id="s2", classification="w2", page_ids=["p2"]),
+        ]
+        records = self._write(reporting, self._doc(sections))
+        assert all(r["document_class"] == "w2" for r in records)
+
+    def test_multiple_classes_gives_mixed(self, reporting):
+        """A packet document (multiple distinct section classes) reads as 'mixed'."""
+        from idp_common.models import Section
+
+        sections = [
+            Section(section_id="s1", classification="w2", page_ids=["p1"]),
+            Section(section_id="s2", classification="1099", page_ids=["p2"]),
+            Section(section_id="s3", classification="invoice", page_ids=["p3"]),
+        ]
+        records = self._write(reporting, self._doc(sections))
+        assert all(r["document_class"] == "mixed" for r in records)
+
+    def test_excluded_section_filtered_from_class_derivation(self, reporting):
+        """Section.excluded=True sections (instruction/legal boilerplate)
+        must NOT push a single-class doc into 'mixed'. This is the
+        semantic improvement over the current read-side query, which
+        would count the instruction page's classification and report
+        'mixed' — see docs/reporting-sql-layer.md §10 and PR description."""
+        from idp_common.models import Section
+
+        sections = [
+            Section(section_id="s1", classification="w2", page_ids=["p1"]),
+            Section(
+                section_id="s2",
+                classification="instructions",
+                page_ids=["p2"],
+                excluded=True,
+                exclusion_reason="instructions",
+            ),
+        ]
+        records = self._write(reporting, self._doc(sections))
+        assert all(r["document_class"] == "w2" for r in records)
+
+    def test_empty_classification_string_ignored(self, reporting):
+        """A section with an empty-string classification (edge case from a
+        classifier that returned no confident label) is not counted."""
+        from idp_common.models import Section
+
+        sections = [
+            Section(section_id="s1", classification="w2", page_ids=["p1"]),
+            Section(section_id="s2", classification="", page_ids=["p2"]),
+        ]
+        records = self._write(reporting, self._doc(sections))
+        assert all(r["document_class"] == "w2" for r in records)
+
+    def test_all_sections_excluded_gives_unknown(self, reporting):
+        """A pathological doc where every section is excluded — no signal
+        to bucket by, so 'unknown' is the safe answer."""
+        from idp_common.models import Section
+
+        sections = [
+            Section(
+                section_id="s1",
+                classification="instructions",
+                page_ids=["p1"],
+                excluded=True,
+            ),
+            Section(
+                section_id="s2",
+                classification="legal",
+                page_ids=["p2"],
+                excluded=True,
+            ),
+        ]
+        records = self._write(reporting, self._doc(sections))
+        assert all(r["document_class"] == "unknown" for r in records)
+
+    def test_document_class_same_value_on_every_row_of_doc(self, reporting):
+        """document_class is a per-DOCUMENT property. Every metering row
+        for one document must carry the same value — otherwise a rollup
+        that groups by document_class would fan out spuriously."""
+        from idp_common.models import Section
+
+        doc = Document(
+            id="multi-row",
+            input_key="test/multi.pdf",
+            sections=[Section(section_id="s1", classification="w2", page_ids=["p1"])],
+        )
+        doc.initial_event_time = "2026-09-21T00:00:00Z"
+        doc.num_pages = 1
+        doc.metering = {
+            "ocr/textract/analyze_document": {"pages": 1.0},
+            "extraction/bedrock/converse": {
+                "inputTokens": 100.0,
+                "outputTokens": 50.0,
+            },
+        }
+        records = self._write(reporting, doc)
+        assert len(records) > 1  # sanity
+        assert len({r["document_class"] for r in records}) == 1
+        assert records[0]["document_class"] == "w2"

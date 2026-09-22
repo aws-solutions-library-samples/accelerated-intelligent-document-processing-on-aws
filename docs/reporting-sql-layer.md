@@ -577,12 +577,53 @@ dependency-sensitive; tracks are independent.
   `(hour, service_api)`. Current dashboard latency comes from X-Ray +
   a 500-doc tracking-DDB sample; Phase 2 lifts that to a single-row
   scan at any range.
-- **`document_class` in the metering grain** — extends
-  `metering_hourly` / `metering_daily` grain from
+- ✅ **`document_class` in the metering grain** — **SHIPPED**. Extends
+  `metering_hourly` / `metering_daily` / `metering_docs_hourly` /
+  `metering_docs_daily` grain from
   `(hour, config_version, service_api, unit)` to
-  `(hour, document_class, config_version, service_api, unit)`. Blocked
-  on the classification service emitting `document_class` into
-  metering rows (write-side change).
+  `(hour, config_version, document_class, service_api, unit)`.
+  Write-side: `save_reporting_data.save_metering_data` computes
+  `document_class` per document using the 0/1/N rule over
+  `document.sections` (0 → 'unknown', 1 → that class, >1 → 'mixed');
+  `Section.excluded` sections are filtered out, so a W2 with an
+  instructions page reads as `'w2'` and not `'mixed'` (a correctness
+  improvement over the previous read-side query). Rollup-side: the
+  rollup Lambda's `INSERT` queries use a CTE + `COALESCE(m.document_class,
+  dc.document_class, 'unknown')` — the `doc_class` CTE joins
+  `document_sections_*` so historical rows lacking the column still
+  bucket correctly. The CTE date-partition-prunes each UNION arm to
+  `WHERE date BETWEEN <target-1d> AND <target+1d>`, so one hourly
+  rollup INSERT reads ~3 date partitions per `document_sections_*`
+  table rather than the full retention window — without that prune a
+  20-table stack fanning out one rollup would peak past S3's
+  per-prefix 5500 GET/s cap and trip `HIVE_S3_THROTTLING`. The ±1 day
+  slop covers the timing gap between per-pipeline-step metering
+  writes and the `document_sections_*` write at pipeline end, which
+  can span a UTC-day boundary. `document_sections_*` UNION runs
+  offline once per rollup hour, not per widget query. Consumers that
+  `SUM` across the grain are unaffected by the new dimension; a naive
+  `COUNT(*)` on rollup rows would over-count. Migration to the
+  widened grain is orchestrated by the `DataMartMigrationStateMachine`
+  (SFN, STANDARD type) — the earlier Lambda-only design capped
+  completion at Lambda's 45 min async-retry budget, insufficient for
+  real-volume windows. The state machine chunks the retention window
+  into 1 h slices with `MaxConcurrency=8` (paired with the rollup
+  Lambda's `ReservedConcurrentExecutions=12`), each chunk a Lambda
+  invocation with its own 3-retry budget via SFN-native retry.
+  Migration `mode: backfill` runs only the two schema-widened arms
+  (`metering_hourly`, `metering_docs_hourly`) via an `arms=[…]`
+  payload; the other two hourly arms (`control_plane_hourly`,
+  `data_plane_lambda_hourly`) don't have `document_class` and are
+  populated by the routine `:05` cron, so including them here would
+  be wasted work. `BackfillDailyRange` fires after MigrateChunks and
+  writes the two daily rollups from the now-populated hourly.
+  Idempotency via a two-phase SSM marker (`state=in_progress` after
+  purge and before backfill; `state=completed` only after all chunks
+  clean **and** no partial-hour failures) makes restarts non-
+  destructive resumption rather than restart. See
+  [data-mart-migration-runbook.md](data-mart-migration-runbook.md)
+  for operations. `idp-monitor` performance plan documents the widget-
+  side consumer.
 
 ### Track B — consumer integration (make Phase 1's tables actually pay off)
 
@@ -624,17 +665,30 @@ dependency-sensitive; tracks are independent.
 
 ### Track D — operational hardening
 
-- **Backfill mode for the rollup Lambda.** If the Lambda misses a
-  period (like `idp-dev-qs` did after a redeploy dropped it),
-  partitions for those hours are just missing — the Lambda only ever
-  processes the immediately-previous hour. Phase 2 adds a
-  `{"mode":"backfill","start":"…","end":"…"}` payload that iterates
-  the range and calls the hourly logic per hour, using the same
-  idempotency guard so reruns are safe.
-- **Alarm on rollup absence.** The develop redeploy that dropped
-  `DataMartRollupFunction` from `idp-dev-qs` was invisible until an
-  operator noticed missing partitions. Phase 2 adds a CloudWatch alarm
-  on `AWS/Lambda/Invocations == 0 for 2 hours` → page the operator.
+- ✅ **Backfill mode for the rollup Lambda.** **SHIPPED**.
+  `{"mode": "backfill", "start": "…", "end": "…"}` iterates hourly and
+  invokes all four per-doc rollup functions per hour, using the same
+  `HeadObject`-skip idempotency guard so reruns are safe. Partial
+  failures (a rollup failed for one table but not the other three on
+  one hour) are recorded per-hour in the return dict rather than
+  aborting the whole run — matches the reconciler's use case where an
+  individual gap should not block filling in others.
+- ✅ **Reconciler on hourly schedule.** **SHIPPED**. A separate
+  EventBridge rule (`DataMartRollupReconcileSchedule`) fires
+  `{"mode": "reconcile"}` at `:35` each hour — 30 min after the `:05`
+  hourly, so it never chases a rollup still in flight. Scans the
+  trailing 24 h and delegates to `mode: backfill` for the trailing
+  range; already-written partitions are no-ops. Cheap when nothing is
+  missing; self-heals gaps left by missed schedules or exhausted
+  async-retry budgets.
+- ✅ **Alarm on rollup absence.** **SHIPPED**. `DataMartRollupAbsenceAlarm`
+  fires on `AWS/Lambda/Invocations == 0` for two consecutive 1-hour
+  windows on the `DataMartRollupFunction`. Catches the class of failure
+  where the EventBridge schedule was dropped from the stack in a
+  redeploy (which was invisible on `idp-dev-qs` — the DLQ alarm only
+  fires when invocations *fail*, not when they *never happen*).
+  `TreatMissingData: breaching` because a Lambda with zero invocations
+  emits no `Invocations` sample at all.
 - **Rollup-Lambda layer swap-in-place guard.** Both the rollup and the
   migration Lambdas now use `IDPCommonReportingLayer` for pyarrow +
   `idp_common`. External customers install this feature via

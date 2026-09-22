@@ -4893,6 +4893,14 @@ Resources:
               Type: timestamp
             - Name: config_version
               Type: string
+            # Document-level classification derived by save_reporting_data
+            # from the document's sections (0/1/N rule, excluded sections
+            # filtered). Rows written before this column was added return
+            # NULL via Parquet schema evolution. The rollup Lambda falls
+            # back to a document_sections_* JOIN when this is NULL. See
+            # docs/reporting-sql-layer.md §10.
+            - Name: document_class
+              Type: string
           Compressed: true
         PartitionKeys:
           - Name: date
@@ -4946,6 +4954,14 @@ Resources:
             - Name: hour_ts
               Type: timestamp
             - Name: config_version
+              Type: string
+            # Document-level classification dimension. Populated by the
+            # rollup Lambda from raw metering.document_class (post-widening
+            # writers) with a document_sections_* JOIN fallback for
+            # historical NULLs. Consumers that SUM across the grain are
+            # unaffected by the new dimension; a naive COUNT(*) on rollup
+            # rows would now over-count. See docs/reporting-sql-layer.md §10.
+            - Name: document_class
               Type: string
             - Name: service_api
               Type: string
@@ -5004,6 +5020,10 @@ Resources:
             - Name: day
               Type: date
             - Name: config_version
+              Type: string
+            # Document-level classification dimension — see metering_hourly
+            # comment above. Same grain-widening contract.
+            - Name: document_class
               Type: string
             - Name: service_api
               Type: string
@@ -5069,6 +5089,10 @@ Resources:
               Type: timestamp
             - Name: config_version
               Type: string
+            # Document-level classification dimension — see metering_hourly
+            # comment above. Same grain-widening contract.
+            - Name: document_class
+              Type: string
             - Name: n_docs
               Type: bigint
             - Name: sum_pages
@@ -5125,6 +5149,10 @@ Resources:
             - Name: day
               Type: date
             - Name: config_version
+              Type: string
+            # Document-level classification dimension — see metering_hourly
+            # comment above. Same grain-widening contract.
+            - Name: document_class
               Type: string
             - Name: n_docs
               Type: bigint
@@ -5515,7 +5543,26 @@ Resources:
       # "decreases account's UnreservedConcurrentExecution below its minimum
       # value of [100]". Raise the account concurrency limit rather than
       # removing this property.
-      ReservedConcurrentExecutions: 1
+      #
+      # Bumped 1 → 3 for 2.1.1 → 12 for 2.1.6. Rationale:
+      # 2.1.1 (1→3): the migration state machine's 720 chunks contend for
+      #   the same Lambda slot as the scheduled hourly (:05), reconciler
+      #   (:35), and daily (:15). With reservation=1, any scheduled
+      #   invocation firing mid-migration caused SFN chunk tasks to hit
+      #   Lambda.TooManyRequestsException, which even the state machine's
+      #   generous Retry couldn't outwait if the competing invocation
+      #   took 5-15 min. Reservation=3 gave SFN + one scheduled + reconciler
+      #   headroom.
+      # 2.1.6 (3→12): the DataMartMigrationStateMachine now runs
+      #   MigrateChunks with MaxConcurrency=8 so a real-volume 720-hour
+      #   migration completes in ~20 min instead of ~2 h. 8 parallel
+      #   chunks × 1 Lambda slot each + the 3 scheduled crons + 1
+      #   headroom slot = 12. Chosen to stay well under Athena's default
+      #   20 DML-concurrency per workgroup (8 chunks × 2 arms = 16
+      #   concurrent Athena queries, leaves 4 for the routine crons).
+      # Idempotency guards (HeadObject-skip per partition, Athena
+      # ClientRequestToken dedup) make concurrent invocations safe.
+      ReservedConcurrentExecutions: 12
       # Async failures (Athena down for all 3 async retries) land in the
       # DLQ so an operator sees the data-hole instead of the hour silently
       # disappearing forever behind the per-partition idempotency skip.
@@ -5566,7 +5613,18 @@ Resources:
             - Effect: Allow
               Action:
                 - glue:GetDatabase
+                - glue:GetDatabases  # required by information_schema.schemata
                 - glue:GetTable
+                - glue:GetTables     # required by information_schema.columns
+                # ^ Without GetTables, Athena's information_schema queries
+                # silently return 0 rows — no permission-denied error, just
+                # empty results. This broke the rollup Lambda's discovery of
+                # document_sections_* tables (found on idp-dev-qs1 2026-09-22):
+                # discovery returned 0 → doc_class CTE was empty → rollup
+                # INSERTs LEFT JOIN'd against an empty CTE → every historical
+                # row's document_class fell through COALESCE fallback to
+                # 'unknown'. GetTable (singular) is NOT sufficient — Athena
+                # needs GetTables (plural) to enumerate a schema.
                 - glue:GetPartitions
                 - glue:CreatePartition
                 - glue:BatchCreatePartition
@@ -5656,6 +5714,14 @@ Resources:
                 # query. Without this, StartQueryExecution fails at the
                 # "verify/create output bucket" precheck.
                 - s3:GetBucketLocation
+                # DeleteObject(s) is used ONLY by the one-shot
+                # `mode: backfill_migrate` path, which purges the four
+                # per-document rollup S3 prefixes before repopulating them
+                # at the widened (document_class) grain. Rollup writes on
+                # the scheduled path never delete objects (append-only
+                # invariant preserved). See docs/reporting-sql-layer.md §10.
+                - s3:DeleteObject
+                - s3:DeleteObjects
               Resource:
                 - !If
                   - ShouldCreateReportingBucket
@@ -5665,6 +5731,18 @@ Resources:
                   - ShouldCreateReportingBucket
                   - !Sub "${ReportingBucket.Arn}/*"
                   - !Sub "arn:${AWS::Partition}:s3:::${ReportingBucketName}/*"
+            # SSM Parameter for the backfill-migrate idempotency marker.
+            # Path is `/idp/<stack>/data-mart-rollup/migration-complete`.
+            # Presence blocks re-execution of `mode: backfill_migrate` for
+            # the same `days=` value so a routine stack update does not
+            # re-run the ~30-45 min purge+repopulate cycle. Written after
+            # a successful migration; delete manually to force re-run.
+            - Effect: Allow
+              Action:
+                - ssm:GetParameter
+                - ssm:PutParameter
+              Resource:
+                - !Sub "arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/idp/${AWS::StackName}/data-mart-rollup/*"
             - Effect: Allow
               Action:
                 - kms:Encrypt
@@ -5760,6 +5838,425 @@ Resources:
       OKActions:
         - !Ref AlertsTopic
 
+  # One-shot Custom Resource — invokes the rollup Lambda in
+  # `mode: backfill_migrate` on stack upgrade so the four per-document
+  # rollup tables are repopulated at the widened (document_class) grain.
+  # Idempotent via an SSM Parameter marker; a second stack update with the
+  # same MigrationVersion + Days is a no-op. See docs/reporting-sql-layer.md §10.
+  #
+  # Handled by the small dispatcher Lambda `DataMartMigrationDispatcherFunction`
+  # (inline code) which async-invokes the rollup Lambda so the CFN response
+  # returns immediately — the actual migration takes ~30-45 min at typical
+  # data volumes and would blow CFN's 60-min ServiceTimeout on wider windows.
+  DataMartRollupMigrationCustomResource:
+    Type: Custom::DataMartRollupMigration
+    # Runs AFTER the four widened rollup Glue tables exist (schema must be
+    # in place before we purge + repopulate) AND after the writer emits
+    # `document_class` on new rows (so post-migration rollup runs have the
+    # column populated for current-hour tails).
+    DependsOn:
+      - SaveReportingDataFunctionV2
+      - MeteringHourlyTable
+      - MeteringDailyTable
+      - MeteringDocsHourlyTable
+      - MeteringDocsDailyTable
+    Properties:
+      ServiceToken: !GetAtt DataMartMigrationDispatcherFunction.Arn
+      # CFN sends an Update event when any property here changes. Bump
+      # this only if a rollup Lambda code change alters what the
+      # migration produces — a new column added to the rollup grain,
+      # or an aggregate whose SQL was rewritten. This value is
+      # persisted into the SSM marker on completion; a subsequent
+      # bump routes to full flow instead of the short-circuit
+      # (marker.version != request.version). It is a template-author
+      # knob, not an operator knob — customers running `idp-cli deploy`
+      # pick up whatever this file ships with.
+      #
+      # Version strings are opaque monotonic identifiers ("v1", "v2", …).
+      # Do not encode build or iteration labels here — those belong to
+      # the CHANGELOG and to git history, not to a value that persists
+      # into a customer's SSM Parameter Store and drives future migration
+      # decisions.
+      #
+      # Current schema state at v1: rollup tables grouped by
+      # (config_version, document_class, service_api, unit). See
+      # docs/reporting-sql-layer.md §Track A for the design rationale.
+      MigrationVersion: "v1"
+      # How many days back to repopulate. Constrained to [1, 90] by
+      # ``_plan_migration_chunks``; typical retention is 30 days.
+      Days: 30
+      # Chunk size in hours — how much of the retention window one
+      # BackfillChunk Task in the state machine's Map state handles.
+      # 1 h is the safest default: worst-case rollup rate is ~60 s per
+      # hour on a very busy stack, so 1 × 60 = 60 s per chunk fits with
+      # ~15× margin under Lambda's 900 s cap. Higher values (up to 168
+      # = 1 week) reduce SFN state-transition cost on nearly-idle
+      # stacks; lower isn't useful (1 is the atomic unit).
+      ChunkHours: 1
+      # ForceFresh forces a full re-migration even if the SSM marker
+      # says state=in_progress or state=completed. Set to 'true' ONLY
+      # when you deliberately want to wipe existing rollup S3 data
+      # and restart from a clean slate — e.g. after a schema change
+      # that requires re-aggregation, or when recovering from a stuck
+      # migration state. Consumed by the dispatcher (which deletes the
+      # SSM marker before starting the state machine so its CheckMarker
+      # sees ParameterNotFound and takes the full-flow branch).
+      #
+      # 'false' is the CUSTOMER-SAFE default:
+      #   * On a fresh install: no marker exists → CheckMarker returns
+      #     state=absent → full flow runs. Migration completes → marker
+      #     is written state=completed. Correct first-run behavior.
+      #   * On any subsequent stack update where MigrationVersion is
+      #     unchanged: dispatcher is a no-op (CustomResource has no delta).
+      #   * On a stack update that DOES change MigrationVersion: dispatcher
+      #     starts SFN; CheckMarker sees state=completed for the same days
+      #     value → short-circuits (MigrationAlreadyDone). No re-run.
+      # Leaving this 'true' in a shipped template would destructively
+      # re-migrate on every version bump — the exact landmine the
+      # customer-normal-day short-circuit is designed to prevent.
+      #
+      # It was 'true' during idp-dev-qs1's 2.1.x recovery cycle. Flipped
+      # to 'false' on 2026-09-22 after execution a76331c7 completed
+      # cleanly (marker written state=completed, 745 parquet files
+      # across the 4 rollup tables, document_class populated for every
+      # row with no NULL and no 'unknown' bucket). Kept 'false' onward
+      # for customer prod safety — if a future schema change needs a
+      # fresh migration, set this to 'true' explicitly (with a bump to
+      # MigrationVersion) and flip back after the run.
+      ForceFresh: "false"
+      # Match the dispatcher's own Timeout — CFN default is 3600s, but the
+      # dispatcher's role is just "delete SSM marker (optional) + start SFN
+      # execution + send CFN SUCCESS", so it finishes in ~5s. 60s cap lets
+      # stack update fail fast if the dispatcher itself is broken.
+      ServiceTimeout: 60
+
+  # ─────────────────────────────────────────────────────────────────────
+  # DataMartMigrationStateMachine — chunked, retry-safe migration.
+  # ─────────────────────────────────────────────────────────────────────
+  # Replaces the earlier Lambda-only ``mode: backfill_migrate`` design.
+  # See src/statemachine/data_mart_migration.asl.json for the full ASL
+  # with commentary. High-level flow:
+  #   CheckMarker → RouteOnMarkerState → (short-circuit | skip purge | full flow)
+  #   full flow: InitialPurge → WriteInProgressMarker → PlanChunks →
+  #              Map over chunks (BackfillChunk × N) → CheckMigrationSuccess
+  #                → (WriteCompletedMarker | MigrationHadFailures/Fail)
+  # Every task is a Lambda invocation against DataMartRollupFunction —
+  # keeps the operational contract (SSM marker, per-partition HeadObject
+  # idempotency, etc.) unchanged from PR1.
+  DataMartMigrationStateMachine:
+    Type: AWS::Serverless::StateMachine
+    Properties:
+      Name: !Sub "${AWS::StackName}-data-mart-migration"
+      # STANDARD (not EXPRESS): the whole migration can run for hours
+      # end-to-end on a high-volume stack. EXPRESS caps at 5 min.
+      Type: STANDARD
+      Role: !GetAtt DataMartMigrationStateMachineRole.Arn
+      Logging:
+        Level: ERROR
+        IncludeExecutionData: false
+        Destinations:
+          - CloudWatchLogsLogGroup:
+              LogGroupArn: !GetAtt DataMartMigrationStateMachineLogGroup.Arn
+      Tracing:
+        Enabled: true
+      DefinitionSubstitutions:
+        DataMartRollupFunctionArn: !GetAtt DataMartRollupFunction.Arn
+      DefinitionUri: ./src/statemachine/data_mart_migration.asl.json
+
+  DataMartMigrationStateMachineRole:
+    Type: AWS::IAM::Role
+    Properties:
+      PermissionsBoundary:
+        !If [
+          HasPermissionsBoundary,
+          !Ref PermissionsBoundaryArn,
+          !Ref AWS::NoValue,
+        ]
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: !Sub "states.${AWS::URLSuffix}"
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: InvokeRollupLambda
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              # State machine's Task states invoke DataMartRollupFunction
+              # for check_marker_state, write_marker, purge_rollup_prefixes,
+              # plan_migration_chunks, mode: backfill, check_hours_failed.
+              - Effect: Allow
+                Action:
+                  - lambda:InvokeFunction
+                Resource:
+                  - !GetAtt DataMartRollupFunction.Arn
+                  - !Sub "${DataMartRollupFunction.Arn}:*"
+        - PolicyName: XRayTracing
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - xray:PutTraceSegments
+                  - xray:PutTelemetryRecords
+                  - xray:GetSamplingRules
+                  - xray:GetSamplingTargets
+                Resource: "*"
+        - PolicyName: CloudWatchLogs
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              # SFN uses CloudWatch Logs resource-policy on the log group,
+              # not IAM — but these actions are required for the SFN service
+              # to create log deliveries. Scoped to this stack's log group.
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogDelivery
+                  - logs:GetLogDelivery
+                  - logs:UpdateLogDelivery
+                  - logs:DeleteLogDelivery
+                  - logs:ListLogDeliveries
+                  - logs:PutResourcePolicy
+                  - logs:DescribeResourcePolicies
+                  - logs:DescribeLogGroups
+                Resource: "*"
+
+  DataMartMigrationStateMachineLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub "/aws/vendedlogs/states/${AWS::StackName}-data-mart-migration"
+      KmsKeyId: !GetAtt CustomerManagedEncryptionKey.Arn
+      RetentionInDays: !Ref LogRetentionDays
+
+  # Alarm on ANY failed / aborted / timed-out state-machine execution.
+  # SFN's Fail state (fires when a chunk exhausts its retries and
+  # reports hours_failed > 0) counts here. Complements the Lambda DLQ
+  # alarm: the DLQ alarm covers async invocations that failed all
+  # retries, but SFN state-machine executions don't go through the
+  # Lambda DLQ — they're synchronous from SFN's perspective and errors
+  # surface as SFN metrics. Without this alarm, a customer's migration
+  # ending in MigrationHadFailures would be invisible until an operator
+  # noticed state=in_progress never flipped to completed. See
+  # docs/data-mart-migration-runbook.md for what to do on alarm fire.
+  DataMartMigrationStateMachineFailureAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub "${AWS::StackName}-data-mart-migration-failure"
+      AlarmDescription: >-
+        The DataMartMigrationStateMachine had at least one execution end
+        in FAILED / TIMED_OUT / ABORTED state. This typically means the
+        rollup migration hit chunks with hours_failed > 0 that exhausted
+        their SFN Retry budget. The SSM marker at
+        /idp/<stack>/data-mart-rollup/migration-complete is left at
+        state=in_progress; a restart (via ForceFresh=false + MigrationVersion
+        bump, or manual StartExecution) resumes from where it left off
+        (purge is skipped, already-written chunks are HeadObject-skipped,
+        only failing hours are retried). See the operations runbook.
+      Namespace: AWS/States
+      MetricName: ExecutionsFailed
+      Dimensions:
+        - Name: StateMachineArn
+          Value: !Ref DataMartMigrationStateMachine
+      Statistic: Sum
+      Period: 300
+      EvaluationPeriods: 1
+      Threshold: 0
+      ComparisonOperator: GreaterThanThreshold
+      TreatMissingData: notBreaching
+      AlarmActions:
+        - !Ref AlertsTopic
+      OKActions:
+        - !Ref AlertsTopic
+
+  # ─────────────────────────────────────────────────────────────────────
+  # DataMartMigrationDispatcherFunction — CFN CustomResource entry point.
+  # ─────────────────────────────────────────────────────────────────────
+  # Small dispatcher Lambda that receives the CFN CustomResource event,
+  # optionally deletes the SSM marker (when ForceFresh=true), starts the
+  # state machine, and sends CFN SUCCESS immediately. Decoupling like
+  # this is standard for long-running migrations that exceed a
+  # synchronous CustomResource's response window (SFN executions can run
+  # for hours; blocking a stack update that long is poor UX and can
+  # exceed CFN's 60-min ServiceTimeout on wider windows).
+  #
+  # Inline Python 3.12 code; ~60 lines. Kept inline so a reader reviewing
+  # the Custom Resource above sees the full contract in one place.
+  DataMartMigrationDispatcherFunction:
+    Type: AWS::Serverless::Function
+    Metadata:
+      cfn_nag:
+        rules_to_suppress:
+          - id: W89
+            reason: "Dispatcher only calls SFN StartExecution + SSM DeleteParameter + urllib to CFN — no VPC needed"
+          - id: W92
+            reason: "One-shot per stack update; no ReservedConcurrentExecutions required"
+      # checkov:skip=CKV_AWS_115: "One-shot dispatcher; concurrency reservation not applicable"
+      # checkov:skip=CKV_AWS_116: "Not SQS-triggered; DLQ not applicable"
+      # checkov:skip=CKV_AWS_117: "Function does not require VPC access"
+      # checkov:skip=CKV_AWS_173: "Environment variables contain only configuration"
+    Properties:
+      PermissionsBoundary:
+        !If [
+          HasPermissionsBoundary,
+          !Ref PermissionsBoundaryArn,
+          !Ref AWS::NoValue,
+        ]
+      Runtime: python3.12
+      Handler: index.handler
+      Timeout: 60
+      MemorySize: 128
+      Tracing: Active
+      Description: One-shot CFN Custom Resource dispatcher for data-mart rollup schema migration state machine.
+      Environment:
+        Variables:
+          LOG_LEVEL: !Ref LogLevel
+          STATE_MACHINE_ARN: !Ref DataMartMigrationStateMachine
+          MIGRATION_MARKER_NAME: !Sub "/idp/${AWS::StackName}/data-mart-rollup/migration-complete"
+      LoggingConfig:
+        LogGroup: !Ref DataMartMigrationDispatcherFunctionLogGroup
+      Policies:
+        - Statement:
+            # Start the SFN execution. Async — dispatcher returns as soon
+            # as StartExecution returns; the state machine runs on.
+            - Effect: Allow
+              Action:
+                - states:StartExecution
+              Resource: !Ref DataMartMigrationStateMachine
+            # ForceFresh=true → delete the SSM marker so the state
+            # machine's CheckMarker takes the full-flow branch. Scoped
+            # to this stack's marker path.
+            - Effect: Allow
+              Action:
+                - ssm:DeleteParameter
+                - ssm:GetParameter
+              Resource:
+                - !Sub "arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/idp/${AWS::StackName}/data-mart-rollup/*"
+      InlineCode: |
+        import json
+        import logging
+        import os
+        import urllib.request
+        import boto3
+
+        logger = logging.getLogger()
+        logger.setLevel(os.environ.get("LOG_LEVEL", "INFO"))
+        sfn_client = boto3.client("stepfunctions")
+        ssm_client = boto3.client("ssm")
+        STATE_MACHINE_ARN = os.environ["STATE_MACHINE_ARN"]
+        MIGRATION_MARKER_NAME = os.environ["MIGRATION_MARKER_NAME"]
+
+        def _send_cfn_response(event, status, reason, data=None):
+            body = json.dumps({
+                "Status": status,
+                "Reason": reason,
+                "PhysicalResourceId": event.get("PhysicalResourceId")
+                    or event["LogicalResourceId"],
+                "StackId": event["StackId"],
+                "RequestId": event["RequestId"],
+                "LogicalResourceId": event["LogicalResourceId"],
+                "Data": data or {},
+            }).encode("utf-8")
+            req = urllib.request.Request(
+                event["ResponseURL"],
+                data=body,
+                method="PUT",
+                headers={"content-type": "", "content-length": str(len(body))},
+            )
+            with urllib.request.urlopen(req, timeout=30) as resp:
+                logger.info("CFN response: %s", resp.status)
+
+        def handler(event, context):
+            logger.info("CFN event: %s", json.dumps(event))
+            try:
+                request_type = event["RequestType"]
+                if request_type == "Delete":
+                    # Nothing to undo — the rollup tables are always recomputable
+                    # from raw metering + document_sections_*. Deleting the stack
+                    # tears them down via their own Glue::Table resources.
+                    _send_cfn_response(event, "SUCCESS", "Delete: no-op")
+                    return
+
+                props = event.get("ResourceProperties", {})
+                days = int(props.get("Days", 30))
+                chunk_hours = int(props.get("ChunkHours", 24))
+                # MigrationVersion is what CFN diffs on to fire this handler.
+                # Passing it into the state machine is what lets CheckMarker
+                # distinguish a completed marker for a DIFFERENT MigrationVersion
+                # (which needs full flow — e.g. next schema-widening release)
+                # from a completed marker for THIS MigrationVersion (which
+                # should short-circuit — e.g. re-firing the CustomResource
+                # after a stack rollback that didn't change the version).
+                migration_version = props.get("MigrationVersion", "")
+                force_fresh = str(props.get("ForceFresh", "false")).lower() in ("true", "1", "yes")
+
+                # ForceFresh=true → delete the SSM marker so the state
+                # machine's CheckMarker sees ParameterNotFound and takes
+                # the full-flow (purge + backfill) branch. Deliberately
+                # visible: operator can force a clean re-migration by
+                # bumping ForceFresh + MigrationVersion.
+                if force_fresh:
+                    try:
+                        ssm_client.delete_parameter(Name=MIGRATION_MARKER_NAME)
+                        logger.info(
+                            "ForceFresh=true: deleted SSM marker %s",
+                            MIGRATION_MARKER_NAME,
+                        )
+                    except ssm_client.exceptions.ParameterNotFound:
+                        logger.info(
+                            "ForceFresh=true: SSM marker %s already absent",
+                            MIGRATION_MARKER_NAME,
+                        )
+
+                # Start the state machine. It runs asynchronously — the
+                # migration continues after the dispatcher exits and the
+                # CustomResource returns SUCCESS to CFN.
+                response = sfn_client.start_execution(
+                    stateMachineArn=STATE_MACHINE_ARN,
+                    input=json.dumps({
+                        "days": days,
+                        "chunk_hours": chunk_hours,
+                        "version": migration_version,
+                    }),
+                )
+                execution_arn = response["executionArn"]
+                logger.info(
+                    "Started SFN execution: %s (days=%d, chunk_hours=%d, version=%s, force_fresh=%s)",
+                    execution_arn,
+                    days,
+                    chunk_hours,
+                    migration_version,
+                    force_fresh,
+                )
+                _send_cfn_response(
+                    event,
+                    "SUCCESS",
+                    f"State machine started (execution={execution_arn.rsplit(':', 1)[-1]}, days={days}, chunk_hours={chunk_hours}, version={migration_version}, force_fresh={force_fresh})",
+                    data={
+                        "ExecutionArn": execution_arn,
+                        "Days": str(days),
+                        "ChunkHours": str(chunk_hours),
+                        "MigrationVersion": migration_version,
+                        "ForceFresh": str(force_fresh),
+                    },
+                )
+            except Exception as e:
+                # CFN Custom Resource contract — never leave the stack update
+                # hanging. Log and return FAILED with the error so the operator
+                # sees why in the CFN events tab.
+                logger.exception("Dispatcher failed")
+                try:
+                    _send_cfn_response(event, "FAILED", f"{type(e).__name__}: {e}")
+                except Exception:
+                    logger.exception("Also failed to send CFN response")
+
+  DataMartMigrationDispatcherFunctionLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      KmsKeyId: !GetAtt CustomerManagedEncryptionKey.Arn
+      RetentionInDays: !Ref LogRetentionDays
+
   # Hourly rollup: writes metering_hourly and control_plane_hourly for the
   # previous fully-sealed UTC hour. Fires at minute 5 to give in-flight
   # doc-completions a moment to land in metering before the aggregation reads.
@@ -5842,6 +6339,87 @@ Resources:
       Action: lambda:InvokeFunction
       Principal: !Sub events.${AWS::URLSuffix}
       SourceArn: !GetAtt DataMartRollupDailySchedule.Arn
+
+  # Reconciler: fills in gaps in the trailing 24 h caused by missed
+  # schedules (redeploy dropped the schedule; async-retry budget
+  # exhausted; Athena partial outage). Fires at :35 of each hour — 30 min
+  # after the :05 scheduled hourly, so it never chases a rollup still in
+  # flight. Idempotent — already-written partitions are no-ops. See
+  # docs/reporting-sql-layer.md §10 Phase-2 Track D.
+  DataMartRollupReconcileSchedule:
+    Type: AWS::Events::Rule
+    # Same DependsOn set as the sibling schedules — reconciler reads the
+    # same rollup tables and must not fire before they exist.
+    DependsOn:
+      - MeteringHourMigrationCustomResource
+      - MeteringTable
+      - MeteringHourlyTable
+      - MeteringDailyTable
+      - MeteringDocsHourlyTable
+      - MeteringDocsDailyTable
+      - ControlPlaneHourlyTable
+      - DataPlaneLambdaHourlyTable
+    Properties:
+      Description: Trailing-24h reconciler for the data-mart rollup Lambda (fills missed hours).
+      ScheduleExpression: "cron(35 * * * ? *)"
+      State: ENABLED
+      Targets:
+        - Id: DataMartRollupReconcile
+          Arn: !GetAtt DataMartRollupFunction.Arn
+          InputTransformer:
+            InputPathsMap:
+              time: "$.time"
+            InputTemplate: '{"mode": "reconcile", "time": <time>}'
+
+  DataMartRollupReconcilePermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref DataMartRollupFunction
+      Action: lambda:InvokeFunction
+      Principal: !Sub events.${AWS::URLSuffix}
+      SourceArn: !GetAtt DataMartRollupReconcileSchedule.Arn
+
+  # Absence alarm: page the operator when the DataMartRollupFunction has
+  # NOT been invoked for 2 hours. Catches the class of failure where the
+  # EventBridge schedule got dropped from the stack in a redeploy (Bob
+  # observed exactly this on idp-dev-qs) — the DLQ alarm above only fires
+  # when INVOCATIONS FAIL, not when they never happen. See §10 Track D.
+  DataMartRollupAbsenceAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub "${AWS::StackName}-data-mart-rollup-absence"
+      AlarmDescription: >-
+        The DataMartRollupFunction has recorded zero invocations for at
+        least 2 consecutive hours. Expected schedule: one invocation at
+        :05 (hourly) + one at :35 (reconciler) each hour. Zero invocations
+        typically means the EventBridge schedule was dropped from the
+        stack by a redeploy or the Lambda is otherwise unreachable.
+        Check the stack template for DataMartRollupHourlySchedule /
+        DataMartRollupReconcileSchedule and CloudWatch Events for the rule
+        state.
+      Namespace: AWS/Lambda
+      MetricName: Invocations
+      Dimensions:
+        - Name: FunctionName
+          Value: !Ref DataMartRollupFunction
+      Statistic: Sum
+      # Two consecutive 1-hour windows with zero invocations trip the
+      # alarm — 2 h detection latency, ~zero false positives (a live
+      # stack fires at least :05 + :35 per hour).
+      Period: 3600
+      EvaluationPeriods: 2
+      Threshold: 0
+      ComparisonOperator: LessThanOrEqualToThreshold
+      # `notBreaching` for a Sum metric: an hour that reported no data
+      # points ALSO trips the alarm (a Lambda with zero invocations
+      # emits no Invocations sample at all). That is exactly the case
+      # we want to catch — the alternative `ignore` would silence the
+      # very outage this alarm exists to page on.
+      TreatMissingData: breaching
+      AlarmActions:
+        - !Ref AlertsTopic
+      OKActions:
+        - !Ref AlertsTopic
 
   DocumentSectionsCrawlerSecurityConfigurationV2:
     Type: AWS::Glue::SecurityConfiguration

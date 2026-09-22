@@ -46,6 +46,19 @@ def _load_module():
         with patch("boto3.client"):
             module = importlib.util.module_from_spec(spec)
             spec.loader.exec_module(module)
+    # Prepopulate the document_sections_* discovery cache to an empty list.
+    # Rationale: the metering_hourly / metering_docs_hourly rollup INSERTs
+    # call ``_build_doc_class_cte`` → ``_discover_document_sections_tables``
+    # → ``_run_athena_query_with_results`` which paginates via
+    # ``athena_client.get_query_results``. Under this file's patched
+    # ``boto3.client``, that call returns a MagicMock whose ``get("NextToken")``
+    # is always truthy — so the paginator ``while True:`` loop would spin
+    # without a sleep and burn CPU + memory (past incident: had to reboot
+    # the EC2 host). Prepopulating the cache short-circuits discovery to
+    # ``[]``, so ``_build_doc_class_cte`` returns the empty-CTE fragment
+    # instantly. Tests that specifically want to verify discovery behavior
+    # override this cache directly.
+    module._document_sections_tables_cache = []
     return module
 
 
@@ -388,12 +401,22 @@ class TestMeteringDocsHourlyRollup:
         sql = captured[0]
         assert '"metering_docs_hourly"' in sql
         # Doc-grain subquery — MAX-collapses pages before outer aggregate.
-        assert "MAX(number_of_pages)" in sql
-        # Grain is (hour_ts, config_version) — NOT service_api / unit.
-        assert (
-            "service_api"
-            not in sql.split("INSERT")[1].split("SELECT")[1].split("FROM")[0]
-        ), (
+        # The doc_class widening (grain now includes document_class) added a
+        # LEFT JOIN with the doc_class CTE, so the metering table is aliased
+        # ``m`` and the column reference is now ``m.number_of_pages``.
+        assert "MAX(m.number_of_pages)" in sql or "MAX(number_of_pages)" in sql
+        # Grain is (hour_ts, config_version, document_class) — NOT service_api
+        # / unit. The CTE prefix ``WITH doc_class AS (SELECT ...)`` is stripped
+        # so the outer-SELECT slice below isn't polluted by the CTE's inner
+        # SELECT (which selects nulls for the fallback-only path).
+        _after_insert = sql.split("INSERT", 1)[1]
+        _after_cte = (
+            _after_insert.split(")", 1)[1]
+            if "WITH doc_class" in _after_insert
+            else _after_insert
+        )
+        outer_select_cols = _after_cte.split("SELECT", 1)[1].split("FROM", 1)[0]
+        assert "service_api" not in outer_select_cols, (
             "Outer SELECT must not include service_api or unit as dims — "
             "that's the fan-out bug this table exists to avoid."
         )
@@ -2285,3 +2308,1027 @@ class TestDataPlaneLambdaRollup:
         ):
             with pytest.raises(ValueError, match="unknown schema_name"):
                 rollup._write_parquet([], "test-key", schema_name="bogus")
+
+
+# ---------------------------------------------------------------------------
+# Backfill mode — repopulate rollup partitions for a caller-supplied window
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.unit
+class TestBackfillMode:
+    """``mode: 'backfill'`` iterates hours in [start, end) and re-runs the
+    four per-document hourly rollups. Idempotent — already-written
+    partitions are no-ops via the existing HeadObject skip.
+    """
+
+    def test_backfill_mode_dispatches_to_run_backfill(self, rollup):
+        with patch.object(
+            rollup, "_run_backfill", return_value={"mode": "backfill"}
+        ) as bf:
+            result = rollup.handler(
+                {
+                    "mode": "backfill",
+                    "start": "2026-09-01T00:00:00Z",
+                    "end": "2026-09-02T00:00:00Z",
+                },
+                None,
+            )
+        bf.assert_called_once()
+        assert result["mode"] == "backfill"
+
+    def test_backfill_requires_start_and_end(self, rollup):
+        with pytest.raises(ValueError, match="requires 'start' and 'end'"):
+            rollup.handler({"mode": "backfill"}, None)
+        with pytest.raises(ValueError, match="requires 'start' and 'end'"):
+            rollup.handler({"mode": "backfill", "start": "2026-09-01T00:00:00Z"}, None)
+
+    def test_backfill_iterates_hours_and_calls_all_four_rollups(self, rollup):
+        """A 3-hour window must invoke all four hourly rollups per hour —
+        12 calls total. Order matters only within an hour (all four
+        run before advancing) so the accumulator's per-hour bookkeeping
+        stays consistent."""
+        calls = []
+
+        def _rec(label):
+            def _fn(date, hour):
+                calls.append((label, date, hour))
+                return {"skipped": False}
+
+            return _fn
+
+        with (
+            patch.object(rollup, "_rollup_metering_hourly", side_effect=_rec("mh")),
+            patch.object(
+                rollup, "_rollup_metering_docs_hourly", side_effect=_rec("mdh")
+            ),
+            patch.object(
+                rollup, "_rollup_control_plane_hourly", side_effect=_rec("cph")
+            ),
+            patch.object(
+                rollup, "_rollup_data_plane_lambda_hourly", side_effect=_rec("dph")
+            ),
+        ):
+            result = rollup._run_backfill(
+                "2026-09-01T00:00:00Z", "2026-09-01T03:00:00Z"
+            )
+        # 3 hours × 4 rollups = 12 calls.
+        assert len(calls) == 12
+        # Each hour must have all four labels present.
+        for hour in ("00", "01", "02"):
+            hour_calls = {label for label, _d, h in calls if h == hour}
+            assert hour_calls == {"mh", "mdh", "cph", "dph"}, (
+                f"Hour {hour} missing rollups: {hour_calls}"
+            )
+        # Every call must have the correct date (no boundary bugs).
+        assert all(d == "2026-09-01" for _l, d, _h in calls)
+        # Result accumulator: 3 hours, all succeeded.
+        assert result["hours_attempted"] == 3
+        assert result["hours_succeeded"] == 3
+        assert result["hours_failed"] == 0
+        assert result["hours_partial"] == 0
+        assert result["failures"] == []
+
+    def test_backfill_records_partial_failures_and_continues(self, rollup):
+        """If one rollup fails for one hour, the other three still write
+        and the accumulator classifies the hour as 'partial'. Iteration
+        continues to the next hour rather than aborting the whole
+        backfill — matches the reconciler's use case, where an
+        individual gap shouldn't block filling in others."""
+
+        def _ok(_d, _h):
+            return {"skipped": False}
+
+        def _fail_first_hour_only(date, hour):
+            if hour == "00":
+                raise RuntimeError("transient athena hiccup")
+            return {"skipped": False}
+
+        with (
+            patch.object(
+                rollup, "_rollup_metering_hourly", side_effect=_fail_first_hour_only
+            ),
+            patch.object(rollup, "_rollup_metering_docs_hourly", side_effect=_ok),
+            patch.object(rollup, "_rollup_control_plane_hourly", side_effect=_ok),
+            patch.object(rollup, "_rollup_data_plane_lambda_hourly", side_effect=_ok),
+        ):
+            result = rollup._run_backfill(
+                "2026-09-01T00:00:00Z", "2026-09-01T02:00:00Z"
+            )
+        assert result["hours_attempted"] == 2
+        assert result["hours_succeeded"] == 1  # hour 01
+        assert result["hours_partial"] == 1  # hour 00: mh failed, other 3 ok
+        assert result["hours_failed"] == 0
+        assert len(result["failures"]) == 1
+        assert result["failures"][0]["hour"] == "00"
+        assert result["failures"][0]["table"] == "metering_hourly"
+        assert "transient athena hiccup" in result["failures"][0]["error"]
+
+    def test_backfill_rejects_reversed_range(self, rollup):
+        with pytest.raises(ValueError, match="strictly before"):
+            rollup._run_backfill("2026-09-02T00:00:00Z", "2026-09-01T00:00:00Z")
+
+    def test_backfill_rejects_malformed_timestamp(self, rollup):
+        with pytest.raises(ValueError, match="ISO 8601"):
+            rollup._run_backfill("not a timestamp", "2026-09-01T00:00:00Z")
+
+    def test_backfill_bound_naive_datetime_treated_as_utc(self, rollup):
+        """Timezone-naive ISO strings must be treated as UTC (matches the
+        pipeline's queue-time convention) — not raise on the missing tz."""
+        parsed = rollup._parse_backfill_bound("2026-09-01T00:00:00", "start")
+        assert parsed.tzinfo is not None
+        assert parsed.utcoffset().total_seconds() == 0
+
+
+@pytest.mark.unit
+class TestBackfillMigrateDeprecatedNoOp:
+    """``mode: 'backfill_migrate'`` is deprecated — the migration moved
+    to the ``DataMartMigrationStateMachine`` in 2.0. The mode is kept
+    as a NO-OP so any queued async retries from the pre-SFN Lambda-only
+    design succeed cleanly (rather than DLQ-firing an alarm the operator
+    has to interpret). See CHANGELOG + docs/reporting-sql-layer.md."""
+
+    def test_deprecated_backfill_migrate_returns_noop(self, rollup):
+        result = rollup.handler({"mode": "backfill_migrate", "days": 30}, None)
+        assert result.get("deprecated") is True
+        assert "no-op" in result.get("action", "").lower()
+        assert result["mode"] == "backfill_migrate"
+
+    def test_deprecated_mode_does_not_touch_ssm_s3_or_athena(self, rollup):
+        """Whatever the payload, the deprecated no-op must not modify
+        any live state — an accidental invocation must not perturb
+        production."""
+        with (
+            patch.object(rollup, "boto3", MagicMock()) as mock_boto3,
+            patch.object(rollup, "_purge_s3_prefix") as purge,
+            patch.object(rollup, "_run_backfill") as bf,
+        ):
+            rollup.handler(
+                {"mode": "backfill_migrate", "days": 30, "start": "x", "end": "y"},
+                None,
+            )
+        # No AWS SDK client instantiated for a no-op path.
+        # (boto3 module mock — client() may not even be called.)
+        purge.assert_not_called()
+        bf.assert_not_called()
+        # get_parameter / put_parameter must not have been touched either.
+        # (The boto3 module is patched, so any client.get_parameter call
+        # would go through mock_boto3.client(...).get_parameter().)
+        client_calls = mock_boto3.client.mock_calls
+        assert all("ssm" not in str(c).lower() for c in client_calls), (
+            f"deprecated mode must not touch SSM; got {client_calls}"
+        )
+
+
+@pytest.mark.unit
+class TestCheckMarkerState:
+    """``mode: 'check_marker_state'`` — SFN's first task. Reads the SSM
+    marker, parses it, returns a routing decision the state machine's
+    Choice state consumes. Three outcomes:
+      * completed matching days → short_circuit
+      * in_progress matching days → skip_purge
+      * absent / unrecognised / different days → full flow
+    """
+
+    def test_absent_marker_returns_full_flow_routing(self, rollup):
+        with patch.object(rollup, "boto3", MagicMock()) as mock_boto3:
+            ssm_mock = mock_boto3.client.return_value
+            ssm_mock.exceptions.ParameterNotFound = type(
+                "ParameterNotFound", (Exception,), {}
+            )
+            ssm_mock.get_parameter.side_effect = ssm_mock.exceptions.ParameterNotFound()
+            result = rollup.handler({"mode": "check_marker_state", "days": 30}, None)
+        assert result["state"] == "absent"
+        assert result["should_short_circuit"] is False
+        assert result["should_skip_purge"] is False
+
+    def test_completed_marker_matching_days_returns_short_circuit(self, rollup):
+        with patch.object(rollup, "boto3", MagicMock()) as mock_boto3:
+            ssm_mock = mock_boto3.client.return_value
+            ssm_mock.exceptions.ParameterNotFound = type(
+                "ParameterNotFound", (Exception,), {}
+            )
+            ssm_mock.get_parameter.return_value = {
+                "Parameter": {
+                    "Value": "days=30;state=completed;completed_at=2026-09-04T12:00:00+00:00"
+                }
+            }
+            result = rollup.handler({"mode": "check_marker_state", "days": 30}, None)
+        assert result["state"] == "completed"
+        assert result["should_short_circuit"] is True
+        assert result["should_skip_purge"] is False
+
+    def test_in_progress_marker_matching_days_returns_skip_purge(self, rollup):
+        """THE KEY retry-safety routing test. A prior state-machine run
+        purged and started backfill, then Lambda timed out mid-chunk.
+        A restart reads the marker and MUST route to skip_purge (not
+        short_circuit and not full_flow)."""
+        with patch.object(rollup, "boto3", MagicMock()) as mock_boto3:
+            ssm_mock = mock_boto3.client.return_value
+            ssm_mock.exceptions.ParameterNotFound = type(
+                "ParameterNotFound", (Exception,), {}
+            )
+            ssm_mock.get_parameter.return_value = {
+                "Parameter": {
+                    "Value": "days=30;state=in_progress;started_at=2026-09-04T12:00:00+00:00"
+                }
+            }
+            result = rollup.handler({"mode": "check_marker_state", "days": 30}, None)
+        assert result["state"] == "in_progress"
+        assert result["should_short_circuit"] is False
+        assert result["should_skip_purge"] is True
+
+    def test_different_days_treated_as_fresh_migration(self, rollup):
+        """Marker says days=30 completed, request is for days=45 → not
+        the same migration → full flow."""
+        with patch.object(rollup, "boto3", MagicMock()) as mock_boto3:
+            ssm_mock = mock_boto3.client.return_value
+            ssm_mock.exceptions.ParameterNotFound = type(
+                "ParameterNotFound", (Exception,), {}
+            )
+            ssm_mock.get_parameter.return_value = {
+                "Parameter": {"Value": "days=30;state=completed;completed_at=x"}
+            }
+            result = rollup.handler({"mode": "check_marker_state", "days": 45}, None)
+        assert result["state"] == "unrecognised"
+        assert result["should_short_circuit"] is False
+        assert result["should_skip_purge"] is False
+
+    def test_ssm_read_error_returns_absent_conservative(self, rollup):
+        """A transient SSM outage (not ParameterNotFound) → treated as
+        absent, so the state machine takes the full-flow branch. This
+        documents the conservative choice: one lost migration attempt
+        vs. leaving tables in mixed state forever."""
+        with patch.object(rollup, "boto3", MagicMock()) as mock_boto3:
+            ssm_mock = mock_boto3.client.return_value
+            ssm_mock.exceptions.ParameterNotFound = type(
+                "ParameterNotFound", (Exception,), {}
+            )
+            ssm_mock.get_parameter.side_effect = RuntimeError("SSM regional outage")
+            result = rollup.handler({"mode": "check_marker_state", "days": 30}, None)
+        assert result["state"] == "absent"
+        assert result["should_short_circuit"] is False
+        assert result["should_skip_purge"] is False
+
+
+@pytest.mark.unit
+class TestWriteMarker:
+    """``mode: 'write_marker'`` — writes the SSM marker to either
+    ``state=in_progress`` (called after purge, before backfill) or
+    ``state=completed`` (called at the terminal WriteCompletedMarker
+    step in the state machine)."""
+
+    def test_write_in_progress_marker(self, rollup):
+        with patch.object(rollup, "boto3", MagicMock()) as mock_boto3:
+            ssm_mock = mock_boto3.client.return_value
+            result = rollup.handler(
+                {"mode": "write_marker", "state": "in_progress", "days": 30},
+                None,
+            )
+        ssm_mock.put_parameter.assert_called_once()
+        put_kwargs = ssm_mock.put_parameter.call_args.kwargs
+        assert "state=in_progress" in put_kwargs["Value"]
+        assert "days=30" in put_kwargs["Value"]
+        assert put_kwargs["Overwrite"] is True
+        assert result["state"] == "in_progress"
+        assert result["days"] == 30
+        assert "state=in_progress" in result["marker"]
+
+    def test_write_completed_marker(self, rollup):
+        with patch.object(rollup, "boto3", MagicMock()) as mock_boto3:
+            ssm_mock = mock_boto3.client.return_value
+            result = rollup.handler(
+                {"mode": "write_marker", "state": "completed", "days": 45},
+                None,
+            )
+        put_kwargs = ssm_mock.put_parameter.call_args.kwargs
+        assert "state=completed" in put_kwargs["Value"]
+        assert "days=45" in put_kwargs["Value"]
+        assert result["state"] == "completed"
+
+    def test_write_marker_rejects_invalid_state(self, rollup):
+        with patch.object(rollup, "boto3", MagicMock()):
+            with pytest.raises(ValueError, match="'in_progress' or 'completed'"):
+                rollup.handler(
+                    {"mode": "write_marker", "state": "bogus", "days": 30},
+                    None,
+                )
+
+
+@pytest.mark.unit
+class TestPurgeRollupPrefixes:
+    """``mode: 'purge_rollup_prefixes'`` — Task-mode wrapper around
+    ``_purge_s3_prefix`` that the state machine invokes for the initial
+    purge. Deletes every S3 object under the four per-document rollup
+    prefixes."""
+
+    def test_purge_covers_all_four_prefixes(self, rollup):
+        purged: list = []
+
+        def _fake_purge(bucket, prefix):
+            purged.append((bucket, prefix))
+            return 7  # arbitrary — assertion is on which prefixes, not counts
+
+        with patch.object(rollup, "_purge_s3_prefix", side_effect=_fake_purge):
+            result = rollup.handler({"mode": "purge_rollup_prefixes"}, None)
+        prefixes = sorted(p for _b, p in purged)
+        assert prefixes == [
+            "metering_daily/",
+            "metering_docs_daily/",
+            "metering_docs_hourly/",
+            "metering_hourly/",
+        ]
+        assert result["total"] == 4 * 7
+        assert set(result["purged"].keys()) == {
+            "metering_hourly/",
+            "metering_daily/",
+            "metering_docs_hourly/",
+            "metering_docs_daily/",
+        }
+
+    def test_purge_task_does_not_touch_control_plane_prefixes(self, rollup):
+        """`control_plane/` and `data_plane_lambda/` prefixes are OUT
+        of scope — they're written by different rollup arms with
+        different schemas and are not affected by the document_class
+        widening. Regression pin."""
+        purged: list = []
+        with patch.object(
+            rollup,
+            "_purge_s3_prefix",
+            side_effect=lambda b, p: (purged.append(p), 0)[1],
+        ):
+            rollup.handler({"mode": "purge_rollup_prefixes"}, None)
+        assert "control_plane/" not in purged
+        assert "data_plane_lambda/" not in purged
+
+
+@pytest.mark.unit
+class TestPlanMigrationChunks:
+    """``mode: 'plan_migration_chunks'`` — returns the list of
+    ``(start, end)`` time ranges the state machine's Map iterates.
+    Each chunk covers ``chunk_hours`` of the retention window."""
+
+    def test_plan_produces_expected_chunk_count(self, rollup):
+        result = rollup.handler(
+            {
+                "mode": "plan_migration_chunks",
+                "days": 30,
+                "chunk_hours": 24,
+                "time": "2026-09-22T00:00:00Z",
+            },
+            None,
+        )
+        # 30 days × 24 h / 24 h per chunk = 30 chunks.
+        assert result["count"] == 30
+        assert len(result["chunks"]) == 30
+
+    def test_plan_chunks_cover_full_window_with_no_gaps(self, rollup):
+        """The Map iterator's chunks must cover [now-days, now-hour]
+        contiguously with no gaps and no overlaps."""
+        result = rollup.handler(
+            {
+                "mode": "plan_migration_chunks",
+                "days": 5,
+                "chunk_hours": 24,
+                "time": "2026-09-22T00:00:00Z",
+            },
+            None,
+        )
+        chunks = result["chunks"]
+        # Each chunk's end == next chunk's start (contiguous).
+        for prev, nxt in zip(chunks, chunks[1:]):
+            assert prev["end"] == nxt["start"], (
+                f"chunks must be contiguous; got prev.end={prev['end']!r} "
+                f"nxt.start={nxt['start']!r}"
+            )
+
+    def test_plan_partial_last_chunk_when_chunk_size_doesnt_divide(self, rollup):
+        """If ``days × 24 / chunk_hours`` is not integer, the LAST chunk
+        must be shorter — not overflow past the anchor."""
+        result = rollup.handler(
+            {
+                "mode": "plan_migration_chunks",
+                "days": 1,  # 24 hours total
+                "chunk_hours": 10,  # 3 chunks: 10 + 10 + 4
+                "time": "2026-09-22T00:00:00Z",
+            },
+            None,
+        )
+        assert result["count"] == 3
+        # Anchor is 2026-09-22T00:00:00Z, window is [now-1d, now] =
+        # [2026-09-21T00, 2026-09-22T00]. Chunks (in order):
+        assert result["chunks"][0]["start"].startswith("2026-09-21T00:00:00")
+        assert result["chunks"][-1]["end"].startswith("2026-09-22T00:00:00")
+
+    def test_plan_rejects_out_of_range_days(self, rollup):
+        for bad in (0, -1, 91, 365):
+            with pytest.raises(ValueError, match="out of range"):
+                rollup.handler({"mode": "plan_migration_chunks", "days": bad}, None)
+
+    def test_plan_rejects_out_of_range_chunk_hours(self, rollup):
+        for bad in (0, -1, 169, 1000):
+            with pytest.raises(ValueError, match="chunk_hours=.*out of range"):
+                rollup.handler(
+                    {
+                        "mode": "plan_migration_chunks",
+                        "days": 30,
+                        "chunk_hours": bad,
+                    },
+                    None,
+                )
+
+
+@pytest.mark.unit
+class TestCheckHoursFailed:
+    """``mode: 'check_hours_failed'`` — aggregates the Map state's
+    chunk results. Returns all_hours_clean=True only if EVERY chunk
+    reported hours_failed=0."""
+
+    def test_all_clean_chunks_returns_all_hours_clean(self, rollup):
+        chunk_results = [
+            {
+                "backfill": {
+                    "hours_attempted": 24,
+                    "hours_succeeded": 24,
+                    "hours_failed": 0,
+                    "hours_partial": 0,
+                }
+            }
+            for _ in range(30)
+        ]
+        result = rollup.handler(
+            {"mode": "check_hours_failed", "chunk_results": chunk_results},
+            None,
+        )
+        assert result["all_hours_clean"] is True
+        assert result["total_failed"] == 0
+        assert result["total_succeeded"] == 24 * 30
+        assert result["failing_chunks"] == []
+
+    def test_one_failing_chunk_marks_not_clean(self, rollup):
+        """Any chunk with hours_failed > 0 → all_hours_clean=False.
+        Partial-hour failures (some rollup arms wrote, some didn't for
+        one hour) do NOT block completion."""
+        chunk_results = [
+            {"backfill": {"hours_attempted": 24, "hours_failed": 0}},
+            {
+                "backfill": {
+                    "hours_attempted": 24,
+                    "hours_failed": 2,
+                    "start": "2026-08-24T00:00:00Z",
+                    "end": "2026-08-25T00:00:00Z",
+                    "failures": [{"hour": "13"}, {"hour": "14"}],
+                }
+            },
+            {"backfill": {"hours_attempted": 24, "hours_failed": 0}},
+        ]
+        result = rollup.handler(
+            {"mode": "check_hours_failed", "chunk_results": chunk_results},
+            None,
+        )
+        assert result["all_hours_clean"] is False
+        assert result["total_failed"] == 2
+        assert len(result["failing_chunks"]) == 1
+        assert result["failing_chunks"][0]["hours_failed"] == 2
+
+    def test_partial_hours_block_migration_completion(self, rollup):
+        """2.1.2 fix: hours_partial > 0 (some rollup arms wrote, others
+        didn't) MUST block WriteCompletedMarker. Before this fix the
+        aggregator only inspected hours_failed, so 38 chunks reporting
+        partial (all metering arms fell on the Athena Idempotent-
+        parameters error while control_plane/data_plane arms cached-
+        succeeded from a prior execution) would have written a
+        completed-migration marker over an empty metering_hourly table.
+        The migration IS the reconciler for these tables; a partial
+        chunk maps directly to customer rows silently missing."""
+        chunk_results = [
+            {
+                "backfill": {
+                    "hours_attempted": 24,
+                    "hours_succeeded": 20,
+                    "hours_partial": 4,
+                    "hours_failed": 0,
+                }
+            }
+        ]
+        result = rollup.handler(
+            {"mode": "check_hours_failed", "chunk_results": chunk_results},
+            None,
+        )
+        assert result["all_hours_clean"] is False
+        assert result["total_partial"] == 4
+        assert len(result["failing_chunks"]) == 1
+        assert result["failing_chunks"][0]["hours_partial"] == 4
+
+    def test_empty_chunk_results_returns_clean(self, rollup):
+        """Degenerate case — no chunks means no failures. State machine
+        contract should never reach this state (0-day window is
+        rejected by _plan_migration_chunks) but the aggregator must
+        not blow up on the edge."""
+        result = rollup.handler(
+            {"mode": "check_hours_failed", "chunk_results": []},
+            None,
+        )
+        assert result["all_hours_clean"] is True
+
+    def test_accepts_bare_payload_or_backfill_wrapper(self, rollup):
+        """Depending on the Map state's ResultSelector, the chunk
+        result could arrive as {backfill: {...}} or bare {...}. The
+        aggregator must handle both."""
+        bare = [{"hours_attempted": 5, "hours_failed": 1}]
+        wrapped = [{"backfill": {"hours_attempted": 5, "hours_failed": 1}}]
+        r1 = rollup.handler({"mode": "check_hours_failed", "chunk_results": bare}, None)
+        r2 = rollup.handler(
+            {"mode": "check_hours_failed", "chunk_results": wrapped}, None
+        )
+        assert r1["total_failed"] == 1
+        assert r2["total_failed"] == 1
+
+    def test_daily_result_included_in_aggregation(self, rollup):
+        """State machine passes daily_result as a separate field
+        (ASL has no ArrayConcat). Aggregator must combine both."""
+        chunk_results = [
+            {"backfill": {"hours_attempted": 24, "hours_failed": 0}} for _ in range(30)
+        ]
+        daily_result = {
+            "hours_attempted": 30,
+            "hours_succeeded": 30,
+            "hours_failed": 0,
+        }
+        result = rollup.handler(
+            {
+                "mode": "check_hours_failed",
+                "chunk_results": chunk_results,
+                "daily_result": daily_result,
+            },
+            None,
+        )
+        assert result["all_hours_clean"] is True
+        # 30 chunk × 24 hours attempted + 30 daily attempted
+        assert result["total_attempted"] == 24 * 30 + 30
+
+    def test_daily_failure_blocks_completion(self, rollup):
+        """If daily has any failed days, migration is not clean → marker
+        stays in_progress → operator can restart to resume."""
+        chunk_results = [
+            {"backfill": {"hours_attempted": 24, "hours_failed": 0}} for _ in range(30)
+        ]
+        daily_result = {
+            "hours_attempted": 30,
+            "hours_failed": 3,
+        }
+        result = rollup.handler(
+            {
+                "mode": "check_hours_failed",
+                "chunk_results": chunk_results,
+                "daily_result": daily_result,
+            },
+            None,
+        )
+        assert result["all_hours_clean"] is False
+        assert result["total_failed"] == 3
+
+
+@pytest.mark.unit
+class TestBackfillDailyRange:
+    """``mode: backfill_daily_range`` iterates each day in the retention
+    window and invokes ``_run_daily`` per day. Fills metering_daily and
+    metering_docs_daily during migration — without this, those tables
+    stay empty for 30 days waiting for scheduled 00:15 UTC runs."""
+
+    def test_iterates_each_day_in_range(self, rollup):
+        called_anchors: list = []
+
+        def _fake_run_daily(anchor):
+            called_anchors.append(anchor)
+            return {
+                "metering_daily": {"skipped": False},
+                "metering_docs_daily": {"skipped": False},
+            }
+
+        with patch.object(rollup, "_run_daily", side_effect=_fake_run_daily):
+            result = rollup.handler(
+                {
+                    "mode": "backfill_daily_range",
+                    "days": 3,
+                    "time": "2026-09-22T00:00:00Z",
+                },
+                None,
+            )
+        # 3 days → 3 _run_daily invocations.
+        assert len(called_anchors) == 3
+        assert result["hours_attempted"] == 3
+        assert result["hours_succeeded"] == 3
+        assert result["hours_failed"] == 0
+
+    def test_day_error_recorded_not_aborted(self, rollup):
+        """One failing day should be recorded as hours_failed, not
+        block subsequent days."""
+
+        def _fake_run_daily(anchor):
+            if anchor.day == 21:
+                raise RuntimeError("simulated Athena error")
+            return {
+                "metering_daily": {"skipped": False},
+                "metering_docs_daily": {"skipped": False},
+            }
+
+        with patch.object(rollup, "_run_daily", side_effect=_fake_run_daily):
+            result = rollup.handler(
+                {
+                    "mode": "backfill_daily_range",
+                    "days": 3,
+                    "time": "2026-09-22T00:00:00Z",
+                },
+                None,
+            )
+        assert result["hours_attempted"] == 3
+        assert result["hours_failed"] == 1
+        assert result["hours_succeeded"] == 2
+        assert len(result["failures"]) == 1
+
+    def test_partial_day_counted_as_partial(self, rollup):
+        """If _run_daily returns with only one of the two sub-tables
+        succeeding, the day should count as partial."""
+
+        def _fake_run_daily(_anchor):
+            return {
+                "metering_daily": {"skipped": False},
+                "metering_docs_daily": {"error": "transient"},
+            }
+
+        with patch.object(rollup, "_run_daily", side_effect=_fake_run_daily):
+            result = rollup.handler(
+                {
+                    "mode": "backfill_daily_range",
+                    "days": 2,
+                    "time": "2026-09-22T00:00:00Z",
+                },
+                None,
+            )
+        assert result["hours_partial"] == 2
+        assert result["hours_succeeded"] == 0
+        assert result["hours_failed"] == 0
+
+    def test_rejects_out_of_range_days(self, rollup):
+        for bad in (0, -1, 91, 365):
+            with pytest.raises(ValueError, match="out of range"):
+                rollup.handler({"mode": "backfill_daily_range", "days": bad}, None)
+
+
+@pytest.mark.unit
+class TestPurgeS3PrefixHelper:
+    """``_purge_s3_prefix`` — used by ``purge_rollup_prefixes`` mode
+    and (previously) by ``_run_backfill_migrate``. Batches S3
+    DeleteObjects at 1000 keys per call (the AWS hard cap)."""
+
+    def test_purge_batches_deletes_over_1000(self, rollup):
+        """S3 DeleteObjects caps at 1000 keys per call. A prefix with
+        2500 objects must issue 3 batched deletes (1000, 1000, 500)."""
+        big_page = {
+            "Contents": [{"Key": f"metering_hourly/f{i}.parquet"} for i in range(2500)]
+        }
+        with patch.object(rollup, "s3_client", MagicMock()) as mock_s3:
+            mock_s3.get_paginator.return_value.paginate.return_value = [big_page]
+            deleted = rollup._purge_s3_prefix("test-bucket", "metering_hourly/")
+        assert deleted == 2500
+        assert mock_s3.delete_objects.call_count == 3
+        batch_sizes = [
+            len(call.kwargs["Delete"]["Objects"])
+            for call in mock_s3.delete_objects.call_args_list
+        ]
+        assert batch_sizes == [1000, 1000, 500]
+
+    def test_purge_requires_bucket_and_prefix(self, rollup):
+        with pytest.raises(ValueError, match="requires bucket and prefix"):
+            rollup._purge_s3_prefix("", "metering_hourly/")
+        with pytest.raises(ValueError, match="requires bucket and prefix"):
+            rollup._purge_s3_prefix("test-bucket", "")
+
+    def test_migrate_handler_rejects_unknown_mode(self, rollup):
+        """Ensure new modes don't silently swallow typos."""
+        with pytest.raises(ValueError, match="Unknown rollup mode"):
+            rollup.handler({"mode": "planmigrationchunks"}, None)  # typo
+
+
+@pytest.mark.unit
+class TestMarkerVersionComparison:
+    """The SSM migration marker now carries a ``version=<x>`` segment,
+    and ``_check_marker_state`` compares BOTH ``days`` AND ``version``.
+    Without this, a future schema-widening release that bumps
+    MigrationVersion but keeps Days=30 would short-circuit against a
+    completed marker from the prior version — the exact silent-no-op
+    bug this fix prevents."""
+
+    def test_completed_marker_same_version_short_circuits(self, rollup):
+        """Matching days AND version → should_short_circuit=True."""
+        with patch.object(rollup, "boto3") as mock_boto3:
+            mock_ssm = MagicMock()
+            mock_boto3.client.return_value = mock_ssm
+            mock_ssm.get_parameter.return_value = {
+                "Parameter": {
+                    "Value": "days=30;version=v1;state=completed;completed_at=2026-09-22T00:00:00Z"
+                }
+            }
+            result = rollup._check_marker_state(30, version="v1")
+        assert result["should_short_circuit"] is True
+        assert result["should_skip_purge"] is False
+        assert result["state"] == "completed"
+        assert result["version"] == "v1"
+
+    def test_completed_marker_different_version_full_flow(self, rollup):
+        """Days match but version differs → must NOT short-circuit — this
+        is the case where the next schema-widening release ships and needs
+        a fresh migration despite an existing completed marker."""
+        with patch.object(rollup, "boto3") as mock_boto3:
+            mock_ssm = MagicMock()
+            mock_boto3.client.return_value = mock_ssm
+            mock_ssm.get_parameter.return_value = {
+                "Parameter": {
+                    "Value": "days=30;version=v1;state=completed;completed_at=2026-09-22T00:00:00Z"
+                }
+            }
+            result = rollup._check_marker_state(30, version="v2")
+        assert result["should_short_circuit"] is False
+        assert result["should_skip_purge"] is False
+
+    def test_in_progress_marker_same_version_skips_purge(self, rollup):
+        """Matching days AND version + state=in_progress → skip purge
+        (resume mid-migration retry semantics)."""
+        with patch.object(rollup, "boto3") as mock_boto3:
+            mock_ssm = MagicMock()
+            mock_boto3.client.return_value = mock_ssm
+            mock_ssm.get_parameter.return_value = {
+                "Parameter": {
+                    "Value": "days=30;version=v1;state=in_progress;started_at=2026-09-22T00:00:00Z"
+                }
+            }
+            result = rollup._check_marker_state(30, version="v1")
+        assert result["should_short_circuit"] is False
+        assert result["should_skip_purge"] is True
+
+    def test_in_progress_marker_different_version_full_flow(self, rollup):
+        """A stuck in_progress marker from a prior version MUST NOT resume
+        — its purge state is irrelevant to a different-version migration."""
+        with patch.object(rollup, "boto3") as mock_boto3:
+            mock_ssm = MagicMock()
+            mock_boto3.client.return_value = mock_ssm
+            mock_ssm.get_parameter.return_value = {
+                "Parameter": {
+                    "Value": "days=30;version=v1;state=in_progress;started_at=2026-09-22T00:00:00Z"
+                }
+            }
+            result = rollup._check_marker_state(30, version="v2")
+        assert result["should_short_circuit"] is False
+        assert result["should_skip_purge"] is False
+
+    def test_legacy_marker_without_version_full_flow(self, rollup):
+        """A marker written before version support (no ``version=`` segment)
+        is treated as MISMATCH — routes to full flow. Silent-accept was
+        rejected because it would reintroduce the original bug on the
+        NEXT schema change."""
+        with patch.object(rollup, "boto3") as mock_boto3:
+            mock_ssm = MagicMock()
+            mock_boto3.client.return_value = mock_ssm
+            mock_ssm.get_parameter.return_value = {
+                "Parameter": {
+                    "Value": "days=30;state=completed;completed_at=2026-09-22T00:00:00Z"
+                }
+            }
+            result = rollup._check_marker_state(30, version="v1")
+        assert result["should_short_circuit"] is False
+        assert result["state"] == "unrecognised"
+
+    def test_version_none_ignores_version_axis(self, rollup):
+        """When the caller doesn't pass a version (direct SFN invocations
+        with pre-versioning input shape), fall back to days-only
+        comparison — preserves the original contract."""
+        with patch.object(rollup, "boto3") as mock_boto3:
+            mock_ssm = MagicMock()
+            mock_boto3.client.return_value = mock_ssm
+            mock_ssm.get_parameter.return_value = {
+                "Parameter": {
+                    "Value": "days=30;state=completed;completed_at=2026-09-22T00:00:00Z"
+                }
+            }
+            result = rollup._check_marker_state(30, version=None)
+        assert result["should_short_circuit"] is True
+
+    def test_write_marker_includes_version_segment(self, rollup):
+        """``_write_marker(state='completed', days=30, version='v1')``
+        must produce a payload whose ``_check_marker_state`` round-trips."""
+        with patch.object(rollup, "boto3") as mock_boto3:
+            mock_ssm = MagicMock()
+            mock_boto3.client.return_value = mock_ssm
+            rollup._write_marker("completed", 30, version="v1")
+            call_kwargs = mock_ssm.put_parameter.call_args.kwargs
+            value = call_kwargs["Value"]
+        assert "days=30" in value
+        assert "version=v1" in value
+        assert "state=completed" in value
+
+    def test_write_marker_no_version_omits_segment(self, rollup):
+        """Backward-compat: when version isn't supplied, no ``version=``
+        segment is emitted (preserves the pre-versioning payload shape)."""
+        with patch.object(rollup, "boto3") as mock_boto3:
+            mock_ssm = MagicMock()
+            mock_boto3.client.return_value = mock_ssm
+            rollup._write_marker("completed", 30, version=None)
+            value = mock_ssm.put_parameter.call_args.kwargs["Value"]
+        assert "version=" not in value
+        assert "days=30" in value
+        assert "state=completed" in value
+
+
+@pytest.mark.unit
+class TestBackfillArmsFilter:
+    """2.1.5 fix: ``_run_backfill(arms=...)`` restricts which per-hour
+    rollup arms fire. The migration state machine passes
+    ``arms=["metering_hourly", "metering_docs_hourly"]`` because those
+    are the ONLY two rollup tables whose schema the widening deploy
+    changed; running the other two during migration was scope creep
+    that (a) doubled per-chunk time and (b) surfaced empty-CW-hour
+    partial failures that blocked WriteCompletedMarker."""
+
+    def test_arms_none_runs_all_four(self, rollup):
+        """Backward-compat: the reconciler calls without ``arms`` and
+        must still get all four arms fired (its contract)."""
+        with (
+            patch.object(rollup, "_rollup_metering_hourly") as mh,
+            patch.object(rollup, "_rollup_metering_docs_hourly") as mdh,
+            patch.object(rollup, "_rollup_control_plane_hourly") as cph,
+            patch.object(rollup, "_rollup_data_plane_lambda_hourly") as dph,
+        ):
+            r = rollup._run_backfill(
+                "2026-08-23T14:00:00+00:00", "2026-08-23T15:00:00+00:00"
+            )
+        assert mh.call_count == 1
+        assert mdh.call_count == 1
+        assert cph.call_count == 1
+        assert dph.call_count == 1
+        assert set(r["arms"]) == {
+            "metering_hourly",
+            "metering_docs_hourly",
+            "control_plane_hourly",
+            "data_plane_lambda_hourly",
+        }
+
+    def test_arms_subset_runs_only_listed(self, rollup):
+        """Migration's arms=[metering_hourly, metering_docs_hourly]
+        must skip the two non-metering arms entirely — not even called."""
+        with (
+            patch.object(rollup, "_rollup_metering_hourly") as mh,
+            patch.object(rollup, "_rollup_metering_docs_hourly") as mdh,
+            patch.object(rollup, "_rollup_control_plane_hourly") as cph,
+            patch.object(rollup, "_rollup_data_plane_lambda_hourly") as dph,
+        ):
+            r = rollup._run_backfill(
+                "2026-08-23T14:00:00+00:00",
+                "2026-08-23T16:00:00+00:00",  # 2 hours
+                arms=["metering_hourly", "metering_docs_hourly"],
+            )
+        assert mh.call_count == 2
+        assert mdh.call_count == 2
+        assert cph.call_count == 0
+        assert dph.call_count == 0
+        assert r["arms"] == ["metering_hourly", "metering_docs_hourly"]
+        assert r["hours_succeeded"] == 2
+        assert r["hours_partial"] == 0
+        assert r["hours_failed"] == 0
+
+    def test_arms_unknown_label_rejected(self, rollup):
+        """A typo in the ``arms`` list should be rejected loudly — a
+        silent skip would produce chunks that report 'succeeded' without
+        actually writing the intended tables."""
+        with pytest.raises(ValueError, match="unknown labels"):
+            rollup._run_backfill(
+                "2026-08-23T14:00:00+00:00",
+                "2026-08-23T15:00:00+00:00",
+                arms=["metering_hourly", "metrring_docs_hourly"],  # typo
+            )
+
+    def test_handler_rejects_non_list_arms(self, rollup):
+        """Payload validation — arms must be a list, not a scalar."""
+        with pytest.raises(ValueError, match="'arms' must be a list"):
+            rollup.handler(
+                {
+                    "mode": "backfill",
+                    "start": "2026-08-23T14:00:00+00:00",
+                    "end": "2026-08-23T15:00:00+00:00",
+                    "arms": "metering_hourly",  # should be a list
+                },
+                None,
+            )
+
+
+@pytest.mark.unit
+class TestBuildDocClassCteDateFilter:
+    """2.1.4 fix: ``_build_doc_class_cte(target_date=...)`` MUST inject a
+    ``WHERE date BETWEEN <D-1> AND <D+1>`` on every UNION arm so Athena
+    partition-prunes the ``document_sections_*`` scans.
+
+    Without this, one hourly rollup INSERT fanned out 20 tables × 30-day
+    partitions = 600 concurrent S3 GETs, and 720 migration chunks stacked
+    against S3's per-prefix 5500 GET/s cap → HIVE_S3_THROTTLING on every
+    chunk (2026-09-22 live incident on idp-dev-qs1)."""
+
+    def test_target_date_injects_partition_filter(self, rollup):
+        """CTE with target_date must include a partition-pruning WHERE."""
+        rollup._document_sections_tables_cache = [
+            "document_sections_invoice",
+            "document_sections_w2",
+        ]
+        cte = rollup._build_doc_class_cte(target_date="2026-08-23")
+        # Both UNION arms must carry the filter, with the ±1 day slop.
+        assert cte.count("WHERE date BETWEEN '2026-08-22' AND '2026-08-24'") == 2
+        assert '"document_sections_invoice"' in cte
+        assert '"document_sections_w2"' in cte
+
+    def test_no_target_date_omits_filter(self, rollup):
+        """Backward-compat: calling without target_date leaves the CTE
+        unfiltered (matches pre-2.1.4 behavior for any callers that don't
+        yet pass target_date)."""
+        rollup._document_sections_tables_cache = ["document_sections_invoice"]
+        cte = rollup._build_doc_class_cte()
+        assert "WHERE date BETWEEN" not in cte
+        # The inner ``WHERE doc_type IS NOT NULL`` on the outer SELECT stays.
+        assert "WHERE doc_type IS NOT NULL" in cte
+
+    def test_date_slop_covers_month_boundary(self, rollup):
+        """Date arithmetic must handle month/year boundaries — a naive
+        string bump would break at the end of the month."""
+        rollup._document_sections_tables_cache = ["document_sections_invoice"]
+        cte = rollup._build_doc_class_cte(target_date="2026-08-31")
+        assert "WHERE date BETWEEN '2026-08-30' AND '2026-09-01'" in cte
+
+    def test_no_tables_returns_empty_cte(self, rollup):
+        """Zero doc_sections tables (fresh stack) — CTE yields no rows;
+        outer LEFT JOIN produces NULL → COALESCE falls through to
+        ``'unknown'``. Empty-CTE behavior must be preserved when
+        target_date is provided too (defensive)."""
+        rollup._document_sections_tables_cache = []
+        cte = rollup._build_doc_class_cte(target_date="2026-08-23")
+        assert "WHERE 1 = 0" in cte
+
+
+@pytest.mark.unit
+class TestReconcileMode:
+    """``mode: 'reconcile'`` re-runs the four per-doc hourly rollups over
+    the trailing 24 h. Idempotent — already-written partitions are no-ops.
+    Fires at :35 of each hour on a separate EventBridge rule so it can
+    fill in gaps left by a missed :05 hourly.
+    """
+
+    def test_reconcile_dispatches_to_run_reconcile(self, rollup):
+        with patch.object(
+            rollup,
+            "_run_reconcile",
+            return_value={"mode": "backfill", "hours_attempted": 24},
+        ) as recon:
+            result = rollup.handler(
+                {"mode": "reconcile", "time": "2026-09-21T12:35:00Z"}, None
+            )
+        recon.assert_called_once()
+        # Anchor passed to _run_reconcile is the trigger time.
+        (anchor_arg,), _ = recon.call_args
+        assert anchor_arg.isoformat() == "2026-09-21T12:35:00+00:00"
+        assert result["hours_attempted"] == 24
+
+    def test_reconcile_scans_trailing_24_hours(self, rollup):
+        """Bounds: end = trigger truncated to top of hour; start = end - 24 h.
+        This ensures the reconciler never chases the CURRENT hour (still
+        in flight) and covers a full day of possibly-missed partitions."""
+        captured_bounds = []
+
+        def _fake_backfill(start_raw, end_raw):
+            captured_bounds.append((start_raw, end_raw))
+            return {"hours_attempted": 24, "hours_succeeded": 24}
+
+        with patch.object(rollup, "_run_backfill", side_effect=_fake_backfill):
+            # Trigger at 12:35 UTC → end should truncate to 12:00,
+            # start should be 24 h earlier at 12:00 of the prior day.
+            anchor = datetime(2026, 9, 21, 12, 35, 0, tzinfo=timezone.utc)
+            rollup._run_reconcile(anchor)
+        assert captured_bounds == [
+            ("2026-09-20T12:00:00+00:00", "2026-09-21T12:00:00+00:00")
+        ]
+
+    def test_reconcile_is_a_thin_wrapper_over_backfill(self, rollup):
+        """The reconciler is deliberately unopinionated — it just delegates
+        to `_run_backfill`. That's the whole design: same idempotency,
+        same failure handling, same result shape. Changes to backfill
+        semantics automatically apply to the reconciler."""
+        with patch.object(
+            rollup,
+            "_run_backfill",
+            return_value={
+                "mode": "backfill",
+                "hours_attempted": 24,
+                "hours_succeeded": 24,
+            },
+        ) as bf:
+            anchor = datetime(2026, 9, 21, 12, 35, 0, tzinfo=timezone.utc)
+            result = rollup._run_reconcile(anchor)
+        bf.assert_called_once()
+        # Reconciler returns whatever backfill returned — no wrapping.
+        assert result["hours_attempted"] == 24
