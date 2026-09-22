@@ -17,6 +17,39 @@ from botocore.exceptions import ClientError
 
 logger = logging.getLogger(__name__)
 
+# Guards the stored transcript against a concurrent append. Every writer reads
+# this value, appends one message, and writes both attributes back under a
+# condition on the value it read, so a write that overlapped another writer's
+# fails instead of overwriting it. Absent on records written before the guard
+# existed; the first append to such a record adds it.
+_VERSION_ATTRIBUTE = "agent_messages_version"
+
+# Every conflict round has at least one winner -- the writer whose condition
+# held -- so W concurrent writers need at most W attempts between them. This
+# bound is therefore a safety valve for an unexpectedly wide pool or for two
+# processes writing one job's record, not a tuning knob. There is deliberately
+# no backoff between attempts: each retry re-reads the record, which is a
+# round trip, and that is what paces the loop.
+_MAX_APPEND_ATTEMPTS = 10
+
+
+class _TranscriptReadFailed(Exception):
+    """A transient failure reading the stored transcript.
+
+    Raised so that the append retries instead of falling through. A read that
+    failed cannot be treated as an empty transcript: appending to an assumed
+    empty array overwrites every message already stored, and the write that
+    does it reports success.
+    """
+
+
+def _coerce_int(value: Any, default: int = 0) -> int:
+    """DynamoDB returns numbers as Decimal; normalize to int for comparison."""
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+
 
 class DynamoDBMessageLogger:
     """
@@ -26,13 +59,23 @@ class DynamoDBMessageLogger:
     in a non-blocking manner to avoid impacting agent performance.
     """
 
-    def __init__(self, table_name: str, max_workers: int = 2):
+    def __init__(self, table_name: str, max_workers: int = 1):
         """
         Initialize the DynamoDB message logger.
 
         Args:
             table_name: Name of the DynamoDB table
-            max_workers: Maximum number of worker threads for async operations
+            max_workers: Maximum number of worker threads for async operations.
+                Defaults to 1. One logger instance serves one (job, user) pair
+                and so writes exactly one DynamoDB item, and DynamoDB serialises
+                writes to a single item anyway, so additional workers buy no
+                throughput and only turn overlapping appends into conflict
+                retries. What the pool is for is keeping the round trip off the
+                agent's critical path -- ``submit`` returns immediately at any
+                width -- and draining in-flight writes on ``shutdown``; a queue
+                of depth one still does both. Correctness does not rest on this
+                value: the append is guarded by a conditional write, which holds
+                for any pool width and across processes.
         """
         self.table_name = table_name
         self.dynamodb = boto3.resource("dynamodb")
@@ -65,11 +108,115 @@ class DynamoDBMessageLogger:
         # Add error callback
         future.add_done_callback(self._handle_write_result)
 
+    def _read_transcript(
+        self, job_id: str, user_id: str, pk: str, sk: str
+    ) -> Optional[tuple[list, int]]:
+        """
+        Read the stored transcript and the version guarding it.
+
+        Args:
+            job_id: The analytics job ID
+            user_id: The user ID who owns the job
+            pk: The partition key of the job record
+            sk: The sort key of the job record
+
+        Returns:
+            A ``(messages, version)`` pair, where ``version`` is 0 if the record
+            carries no version attribute yet, or ``None`` in place of the pair
+            when there is no record to append to.
+
+        Raises:
+            _TranscriptReadFailed: the read failed transiently and the append
+                must retry rather than continue with an empty transcript.
+        """
+        try:
+            response = self.table.get_item(Key={"PK": pk, "SK": sk})
+        except ClientError as e:
+            error_code = e.response.get("Error", {}).get("Code")
+            if error_code == "ResourceNotFoundException":
+                logger.warning(f"Job record not found for job {job_id}, user {user_id}")
+                return None
+            raise _TranscriptReadFailed(str(e)) from e
+
+        item = response.get("Item", {})
+        existing_messages_str = item.get("agent_messages", "[]")
+
+        # Parse existing messages
+        try:
+            existing_messages = json.loads(existing_messages_str)
+            if not isinstance(existing_messages, list):
+                existing_messages = []
+        except json.JSONDecodeError:
+            logger.warning(
+                f"Invalid JSON in agent_messages for job {job_id}, starting fresh"
+            )
+            existing_messages = []
+
+        return existing_messages, _coerce_int(item.get(_VERSION_ATTRIBUTE))
+
+    def _append_conditionally(
+        self, pk: str, sk: str, messages: list, version: int
+    ) -> bool:
+        """
+        Write the transcript back, but only if nobody else wrote since the read.
+
+        Args:
+            pk: The partition key of the job record
+            sk: The sort key of the job record
+            messages: The full transcript to store, new message included
+            version: The version observed by the read this write is based on
+
+        Returns:
+            True if the write committed, False if another writer got there first
+            and the append has to be rebuilt on a fresh read.
+        """
+        try:
+            self.table.update_item(
+                Key={"PK": pk, "SK": sk},
+                UpdateExpression=(
+                    f"SET agent_messages = :messages, "
+                    f"{_VERSION_ATTRIBUTE} = :next_version"
+                ),
+                # The first clause admits a record written before the guard
+                # existed; two writers racing to add it still conflict, because
+                # whichever commits first makes the attribute exist.
+                ConditionExpression=(
+                    f"attribute_not_exists({_VERSION_ATTRIBUTE}) "
+                    f"OR {_VERSION_ATTRIBUTE} = :expected_version"
+                ),
+                ExpressionAttributeValues={
+                    ":messages": json.dumps(messages),
+                    ":expected_version": version,
+                    ":next_version": version + 1,
+                },
+                ReturnValues="NONE",
+            )
+            return True
+        except ClientError as e:
+            if (
+                e.response.get("Error", {}).get("Code")
+                == "ConditionalCheckFailedException"
+            ):
+                return False
+            raise
+
     def _write_message_to_dynamodb(
         self, job_id: str, user_id: str, message_data: Dict[str, Any]
     ) -> None:
         """
-        Write a message to DynamoDB by appending to a JSON string.
+        Append a message to the transcript stored as a JSON string.
+
+        The transcript is one attribute holding the whole array, so appending
+        means reading it, growing it by one and writing it back. That is only
+        safe if an overlapping writer is detected, so the write is conditional
+        on a version attribute read alongside the transcript: a write whose
+        version no longer matches is rejected by DynamoDB and rebuilt on a fresh
+        read, rather than silently replacing the other writer's message. The
+        guarantee holds for any number of threads and for concurrent processes.
+
+        A message that cannot be appended is dropped and reported. Overwriting
+        the stored transcript to force it through would trade one lost message
+        for all of them.
 
         Args:
             job_id: The analytics job ID
@@ -80,52 +227,40 @@ class DynamoDBMessageLogger:
             pk = f"agent#{user_id}"
             sk = job_id
 
-            # First, try to get the existing agent_messages to append to it
-            try:
-                response = self.table.get_item(Key={"PK": pk, "SK": sk})
-                item = response.get("Item", {})
-                existing_messages_str = item.get("agent_messages", "[]")
-
-                # Parse existing messages
+            for attempt in range(1, _MAX_APPEND_ATTEMPTS + 1):
                 try:
-                    existing_messages = json.loads(existing_messages_str)
-                    if not isinstance(existing_messages, list):
-                        existing_messages = []
-                except json.JSONDecodeError:
+                    read = self._read_transcript(job_id, user_id, pk, sk)
+                except _TranscriptReadFailed as e:
                     logger.warning(
-                        f"Invalid JSON in agent_messages for job {job_id}, starting fresh"
+                        f"Could not read existing messages for job {job_id} "
+                        f"(attempt {attempt}), retrying: {e}"
                     )
-                    existing_messages = []
+                    continue
 
-            except ClientError as e:
-                error_code = e.response.get("Error", {}).get("Code")
-                if error_code == "ResourceNotFoundException":
-                    logger.warning(
-                        f"Job record not found for job {job_id}, user {user_id}"
+                if read is None:
+                    return
+
+                existing_messages, version = read
+
+                if self._append_conditionally(
+                    pk, sk, existing_messages + [message_data], version
+                ):
+                    logger.debug(
+                        f"Successfully logged message for job {job_id}, sequence {message_data.get('sequence_number')}"
                     )
                     return
-                else:
-                    logger.error(
-                        f"Error getting existing messages for job {job_id}: {e}"
-                    )
-                    existing_messages = []
 
-            # Append the new message
-            existing_messages.append(message_data)
+                # Another writer committed between the read and the write. Loop
+                # to re-read so that its message survives alongside this one.
+                logger.debug(
+                    f"Concurrent append detected for job {job_id} "
+                    f"(attempt {attempt}), retrying"
+                )
 
-            # Serialize back to JSON string
-            updated_messages_str = json.dumps(existing_messages)
-
-            # Update the record with the new JSON string
-            self.table.update_item(
-                Key={"PK": pk, "SK": sk},
-                UpdateExpression="SET agent_messages = :messages",
-                ExpressionAttributeValues={":messages": updated_messages_str},
-                ReturnValues="NONE",
-            )
-
-            logger.debug(
-                f"Successfully logged message for job {job_id}, sequence {message_data.get('sequence_number')}"
+            logger.error(
+                f"Gave up appending message for job {job_id} after "
+                f"{_MAX_APPEND_ATTEMPTS} attempts; sequence "
+                f"{message_data.get('sequence_number')} was not persisted"
             )
 
         except ClientError as e:
@@ -134,8 +269,6 @@ class DynamoDBMessageLogger:
                 logger.warning(
                     f"DynamoDB table {self.table_name} not found for job {job_id}"
                 )
-            elif error_code == "ConditionalCheckFailedException":
-                logger.warning(f"Job record not found for job {job_id}, user {user_id}")
             else:
                 logger.error(f"DynamoDB error logging message for job {job_id}: {e}")
         except Exception as e:

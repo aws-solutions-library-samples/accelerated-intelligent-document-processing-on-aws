@@ -45,6 +45,25 @@ from strands.hooks import (
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
 
+# Guards the newest conversation item against a concurrent append. Appending
+# rewrites the whole item, so two writers that both read it would each drop the
+# other's message; each write is conditional on the version it read instead.
+# Absent on items written before the guard existed; the first append adds it.
+_VERSION_ATTRIBUTE = "conversation_version"
+
+# Every conflict round has at least one winner, so W concurrent writers need at
+# most W attempts between them. Each retry re-queries, which is a round trip, so
+# the loop needs no backoff to pace itself.
+_MAX_APPEND_ATTEMPTS = 10
+
+
+def _coerce_int(value: Any, default: int = 0) -> int:
+    """DynamoDB returns numbers as Decimal; normalize to int for comparison."""
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+
 
 class DynamoDBMemoryHookProvider(HookProvider):
     """
@@ -163,6 +182,79 @@ class DynamoDBMemoryHookProvider(HookProvider):
             )
             return None
 
+    def _parse_history(self, item: Dict[str, Any]) -> List[Dict[str, Any]]:
+        """
+        The message array stored on one conversation item.
+
+        Args:
+            item: A conversation item read from DynamoDB
+
+        Returns:
+            The stored messages, or an empty list if the attribute is absent or
+            cannot be parsed as an array.
+        """
+        try:
+            messages = json.loads(item.get("conversation_history", "[]"))
+        except json.JSONDecodeError:
+            logger.warning(
+                f"Invalid JSON in conversation_history for session {self.session_id}, starting fresh"
+            )
+            return []
+        return messages if isinstance(messages, list) else []
+
+    def _put_new_item(self, pk: str, message_entry: Dict[str, Any]) -> None:
+        """
+        Start a new conversation item holding one message.
+
+        Args:
+            pk: The conversation partition key
+            message_entry: The message to seed the new item with
+        """
+        self.table.put_item(
+            Item={
+                "PK": pk,
+                "SK": self._generate_timestamp_sk(),
+                "conversation_history": json.dumps([message_entry]),
+                "session_id": self.session_id,
+                "last_updated": datetime.now().isoformat(),
+                "message_count": 1,
+                _VERSION_ATTRIBUTE: 1,
+            }
+        )
+
+    def _put_conditionally(self, item: Dict[str, Any], version: int) -> bool:
+        """
+        Write the item back, but only if nobody else wrote since the read.
+
+        Args:
+            item: The rewritten conversation item, new message included
+            version: The version observed by the read this write is based on
+
+        Returns:
+            True if the write committed, False if another writer got there first
+            and the append has to be rebuilt on a fresh read.
+        """
+        try:
+            self.table.put_item(
+                Item=item,
+                # The first clause admits an item written before the guard
+                # existed; two writers racing to add it still conflict, because
+                # whichever commits first makes the attribute exist.
+                ConditionExpression=(
+                    f"attribute_not_exists({_VERSION_ATTRIBUTE}) "
+                    f"OR {_VERSION_ATTRIBUTE} = :expected_version"
+                ),
+                ExpressionAttributeValues={":expected_version": version},
+            )
+            return True
+        except ClientError as e:
+            if (
+                e.response.get("Error", {}).get("Code")
+                == "ConditionalCheckFailedException"
+            ):
+                return False
+            raise
+
     def _store_message_to_dynamodb(
         self, message_content: str, message_role: str
     ) -> None:
@@ -173,6 +265,13 @@ class DynamoDBMemoryHookProvider(HookProvider):
         1. Try to append to the latest existing item
         2. If adding the message would exceed size limit, create a new item
         3. Track message count and timestamps for debugging
+
+        Appending rewrites the whole newest item, so the write is conditional on
+        a version attribute read alongside it: a write whose version no longer
+        matches is rejected by DynamoDB and rebuilt on a fresh read, rather than
+        replacing a message another writer appended in between. Two invocations
+        serving one session -- a resubmitted request, or a retried Lambda -- are
+        what make that overlap possible.
 
         Args:
             message_content: The message content to store
@@ -192,24 +291,23 @@ class DynamoDBMemoryHookProvider(HookProvider):
                 ),  # Microsecond precision
             }
 
-            # Get the latest conversation item
-            latest_item = self._get_latest_conversation_item()
+            for attempt in range(1, _MAX_APPEND_ATTEMPTS + 1):
+                # Get the latest conversation item
+                latest_item = self._get_latest_conversation_item()
 
-            if latest_item:
-                # Parse existing messages
-                existing_messages_str = latest_item.get("conversation_history", "[]")
-                try:
-                    existing_messages = json.loads(existing_messages_str)
-                    if not isinstance(existing_messages, list):
-                        existing_messages = []
-                except json.JSONDecodeError:
-                    logger.warning(
-                        f"Invalid JSON in conversation_history for session {self.session_id}, starting fresh"
+                if not latest_item:
+                    # Create first item
+                    self._put_new_item(pk, message_entry)
+                    logger.info(
+                        f"Created first conversation item for session {self.session_id}"
                     )
-                    existing_messages = []
+                    break
+
+                existing_messages = self._parse_history(latest_item)
 
                 # Create a test item with the new message to check size
                 test_messages = existing_messages + [message_entry]
+                version = _coerce_int(latest_item.get(_VERSION_ATTRIBUTE))
                 test_item = {
                     "PK": pk,
                     "SK": latest_item["SK"],  # Use existing timestamp
@@ -217,47 +315,40 @@ class DynamoDBMemoryHookProvider(HookProvider):
                     "session_id": self.session_id,
                     "last_updated": datetime.now().isoformat(),
                     "message_count": len(test_messages),
+                    _VERSION_ATTRIBUTE: version + 1,
                 }
 
                 # Check if adding this message would exceed size limit
                 test_size_kb = self._get_item_size_bytes(test_item) / 1024
 
-                if test_size_kb <= self.max_item_size_kb:
-                    # Update existing item
-                    self.table.put_item(Item=test_item)
-                    logger.debug(
-                        f"Updated existing item for session {self.session_id}, size: {test_size_kb:.2f} KB"
-                    )
-                else:
-                    # Create new item with just this message
-                    new_sk = self._generate_timestamp_sk()
-                    new_item = {
-                        "PK": pk,
-                        "SK": new_sk,
-                        "conversation_history": json.dumps([message_entry]),
-                        "session_id": self.session_id,
-                        "last_updated": datetime.now().isoformat(),
-                        "message_count": 1,
-                    }
-                    self.table.put_item(Item=new_item)
+                if test_size_kb > self.max_item_size_kb:
+                    # Create new item with just this message. This lands on a
+                    # fresh sort key, so it needs no guard: it cannot overwrite
+                    # the item it is rolling over from.
+                    self._put_new_item(pk, message_entry)
                     logger.info(
                         f"Created new item for session {self.session_id} (previous item was {test_size_kb:.2f} KB)"
                     )
-            else:
-                # Create first item
-                sk = self._generate_timestamp_sk()
-                new_item = {
-                    "PK": pk,
-                    "SK": sk,
-                    "conversation_history": json.dumps([message_entry]),
-                    "session_id": self.session_id,
-                    "last_updated": datetime.now().isoformat(),
-                    "message_count": 1,
-                }
-                self.table.put_item(Item=new_item)
-                logger.info(
-                    f"Created first conversation item for session {self.session_id}"
+                    break
+
+                if self._put_conditionally(test_item, version):
+                    logger.debug(
+                        f"Updated existing item for session {self.session_id}, size: {test_size_kb:.2f} KB"
+                    )
+                    break
+
+                # Another writer appended between the query and the write. Loop
+                # to re-read so that its message survives alongside this one.
+                logger.debug(
+                    f"Concurrent append detected for session {self.session_id} "
+                    f"(attempt {attempt}), retrying"
                 )
+            else:
+                logger.error(
+                    f"Gave up storing message for session {self.session_id} after "
+                    f"{_MAX_APPEND_ATTEMPTS} attempts; the message was not persisted"
+                )
+                return
 
             logger.debug(
                 f"Successfully stored message for session {self.session_id}, role: {message_role}"

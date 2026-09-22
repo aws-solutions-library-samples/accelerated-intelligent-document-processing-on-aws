@@ -25,6 +25,12 @@ a `ValidationException` that loses the message.
 it, and `max_history_turns` truncates from the end. Truncating from the wrong end
 would hand the agent the oldest turns and drop the ones it needs.
 
+**Appending without losing a concurrent append.** Adding a message rewrites the
+whole newest item, so two writers serving one session — a resubmitted request, or a
+retried Lambda — would each drop the other's message. The write is conditional on a
+version attribute read alongside the item, and `TestConcurrentAppendGuard` drives
+that mechanism by injecting the conflict rather than racing for it.
+
 `boto3.resource` is stubbed throughout. Nothing here reaches AWS.
 """
 
@@ -169,6 +175,121 @@ class TestLatestConversationItem:
             "ProvisionedThroughputExceededException"
         )
         assert provider._get_latest_conversation_item() is None
+
+
+@pytest.mark.unit
+class TestConcurrentAppendGuard:
+    """The version attribute that stops one append from overwriting another.
+
+    The conflict is injected, not raced for, so every assertion here is as
+    deterministic as the rest of the module: no threads, no sleeps, no dependence
+    on the scheduler.
+    """
+
+    def _put_kwargs(self, table: MagicMock) -> dict[str, Any]:
+        return table.put_item.call_args.kwargs
+
+    def test_an_append_is_conditional_on_the_version_it_read(self):
+        provider, table = _provider()
+        table.query.return_value = {
+            "Items": [_item("t1", [_message("user", "a")], conversation_version=4)]
+        }
+        provider._store_message_to_dynamodb({"text": "b"}, "assistant")
+        kwargs = self._put_kwargs(table)
+        assert (
+            "conversation_version = :expected_version" in kwargs["ConditionExpression"]
+        )
+        assert kwargs["ExpressionAttributeValues"][":expected_version"] == 4
+
+    def test_an_append_advances_the_stored_version(self):
+        provider, table = _provider()
+        table.query.return_value = {
+            "Items": [_item("t1", [_message("user", "a")], conversation_version=4)]
+        }
+        provider._store_message_to_dynamodb({"text": "b"}, "assistant")
+        assert _written_item(table)["conversation_version"] == 5
+
+    def test_an_item_written_before_the_guard_existed_is_still_appendable(self):
+        provider, table = _provider()
+        table.query.return_value = {"Items": [_item("t1", [_message("user", "a")])]}
+        provider._store_message_to_dynamodb({"text": "b"}, "assistant")
+        kwargs = self._put_kwargs(table)
+        assert (
+            "attribute_not_exists(conversation_version)"
+            in kwargs["ConditionExpression"]
+        )
+        assert len(_written_messages(table)) == 2
+
+    def test_a_newly_created_item_carries_the_guard_from_the_start(self):
+        provider, table = _provider()
+        table.query.return_value = {"Items": []}
+        provider._store_message_to_dynamodb({"text": "hello"}, "user")
+        assert _written_item(table)["conversation_version"] == 1
+
+    def test_a_rejected_append_is_retried_and_both_messages_survive(self):
+        # The point of the retry: the other writer's message has to be picked up
+        # by the re-read, not overwritten by the array the first attempt built.
+        provider, table = _provider()
+        table.query.side_effect = [
+            {"Items": [_item("t1", [_message("user", "a")])]},
+            {
+                "Items": [
+                    _item(
+                        "t1",
+                        [_message("user", "a"), _message("assistant", "other-writer")],
+                        conversation_version=1,
+                    )
+                ]
+            },
+        ]
+        table.put_item.side_effect = [
+            _client_error("ConditionalCheckFailedException"),
+            None,
+        ]
+        provider._store_message_to_dynamodb({"text": "mine"}, "assistant")
+        assert table.query.call_count == 2
+        stored = _written_messages(table)
+        assert len(stored) == 3
+        assert stored[-1]["content"] == {"text": "mine"}
+        assert any(m["content"] == {"text": "other-writer"} for m in stored)
+
+    def test_the_retry_is_bounded_rather_than_looping_forever(self):
+        provider, table = _provider()
+        table.query.return_value = {"Items": [_item("t1", [_message("user", "a")])]}
+        table.put_item.side_effect = _client_error("ConditionalCheckFailedException")
+        provider._store_message_to_dynamodb({"text": "b"}, "assistant")
+        assert table.put_item.call_count == 10
+
+    def test_exhausting_the_retries_is_reported(self, caplog):
+        # Dropping one message beats overwriting the conversation, but it must not
+        # be silent -- silence is what makes this class of defect invisible.
+        import logging
+
+        provider, table = _provider()
+        table.query.return_value = {"Items": [_item("t1", [_message("user", "a")])]}
+        table.put_item.side_effect = _client_error("ConditionalCheckFailedException")
+        with caplog.at_level(logging.ERROR):
+            provider._store_message_to_dynamodb({"text": "b"}, "assistant")
+        errors = [r.getMessage() for r in caplog.records if r.levelno >= logging.ERROR]
+        assert any("sess-1" in m and "not persisted" in m for m in errors)
+
+    def test_a_non_conflict_write_error_is_not_retried(self):
+        provider, table = _provider()
+        table.query.return_value = {"Items": [_item("t1", [_message("user", "a")])]}
+        table.put_item.side_effect = _client_error("ValidationException")
+        provider._store_message_to_dynamodb({"text": "b"}, "assistant")
+        assert table.put_item.call_count == 1
+
+    def test_rolling_over_to_a_new_item_needs_no_guard(self):
+        # The rollover write lands on a fresh sort key, so it cannot overwrite the
+        # item it rolled over from and must not be rejected by a stale version.
+        provider, table = _provider(max_item_size_kb=0.1)
+        table.query.return_value = {
+            "Items": [_item("t1", [_message("user", "x" * 500)])]
+        }
+        provider._store_message_to_dynamodb({"text": "next"}, "assistant")
+        assert "ConditionExpression" not in self._put_kwargs(table)
+        assert len(_written_messages(table)) == 1
 
 
 @pytest.mark.unit

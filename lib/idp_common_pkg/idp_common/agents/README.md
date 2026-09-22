@@ -153,7 +153,16 @@ Stores conversation history for agent memory.
 **Schema**:
 - **PK**: `conversation#{session_id}`
 - **SK**: `timestamp` (ISO-8601 format)
-- **Attributes**: conversation_history (JSON), message_count, last_updated
+- **Attributes**: conversation_history (JSON), message_count, last_updated,
+  conversation_version
+
+Appending a message rewrites the whole newest item, so `conversation_version`
+guards it: the write is conditional on the value that was read and advances it in
+the same call, and a rejected write is rebuilt on a fresh read rather than
+replacing the message another writer appended in between. Two invocations serving
+one session — a resubmitted request, or a retried Lambda — are what make that
+overlap possible. Items written before the guard existed carry no version
+attribute; the first append to one adds it, so no migration is needed.
 
 ### 4. GraphQL API
 
