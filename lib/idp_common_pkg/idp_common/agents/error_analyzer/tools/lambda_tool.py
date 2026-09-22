@@ -210,16 +210,13 @@ def extract_lambda_request_ids(
                     function_name = resource.split(":function:")[-1]
                 elif name:
                     function_name = name
-
-                # Also check for function name in resource ARN without :function: prefix
-                if not function_name and resource:
-                    # Reading arn_parts[6] needs seven segments, so the guard is
-                    # >= 7. A shorter Lambda ARN falls through with function_name
-                    # still None, which the code below already handles: the event
-                    # contributes nothing rather than aborting the whole analysis.
-                    arn_parts = resource.split(":")
-                    if len(arn_parts) >= 7 and arn_parts[2] == "lambda":
-                        function_name = arn_parts[6]
+                # A `resource` that is a Lambda ARN but NOT a function ARN -- a layer
+                # version, an event-source mapping, a code-signing config -- carries no
+                # function name to read. Splitting one positionally yields the layer
+                # name or the mapping uuid, and that value would be reported to an
+                # operator as the function that failed and used to pick the log group
+                # to search. Such an event contributes nothing instead, which is what
+                # an unreadably short ARN already did.
 
                 # Extract request ID from multiple fields
                 for field_name, field_value in event_detail.items():
