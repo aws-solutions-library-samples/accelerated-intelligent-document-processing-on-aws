@@ -100,7 +100,7 @@ def _sleep_before_retry(attempt: int) -> None:
         attempt: The attempt that just failed, 1-based.
     """
     bound = min(_BACKOFF_CAP_SECONDS, _BACKOFF_BASE_SECONDS * (2 ** (attempt - 1)))
-    time.sleep(random.uniform(0, bound))  # nosec B311 - retry jitter, not a secret
+    time.sleep(random.uniform(0, bound))  # nosec B311  # retry jitter, not a secret
 
 
 class DynamoDBMemoryHookProvider(HookProvider):
