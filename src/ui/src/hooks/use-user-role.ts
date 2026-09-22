@@ -133,14 +133,15 @@ interface UserRoleReturn {
    * set, the user pool allows self-registration and the new user is in no group
    * until an administrator assigns one.
    *
-   * It matters because the API refuses such a caller the eleven operations
-   * declared `ANY_GROUP` in `scripts/api_rbac_expectations.yaml` — the
-   * document-content reads and three mutations — with 403. Not every operation:
-   * 15 remain `ANY` (the caller's own profile, enumeration, platform and
-   * feature-catalog reads), which is why this flag gates the app rather than
-   * being consulted per call. The server is the authority either way; the flag
-   * only lets the UI say once and clearly what it would otherwise discover one
-   * failing page at a time.
+   * It matters because the API refuses such a caller the eighteen operations
+   * declared `ANY_GROUP` in `scripts/api_rbac_expectations.yaml` — every document
+   * read, the chat transcript read, the processing-breaker badge and three
+   * mutations — with 403. Not every operation: 8 remain `ANY` (the caller's own
+   * profile and own chat sessions, the published release number, the two
+   * fine-tuning job reads and the three feature-platform reads), which is why
+   * this flag gates the app rather than being consulted per call. The server is
+   * the authority either way; the flag only lets the UI say once and clearly what
+   * it would otherwise discover one failing page at a time.
    *
    * It requires a **successful** read of the session, not merely a finished one.
    * False while `loading`, and false when `sessionError` is set — "I could not
@@ -210,10 +211,15 @@ const useUserRole = (): UserRoleReturn => {
         const userGroups = session.tokens.idToken.payload?.['cognito:groups'] || [];
         let groupsArray = Array.isArray(userGroups) ? (userGroups as string[]) : [userGroups as string];
 
-        // For federated users on first login, groups may not be in the initial token.
-        // Force a single token refresh to pick up groups assigned by the PreTokenGeneration Lambda.
-        // Once per mount (the effect re-runs only on an explicit retry), so this
-        // will not cause excessive refresh calls.
+        // A fallback for a federated token that arrives with no app group, not a
+        // routine first-login step: the PreTokenGeneration trigger writes the groups
+        // into the FIRST token (it emits both `claimsOverrideDetails` and
+        // `claimsAndScopeOverrideDetails`, so the override is honoured whichever
+        // LambdaVersion the pool is on — see the trigger in `template.yaml`). What
+        // still reaches this branch is a deployment with `ExternalIdPGroupMapping`
+        // off, a mapping that assigned nothing, or a group granted after the token
+        // was issued. Force a single refresh, once per mount (the effect re-runs only
+        // on an explicit retry), so this will not cause excessive refresh calls.
         const isFederated = (session?.tokens?.idToken?.payload?.['identities'] as string | undefined) !== undefined;
         const appGroups = groupsArray.filter((g) => APP_GROUPS.includes(g));
         if (isFederated && appGroups.length === 0) {

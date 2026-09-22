@@ -35,9 +35,10 @@ What these tests pin
    came to be computed by the scorer and readable from nothing.
 
 Note on where this runs: ``benchmarks/tests`` is in ``scripts/run_all_tests.py``'s
-``RUN_ROOTS``, so ``make test`` covers it. Neither CI target
-(``test-cicd``/``test-packages-cicd``) runs this directory — that is pre-existing
-and true of the other six suites here too.
+``RUN_ROOTS``, so ``make test`` covers it, and ``make test-packages-cicd`` runs it in
+both CIs. ``scripts/tests/test_src_lambda_tests_in_ci.py`` derives the universe of
+directories holding a tracked ``test_*.py`` and fails if one reaches neither CI, so
+this directory cannot fall out of coverage unnoticed.
 """
 
 from __future__ import annotations

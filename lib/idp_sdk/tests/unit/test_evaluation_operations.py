@@ -751,7 +751,15 @@ class TestEvaluationOperationResults:
                     }
                 ],
                 "count": 1,
-                "next_token": "dG9rZW4=",
+                # Bandit flags `next_token` on sight. B105/B106 match the
+                # *identifier* — `RE_CANDIDATES` tests `_token$` against the dict
+                # key or keyword name — and never inspect the value, so no choice
+                # of literal here would quiet them. The name is the SDK's real
+                # pagination field: `list_baselines` base64-encodes its
+                # `LastEvaluatedKey` into it and `EvaluationBaselineListResult`
+                # declares it, so renaming it would make this stub a shape the
+                # operation never returns. Both flagged lines carry a pragma.
+                "next_token": "dG9rZW4=",  # nosec B105 - cursor, base64 "token"
             }
         )
 
@@ -760,7 +768,7 @@ class TestEvaluationOperationResults:
 
         assert isinstance(result, EvaluationBaselineListResult)
         assert result.count == 1
-        assert result.next_token == "dG9rZW4="
+        assert result.next_token == "dG9rZW4="  # nosec B105 - stub cursor read back
         assert isinstance(result.baselines[0], BaselineInfo)
         assert result.baselines[0].document_id == "invoice-001.pdf"
         assert result.baselines[0].created_date is None
