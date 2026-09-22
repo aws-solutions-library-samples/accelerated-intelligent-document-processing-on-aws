@@ -37,10 +37,22 @@ property is covered by `TestConcurrentAppends`, which uses a **real**
 before any of them writes, and by `TestConflictRetry`, which drives the retry
 mechanism with no threads at all. A concurrency regression has to fail one of those
 two; it will not fail any of the rest.
+
+**`TestConcurrentAppends._run` asserts that the pool it got is a real
+`ThreadPoolExecutor`, and that assertion is load-bearing rather than defensive.**
+Substituting the synchronous stand-in into that one method is the regression that
+*caused* #1098, it is a two-line edit, and without the check it leaves the whole
+module green except for a single test — so the control guarding the blind spot
+would itself be one test wide. With the check, all six tests in the class fail.
+Measured by writing the mutation into a throwaway copy of this file and running it:
+1 of 6 failed before, 6 of 6 after. The rejection count is asserted inside the
+parametrised test for the same reason, so every width carries it rather than one
+width carrying it for the others.
 """
 
 import json
 import threading
+from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 from unittest.mock import MagicMock, patch
 
@@ -48,6 +60,8 @@ import botocore.exceptions
 import pytest
 
 from idp_common.agents.common.dynamodb_logger import (
+    _MAX_APPEND_ATTEMPTS,
+    _MAX_READ_ATTEMPTS,
     DynamoDBMessageLogger,
     DynamoDBMessageTracker,
 )
@@ -211,12 +225,24 @@ class TestAppendSemantics:
         assert len(_written_messages(table)) == 1
 
     def test_a_missing_table_on_read_abandons_the_write_entirely(self):
-        # ResourceNotFoundException on the read means the job record does not
-        # exist, so there is nothing to append to and writing would create a
-        # partial record with one message and no job.
+        # ResourceNotFoundException from get_item means the *table* does not exist,
+        # so no write can succeed and retrying would only spend the budget. A
+        # missing *item* is a different outcome and is not this one: get_item
+        # answers an absent key with an empty response and no error, which is
+        # covered by test_an_absent_item_is_appended_to_rather_than_abandoned.
         instance, table = _logger(get_error=_client_error("ResourceNotFoundException"))
         instance.log_message_async("job-1", "user-1", {"role": "user"})
         table.update_item.assert_not_called()
+
+    def test_an_absent_item_is_appended_to_rather_than_abandoned(self):
+        # The distinction the test above rests on, asserted rather than assumed: an
+        # empty get_item response is the record not being there yet, and the
+        # conditional write is what creates it. Reading this as "nothing to append
+        # to" would drop the first message of every job.
+        instance, table = _logger(existing=None)
+        instance.log_message_async("job-1", "user-1", {"role": "user"})
+        table.update_item.assert_called_once()
+        assert [m["role"] for m in _written_messages(table)] == ["user"]
 
     def test_a_read_that_keeps_failing_writes_nothing_at_all(self):
         # A throttled read yields no transcript, and appending to the empty array
@@ -356,7 +382,7 @@ class TestConflictRetry:
         instance, table = _logger()
         table.update_item.side_effect = _client_error("ConditionalCheckFailedException")
         instance.log_message_async("job-1", "user-1", {"role": "user"})
-        assert table.update_item.call_count == 10
+        assert table.update_item.call_count == _MAX_APPEND_ATTEMPTS
 
     def test_exhausting_the_retries_reports_the_message_it_dropped(self, caplog):
         # Dropping one message is the right trade against overwriting the whole
@@ -378,6 +404,167 @@ class TestConflictRetry:
         table.update_item.side_effect = _client_error("ValidationException")
         instance.log_message_async("job-1", "user-1", {"role": "user"})
         assert table.update_item.call_count == 1
+
+    def test_losing_a_conflict_backs_off_before_re_reading(self):
+        # Without a pause the loser re-enters the same race immediately and in
+        # phase with every other loser, which is why a condition alone plateaus
+        # short of full retention. The interval is asserted to exist, not its
+        # length: it is a jittered draw, so a threshold would be a flaky test.
+        instance, table = _logger()
+        table.update_item.side_effect = [
+            _client_error("ConditionalCheckFailedException"),
+            None,
+        ]
+        with patch(f"{MODULE}.time.sleep") as sleep:
+            instance.log_message_async("job-1", "user-1", {"role": "user"})
+        assert sleep.call_count == 1
+        assert 0 <= sleep.call_args.args[0] <= 0.05
+
+    def test_the_backoff_is_jittered_rather_than_a_fixed_interval(self):
+        # Equal sleeps move a collision instead of breaking it up, so two writers
+        # that back off for the same duration collide again. Drawing distinct
+        # values is the property; asserted over enough draws that a fixed
+        # implementation cannot pass by coincidence.
+        from idp_common.agents.common.dynamodb_logger import _sleep_before_retry
+
+        with patch(f"{MODULE}.time.sleep") as sleep:
+            for _ in range(25):
+                _sleep_before_retry(3)
+        drawn = {call.args[0] for call in sleep.call_args_list}
+        assert len(drawn) > 1
+
+
+@pytest.mark.unit
+class TestReadFailureBudget:
+    """Read failures have their own budget, and permanent ones spend none of it.
+
+    Two unrelated failures shared one budget before: a run of failing reads could
+    exhaust the append budget having attempted no write at all, and a mixture of
+    read failures and conflicts could drop a message that neither alone would have.
+    """
+
+    def test_a_failing_read_does_not_consume_the_conflict_budget(self):
+        # The mixture case. Read failures up to the read budget, then conflicts up
+        # to the append budget: if the two shared one counter the write attempts
+        # would stop early, so the count of writes is what discriminates.
+        instance, table = _logger()
+        table.get_item.side_effect = [
+            _client_error("ProvisionedThroughputExceededException")
+        ] * (_MAX_READ_ATTEMPTS - 1) + [{"Item": {"agent_messages": "[]"}}] * (
+            _MAX_APPEND_ATTEMPTS + 5
+        )
+        table.update_item.side_effect = _client_error("ConditionalCheckFailedException")
+        with patch(f"{MODULE}.time.sleep"):
+            instance.log_message_async("job-1", "user-1", {"role": "user"})
+        assert table.update_item.call_count == _MAX_APPEND_ATTEMPTS
+
+    def test_the_read_budget_is_bounded_well_below_the_append_budget(self):
+        # A read that never succeeds should stop after its own few attempts rather
+        # than running the full append budget: every one of those is a round trip
+        # spent on a record it cannot read.
+        instance, table = _logger(
+            get_error=_client_error("ProvisionedThroughputExceededException")
+        )
+        with patch(f"{MODULE}.time.sleep"):
+            instance.log_message_async("job-1", "user-1", {"role": "user"})
+        assert table.get_item.call_count == _MAX_READ_ATTEMPTS
+        table.update_item.assert_not_called()
+
+    @pytest.mark.parametrize("code", ["AccessDeniedException", "ValidationException"])
+    def test_a_permanent_read_error_is_not_retried_at_all(self, code):
+        # Neither answer changes on a retry, so retrying spends the budget and logs
+        # the same warning once per attempt. One read, one report.
+        instance, table = _logger(get_error=_client_error(code))
+        instance.log_message_async("job-1", "user-1", {"role": "user"})
+        assert table.get_item.call_count == 1
+        table.update_item.assert_not_called()
+
+    def test_a_permanent_read_error_is_reported_once_and_not_per_attempt(self, caplog):
+        import logging
+
+        instance, _ = _logger(get_error=_client_error("AccessDeniedException"))
+        with caplog.at_level(logging.WARNING):
+            instance.log_message_async("job-1", "user-1", {"role": "user"})
+        assert len([r for r in caplog.records if r.levelno >= logging.WARNING]) == 1
+
+    def test_exhausting_the_read_budget_reports_the_message_it_dropped(self, caplog):
+        # The same visibility the conflict path has. A read that never succeeds
+        # drops the message just as surely as a conflict that never clears.
+        import logging
+
+        instance, _ = _logger(
+            get_error=_client_error("ProvisionedThroughputExceededException")
+        )
+        with caplog.at_level(logging.ERROR), patch(f"{MODULE}.time.sleep"):
+            instance.log_message_async("job-1", "user-1", {"role": "user"})
+        errors = [r.getMessage() for r in caplog.records if r.levelno >= logging.ERROR]
+        assert any("job-1" in m and "not persisted" in m for m in errors)
+
+
+@pytest.mark.unit
+class TestDroppedMessageMetric:
+    """A dropped message is counted on a metric, not only written to a log.
+
+    The log line names the job and the sequence number, which is what an operator
+    needs once they are already looking at the logs. Nothing can be alarmed on it,
+    and the transcript losing entries with nothing to notice is the reason #1098
+    survived as long as it did.
+    """
+
+    def _drop_by_conflict(self):
+        instance, table = _logger()
+        table.update_item.side_effect = _client_error("ConditionalCheckFailedException")
+        with patch(f"{MODULE}.time.sleep"):
+            with patch("idp_common.metrics.put_metric") as put_metric:
+                instance.log_message_async("job-1", "user-1", {"role": "user"})
+        return put_metric
+
+    def test_a_message_dropped_after_exhausting_the_conflicts_is_counted(self):
+        put_metric = self._drop_by_conflict()
+        put_metric.assert_called_once_with("AgentTranscriptMessageDropped", 1)
+
+    def test_a_message_dropped_after_a_failing_read_is_counted(self):
+        instance, _ = _logger(
+            get_error=_client_error("ProvisionedThroughputExceededException")
+        )
+        with patch(f"{MODULE}.time.sleep"):
+            with patch("idp_common.metrics.put_metric") as put_metric:
+                instance.log_message_async("job-1", "user-1", {"role": "user"})
+        put_metric.assert_called_once_with("AgentTranscriptMessageDropped", 1)
+
+    def test_a_message_that_was_stored_is_not_counted(self):
+        # A counter that also fires on success cannot be alarmed on either.
+        instance, _ = _logger()
+        with patch("idp_common.metrics.put_metric") as put_metric:
+            instance.log_message_async("job-1", "user-1", {"role": "user"})
+        put_metric.assert_not_called()
+
+    def test_a_metric_that_cannot_be_published_does_not_raise(self):
+        # This runs on the drop path of a best-effort logger. A telemetry failure
+        # here must not add a second failure to the one being reported -- and the
+        # namespace this resolves to is denied by IAM on some callers, so the
+        # failure is a live possibility rather than a hypothetical.
+        instance, table = _logger()
+        table.update_item.side_effect = _client_error("ConditionalCheckFailedException")
+        with patch(f"{MODULE}.time.sleep"):
+            with patch(
+                "idp_common.metrics.put_metric", side_effect=RuntimeError("denied")
+            ):
+                instance.log_message_async("job-1", "user-1", {"role": "user"})
+
+    def test_a_metric_failure_still_leaves_the_drop_reported_in_the_log(self, caplog):
+        import logging
+
+        instance, table = _logger()
+        table.update_item.side_effect = _client_error("ConditionalCheckFailedException")
+        with caplog.at_level(logging.WARNING), patch(f"{MODULE}.time.sleep"):
+            with patch(
+                "idp_common.metrics.put_metric", side_effect=RuntimeError("denied")
+            ):
+                instance.log_message_async("job-1", "user-1", {"role": "user"})
+        messages = [r.getMessage() for r in caplog.records]
+        assert any("not persisted" in m for m in messages)
+        assert any("Could not publish" in m for m in messages)
 
 
 class _ConditionalTable:
@@ -463,12 +650,17 @@ class _ConditionalTable:
 class TestConcurrentAppends:
     """The property `_InlineExecutor` cannot see, on a real thread pool.
 
-    These are not timing assertions. The barrier in `_ConditionalTable` makes the
-    overlap itself deterministic -- every writer is guaranteed to have read the
-    same state before any of them writes -- and what is asserted afterwards is an
-    invariant that holds under every interleaving: no submitted message is
-    missing. There is no sleep, no wall-clock threshold and no dependence on the
-    scheduler, so the only way to fail is for an append to actually be lost.
+    These are not timing assertions, but the scope of what they establish is
+    narrower than "safe under concurrency" and worth stating exactly. The barrier
+    in `_ConditionalTable` produces **one** interleaving -- every writer reads the
+    same state before any of them writes -- and that is the worst case for this
+    defect, not a sample of the space. What holds under every interleaving is the
+    *rejection*, which DynamoDB decides; whether a rejected append then finds a gap
+    within `_MAX_APPEND_ATTEMPTS` is probabilistic, and the measurement behind that
+    constant is in the module's own comment rather than asserted here. So: no
+    submitted message is missing *under the interleaving the barrier produces*.
+    There is no sleep, no wall-clock threshold and no dependence on the scheduler,
+    so the only way to fail is for an append to actually be lost.
 
     What is asserted is the *set* of messages stored, not their order. Under real
     overlap the stored order is the order the writes committed in, which the
@@ -482,6 +674,16 @@ class TestConcurrentAppends:
         with patch(f"{MODULE}.boto3.resource") as resource:
             resource.return_value.Table.return_value = table
             instance = DynamoDBMessageLogger("agent-table", max_workers=workers)
+        # The one assertion this class cannot do without. Substituting a
+        # synchronous executor is what made #1098 invisible, and it is a two-line
+        # edit that leaves every content assertion in this module green -- so
+        # without this check the substitution could come back here too, and these
+        # tests would keep passing while measuring nothing. Asserted on the
+        # instance rather than by patching, because the point is what the
+        # production constructor built.
+        assert isinstance(instance.executor, ThreadPoolExecutor), (
+            "these tests measure nothing unless the writes run on a real pool"
+        )
         for index in range(workers):
             instance.log_message_async("job-1", "user-1", {"role": f"r{index}"})
         instance.shutdown()  # drains the pool, so the assertions see every write
@@ -491,6 +693,11 @@ class TestConcurrentAppends:
     def test_no_message_is_lost_when_every_writer_overlaps(self, workers):
         table = self._run(workers)
         assert sorted(table.sequence_numbers()) == list(range(1, workers + 1))
+        # Carried at every width rather than only at four, so that a change which
+        # quietly stops the writers overlapping fails all three parametrisations
+        # instead of one test elsewhere. The barrier releases `workers` readers on
+        # the same state, so all but the winner must be rejected at least once.
+        assert table.conditional_rejections >= workers - 1
 
     def test_the_stored_sequence_numbers_are_contiguous(self):
         # The observable symptom of the defect was a gap in this series: four

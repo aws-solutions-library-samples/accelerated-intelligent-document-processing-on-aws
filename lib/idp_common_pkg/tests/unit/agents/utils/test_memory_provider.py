@@ -167,14 +167,19 @@ class TestLatestConversationItem:
         table.query.return_value = {"Items": []}
         assert provider._get_latest_conversation_item() is None
 
-    def test_a_query_failure_yields_nothing_rather_than_propagating(self):
-        # The caller treats None as "no history yet" and creates a first item, so a
-        # transient query failure costs the earlier history rather than the message.
+    def test_a_query_failure_is_distinguishable_from_an_empty_session(self):
+        # The caller answers None by creating a first item, so None must mean "no
+        # history yet" and nothing else. Returning it for a failed query too made a
+        # transient failure fork the conversation into a second item, which is the
+        # same shape as the defect the message logger guards against next door.
+        from idp_common.agents.utils.memory_provider import _ConversationReadFailed
+
         provider, table = _provider()
         table.query.side_effect = _client_error(
             "ProvisionedThroughputExceededException"
         )
-        assert provider._get_latest_conversation_item() is None
+        with pytest.raises(_ConversationReadFailed):
+            provider._get_latest_conversation_item()
 
 
 @pytest.mark.unit
@@ -280,16 +285,105 @@ class TestConcurrentAppendGuard:
         provider._store_message_to_dynamodb({"text": "b"}, "assistant")
         assert table.put_item.call_count == 1
 
-    def test_rolling_over_to_a_new_item_needs_no_guard(self):
-        # The rollover write lands on a fresh sort key, so it cannot overwrite the
-        # item it rolled over from and must not be rejected by a stale version.
+    def test_rolling_over_to_a_new_item_is_not_guarded_by_the_version(self):
+        # The rollover write lands on a fresh sort key, so a stale version must not
+        # reject it -- it is not appending to the item it rolled over from. What it
+        # is conditional on is the key being free, which is a different question and
+        # is what stops a colliding timestamp replacing an item instead of appending
+        # to it.
         provider, table = _provider(max_item_size_kb=0.1)
         table.query.return_value = {
             "Items": [_item("t1", [_message("user", "x" * 500)])]
         }
         provider._store_message_to_dynamodb({"text": "next"}, "assistant")
-        assert "ConditionExpression" not in self._put_kwargs(table)
+        condition = self._put_kwargs(table)["ConditionExpression"]
+        assert condition == "attribute_not_exists(PK)"
+        assert "conversation_version" not in condition
         assert len(_written_messages(table)) == 1
+
+    def test_a_first_item_whose_key_is_taken_appends_instead_of_replacing(self):
+        # Two writers that both find no history choose their own timestamp sort key,
+        # so they normally create two items and nothing is lost. If they choose the
+        # same key an unconditional put would replace the first writer's item
+        # outright; the condition turns that into a retry, and the retry's query
+        # finds the item and appends to it.
+        provider, table = _provider()
+        table.query.side_effect = [
+            {"Items": []},
+            {"Items": [_item("t1", [_message("user", "first")])]},
+        ]
+        table.put_item.side_effect = [
+            _client_error("ConditionalCheckFailedException"),
+            None,
+        ]
+        provider._store_message_to_dynamodb({"text": "second"}, "assistant")
+        stored = _written_messages(table)
+        assert len(stored) == 2
+        assert [m["role"] for m in stored] == ["user", "assistant"]
+
+
+@pytest.mark.unit
+class TestFailedQueryIsNotAnEmptySession:
+    """A query that failed must not be answered by starting a new item.
+
+    This is the shape PR #1105 fixed in the message logger, left in place here: the
+    append reads `None` as "no history yet" and creates a fresh item, so a transient
+    query failure forked the conversation rather than appending to the item that
+    already existed. Neither outcome lost a message -- history is read back across
+    items -- but the store ends up in a state it was never meant to reach, and the
+    same reasoning that made it wrong next door makes it wrong here.
+    """
+
+    def test_a_query_failure_does_not_start_a_new_item(self):
+        provider, table = _provider()
+        table.query.side_effect = _client_error(
+            "ProvisionedThroughputExceededException"
+        )
+        with patch(f"{MODULE}.time.sleep"):
+            provider._store_message_to_dynamodb({"text": "hi"}, "user")
+        table.put_item.assert_not_called()
+
+    def test_a_query_that_recovers_appends_to_the_history_it_then_sees(self):
+        provider, table = _provider()
+        table.query.side_effect = [
+            _client_error("ProvisionedThroughputExceededException"),
+            {"Items": [_item("t1", [_message("user", "first")])]},
+        ]
+        with patch(f"{MODULE}.time.sleep"):
+            provider._store_message_to_dynamodb({"text": "second"}, "assistant")
+        assert [m["role"] for m in _written_messages(table)] == ["user", "assistant"]
+
+    def test_the_query_budget_is_bounded_and_separate_from_the_conflicts(self):
+        # A query that never succeeds stops after its own few attempts rather than
+        # running the whole conflict budget of round trips against a failing read.
+        from idp_common.agents.utils.memory_provider import _MAX_READ_ATTEMPTS
+
+        provider, table = _provider()
+        table.query.side_effect = _client_error(
+            "ProvisionedThroughputExceededException"
+        )
+        with patch(f"{MODULE}.time.sleep"):
+            provider._store_message_to_dynamodb({"text": "hi"}, "user")
+        assert table.query.call_count == _MAX_READ_ATTEMPTS
+
+    def test_exhausting_the_query_budget_reports_the_message_it_dropped(self, caplog):
+        import logging
+
+        provider, table = _provider()
+        table.query.side_effect = _client_error(
+            "ProvisionedThroughputExceededException"
+        )
+        with caplog.at_level(logging.ERROR), patch(f"{MODULE}.time.sleep"):
+            provider._store_message_to_dynamodb({"text": "hi"}, "user")
+        errors = [r.getMessage() for r in caplog.records if r.levelno >= logging.ERROR]
+        assert any("not persisted" in m for m in errors)
+
+    def test_a_failure_to_store_does_not_propagate_out_of_the_hook(self):
+        # Memory is best-effort: losing a turn of history is acceptable, aborting
+        # the caller's turn is not.
+        provider, table = _provider()
+        table.query.side_effect = RuntimeError("boom")
+        provider._store_message_to_dynamodb({"text": "hi"}, "user")
 
 
 @pytest.mark.unit

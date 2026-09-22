@@ -29,6 +29,8 @@ Usage:
 
 import json
 import logging
+import random
+import time
 import traceback
 from datetime import datetime
 from typing import Any, Dict, List, Optional
@@ -42,6 +44,8 @@ from strands.hooks import (
     MessageAddedEvent,
 )
 
+from idp_common.ddb_numbers import coerce_int
+
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
 
@@ -51,18 +55,52 @@ logger.setLevel(logging.INFO)
 # Absent on items written before the guard existed; the first append adds it.
 _VERSION_ATTRIBUTE = "conversation_version"
 
-# Every conflict round has at least one winner, so W concurrent writers need at
-# most W attempts between them. Each retry re-queries, which is a round trip, so
-# the loop needs no backoff to pace itself.
+# How many times one message may rebuild its append after losing a conflict.
+#
+# Not a guarantee. Writers are not in lockstep rounds: a loser re-queries while the
+# others are mid-cycle, so each attempt races the same field and the chance of
+# exhausting the budget is small rather than zero. Re-querying paces the loop in
+# wall-clock terms but puts the loser back into the same race, which is why the
+# backoff below is what actually lowers the collision rate. See the equivalent
+# comment in ``agents/common/dynamodb_logger.py`` for the measured numbers; the
+# contention here is far lower, because one session's turns arrive in sequence
+# rather than from a fan-out of sub-agents, so the overlap needs a resubmitted
+# request or a retried Lambda to arise at all.
 _MAX_APPEND_ATTEMPTS = 10
 
+# Full-jitter backoff, the same shape and for the same reason as the message
+# logger's: a uniform draw from [0, min(cap, base * 2**(attempt-1))), so that
+# writers that collided do not re-enter in phase.
+_BACKOFF_BASE_SECONDS = 0.005
+_BACKOFF_CAP_SECONDS = 0.050
 
-def _coerce_int(value: Any, default: int = 0) -> int:
-    """DynamoDB returns numbers as Decimal; normalize to int for comparison."""
-    try:
-        return int(value)
-    except (TypeError, ValueError):
-        return default
+# A failing query gets its own budget, kept separate from the conflict budget, so
+# that neither failure mode can starve the other.
+_MAX_READ_ATTEMPTS = 3
+
+
+class _ConversationReadFailed(Exception):
+    """A query for the newest conversation item that may succeed if tried again.
+
+    Raised so that the append retries rather than falling through. This is the
+    distinction the surrounding code previously could not make: a query that failed
+    and a session with no history both produced ``None``, and the append answers
+    ``None`` by starting a fresh item -- so a transient failure forked the
+    conversation into a second item instead of appending to the one that exists.
+    That is the same "a failed read stands in for an empty store" shape that the
+    message logger next door guards against.
+    """
+
+
+def _sleep_before_retry(attempt: int) -> None:
+    """
+    Sleep a jittered interval before rebuilding an append that lost a conflict.
+
+    Args:
+        attempt: The attempt that just failed, 1-based.
+    """
+    bound = min(_BACKOFF_CAP_SECONDS, _BACKOFF_BASE_SECONDS * (2 ** (attempt - 1)))
+    time.sleep(random.uniform(0, bound))  # nosec B311 - retry jitter, not a secret
 
 
 class DynamoDBMemoryHookProvider(HookProvider):
@@ -161,7 +199,14 @@ class DynamoDBMemoryHookProvider(HookProvider):
         Get the latest conversation item (most recent timestamp).
 
         Returns:
-            Latest conversation item or None if no items exist
+            The newest conversation item, or ``None`` when the session genuinely
+            has no history yet. ``None`` means only that: a query that *failed*
+            raises instead, because the caller answers ``None`` by starting a new
+            item, and doing that after a failed read forks the conversation into a
+            second item rather than appending to the one that already exists.
+
+        Raises:
+            _ConversationReadFailed: the query failed and the append must retry.
         """
         try:
             pk = self._get_conversation_pk()
@@ -180,7 +225,7 @@ class DynamoDBMemoryHookProvider(HookProvider):
             logger.error(
                 f"Error getting latest conversation item for session {self.session_id}: {e}"
             )
-            return None
+            raise _ConversationReadFailed(str(e)) from e
 
     def _parse_history(self, item: Dict[str, Any]) -> List[Dict[str, Any]]:
         """
@@ -202,25 +247,48 @@ class DynamoDBMemoryHookProvider(HookProvider):
             return []
         return messages if isinstance(messages, list) else []
 
-    def _put_new_item(self, pk: str, message_entry: Dict[str, Any]) -> None:
+    def _put_new_item(self, pk: str, message_entry: Dict[str, Any]) -> bool:
         """
         Start a new conversation item holding one message.
+
+        Conditional on nothing existing at the key it chose. The sort key is a
+        timestamp, so two writers starting an item together normally land on
+        different keys and both succeed -- two items, which costs nothing, since
+        history is read back across items. What the condition catches is the case
+        where they do not: an unconditional ``put_item`` at a key that is already
+        occupied replaces that item outright, discarding the message it held. With
+        the condition the second writer is rejected and rebuilds its append, and by
+        then the query finds the first writer's item and appends to it.
 
         Args:
             pk: The conversation partition key
             message_entry: The message to seed the new item with
+
+        Returns:
+            True if the item was created, False if something already occupied the
+            key and the append has to be rebuilt on a fresh query.
         """
-        self.table.put_item(
-            Item={
-                "PK": pk,
-                "SK": self._generate_timestamp_sk(),
-                "conversation_history": json.dumps([message_entry]),
-                "session_id": self.session_id,
-                "last_updated": datetime.now().isoformat(),
-                "message_count": 1,
-                _VERSION_ATTRIBUTE: 1,
-            }
-        )
+        try:
+            self.table.put_item(
+                Item={
+                    "PK": pk,
+                    "SK": self._generate_timestamp_sk(),
+                    "conversation_history": json.dumps([message_entry]),
+                    "session_id": self.session_id,
+                    "last_updated": datetime.now().isoformat(),
+                    "message_count": 1,
+                    _VERSION_ATTRIBUTE: 1,
+                },
+                ConditionExpression="attribute_not_exists(PK)",
+            )
+            return True
+        except ClientError as e:
+            if (
+                e.response.get("Error", {}).get("Code")
+                == "ConditionalCheckFailedException"
+            ):
+                return False
+            raise
 
     def _put_conditionally(self, item: Dict[str, Any], version: int) -> bool:
         """
@@ -273,6 +341,20 @@ class DynamoDBMemoryHookProvider(HookProvider):
         serving one session -- a resubmitted request, or a retried Lambda -- are
         what make that overlap possible.
 
+        Three things the loop keeps separate, because conflating any two of them
+        loses a message:
+
+        * A query that **failed** is not a session with no history. Both once
+          produced ``None``, and the branch below answers ``None`` by starting a
+          new item, so a transient failure forked the conversation instead of
+          appending to the item that exists. A failed query now raises and is
+          retried against its own budget.
+        * **Starting** an item is conditional too, on nothing occupying the key it
+          chose, so a colliding sort key cannot replace an item rather than append
+          to it.
+        * Conflicts and query failures have **separate budgets**. Sharing one lets
+          either starve the other.
+
         Args:
             message_content: The message content to store
             message_role: The role of the message (user, assistant, system, etc.)
@@ -291,23 +373,54 @@ class DynamoDBMemoryHookProvider(HookProvider):
                 ),  # Microsecond precision
             }
 
-            for attempt in range(1, _MAX_APPEND_ATTEMPTS + 1):
+            # Two counters, so that a failing query cannot spend a conflict attempt
+            # and vice versa. Either one alone bounds the loop.
+            conflicts_left = _MAX_APPEND_ATTEMPTS
+            reads_left = _MAX_READ_ATTEMPTS
+            stored = False
+
+            while conflicts_left > 0:
                 # Get the latest conversation item
-                latest_item = self._get_latest_conversation_item()
+                try:
+                    latest_item = self._get_latest_conversation_item()
+                except _ConversationReadFailed as e:
+                    reads_left -= 1
+                    read_attempt = _MAX_READ_ATTEMPTS - reads_left
+                    if reads_left <= 0:
+                        logger.error(
+                            f"Could not read conversation history for session "
+                            f"{self.session_id} after {_MAX_READ_ATTEMPTS} "
+                            f"attempts; the message was not persisted: {e}"
+                        )
+                        return
+                    logger.warning(
+                        f"Could not read conversation history for session "
+                        f"{self.session_id} (read attempt {read_attempt} of "
+                        f"{_MAX_READ_ATTEMPTS}), retrying: {e}"
+                    )
+                    _sleep_before_retry(read_attempt)
+                    continue
 
                 if not latest_item:
                     # Create first item
-                    self._put_new_item(pk, message_entry)
-                    logger.info(
-                        f"Created first conversation item for session {self.session_id}"
-                    )
-                    break
+                    if self._put_new_item(pk, message_entry):
+                        logger.info(
+                            f"Created first conversation item for session {self.session_id}"
+                        )
+                        stored = True
+                        break
+                    # Something already occupies that key. Rebuild on a fresh
+                    # query, which will now find it and append rather than replace.
+                    conflicts_left -= 1
+                    if conflicts_left > 0:
+                        _sleep_before_retry(_MAX_APPEND_ATTEMPTS - conflicts_left)
+                    continue
 
                 existing_messages = self._parse_history(latest_item)
 
                 # Create a test item with the new message to check size
                 test_messages = existing_messages + [message_entry]
-                version = _coerce_int(latest_item.get(_VERSION_ATTRIBUTE))
+                version = coerce_int(latest_item.get(_VERSION_ATTRIBUTE))
                 test_item = {
                     "PK": pk,
                     "SK": latest_item["SK"],  # Use existing timestamp
@@ -322,28 +435,42 @@ class DynamoDBMemoryHookProvider(HookProvider):
                 test_size_kb = self._get_item_size_bytes(test_item) / 1024
 
                 if test_size_kb > self.max_item_size_kb:
-                    # Create new item with just this message. This lands on a
-                    # fresh sort key, so it needs no guard: it cannot overwrite
-                    # the item it is rolling over from.
-                    self._put_new_item(pk, message_entry)
-                    logger.info(
-                        f"Created new item for session {self.session_id} (previous item was {test_size_kb:.2f} KB)"
-                    )
-                    break
+                    # Roll over to a new item. The sort key is a fresh timestamp,
+                    # so this normally cannot touch the item it is rolling over
+                    # from; the condition inside _put_new_item covers the case
+                    # where the key is occupied anyway, and a rejection is retried
+                    # like any other conflict.
+                    if self._put_new_item(pk, message_entry):
+                        logger.info(
+                            f"Created new item for session {self.session_id} (previous item was {test_size_kb:.2f} KB)"
+                        )
+                        stored = True
+                        break
+                    conflicts_left -= 1
+                    if conflicts_left > 0:
+                        _sleep_before_retry(_MAX_APPEND_ATTEMPTS - conflicts_left)
+                    continue
 
                 if self._put_conditionally(test_item, version):
                     logger.debug(
                         f"Updated existing item for session {self.session_id}, size: {test_size_kb:.2f} KB"
                     )
+                    stored = True
                     break
 
-                # Another writer appended between the query and the write. Loop
-                # to re-read so that its message survives alongside this one.
+                # Another writer appended between the query and the write. Back off
+                # a jittered interval so the losers do not re-query in phase, then
+                # loop so that the winner's message survives alongside this one.
+                conflicts_left -= 1
+                attempt = _MAX_APPEND_ATTEMPTS - conflicts_left
                 logger.debug(
                     f"Concurrent append detected for session {self.session_id} "
                     f"(attempt {attempt}), retrying"
                 )
-            else:
+                if conflicts_left > 0:
+                    _sleep_before_retry(attempt)
+
+            if not stored:
                 logger.error(
                     f"Gave up storing message for session {self.session_id} after "
                     f"{_MAX_APPEND_ATTEMPTS} attempts; the message was not persisted"
