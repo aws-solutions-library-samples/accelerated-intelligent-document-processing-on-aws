@@ -1,6 +1,6 @@
 # Wave 0 — what the re-instrumented enforcement A/B actually measures
 
-Measured live on IDP1 (`v0.6.7.dev3`, us-west-2, account 912625584728), 2026-09-02.
+Measured live on IDP1 (`v0.6.7.dev3`, us-west-2), 2026-09-02.
 28 document runs across three suites. Every cell pair differs on **one axis**, on
 one deployed stack with identical code, so a delta is attributable to the knob.
 
