@@ -8,6 +8,7 @@ Pytest configuration file for the IDP Common package tests.
 import importlib
 import os
 import sys
+from pathlib import Path
 from unittest.mock import MagicMock
 
 import pytest
@@ -81,6 +82,26 @@ _stub_if_absent(
 
 # PIL module is now used directly for document conversion functionality
 # No mocking needed as PIL is a required dependency for the OCR module
+
+
+# Fail fast when the idp_common being tested is not the one in this checkout. The
+# rationale, and why this is an error rather than a warning, is in the shared helper.
+#
+# This suite usually shadows the installed package by accident rather than by design:
+# tests/ and tests/unit/ carry __init__.py, so pytest's prepend import mode inserts the
+# PACKAGE ROOT on sys.path and the local idp_common wins. That is luck, not a control --
+# it disappears if those files go away or import mode changes -- so the check is stated
+# explicitly here instead of being left to infer.
+sys.path.insert(0, str(Path(__file__).resolve().parents[3] / "scripts" / "tests"))
+try:
+    from first_party_provenance import assert_resolves_in
+
+    assert_resolves_in("idp_common", __file__)
+except ImportError:
+    # Running against an export with no scripts/ tree. Nothing to assert.
+    pass
+finally:
+    sys.path.pop(0)
 
 
 @pytest.fixture(scope="session", autouse=True)
