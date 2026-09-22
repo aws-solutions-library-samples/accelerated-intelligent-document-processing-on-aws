@@ -31,6 +31,7 @@ render a report with no statistics section rather than one showing zeroes.
 
 from __future__ import annotations
 
+import logging
 from typing import Any
 from unittest.mock import MagicMock
 
@@ -192,14 +193,40 @@ class TestPageContentRegex:
         assert service._check_page_content_regex("loan amount", "1", []) == ["Lending"]
         assert service._check_page_content_regex("LOAN AMOUNT", "1", []) == ["Lending"]
 
-    def test_an_invalid_pattern_makes_its_policy_unmatchable_rather_than_raising(self):
-        # A bad pattern is logged and left compiled to None, so the policy class is
-        # loaded but can never match. Pinned because the failure is silent: rule
-        # validation reports NO_POLICY_MATCH, which reads like a correct outcome
-        # rather than a configuration error.
-        service = _service(_policy("Broken", content_regex=r"([unclosed"))
+    def test_an_invalid_pattern_makes_its_policy_unmatchable_rather_than_raising(
+        self, caplog
+    ):
+        """A bad pattern must not crash classification, and must not pass unremarked.
+
+        Two separate properties, and this test is careful to pin only the first as
+        *behaviour*:
+
+        1. **Matching does not raise.** A configuration error in one policy class should
+           not fail the whole document, so `_compiled_content_regex` is left `None` and
+           the class simply never matches.
+        2. **It is reported somewhere.** `PolicyClass.__post_init__` logs at ERROR,
+           naming the policy type. That log line is the only thing distinguishing this
+           from a correct no-match, since the validation result is `NO_POLICY_MATCH`
+           either way.
+
+        The second is asserted against the LOG rather than by asserting that nothing
+        else happens. An earlier version asserted only the empty result, which
+        sanctioned the silence: any change that added a stronger signal — surfacing the
+        bad pattern in the report, or refusing the configuration outright — would have
+        failed a test whose name says nothing about signalling. Pinning the log instead
+        leaves that fix open while still failing if the diagnostic is dropped.
+        """
+        with caplog.at_level(logging.ERROR):
+            service = _service(_policy("Broken", content_regex=r"([unclosed"))
         assert service._check_page_content_regex("[unclosed", "1", []) == []
         assert service.get_all_policy_types() == ["Broken"]
+        assert any(
+            "Broken" in record.message and "regex" in record.message.lower()
+            for record in caplog.records
+        ), (
+            "an unusable policy class was loaded with no diagnostic naming it; "
+            f"records were {[r.message for r in caplog.records]}"
+        )
 
 
 @pytest.mark.unit

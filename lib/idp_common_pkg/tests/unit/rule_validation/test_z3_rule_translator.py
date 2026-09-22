@@ -24,23 +24,32 @@ a confident translation of the wrong thing. `_build_prompt` and
 `_build_extraction_prompt` are therefore checked for the substrings that must reach
 the model.
 
-`_invoke_bedrock` is stubbed throughout — these tests make no model call and no AWS
-call. The retry ladder inside it is out of scope here; what is covered is that
-`translate_rule` re-raises a `TranslationError` from it unchanged and wraps anything
-else.
+These tests make no model call and no AWS call. Most of them stub `_invoke_bedrock`
+outright and assert that `translate_rule` re-raises a `TranslationError` from it
+unchanged and wraps anything else. `TestInvokeBedrockRetryLadder` covers the method
+itself against a mocked Bedrock client, with `time.sleep` patched out: which error
+codes are retried, which fail immediately, how the backoff progresses and what the
+exhaustion path raises. Both directions matter there — a retryable code dropped from the
+set turns a transient throttle into a hard failure for every rule, and a non-retryable
+one added to it delays the error an operator needs to see.
 
-One behaviour worth knowing before reading: `_parse_extraction_output` validates that
-every **required** parameter is present and non-null, and never compares a value
-against its declared `type`. That gap is
-[#1057](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/1057),
-and the tests here pin the checks that do exist so a fix has a baseline.
+Two behaviours worth knowing before reading. `_parse_extraction_output` compares every
+value against its declared `type` and refuses a lossy reading; the refusal is
+**per-attempt rather than per-rule**, because the caller catches `TranslationError` and
+retries extraction against the raw document text, which is a second model call. So an
+over-strict check here shows up as doubled cost on a correct answer rather than as an
+outright failure, and both directions are asserted for that reason. And
+`_generate_rule_id` is not unique despite its comment saying so — see
+[#1118](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/1118).
 """
 
+import io
 import json
 from typing import Any
 from unittest.mock import MagicMock, patch
 
 import pytest
+from botocore.exceptions import ClientError, EndpointConnectionError
 
 from idp_common.rule_validation.z3.config_loader import (
     TranslatorConfig,
@@ -237,14 +246,41 @@ class TestGenerateRuleId:
     def test_the_id_has_the_documented_prefix(self):
         assert _translator()._generate_rule_id("some rule").startswith("rule_")
 
-    def test_two_ids_for_the_same_text_differ(self):
-        # The hash includes a millisecond timestamp, so two rules with identical
-        # text do not collide on one id -- which matters because the id keys the
-        # S3 rule cache.
+    def test_ids_for_the_same_text_collide_within_a_millisecond(self):
+        """The id is not unique, despite the code saying it is. See #1118.
+
+        `_generate_rule_id` hashes the rule text plus `int(time.time() * 1000)`, and its
+        comment reads "Use hash of rule text + timestamp for uniqueness". Millisecond
+        resolution is far coarser than the call rate: 2,000 back-to-back calls on
+        identical text produced **3** distinct ids.
+
+        This is asserted in the direction that is TRUE rather than as a strict xfail on
+        the direction that is wanted, because "unique" is not in fact the requirement
+        anywhere — every consumer traced (`rule_translator.py` lines 164-299) uses the
+        id for log and error context and to populate the returned rule object, and
+        nothing keys a cache or an S3 object on it. So there is no current defect to
+        pin, only a comment that promises a property the code does not have and that a
+        future caller could reasonably rely on.
+
+        An earlier version of this test asserted `first != second or len(first) ==
+        len(second)`, whose second disjunct is unconditionally true for a `"rule_"`
+        prefix plus 8 hex characters. It could not fail, and it stated the opposite of
+        what the code does.
+        """
         translator = _translator()
-        first = translator._generate_rule_id("same text")
-        second = translator._generate_rule_id("same text")
-        assert first != second or len(first) == len(second)
+        ids = [translator._generate_rule_id("same text") for _ in range(500)]
+        assert len(set(ids)) < len(ids), (
+            "ids no longer collide, so #1118 may be fixed; if the generator is now "
+            "genuinely unique, assert that instead and update the docstring"
+        )
+
+    def test_different_text_gives_different_ids(self):
+        # The property that does hold and that the id is actually used for: two
+        # different rules are distinguishable in logs even within the same millisecond.
+        translator = _translator()
+        assert translator._generate_rule_id("rule one") != translator._generate_rule_id(
+            "rule two"
+        )
 
     def test_the_suffix_is_eight_hex_characters(self):
         suffix = _translator()._generate_rule_id("rule")[len("rule_") :]
@@ -607,25 +643,40 @@ class TestBuildExtractionPrompt:
         prompt = _translator()._build_extraction_prompt(_rule_json(), {})
         assert prompt.startswith("EXTRACTION_SYSTEM_MARKER")
 
-    def test_a_dict_is_described_as_structured_json(self):
-        prompt = _translator()._build_extraction_prompt(_rule_json(), {"a": 1})
-        assert "structured JSON" in prompt
+    #: Every label `_build_extraction_prompt` can put in `data_type`. Asserted as a
+    #: closed set so a branch cannot be relabelled without a test noticing.
+    DATA_TYPE_LABELS = ("structured JSON", "text", "list/array", "unknown format")
 
-    def test_a_string_is_passed_through_as_text(self):
-        # Telling the model the data is JSON when it is prose makes it look for
-        # fields that do not exist and report the values missing.
-        prompt = _translator()._build_extraction_prompt(_rule_json(), "free text here")
-        assert "text" in prompt
-        assert "free text here" in prompt
-
-    def test_a_list_is_described_as_a_list(self):
-        prompt = _translator()._build_extraction_prompt(_rule_json(), [1, 2, 3])
-        assert "list/array" in prompt
-
-    def test_any_other_type_is_stringified_and_labelled_unknown(self):
-        prompt = _translator()._build_extraction_prompt(_rule_json(), 42)
-        assert "unknown format" in prompt
-        assert "42" in prompt
+    @pytest.mark.parametrize(
+        "data, expected, rendered",
+        [
+            ({"a": 1}, "structured JSON", '"a": 1'),
+            ("free prose here", "text", "free prose here"),
+            ([1, 2], "list/array", "[\n  1,\n  2\n]"),
+            (42, "unknown format", "42"),
+        ],
+    )
+    def test_the_data_shape_is_described_to_the_model(self, data, expected, rendered):
+        # Telling the model the data is JSON when it is prose makes it look for fields
+        # that do not exist and report the values missing, so the label is load-bearing
+        # rather than cosmetic.
+        #
+        # Asserted as "exactly this label and none of the others" rather than `expected
+        # in prompt`. The previous version passed `"free text here"` as the data and
+        # asserted `"text" in prompt`, which the DATA ITSELF satisfied -- relabelling
+        # the string branch to "prose" would have gone undetected. Checking the whole
+        # label set also makes the string case prove the dict label is absent, which is
+        # the confusion that actually costs an extraction.
+        prompt = _translator()._build_extraction_prompt(_rule_json(), data)
+        present = [label for label in self.DATA_TYPE_LABELS if label in prompt]
+        assert present == [expected], (
+            f"expected only {expected!r} to describe {data!r}, found {present}"
+        )
+        # The data has to actually reach the model, not just be described. A branch that
+        # labelled correctly and dropped the payload would satisfy the check above.
+        assert rendered in prompt, (
+            f"the data itself is missing from the prompt: {data!r}"
+        )
 
     def test_the_required_flag_is_included_per_parameter(self):
         rule = _rule_json(
@@ -721,17 +772,51 @@ class TestParseExtractionOutput:
         )
         assert values["stray"] == 9
 
-    def test_no_value_is_checked_against_its_declared_type(self):
-        # A string where a Real is declared, and a fractional value where an Int is
-        # declared, both pass here: this method never references param.type. That is
-        # issue #1057, and this test is the baseline a fix changes.
+    @pytest.mark.parametrize(
+        "value, fragment",
+        [
+            ("not a number", "Cannot convert string"),
+            (30.9, "without loss"),
+            (True, "declare the parameter as Bool"),
+        ],
+    )
+    def test_a_value_that_is_not_the_declared_type_is_refused(self, value, fragment):
+        # Each of these used to pass straight through, because this method validated
+        # presence and non-nullness and never referenced `param.type` (#1057). The
+        # refusal message is asserted on, not just the exception: "refused" without a
+        # reason gives whoever reads the log nothing to act on, and all three of these
+        # reach the same raise from different causes.
         rule = _rule_json(
             parameters=[Parameter(name="n", type="Int")], constraints=["(<= n 30)"]
         )
-        assert self._parse({"extracted_values": {"n": "not a number"}}, rule) == {
-            "n": "not a number"
-        }
-        assert self._parse({"extracted_values": {"n": 30.9}}, rule) == {"n": 30.9}
+        with pytest.raises(TranslationError) as excinfo:
+            self._parse({"extracted_values": {"n": value}}, rule)
+        assert any(fragment in e for e in (excinfo.value.validation_errors or [])), (
+            excinfo.value.validation_errors
+        )
+
+    @pytest.mark.parametrize(
+        "declared, value, expected",
+        [
+            ("Int", 30, 30),
+            ("Int", "30", 30),  # a numeric string is a lossless reading, not a refusal
+            ("Real", 30.9, 30.9),
+        ],
+    )
+    def test_a_value_that_IS_the_declared_type_still_passes_through(
+        self, declared, value, expected
+    ):
+        # The over-refusal direction, which is the one a type check is most likely to
+        # get wrong and the one nothing else here would catch: every refusal on this
+        # route costs a whole extraction attempt, because the caller catches
+        # TranslationError and retries against the raw document text — a second
+        # Bedrock call. A check that refused `"30"` for an Int would therefore double
+        # the cost of a correct answer rather than fail outright, which is the kind of
+        # regression that shows up on a bill instead of in a test.
+        rule = _rule_json(
+            parameters=[Parameter(name="n", type=declared)], constraints=["(<= n 30)"]
+        )
+        assert self._parse({"extracted_values": {"n": value}}, rule) == {"n": expected}
 
 
 @pytest.mark.unit
@@ -771,3 +856,173 @@ class TestExtractValuesWithLlm:
         with patch.object(translator, "_invoke_bedrock", return_value="not json"):
             with pytest.raises(TranslationError):
                 translator.extract_values_with_llm(_rule_json(), {})
+
+
+@pytest.mark.unit
+class TestInvokeBedrockRetryLadder:
+    """_invoke_bedrock: which failures are retried, which are not, and what is raised.
+
+    This is the one Bedrock-facing method in the translator, and every call into the
+    model goes through it, so an error classified wrongly here either burns attempts on
+    something that will never succeed or gives up on something transient. It had no
+    tests: `for attempt in range(max_retries)` never executed, so the whole ladder --
+    both retry branches, the exhaustion paths and the classification set -- was
+    unexercised.
+
+    `time.sleep` is patched out in every case. The backoff doubles from
+    `initial_backoff`, so a test that actually slept would add real seconds to the suite
+    for no assurance, and the delay *values* are asserted directly instead.
+    """
+
+    @staticmethod
+    def _client_error(code: str) -> ClientError:
+        return ClientError(
+            {"Error": {"Code": code, "Message": f"{code} happened"}}, "InvokeModel"
+        )
+
+    @staticmethod
+    def _ok_response(text: str = "RESPONSE_MARKER") -> dict:
+        body = {
+            "content": [{"text": text}],
+            "usage": {"input_tokens": 11, "output_tokens": 22},
+        }
+        return {"body": io.BytesIO(json.dumps(body).encode())}
+
+    def _translator_with(self, *side_effects):
+        translator = _translator()
+        translator.bedrock_client = MagicMock()
+        translator.bedrock_client.invoke_model.side_effect = list(side_effects)
+        return translator
+
+    def test_a_first_attempt_success_does_not_retry(self):
+        translator = self._translator_with(self._ok_response())
+        with patch(f"{MODULE}.time.sleep") as sleep:
+            assert translator._invoke_bedrock("p") == "RESPONSE_MARKER"
+        assert translator.bedrock_client.invoke_model.call_count == 1
+        sleep.assert_not_called()
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            "ThrottlingException",
+            "ServiceUnavailableException",
+            "TooManyRequestsException",
+            "RequestTimeoutException",
+        ],
+    )
+    def test_each_retryable_code_is_retried_and_can_then_succeed(self, code):
+        # The set is asserted member by member rather than as a whole: dropping one
+        # entry turns a transient throttle into an immediate hard failure for every
+        # rule, and a single-member test would not see it.
+        translator = self._translator_with(
+            self._client_error(code), self._ok_response()
+        )
+        with patch(f"{MODULE}.time.sleep"):
+            assert translator._invoke_bedrock("p") == "RESPONSE_MARKER"
+        assert translator.bedrock_client.invoke_model.call_count == 2
+
+    def test_a_non_retryable_code_fails_on_the_first_attempt(self):
+        # AccessDeniedException will never succeed on a retry, and retrying it delays
+        # the error the operator needs to see.
+        translator = self._translator_with(
+            self._client_error("AccessDeniedException"), self._ok_response()
+        )
+        with patch(f"{MODULE}.time.sleep") as sleep:
+            with pytest.raises(TranslationError) as excinfo:
+                translator._invoke_bedrock("p")
+        assert translator.bedrock_client.invoke_model.call_count == 1
+        sleep.assert_not_called()
+        assert excinfo.value.context["error_code"] == "AccessDeniedException"
+
+    def test_the_default_allows_two_attempts_not_three(self):
+        # `max_retries: int = 2` with `range(max_retries)` is TWO attempts in total,
+        # i.e. one retry. The docstring says "default: 3". Pinned at the observable
+        # count so the mismatch is visible to whoever reconciles them; if the default
+        # is raised to 3 this test is the one that says so.
+        translator = self._translator_with(
+            self._client_error("ThrottlingException"),
+            self._client_error("ThrottlingException"),
+            self._ok_response(),
+        )
+        with patch(f"{MODULE}.time.sleep"):
+            with pytest.raises(TranslationError):
+                translator._invoke_bedrock("p")
+        assert translator.bedrock_client.invoke_model.call_count == 2
+
+    def test_the_backoff_doubles_between_attempts(self):
+        translator = self._translator_with(
+            *([self._client_error("ThrottlingException")] * 4)
+        )
+        with patch(f"{MODULE}.time.sleep") as sleep:
+            with pytest.raises(TranslationError):
+                translator._invoke_bedrock("p", max_retries=4, initial_backoff=0.5)
+        assert [call.args[0] for call in sleep.call_args_list] == [0.5, 1.0, 2.0]
+
+    def test_exhausting_the_retries_reports_the_attempt_count(self):
+        translator = self._translator_with(
+            *([self._client_error("ThrottlingException")] * 3)
+        )
+        with patch(f"{MODULE}.time.sleep"):
+            with pytest.raises(TranslationError) as excinfo:
+                translator._invoke_bedrock("p", rule_id="r1", max_retries=3)
+        assert excinfo.value.context["max_retries"] == 3
+        assert excinfo.value.rule_id == "r1"
+
+    def test_a_connection_error_is_retried(self):
+        # BotoCoreError has its own branch, with no code to classify -- every one of
+        # them is treated as transient.
+        translator = self._translator_with(
+            EndpointConnectionError(endpoint_url="https://bedrock"), self._ok_response()
+        )
+        with patch(f"{MODULE}.time.sleep"):
+            assert translator._invoke_bedrock("p") == "RESPONSE_MARKER"
+        assert translator.bedrock_client.invoke_model.call_count == 2
+
+    def test_a_connection_error_that_never_clears_raises(self):
+        translator = self._translator_with(
+            *([EndpointConnectionError(endpoint_url="https://bedrock")] * 2)
+        )
+        with patch(f"{MODULE}.time.sleep"):
+            with pytest.raises(TranslationError) as excinfo:
+                translator._invoke_bedrock("p")
+        assert excinfo.value.context["error_type"] == "EndpointConnectionError"
+
+    def test_a_response_with_no_content_field_is_not_retried(self):
+        # Raised inside the `try`, so it is caught by the bare `except Exception` and
+        # re-wrapped rather than retried. Worth pinning because a malformed response is
+        # the one failure here that looks transient and is not.
+        translator = self._translator_with({"body": io.BytesIO(b'{"usage": {}}')})
+        with patch(f"{MODULE}.time.sleep") as sleep:
+            with pytest.raises(TranslationError):
+                translator._invoke_bedrock("p")
+        assert translator.bedrock_client.invoke_model.call_count == 1
+        sleep.assert_not_called()
+
+    def test_an_unparseable_body_is_not_retried(self):
+        translator = self._translator_with({"body": io.BytesIO(b"not json")})
+        with patch(f"{MODULE}.time.sleep") as sleep:
+            with pytest.raises(TranslationError) as excinfo:
+                translator._invoke_bedrock("p")
+        assert "JSON" in excinfo.value.message
+        sleep.assert_not_called()
+
+    def test_the_extraction_config_selects_the_extraction_model(self):
+        # The two configs exist so extraction can run on a cheaper model; picking the
+        # translator config here would spend the expensive one on every document.
+        translator = self._translator_with(self._ok_response())
+        with patch(f"{MODULE}.time.sleep"):
+            translator._invoke_bedrock("p", use_extraction_config=True)
+        kwargs = translator.bedrock_client.invoke_model.call_args.kwargs
+        assert kwargs["modelId"] == translator.extraction_config.model_id
+        assert kwargs["modelId"] != translator.translator_config.model_id
+
+    def test_the_request_body_carries_the_configured_limits(self):
+        translator = self._translator_with(self._ok_response())
+        with patch(f"{MODULE}.time.sleep"):
+            translator._invoke_bedrock("PROMPT_MARKER")
+        body = json.loads(
+            translator.bedrock_client.invoke_model.call_args.kwargs["body"]
+        )
+        assert body["max_tokens"] == translator.translator_config.max_tokens
+        assert body["temperature"] == translator.translator_config.temperature
+        assert body["messages"] == [{"role": "user", "content": "PROMPT_MARKER"}]
