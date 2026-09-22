@@ -44,15 +44,22 @@ the length of the ladder and then clear it. See
 document *completes* and therefore trips no alarm, everything routed through this
 module re-raises: the execution fails, and the existing failure alarms and DLQ
 already count it. A second signal would double-count the same event.
+
+The mechanics below — replace only the same ``code`` and keep every other issue,
+swallow every failure of the write itself, record nothing for a transient error —
+are shared with the document-level sites (#1064) and defined once, in
+:mod:`idp_common.document_failure`. This module supplies extraction's stage, code
+and message and keeps the two entry points the extraction Lambdas call.
 """
 
-import logging
 from typing import Any, Optional
 
-from idp_common.models import Document, ProcessingIssue, Section
-from idp_common.utils.transient_errors import is_transient_error
-
-logger = logging.getLogger(__name__)
+from idp_common.document_failure import (
+    SectionDiagnosis,
+    persist_failed_section,
+    record_section_failure,
+)
+from idp_common.models import Document, ProcessingIssue
 
 #: Stage that owns the issues this module writes. Matches the value
 #: ``ExtractionService._save_results`` uses, so a successful re-run replaces the
@@ -78,11 +85,14 @@ _FAILED_MESSAGE = (
 )
 
 
-def _find_section(document: Document, section_id: str) -> Optional[Section]:
-    for section in document.sections or []:
-        if section.section_id == section_id:
-            return section
-    return None
+def _diagnosis(section_id: str, error: BaseException) -> SectionDiagnosis:
+    return SectionDiagnosis(
+        section_id=section_id,
+        stage=EXTRACTION_STAGE,
+        code=EXTRACTION_FAILED_CODE,
+        message=_FAILED_MESSAGE,
+        root_cause=f"{type(error).__name__}: {error}",
+    )
 
 
 def record_section_extraction_failure(
@@ -118,31 +128,7 @@ def record_section_extraction_failure(
     stays generic and the specifics are not paraphrased in a second place that
     could drift from the first.
     """
-    section = _find_section(document, section_id)
-    if section is None:
-        logger.error(
-            "Section %s is not present in document %s, so the %s issue could not "
-            "be recorded on it; the failure is reported only by the exception.",
-            section_id,
-            getattr(document, "id", "<unknown>"),
-            EXTRACTION_FAILED_CODE,
-        )
-        return None
-
-    issue = ProcessingIssue(
-        stage=EXTRACTION_STAGE,
-        severity="error",
-        code=EXTRACTION_FAILED_CODE,
-        message=_FAILED_MESSAGE,
-        root_cause=f"{type(error).__name__}: {error}",
-        section_id=section_id,
-    )
-    section.processing_issues = [
-        pi
-        for pi in (section.processing_issues or [])
-        if getattr(pi, "code", None) != EXTRACTION_FAILED_CODE
-    ] + [issue]
-    return issue
+    return record_section_failure(document, _diagnosis(section_id, error))
 
 
 def persist_section_after_extraction_failure(
@@ -178,38 +164,11 @@ def persist_section_after_extraction_failure(
     every failure here is logged and swallowed. Returns ``None`` if nothing was
     recorded or the write did not happen.
     """
-    if is_transient_error(error):
-        logger.info(
-            "Not marking section %s as failed: %s is transient, so the step will "
-            "be retried and a marked section would clear itself.",
-            section_id,
-            type(error).__name__,
-        )
-        return None
-    issue = record_section_extraction_failure(document, section_id, error)
-    if issue is None:
-        return None
-    try:
-        document_service.update_document_section(
-            document_id=document.input_key,
-            section_index=section_index,
-            section=_find_section(document, section_id),
-        )
-        logger.info(
-            "Persisted failed section %s (index %d) with issue %s for document %s",
-            section_id,
-            section_index,
-            issue.code,
-            document.input_key,
-        )
-    except Exception as persist_error:
-        logger.error(
-            "Could not persist failed section %s for document %s: %s. The failure "
-            "is still reported by the exception that is about to be re-raised.",
-            section_id,
-            getattr(document, "input_key", "<unknown>"),
-            persist_error,
-            exc_info=True,
-        )
-        return None
-    return issue
+    recorded = persist_failed_section(
+        document_service=document_service,
+        document=document,
+        error=error,
+        diagnosis=_diagnosis(section_id, error),
+        section_index=section_index,
+    )
+    return recorded[0] if recorded else None

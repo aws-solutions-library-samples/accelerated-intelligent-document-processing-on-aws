@@ -25,8 +25,21 @@ export interface SectionWithIssues {
  * still accepted. Both are error severity, so severity alone cannot tell them
  * apart, and the difference is the one an operator acts on first: a failed
  * section has no trustworthy result, while a flagged one does and was kept.
+ *
+ * This list is a literal in a different language from the backend that produces
+ * the codes, so nothing about adding a code there would make it appear here. The
+ * backend declares its own set (`FAILURE_CODES` in `idp_common.document_failure`
+ * and `EXTRACTION_FAILED_CODE` in `idp_common.extraction.failure`) and
+ * `scripts/tests/test_failure_code_ui_parity.py` fails when the two disagree in
+ * either direction — a missing code would otherwise render a raised stage as the
+ * milder "Incomplete" with every test green.
  */
-const FAILURE_CODES = new Set(['extraction_failed']);
+const FAILURE_CODES = new Set([
+  'extraction_failed',
+  'rule_validation_failed',
+  'rule_validation_not_consolidated',
+  'section_processing_failed',
+]);
 
 /**
  * Reduce a section's issues to a single Cloudscape StatusIndicator type +
