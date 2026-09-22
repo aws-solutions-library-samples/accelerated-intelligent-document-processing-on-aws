@@ -619,28 +619,74 @@ def test_orchestration_transient_failure_records_nothing():
     Marking the sections would show them failed for most of three hours and then
     clear.
 
-    The error is shaped the way botocore raises a Bedrock throttle — a class *named*
-    after the modeled code — because that is what makes the premise hold: Step
-    Functions matches the class name, not the error code.
+    The error is shaped the way botocore really raises a Bedrock throttle — a class
+    *named* after the modeled code, which is what `ThrottlingException` being in
+    bedrock-runtime's error map produces.
+
+    That name is one the task state already listed, so this is the case where the
+    two classifications happened to agree before #1101. It is re-raised as
+    `TransientError` all the same: one name on the wire for every transient cause is
+    what makes the state machine's list short enough to be right, and both names sit
+    in the same retry tier, so the ladder is identical either way.
     """
     service = MagicMock()
     throttle = _ModeledThrottlingException(
         {"Error": {"Code": "ThrottlingException", "Message": "slow down"}}, "Converse"
     )
     assert type(throttle).__name__ == "ThrottlingException", "fixture precondition"
-    with pytest.raises(botocore.exceptions.ClientError):
+    names = _retry_names("RuleValidationOrchestration")
+    assert "ThrottlingException" in names, "the name that already agreed"
+    with pytest.raises(TransientError) as surfaced:
         _orch_invoke(
             _document(Status.RULE_VALIDATION_ORCHESTRATOR), service, fails_with=throttle
         )
+    assert type(surfaced.value).__name__ in names
     service.update_document.assert_not_called()
+
+
+def _retry_names(state_name: str) -> set[str]:
+    """Every error name the named task state's ``Retry`` list matches on.
+
+    Read from the shipped definition rather than restated here, because the whole
+    point of these two tests is that the library's verdict and the state machine's
+    are the same question, and a hardcoded copy could agree with neither.
+    """
+    import json
+    import re
+
+    asl = os.path.join(
+        os.path.dirname(__file__),
+        "../../../../../patterns/unified/statemachine/workflow.asl.json",
+    )
+    with open(asl, encoding="utf-8") as fh:
+        raw = fh.read()
+    # The definition carries ``${...}`` substitution tokens that are not JSON.
+    # Anchored on the key's closing quote so quoted ARN values are left intact.
+    states = json.loads(re.sub(r'"\s*:\s*\$\{[^}]+\}', '": 1', raw))["States"]
+
+    def find(node: dict) -> dict:
+        for key, st in node.items():
+            if key == state_name:
+                return st
+            for branch in st.get("Branches", []):
+                if hit := find(branch["States"]):
+                    return hit
+            for sub in ("ItemProcessor", "Iterator"):
+                if sub in st and (hit := find(st[sub]["States"])):
+                    return hit
+        return {}
+
+    state = find(states)
+    assert state, f"{state_name} not found in workflow.asl.json"
+    return {n for r in state.get("Retry", []) for n in r["ErrorEquals"]}
 
 
 @pytest.mark.unit
 @pytest.mark.parametrize(
     "error",
     [
-        # Same throttling CODE, but the class name Step Functions sees is
-        # `ClientError`, which this task state does not list.
+        # A throttling CODE under a class name botocore did not derive from the
+        # code — what arrives when the error is not modeled on the operation.
         botocore.exceptions.ClientError(
             {"Error": {"Code": "ThrottlingException", "Message": "slow down"}},
             "Converse",
@@ -649,22 +695,21 @@ def test_orchestration_transient_failure_records_nothing():
     ],
     ids=["bare-ClientError", "ReadTimeoutError"],
 )
-def test_a_transient_that_the_state_machine_will_not_retry_records_nothing(error):
-    """The known residual, pinned so it is visible rather than assumed away.
+def test_a_transient_under_any_class_name_is_surfaced_as_the_name_that_is_retried(
+    error,
+):
+    """#1101: the library's verdict and the state machine's now answer together.
 
-    `is_transient_error` says these are transient, so the carve-out suppresses the
-    record — but `RuleValidationOrchestration`'s `Retry.ErrorEquals` lists neither
-    `ClientError` nor `ReadTimeoutError` nor `TransientError`, and this handler has
-    no `raise_if_transient` wrapper to convert them, so **no retry is coming
-    either**. The document fails with nothing on its record.
+    These two shapes are transient by error code and by exception type, but neither
+    class NAME — ``ClientError``, ``ReadTimeoutError`` — is a name a ``Retry`` list
+    can usefully carry. The handler converts them to ``TransientError``, which
+    ``RuleValidationOrchestration`` lists, so the eight-attempt ladder runs. Nothing
+    is recorded on the sections, and that suppression is now sound rather than
+    coincidental: the same predicate decides both, so a record is withheld exactly
+    when a retry is genuinely coming.
 
-    Extraction and assessment do not have this gap: their handlers wrap the whole
-    invocation in `raise_if_transient` and their task states list `TransientError`.
-
-    This test asserts today's behaviour, not desired behaviour. It is expected to
-    need changing when #1101 gives these handlers the wrapper and their task states
-    the name; a failure here after that work is the reminder to update the two
-    doc tiers that state the residual.
+    The ``Retry`` list is read from the shipped definition, so removing the name
+    there fails this test rather than silently restoring the old behaviour.
     """
     from idp_common.utils.transient_errors import is_transient_error
 
@@ -672,14 +717,36 @@ def test_a_transient_that_the_state_machine_will_not_retry_records_nothing(error
     assert type(error).__name__ not in {
         "TransientError",
         "ThrottlingException",
-    }, "fixture precondition: a name the task state does not list"
+    }, "fixture precondition: a name the task state does not list directly"
 
     service = MagicMock()
-    with pytest.raises(type(error)):
+    with pytest.raises(TransientError) as surfaced:
         _orch_invoke(
             _document(Status.RULE_VALIDATION_ORCHESTRATOR), service, fails_with=error
         )
+    # Step Functions matches the CLASS NAME, so that is what has to be in the list.
+    assert type(surfaced.value).__name__ in _retry_names("RuleValidationOrchestration")
+    assert surfaced.value.__cause__ is error, "the cause must stay readable"
     service.update_document.assert_not_called()
+
+
+@pytest.mark.unit
+def test_a_deterministic_failure_is_still_recorded_and_keeps_its_own_name():
+    """The other half of #1101, and the property that makes the split worth having.
+
+    A failure a retry cannot fix must not be dressed up as retryable: it keeps its
+    own class name, which no ``Retry`` list carries, and it is recorded so the
+    Sections panel says why the document failed.
+    """
+    service = MagicMock()
+    with pytest.raises(ValueError, match="rule schema is malformed"):
+        _orch_invoke(
+            _document(Status.RULE_VALIDATION_ORCHESTRATOR),
+            service,
+            fails_with=ValueError("rule schema is malformed"),
+        )
+    assert "ValueError" not in _retry_names("RuleValidationOrchestration")
+    service.update_document.assert_called_once()
 
 
 @pytest.mark.unit
