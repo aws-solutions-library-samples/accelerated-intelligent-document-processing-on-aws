@@ -35,7 +35,16 @@ so the classification stage fails outright rather than degrading. The file there
 cannot ship a working one.
 
 It ships with `classification.model` set to the base model, so it runs as-is and is
-priced and limit-checked correctly. To run the fine-tuned arm:
+priced and limit-checked correctly.
+
+⚠️ **As shipped, the two arms of this A/B are the same configuration, so running both
+produces the same numbers and a delta of zero.** That is not a result about
+fine-tuning — it is the consequence of the fine-tuned arm having no deployment to
+point at until you supply one. `docsplit_finedtuned_config.yaml` and
+`docsplit_base_model_config.yaml` now differ only in comments. Substitute your own
+deployment before reading any comparison between them.
+
+To run the fine-tuned arm:
 
 1. Fine-tune `amazon.nova-2-lite-v1:0` on your own classification data.
 2. Create a custom model deployment for the result and note its ARN.

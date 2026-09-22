@@ -79,8 +79,16 @@ account"* — so the stage fails outright rather than degrading. The file theref
 cannot ship a working one.
 
 Both `model` values ship as `us.amazon.nova-2-lite-v1:0`, the base model the fine-tune
-was derived from, so the file runs as-is and is priced and limit-checked correctly. To
-run the fine-tuned arm:
+was derived from, so the file runs as-is and is priced and limit-checked correctly.
+
+⚠️ **As shipped, the two arms of this A/B are the same configuration, so running both
+produces the same numbers and a delta of zero.** That is not a result about
+fine-tuning — it is the consequence of the fine-tuned arm having no deployment to
+point at until you supply one. `fine_tuned_config.yaml` and `ocr_config.yaml` now
+differ only in comments and the position of one key. Substitute your own deployment
+before reading any comparison between them.
+
+To run the fine-tuned arm:
 
 1. Fine-tune `amazon.nova-2-lite-v1:0` on your own data.
 2. Create a custom model deployment for the result and note its ARN.
@@ -90,6 +98,18 @@ run the fine-tuned arm:
 4. Add a `bedrock/<that ARN>` entry to your pricing configuration if you want cost
    reporting for the run — a model with no pricing entry records a NULL cost rather
    than a wrong one, so the run's spend is reported as incomplete.
+
+### One log line to expect on the first extraction call
+
+`extraction.max_tokens` in this file is `65535`, and Nova 2 Lite's output cap is
+10,000. Bedrock rejects the first request with a `ValidationException` naming the
+limit, the client reads the cap and retries, and the run proceeds — so this is noise
+rather than a failure, and the same pairing already appears elsewhere in this
+directory. It is called out because until now the stage never got this far: the
+account-scoped ARN failed with `AccessDeniedException` first, and the limits lookup
+that would have flagged the mismatch had no entry for that ARN and was swallowed.
+Setting `max_tokens: '10000'` — the value the sibling blocks in this file already use
+— avoids the round trip.
 
 ## Processing Mode
 

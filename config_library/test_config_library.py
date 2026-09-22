@@ -141,12 +141,26 @@ class TestConfigFilesStructure:
             )
 
 
+def _names_a_model(key) -> bool:
+    """Is `key` a field whose value is a model identifier?
+
+    Matched by SUFFIX, not against the pair ("model", "model_id"). Two of the 71
+    model-bearing fields in this library are named neither — `escalation_model` and
+    `analysis_model_id`, both in `unified/lending-package-sample-govcloud/config.yaml`
+    — so an exact-pair predicate covers 69 of 71 and a private-account ARN written
+    into either one passes every check in this file. The suffix reaches all 71 and,
+    more to the point, reaches the next such field without anyone remembering to add
+    it.
+    """
+    return isinstance(key, str) and (key.endswith("model") or key.endswith("model_id"))
+
+
 def _iter_model_values(node, path=""):
-    """Yield every (dotted-path, value) for a key named `model` or `model_id`."""
+    """Yield every (dotted-path, value) for a key that names a model."""
     if isinstance(node, dict):
         for key, value in node.items():
             here = f"{path}.{key}" if path else str(key)
-            if key in ("model", "model_id") and isinstance(value, str):
+            if _names_a_model(key) and isinstance(value, str):
                 yield here, value
             else:
                 yield from _iter_model_values(value, here)
@@ -161,6 +175,16 @@ def _iter_model_values(node, path=""):
 # segment (`arn:aws:bedrock:us-east-1::foundation-model/...`) and is therefore fine,
 # which is why this keys on the account segment being populated rather than on a list
 # of resource types that would go stale as Bedrock adds them.
+#
+# ⚠️ Bedrock only. A private-account **SageMaker** endpoint ARN — the Pattern-3 UDOP
+# shape — has a populated account segment too and is not matched here. That is a
+# deliberate bound rather than an oversight: `scripts/check_account_ids.py` (PR #1092)
+# gates committed account ids generally, whatever service names them, so between the
+# two the class is covered. The residual is that this check alone would not catch a
+# SageMaker endpoint, and #1092's own coverage of this directory is what its three
+# preset exemption entries currently suppress — entries slated for deletion once both
+# changes have landed. If #1092 is ever removed, widen the pattern here to any ARN
+# with a populated account segment.
 ACCOUNT_SCOPED_BEDROCK_ARN = re.compile(r"^arn:[^:]*:bedrock:[^:]*:\d{12}:")
 
 # The presets whose whole purpose is to demonstrate a fine-tuned model, and which
@@ -207,6 +231,44 @@ class TestNoAccountScopedModelArns:
             f"presets for the pattern. Redacting the account id is not a fix: the "
             f"ARN still would not resolve."
         )
+
+    def test_every_model_bearing_key_in_the_tree_is_matched(self):
+        """No model-bearing field may sit outside the predicate's reach.
+
+        Universe closure for the key rule, derived rather than authored. An exact
+        ("model", "model_id") predicate reached 69 of the 71 model-bearing fields in
+        this library, and a private-account ARN in either of the other two passed every
+        check in this file. So the universe is computed from the tree — every key whose
+        name ends in a model-ish word — and any member the predicate rejects fails here,
+        which is what stops the rule narrowing back without the loss being visible.
+        """
+        key_re = re.compile(r"^\s*([A-Za-z_][A-Za-z0-9_]*)\s*:")
+        found: dict[str, int] = {}
+        for param in discover_yaml_files():
+            path = param.values[0]
+            for line in path.read_text(encoding="utf-8").splitlines():
+                m = key_re.match(line)
+                if m and re.search(r"model(_id)?$", m.group(1)):
+                    found[m.group(1)] = found.get(m.group(1), 0) + 1
+
+        assert found, (
+            "no model-bearing keys discovered at all; the census below is vacuous and "
+            "the check above may be scanning nothing"
+        )
+        unmatched = sorted(k for k in found if not _names_a_model(k))
+        assert not unmatched, (
+            f"{unmatched} name a model but are not matched by _names_a_model, so a "
+            f"private-account ARN in one of them would pass. Widen the predicate."
+        )
+        # Non-vacuity: the two keys that motivated the suffix rule must still be here,
+        # or the rule is being kept for nothing and a revert to the exact pair would
+        # look harmless.
+        for key in ("escalation_model", "analysis_model_id"):
+            assert key in found, (
+                f"'{key}' is gone from config_library, so it no longer demonstrates "
+                f"why the key predicate matches by suffix. Re-derive the census before "
+                f"narrowing the predicate — do not narrow it because this list shrank."
+            )
 
     def test_the_check_can_actually_see_the_fine_tuned_presets(self):
         """The three presets this check exists for must be in its universe.
