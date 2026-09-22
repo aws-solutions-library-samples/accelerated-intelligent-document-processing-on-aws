@@ -8,14 +8,87 @@ Contains only existing summarization methods, no new functionality.
 
 import json
 import logging
+import numbers
 from datetime import datetime
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 from idp_common import bedrock, s3, utils
 from idp_common.models import Document, RuleValidationResult
 from idp_common.rule_validation.models import LLMResponse
 
 logger = logging.getLogger(__name__)
+
+#: Sort key for a page reference that is not a decimal integer. Non-numeric
+#: references sort after every numeric one, and among themselves by their own text,
+#: so the order is total and does not depend on set iteration order.
+_NON_NUMERIC_PAGE_RANK = 1
+_NUMERIC_PAGE_RANK = 0
+
+
+def _normalize_page_reference(page: Any) -> Optional[Tuple[str, Tuple[int, int, str]]]:
+    """Canonicalise one ``supporting_pages`` element, or reject it.
+
+    Returns ``(canonical_text, sort_key)``, or ``None`` for a value that is not a
+    page reference at all.
+
+    Page references reach the consolidated summary from two engines. The solver
+    path builds them with ``str(citation).split(",")`` and so always yields ``str``;
+    the model path passes a JSON array through unchanged and can yield ``int``. A
+    document routing some rules to each therefore mixes the two shapes by
+    construction, and a set holding both counts page 1 twice. Canonicalising to
+    ``str`` here — once, where the set is populated — is what makes the members
+    comparable, and it agrees with ``LLMResponse.supporting_pages``, which is
+    declared ``List[str]`` and already coerces its own elements.
+
+    The ordering integer is parsed here as well, rather than in the sort key, for
+    two reasons. ``str.isdigit()`` is true for characters ``int()`` refuses —
+    ``'²'``, ``'₂'``, ``'②'`` — and a decimal string longer than CPython's
+    conversion limit raises even though ``str.isdecimal()`` is true, so the parse
+    needs a guard wherever it happens; doing it once at populate time means a
+    rejected value is reported next to the response it came from, and leaves the
+    sort with nothing left to raise on.
+
+    A value that is not text and not a number (a list, a dict) is **not** silently
+    stringified into the report: the raw per-rule list is preserved verbatim under
+    ``rule_details[...]["rules"][...]["supporting_pages"]``, so dropping it from the
+    aggregate loses nothing a reader cannot recover, whereas ``"{'page': 1}"``
+    sitting in a page list is indistinguishable from a real reference.
+    """
+    if isinstance(page, str):
+        text = page.strip()
+    elif isinstance(page, bool):
+        # bool is an int subclass, so it would otherwise render as "True".
+        logger.warning(
+            "Ignoring boolean supporting_pages entry %r: not a page reference", page
+        )
+        return None
+    elif isinstance(page, numbers.Number):
+        text = str(page).strip()
+    else:
+        logger.warning(
+            "Ignoring supporting_pages entry of type %s (%.80r): not a page "
+            "reference. The rule's own supporting_pages is unchanged.",
+            type(page).__name__,
+            page,
+        )
+        return None
+
+    if not text:
+        return None
+
+    if text.isdecimal():
+        try:
+            return text, (_NUMERIC_PAGE_RANK, int(text), text)
+        except ValueError:
+            # A decimal string above sys.get_int_max_str_digits(). Orderable as
+            # text, which is all this key is for.
+            logger.warning(
+                "supporting_pages entry of %d digits is too long to read as a "
+                "number; ordering it as text.",
+                len(text),
+            )
+
+    return text, (_NON_NUMERIC_PAGE_RANK, 0, text)
 
 
 class RuleValidationOrchestratorService:
@@ -66,27 +139,40 @@ class RuleValidationOrchestratorService:
         self, all_responses: Dict[str, Any]
     ) -> Dict[str, Any]:
         """
-        EXISTING METHOD: Generate a consolidated summary from all criteria validation responses.
-        Extracted from service.py without changes.
+        Generate a consolidated summary from all rule validation responses.
+
+        This method does not raise: the caller writes whatever it returns to S3 as
+        the document's compliance report. It therefore keeps a broad ``except``, but
+        what that ``except`` returns is the summary built **so far** with the error
+        attached, not a summary stripped of its statistics — a report showing zero
+        rules is indistinguishable from a document where nothing was evaluated,
+        which is what made the page-sort crash in issue #1052 expensive to diagnose.
+        Nothing re-raises here, so no ``ProcessingIssue`` is recorded either (the
+        ``rule_validation_not_consolidated`` code is attached by the orchestration
+        Lambda, and only when the handler itself raises); the surviving statistics,
+        the ``error`` field, the banner ``_format_summary_as_markdown`` renders from
+        it and a logged traceback are what make an instance visible.
         """
+        summary = {
+            "document_id": None,  # Will be set when we have access to document
+            "overall_status": "COMPLETE",
+            "total_policy_types": len(all_responses),
+            "rule_summary": {},
+            "overall_statistics": {
+                "total_rules": 0,
+                "recommendation_counts": {},
+            },
+            "supporting_pages": [],
+            "rule_details": {},
+        }
+
+        # Canonical page text -> sort key, so a page is deduplicated by its
+        # canonical form and the ordering is decided once, where the value arrives.
+        all_supporting_pages: Dict[str, Tuple[int, int, str]] = {}
+        total_rules = 0
+        recommendation_counts = {}
+
         try:
-            summary = {
-                "document_id": None,  # Will be set when we have access to document
-                "overall_status": "COMPLETE",
-                "total_policy_types": len(all_responses),
-                "rule_summary": {},
-                "overall_statistics": {
-                    "total_rules": 0,
-                    "recommendation_counts": {},
-                },
-                "supporting_pages": [],
-                "rule_details": {},
-            }
-
-            all_supporting_pages = set()
-            total_rules = 0
-            recommendation_counts = {}
-
             # Process each policy type
             for policy_type, responses in all_responses.items():
                 rule_stats = {
@@ -125,9 +211,30 @@ class RuleValidationOrchestratorService:
                         rule_stats["recommendation_counts"].get(recommendation, 0) + 1
                     )
 
-                    # Collect supporting pages
-                    for page in supporting_pages:
-                        all_supporting_pages.add(page)
+                    # Collect supporting pages, canonicalised on the way in.
+                    # `supporting_pages` is model output, so its own shape is not
+                    # guaranteed either: a bare int is not iterable and a bare
+                    # string iterates into characters, and neither should decide
+                    # what the rest of this report contains.
+                    if isinstance(supporting_pages, (list, tuple, set, frozenset)):
+                        page_values = supporting_pages
+                    elif not supporting_pages:
+                        # None, "", or another empty value: nothing to collect.
+                        page_values = []
+                    else:
+                        logger.warning(
+                            "Ignoring supporting_pages of type %s for rule %.80r: "
+                            "expected a list of page references.",
+                            type(supporting_pages).__name__,
+                            rule,
+                        )
+                        page_values = []
+
+                    for page in page_values:
+                        normalized = _normalize_page_reference(page)
+                        if normalized is not None:
+                            text, sort_key = normalized
+                            all_supporting_pages[text] = sort_key
 
                     # Add rule summary
                     rule_stats["rules"].append(
@@ -168,34 +275,12 @@ class RuleValidationOrchestratorService:
                 }
 
             # Calculate overall statistics
-            summary["overall_statistics"]["total_rules"] = total_rules
-            summary["overall_statistics"]["recommendation_counts"] = (
-                recommendation_counts
-            )
+            self._apply_overall_statistics(summary, total_rules, recommendation_counts)
 
-            # Add explicit count fields for easier access in UI
-            summary["overall_statistics"]["pass_count"] = recommendation_counts.get(
-                "Pass", 0
-            )
-            summary["overall_statistics"]["fail_count"] = recommendation_counts.get(
-                "Fail", 0
-            )
-            summary["overall_statistics"]["information_not_found_count"] = (
-                recommendation_counts.get("Information Not Found", 0)
-            )
-
-            # Calculate pass percentage
-            if total_rules > 0:
-                summary["overall_statistics"]["pass_percentage"] = round(
-                    (summary["overall_statistics"]["pass_count"] / total_rules) * 100, 2
-                )
-            else:
-                summary["overall_statistics"]["pass_percentage"] = 0.0
-
-            # Convert supporting pages set to sorted list
+            # Order the pages. Both the canonical text and its ordering key were
+            # decided when the value was collected, so nothing here can raise.
             summary["supporting_pages"] = sorted(
-                list(all_supporting_pages),
-                key=lambda x: int(x) if str(x).isdigit() else 0,
+                all_supporting_pages, key=all_supporting_pages.__getitem__
             )
 
             # Add generation timestamp
@@ -208,15 +293,51 @@ class RuleValidationOrchestratorService:
             return summary
 
         except Exception as e:
-            logger.error(f"Error generating consolidated summary: {str(e)}")
-            # Return basic summary on error
-            return {
-                "document_id": None,
-                "overall_status": "ERROR",
-                "error": str(e),
-                "total_policy_types": len(all_responses) if all_responses else 0,
-                "generated_at": datetime.now().isoformat(),
-            }
+            # Keep every statistic that was computed before the failure. Returning a
+            # five-key stub instead reads exactly like a document on which no rule
+            # was ever evaluated, which is the difference between a defect that is
+            # noticed and one that is not.
+            logger.error(
+                f"Error generating consolidated summary: {str(e)}", exc_info=True
+            )
+            summary["overall_status"] = "ERROR"
+            summary["error"] = str(e)
+            self._apply_overall_statistics(summary, total_rules, recommendation_counts)
+            summary["supporting_pages"] = sorted(
+                all_supporting_pages, key=all_supporting_pages.__getitem__
+            )
+            summary["generated_at"] = datetime.now().isoformat()
+            return summary
+
+    @staticmethod
+    def _apply_overall_statistics(
+        summary: Dict[str, Any],
+        total_rules: int,
+        recommendation_counts: Dict[str, int],
+    ) -> None:
+        """Write the document-level counts into ``summary["overall_statistics"]``.
+
+        Shared by the success and failure paths of
+        ``_generate_consolidated_summary`` so a report that failed part way through
+        still carries the same statistics fields, filled from however many responses
+        had been counted.
+        """
+        statistics = summary["overall_statistics"]
+        statistics["total_rules"] = total_rules
+        statistics["recommendation_counts"] = recommendation_counts
+
+        # Explicit count fields, for easier access in the UI
+        statistics["pass_count"] = recommendation_counts.get("Pass", 0)
+        statistics["fail_count"] = recommendation_counts.get("Fail", 0)
+        statistics["information_not_found_count"] = recommendation_counts.get(
+            "Information Not Found", 0
+        )
+
+        statistics["pass_percentage"] = (
+            round((statistics["pass_count"] / total_rules) * 100, 2)
+            if total_rules > 0
+            else 0.0
+        )
 
     async def _summarize_responses(
         self, responses: Dict[str, Any], config: Dict[str, Any]
@@ -1147,6 +1268,27 @@ tr:hover {
         # Title
         doc_id = consolidated_summary.get("document_id", "Document")
         md_parts.append(f"# Rule Validation Summary: {doc_id}\n\n")
+
+        # A consolidation that failed part way through still has statistics worth
+        # showing, but they describe only the rules counted before the failure. Say
+        # so here: this markdown is the report an operator reads, and without the
+        # banner a partial count is indistinguishable from a complete one.
+        error = consolidated_summary.get("error")
+        if error:
+            escaped_error = (
+                str(error)
+                .replace("&", "&amp;")
+                .replace("<", "&lt;")
+                .replace(">", "&gt;")
+                .replace('"', "&quot;")
+                .replace("\n", " ")
+            )
+            md_parts.append(
+                '> ⚠️ **Consolidation did not complete.** The statistics below cover '
+                "only the rules counted before it failed, so they may be "
+                "incomplete. Each policy type's own section is unaffected.\n>\n"
+                f"> Reason: {escaped_error}\n\n"
+            )
 
         # Overall Statistics as compact table with color coding
         overall_stats = consolidated_summary.get("overall_statistics", {})

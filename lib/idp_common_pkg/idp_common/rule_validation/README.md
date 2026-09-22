@@ -442,6 +442,50 @@ all_text += f"<page-number>{page_id}</page-number>\n{page_text}\n\n"
 "supporting_pages": ["1", "2", "3", "4", "5"]  # Sorted unique page IDs
 ```
 
+### The consolidated aggregate is always a list of strings
+
+The document-level `supporting_pages` in `consolidated_summary.json` holds `str`
+elements, deduplicated by that string and totally ordered: numeric references first
+by numeric value, then everything else by its own text. That is the same element type
+`LLMResponse.supporting_pages` declares and coerces to, and the same one the
+reporting layer serialises into the Athena `supporting_pages` column.
+
+This matters because the two engines produce different shapes. The solver path builds
+its pages from `str(citation).split(",")` and always yields `str`; the model path
+passes a JSON array through unchanged and can yield `int`. A document routing some
+rules to each mixes both in one aggregate, and unnormalised that listed page `1` twice
+— once as `1` and once as `"1"`.
+
+The **per-rule** lists under `rule_details[<policy_type>]["rules"][*]`
+["supporting_pages"] are *not* normalised: they stay exactly as the response
+delivered them, and are what the Markdown table formats. So a value dropped from the
+aggregate — a `list`, a `dict`, a boolean, anything that is not text or a number — is
+still recorded there, with a warning naming it in the log.
+
+Two page shapes are worth knowing about because `int()` refuses them while
+`str.isdigit()` accepts them: the digit characters that are not decimal digits
+(`'²'`, `'₂'`, `'②'`), and a decimal string longer than
+`sys.get_int_max_str_digits()`. Both are kept as page references and ordered as text.
+`str.isdecimal()` — not `isdigit()` — is the predicate that matches what `int()`
+accepts.
+
+### A consolidation that fails keeps its statistics
+
+`_generate_consolidated_summary` does not raise: the caller writes whatever it
+returns to S3 as the document's compliance report. On an unexpected failure it
+returns the summary built **so far** — the policy types already counted, their
+rules, the document-level counts and the pages collected — with `overall_status`
+`"ERROR"` and the reason in `error`, and `_format_summary_as_markdown` renders that
+reason as a banner above the statistics. A report carrying zero rules and no error is
+indistinguishable from a document on which nothing was evaluated, which is why the
+partial statistics are kept rather than discarded.
+
+Because nothing re-raises there, this path records **no** `ProcessingIssue`:
+`rule_validation_not_consolidated` is attached by the orchestration Lambda's handler,
+and only when the handler itself raises (see "How a failure is recorded" above). The
+surviving statistics, the `error` field, the rendered banner and a logged traceback
+are what make an instance of this visible.
+
 ## Intelligent Chunking
 
 ### Page-Aware Chunking

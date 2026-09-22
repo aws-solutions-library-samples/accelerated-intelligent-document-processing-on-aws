@@ -14,7 +14,7 @@ nested JSON documents using path mappings from Rule_JSON.
 Key features:
 - Path traversal with dot notation support
 - Type conversion (string to Int/Real/Bool)
-- Caching mechanism for performance
+- Per-call memoization of path readings
 - Comprehensive error handling
 - Null vs zero distinction
 """
@@ -87,15 +87,23 @@ class DataExtractor:
     """
     Extracts parameter values from nested JSON documents using path mappings.
 
-    The DataExtractor traverses JSON structures using dot notation paths,
-    converts values to appropriate types, and caches results for performance.
+    The DataExtractor traverses JSON structures using dot notation paths and
+    converts values to the types the rule declares.
 
     Features:
     - Dot notation path traversal (e.g., "documents.tax_bill.inference_result.amount")
     - Type conversion: string → Int/Real/Bool based on parameter declarations
-    - Caching: Avoids redundant extraction of the same path
+    - Path memoization within one extract_values call
     - Null handling: Distinguishes between null/missing and zero/empty string
     - Error context: Provides detailed error messages with available keys
+
+    The extractor holds **no per-document state**, so one instance is safe to
+    reuse across documents: each ``extract_values`` call memoizes its own path
+    lookups and discards them on return. The readings this class produces are the
+    values bound into the solver, so a reading served for the wrong document is a
+    compliance verdict computed against another document's data — reported with
+    normal confidence and no signal that it happened. Keeping the memo inside the
+    call is what makes that unrepresentable; see ``_extract_path``.
 
     Example:
         extractor = DataExtractor()
@@ -104,8 +112,7 @@ class DataExtractor:
     """
 
     def __init__(self):
-        """Initialize DataExtractor with empty cache."""
-        self._cache: Dict[Tuple[int, str], Any] = {}
+        """Initialize DataExtractor. The extractor carries no document state."""
 
     def extract_values(self, rule_json: RuleJSON, data: dict) -> Dict[str, Any]:
         """
@@ -115,7 +122,7 @@ class DataExtractor:
         1. Traverse the data using the dot notation path
         2. Convert the extracted value to the declared parameter type
         3. Handle missing/null values based on the required flag
-        4. Cache results to avoid redundant extraction
+        4. Memoize path lookups for the duration of this call
 
         Args:
             rule_json: Rule_JSON containing path mappings and parameter declarations
@@ -136,6 +143,11 @@ class DataExtractor:
         """
         # Build parameter lookup for type information
         param_lookup = {param.name: param for param in rule_json.parameters}
+
+        # One memo per call, holding readings of THIS `data` only. Two parameters
+        # may share a data_path, which is the only redundancy there is to avoid
+        # here, and it is entirely within one call.
+        path_cache: Dict[str, Any] = {}
 
         # Extract values for each path mapping
         extracted_values = {}
@@ -158,7 +170,9 @@ class DataExtractor:
 
             # Extract value from data
             try:
-                value = self._extract_path(data, data_path, rule_json.rule_id)
+                value = self._extract_path(
+                    data, data_path, rule_json.rule_id, path_cache=path_cache
+                )
             except ExtractionError:
                 # Re-raise extraction errors
                 raise
@@ -211,7 +225,11 @@ class DataExtractor:
         return extracted_values
 
     def _extract_path(
-        self, data: dict, path: str, rule_id: Optional[str] = None
+        self,
+        data: dict,
+        path: str,
+        rule_id: Optional[str] = None,
+        path_cache: Optional[Dict[str, Any]] = None,
     ) -> Any:
         """
         Traverse nested dictionary using dot notation path.
@@ -229,12 +247,22 @@ class DataExtractor:
         index counts from the end, as in Python. An out-of-range index resolves to
         ``None``, the same as a missing key.
 
-        Uses caching to avoid redundant traversal of the same path.
+        ``path_cache`` memoizes readings of ``data`` and is supplied by
+        ``extract_values``, which creates one per call and drops it on return. It
+        is keyed by path alone, which is correct **because** its lifetime is one
+        call against one ``data`` object: there is no second document for a key to
+        confuse it with. Anything longer-lived would have to identify the document
+        as well, and identity is the part that has no cheap answer — ``id(data)``
+        is an address CPython recycles, so a freed document's entries can be served
+        to whatever is allocated next (#1115), and a content hash costs about four
+        milliseconds per megabyte to avoid a sub-microsecond dict walk.
 
         Args:
             data: Nested dictionary to traverse
             path: Dot-notation path string
             rule_id: Optional rule ID for error context
+            path_cache: Per-call memo of readings of ``data``. A caller that omits
+                it gets a memo scoped to this single call, i.e. no memoization.
 
         Returns:
             Value at the specified path, or None if path doesn't exist
@@ -242,10 +270,13 @@ class DataExtractor:
         Raises:
             ExtractionError: If path syntax is invalid
         """
-        # Check cache first
-        cache_key = self._cache_key(data, path)
-        if cache_key in self._cache:
-            return self._cache[cache_key]
+        if path_cache is None:
+            path_cache = {}
+
+        # Check the memo first. `None` is a legitimate cached reading (a miss), so
+        # membership is the test, not truthiness.
+        if path in path_cache:
+            return path_cache[path]
 
         # Validate path syntax
         if not path or not isinstance(path, str):
@@ -278,7 +309,7 @@ class DataExtractor:
             if not isinstance(current, dict):
                 # Path goes deeper but current value is not a dict
                 # This means the path doesn't exist
-                self._cache[cache_key] = None
+                path_cache[path] = None
                 return None
 
             # Check if component exists at current level
@@ -305,7 +336,7 @@ class DataExtractor:
                         INSTANCES_KEY,
                         key,
                     )
-                self._cache[cache_key] = None
+                path_cache[path] = None
                 return None
 
             # Move to next level
@@ -313,18 +344,18 @@ class DataExtractor:
 
             for index in indices:
                 if not isinstance(current, (list, tuple)):
-                    self._cache[cache_key] = None
+                    path_cache[path] = None
                     return None
                 try:
                     current = current[index]
                 except IndexError:
                     # Out of range is a miss, not an error — same contract as a
                     # missing key, so an optional parameter still behaves.
-                    self._cache[cache_key] = None
+                    path_cache[path] = None
                     return None
 
         # Cache and return the result
-        self._cache[cache_key] = current
+        path_cache[path] = current
         return current
 
     def _convert_type(
@@ -444,30 +475,12 @@ class DataExtractor:
                 actual_value=value,
             )
 
-    def _cache_key(self, data: dict, path: str) -> Tuple[int, str]:
-        """
-        Generate cache key for memoization.
-
-        Uses the id() of the data dictionary and the path string as the key.
-        This ensures that the same path on the same data object returns cached results,
-        but different data objects (even with same content) are treated separately.
-
-        Args:
-            data: Data dictionary
-            path: Path string
-
-        Returns:
-            Tuple of (data_id, path) for use as cache key
-        """
-        return (id(data), path)
-
     def clear_cache(self):
         """
-        Clear the extraction cache.
+        No-op, retained because callers exist.
 
-        Should be called when:
-        - Processing a new data document
-        - Memory needs to be freed
-        - Testing (to ensure clean state)
+        There is no longer any cross-call state to clear: ``extract_values``
+        memoizes path readings in a dict it owns for the duration of one call, so a
+        fresh call already reads fresh data and no document's values are retained
+        after it returns. Calling this is harmless and changes nothing.
         """
-        self._cache.clear()

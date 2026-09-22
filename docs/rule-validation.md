@@ -410,6 +410,22 @@ Located at `s3://{bucket}/{document_id}/rule_validation/consolidated/consolidate
 }
 ```
 
+Two things to know if you read this file programmatically.
+
+**`supporting_pages` is always a list of strings.** Page references reach the summary
+from two engines and from model output, so they arrive as strings and as numbers; the
+document-level list canonicalises them to strings, drops duplicates, and orders
+numeric references by value followed by anything non-numeric in alphabetical order.
+The per-rule lists under `rule_details` are **not** canonicalised — they hold exactly
+what each rule's response returned, which is the record of the evidence cited.
+
+**`overall_status` is `"ERROR"` with an `error` field when consolidation did not
+complete.** The statistics alongside it are still real, but they cover only the rules
+counted before the failure, so treat them as a floor rather than a total. The Markdown
+report states this above the statistics table. A document whose per-section validation
+failed is a different case and is reported per section — see
+[Where a failed rule validation shows up](#where-a-failed-rule-validation-shows-up).
+
 ### Markdown Output
 
 Located at `s3://{bucket}/{document_id}/rule_validation/consolidated/consolidated_summary.md`:
