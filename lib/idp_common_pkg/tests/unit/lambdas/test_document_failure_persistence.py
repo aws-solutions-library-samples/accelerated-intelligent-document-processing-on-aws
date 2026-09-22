@@ -371,8 +371,12 @@ def test_processresults_attributes_the_verdict_to_the_failed_section(pr_service)
     writes = []
     pr_service.update_document.side_effect = lambda document: (
         writes.append(
-            {s.section_id: [(i.code, i.root_cause) for i in s.processing_issues or []]
-             for s in document.sections}
+            {
+                s.section_id: [
+                    (i.code, i.root_cause) for i in s.processing_issues or []
+                ]
+                for s in document.sections
+            }
         ),
         document,
     )[1]
