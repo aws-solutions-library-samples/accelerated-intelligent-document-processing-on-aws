@@ -377,7 +377,7 @@ def test_the_gate_is_registered_as_an_exemption_surface() -> None:
 
 
 # --------------------------------------------------------------------------- #
-# removedBy: decoupling two pull requests' merge order
+# Staleness, against the real entry set
 # --------------------------------------------------------------------------- #
 
 
@@ -393,94 +393,21 @@ def _clean_result():
     return result
 
 
-def test_a_removedby_entry_may_shield_nothing() -> None:
-    """Zero sites is satisfied for an entry whose named change removed them.
+def test_every_entry_fails_at_zero_with_no_tolerance() -> None:
+    """Shielding nothing fails for every entry, with no per-entry exception.
 
-    Without this, the two pull requests touching these lines could not both be green:
-    this one's entries would be stale on arrival if the other merged first, and its
-    staleness ratchet would fire if this one did. The second to land would go red and
-    the failure would read as its own defect.
+    There is no "may be absent" flag: an entry whose occurrences are gone must be
+    deleted, because while it remains it pre-exempts a future id on a matching line.
+    Asserted over the whole set rather than one member, so a tolerance reintroduced for
+    any single entry fails here.
     """
-    result = _clean_result()
-    pending = gate._removal_pending()
-    assert pending, "no entry carries removedBy, so this case proves nothing"
-    for key in pending:
+    for key in gate.ACCOUNT_ID_EXEMPT_LINES:
+        result = _clean_result()
         result.exempt_hits[key] = 0
-    assert gate._ratchet_problems(result) == []
-
-
-def test_a_dead_removedby_entry_is_named_on_every_run() -> None:
-    """It passes, but it does not pass silently.
-
-    An entry shielding zero hides no finding today; what it would do is pre-exempt a
-    future id on a line matching its pattern. So the run names it until it is deleted.
-    """
-    result = _clean_result()
-    pending = gate._removal_pending()
-    for key in pending:
-        result.exempt_hits[key] = 0
-    notices = gate._standing_notices(result)
-    assert len(notices) == len(pending)
-    for notice in notices:
-        assert "DELETE the entry" in notice
-        assert "#1107" in notice
-
-
-def test_a_live_removedby_entry_raises_no_notice() -> None:
-    """While the occurrences are still there, there is nothing to clean up."""
-    assert gate._standing_notices(_clean_result()) == []
-
-
-def test_a_removedby_entry_still_fails_on_a_partial_count() -> None:
-    """Zero or the pinned count — anything else is a change nobody audited."""
-    result = _clean_result()
-    key = next(
-        k
-        for k, v in gate.ACCOUNT_ID_EXEMPT_LINES.items()
-        if v.get("removedBy") and v["sites"] > 1
-    )
-    result.exempt_hits[key] = gate.ACCOUNT_ID_EXEMPT_LINES[key]["sites"] + 1
-    assert any(key in p and "pinned at" in p for p in gate._ratchet_problems(result))
-
-
-def test_an_entry_without_removedby_still_fails_at_zero() -> None:
-    """The tolerance is opt-in per entry, not a general relaxation."""
-    result = _clean_result()
-    key = next(
-        k for k, v in gate.ACCOUNT_ID_EXEMPT_LINES.items() if not v.get("removedBy")
-    )
-    result.exempt_hits[key] = 0
-    assert any(
-        key in p and "shields nothing" in p for p in gate._ratchet_problems(result)
-    )
-
-
-def test_removal_pending_does_not_grow(monkeypatch: pytest.MonkeyPatch) -> None:
-    """The escape hatch is bounded, on the same reasoning as MAX_UNRATCHETED.
-
-    ``removedBy`` exists to decouple a merge order, not to make "shields nothing" an
-    acceptable steady state, so adding a fourth has to be a deliberate edit.
-    """
-    assert len(gate._removal_pending()) <= gate.REMOVAL_PENDING_LIMIT
-    monkeypatch.setitem(
-        gate.ACCOUNT_ID_EXEMPT_LINES,
-        "some/other/file.yaml:pattern",
-        {"sites": 1, "removedBy": "#9999", "reason": "probe"},
-    )
-    problems = gate._ratchet_problems(_clean_result())
-    assert any("removedBy" in p and "above the limit" in p for p in problems)
-
-
-def test_every_removedby_names_a_change_and_a_reason() -> None:
-    """Shape, per entry, so the field cannot be a bare flag."""
-    for key in gate._removal_pending():
-        entry = gate.ACCOUNT_ID_EXEMPT_LINES[key]
-        assert entry["removedBy"].startswith("#"), (
-            f"{key}: removedBy must name the pull request or issue that removes the "
-            f"occurrences, got {entry['removedBy']!r}"
+        problems = gate._ratchet_problems(result)
+        assert any(key in p and "shields nothing" in p for p in problems), (
+            f"{key} shielding nothing did not fail: {problems}"
         )
-        assert entry["removedBy"].lstrip("#").isdigit(), key
-        assert entry.get("reason", "").strip(), key
 
 
 # --------------------------------------------------------------------------- #
