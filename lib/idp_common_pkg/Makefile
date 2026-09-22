@@ -31,6 +31,17 @@ include $(dir $(lastword $(MAKEFILE_LIST)))../../make/hermetic_aws.mk
 # concurrent workers would race on them rather than merely run faster.
 PYTEST_PARALLEL ?= -n auto
 
+# Aggregate coverage floor. The blunt half of the ratchet: it catches a general slide,
+# and it cannot see one module regressing while another grows -- which is what
+# scripts/check_coverage_debt.py's per-file baseline is for. Both halves exist because
+# neither subsumes the other.
+#
+# Set one point below the figure measured when the baseline was recorded, so ordinary
+# run-to-run variation does not red-line a branch nobody changed. Raise it when the
+# baseline is re-recorded upward. `COV_FLOOR=` disables it, which is what you want when
+# running a subset of the suite -- a partial run legitimately covers less.
+COV_FLOOR ?= --cov-fail-under=82
+
 .PHONY: test test-cicd clean
 
 test: test-unit
@@ -62,7 +73,7 @@ test-cicd: test-unit-cicd
 # in this file now -- as a CI-side override it left GitHub running the suite serially.
 test-unit-cicd:
 	@if [ -z "$(SKIP_INSTALL)" ]; then pip install -e ".[test]"; else echo "SKIP_INSTALL set — using pre-installed deps"; fi
-	$(PYTEST_HERMETIC) $(PYTEST_PARALLEL) -m "not integration" $(PYTEST_ARGS) --cov=idp_common --cov-report=xml:test-reports/coverage.xml --cov-report=term --junitxml=test-reports/test-results.xml tests/
+	$(PYTEST_HERMETIC) $(PYTEST_PARALLEL) -m "not integration" $(PYTEST_ARGS) $(COV_FLOOR) --cov=idp_common --cov-report=xml:test-reports/coverage.xml --cov-report=term --junitxml=test-reports/test-results.xml tests/
 
 clean:
 	rm -rf .pytest_cache

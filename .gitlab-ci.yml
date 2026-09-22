@@ -175,6 +175,9 @@ code_checks:
     # on the command line twice, which pytest answers by collecting NOTHING and
     # exiting 5 -- loud rather than silent, but a broken job either way.
     - make test-cicd -C lib/idp_common_pkg SKIP_INSTALL=1
+    # Ratchet per-file coverage against scripts/coverage_debt.json. Must follow the
+    # line above: it reads the coverage report that step writes.
+    - make check-coverage-debt
     # Package/Lambda suites not covered by idp_common_pkg (idp_cli, idp_sdk,
     # idp_feature_sdk, feature-platform, capacity, circuit-breaker, chat,
     # config_library) — all green headless, previously CI-untested.
