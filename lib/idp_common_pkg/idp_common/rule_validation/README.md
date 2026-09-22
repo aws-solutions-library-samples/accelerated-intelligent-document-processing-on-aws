@@ -445,10 +445,15 @@ all_text += f"<page-number>{page_id}</page-number>\n{page_text}\n\n"
 ### The consolidated aggregate is always a list of strings
 
 The document-level `supporting_pages` in `consolidated_summary.json` holds `str`
-elements, deduplicated by that string and totally ordered: numeric references first
-by numeric value, then everything else by its own text. That is the same element type
-`LLMResponse.supporting_pages` declares and coerces to, and the same one the
-reporting layer serialises into the Athena `supporting_pages` column.
+elements, deduplicated by that string and ordered by codepoint within two groups:
+numeric references first by numeric value, then everything else by its own text. That
+is the same element type `LLMResponse.supporting_pages` declares and coerces to.
+
+Its one consumer in this repository is the sample health-insurance review extension,
+whose claim-detail API serves it as `supportingPages` against a TypeScript interface
+declaring `string[]`. The Athena `supporting_pages` column is **not** fed from this
+list — it belongs to the per-rule `rule_details` rows, which are left as the responses
+delivered them.
 
 This matters because the two engines produce different shapes. The solver path builds
 its pages from `str(citation).split(",")` and always yields `str`; the model path
@@ -467,7 +472,15 @@ Two page shapes are worth knowing about because `int()` refuses them while
 (`'²'`, `'₂'`, `'②'`), and a decimal string longer than
 `sys.get_int_max_str_digits()`. Both are kept as page references and ordered as text.
 `str.isdecimal()` — not `isdigit()` — is the predicate that matches what `int()`
-accepts.
+accepts. Note that a reference is not length-bounded: a model that returns a
+5,000-digit page reference puts a 5,000-character string in the artifact, which is
+better than losing the report to it but is not a validated page id.
+
+The solver path's **per-rule** page list (`_process_z3_cross_section_rule`) sorts with
+the same `int(x) if x.isdigit() else 0` key this aggregate used to. It cannot raise
+there, because it builds its elements with `str(citation).split(",")` so every one is
+a `str`, but non-numeric citations still share one key and so still have no defined
+order among themselves.
 
 ### A consolidation that fails keeps its statistics
 
@@ -479,6 +492,13 @@ rules, the document-level counts and the pages collected — with `overall_statu
 reason as a banner above the statistics. A report carrying zero rules and no error is
 indistinguishable from a document on which nothing was evaluated, which is why the
 partial statistics are kept rather than discarded.
+
+Those figures are a floor on what was evaluated, and they are internally consistent:
+a rule is counted once its fields have been read, so `total_rules` never exceeds the
+rules the report details and `pass_percentage` is computed over the rules counted. A
+policy type whose responses failed part way through keeps the rules already read; one
+whose response list could not be read at all gets no entry, since there is nothing
+partial to report for it.
 
 Because nothing re-raises there, this path records **no** `ProcessingIssue`:
 `rule_validation_not_consolidated` is attached by the orchestration Lambda's handler,

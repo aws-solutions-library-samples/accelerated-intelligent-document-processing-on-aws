@@ -555,6 +555,64 @@ class TestConsolidationFailureKeepsItsStatistics:
         assert summary["overall_statistics"]["pass_percentage"] == 0.0
         assert summary["rule_details"] == {}
 
+    @staticmethod
+    def _summary_failing_inside_a_response():
+        # A response that is not a dict, after two good ones in the same policy
+        # type: `.get` raises, so the failure lands mid-way through one policy
+        # type's responses rather than between two policy types.
+        return _service()._generate_consolidated_summary(
+            {
+                "Lending": [
+                    _response("r1", "Pass", pages=["3"]),
+                    _response("r2", "Fail", pages=["1"]),
+                    "not-a-dict",
+                ]
+            }
+        )
+
+    def test_a_rule_is_counted_only_once_it_has_been_read(self):
+        # Counting before reading the response inflated total_rules by the failing
+        # one, so the report claimed three rules while its recommendation counts
+        # summed to two -- and pass_percentage was computed against the inflated
+        # denominator, understating it (33.33 rather than 50.0).
+        summary = self._summary_failing_inside_a_response()
+        statistics = summary["overall_statistics"]
+        assert statistics["total_rules"] == 2
+        assert sum(statistics["recommendation_counts"].values()) == 2
+        assert statistics["pass_percentage"] == 50.0
+
+    def test_the_rules_read_before_the_failure_are_still_detailed(self):
+        # The per-policy-type entry used to be attached only after the whole
+        # response list had been processed, so a failure inside it dropped every
+        # rule of that policy type from the report while still counting them.
+        summary = self._summary_failing_inside_a_response()
+        detail = summary["rule_details"]["Lending"]
+        assert [rule["rule"] for rule in detail["rules"]] == ["r1", "r2"]
+        assert detail["total_rules"] == 2
+        assert detail["pass_count"] == 1
+        assert detail["pass_percentage"] == 50.0
+
+    def test_the_rendered_report_shows_counts_that_agree_with_each_other(self):
+        # The one line an operator reads first. "3 (1 / 1 / 0)" is internally
+        # inconsistent and gives a reader reason to distrust the whole partial
+        # report, which is the opposite of what keeping the statistics is for.
+        summary = self._summary_failing_inside_a_response()
+        summary["document_id"] = "lending_package.pdf"
+        markdown = _service()._format_summary_as_markdown(summary)
+        line = next(line for line in markdown.splitlines() if "Rules Evaluated" in line)
+        assert ">2</span>" not in line
+        assert "| 2 (" in line
+        assert ">1</span> / <span" in line
+
+    def test_a_policy_type_whose_responses_could_not_be_read_at_all_is_not_claimed(
+        self,
+    ):
+        # The flatten step raises before any response is read, so there is nothing
+        # partial to report for that policy type and no entry is invented for it.
+        summary = self._summary_failing_after_one_policy_type()
+        assert "Fraud" not in summary["rule_details"]
+        assert "Fraud" not in summary["rule_summary"]
+
     @pytest.mark.parametrize(
         "responses",
         [pytest.param(None, id="none"), pytest.param(7, id="not-a-mapping")],

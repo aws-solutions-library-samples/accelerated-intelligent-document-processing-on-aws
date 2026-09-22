@@ -146,8 +146,9 @@ class DataExtractor:
         param_lookup = {param.name: param for param in rule_json.parameters}
 
         # One memo per call, holding readings of THIS `data` only. Two parameters
-        # may share a data_path, which is the only redundancy there is to avoid
-        # here, and it is entirely within one call.
+        # declared on one data_path is the only redundancy there is to avoid here,
+        # and it is entirely within one call — see the warning in `_extract_path`
+        # about not mistaking this for a performance feature.
         path_cache: Dict[str, Any] = {}
 
         # Extract values for each path mapping
@@ -253,10 +254,18 @@ class DataExtractor:
         is keyed by path alone, which is correct **because** its lifetime is one
         call against one ``data`` object: there is no second document for a key to
         confuse it with. Anything longer-lived would have to identify the document
-        as well, and identity is the part that has no cheap answer — ``id(data)``
-        is an address CPython recycles, so a freed document's entries can be served
-        to whatever is allocated next (#1115), and a content hash costs about four
-        milliseconds per megabyte to avoid a sub-microsecond dict walk.
+        as well, and identity is the part with no good answer — ``id(data)`` is an
+        address CPython recycles, so a freed document's entries get served to
+        whatever is allocated next (#1115), and a content hash costs milliseconds
+        per megabyte of document to avoid a microsecond of walking.
+
+        ⚠️ **Do not read this memo as a performance feature.** Under the pattern the
+        callers actually have — one ``extract_values`` call per rule, each rule
+        naming distinct paths — its hit rate is zero, because nothing is ever read
+        twice within one call. It hits only when a rule declares two parameters on
+        the same ``data_path``, and it is kept for that shape and because a memo
+        that cannot outlive the call cannot serve the wrong document. Deleting it
+        would cost nothing measurable; enlarging its scope would reopen #1115.
 
         Args:
             data: Nested dictionary to traverse

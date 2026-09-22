@@ -200,15 +200,27 @@ class RuleValidationOrchestratorService:
                         else:
                             response_list.append(rule_responses)
 
+                # Registered before the per-response loop and mutated in place
+                # below, so a failure part way through one policy type's responses
+                # still leaves the rules already read in the report rather than
+                # dropping the whole policy type.
+                summary["rule_details"][policy_type] = rule_stats
+
                 # Process each response
                 for response in response_list:
-                    rule_stats["total_rules"] += 1
-                    total_rules += 1
-
+                    # Read the response first, and count it only once it has been
+                    # read: incrementing above these four meant a response that
+                    # raised here was counted while contributing no recommendation
+                    # and no rule, so the report claimed more rules than it
+                    # detailed and understated `pass_percentage` against the
+                    # inflated denominator.
                     recommendation = response.get("recommendation", "Unknown")
                     rule = response.get("rule", "Unknown rule")
                     supporting_pages = response.get("supporting_pages", [])
                     reasoning = response.get("reasoning", "No reasoning provided")
+
+                    rule_stats["total_rules"] += 1
+                    total_rules += 1
 
                     # Count recommendations dynamically
                     recommendation_counts[recommendation] = (
@@ -253,26 +265,8 @@ class RuleValidationOrchestratorService:
                         }
                     )
 
-                # Add explicit count fields for easier access in UI
-                rule_stats["pass_count"] = rule_stats["recommendation_counts"].get(
-                    "Pass", 0
-                )
-                rule_stats["fail_count"] = rule_stats["recommendation_counts"].get(
-                    "Fail", 0
-                )
-                rule_stats["information_not_found_count"] = rule_stats[
-                    "recommendation_counts"
-                ].get("Information Not Found", 0)
-
-                # Calculate pass percentage for this rule type
-                if rule_stats["total_rules"] > 0:
-                    rule_stats["pass_percentage"] = round(
-                        (rule_stats["pass_count"] / rule_stats["total_rules"]) * 100, 2
-                    )
-                else:
-                    rule_stats["pass_percentage"] = 0.0
-
-                summary["rule_details"][policy_type] = rule_stats
+                # Derived counts for this policy type
+                self._apply_derived_counts(rule_stats)
 
                 # Create rule summary
                 summary["rule_summary"][policy_type] = {
@@ -310,6 +304,12 @@ class RuleValidationOrchestratorService:
             summary["overall_status"] = "ERROR"
             summary["error"] = str(e)
             self._apply_overall_statistics(summary, total_rules, recommendation_counts)
+            # A policy type interrupted part way through has counted rules but no
+            # derived counts yet, and the markdown formatter reads those with a
+            # default of 0 — which would render "5 rules, 0 pass" for a policy type
+            # whose counts are right there in recommendation_counts.
+            for rule_stats in summary["rule_details"].values():
+                self._apply_derived_counts(rule_stats)
             summary["supporting_pages"] = sorted(
                 all_supporting_pages, key=all_supporting_pages.__getitem__
             )
@@ -317,7 +317,32 @@ class RuleValidationOrchestratorService:
             return summary
 
     @staticmethod
+    def _apply_derived_counts(statistics: Dict[str, Any]) -> None:
+        """Fill the explicit count fields from ``recommendation_counts``.
+
+        Used for both the document-level statistics and each policy type's, and
+        called from the success and failure paths alike, so the counts a report
+        shows always agree with the responses it actually counted: the denominator
+        of ``pass_percentage`` is the number of rules counted, not the number seen.
+        """
+        counts = statistics.get("recommendation_counts") or {}
+        total_rules = statistics.get("total_rules", 0)
+
+        # Explicit count fields, for easier access in the UI
+        statistics["pass_count"] = counts.get("Pass", 0)
+        statistics["fail_count"] = counts.get("Fail", 0)
+        statistics["information_not_found_count"] = counts.get(
+            "Information Not Found", 0
+        )
+
+        statistics["pass_percentage"] = (
+            round((statistics["pass_count"] / total_rules) * 100, 2)
+            if total_rules > 0
+            else 0.0
+        )
+
     def _apply_overall_statistics(
+        self,
         summary: Dict[str, Any],
         total_rules: int,
         recommendation_counts: Dict[str, int],
@@ -332,19 +357,7 @@ class RuleValidationOrchestratorService:
         statistics = summary["overall_statistics"]
         statistics["total_rules"] = total_rules
         statistics["recommendation_counts"] = recommendation_counts
-
-        # Explicit count fields, for easier access in the UI
-        statistics["pass_count"] = recommendation_counts.get("Pass", 0)
-        statistics["fail_count"] = recommendation_counts.get("Fail", 0)
-        statistics["information_not_found_count"] = recommendation_counts.get(
-            "Information Not Found", 0
-        )
-
-        statistics["pass_percentage"] = (
-            round((statistics["pass_count"] / total_rules) * 100, 2)
-            if total_rules > 0
-            else 0.0
-        )
+        self._apply_derived_counts(statistics)
 
     async def _summarize_responses(
         self, responses: Dict[str, Any], config: Dict[str, Any]
