@@ -4,19 +4,22 @@ Test script for S3 Vectors custom resource handler.
 This script validates the API calls and logic without requiring CloudFormation.
 """
 
-import boto3
-import json
 import logging
+import os
+import re
 import sys
-from unittest.mock import Mock, patch, MagicMock
+from unittest.mock import Mock, patch
+
+import botocore.session
 from botocore.exceptions import ClientError
 
 # Import the handler functions
 from handler import (
-    get_s3_vector_info, 
-    create_s3_vector_resources, 
+    create_s3_vector_resources,
     create_vector_index,
-    sanitize_bucket_name
+    get_s3_vector_info,
+    is_valid_s3_bucket_name,
+    sanitize_bucket_name,
 )
 
 # Set up logging
@@ -24,60 +27,85 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 def test_sanitize_bucket_name():
-    """Test bucket name sanitization."""
-    print("Testing bucket name sanitization...")
-    
-    test_cases = [
-        ("TestBucket", "testbucket"),
-        ("Test_Bucket_123", "test-bucket-123"),
-        ("TEST-BUCKET-NAME", "test-bucket-name"),
-        ("", "default-s3-vectors"),
-        ("a", "s3vectors-a"),
-        ("Test--Bucket", "test-bucket"),
-        ("-test-bucket-", "s3test-bucket-kb")
+    """Each documented sanitization rule, pinned to the name it actually produces.
+
+    The name this returns is the bucket the handler creates, and the IAM policy in
+    the parent template is written against its *shape* (see
+    ``tests/test_iam_scope.py``), so a change in what any of these inputs maps to
+    is a deploy-time failure rather than a cosmetic one. Every case below names the
+    rule it exercises; the final assertion is the invariant the whole function
+    exists for, and is the one ``create_s3_vector_resources`` raises ``ValueError``
+    on if it is ever violated.
+    """
+    cases = [
+        # (input, expected, the rule it exercises)
+        ("TestBucket", "testbucket", "uppercase is lowered"),
+        ("Test_Bucket_123", "test-bucket-123", "invalid characters become hyphens"),
+        ("TEST-BUCKET-NAME", "test-bucket-name", "existing hyphens are preserved"),
+        ("", "default-s3-vectors", "an empty name falls back to a default"),
+        ("a", "s3vectors-a", "a name under 3 characters is prefixed"),
+        ("Test--Bucket", "test-bucket", "consecutive hyphens collapse"),
+        # `strip('-')` runs before the leading/trailing-hyphen guards below it, so
+        # those guards never fire for this input and the result keeps no affix.
+        ("-test-bucket-", "test-bucket", "leading and trailing hyphens are stripped"),
+        # 70 characters in, 63 out: truncated to 60 plus the `-kb` suffix.
+        ("x" * 70, "x" * 60 + "-kb", "a name over 63 characters is truncated"),
     ]
-    
-    for input_name, expected in test_cases:
-        result = sanitize_bucket_name(input_name)
-        print(f"  '{input_name}' -> '{result}' (expected: '{expected}')")
-        # Note: Some expected values might differ due to the sanitization logic
-    
-    print("✓ Bucket name sanitization tests completed")
+
+    for raw, expected, rule in cases:
+        result = sanitize_bucket_name(raw)
+        assert result == expected, (
+            f"sanitize_bucket_name({raw!r}) == {result!r}, expected {expected!r} "
+            f"({rule})"
+        )
+        assert is_valid_s3_bucket_name(result), (
+            f"sanitize_bucket_name({raw!r}) returned {result!r}, which "
+            "is_valid_s3_bucket_name rejects — create_s3_vector_resources raises "
+            "ValueError on such a name, failing the stack deployment"
+        )
 
 def test_s3_vectors_api_methods():
-    """Test that S3 Vectors client has the expected methods."""
-    print("Testing S3 Vectors API method availability...")
-    
-    # Create a mock client to verify method names
-    with patch('boto3.client') as mock_boto3:
-        mock_client = Mock()
-        
-        # Methods that should exist on the S3 Vectors client
-        expected_methods = [
-            'create_vector_bucket',
-            'get_vector_bucket', 
-            'delete_vector_bucket',
-            'create_index',
-            'get_index',
-            'delete_index'
-        ]
-        
-        # Add the methods to our mock
-        for method in expected_methods:
-            setattr(mock_client, method, Mock())
-        
-        mock_boto3.return_value = mock_client
-        
-        # Test that we can call the methods
-        s3vectors_client = boto3.client('s3vectors', region_name='us-west-2')
-        
-        for method in expected_methods:
-            if hasattr(s3vectors_client, method):
-                print(f"  ✓ {method} - method exists")
-            else:
-                print(f"  ✗ {method} - method missing")
-    
-    print("✓ S3 Vectors API method tests completed")
+    """Every s3vectors operation the handler calls must exist in the real API.
+
+    This is the one check here that a mock cannot perform. Every other test in this
+    file drives ``handler.py`` against a ``Mock``, and a ``Mock`` answers to any
+    attribute name at all — so a misspelled or renamed operation is invisible at
+    that level and surfaces only as a stack rollback. ``botocore`` ships the
+    service model, which is a local, offline source of truth for what ``s3vectors``
+    actually offers.
+
+    The handler was written against an API surface its author was unsure of — the
+    comment at ``get_s3_vector_info`` calls existence checks "potentially
+    non-existent API methods" — which is exactly the situation this guards.
+
+    The call list is scanned out of the source rather than restated, so a new call
+    is covered without editing this test. ``tests/test_iam_scope.py`` scans the same
+    way for a different purpose (that the IAM policy grants exactly these actions);
+    neither subsumes the other, since a rename applied consistently to the handler
+    *and* the template satisfies that one and fails here.
+    """
+    handler_source = os.path.join(os.path.dirname(os.path.abspath(__file__)), "handler.py")
+    with open(handler_source, encoding="utf-8") as source_file:
+        called = set(re.findall(r"s3vectors_client\.([a-z_]+)\(", source_file.read()))
+    assert called, (
+        "no `s3vectors_client.<method>(` calls found in handler.py — the scan is "
+        "broken, so this test would pass no matter what the handler called"
+    )
+
+    model = botocore.session.get_session().get_service_model("s3vectors")
+    # botocore names operations in PascalCase; boto3 exposes them snake_cased.
+    # Comparing on a case- and underscore-insensitive key avoids reimplementing
+    # that conversion in either direction.
+    available = {name.lower() for name in model.operation_names}
+    unknown = sorted(
+        method for method in called if method.replace("_", "") not in available
+    )
+    assert not unknown, (
+        f"handler.py calls s3vectors operations that the installed botocore's "
+        f"service model does not define: {unknown}. Either the name is misspelled "
+        f"or the API changed; the deployment would fail at runtime. Known "
+        f"operations: {sorted(model.operation_names)}"
+    )
 
 def test_create_vector_index_function():
     """Test the create_vector_index function with mocked client."""
@@ -123,59 +151,72 @@ def test_create_vector_index_function():
     print("✓ create_vector_index function tests completed")
 
 def test_get_s3_vector_info_function():
-    """Test the get_s3_vector_info function with mocked client."""
-    print("Testing get_s3_vector_info function...")
-    
+    """Both arms of the Status the handler reports for an existing bucket.
+
+    ``get_s3_vector_info`` deliberately does not ask whether the index exists — the
+    comment in it explains why — so the *only* thing that distinguishes its two
+    outcomes is how ``create_index`` responds: ``ConflictException`` means the index
+    was already there (``Existing``), and a successful response means this call made
+    it (``IndexCreated``). Driving the branch through ``create_index`` is therefore
+    the only way to reach either arm, and both are asserted here because nothing
+    else pins that ternary — with one arm unasserted it could be inverted
+    undetected.
+
+    The index ARN is compared in full rather than merely for presence: it is built
+    by string interpolation and handed to the Bedrock Knowledge Base as the vector
+    store, so a wrong partition, region or path segment is a silent
+    misconfiguration rather than an error.
+    """
+    bucket_arn = "arn:aws:s3vectors:us-west-2:123456789012:bucket/test-bucket"
+    expected_index_arn = f"{bucket_arn}/index/test-index"
+
     # Mock S3 Vectors client
     mock_client = Mock()
     mock_client.meta.region_name = 'us-west-2'
-    
+
     # Mock STS client for account ID
     with patch('boto3.client') as mock_boto3:
         mock_sts = Mock()
         mock_sts.get_caller_identity.return_value = {'Account': '123456789012'}
-        
+
         def client_factory(service, **kwargs):
             if service == 'sts':
                 return mock_sts
             return mock_client
-        
+
         mock_boto3.side_effect = client_factory
-        
-        # Test case 1: Bucket exists, index exists
-        mock_client.get_vector_bucket.return_value = {
-            'BucketArn': 'arn:aws:s3vectors:us-west-2:123456789012:bucket/test-bucket'
-        }
-        mock_client.get_index.return_value = {'IndexName': 'test-index'}
-        
+
+        # Case 1: the index is already there, so create_index conflicts.
+        mock_client.get_vector_bucket.return_value = {'BucketArn': bucket_arn}
+        mock_client.create_index.side_effect = ClientError(
+            {'Error': {'Code': 'ConflictException'}},
+            'create_index',
+        )
+
         result = get_s3_vector_info(mock_client, 'test-bucket', 'test-index')
-        
+
         assert result['BucketName'] == 'test-bucket'
         assert result['IndexName'] == 'test-index'
-        assert 'IndexArn' in result
-        assert result['Status'] == 'Existing'
-        
-        print("  ✓ Existing bucket and index handled correctly")
-        
-        # Test case 2: Bucket exists, index missing
-        mock_client.reset_mock()
-        mock_client.get_vector_bucket.return_value = {
-            'BucketArn': 'arn:aws:s3vectors:us-west-2:123456789012:bucket/test-bucket'
-        }
-        mock_client.get_index.side_effect = ClientError(
-            {'Error': {'Code': 'IndexNotFound'}}, 
-            'get_index'
+        assert result['BucketArn'] == bucket_arn
+        assert result['IndexArn'] == expected_index_arn
+        assert result['Status'] == 'Existing', (
+            "a ConflictException from create_index means the index already "
+            "existed, which the handler reports as 'Existing'"
         )
-        mock_client.create_index.return_value = {'IndexName': 'test-index'}
-        
-        result = get_s3_vector_info(mock_client, 'test-bucket', 'test-index')
-        
-        assert result['Status'] == 'IndexCreated'
         mock_client.create_index.assert_called_once()
-        
-        print("  ✓ Missing index creation handled correctly")
-    
-    print("✓ get_s3_vector_info function tests completed")
+
+        # Case 2: the index is absent, so create_index succeeds and this call
+        # is the one that created it.
+        mock_client.reset_mock()
+        mock_client.create_index.side_effect = None
+        mock_client.get_vector_bucket.return_value = {'BucketArn': bucket_arn}
+        mock_client.create_index.return_value = {'IndexName': 'test-index'}
+
+        result = get_s3_vector_info(mock_client, 'test-bucket', 'test-index')
+
+        assert result['Status'] == 'IndexCreated'
+        assert result['IndexArn'] == expected_index_arn
+        mock_client.create_index.assert_called_once()
 
 def test_full_workflow_simulation():
     """Simulate a full CloudFormation CREATE workflow."""

@@ -19,9 +19,6 @@ doc check derives its stated root count from ``len(RUN_ROOTS)``.
 from __future__ import annotations
 
 import importlib.util
-import re
-import subprocess
-import sys
 from collections import Counter
 from pathlib import Path
 
@@ -136,94 +133,4 @@ def test_a_root_quarantined_for_collecting_nothing_really_collects_nothing(
         "RUN_ROOTS, or the reason is about something else and should say so -- the "
         "identical claim was already false once, for "
         "samples/lambda-hook-inference/GENAIIDP-w2-copy-consistency, which collects six."
-    )
-
-
-# ---------------------------------------------------------------------------
-# QUARANTINE: a root held back by ONE failing test.
-# ---------------------------------------------------------------------------
-#
-# A root kept out of `make test` because a single test in it fails is the most
-# perishable reason in the registry: the day somebody fixes that test, the reason is
-# stale and nothing says so, and the root then sits outside the gate on the strength of
-# a sentence that is no longer true. That is how the cfnresponse reason on
-# `nested/bedrockkb/src/s3_vectors_manager` outlived its own remedy -- a `cfnresponse`
-# stub had been written one directory down, and the entry above it still named the
-# missing module as the obstruction.
-#
-# So the claim is computed instead of believed, in three directions: the named test must
-# still EXIST, it must still fail, and everything else in its file must still pass.
-#
-# Existence is not redundant with failure, and leaving it out was a real hole. `pytest
-# <path>::<name>` for a name that is gone exits 4 (usage error, "no match in any of
-# ...") rather than 0, so a `returncode != 0` check alone is satisfied by DELETING or
-# renaming the test. The entry would then stand forever naming a node id nothing can
-# resolve, and the file's four passing tests would stay outside the gate with nothing
-# prompting a revisit -- the same "reason that outlived its subject" failure this whole
-# section exists to stop, reached by a different route. So the first check requires
-# `--collect-only` to find exactly one item.
-
-#: root -> the one pytest node id whose failure holds the root back.
-_ROOTS_HELD_BACK_BY_ONE_TEST = {
-    "nested/bedrockkb/src/s3_vectors_manager": (
-        "test_handler.py::test_get_s3_vector_info_function"
-    ),
-}
-
-
-def _pytest(root: str, *arguments: str) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(
-        [sys.executable, "-m", "pytest", "-q", "-p", "no:cacheprovider", *arguments],
-        cwd=REPO_ROOT / root,
-        capture_output=True,
-        text=True,
-    )
-
-
-@pytest.mark.unit
-@pytest.mark.parametrize("root", sorted(_ROOTS_HELD_BACK_BY_ONE_TEST))
-def test_the_one_test_holding_a_root_back_still_exists(root: str) -> None:
-    """Rename or delete the named test and this fails, not the one below."""
-    node = _ROOTS_HELD_BACK_BY_ONE_TEST[root]
-    result = _pytest(root, node, "--collect-only")
-    collected = re.search(r"^(\d+) tests? collected", result.stdout, re.M)
-    assert result.returncode == 0 and collected and collected.group(1) == "1", (
-        f"`pytest {node} --collect-only` does not resolve to exactly one test, so "
-        f"QUARANTINE['{root}'] names something that no longer exists. If the test was "
-        "renamed, re-key this entry; if it was deleted, the root is no longer held back "
-        "and belongs in RUN_ROOTS.\n\n" + (result.stdout + result.stderr)[-2000:]
-    )
-
-
-@pytest.mark.unit
-@pytest.mark.parametrize("root", sorted(_ROOTS_HELD_BACK_BY_ONE_TEST))
-def test_the_one_test_holding_a_root_back_still_fails(root: str) -> None:
-    """Fix the named test and this fails, which is the point."""
-    node = _ROOTS_HELD_BACK_BY_ONE_TEST[root]
-    result = _pytest(root, node)
-    assert result.returncode != 0, (
-        f"{node} passes now, so QUARANTINE['{root}'] no longer describes anything. "
-        f"Move {root} into RUN_ROOTS, point the `make test-packages-cicd` recipe line "
-        "at the directory instead of its `tests` subdirectory, and delete this entry "
-        f"along with the QUARANTINE entries for {root} and {root}/tests.\n\n"
-        + result.stdout[-2000:]
-    )
-
-
-@pytest.mark.unit
-@pytest.mark.parametrize("root", sorted(_ROOTS_HELD_BACK_BY_ONE_TEST))
-def test_only_the_named_test_holds_the_root_back(root: str) -> None:
-    """Everything else in that file must pass, or the reason understates the problem."""
-    node = _ROOTS_HELD_BACK_BY_ONE_TEST[root]
-    module, _, name = node.partition("::")
-    # ``-k`` rather than ``--deselect``: the node id ``--deselect`` wants is relative
-    # to pytest's rootdir, which is the repository root here (pytest.ini lives there)
-    # rather than the directory this runs in, so the obvious spelling silently
-    # deselects nothing and the assertion below passes for the wrong reason.
-    result = _pytest(root, module, "-k", f"not {name}")
-    assert result.returncode == 0, (
-        f"QUARANTINE['{root}'] names {node} as the only thing holding the root back, "
-        f"but {module} still fails with that test deselected -- so the reason is "
-        "incomplete and a reader would underestimate the work. Update it.\n\n"
-        + result.stdout[-2000:]
     )

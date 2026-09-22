@@ -518,8 +518,8 @@ check-retired-models: ## Ask Bedrock whether any model this repo offers has been
 # pyrightconfig.json's 12-entry `include`, whose closure over every tracked .py
 # file scripts/tests/test_pyright_config.py derives from `git ls-files` — so the
 # set it covers cannot silently shrink. A full run is ~1 minute through make
-# (48-60s measured; the bare binary is ~47s) over 1273 files, which is why there
-# is no cheaper CI variant: the PR-scoped form below narrows the file set and
+# (48-60s measured; the bare binary is ~47s) over every tracked .py file, which is
+# why there is no cheaper CI variant: the PR-scoped form below narrows the file set and
 # therefore cannot see a break your change caused in a file it did not select.
 typecheck: ## Run type checks with basedpyright over the whole tree (the CI gate)
 	@echo "Running type checks..."
@@ -660,8 +660,11 @@ test-packages-cicd: ## CI-safe: run the package/Lambda suites NOT covered by idp
 	cd src/lambda/chat_stream_processor && $(PYTEST_HERMETIC) tests -q -p no:cacheprovider
 	@echo "Running BDA OCR project custom-resource tests (incl. library drift guard)..."
 	cd src/lambda/bda_ocr_project && $(PYTEST_HERMETIC) tests -q -p no:cacheprovider
-	@echo "Running S3 Vectors custom-resource tests (IAM scope vs sanitized bucket name)..."
-	cd nested/bedrockkb/src/s3_vectors_manager && $(PYTEST_HERMETIC) tests -q -p no:cacheprovider
+	@echo "Running S3 Vectors custom-resource tests (handler behaviour + IAM scope)..."
+	@# The directory, not just its `tests` subdirectory: test_handler.py sits beside
+	@# handler.py and covers the custom resource's own behaviour, so naming `tests`
+	@# ran the IAM-scope suite and skipped the handler's.
+	cd nested/bedrockkb/src/s3_vectors_manager && $(PYTEST_HERMETIC) . -q -p no:cacheprovider
 	@echo "Running fine-tuning job creator tests (ARN partition passthrough)..."
 	cd src/lambda/finetuning_job_creator && $(PYTEST_HERMETIC) tests -q -p no:cacheprovider
 	@echo "Running the remaining API resolver suites (download allow-list, upload target, filtered scans)..."

@@ -153,8 +153,6 @@ that exists and never runs is otherwise indistinguishable from one that passes:
 |---|---|
 | `scripts` | `scripts/test_api_rbac.py` is the live RBAC harness driven by `make api-test` against a deployed stack (layer 6), not a pytest suite; collecting it picks up its `test_email()` helper as a test |
 | `src/lambda/ocr_benchmark_deployer` | `test_local.py` needs `huggingface_hub`, which is not a test dependency |
-| `nested/bedrockkb/src/s3_vectors_manager` | One stale assertion, not an environment problem. `conftest.py` in that directory stubs `cfnresponse` (a Lambda-runtime-only module) and supplies a region and placeholder credentials, so `handler.py` imports and four of `test_handler.py`'s five tests pass. The fifth mocks `get_index` and asserts `Status == 'Existing'`; `get_s3_vector_info` no longer consults `get_index` — it always attempts `create_index` and reports `Existing` only on `ConflictException` — so it reports `IndexCreated` and the assertion fails. `scripts/tests/test_run_all_tests_registry.py` computes both halves of that claim, so fixing the test fails the guard and asks for the root to be moved into `RUN_ROOTS` |
-| `nested/bedrockkb/src/s3_vectors_manager/tests` | Named separately now that an exclusion no longer covers what is nested under it. Not skipped in practice — `make test-packages-cicd` runs it directly, in both CI systems, so CI runs more than `make test` does |
 | `samples/lambda-hook-inference/GENAIIDP-chandra-ocr-hook` | `test_local.py` is a manual local-run script and collects zero pytest tests (measured) |
 | `lib/idp_sdk/idp_sdk/_core` | source, not tests: `test_studio_processor.py` is the Test Studio processor module, which the `test_` prefix makes look like a suite |
 | `lib/idp_common_pkg/manual_tests/agents` | operator-run scripts, not a suite: each one drives real Bedrock, Athena or DynamoDB against a deployed stack and bills model calls. Run by hand (`python manual_tests/agents/test_analytics.py -q "…"`); `norecursedirs` in `lib/idp_common_pkg/pytest.ini` keeps a bare `pytest` from collecting them |
@@ -226,10 +224,12 @@ path-filtered, and `Test Results` is a check run an action creates behind an `if
 so none of them reports on every PR and requiring one would leave a check pending
 forever and block every merge.
 
-Three details are worth knowing about what it reads. All eight shared gates are
-*steps* inside one job, so they collapse to a single requireable context and share
-a single red mark — a required-check failure does not say which of the eight
-failed. It reads **both** enforcement mechanisms, classic branch protection and
+Three details are worth knowing about what it reads. Eight of the ten shared gates
+are *steps* inside one job, so those eight collapse to a single requireable context
+and share a single red mark — a required-check failure does not say which of them
+failed. The remaining two, the SRT scan and the dependency audit, are jobs of their
+own, one context each. It reads **both** enforcement mechanisms, classic branch
+protection and
 rulesets, because a branch can be fully governed by a ruleset while the classic
 endpoint reports nothing. And it distinguishes "not protected" from "cannot see":
 the classic endpoint needs repository **admin** and answers 404 without it, so the

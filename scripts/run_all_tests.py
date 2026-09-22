@@ -111,6 +111,12 @@ RUN_ROOTS = [
     # exactly what happened at v0.6.5. Pure dict/YAML logic, no AWS.
     "benchmarks/tests",
     "nested/multi-doc-discovery/docker_build_lambda/tests",
+    # S3 Vectors custom resource. The directory root, not its `tests` subdirectory:
+    # `test_handler.py` sits beside `handler.py` and the nested suite is reached by
+    # nesting under this entry. `conftest.py` here stubs `cfnresponse` and supplies
+    # a region and placeholder credentials, which is what makes the handler
+    # importable outside Lambda.
+    "nested/bedrockkb/src/s3_vectors_manager",
     # Configuration Profile revision operations: group gate + profile-level scope.
     "nested/api-resolvers/src/lambda/configuration_resolver",
     "nested/api-resolvers/src/lambda/get_file_contents_resolver",
@@ -214,36 +220,8 @@ QUARANTINE = {
     "src/lambda/ocr_benchmark_deployer": (
         "Requires huggingface_hub, which is not a test dependency."
     ),
-    # The obstruction here is ONE assertion, not the environment. The environment
-    # half is fixed: `conftest.py` in this directory stubs `cfnresponse` and
-    # supplies a region and placeholder credentials, so `handler.py` imports and
-    # four of `test_handler.py`'s five tests pass. (test_handler.py does stub
-    # `cfnresponse` itself, but on the line AFTER the `from handler import ...`
-    # that needs it, so its own stub never runs.) The fifth,
-    # test_get_s3_vector_info_function, mocks `get_index` and asserts
-    # Status == 'Existing'; `get_s3_vector_info` no longer consults `get_index` --
-    # it always attempts `create_index` and reports 'Existing' only when that
-    # raises ConflictException -- so against a plain Mock it reports
-    # 'IndexCreated' and the assertion fails. That is a stale test expectation
-    # rather than a handler defect, and correcting it is a change to the suite
-    # that this registration deliberately does not make. Once it is corrected
-    # this root moves to RUN_ROOTS and the recipe line below it can name the
-    # directory instead of `tests`.
-    "nested/bedrockkb/src/s3_vectors_manager": (
-        "test_handler.py::test_get_s3_vector_info_function asserts a Status the "
-        "handler stopped returning; the other four tests pass."
-    ),
     "samples/lambda-hook-inference/GENAIIDP-chandra-ocr-hook": (
         "test_local.py is a manual local-run script; collects zero pytest tests."
-    ),
-    # nested/bedrockkb/src/s3_vectors_manager/tests is named explicitly now that
-    # nesting under a QUARANTINE entry no longer inherits the exclusion. It is
-    # not skipped in practice: `make test-packages-cicd` runs it directly, in
-    # both CI systems, so the asymmetry is in the safe direction -- CI runs more
-    # than `make test` does.
-    "nested/bedrockkb/src/s3_vectors_manager/tests": (
-        "Run directly by `make test-packages-cicd` in both CI systems instead; "
-        "the parent dir is quarantined for one stale assertion in test_handler.py."
     ),
     # Vendored/internal helper trees that contain test_*.py but are not suites.
     "lib/idp_sdk/idp_sdk/_core": (

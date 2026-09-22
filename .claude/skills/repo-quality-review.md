@@ -151,10 +151,10 @@ not bound them. G2 reads a live *repository setting* and I2 reads the live issue
 pull-request lists — both move without any commit, so record a timestamp with them and
 do not treat a difference from the last run as a change in the tree. And
 **basedpyright's warning count is a property of the working tree**, not of the commit:
-in a clean worktree it analyses 1272 files and reports 91 warnings, and in a populated
-checkout — one carrying staged library copies, a `.aws-sam/` build tree or an editable
-install resolving elsewhere — the same commit reports 173. Say which kind of checkout
-you measured in. The **error** count is the number that must stay at zero and it is
+in a clean worktree it analyses every tracked `.py` file and reports 91 warnings, and
+in a populated checkout — one carrying staged library copies, a `.aws-sam/` build tree
+or an editable install resolving elsewhere — the same commit reports 173. Say which
+kind of checkout you measured in. The **error** count is the number that must stay at zero and it is
 stable across both.
 
 The measurements assume an **existing** dev environment with `ruff` on `PATH`
@@ -277,14 +277,17 @@ for k in ('include', 'exclude'):
 "
 ```
 
-Last measured: **1272** tracked `.py` files, of which `ruff check` reads **1241**;
-`basedpyright` 1.32.1 in a clean worktree analyses all **1272** and reports **0 errors,
-91 warnings**. What each
-gate skips is a named list of individual files, not a tree — 85 files carrying 196
-pre-existing lint findings, 184 files `ruff format` has never run over, plus two scope
-entries (the vendored `pii-anonymizer` tree and `**/*.ipynb`). `python3
-scripts/check_lint_debt.py --summary` prints the split, and `make check-lint-debt`
-fails if a listed file gains a finding or has become clean.
+Measure the coverage figures rather than quoting them: they grow with the tree, so a
+number written here is wrong by the next review. `git ls-files '*.py' | wc -l` is the
+tracked total and is exactly what `basedpyright` reports as `filesAnalyzed`; `python3
+scripts/check_lint_debt.py --summary` prints how many of them `ruff check` reads and
+how many it skips. The figure that is an **invariant** rather than a measurement is
+basedpyright's **0 errors** — that is the one to treat as a regression if it moves.
+What each gate skips is a named list of individual files, not a tree — files carrying
+pre-existing lint findings, files `ruff format` has never run over, plus two scope
+entries (the vendored `pii-anonymizer` tree and `**/*.ipynb`); the same `--summary`
+prints that split, and `make check-lint-debt` fails if a listed file gains a finding
+or has become clean.
 
 ⚠️ **basedpyright is not pinned**, unlike `cfn-lint`. `package.json` declares
 `"basedpyright": "^1.32.1"`, which is a caret range and in any case is not what gets
@@ -303,7 +306,7 @@ The **error** count is the one that must stay at zero, and it is the count that 
 stable across versions and across checkout states.
 
 Two things to know before reporting a coverage gap here. The **formatting** debt is
-deliberately unpaid and is not a new finding: reformatting those 184 files is a
+deliberately unpaid and is not a new finding: reformatting that list of files is a
 mechanical sweep deferred to its own change (issue #975 closed the exclusions, not the
 formatting). And when you demonstrate that a file is excluded, use
 `python3 scripts/check_lint_debt.py --explain <path>`. **No ruff invocation answers

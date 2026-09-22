@@ -394,9 +394,12 @@ The second is that `ruff` still does not read everything, and what it skips is
 now a **named list of individual files** rather than a directory. Any file you
 add, anywhere in the repository, is linted and format-checked from the moment it
 exists. The files that are skipped are the ones that already carried findings
-when the exclusions were narrowed: `ruff.toml`'s `[lint] exclude` names 85 files
-holding 196 pre-existing findings, and `[format] exclude` names 183 files that
-`ruff format` has never been run over. Two further entries in the top-level
+when the exclusions were narrowed: `ruff.toml`'s `[lint] exclude` names 84 files
+holding 193 pre-existing findings, and `[format] exclude` names 183 files that
+`ruff format` has never been run over. Both counts fall as files are paid off, and
+`scripts/tests/test_contributing_doc.py` reads them out of
+`scripts/lint_debt.json`, so they cannot drift from it. Two further entries in the
+top-level
 `extend-exclude` are scope decisions rather than debt — the vendored
 `pii-anonymizer` tree, and `**/*.ipynb`, because `E402`/`F811`/`I001` describe a
 module and a notebook is a document. Both arrays and both scope entries are
@@ -606,11 +609,12 @@ make typecheck-pr    # fast local check of only the files changed vs TARGET_BRAN
 
 `make typecheck` is the gate. It is what both CI systems run, and it reads
 `pyrightconfig.json`'s 12-entry `include` — whose closure over every tracked
-`.py` file `scripts/tests/test_pyright_config.py` derives from `git ls-files`. It
-analyses **1273** files, which is exactly `git ls-files '*.py' | wc -l` and exactly
-the `filesAnalyzed` it reports, and takes **about a minute** through `make` (48–60 s
-measured across several trees; the bare `basedpyright` binary is ~47 s, but the
-`make` figure is the one CI pays).
+`.py` file `scripts/tests/test_pyright_config.py` derives from `git ls-files`. The
+number of files it analyses is exactly `git ls-files '*.py' | wc -l`, and exactly
+the `filesAnalyzed` it reports; run either if you want the figure, because it grows
+with the tree. It takes **about a minute** through `make` (48–60 s measured across
+several trees; the bare `basedpyright` binary is ~47 s, but the `make` figure is the
+one CI pays).
 
 Errors fail it and warnings do not. There are **91** warnings today, and they are
 not one thing: `reportCallIssue` 34, `reportUnsupportedDunderAll` 26,
@@ -787,7 +791,7 @@ documented in [docs/deployment.md](docs/deployment.md) and
 **Python.** PEP 8, checked by `ruff` (`ruff.toml`), target Python 3.12. Write to
 88 columns, but be aware that 88 is the *formatter's* wrapping preference and not
 an enforced rule — `E501` is not among the selected lint rules, and `ruff.toml`
-still excludes a named list of 85 files from the linter and 183 from the
+still excludes a named list of 84 files from the linter and 183 from the
 formatter. Both caveats are explained under
 [the local gate set](#before-every-commit), along with how to pay one of those
 files off. Types are checked

@@ -125,7 +125,6 @@ exclude = [
     "nested/api-resolvers/src/lambda/test_set_resolver/index.py",
     "nested/bedrockkb/src/opensearch_index_custom_resource/oss_handler.py",
     "nested/bedrockkb/src/s3_vectors_manager/handler.py",
-    "nested/bedrockkb/src/s3_vectors_manager/test_handler.py",
     "patterns/unified/src/assessment_function/assessment_validator.py",
     "patterns/unified/src/bda_completion_function/index.py",
     "patterns/unified/src/bda_invoke_function/index.py",

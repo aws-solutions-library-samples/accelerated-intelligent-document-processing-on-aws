@@ -2071,6 +2071,18 @@
       "ratchet": "none",
       "reason": "Enforced vocabulary.",
       "ratchetGap": "An unrecognised status would be silently uncounted."
+    },
+    "scripts/tests/test_documented_counts.py::DOCUMENTED_COUNTS": {
+      "kind": "enforced-universe",
+      "turnsOff": "nothing; it IS the set of counts whose stated value is asserted against the thing that produces it",
+      "premise": [
+        "JUDGEMENT"
+      ],
+      "ratchet": "non-vacuity",
+      "ratchetEvidence": "scripts/tests/test_documented_counts.py",
+      "reason": "Each entry pairs a count with the code that derives it, so the risk is a count nobody registered rather than a member escaping a check. Which phrasings in English carry a count cannot be computed. Non-vacuity is per document: test_every_document_making_a_count_claim_states_a_pinned_one fails if a registered document no longer contains a statement any pattern reads, so both a dead entry and a claim reworded out of reach fail. The file scan is NOT a list -- it runs over every tracked .md/.py/.mk/Makefile from git ls-files, so no file is carved out of it, and test_this_module_does_not_match_its_own_patterns keeps that true by asserting the module needs no exclusion for itself.",
+      "ratchetGap": "A NEW document inventing a phrasing none of the registered patterns match states an unchecked count. The per-document non-vacuity check closes this for the documents already registered -- rewording one of those into an unreadable form fails -- but not for a file that has never stated a count before.",
+      "memberKind": "other"
     }
   }
 }
