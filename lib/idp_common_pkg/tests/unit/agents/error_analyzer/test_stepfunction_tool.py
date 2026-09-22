@@ -41,6 +41,7 @@ is patched at its import site.
 """
 
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 from typing import Any
 from unittest.mock import patch
 
@@ -60,6 +61,15 @@ from idp_common.agents.error_analyzer.tools.stepfunction_tool import (
 
 MODULE = "idp_common.agents.error_analyzer.tools.stepfunction_tool"
 EXECUTION_ARN = "arn:aws:states:us-east-1:123456789012:execution:idp-sm:abc123"
+
+
+def _repo_root() -> Path:
+    """The checkout this test file belongs to.
+
+    Derived from __file__ rather than from the working directory, so the walk cannot
+    read a sibling worktree's state machine.
+    """
+    return Path(__file__).resolve().parents[6]
 
 
 # The `type` field of a Step Functions HistoryEvent never carries a bare
@@ -865,3 +875,233 @@ class TestAnalyzeWorkflowExecution:
             patch(f"{MODULE}._get_execution_data", side_effect=RuntimeError("x")),
         ):
             assert set(analyze_workflow_execution("a.pdf").keys()) == expected
+
+
+def _fail_state_entered(name: str, timestamp: int) -> dict[str, Any]:
+    """A `Fail` state being entered by a Catch. `FailStateEntered` is a real event type
+    and so matches the `StateEntered` suffix, which is how it came to overwrite the
+    tracked state."""
+    return _entered(name, timestamp, kind="Fail")
+
+
+@pytest.mark.unit
+class TestACaughtFailureIsAttributedToTheStateThatFailed:
+    """#1139: a Catch handler is not the state that failed.
+
+    Every state that routes a failure to a `Fail` state produces a history of the
+    shape below, and the terminal `ExecutionFailed` arrives *after* the handler has
+    been entered. Reporting the last state entered therefore names the handler.
+
+    The fix keeps the two apart: the state comes from the last **task-level** failure,
+    the error text from the terminal event. Both halves are asserted, because taking
+    the state from the task failure and the error from it too would lose the
+    propagated cause an operator reads.
+    """
+
+    #: Extraction failed; the Catch routed to a handler; the execution then ended.
+    _CAUGHT = [
+        _entered("OCR", 1),
+        _exited("OCR", 2),
+        _entered("Extraction", 3),
+        _task_failed(4, error="ExtractionBoom"),
+        _fail_state_entered("ExtractionShardMapFailed", 5),
+        _execution_failed(6, error="States.TaskFailed"),
+    ]
+
+    def test_the_failing_state_is_reported_not_the_catch_handler(self):
+        with _fixed_timeline_cap():
+            result = _analyze_execution_timeline(self._CAUGHT)
+        assert result["failure_point"]["state"] == "Extraction", (
+            "the Catch handler is not the state that failed; reporting it sends an "
+            "operator to the wrong log group"
+        )
+
+    def test_the_error_text_still_comes_from_the_terminal_event(self):
+        """The state and the error come from different events, deliberately."""
+        with _fixed_timeline_cap():
+            result = _analyze_execution_timeline(self._CAUGHT)
+        fp = result["failure_point"]
+        assert fp["event_type"] == "ExecutionFailed"
+        assert fp["details"]["error"] == "States.TaskFailed"
+        assert fp["details"]["cause"] == "propagated"
+
+    def test_a_recovered_earlier_failure_does_not_win(self):
+        """The workflow retries in many places, so a survived TaskFailed is ordinary.
+
+        The LAST task-level failure is the one that explains the end of the execution;
+        an earlier recovered one names a state that went on to succeed.
+        """
+        history = [
+            _entered("OCR", 1),
+            _task_failed(2, error="ThrottledOnce"),
+            _exited("OCR", 3),
+            _entered("Extraction", 4),
+            _task_failed(5, error="ExtractionBoom"),
+            _fail_state_entered("FailState", 6),
+            _execution_failed(7),
+        ]
+        with _fixed_timeline_cap():
+            result = _analyze_execution_timeline(history)
+        assert result["failure_point"]["state"] == "Extraction"
+
+    def test_an_execution_level_failure_alone_still_reports_the_last_state(self):
+        """No task failed, so there is nothing better than the last state entered.
+
+        This is the case the change must NOT alter: an execution that times out or is
+        failed without a task-level event has only one candidate, and reporting it is
+        better than reporting nothing.
+        """
+        history = [
+            _entered("OCR", 1),
+            _exited("OCR", 2),
+            _entered("Extraction", 3),
+            _execution_failed(4, error="States.Timeout"),
+        ]
+        with _fixed_timeline_cap():
+            result = _analyze_execution_timeline(history)
+        assert result["failure_point"]["state"] == "Extraction"
+
+    def test_an_uncaught_task_failure_is_unchanged(self):
+        """The shape that already worked: no handler between the failure and the end."""
+        with _fixed_timeline_cap():
+            result = _analyze_execution_timeline(CHRONOLOGICAL_HISTORY)
+        assert result["failure_point"]["state"] == "Extraction"
+        assert result["failure_point"]["event_type"] == "TaskFailed"
+
+    def test_the_two_failure_classes_partition_the_matched_set(self):
+        """A new failure event type must be classified, not silently execution-level.
+
+        `_extract_failure_details` matches the union, so an event type added to one set
+        and not considered for the other would change which events can set the state.
+        """
+        from idp_common.agents.error_analyzer.tools import stepfunction_tool as m
+
+        assert m._FAILURE_EVENTS == (
+            m._TASK_LEVEL_FAILURE_EVENTS | m._EXECUTION_LEVEL_FAILURE_EVENTS
+        )
+        assert not (m._TASK_LEVEL_FAILURE_EVENTS & m._EXECUTION_LEVEL_FAILURE_EVENTS)
+
+
+@pytest.mark.unit
+class TestTheMisattributionPopulationIsDerivedFromTheWorkflow:
+    """How many states can be misattributed, computed from the state machine.
+
+    The scope of #1139 was left as "any failure routed through a `States.ALL` Catch"
+    because the enumeration kept failing. Two reasons it did, both worth recording so
+    the next reader does not repeat them:
+
+    1. **`workflow.asl.json` is not valid JSON.** It is a CloudFormation-substituted
+       template, and a `${Token}` sits in value position unquoted, so `json.load`
+       raises at the first one. It has to be substituted before parsing.
+    2. **States nest, and `Next` resolves within its own state map.** A Map's
+       `ItemProcessor.States` and a Parallel's `Branches[].States` each hold a separate
+       namespace, so a top-level-only walk sees 41 of 55 states, and a *global* name
+       lookup reports `ExtractionShardMapFailed` missing because it exists only inside
+       `ProcessSections`' iterator.
+
+    What the measurement then shows is that the population is keyed on the catch's
+    **target being a `Fail` state**, not on the breadth of its `ErrorEquals`: only two
+    of the nine route via `States.ALL`, and the other seven match narrowly. A catch
+    whose target is a `Task` or `Pass` state is a recovery path — the execution
+    continues, no `ExecutionFailed` follows, and there is nothing to misattribute.
+    """
+
+    @staticmethod
+    def _scopes():
+        import json
+        import re
+
+        asl = _repo_root() / "patterns/unified/statemachine/workflow.asl.json"
+        doc = json.loads(re.sub(r"\$\{[^}]+\}", "0", asl.read_text(encoding="utf-8")))
+        scopes: list[tuple[str, dict]] = []
+
+        def collect(states: dict, path: str = "") -> None:
+            scopes.append((path, states))
+            for name, d in states.items():
+                if not isinstance(d, dict):
+                    continue
+                for key in ("ItemProcessor", "Iterator"):
+                    inner = d.get(key)
+                    if isinstance(inner, dict) and isinstance(
+                        inner.get("States"), dict
+                    ):
+                        collect(inner["States"], f"{path}{name}/{key}/")
+                for i, branch in enumerate(d.get("Branches") or []):
+                    if isinstance(branch, dict) and isinstance(
+                        branch.get("States"), dict
+                    ):
+                        collect(branch["States"], f"{path}{name}/Branches[{i}]/")
+
+        collect(doc["States"])
+        return scopes
+
+    @classmethod
+    def _catches(cls):
+        out = []
+        for scope, states in cls._scopes():
+            for name, defn in states.items():
+                if not isinstance(defn, dict):
+                    continue
+                for c in defn.get("Catch") or []:
+                    nxt = c.get("Next")
+                    target = states.get(nxt) or {}
+                    out.append(
+                        {
+                            "state": f"{scope}{name}",
+                            "errors": tuple(c.get("ErrorEquals") or []),
+                            "target": nxt,
+                            "target_type": target.get("Type", "UNRESOLVED"),
+                        }
+                    )
+        return out
+
+    def test_every_catch_target_resolves(self):
+        """The check that makes the rest of this class trustworthy.
+
+        An unresolved target would silently drop a state from the population, which is
+        exactly how the original enumeration under-counted.
+        """
+        unresolved = [c for c in self._catches() if c["target_type"] == "UNRESOLVED"]
+        assert not unresolved, unresolved
+
+    def test_the_nested_state_maps_are_walked(self):
+        """Not vacuous: a top-level-only walk would see far fewer states."""
+        scopes = self._scopes()
+        assert len(scopes) > 1, "no nested state map found; the walk is not descending"
+        total = sum(len(states) for _, states in scopes)
+        assert total > len(scopes[0][1]), (
+            "the nested maps contributed nothing, so this walk is top-level only"
+        )
+
+    def test_the_population_is_catches_targeting_a_fail_state(self):
+        """Count-pinned, so a new Fail-targeting catch shows up here.
+
+        The number is the point: a state added with a catch onto a `Fail` state joins
+        the population silently otherwise, and the analysis would misattribute it.
+        """
+        catches = self._catches()
+        to_fail = sorted({c["state"] for c in catches if c["target_type"] == "Fail"})
+        assert len(to_fail) == 9, (
+            "the set of states whose caught failure ends the execution changed; "
+            f"if that is intended, update this count. Currently: {to_fail}"
+        )
+        # And the breadth of the match is NOT what selects them.
+        wide = {
+            c["state"]
+            for c in catches
+            if c["target_type"] == "Fail" and "States.ALL" in c["errors"]
+        }
+        assert 0 < len(wide) < len(to_fail), (
+            "the population is keyed on the catch TARGET being a Fail state, not on "
+            f"States.ALL; {len(wide)} of {len(to_fail)} match broadly"
+        )
+
+    def test_a_recovery_catch_is_not_in_the_population(self):
+        """A catch onto a Task or Pass state continues the execution, so no terminal
+        failure follows it and nothing is misattributed. Asserted so the population is
+        bounded from both sides rather than only counted."""
+        kinds = {c["target_type"] for c in self._catches()}
+        assert kinds & {"Task", "Pass"}, (
+            "no recovery catches found; if every catch now ends the execution, the "
+            "distinction this class draws no longer exists"
+        )
