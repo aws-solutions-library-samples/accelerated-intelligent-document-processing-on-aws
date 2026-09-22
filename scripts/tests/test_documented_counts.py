@@ -109,6 +109,11 @@ _NUMBER_WORDS = {
 _NUMBER = r"(?:\*\*)?(" + "|".join(_NUMBER_WORDS) + r"|\d{1,3},?\d{0,3})(?:\*\*)?"
 
 
+#: Substituted into a probe's `{n}` when firing it. Any parseable number will do; it
+#: is not compared against a derived value.
+_PROBE_NUMBER = "7"
+
+
 def _as_int(token: str) -> int | None:
     """Parse a captured number token, or ``None`` if it is not a number at all."""
     cleaned = token.strip("*").replace(",", "")
@@ -201,6 +206,13 @@ class DocumentedCount:
     derive: Callable[[], int]
     #: Each must contain exactly one capturing group, around the number.
     patterns: tuple[str, ...]
+    #: One sample statement per pattern, in the same order, that the pattern MUST
+    #: match. This is what makes a pattern that can never match a test failure rather
+    #: than a silent pass: a misspelling, or a literal space where the real prose
+    #: wraps across lines, leaves a registered count compared against nothing at all.
+    #: An entry with ``documents=()`` has no live statement to catch that, so the
+    #: probe is the only thing standing between it and a dead pattern.
+    probes: tuple[str, ...]
     #: Documents required to state this count. Empty means the correct number of
     #: statements is zero and these patterns are a reintroduction guard.
     documents: tuple[str, ...]
@@ -212,8 +224,16 @@ DOCUMENTED_COUNTS = (
         name="shared gates in total",
         derive=derive_shared_gate_total,
         patterns=(
+            # A literal space, NOT `\s+`, and deliberately so. The prose says the
+            # remaining pair of gates are jobs of their own, and wraps between that
+            # number and the noun — so a whitespace-tolerant version would read it as
+            # a claim about the TOTAL and report red against a correct sentence.
             rf"\b{_NUMBER} shared gates\b",
             rf"\bof the {_NUMBER} gates asserted by\b",
+        ),
+        probes=(
+            "the {n} shared gates run in both CI systems",
+            "of the {n} gates asserted by ``SHARED_GATES``",
         ),
         documents=(
             "CLAUDE.md",
@@ -233,6 +253,10 @@ DOCUMENTED_COUNTS = (
             rf"\b{_NUMBER} of the (?:\w+|\d+) shared gates\b",
             rf"\b{_NUMBER} of the (?:\w+|\d+) gates asserted by\b",
         ),
+        probes=(
+            "{n} of the many shared gates are *steps* in one job",
+            "{n} of the many gates asserted by ``SHARED_GATES`` are *steps*",
+        ),
         documents=(
             "CLAUDE.md",
             "docs/testing.md",
@@ -247,8 +271,16 @@ DOCUMENTED_COUNTS = (
     DocumentedCount(
         name="requireable contexts holding a shared gate",
         derive=derive_requireable_contexts_with_a_shared_gate,
-        patterns=(rf"\b{_NUMBER} requireable contexts\b",),
-        documents=(),
+        # `\s+` rather than a literal space, because BOTH statements of this count
+        # wrap between the number and the noun ("... produce three\nrequireable
+        # contexts"). A literal space matched neither, so the derivation was computed
+        # and compared against nothing — the defect class this module exists to
+        # remove, occurring inside it. The `documents` below are the other half of
+        # the fix: with them registered, a pattern that stops matching fails the
+        # per-document check instead of going quiet.
+        patterns=(rf"\b{_NUMBER}\s+requireable contexts\b",),
+        probes=("so those gates produce {n}\nrequireable contexts",),
+        documents=("CLAUDE.md", "scripts/sdlc/docs/CI_TEST_COVERAGE.md"),
         why="GitHub jobs holding at least one shared gate, across the two workflows",
     ),
     DocumentedCount(
@@ -269,7 +301,17 @@ DOCUMENTED_COUNTS = (
         patterns=(
             r"(?<!of )(?<!of \*\*)\b" + _NUMBER + r" tracked `?\.py`? files\b",
             rf"\banalyses (?:all )?{_NUMBER} files\b",
-            rf"~1 minute, {_NUMBER} files",
+            # Anchored on "~1 minute" because that phrasing is specific to the type
+            # gate. A bare `over <n> files` is not used: it matched a sentence about
+            # walking a HuggingFace dataset tree in
+            # feature-platform/confbench-testset/shared/python/variants.py, and a gate
+            # that reports an unrelated sentence is one people learn to ignore.
+            rf"~1 minute(?:,| over) {_NUMBER} files",
+        ),
+        probes=(
+            "basedpyright covers all {n} tracked `.py` files",
+            "It analyses **{n}** files, which is exactly",
+            "(~1 minute over {n} files) in both CI systems",
         ),
         documents=(),
         why=(
@@ -280,8 +322,11 @@ DOCUMENTED_COUNTS = (
 )
 
 #: Suffixes scanned. Prose that states one of these counts lives in Markdown, in a
-#: Python docstring, in the Makefile or in a make fragment.
-_SCANNED_SUFFIXES = (".md", ".py", ".mk", "Makefile")
+#: Python docstring, in the Makefile or a make fragment, and — this being a repository
+#: whose CI configuration is heavily commented — in the workflow and pipeline YAML.
+#: A stale figure in a workflow comment was invisible twice over while `.yml` was
+#: absent here: no pattern could reach it, so no pattern could report it.
+_SCANNED_SUFFIXES = (".md", ".py", ".mk", ".yml", ".yaml", "Makefile")
 
 
 def _matches(count: DocumentedCount) -> list[tuple[Path, str, int | None]]:
@@ -362,11 +407,51 @@ def test_the_registry_is_not_empty_and_every_pattern_has_one_group() -> None:
     assert registered, "nothing is pinned, so this module asserts nothing"
     for count in DOCUMENTED_COUNTS:
         assert count.patterns, f"{count.name} registers no patterns"
+        assert len(count.probes) == len(count.patterns), (
+            f"{count.name} has {len(count.patterns)} pattern(s) and "
+            f"{len(count.probes)} probe(s). Every pattern needs one sample statement "
+            "it must match, in the same order, or a pattern that can never match "
+            "cannot be told from one that currently matches nothing."
+        )
         for pattern in count.patterns:
             assert re.compile(pattern).groups == 1, (
                 f"{pattern!r} for {count.name} must have exactly one capturing "
                 f"group, around the number; it has {re.compile(pattern).groups}"
             )
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("count", DOCUMENTED_COUNTS, ids=lambda c: c.name)
+def test_no_pattern_is_one_that_could_never_match(count: DocumentedCount) -> None:
+    """A pattern compiling and having one group does not make it able to fire.
+
+    Compilation and group count were the only things asserted about a pattern, and
+    they are satisfied by one that matches nothing in any possible input — a
+    misspelling, or a literal space where the real sentence wraps across lines. For
+    an entry with registered documents the per-document check would eventually catch
+    that; for a reintroduction guard, which correctly matches nothing today, nothing
+    would. So each pattern is fired at a sample statement of the shape it is for, and
+    the number it reads back must parse.
+    """
+    for pattern, template in zip(count.patterns, count.probes, strict=True):
+        # The probes carry `{n}` where the number goes, and the number is substituted
+        # here rather than written into the literal. That is not decoration: the scan
+        # reads every tracked `.py` file, this module included, so a probe spelled out
+        # in full would be found by the very pattern it tests and reported as a claim
+        # the tree makes. Keeping the numeral out of the source is what lets the scan
+        # cover this file like any other instead of needing an exclusion for it.
+        probe = template.replace("{n}", _PROBE_NUMBER)
+        match = re.search(pattern, probe, re.IGNORECASE)
+        assert match, (
+            f"{count.name}: pattern {pattern!r} does not match its own probe "
+            f"{probe!r}, so it can report nothing. Note that a probe spanning two "
+            "lines needs `\\s+` rather than a literal space."
+        )
+        assert _as_int(match.group(1)) is not None, (
+            f"{count.name}: pattern {pattern!r} matched {match.group(0)!r} in its "
+            f"probe but its capturing group read {match.group(1)!r}, which is not a "
+            "number. The group must be around the number itself."
+        )
 
 
 #: The statements about what issue #975 measured. They are dated facts about a state

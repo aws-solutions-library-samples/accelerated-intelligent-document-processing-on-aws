@@ -4,12 +4,12 @@ Test script for S3 Vectors custom resource handler.
 This script validates the API calls and logic without requiring CloudFormation.
 
 Every test here was checked by mutating ``handler.py`` and confirming that it, and
-only it, went red. If you re-run that check, clear ``__pycache__`` and pass ``-B``:
-several of the useful mutations here are the same LENGTH as the code they replace
-(swapping the arms of the status ternary, one ARN path segment for another), and
-CPython keys ``.pyc`` invalidation on ``(mtime, size)``, so a same-length edit and
-restore inside one clock second leaves stale bytecode considered valid. See
-"Proving a test is load-bearing" in ``.claude/skills/testing-qa.md``.
+only it, went red. If you re-run that check, **delete ``__pycache__`` between
+mutations** — one of the useful mutations here is the same LENGTH as the code it
+replaces (swapping the arms of the status ternary), and CPython keys ``.pyc``
+invalidation on ``(mtime, size)``, so it can leave stale bytecode considered valid.
+``-B`` alone does not help: it stops a ``.pyc`` being written, not one being read.
+See "Proving a test is load-bearing" in ``.claude/skills/testing-qa.md``.
 """
 
 import logging
@@ -33,6 +33,7 @@ from handler import (
 # Set up logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+
 
 def test_sanitize_bucket_name():
     """Each documented sanitization rule, pinned to the name it actually produces.
@@ -72,6 +73,7 @@ def test_sanitize_bucket_name():
             "ValueError on such a name, failing the stack deployment"
         )
 
+
 def test_s3_vectors_api_methods():
     """Every s3vectors operation the handler calls must exist in the real API.
 
@@ -92,7 +94,9 @@ def test_s3_vectors_api_methods():
     neither subsumes the other, since a rename applied consistently to the handler
     *and* the template satisfies that one and fails here.
     """
-    handler_source = os.path.join(os.path.dirname(os.path.abspath(__file__)), "handler.py")
+    handler_source = os.path.join(
+        os.path.dirname(os.path.abspath(__file__)), "handler.py"
+    )
     with open(handler_source, encoding="utf-8") as source_file:
         called = set(re.findall(r"s3vectors_client\.([a-z_]+)\(", source_file.read()))
     assert called, (
@@ -115,48 +119,49 @@ def test_s3_vectors_api_methods():
         f"operations: {sorted(model.operation_names)}"
     )
 
+
 def test_create_vector_index_function():
     """Test the create_vector_index function with mocked client."""
     print("Testing create_vector_index function...")
-    
+
     # Mock S3 Vectors client
     mock_client = Mock()
-    mock_client.meta.region_name = 'us-west-2'
-    
+    mock_client.meta.region_name = "us-west-2"
+
     # Test successful index creation
-    mock_client.create_index.return_value = {'IndexName': 'test-index'}
-    
-    result = create_vector_index(mock_client, 'test-bucket', 'test-index')
-    
+    mock_client.create_index.return_value = {"IndexName": "test-index"}
+
+    result = create_vector_index(mock_client, "test-bucket", "test-index")
+
     # Verify the create_index was called with correct parameters
     mock_client.create_index.assert_called_once_with(
-        vectorBucketName='test-bucket',
-        indexName='test-index',
+        vectorBucketName="test-bucket",
+        indexName="test-index",
         dataType="float32",
         dimension=1024,
         distanceMetric="cosine",
         metadataConfiguration={
             "nonFilterableMetadataKeys": [
                 "AMAZON_BEDROCK_METADATA",
-                "AMAZON_BEDROCK_TEXT"
+                "AMAZON_BEDROCK_TEXT",
             ]
-        }
+        },
     )
-    
+
     print("  ✓ create_vector_index called with correct parameters")
-    
+
     # Test conflict exception handling
     mock_client.reset_mock()
     mock_client.create_index.side_effect = ClientError(
-        {'Error': {'Code': 'ConflictException'}}, 
-        'create_index'
+        {"Error": {"Code": "ConflictException"}}, "create_index"
     )
-    
-    result = create_vector_index(mock_client, 'test-bucket', 'test-index')
+
+    result = create_vector_index(mock_client, "test-bucket", "test-index")
     assert result is None, "Should return None for ConflictException"
     print("  ✓ ConflictException handled correctly")
-    
+
     print("✓ create_vector_index function tests completed")
+
 
 def test_get_s3_vector_info_function():
     """Both arms of the Status the handler reports for an existing bucket.
@@ -180,34 +185,34 @@ def test_get_s3_vector_info_function():
 
     # Mock S3 Vectors client
     mock_client = Mock()
-    mock_client.meta.region_name = 'us-west-2'
+    mock_client.meta.region_name = "us-west-2"
 
     # Mock STS client for account ID
-    with patch('boto3.client') as mock_boto3:
+    with patch("boto3.client") as mock_boto3:
         mock_sts = Mock()
-        mock_sts.get_caller_identity.return_value = {'Account': '123456789012'}
+        mock_sts.get_caller_identity.return_value = {"Account": "123456789012"}
 
         def client_factory(service, **kwargs):
-            if service == 'sts':
+            if service == "sts":
                 return mock_sts
             return mock_client
 
         mock_boto3.side_effect = client_factory
 
         # Case 1: the index is already there, so create_index conflicts.
-        mock_client.get_vector_bucket.return_value = {'BucketArn': bucket_arn}
+        mock_client.get_vector_bucket.return_value = {"BucketArn": bucket_arn}
         mock_client.create_index.side_effect = ClientError(
-            {'Error': {'Code': 'ConflictException'}},
-            'create_index',
+            {"Error": {"Code": "ConflictException"}},
+            "create_index",
         )
 
-        result = get_s3_vector_info(mock_client, 'test-bucket', 'test-index')
+        result = get_s3_vector_info(mock_client, "test-bucket", "test-index")
 
-        assert result['BucketName'] == 'test-bucket'
-        assert result['IndexName'] == 'test-index'
-        assert result['BucketArn'] == bucket_arn
-        assert result['IndexArn'] == expected_index_arn
-        assert result['Status'] == 'Existing', (
+        assert result["BucketName"] == "test-bucket"
+        assert result["IndexName"] == "test-index"
+        assert result["BucketArn"] == bucket_arn
+        assert result["IndexArn"] == expected_index_arn
+        assert result["Status"] == "Existing", (
             "a ConflictException from create_index means the index already "
             "existed, which the handler reports as 'Existing'"
         )
@@ -217,88 +222,91 @@ def test_get_s3_vector_info_function():
         # is the one that created it.
         mock_client.reset_mock()
         mock_client.create_index.side_effect = None
-        mock_client.get_vector_bucket.return_value = {'BucketArn': bucket_arn}
-        mock_client.create_index.return_value = {'IndexName': 'test-index'}
+        mock_client.get_vector_bucket.return_value = {"BucketArn": bucket_arn}
+        mock_client.create_index.return_value = {"IndexName": "test-index"}
 
-        result = get_s3_vector_info(mock_client, 'test-bucket', 'test-index')
+        result = get_s3_vector_info(mock_client, "test-bucket", "test-index")
 
-        assert result['Status'] == 'IndexCreated'
-        assert result['IndexArn'] == expected_index_arn
+        assert result["Status"] == "IndexCreated"
+        assert result["IndexArn"] == expected_index_arn
         mock_client.create_index.assert_called_once()
+
 
 def test_full_workflow_simulation():
     """Simulate a full CloudFormation CREATE workflow."""
     print("Testing full workflow simulation...")
-    
+
     # Mock all external dependencies
-    with patch('boto3.client') as mock_boto3:
+    with patch("boto3.client") as mock_boto3:
         mock_s3v_client = Mock()
-        mock_s3v_client.meta.region_name = 'us-west-2'
+        mock_s3v_client.meta.region_name = "us-west-2"
         mock_sts_client = Mock()
-        mock_sts_client.get_caller_identity.return_value = {'Account': '123456789012'}
-        
+        mock_sts_client.get_caller_identity.return_value = {"Account": "123456789012"}
+
         def client_factory(service, **kwargs):
-            if service == 'sts':
+            if service == "sts":
                 return mock_sts_client
-            elif service == 's3vectors':
+            elif service == "s3vectors":
                 return mock_s3v_client
             return Mock()
-        
+
         mock_boto3.side_effect = client_factory
-        
+
         # Simulate successful bucket and index creation
-        mock_s3v_client.create_vector_bucket.return_value = {'BucketName': 'test-bucket'}
-        mock_s3v_client.create_index.return_value = {'IndexName': 'test-index'}
-        
+        mock_s3v_client.create_vector_bucket.return_value = {
+            "BucketName": "test-bucket"
+        }
+        mock_s3v_client.create_index.return_value = {"IndexName": "test-index"}
+
         result = create_s3_vector_resources(
-            mock_s3v_client, 
-            'test-bucket', 
-            'test-index', 
-            'amazon.titan-embed-text-v2:0'
+            mock_s3v_client, "test-bucket", "test-index", "amazon.titan-embed-text-v2:0"
         )
-        
-        assert result['BucketName'] == 'test-bucket'
-        assert result['IndexName'] == 'test-index'
-        assert 'IndexArn' in result
-        assert result['Status'] == 'Created'
-        
+
+        assert result["BucketName"] == "test-bucket"
+        assert result["IndexName"] == "test-index"
+        assert "IndexArn" in result
+        assert result["Status"] == "Created"
+
         print("  ✓ Full CREATE workflow completed successfully")
-    
+
     print("✓ Full workflow simulation tests completed")
+
 
 def run_all_tests():
     """Run all test functions."""
     print("=" * 60)
     print("Running S3 Vectors Handler Tests")
     print("=" * 60)
-    
+
     try:
         test_sanitize_bucket_name()
         print()
-        
+
         test_s3_vectors_api_methods()
         print()
-        
+
         test_create_vector_index_function()
         print()
-        
+
         test_get_s3_vector_info_function()
         print()
-        
+
         test_full_workflow_simulation()
         print()
-        
+
         print("=" * 60)
         print("✓ ALL TESTS PASSED")
         print("=" * 60)
         return True
-        
+
     except Exception as e:
         print(f"✗ TEST FAILED: {e}")
         import traceback
+
         traceback.print_exc()
         return False
 
-if __name__ == '__main__':
+
+if __name__ == "__main__":
     success = run_all_tests()
     sys.exit(0 if success else 1)

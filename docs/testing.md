@@ -28,7 +28,7 @@ record of its last run.
 | Layer | Needs AWS? | Runs in CI? | Entry point |
 |---|---|---|---|
 | [1. Offline test suites](#1-offline-test-suites) | no | ✅ both CIs, but through two other targets — see below | `make test` |
-| [2. Static gates](#2-static-gates-lint-types-and-hand-written-scanners) | no | ✅ both CIs | `make lint-cicd` · `make typecheck-pr` |
+| [2. Static gates](#2-static-gates-lint-types-and-hand-written-scanners) | no | ✅ both CIs | `make lint-cicd` · `make typecheck` |
 | [3. Web UI unit tests](#3-web-ui-unit-tests) | no | ✅ both CIs | `make ui-test` |
 | [4. Security scanning](#4-security-scanning-sast-and-sca) | no | ✅ both CIs | `make srt-scan` · `make dep-audit` |
 | [5. Integration smoke suite](#5-integration-smoke-suite-ci-only) | **yes** | ⚠️ GitLab only | pipeline `integration_tests` |
@@ -207,7 +207,7 @@ hand-written scanners for classes of defect that have each shipped at least once
 | `make check-data-plane-tags` | the `idp:plane=data` tag on the Lambdas that must carry it |
 | `make validate-buildspec` | malformed CodeBuild buildspecs — otherwise a deploy-time failure |
 | `make codegen-check` | generated GraphQL types drifting from the schema |
-| `make typecheck` · `make typecheck-pr` | `basedpyright`; CI checks only files the PR changed |
+| `make typecheck` | `basedpyright` over every tracked `.py` file — this is what both CIs run. `make typecheck-pr` narrows it to the files a branch changes, for local latency, and is a gate in neither |
 | `make api-test-static` | an API operation added without authorization, and drift between the dispatcher's generated required-groups manifest and `scripts/api_rbac_expectations.yaml` — see [layer 6](#6-live-stack-tiers-manual) for the live half |
 | `python3 scripts/check_first_party_deps.py` | a first-party package in the **current environment** that came from a package index rather than from `lib/`, which on public PyPI is [somebody else's code](./dependency-confusion.md) |
 | `scripts/tests/test_doc_install_commands.py` (part of `make test-packages-cicd`) | a `pip install` **documented** in a fenced code block that could resolve a first-party name from an index — a bare name, or a path install missing a sibling the package requires by name. The environment checker above cannot see an instruction nobody has run yet |

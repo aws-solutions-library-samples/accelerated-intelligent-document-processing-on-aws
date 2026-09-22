@@ -260,8 +260,8 @@ reports zero problems, which reads identically to clean.
 ```bash
 # ruff: files it would actually check, against every tracked .py. Take the
 # "checked" figure from check_lint_debt.py, NOT from ruff: `ruff check
-# --show-files` does not honour `[lint] exclude`, so it over-reports (1250 where
-# the answer is 1241). The one authority on whether a given file is linted is
+# --show-files` does not honour `[lint] exclude`, so it over-reports by exactly
+# the size of that list. The one authority on whether a given file is linted is
 # `python3 scripts/check_lint_debt.py --explain <path>`.
 echo "tracked: $(git ls-files '*.py' | wc -l)"
 python3 scripts/check_lint_debt.py --summary
