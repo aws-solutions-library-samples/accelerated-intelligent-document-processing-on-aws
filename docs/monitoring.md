@@ -376,7 +376,7 @@ One dashboard widget on the **unified pattern** dashboard (not the main one):
 **Confidence Assessment Degraded**, a 15-minute-period count with the alarm
 threshold drawn as an annotation so the trend and the trigger are read together.
 
-### Agent Transcript Messages Dropped
+### Agent Transcript Write Failures
 
 The analytics UI replays an agent conversation from `agent_messages` on the job
 record, which is the **whole transcript held in one DynamoDB attribute**. Appending
@@ -394,51 +394,79 @@ because the unguarded version of this append lost most of a transcript with ever
 individual write reporting success
 ([#1098](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/1098)).
 
-One metric in the stack's own namespace (`<StackName>`):
+**Only the analytics agent records a transcript.** `AGENT_TABLE` is set on exactly two
+functions — `AgentProcessorFunction`, which is this path, and
+`AgentCoreMCPHandlerFunction`, which builds no agent — and a transcript logger also
+needs the `job_id` and `user_id` that only the analytics entry point passes. Agent chat
+stores no transcript, so neither metric below can come from it.
 
-- **`AgentTranscriptMessageDropped`** — published (value `1`) with no dimensions by
-  `DynamoDBMessageLogger` in `idp_common.agents.common`, once per message that could
-  not be stored. Both causes count: exhausting the conflict retries, and a read that
-  kept failing. It is emitted from `AgentProcessorFunction` and
-  `AgentChatProcessorFunction`, both of which set `METRIC_NAMESPACE` to the root
-  stack name and both of whose `cloudwatch:PutMetricData` grants permit that
-  namespace alongside `IDPControlPlane`. **No data means no transcript entry was
-  dropped.**
+Two metrics in the stack's own namespace (`<StackName>`), both published with no
+dimensions by `DynamoDBMessageLogger` in `idp_common.agents.common`, both from
+`AgentProcessorFunction`, which sets `METRIC_NAMESPACE` to the root stack name and
+whose `cloudwatch:PutMetricData` grant permits that namespace alongside
+`IDPControlPlane`. They are separate because only one of them means the message is
+gone:
 
-One alarm publishes to `AlertsTopic`:
+- **`AgentTranscriptMessageDropped`** — value `1` per message the append gave up on:
+  the conflict retries ran out, or the read kept failing. **The message is lost.** No
+  data means nothing was dropped.
+- **`AgentTranscriptDrainIncomplete`** — one datum per drain that did not finish,
+  carrying the **number of messages** it left behind, so `Sum` counts messages. An
+  agent's close waits two seconds for whatever is still queued; this is what the wait
+  left. **The message is not necessarily lost** — the wait stops without cancelling,
+  and Lambda resumes unfinished background work if that execution environment is
+  thawed again. No data means every drain finished.
 
-- **`AgentTranscriptMessageDroppedAlarm`** — ten or more drops within 15 minutes.
-  Like `AssessmentConfidenceUnavailableAlarm`, and unlike
+Two alarms publish to `AlertsTopic`:
+
+- **`AgentTranscriptMessageDroppedAlarm`** — ten or more dropped messages within 15
+  minutes. Like `AssessmentConfidenceUnavailableAlarm`, and unlike
   `StaleOutputPurgeFailedAlarm`, it deliberately does **not** fire on the first
   occurrence: one drop is a tolerated outcome of a bounded retry under a burst and
   costs a single transcript entry that nothing else depends on. A stream of them
   means transcripts are being recorded with gaps across the board.
+- **`AgentTranscriptDrainIncompleteAlarm`** — ten or more messages left behind within
+  15 minutes. Volume rather than first occurrence for a weaker reason than its sibling:
+  a single incomplete drain usually costs nothing, because the write resumes on the
+  next thaw. What is worth waking someone for is writes routinely outlasting the agents
+  that queued them.
 
-**Diagnosing.** The log line beside every emit names the job id and the
-`sequence_number` that was not persisted, at ERROR in the emitting function's log
-group. Which log group depends on the entry point, and neither is under a
-`/aws/lambda/<StackName>-` prefix you can guess: `AgentProcessorFunction` and
-`AgentChatProcessorFunction` both declare no `LogGroupName`, so they take
-CloudFormation's generated name and list on the `<StackName>-` prefix with **no
-leading slash**. The two causes read differently:
+**Diagnosing.** The log line beside every emit names the job id and the message's
+role and timestamp, at ERROR in `AgentProcessorFunction`'s log group. It does not name a
+`sequence_number`, because that value is the message's position in the *stored*
+transcript and a message that was never stored has none. That log group is not under a
+`/aws/lambda/<StackName>-` prefix you can guess: the function declares no
+`LogGroupName`, so it takes CloudFormation's generated name and lists on the
+`<StackName>-` prefix with **no leading slash**. The three causes read differently:
 
 | Log line | Cause | Fix |
 |---|---|---|
-| `Gave up appending message ... after N attempts` | Sustained contention: many sub-agents writing one job record, or overlapping workflow retries doing so | Expected under a wide fan-out; if it is steady, look at how many agents the requests select. Selecting every available agent is one click in the UI |
+| `Gave up appending message ... after N attempts` | Sustained contention: many sub-agents writing one job record | Expected under a wide fan-out; if it is steady, look at how many agents the requests select. Selecting every available agent is one click in the UI |
 | `Could not read existing messages ... after N attempts` | The read itself kept failing — throughput on the agent table, or a transient service error | Check the agent table's throttling metrics. A read error that cannot succeed on retry (`AccessDeniedException`, `ValidationException`) is not retried and is logged once, so a single warning of that shape points at the grant or the request rather than at load |
+| `Agent transcript write for job ... did not finish within Ns` | The agent closed and the bounded drain at its exit could not complete this write in time — a write deep in a retry ladder, or a burst queued behind one. This is the one that feeds `AgentTranscriptDrainIncomplete` | Check the agent table's latency and throttling metrics. Unlike the two above, the message may well have been persisted: see below |
 
-**What is lost while it is firing:** entries in the stored conversation transcript,
-so a replayed conversation shows gaps. The agent's own answer to the user, the job's
-outcome and every extracted result are unaffected — this metric watches a path whose
-failure the workflow reports as success.
+**What is lost while either alarm is firing:** entries in the stored conversation
+transcript, so a replayed conversation shows gaps. The agent's own answer to the user,
+the job's outcome and every extracted result are unaffected — these metrics watch a
+path whose failure the workflow reports as success.
 
-⚠️ This metric does **not** cover every way a transcript entry can be lost. Writes
-are queued on a thread pool that nothing drains in production, so whatever is still
-queued when the Lambda execution environment freezes is abandoned without reaching
-the drop path or this metric
+**The two metrics do not license the same conclusion, which is why they are separate.**
+`AgentTranscriptMessageDropped` means the message is gone: the append gave up.
+`AgentTranscriptDrainIncomplete` means only that a write outlived the agent that queued
+it. Stopping the wait does not cancel the write, and Lambda resumes unfinished
+background work if that execution environment is thawed for another invocation, so the
+message frequently is stored — just after the session that was reading the transcript
+has moved on. It is lost only if the environment is reclaimed instead of reused, which
+is the certain outcome for the last invocation before a scale-down. Folding the two
+together would page whoever alarmed on a destroyed transcript every time an environment
+froze and thawed.
+
+The drain is what makes the third case bounded and visible at all. Transcript writes
+are queued on a thread pool, and a Lambda invocation ends with the execution
+environment being *frozen* rather than shut down, so nothing flushes that queue on its
+own — an agent's context-manager exit waits for it, for two seconds, and reports what
+it could not finish
 ([#1110](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/1110)).
-Treat "no data" as "no message was dropped by the retry loop", not as "the
-transcript is complete".
 
 ## Log Groups
 
@@ -634,7 +662,8 @@ documents processed" genuinely means "no failures", and leaving alarms parked in
 | `WorkflowTrackerDLQAlarm` | Any message in the Workflow Tracker DLQ | `AlertsTopic` | — |
 | `StaleOutputPurgeFailedAlarm` | Any output-purge failure within 5 min | `AlertsTopic` | — |
 | `AssessmentConfidenceUnavailableAlarm` | `ConfidenceUnavailableThreshold` or more sections left with "no confidence scores" within 15 min, whether the confidence pass failed or never ran — something systemic, not a few awkward documents | `AlertsTopic` | `ConfidenceUnavailableThreshold` (default `10`) |
-| `AgentTranscriptMessageDroppedAlarm` | Ten or more agent conversation messages dropped from the stored transcript within 15 min — sustained write contention on one job record, or reads that keep failing | `AlertsTopic` | — |
+| `AgentTranscriptMessageDroppedAlarm` | Ten or more agent conversation messages dropped from the stored transcript within 15 min — sustained write contention on one job record, or reads that keep failing. These messages are gone | `AlertsTopic` | — |
+| `AgentTranscriptDrainIncompleteAlarm` | Ten or more transcript writes left unfinished within 15 min when the agents that queued them closed. Distinct from the row above: these writes were not cancelled and often complete on the next thaw, so the transcript may be late rather than incomplete | `AlertsTopic` | — |
 | `DataMartRollupDLQAlarm` | Any message in the reporting-rollup DLQ | `AlertsTopic` | — |
 | `BedrockServiceOutageAlarm` | Combined Bedrock error count exceeds the circuit-breaker threshold | `CircuitBreakerTopic` | `CircuitBreakerFailureThreshold` and the `CircuitBreakerTrigger*` toggles |
 

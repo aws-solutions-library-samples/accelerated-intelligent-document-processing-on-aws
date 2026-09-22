@@ -8178,7 +8178,7 @@ Resources:
   AgentTranscriptMessageDroppedAlarm:
     Type: AWS::CloudWatch::Alarm
     Properties:
-      AlarmDescription: !Sub "Messages are being dropped from agent conversation transcripts in ${AWS::StackName}. The agent's own answer to the user is unaffected -- what is lost is an entry in the stored transcript the analytics UI replays, so a conversation will show gaps. A message is dropped only after it has failed to append for the whole retry budget, which means sustained contention on one job's record (many sub-agents in one turn) or a read that kept failing (throttling on the agent table, or a missing grant). Diagnose from the AgentProcessorFunction and AgentChatProcessorFunction logs: the line beside every emit names the job id and the sequence number that was not persisted. See issue #1098 for why this is counted rather than only logged."
+      AlarmDescription: !Sub "Messages are being dropped from agent conversation transcripts in ${AWS::StackName}. The agent's own answer to the user is unaffected -- what is lost is an entry in the stored transcript the analytics UI replays, so a conversation will show gaps. A message counted here is gone: it is dropped only after failing to append for the whole retry budget, which means sustained contention on one job's record (many sub-agents in one turn) or a read that kept failing (throttling on the agent table, or a missing grant). A write merely abandoned when an agent closed is a different condition and is counted on AgentTranscriptDrainIncomplete instead. Diagnose from the AgentProcessorFunction logs, which is the only function that records transcripts: the line beside every emit names the job id and identifies the message by role and timestamp. See issue #1098 for why this is counted rather than only logged."
       MetricName: AgentTranscriptMessageDropped
       Namespace: !Ref AWS::StackName
       Statistic: Sum
@@ -8194,6 +8194,30 @@ Resources:
       ComparisonOperator: GreaterThanOrEqualToThreshold
       # Published only on the drop path, so "no data" is the healthy state and must
       # not hold the alarm in INSUFFICIENT_DATA.
+      TreatMissingData: notBreaching
+      AlarmActions:
+        - !Ref AlertsTopic
+
+  AgentTranscriptDrainIncompleteAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmDescription: !Sub "Agent transcript writes in ${AWS::StackName} are outliving the agents that queued them. Transcript messages are written on a thread pool, and an agent's close waits a bounded two seconds for whatever is still queued; this counts what that wait left behind. A write counted here is NOT necessarily lost -- the wait stops without cancelling, and Lambda resumes unfinished background work if that execution environment is thawed again -- so treat it as 'the transcript may be incomplete for the session reading it now', and as a real loss only when the environment is reclaimed instead of reused. That is the distinction from AgentTranscriptMessageDroppedAlarm, where the message is gone. A sustained signal means writes are slow or contended for long enough to outlast an agent: check the agent table's latency and throttling metrics, and how many sub-agents a request selects. Diagnose from the AgentProcessorFunction logs, which is the only function that records transcripts."
+      MetricName: AgentTranscriptDrainIncomplete
+      Namespace: !Ref AWS::StackName
+      Statistic: Sum
+      # Volume rather than first occurrence, and for a weaker reason than its sibling
+      # above: one incomplete drain usually costs nothing at all, because the write
+      # resumes on the next thaw. What is worth waking someone for is a rate high
+      # enough to mean writes routinely outlast the agents that queued them.
+      #
+      # Published as one datum carrying the number of messages left behind, so Sum
+      # counts messages and not drains. The threshold matches the sibling so the two
+      # read on the same scale.
+      Period: 900
+      EvaluationPeriods: 1
+      Threshold: 10
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      # Published only when a drain does not finish, so "no data" is the healthy state.
       TreatMissingData: notBreaching
       AlarmActions:
         - !Ref AlertsTopic
