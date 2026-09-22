@@ -69,12 +69,25 @@ PRESET_SCAN_EXCLUDED_NON_CONFIGS = {
 # reader, and `test_every_read_elsewhere_key_really_is_read` computes that premise
 # rather than trusting this comment.
 #
-# `description`: the managed-configuration path carries a human-readable label for the
-# catalogue, and `test_managed_config.py` asserts the stored managed version's
-# `description` — which is the evidence it survives the load rather than being dropped
-# with the rest of what IDPConfig ignores.
+# `description`: read by `update_configuration`, which POPS it off the dict before
+# IDPConfig ever sees it and embeds it in the DynamoDB sort key the UI renders
+# (`Config#{version}#{description}`). That pop is exactly why IDPConfig models no such
+# field, and why "IDPConfig discards it" is the wrong question for this key.
+#
+# Each entry is (path of the PRODUCTION consumer, the source text that constitutes the
+# read). Both halves are load-bearing:
+#
+#   * The path names production, not a test. A test merely asserting the string would
+#     keep this entry green after the real reader was deleted.
+#   * The marker is the READ, not the bare key name. `description` occurs ten times in
+#     that file, mostly as an unrelated function parameter, so a substring check for
+#     the word alone would survive deleting the line that actually reads the config
+#     key — a premise satisfied by a coincidence is not a premise.
 TOP_LEVEL_KEY_EXEMPT = {
-    "description": "lib/idp_common_pkg/tests/unit/config/test_managed_config.py",
+    "description": (
+        "src/lambda/update_configuration/index.py",
+        'pop("description"',
+    ),
 }
 
 
@@ -150,8 +163,12 @@ def test_no_preset_carries_a_top_level_key_idpconfig_discards(presets):
     }
     assert not offenders, (
         "these shipped presets carry top-level keys that IDPConfig discards on load, "
-        "so the values read as configuration and have no effect. Either the key "
-        "belongs under a name the model reads, or the block is dead and should go:\n"
+        "so the values read as configuration and have no effect. Three possibilities, "
+        "and the third is easy to miss: the key belongs under a name the model reads; "
+        "the block is dead and should go; or something OTHER than IDPConfig reads it, "
+        "in which case register it in TOP_LEVEL_KEY_EXEMPT with the path of that "
+        "reader. Do not delete a key before checking the third -- `description` is "
+        "read by update_configuration and is invisible to this gate's question:\n"
         + "\n".join(f"  {rel}: {keys}" for rel, keys in sorted(offenders.items()))
     )
 
@@ -166,22 +183,28 @@ def test_the_excluded_extension_manifests_are_present():
 
 
 @pytest.mark.unit
-@pytest.mark.parametrize("key,reader", sorted(TOP_LEVEL_KEY_EXEMPT.items()))
-def test_every_read_elsewhere_key_really_is_read(key, reader):
+@pytest.mark.parametrize("key,entry", sorted(TOP_LEVEL_KEY_EXEMPT.items()))
+def test_every_read_elsewhere_key_really_is_read(key, entry):
     """The premise, computed per key rather than asserted in a comment.
 
     A key allowed here because something else reads it must have that reader still
-    present and still naming it. Otherwise the allowance outlives its reason and
-    silently pre-exempts the next dead block that happens to use the same name —
+    present and still performing the read. Otherwise the allowance outlives its reason
+    and silently pre-exempts the next dead block that happens to use the same name —
     which is the failure mode this gate exists to catch.
+
+    The assertion is on the **read**, not on the key name appearing somewhere in the
+    file. `description` occurs ten times in its reader, mostly as an unrelated
+    function parameter, so matching the bare word would hold after the line that
+    actually reads the config key was deleted.
     """
+    reader, marker = entry
     path = REPO_ROOT / reader
     assert path.is_file(), (
         f"{key} is allowed because {reader} reads it; that file is gone"
     )
-    assert key in path.read_text(encoding="utf-8"), (
-        f"{reader} no longer mentions {key!r}, so the reason for allowing that "
-        "top-level key no longer holds"
+    assert marker in path.read_text(encoding="utf-8"), (
+        f"{reader} no longer contains {marker!r}, so it no longer reads {key!r} and "
+        "the reason for allowing that top-level key no longer holds"
     )
 
 

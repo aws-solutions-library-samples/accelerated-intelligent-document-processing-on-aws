@@ -2209,7 +2209,7 @@
     },
     "scripts/tests/test_preset_keys_are_read.py::TOP_LEVEL_KEY_EXEMPT": {
       "kind": "exemption",
-      "memberKind": "top-level YAML key, paired with the path of its reader",
+      "memberKind": "top-level YAML key, paired with its production reader's path and the source text that constitutes the read",
       "turnsOff": "the requirement that a preset's top-level key be one IDPConfig models, for one key that a DIFFERENT consumer reads",
       "premise": [
         "JUDGEMENT"
@@ -2219,8 +2219,8 @@
       "issues": [
         1145
       ],
-      "reason": "`description` is a human-readable label the managed-configuration path carries for its catalogue. IDPConfig does not model it, so the gate's own question answers 'discarded' -- and that answer is wrong, because the managed-config reader consumes it before IDPConfig is involved. This is the one entry that exists because the gate's premise (IDPConfig is the only consumer) is false for a specific key, so it is recorded per key with its reader named rather than as a blanket allowance. Which consumers exist for a key is not computable from the tree; that the named reader still mentions the key IS, and test_every_read_elsewhere_key_really_is_read asserts exactly that per member, so an entry whose reader is deleted or stops naming the key fails.",
-      "ratchetGap": "The reader is matched by substring, not by resolving a read at runtime, so a reader that merely mentions the key in a comment would satisfy the premise. Bounding it to one key with one named path is what keeps that cheap to review."
+      "reason": "`description` is read by src/lambda/update_configuration/index.py, which POPS it off the configuration dict before IDPConfig is constructed and embeds it in the DynamoDB sort key the UI renders (Config#{version}#{description}). That pop is why IDPConfig models no such field, so the gate's own question -- does IDPConfig discard this key -- answers 'yes' and is the wrong question for this key. This is the one entry that exists because the gate's premise is false for a specific key, so it is recorded per key with its reader named rather than as a blanket allowance. Which consumers exist for a key is not computable from the tree; that the named reader still mentions it IS, and test_every_read_elsewhere_key_really_is_read asserts exactly that per member. The path names the PRODUCTION consumer deliberately: pointing it at a test that merely contains the string would leave the entry green after the real reader was deleted, which is the failure this premise check exists to prevent.",
+      "ratchetGap": "The read is matched as source text rather than by resolving it at runtime, so a reader that moved the pop into a helper with a different spelling would fail the premise even though the key is still read -- a false alarm, which is the safe direction. Bounding it to one key with one named path and one marker is what keeps that cheap to review."
     }
   }
 }
