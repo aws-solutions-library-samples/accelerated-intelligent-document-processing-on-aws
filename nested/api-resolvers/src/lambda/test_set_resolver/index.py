@@ -17,7 +17,11 @@ from idp_common.evaluation.confidence_curve import (  # type: ignore
     DEFAULT_PAGES_PER_DOC,
     estimate_for_target,
 )
-from idp_common.evaluation.curve_store import CurveStore  # type: ignore
+from idp_common.evaluation.curve_store import (  # type: ignore
+    CurveStore,
+    field_child_path,
+    list_child_path,
+)
 from idp_common.models import Status  # type: ignore
 from idp_common.s3 import find_matching_files  # type: ignore
 from idp_common.testset_scope import (  # type: ignore
@@ -2218,32 +2222,8 @@ def _walk_confidence(explainability_info):
     return found
 
 
-def _field_path(prefix, key):
-    """Join a field path segment, matching ``curve_store``'s path convention."""
-    return f"{prefix}.{key}" if prefix else key
-
-
-def _list_item_path(prefix, node, index):
-    """Path for one member of a list.
-
-    A single-element list adds no level, which keeps ``explainability_info``'s wrapper
-    list from adding a level that ``inference_result`` does not have.
-
-    ⚠️ **The rule is keyed off list LENGTH, and that is not how the rest of the
-    repository keys list paths.** ``curve_store.flatten_values`` always emits an index,
-    so a one-row table keys ``Transactions.Date`` here and ``Transactions[0].Date``
-    there — the paths from the two are not interchangeable even though both are
-    "the field path". Nothing crosses them today (this one is only ever compared against
-    :func:`_walk_confidence_named`, within a single request, so no user-visible value is
-    wrong), but a caller that mixed them would silently fail to match on exactly the
-    single-row documents. Replacing this with the now-public ``flatten_values`` is
-    [#1066](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/1066).
-    """
-    return prefix if len(node) == 1 else f"{prefix}[{index}]"
-
-
 def _absent_field_paths(inference_result):
-    """Field *paths* whose extracted value is absent (null / "" / empty container).
+    """Field *paths* whose extracted value is absent (null, ``""``, or an empty list).
 
     A field the document does not contain is assessed at confidence 0.0, which is a
     correct reading of a blank box but indistinguishable from real uncertainty once
@@ -2253,26 +2233,27 @@ def _absent_field_paths(inference_result):
     exclude *every* Description score in a 200-row transaction table, understating
     review need on exactly the table-heavy documents this feature targets.
 
-    ⚠️ The path shape matches :func:`_walk_confidence_named`, which is what matters
-    here — the two are compared only against each other, within one request. It does
-    **not** match ``curve_store.flatten_values``: :func:`_list_item_path` keys a list
-    index off list *length*, so a one-row table keys ``Transactions.Date`` where
-    ``curve_store`` keys ``Transactions[0].Date``. No caller crosses the two, so there
-    is no user-visible defect, but a future one must not assume they interchange.
-    Unifying them by delegating to the now-public ``flatten_values`` is
-    [#1066](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/1066).
+    Paths are keyed by ``field_child_path`` / ``list_child_path`` — the same rule
+    ``curve_store.flatten_values`` uses — so they are interchangeable with a stored
+    confidence curve's keys and with :func:`_walk_confidence_named`'s.
+
+    **Why this is not simply a call to ``flatten_values``.** That function records
+    scalar leaves, and an empty list has no leaf to record. An empty list is exactly
+    what "the document does not contain this table" looks like, so it has to be
+    collected here. Taking the path *rule* from the shared module rather than the
+    whole traversal is what keeps the keys aligned without giving up that case.
     """
     absent = set()
 
     def walk(node, prefix=""):
         if isinstance(node, dict):
             for key, child in node.items():
-                walk(child, _field_path(prefix, key))
+                walk(child, field_child_path(prefix, key))
         elif isinstance(node, list):
             if not node and prefix:
                 absent.add(prefix)
             for index, child in enumerate(node):
-                walk(child, _list_item_path(prefix, node, index))
+                walk(child, list_child_path(prefix, index))
         elif prefix and (node is None or node == ""):
             absent.add(prefix)
 
@@ -2311,9 +2292,24 @@ def _min_confidence(explainability_info, inference_result=None):
 def _walk_confidence_named(explainability_info):
     """As :func:`_walk_confidence`, plus the field *path* each score belongs to.
 
-    Paths are built the same way as :func:`_absent_field_paths`, so the two line up
-    per occurrence rather than per field name — see that function for why the
-    distinction matters on tables.
+    Paths are built by ``field_child_path`` / ``list_child_path``, so they line up
+    with :func:`_absent_field_paths`' per occurrence rather than per field name —
+    see that function for why the distinction matters on tables — and with
+    ``curve_store.flatten_confidences``' keys, which is what a caller joining one of
+    these paths to a stored confidence curve would need.
+
+    **Why this is not simply a call to ``flatten_confidences``.** That function
+    returns path → confidence. This one also has to return the per-field
+    ``confidence_threshold`` sitting beside each score, which ``flatten_confidences``
+    deliberately skips, because :func:`_alert_counts` compares each score against its
+    own field's threshold. Taking the path *rule* from the shared module rather than
+    the whole traversal is what keeps the keys aligned without giving that up.
+
+    What is shared is how a path is KEYED, then, not which leaves are collected: this
+    walk descends into a ``geometry`` or ``confidence_threshold`` subtree, which
+    ``flatten_confidences`` skips, so a ``confidence`` leaf nested inside one would be
+    reported here and not there. Neither carries one today; the difference is in the
+    leaf set rather than in the path shape, and it is the path shape a join needs.
     """
     found = []
 
@@ -2329,10 +2325,10 @@ def _walk_confidence_named(explainability_info):
                 found.append((float(value), threshold, prefix or None))
             for key, child in node.items():
                 if key != "confidence":
-                    walk(child, _field_path(prefix, key))
+                    walk(child, field_child_path(prefix, key))
         elif isinstance(node, list):
             for index, child in enumerate(node):
-                walk(child, _list_item_path(prefix, node, index))
+                walk(child, list_child_path(prefix, index))
 
     walk(explainability_info)
     return found
