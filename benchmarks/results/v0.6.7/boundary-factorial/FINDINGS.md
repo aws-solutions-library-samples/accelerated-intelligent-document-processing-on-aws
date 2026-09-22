@@ -29,7 +29,7 @@
 > and the fact that no arm loses rows.
 
 
-**Run:** 2026-09-03, stack `IDP1` (us-west-2, acct 912625584728), develop @ v0.6.7.dev5
+**Run:** 2026-09-03, stack `IDP1` (us-west-2), develop @ v0.6.7.dev5
 plus PR #744. Classification model `us.anthropic.claude-sonnet-5` throughout — the
 model #653 was reported against, and the stricter test because Sonnet 5 rejects
 `temperature`/`top_p`/`top_k` (they are stripped) and therefore samples.
