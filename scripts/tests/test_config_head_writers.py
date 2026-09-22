@@ -14,10 +14,12 @@ every write or they are silently dropped.
 
 ``register_feature_hooks`` re-attached seven fields on its ``put_item`` and not one
 of them was a member of that tuple, so every call deleted all five and reported
-success. Losing ``LatestRevision`` is unrecoverable rather than cosmetic: DynamoDB
-reads an absent attribute as zero for ``ADD``, so ``next_number`` hands out
-revision 1 again and the next save overwrites the revision-1 body that is already
-in S3 under a write-once key. Issue #1111.
+success. What that costs is not the attribute but what happens next: DynamoDB reads
+an absent attribute as zero for ``ADD``, so ``next_number`` hands out revision 1
+again and the next save **overwrites** the revision-1 body already in S3 under a
+key that is write-once by construction. The counter itself can be recomputed from
+the surviving revision index; the overwritten body cannot, and neither can
+``PublishedRevision``, which nothing else records. Issue #1111.
 
 Two things made that survive review, and there is one assertion here for each.
 
@@ -100,11 +102,11 @@ _KNOWN_UNPRESERVED_HEAD_WRITERS: Dict[Tuple[str, str], str] = {
     ),
 }
 
-# Floor on the discovered universe, so a rename or refactor that stops the walk
-# finding anything fails here instead of passing vacuously. This is a floor and not
-# an equality: a new read-modify-write site must fail the assertion above on its
-# own merits, not on a count.
-_MIN_HEAD_WRITE_SITES = 4
+# Size of the discovered universe, pinned so a refactor that stops the walk finding
+# a site fails here instead of passing vacuously. An equality rather than a floor:
+# a floor catches the walk collapsing but leaves headroom for one site to slip out
+# of it unnoticed.
+_EXPECTED_HEAD_WRITE_SITES = 5
 _MIN_METADATA_LISTS = 3
 
 
@@ -250,14 +252,21 @@ def _local_string_prefixes(fn: ast.AST) -> Dict[str, str]:
     """Local name -> literal prefix of the string it is assigned, one level deep."""
     prefixes: Dict[str, str] = {}
     for node in ast.walk(fn):
-        if not isinstance(node, ast.Assign):
+        if isinstance(node, ast.Assign):
+            targets = [t.id for t in node.targets if isinstance(t, ast.Name)]
+            value = node.value
+        elif isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name):
+            targets = [node.target.id]
+            value = node.value
+        else:
             continue
-        prefix = _string_prefix(node.value)
+        if value is None:
+            continue
+        prefix = _string_prefix(value)
         if prefix is None:
             continue
-        for target in node.targets:
-            if isinstance(target, ast.Name):
-                prefixes[target.id] = prefix
+        for target in targets:
+            prefixes[target] = prefix
     return prefixes
 
 
@@ -275,11 +284,7 @@ def _row_key_prefix(call: ast.Call, fn: ast.AST) -> Optional[str]:
     locals_ = _local_string_prefixes(fn)
     candidates: List[ast.AST] = [item]
     if isinstance(item, ast.Name):
-        for node in ast.walk(fn):
-            if isinstance(node, ast.Assign) and any(
-                isinstance(t, ast.Name) and t.id == item.id for t in node.targets
-            ):
-                candidates.append(node.value)
+        candidates.extend(_assignments_to(item.id, fn))
     for candidate in candidates:
         if not isinstance(candidate, ast.Dict):
             continue
@@ -339,13 +344,113 @@ def discover_head_write_sites() -> List[WriteSite]:
     return sites
 
 
-def _writes_a_wholesale_copy(call: ast.Call, fn: ast.AST) -> bool:
-    """True when the written item is a full copy of another dict.
+def _assignments_to(name: str, fn: ast.AST):
+    """Every value assigned to a local, through ``x = ...`` and ``x: T = ...``.
 
-    ``new = dict(existing)`` then mutate then ``put_item(Item=new)`` carries every
-    attribute forward by construction, so it cannot drop a head field. This is a
-    legitimate second way to be correct, and the legacy ``Default`` -> ``Config#default``
-    migration uses it.
+    Both spellings, because reading only ``ast.Assign`` makes this gate's verdict
+    depend on whether the author wrote a type annotation. The defect this module
+    exists for used the annotated form, so the annotation was the only thing
+    stopping :func:`_is_wholesale_source` from clearing it — see
+    :func:`test_a_filtered_spread_is_not_a_wholesale_copy`.
+    """
+    for node in ast.walk(fn):
+        if isinstance(node, ast.Assign):
+            if any(isinstance(t, ast.Name) and t.id == name for t in node.targets):
+                yield node.value
+        elif isinstance(node, ast.AnnAssign):
+            if isinstance(node.target, ast.Name) and node.target.id == name:
+                if node.value is not None:
+                    yield node.value
+
+
+def _names_derived_from_a_read(fn: ast.AST) -> Set[str]:
+    """Locals whose value came, directly or transitively, from a ``get_item``.
+
+    Computed to a fixpoint, because the read is rarely one statement: the shape in
+    the tree is ``response = table.get_item(...)`` and then ``item =
+    response["Item"]``, so the name the writer copies is two steps from the call.
+    """
+    read: Set[str] = set()
+    changed = True
+    while changed:
+        changed = False
+        for node in ast.walk(fn):
+            if isinstance(node, ast.Assign):
+                targets = [t.id for t in node.targets if isinstance(t, ast.Name)]
+                value = node.value
+            elif isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name):
+                targets = [node.target.id]
+                value = node.value
+            else:
+                continue
+            if value is None or not targets:
+                continue
+            derived = any(
+                (
+                    isinstance(sub, ast.Call)
+                    and isinstance(sub.func, ast.Attribute)
+                    and sub.func.attr == "get_item"
+                )
+                or (isinstance(sub, ast.Name) and sub.id in read)
+                for sub in ast.walk(value)
+            )
+            if derived:
+                for target in targets:
+                    if target not in read:
+                        read.add(target)
+                        changed = True
+    return read
+
+
+def _is_wholesale_source(node: ast.AST, read_names: Set[str]) -> bool:
+    """True when this expression evaluates to every attribute of the item just read.
+
+    Two conditions, and both are load-bearing.
+
+    The **shape** must actually carry everything: a bare name, ``dict(x)``,
+    ``x.copy()`` or ``copy.deepcopy(x)``, and nothing else. Reading any ``**`` as
+    wholesale is wrong, because ``**{k: v for k, v in payload.items() if k not in
+    METADATA}`` is a spread of a FILTERED comprehension and carries a subset — and
+    that is exactly the defective writer, so the loose reading would clear the one
+    case this gate exists for.
+
+    The **operand** must be the dict that was read. Spreading a whole dict that is
+    not the stored item preserves nothing about the stored item:
+    ``apply_feature_config_preset._write_sparse`` ends its item with ``**config``,
+    the preset body it was handed, while the row it read is bound to ``existing``
+    and contributes two fields. Judged on shape alone that writer reads as safe,
+    which would drop a genuinely unprotected head write out of this gate's sight.
+    """
+    if isinstance(node, ast.Name):
+        return node.id in read_names
+    if isinstance(node, ast.Call):
+        # dict(existing) — but not dict(**filtered) or dict(a=1)
+        if (
+            isinstance(node.func, ast.Name)
+            and node.func.id == "dict"
+            and len(node.args) == 1
+            and not node.keywords
+            and _is_wholesale_source(node.args[0], read_names)
+        ):
+            return True
+        if isinstance(node.func, ast.Attribute):
+            if node.func.attr == "copy" and not node.args:
+                return _is_wholesale_source(node.func.value, read_names)
+            if node.func.attr == "deepcopy" and len(node.args) == 1:
+                return _is_wholesale_source(node.args[0], read_names)
+    return False
+
+
+def _writes_a_wholesale_copy(call: ast.Call, fn: ast.AST) -> bool:
+    """True when the written item carries every attribute of a dict it copied.
+
+    ``new = dict(existing)`` then mutate then ``put_item(Item=new)`` cannot drop a
+    head field, and neither can ``{**existing, "Configuration": ...}``. This is a
+    legitimate second way to be correct and the legacy ``Default`` ->
+    ``Config#default`` migration uses it, so the gate has to recognise it — but
+    only where the thing being spread really is a whole dict. See
+    :func:`_is_wholesale_source` for why that distinction decides whether this gate
+    can see its own case.
     """
     item = None
     for kw in call.keywords:
@@ -353,30 +458,27 @@ def _writes_a_wholesale_copy(call: ast.Call, fn: ast.AST) -> bool:
             item = kw.value
     if item is None:
         return False
-    if isinstance(item, ast.Dict) and any(k is None for k in item.keys):
-        return True  # {**existing, ...}
+    read_names = _names_derived_from_a_read(fn)
+
+    def _dict_spreads_wholesale(node: ast.AST) -> bool:
+        if not isinstance(node, ast.Dict):
+            return False
+        return any(
+            key is None and _is_wholesale_source(value, read_names)
+            for key, value in zip(node.keys, node.values)
+        )
+
+    if _dict_spreads_wholesale(item):
+        return True
+    # `put_item(Item=existing.copy())` / `Item=dict(existing)` — the copy inlined at
+    # the call rather than bound to a local first.
+    if not isinstance(item, ast.Name) and _is_wholesale_source(item, read_names):
+        return True
     if not isinstance(item, ast.Name):
         return False
-    for node in ast.walk(fn):
-        if not (
-            isinstance(node, ast.Assign)
-            and any(isinstance(t, ast.Name) and t.id == item.id for t in node.targets)
-        ):
-            continue
-        value = node.value
-        if isinstance(value, ast.Dict) and any(k is None for k in value.keys):
+    for value in _assignments_to(item.id, fn):
+        if _dict_spreads_wholesale(value) or _is_wholesale_source(value, read_names):
             return True
-        if (
-            isinstance(value, ast.Call)
-            and isinstance(value.func, ast.Name)
-            and value.func.id == "dict"
-            and value.args
-        ):
-            return True
-        if isinstance(value, ast.Call) and isinstance(value.func, ast.Attribute):
-            # `existing.copy()` / `copy.deepcopy(existing)` read the same way.
-            if value.func.attr in ("copy", "deepcopy"):
-                return True
     return False
 
 
@@ -384,7 +486,17 @@ def discover_metadata_lists() -> List[MetadataList]:
     """Every copy of the head-item metadata field list in a module that rewrites a head.
 
     Discovered by its CONTENT rather than by the name it is bound to, because the
-    copies in the tree carry three different names.
+    names disagree: in scope today are ``_DYNAMODB_METADATA_FIELDS`` in the
+    configuration manager, which is the canonical one, and two separate
+    ``_CONFIG_METADATA_FIELDS`` in the feature-platform Lambdas, which are copies of
+    it. A name-based walk would have to know all three spellings in advance.
+
+    Collections of the same attribute names exist elsewhere in the tree and are
+    **not** in this universe — the pipeline-hooks dispatcher and the test runner
+    read a profile and write ``PK``-keyed rows, the benchmark harness builds its
+    item from scratch, and ``finetuning_deployment_handler`` describes pricing rows.
+    Several of those omit the revision counters harmlessly, which is why the scope
+    conditions below are worth stating precisely rather than widening.
 
     Scoped to modules that both READ a ``Configuration``-keyed row and WRITE one, and
     that name the ``Config#`` profile prefix. All three conditions come from the code
@@ -450,14 +562,31 @@ def test_the_preserved_head_fields_tuple_is_still_the_five_it_documents():
     )
 
 
-def test_the_head_write_universe_is_not_empty():
-    """Non-vacuity: a walk that finds nothing would pass every check below."""
+def test_the_head_write_universe_is_the_pinned_size():
+    """Count pinning, in both directions, because a floor leaves room for an escapee.
+
+    A floor catches the walk collapsing to nothing but not one site slipping out of
+    it: with five found and a floor of four there was a full site of headroom, and a
+    writer whose read moves behind a helper leaves this function's scope entirely —
+    ``finetuning_deployment_handler._write_pricing_config`` is a live instance of
+    that shape, reading in one function and writing in another. It is out of scope
+    on row-family grounds anyway (it writes pricing rows), but it is also
+    structurally invisible here, so the walk's reach is narrower than it looks.
+
+    Pinning the exact number turns any change into a deliberate edit: a new
+    read-modify-write site of a profile head is a thing to look at, and so is one
+    disappearing.
+    """
     sites = discover_head_write_sites()
-    assert len(sites) >= _MIN_HEAD_WRITE_SITES, (
-        f"Only {len(sites)} read-modify-write profile-head site(s) discovered, expected "
-        f"at least {_MIN_HEAD_WRITE_SITES}. The walk keys on a function calling both "
-        f"get_item and put_item; if those moved behind a helper, this gate stopped "
-        f"looking at anything and needs re-aiming, not a lower floor."
+    detail = "\n".join(f"  {s.path}:{s.lineno} in {s.function}()" for s in sites)
+    assert len(sites) == _EXPECTED_HEAD_WRITE_SITES, (
+        f"Discovered {len(sites)} read-modify-write profile-head write site(s), pinned "
+        f"at {_EXPECTED_HEAD_WRITE_SITES}:\n{detail}\n\n"
+        f"If you ADDED one, it must satisfy the assertion below on its own merits — "
+        f"then raise the pin. If one VANISHED, check it was fixed or removed rather "
+        f"than merely moved out of this walk's reach: the walk keys on one function "
+        f"calling both get_item and put_item, so splitting a writer across two "
+        f"functions takes it out of scope without fixing anything."
     )
 
 
@@ -525,6 +654,152 @@ def test_each_registered_head_writer_exemption_states_a_reason(entry):
         f"The reason for {path}::{function} must cite the issue tracking it, so a "
         f"reader can tell a known carve-out from an unexamined one."
     )
+
+
+def _wholesale_verdict(source: str) -> bool:
+    """Run the resolver over one synthetic writer and return its verdict."""
+    tree = ast.parse(source)
+    fn = next(n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef))
+    call = next(c for name, c in _attribute_calls(fn) if name == "put_item")
+    return _writes_a_wholesale_copy(call, fn)
+
+
+#: Writers that drop head fields, each of which the gate must REPORT. Every one is
+#: the defective shape; what differs is only how it is spelled, and none of those
+#: differences may change the verdict.
+_DEFECTIVE_SPELLINGS = {
+    "annotated assignment": """
+def _register(table, config_key, item, payload, timestamp):
+    resp = table.get_item(Key={"Configuration": config_key})
+    new_item: Dict[str, Any] = {
+        "Configuration": config_key,
+        "CreatedAt": item.get("CreatedAt", timestamp),
+        **{k: v for k, v in payload.items() if k not in _CONFIG_METADATA_FIELDS},
+    }
+    table.put_item(Item=new_item)
+""",
+    "plain assignment": """
+def _register(table, config_key, item, payload, timestamp):
+    resp = table.get_item(Key={"Configuration": config_key})
+    new_item = {
+        "Configuration": config_key,
+        **{k: v for k, v in payload.items() if k not in _CONFIG_METADATA_FIELDS},
+    }
+    table.put_item(Item=new_item)
+""",
+    "inlined at the call": """
+def _register(table, config_key, payload):
+    resp = table.get_item(Key={"Configuration": config_key})
+    table.put_item(Item={
+        "Configuration": config_key,
+        **{k: v for k, v in payload.items() if k not in _CONFIG_METADATA_FIELDS},
+    })
+""",
+    "spread of a whole dict that is not the row read": """
+def _write_sparse(table, config_key, config, timestamp):
+    existing = (table.get_item(Key={"Configuration": config_key})).get("Item") or {}
+    item: Dict[str, Any] = {
+        "Configuration": config_key,
+        "CreatedAt": existing.get("CreatedAt", timestamp),
+        **config,
+    }
+    table.put_item(Item=item)
+""",
+}
+
+#: Writers that genuinely carry every attribute forward, each of which the gate must
+#: stay quiet about — the legacy Default -> Config#default migration is one of them,
+#: so a false positive here would fail the gate on correct code.
+_WHOLESALE_SPELLINGS = {
+    "dict(existing)": """
+def migrate(table):
+    existing = table.get_item(Key={"Configuration": "Default"})["Item"]
+    new = dict(existing)
+    table.put_item(Item=new)
+""",
+    "spread of the name that was read": """
+def migrate(table):
+    existing = table.get_item(Key={"Configuration": "Default"})["Item"]
+    table.put_item(Item={**existing, "Configuration": "Config#default"})
+""",
+    "existing.copy()": """
+def migrate(table):
+    existing = table.get_item(Key={"Configuration": "Default"})["Item"]
+    table.put_item(Item=existing.copy())
+""",
+    "annotated dict(existing)": """
+def migrate(table):
+    existing = table.get_item(Key={"Configuration": "Default"})["Item"]
+    new: Dict[str, Any] = dict(existing)
+    table.put_item(Item=new)
+""",
+    "two-step read then dict()": """
+def migrate(table):
+    response = table.get_item(Key={"Configuration": "Default"})
+    default_item = response["Item"]
+    new_default_item = dict(default_item)
+    new_default_item["Configuration"] = "Config#default"
+    table.put_item(Item=new_default_item)
+""",
+}
+
+
+@pytest.mark.parametrize("label", sorted(_DEFECTIVE_SPELLINGS))
+def test_a_defective_writer_is_reported_however_it_is_spelled(label):
+    """The gate must not depend on an incidental property of the source.
+
+    Every entry here is the same defect. Two of them would have cleared an earlier
+    version of this resolver: it read **any** ``**`` spread as carrying everything
+    forward, so a spread of a *filtered* dict comprehension — which is precisely the
+    defective writer — looked safe. What saved it was that the historical instance
+    happened to use an annotated assignment, and the resolver walked only
+    ``ast.Assign``: dropping the annotation or inlining the dict passed the gate with
+    the bug intact. A gate whose protection rests on a type annotation is not a gate.
+    """
+    assert not _wholesale_verdict(_DEFECTIVE_SPELLINGS[label]), (
+        f"The {label!r} writer was judged a wholesale copy, so the gate would not "
+        f"report it. It spreads a filtered subset, or a dict other than the row it "
+        f"read, and drops every head field it does not name."
+    )
+
+
+@pytest.mark.parametrize("label", sorted(_WHOLESALE_SPELLINGS))
+def test_a_genuine_wholesale_copy_is_not_reported(label):
+    """The other direction: correct code must not fail the gate.
+
+    ``dict(existing)`` and ``{**existing, ...}`` cannot drop an attribute, and the
+    legacy ``Default`` -> ``Config#default`` migration is written that way, so
+    tightening the resolver until it reported those would make the gate unusable.
+    """
+    assert _wholesale_verdict(_WHOLESALE_SPELLINGS[label]), (
+        f"The {label!r} writer carries every attribute of the row it read, but the "
+        f"resolver did not recognise it — this is a false positive that would fail "
+        f"the gate on correct code."
+    )
+
+
+def test_a_spread_is_only_wholesale_when_its_operand_is_the_row_that_was_read():
+    """Shape alone is not enough, and this is the case that shows why.
+
+    ``{**config, ...}`` spreads a whole dict, so a resolver checking only the shape
+    calls it wholesale — but ``config`` is the preset body the function was handed,
+    not the stored row, and preserving all of *it* preserves nothing of the item
+    being replaced. This is `_write_sparse`'s real shape, and reading it as safe
+    dropped one of the two genuinely unprotected head writers out of the gate's
+    sight entirely, which also silently emptied its registered exemption.
+    """
+    same_shape_but_reads_the_row = """
+def writer(table, config_key):
+    existing = (table.get_item(Key={"Configuration": config_key})).get("Item") or {}
+    table.put_item(Item={**existing, "UpdatedAt": "now"})
+"""
+    same_shape_but_spreads_a_parameter = """
+def writer(table, config_key, config):
+    existing = (table.get_item(Key={"Configuration": config_key})).get("Item") or {}
+    table.put_item(Item={**config, "UpdatedAt": "now"})
+"""
+    assert _wholesale_verdict(same_shape_but_reads_the_row)
+    assert not _wholesale_verdict(same_shape_but_spreads_a_parameter)
 
 
 def test_the_metadata_list_universe_is_not_empty():
