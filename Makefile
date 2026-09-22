@@ -245,6 +245,21 @@ lint-cicd: ## CI/CD lint — checks only, no modifications
 
 	@echo -e "$(GREEN)All code quality checks passed!$(NC)"
 
+coverage: ## Measure idp_common coverage and print a table, worst-covered first
+	@$(MAKE) --no-print-directory -C lib/idp_common_pkg test-cicd SKIP_INSTALL=1 COV_FLOOR= >/dev/null 2>&1 || true
+	@python3 scripts/coverage_table.py $(COVERAGE_ARGS)
+
+coverage-table: ## Print the coverage table from the last run, without re-measuring
+	@python3 scripts/coverage_table.py $(COVERAGE_ARGS)
+
+# Deliberately NOT a prerequisite of `lint` or `fastlint`: it reads the coverage
+# report that `make test-cicd -C lib/idp_common_pkg` writes, and the lint targets
+# never build one. Wired there it would find no report, exit 0, and pass vacuously --
+# a gate that cannot fail is worse than an absent one, because it reads as coverage.
+# Both CI configurations invoke it immediately after the test step instead.
+check-coverage-debt: ## Ratchet idp_common per-file coverage: fail if a file loses coverage, or a new module arrives unratcheted
+	@python3 scripts/check_coverage_debt.py
+
 check-lint-debt: ## Ratchet ruff's per-file exclusions: fail if an excluded file gains a finding, or is now clean (issue #975)
 	@# ruff.toml used to exclude five BARE directory names, which match at any
 	@# path depth, so 442 of 1230 tracked .py files were read by neither the
@@ -550,6 +565,13 @@ check-retired-models: ## Ask Bedrock whether any model this repo offers has been
 # (48-60s measured; the bare binary is ~47s) over every tracked .py file, which is
 # why there is no cheaper CI variant: the PR-scoped form below narrows the file set and
 # therefore cannot see a break your change caused in a file it did not select.
+#
+# It needs NO environment: pyrightconfig.json's `extraPaths` puts the five
+# first-party package roots on the import path, so `idp_common` resolves whatever
+# PYTHONPATH says. Do NOT "fix" resolution by exporting PYTHONPATH here — this
+# machine carries editable installs pointing at a sibling worktree and another
+# project (#1094), so an environment-level answer can type-check somebody else's
+# copy of the library. See #1109 and scripts/tests/test_pyright_config.py.
 typecheck: ## Run type checks with basedpyright over the whole tree (the CI gate)
 	@echo "Running type checks..."
 	basedpyright
