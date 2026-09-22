@@ -68,7 +68,9 @@ make typecheck     # basedpyright
 tool is absent — it is not in the `[test]` extra. `pip install basedpyright` (CI
 installs it via `npm install -g basedpyright`). Compare its output against the
 baseline on `develop` rather than reading it absolutely: it reports **0 errors / 42
-warnings over 1,325 files** on a clean tree (2026-09-22). Errors are the gate, so a
+warnings** on a clean tree (2026-09-22), over every tracked `.py` file — the number of
+those is not worth quoting, and `git ls-files '*.py' | wc -l` must equal the
+`filesAnalyzed` it prints. Errors are the gate, so a
 single one is a regression; the warnings are a standing set (`reportUnsupportedDunderAll`
 on several `__init__.py` re-export lists, one duplicate import). Note **which files a
 diagnostic lands in shifts with the installed dependency set** — `z3-solver` moves two
