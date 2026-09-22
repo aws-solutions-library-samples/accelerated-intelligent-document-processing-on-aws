@@ -2,6 +2,19 @@
 # SPDX-License-Identifier: MIT-0
 
 # All settings not explicitly defined here are inherited from system defaults.
+
+# ⚠️ This is the FINE-TUNED arm of the OCR benchmark, and the fine-tuned model
+# it was authored against cannot be shipped. A fine-tuned Nova model is reached through
+# a Bedrock custom-model-deployment ARN, and such an ARN resolves only in the account
+# that owns the deployment — from anywhere else Bedrock answers AccessDeniedException
+# ("the provided resource ARN is from a different account"), so the stage fails rather
+# than degrading.
+#
+# Every `model` below therefore ships as us.amazon.nova-2-lite-v1:0, the base model this
+# benchmark's fine-tune was derived from and the value its base-model sibling uses. The
+# preset runs as-is on any account. To run the fine-tuned arm, fine-tune that base
+# model, deploy it, and substitute your own deployment ARN at each `model` marked
+# below. See README.md in this directory.
 notes: Pattern-2 default configuration - Bedrock LLM-based processing
 classes:
 - $schema: https://json-schema.org/draft/2020-12/schema
@@ -832,7 +845,9 @@ ocr:
     preprocessing:
 classification:
   classificationMethod: multimodalPageLevelClassification
-  model: arn:aws:bedrock:us-east-1:364791462985:custom-model-deployment/p5byhttv7ubw
+  # Replace with your own deployment to run the fine-tuned arm:
+  #   model: arn:aws:bedrock:<region>:<your-account-id>:custom-model-deployment/<deployment-id>
+  model: us.amazon.nova-2-lite-v1:0
   maxPagesForClassification: ALL
   contextPagesCount: '0'
   sectionSplitting: llm_determined
@@ -891,7 +906,9 @@ extraction:
   image:
     target_width: ''
     target_height: ''
-  model: arn:aws:bedrock:us-east-1:364791462985:custom-model-deployment/p5byhttv7ubw
+  # Replace with your own deployment to run the fine-tuned arm:
+  #   model: arn:aws:bedrock:<region>:<your-account-id>:custom-model-deployment/<deployment-id>
+  model: us.amazon.nova-2-lite-v1:0
   temperature: '0.0'
   top_p: '0.0'
   max_tokens: '65535'
