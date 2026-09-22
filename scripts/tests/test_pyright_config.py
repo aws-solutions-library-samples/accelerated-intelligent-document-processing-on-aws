@@ -861,7 +861,7 @@ def _resolution_probe(extra_paths: list[str], modules: list[str]) -> list[str]:
     basedpyright, with `reportMissingImports` forced to "error" in a throwaway
     project so the answer is reported rather than suppressed.
 
-    Costs ~0.5s: one synthetic file, not the 1,314-file tree.
+    Costs ~0.5s: one synthetic file, not the whole tree.
     """
     with tempfile.TemporaryDirectory() as tmp:
         project = Path(tmp)

@@ -195,12 +195,13 @@ failure mode it claims, because a ratchet nobody has watched fail is not a
 ratchet. All three exist because every gap they cover was originally found by
 hand, months late.
 
-`make typecheck` reads every tracked `.py` file — 1,314 today, the same figure
-`git ls-files '*.py' | wc -l` and `filesAnalyzed` report — which
-`scripts/tests/test_pyright_config.py` asserts by deriving the set from
-`git ls-files` rather than from a list. Its `include` array named six paths and
-reached 432 of the 1,230 tracked at the time, and two `NameError`-class defects
-reached `develop` through the gap.
+`make typecheck` reads every tracked `.py` file — `git ls-files '*.py' | wc -l` and
+`basedpyright`'s `filesAnalyzed` agree exactly, and that identity, rather than any
+particular count, is what `scripts/tests/test_pyright_config.py` asserts by deriving
+the set from `git ls-files` rather than from a list. (It was 1,318 when this was
+written, and it moves with almost every merge.) The `include` array once named six
+paths and reached 432 of the 1,230 tracked at the time, and two `NameError`-class
+defects reached `develop` through the gap.
 
 Reading every file is a weaker property than it sounds, and the same suite now
 covers the difference. `basedpyright` honours `PYTHONPATH`, which neither the

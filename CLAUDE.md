@@ -115,12 +115,14 @@ the gate evaluates against the tree.
 The **formatting** debt is deliberately unpaid: `ruff format` over those 184 files
 is a mechanical, conflict-generating sweep that belongs in its own change.
 
-`basedpyright` covers all 1,314 tracked `.py` files — the figure `git ls-files
-'*.py' | wc -l` and `filesAnalyzed` both report, so the closure is exact
-(`pyrightconfig.json`'s `include` previously named six paths and reached 432 of the
-1,230 tracked then). `scripts/tests/test_pyright_config.py` derives that closure
-from `git ls-files`, so a new tree holding Python fails there rather than being
-silently uncovered.
+`basedpyright` covers **every tracked `.py` file**, and the property to rely on is
+the identity rather than the number: `git ls-files '*.py' | wc -l` and
+`filesAnalyzed` agree exactly, which is what
+`scripts/tests/test_pyright_config.py` asserts by deriving the closure from `git
+ls-files` — so a new tree holding Python fails there rather than being silently
+uncovered. The figure was 1,318 when this paragraph was written and moves with
+almost every merge; measure it rather than quoting it. (`include` previously named
+six paths and reached 432 of the 1,230 tracked at that time.)
 
 ⚠️ **Reading every file is not checking every call.** `basedpyright` honours
 `PYTHONPATH`, and `make typecheck` and both CIs invoke it without one; with
