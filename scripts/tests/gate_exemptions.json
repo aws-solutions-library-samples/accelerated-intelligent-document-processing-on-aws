@@ -1784,7 +1784,7 @@
     },
     "scripts/tests/test_pyright_config.py::STAGED_BUILD_OUTPUT_EXEMPT": {
       "kind": "exemption",
-      "turnsOff": "basedpyright's walk of one named tree, and with it the 'the typecheck walk reaches no ignored Python' closure check for that tree. The exclusion is total for the path -- exclude beats include in pyright, so nothing under it is read and no diagnostic is left behind to count -- which is why the premise is what bounds it rather than a finding count",
+      "turnsOff": "basedpyright's walk of one named tree, and with it the 'the typecheck walk reaches no ignored Python' closure check for that tree. The exclusion is total for the CHECKED SET -- exclude beats include in pyright, so no file under it is analysed and no diagnostic is left behind to count -- which is why the premise is what bounds it rather than a finding count. It does NOT remove the tree from the RESOLUTION path: measured, an excluded directory named in extraPaths still resolves, and its types still produce diagnostics in included files. So this entry must not be read as protection against a stale copy being imported from -- that is the #1094 shape, and #1109 is where the resolution path gets asserted",
       "premise": [
         "vcs_ignored_build_output"
       ],

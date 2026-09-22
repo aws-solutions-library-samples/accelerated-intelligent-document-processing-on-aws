@@ -5,6 +5,30 @@ SPDX-License-Identifier: MIT-0
 
 The Rule Validation Service validates extracted document information against predefined business rules using a three-step approach: regex-based policy classification, LLM-based fact extraction, and LLM-based compliance decisioning.
 
+## How a failure is recorded
+
+This service does not raise on failure. It records the reason in
+`document.errors` and sets `Status.FAILED`, and the two rule-validation Lambdas
+check that status and raise. `document.errors` is persisted nowhere, so the
+handlers are what make the reason visible: both call
+[`idp_common.document_failure`](../README.md#-recording-a-document-level-failure)
+to attach an error-severity `ProcessingIssue` to the affected section(s) before
+re-raising. `rule_validation_failed` means this section's validation did not
+complete; `rule_validation_not_consolidated` means the orchestrator's consolidation
+failed, so no section has a verdict. Read that section before changing either
+handler's `except` block — in particular, the original exception must propagate
+unchanged and a transient failure must record nothing.
+
+⚠️ `validate_document_async` wraps its whole body in a broad `except` that converts
+**every** failure, including a throttle or a read timeout, into `Status.FAILED`
+plus an `errors` entry and returns normally. The handler then raises a plain
+`Exception`, which matches none of the task state's `Retry` error names, so a
+transient Bedrock failure here permanently fails the document instead of being
+retried — unlike the extraction and assessment paths, which re-raise transient
+causes under the name the state machine retries
+(`idp_common.utils.transient_errors`). Worth knowing before relying on retry
+behaviour for this stage.
+
 ## Overview
 
 The rule validation service uses a three-step approach:
