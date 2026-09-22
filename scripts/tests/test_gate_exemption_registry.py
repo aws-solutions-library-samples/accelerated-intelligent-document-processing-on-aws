@@ -79,7 +79,16 @@ RATCHETS = {
 #: declared, so a figure written here would have to be maintained in two places and would
 #: go stale in the one comment that explains the incentive the whole mechanism rests on.
 #: State the rule, let the assignment below carry the number.
-MAX_UNRATCHETED = 58
+#:
+#: ⚠️ One of the two directions this budget can move in is **correcting a label**, and it
+#: is worth separating from the one the rule is aimed at. The number went up by one when
+#: `scripts/srt/issues.json` stopped claiming a staleness ratchet it did not have: the two
+#: checks on that register assert tracked paths and a written reason, and neither asks
+#: whether an entry still shields a finding. No exemption was added and nothing became
+#: less protected — an entry that read as ratcheted now reads as the gap it always was,
+#: which is the move this mechanism is supposed to make attractive. Raising the budget to
+#: absorb a NEW exemption is the thing it exists to refuse.
+MAX_UNRATCHETED = 59
 
 #: Entries whose premise is computable but whose gate does not yet call the predicate.
 #: Same ratchet direction, same reason: this state must not become a comfortable place

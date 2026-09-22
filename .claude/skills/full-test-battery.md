@@ -124,9 +124,13 @@ knowing before you write a row:
   repo-relative, backticks optional. That is the form a run reports, so it is the
   only form the comparison can key on, and a row written as prose fails the gate
   rather than being silently ignored.
-- **A root that dies before collecting anything names no node id**, so no row can
-  cover it. A collection error, a crash or an internal pytest error is reported
-  separately and is always red.
+- **A run that produces no JUnit entry at all cannot be declared away**, and is
+  reported separately: a crash, an internal pytest error, or a failure before
+  anything was collected. Note where that boundary actually falls — a module that
+  fails to **import** *does* get an entry, under a synthetic name derived from the
+  module, so that failure is declarable like any other and a row naming that id
+  makes the run green. The undeclarable case is only the one where nothing was
+  collected.
 
 Each root's results are written as JUnit XML under `test-reports/`, with a
 `test-reports/run_all_tests.json` summary naming the observed, declared,

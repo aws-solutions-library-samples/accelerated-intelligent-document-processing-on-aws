@@ -550,9 +550,11 @@ def run_gate(roots: list[str], integration: bool) -> int:
     for root in unexplained:
         print(
             f"❌ {root} exited non-zero but its JUnit XML names no failing test — "
-            "a collection error, a crash or an internal pytest error. Read the "
-            "output above; it cannot be covered by the baseline, which keys on "
-            "test node ids."
+            "a crash, an internal pytest error, or a failure before anything could "
+            "be collected. Read the output above; this is the one kind of failure "
+            "the baseline cannot cover, because it keys on test node ids and there "
+            "is none. (A module that fails to *import* does produce an entry, under "
+            "a synthetic name, so that case is declarable like any other.)"
         )
 
     _write_summary(

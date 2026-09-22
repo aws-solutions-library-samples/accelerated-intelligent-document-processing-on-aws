@@ -267,11 +267,17 @@ def test_the_runner_decides_the_verdict_from_what_it_observed(
 def test_a_root_that_fails_with_no_named_test_cannot_be_declared_away(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    """A collection error or crash names no node id, so no row can cover it.
+    """A run that names no node id at all must not be declarable away.
 
-    Keying the baseline on node ids means a root that dies before collecting
-    anything produces an empty observed set. Treating that as "no failures" would
-    turn the most serious kind of red — the suite did not run — into a pass.
+    Keying the baseline on node ids means a root that produces no JUnit entry —
+    a crash, an internal pytest error, an unwritable report — yields an empty
+    observed set. Treating that as "no failures" would turn the most serious kind
+    of red, the suite did not run, into a pass.
+
+    This is a narrower case than it sounds, and the boundary is worth knowing: a
+    module that fails to *import* does get a JUnit entry, under a synthetic name
+    derived from the module, so that failure is declarable like any other. The
+    undeclarable case is the one where nothing was collected at all.
     """
     monkeypatch.setattr(runner, "REPORT_DIR", tmp_path)
     monkeypatch.setattr(runner.subprocess, "run", _fake_run(2))

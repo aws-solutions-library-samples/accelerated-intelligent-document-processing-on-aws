@@ -1114,12 +1114,12 @@
     },
     "scripts/srt/ci_paths.py::NAME_HEURISTIC_EXEMPT": {
       "kind": "exemption",
-      "turnsOff": "the SRT security gate for Bandit B105/B106 only, and only where is_test_only_path() answers true for the finding's path; both checks still gate in shipped code",
+      "turnsOff": "the SRT security gate for Bandit B105/B106 only, and only where is_test_only_path() answers true for the finding's path — test-shaped AND outside every directory a deployment artifact is built from; both checks still gate in shipped code",
       "premise": [
         "JUDGEMENT"
       ],
       "ratchet": "universe-closure",
-      "reason": "What is ratcheted is the classification of every tracked Python file as test code or shipped code, not a count of demoted findings: the members are derived by is_test_only_path() rather than written down, so there is no entry that could go stale. B105/B106 match an identifier's NAME against a password wordlist, so `pass_count` and `next_token` arrive as HIGH; whether a constant in a test fixture is a real credential is the judgement, and it is not computable. The scope decision cannot live in Bandit's own configuration: SRT's promotion of these two checks to HIGH is compiled into its binary, a root `.bandit` file's `skips` applies repo-wide with per-path sections ignored, and neither check takes plugin configuration, so the alternative was to stop reporting them everywhere.",
+      "reason": "What is ratcheted is the classification of every tracked Python file as test code or shipped code, not a count of demoted findings: the members are derived by is_test_only_path() rather than written down, so there is no entry that could go stale. The closure assertion is stated against the CodeUri/ContentUri directories parsed from the templates rather than against the classifier, so it is not satisfied by construction — it fails on a classifier that reads path shape alone, which demoted 99 files that `sam build` copies into a deployment artifact. B105/B106 match an identifier's NAME against a password wordlist, so `pass_count` and `next_token` arrive as HIGH; whether a constant in a test fixture is a real credential is the judgement, and it is not computable. No Bandit RULE can express this scope: SRT's promotion of the two checks is compiled into its binary, and Bandit's config keys are one flat namespace where `skips` applies to the whole run and `exclude_dirs` drops the file from every check. Its `baseline` key does distinguish paths, but it is a frozen list of findings matched on the literal value, so it cannot cover a finding that does not exist yet.",
       "memberKind": "check id + path scope",
       "ratchetEvidence": "scripts/srt/tests/test_name_heuristic_scope.py",
       "crossReferences": [
@@ -1136,10 +1136,10 @@
       "premise": [
         "JUDGEMENT"
       ],
-      "ratchet": "staleness",
-      "reason": "SRT findings suppressed with a justification through `make srt-fix`.",
+      "ratchet": "none",
+      "reason": "SRT findings suppressed with a justification through `make srt-fix`. Two properties of the register are checked, in scripts/srt/tests/test_ci_paths.py: every entry's path is git-tracked, and every suppressed entry carries a suppressionReason. Neither is a staleness check, which is what this label used to claim — nothing asks whether an entry still shields a finding, and measured today most do not: a scan consults 52 of the 111 entries, and of the Bandit entries whose issue text quotes the matched literal, 24 name a line that no longer contains it. Each of those is a line-pinned suppression over whatever finding next lands at that path and line.",
+      "ratchetGap": "No non-vacuity or staleness check on an individual entry. An entry whose finding was fixed in the source, or whose line moved, keeps its suppression indefinitely and pre-suppresses whatever next occupies that (path, line, check_id). The check cannot be offline: matching is SRT's, so the only place that knows which entries were consulted is the scan itself, and 59 entries are dead today, so a scan-time assertion would red-line until the register is swept.",
       "memberKind": "finding id",
-      "ratchetEvidence": "scripts/srt/tests/test_ci_paths.py",
       "crossReferences": [
         "scripts/srt/ci_paths.py::NAME_HEURISTIC_EXEMPT"
       ]

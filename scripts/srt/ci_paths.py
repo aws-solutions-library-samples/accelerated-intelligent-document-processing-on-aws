@@ -23,6 +23,7 @@ This module lets run.py report those separately instead of gating on them, and
 lets fix.py keep them out of the committed baseline in the first place.
 """
 
+import re
 import subprocess
 from pathlib import Path
 
@@ -107,17 +108,24 @@ def is_in_ci_checkout(path, tracked):
 #: its severity mapping, so a dict key named `pass_count` in a test fixture arrives
 #: at the same priority as a real credential. Three times in one day that took the
 #: gate red on `develop`, blocking every open pull request, and each response was
-#: another per-line `# nosec` (#1086).
+#: another per-line suppression pragma (#1086).
 #:
-#: The scope decision has to live here because it is expressible nowhere else. The
-#: promotion is compiled into the SRT binary with no configuration surface. Bandit
-#: itself cannot scope a check to a subset of paths: the only config file the
-#: invocation auto-discovers is a root `.bandit`, whose `skips` is repo-global and
-#: whose per-path section spellings are silently ignored, and neither B105 nor B106
-#: takes plugin configuration, so the wordlist cannot be narrowed either. That
-#: leaves exactly two repo-side levers — stop reporting the check everywhere, or
-#: decide here which reports gate — and the first would hide a real hardcoded
-#: secret anywhere in the tree.
+#: The scope decision lives here because **no Bandit rule scopes a check to a
+#: path.** The promotion itself is compiled into the SRT binary with no
+#: configuration surface, and on Bandit's side the config keys are one flat
+#: namespace: `skips` applies to the whole run, `exclude_dirs` removes the file
+#: from the scan entirely rather than one check, and neither B105 nor B106 takes
+#: plugin configuration, so the wordlist cannot be narrowed either. (A `.bandit`
+#: file *is* discovered at any depth by the invocation SRT already makes, and its
+#: `configfile` key chains to the full YAML/TOML surface including `pyproject.toml`
+#: — the limitation is the key set, not the reach.)
+#:
+#: The one mechanism that *can* distinguish paths is `baseline`, a frozen JSON
+#: report of findings to subtract, and it is the wrong tool for a reason worth
+#: writing down: baseline matching compares the finding's literal matched value, so
+#: it can only ever cover findings that already existed when it was frozen. Add one
+#: new name-shaped identifier to an already-baselined file and it arrives as HIGH.
+#: A rule about paths is what this needs, and a baseline is a list of facts.
 #:
 #: What this gives up, stated plainly: a genuine credential pasted into a test
 #: fixture is reported at Bandit's own LOW severity and does not block the build.
@@ -126,32 +134,102 @@ def is_in_ci_checkout(path, tracked):
 #: heading rather than dropping it.
 NAME_HEURISTIC_EXEMPT = ("B105", "B106")
 
-#: Directory names that make everything below them test code.
+#: Directory names whose contents are test code.
 _TEST_ONLY_SEGMENTS = frozenset({"test", "tests", "manual_tests"})
 
+#: Template keys naming a local directory that `sam build` copies **verbatim** into
+#: the deployment artifact. Both behave the same way, so both are read.
+_PACKAGED_SOURCE_KEYS = ("CodeUri", "ContentUri")
 
-def is_test_only_path(path):
-    """True if this repo-relative path is test code rather than shipped code.
+_PACKAGED_SOURCE_RE = re.compile(
+    r"^\s*(?:" + "|".join(_PACKAGED_SOURCE_KEYS) + r"):\s*(?P<value>[^\s#]+)\s*$",
+    re.MULTILINE,
+)
 
-    Whole path *segments* are matched, never prefixes:
-    `src/lambda/test_file_copier/`, `nested/api-resolvers/src/lambda/test_runner/`
-    and `nested/api-resolvers/src/lambda/test_set_resolver/` are Lambda handlers
-    that ship into a customer's account, and a hardcoded credential in any of them
-    must keep gating. The file-name shapes are checked as well as the directory,
-    because several suites here sit beside the code they cover rather than under a
-    `tests/` directory.
+#: File suffixes worth opening when looking for a template.
+_TEMPLATE_SUFFIXES = (".yaml", ".yml", ".json", ".template")
 
-    Fails closed in both senses that matter: a finding with no path, or one whose
-    path is not test code, keeps gating.
+
+def _repo_relative(base, value):
+    """Resolve a template-relative path value to a repo-relative POSIX path."""
+    parts = []
+    for piece in f"{base}/{value}".split("/"):
+        if piece in ("", "."):
+            continue
+        if piece == "..":
+            if not parts:
+                return None
+            parts.pop()
+            continue
+        parts.append(piece)
+    return "/".join(parts) or None
+
+
+def packaged_source_dirs(project_root):
+    """Directories a deployment artifact is built from, or None if unknown.
+
+    Discovered by **content** — every tracked file declaring
+    `AWSTemplateFormatVersion` — so a new template is covered without being listed,
+    the same rule `scripts/discover_templates.sh` uses for the cfn-lint and
+    ARN-partition gates.
+
+    This exists because a path's *shape* does not decide whether it ships.
+    `sam build` copies a `CodeUri` directory verbatim; there is no ignore file in
+    this tree and the publisher prunes nothing, so a `test_*.py` or a `tests/`
+    directory sitting beside a handler is packaged with it and runs in a customer's
+    account. Deciding on shape alone demoted 99 such files.
+
+    Returns None when the answer cannot be established — git unavailable, or no
+    template found. Callers must read that as "cannot tell" and keep gating, never
+    as "nothing ships".
     """
-    normalized = _normalize(path)
-    if normalized is None:
-        return False
+    tracked = tracked_files(project_root)
+    if tracked is None:
+        return None
 
-    parts = normalized.split("/")
+    root = Path(project_root)
+    found = set()
+    templates = 0
+    for rel in sorted(tracked):
+        if not rel.endswith(_TEMPLATE_SUFFIXES):
+            continue
+        try:
+            text = (root / rel).read_text(encoding="utf-8", errors="ignore")
+        except OSError:
+            continue
+        if "AWSTemplateFormatVersion" not in text:
+            continue
+        templates += 1
+        base = Path(rel).parent.as_posix()
+        for match in _PACKAGED_SOURCE_RE.finditer(text):
+            value = match.group("value").strip().strip("'\"")
+            # An intrinsic function, a nested mapping or an S3 location names no
+            # local directory, so there is nothing to protect.
+            if value.startswith(("!", "{", "s3://")) or "${" in value:
+                continue
+            resolved = _repo_relative(base, value)
+            if resolved and (root / resolved).is_dir():
+                found.add(resolved)
+
+    if not templates:
+        print(
+            "⚠️  Warning: no CloudFormation template found, so packaged Lambda "
+            "source directories are unknown; treating every finding as shipped."
+        )
+        return None
+
+    return frozenset(found)
+
+
+def _in_packaged_tree(rel, packaged):
+    return any(rel == d or rel.startswith(d.rstrip("/") + "/") for d in packaged)
+
+
+def _has_test_shape(rel):
+    """True if the path's shape says test code: a directory segment or a filename."""
+    parts = rel.split("/")
     if any(part in _TEST_ONLY_SEGMENTS for part in parts[:-1]):
         return True
-
     name = parts[-1]
     return (
         name == "conftest.py"
@@ -160,20 +238,52 @@ def is_test_only_path(path):
     )
 
 
-def partition_by_name_heuristic_scope(issues):
+def is_test_only_path(path, packaged):
+    """True if this repo-relative path is test code that does **not** ship.
+
+    Two conditions, because either alone is wrong. The path must have a test shape
+    — whole segments, never prefixes, since `src/lambda/test_file_copier/` and
+    `.../test_runner/` are Lambda handler directories — and it must not sit inside
+    a directory a deployment artifact is built from. The second is what makes the
+    first safe: `src/lambda/queue_processor/test_reconcile_counter.py` and
+    `src/lambda/test_file_copier/test_index.py` are test-shaped and are copied into
+    the artifact beside the handler, so a hardcoded credential in either reaches a
+    customer's account and must keep gating.
+
+    Fails closed in every direction that matters: a finding with no path, a path
+    that is not test-shaped, a path inside a packaged tree, and a `packaged` of
+    None (meaning the packaged set could not be established) all keep gating.
+    """
+    if packaged is None:
+        return False
+
+    normalized = _normalize(path)
+    if normalized is None:
+        return False
+
+    if _in_packaged_tree(normalized, packaged):
+        return False
+
+    return _has_test_shape(normalized)
+
+
+def partition_by_name_heuristic_scope(issues, project_root):
     """Split issues into (gating, name_heuristic_in_test_code).
 
     See :data:`NAME_HEURISTIC_EXEMPT`. Every finding is in exactly one of the two
     lists, and a finding reaches the second only if its check is one of those two
-    AND its path is test-only — so nothing is dropped and nothing shipped is
-    demoted.
+    AND its path is test code that is not packaged into a deployment artifact — so
+    nothing is dropped and nothing shipped is demoted.
     """
+    packaged = packaged_source_dirs(project_root)
     gating = []
     name_scoped = []
 
     for issue in issues:
         check_id = (issue.get("check_id") or "").upper()
-        if check_id in NAME_HEURISTIC_EXEMPT and is_test_only_path(issue.get("path")):
+        if check_id in NAME_HEURISTIC_EXEMPT and is_test_only_path(
+            issue.get("path"), packaged
+        ):
             name_scoped.append(issue)
         else:
             gating.append(issue)
