@@ -233,8 +233,13 @@ rule_validation:
 **Common Parameters** (top level):
 - `enabled`: Turns rule validation on or off
 - `semaphore`: Maximum number of concurrent API calls (default: 5)
-- `max_chunk_size`: Maximum characters per chunk (default: 8000)
-- `overlap_percentage`: Percentage of overlap between chunks to preserve context (default: 10%)
+- `max_chunk_size`: Maximum **tokens** per chunk (default: 8000). Multiplied by
+  `token_size`, the assumed characters per token (default: 4), to get the character
+  budget a chunk is measured against — 32,000 characters with the defaults
+- `overlap_percentage`: Percentage of the previous chunk repeated at the start of the
+  next, to keep a fact that spans the boundary readable (0-100, default: 10). `0`
+  repeats nothing. `100` would leave no forward progress, so the character chunker
+  reduces it and logs that it did
 - `recommendation_options`: Custom recommendation categories for your use case
 
 **Fact Extraction Parameters**:

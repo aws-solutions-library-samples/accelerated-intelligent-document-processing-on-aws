@@ -218,25 +218,43 @@ class RuleValidationService:
         if estimated_tokens <= max_chunk_size:
             return [text]
 
-        # Calculate chunk size in characters
-        chunk_size_chars = max_chunk_size * token_size
+        # Calculate chunk size in characters. RuleValidationConfig validates both
+        # factors as > 0; the floor keeps the budget positive for a direct caller
+        # that did not come through the config model.
+        chunk_size_chars = max(1, max_chunk_size * token_size)
         overlap_chars = int(chunk_size_chars * (overlap_percentage / 100))
+
+        # Each pass advances `start` by chunk_size_chars - overlap_chars, so that
+        # stride has to be at least one character. overlap_percentage is allowed to
+        # be 100, which would otherwise make it zero and repeat a chunk forever.
+        bounded_overlap_chars = min(max(overlap_chars, 0), chunk_size_chars - 1)
+        if bounded_overlap_chars != overlap_chars:
+            logger.warning(
+                f"overlap_percentage={overlap_percentage} asks for "
+                f"{overlap_chars} characters of overlap on a {chunk_size_chars}"
+                f"-character chunk, leaving no forward progress; using "
+                f"{bounded_overlap_chars} instead. Every chunk will repeat almost "
+                f"all of the one before it, so lower overlap_percentage."
+            )
+        overlap_chars = bounded_overlap_chars
 
         chunks = []
         start = 0
 
         while start < len(text):
-            end = start + chunk_size_chars
-            if end > len(text):
-                end = len(text)
+            end = min(start + chunk_size_chars, len(text))
+            chunks.append(text[start:end])
 
-            chunk = text[start:end]
-            chunks.append(chunk)
+            # This chunk reached the end of the text, so it is the last one.
+            # Deciding that here rather than after moving `start` is what makes
+            # the loop terminate: `end` has been clamped to len(text), so
+            # `end - overlap_chars` lands back inside the text for any non-zero
+            # overlap and the same tail slice would be emitted indefinitely.
+            if end >= len(text):
+                break
 
             # Move start position with overlap
             start = end - overlap_chars
-            if start >= len(text):
-                break
 
         return chunks
 
@@ -253,7 +271,8 @@ class RuleValidationService:
 
         Dynamic overlap strategy:
         - If previous chunk has multiple complete pages: use complete last page as overlap
-        - If previous chunk has only 1 complete page: use 10% of that page as overlap
+        - If previous chunk has only 1 complete page: use overlap_percentage of that
+          page as overlap, and nothing at all when that rounds down to no characters
 
         Args:
             text: The text to chunk with page markers
@@ -349,9 +368,18 @@ class RuleValidationService:
                 )
                 return [prev_pages[-1]]
             else:
-                # Single page: use 10% of page as overlap
+                # Single page: use overlap_percentage of the page as overlap
                 page_num, page_content = prev_pages[0]
-                overlap_size = len(page_content) * overlap_percentage // 100  # True 10%
+                overlap_size = len(page_content) * overlap_percentage // 100
+                if overlap_size <= 0:
+                    # No overlap was asked for, so repeat nothing. Slicing with a
+                    # zero bound would not do that: page_content[-0:] is
+                    # page_content[0:], the whole page, so zero overlap would
+                    # produce the maximum overlap.
+                    logger.debug(
+                        f"Page chunk overlap single-page page={page_num} original_length={len(page_content)} overlap_percentage={overlap_percentage} overlap_size={overlap_size} no_overlap=True"
+                    )
+                    return []
                 overlap_content = page_content[-overlap_size:]
                 logger.debug(
                     f"Page chunk overlap single-page page={page_num} original_length={len(page_content)} overlap_percentage={overlap_percentage} overlap_size={overlap_size} overlap_length={len(overlap_content)}"
