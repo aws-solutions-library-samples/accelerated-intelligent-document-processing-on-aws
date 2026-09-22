@@ -287,3 +287,25 @@ Report failures explicitly; never average accuracy only over docs that completed
 without saying so (advanced/large runs are survivorship-sensitive). Costs are
 estimates from `config_library/pricing.yaml` (state the rate date). Any capped or
 skipped cell must appear in `meta.json`, not vanish.
+
+### A figure that could not be read is null, never zero
+
+The harness may continue past a failed read; it may not record the failure as a
+value. Every reader returns a three-state `lib.Reading` — present / absent / failed —
+and zero is not the sentinel for either empty state, because zero is a real answer for
+most of these metrics. Before quoting a number from a grid, check the four places a
+read failure surfaces. All four are null or zero on a clean run.
+
+| Where | Key | Means |
+|---|---|---|
+| a row | `cost_unread` | the metering row was not read, so `cost` and `tokens` are null rather than `$0.00` |
+| a row | `sections_unread` / `sections_unreadable` | some section objects would not read, so the row carries **no** quality metric at all |
+| a cell | `n_cost_unread` / `n_sections_unread` | that cell's means are over fewer runs than `n_success` |
+| `--calibration` | the `UNREAD` bucket on the `skipped:` line | rows nobody could measure — **not** runs that emitted no confidence |
+
+`--compare` prints the cell-level version under `MEASURED OVER FEWER RUNS THAN IT
+LOOKS`. A non-zero count there makes the arm's figures provisional: re-run against a
+readable stack before quoting them, and do not publish the arm on the strength of what
+happened to decrypt. The case this exists for is a stack whose KMS key has entered
+pending deletion — every object present, listable and undecryptable — which is
+indistinguishable from an unassessed grid unless the reader says so.

@@ -8,6 +8,7 @@ All AWS access uses the 'default' profile (the deployment account).
 import json
 import os
 import re
+from typing import Any, Literal, NoReturn
 
 import boto3
 import yaml
@@ -35,7 +36,7 @@ def client(name):
     """One cached client per service.
 
     ``Session.client()`` parses the service model on every call, and the S3 client
-    was being rebuilt once per ``get_json`` — tens of thousands of times on a
+    was being rebuilt once per ``read_json`` — tens of thousands of times on a
     release-wide calibration pass over stored runs. Everything here is sequential;
     the cache is a latency fix and nothing more.
     """
@@ -50,6 +51,199 @@ def s3():
 
 def ddb():
     return client("dynamodb")
+
+
+# -------------------------------------------------------------------- readings
+class Unread(Exception):
+    """A value was demanded from a measurement that was not taken.
+
+    Raised rather than returning a default, because every default this harness
+    could pick is a number a reader of a benchmark artifact would take at face
+    value.
+    """
+
+
+ReadingState = Literal["present", "absent", "failed"]
+
+
+class Reading[T]:
+    """One measurement, in exactly one of THREE states (GitHub #1079).
+
+    ``present`` — the read succeeded. ``value`` is what was there, and it may
+    legitimately be empty or zero: no cost for a cached call, no corrections, no
+    missing rows. That is why zero cannot serve as the sentinel for either of the
+    other two states.
+
+    ``absent`` — the read succeeded in establishing that there is nothing there:
+    the object does not exist, the tracking row was never written. There is no
+    measurement, and there is also nothing wrong.
+
+    ``failed`` — the read did not happen. The object may or may not exist and its
+    contents are unknown; ``error`` says why. The case this class exists for is a
+    release stack whose KMS key entered pending deletion, leaving every object in
+    its output bucket present, listable and undecryptable — which the previous
+    ``None``-for-everything readers turned into a grid that had recorded nothing.
+
+    The rule the harness follows: **it may continue past a failure, but it may not
+    record the failure as a value.** So there is no attribute that yields the value
+    without first saying which state you are handling:
+
+    * ``value`` raises :class:`Unread` unless the read is ``present``;
+    * ``value_or(default)`` substitutes for ``absent`` only, and raises for
+      ``failed`` — a caller that wants to carry on past a failure has to say so,
+      and say what it will record about it;
+    * ``__bool__`` raises, because ``if reading:`` is precisely the two-state test
+      that merges ``absent`` with ``failed``. Truth-testing is how every one of the
+      six sites in #1079 lost the distinction, so it is an error here rather than a
+      convention documented somewhere else.
+
+    A ``Reading`` also has none of the methods of the thing it wraps, so
+    ``reading.get(...)`` and ``reading.items()`` fail the type check as well as the
+    run. Do not rely on the type checker alone: ``reportArgumentType`` is disabled
+    in ``pyrightconfig.json``, so passing a ``Reading`` where a ``dict`` is declared
+    is not reported — the ``__bool__`` guard is what catches that, at the first
+    ``metering or {}``.
+    """
+
+    __slots__ = ("_error", "_state", "_value")
+
+    def __init__(
+        self, state: ReadingState, value: T | None = None, error: str | None = None
+    ) -> None:
+        self._state: ReadingState = state
+        self._value: T | None = value
+        self._error: str | None = error
+
+    @classmethod
+    def present(cls, value: T) -> "Reading[T]":
+        return cls("present", value)
+
+    @classmethod
+    def absent(cls, why: str = "") -> "Reading[T]":
+        """Nothing there — established, not assumed. ``why`` is for the log only."""
+        return cls("absent", None, why or None)
+
+    @classmethod
+    def failed(cls, error: object) -> "Reading[T]":
+        return cls("failed", None, str(error) or type(error).__name__)
+
+    @property
+    def state(self) -> ReadingState:
+        return self._state
+
+    @property
+    def is_present(self) -> bool:
+        return self._state == "present"
+
+    @property
+    def is_absent(self) -> bool:
+        return self._state == "absent"
+
+    @property
+    def is_failed(self) -> bool:
+        return self._state == "failed"
+
+    @property
+    def error(self) -> str | None:
+        """Why the read failed, or the note attached to an absence."""
+        return self._error
+
+    @property
+    def value(self) -> T:
+        if self._state != "present":
+            raise Unread(f"no value: this read is {self._state} ({self._error})")
+        return self._value  # pyright: ignore[reportReturnType]
+
+    def value_or[D](self, default: D) -> T | D:
+        """The value, or ``default`` when the thing read is genuinely ABSENT.
+
+        Raises :class:`Unread` for a failed read. A failure has no value to
+        substitute for, and the substitution is the whole defect: it is what turns
+        an undecryptable object into "this document recorded nothing".
+        """
+        if self._state == "failed":
+            raise Unread(
+                f"read failed ({self._error}) — handle is_failed explicitly and "
+                "record the failure; do not substitute a value for it"
+            )
+        return self._value if self._state == "present" else default  # pyright: ignore[reportReturnType]
+
+    def __bool__(self) -> NoReturn:
+        raise TypeError(
+            f"a Reading has three states ({self._state} here) — truth-testing one "
+            "reads a failed measurement as an absent one. Branch on .is_present / "
+            ".is_absent / .is_failed, or call .value_or(default)."
+        )
+
+    def __repr__(self) -> str:
+        if self._state == "present":
+            return f"Reading.present({self._value!r})"
+        return f"Reading.{self._state}({self._error!r})"
+
+
+class SectionRead:
+    """Every ``result.json`` under one document prefix, and what could not be read.
+
+    ``sections`` is only the objects that parsed. ``unreadable`` counts the ones
+    that were LISTED and then would not read — which is a different fact from a
+    document having no sections, and the reason a scorer must not compute an
+    accuracy from ``sections`` alone when it is non-zero: an accuracy over the
+    subset that happened to decrypt is a wrong number, biased in whichever
+    direction the missing sections would have moved it.
+
+    ``listing_error`` is set when the LIST itself failed, in which case it is not
+    known whether there are sections at all, and ``sections`` raises
+    :class:`Unread` rather than presenting an empty list as an answer.
+    """
+
+    __slots__ = ("_sections", "errors", "listing_error", "unreadable")
+
+    def __init__(
+        self,
+        sections: list[Any],
+        unreadable: int = 0,
+        errors: tuple[str, ...] = (),
+        listing_error: str | None = None,
+    ) -> None:
+        self._sections = sections
+        self.unreadable = unreadable
+        self.errors = errors
+        self.listing_error = listing_error
+
+    @property
+    def sections(self) -> list[Any]:
+        if self.listing_error:
+            raise Unread(f"section listing failed: {self.listing_error}")
+        return self._sections
+
+    @property
+    def complete(self) -> bool:
+        """True when every object under the prefix was read — the only state in
+        which ``sections`` is the whole document."""
+        return not self.unreadable and not self.listing_error
+
+    @property
+    def why(self) -> str:
+        """One line naming what went unread, for an artifact or a console note."""
+        if self.listing_error:
+            return f"cannot list: {self.listing_error}"
+        if not self.unreadable:
+            return ""
+        return f"{self.unreadable} section object(s) unreadable: " + "; ".join(
+            self.errors
+        )
+
+    def __bool__(self) -> NoReturn:
+        raise TypeError(
+            "a SectionRead distinguishes 'no sections' from 'sections that would "
+            "not read' — test .complete and .sections, not the object itself."
+        )
+
+    def __repr__(self) -> str:
+        return (
+            f"SectionRead(sections={len(self._sections)}, "
+            f"unreadable={self.unreadable}, listing_error={self.listing_error!r})"
+        )
 
 
 # ----------------------------------------------------------------------------- pricing
@@ -81,6 +275,12 @@ def price_metering(metering):
     'cacheReadInputTokens' to a row's 'inputTokens' price and overcharged cache
     reads by up to 10x. Keep the two in step — a benchmark cost that disagrees
     with the reported cost for the same metering map is a bug in one of them.
+
+    Takes a metering MAP, never a :class:`Reading`. A caller holding a reading has
+    to establish that it is ``present`` first — pricing an unread metering row is
+    how a failed measurement becomes $0.00 in a published artifact. Passing one
+    raises from ``Reading.__bool__`` below rather than pricing it, because
+    ``reportArgumentType`` is disabled here and the type checker will not say so.
     """
     total = 0.0
     by = {}
@@ -119,8 +319,24 @@ def ddb_to_py(v):
     return None
 
 
-def doc_metering(tracking, run_id, doc_name):
-    """Metering map from the doc# tracking row. Handles Map or JSON-string."""
+def read_metering(tracking, run_id, doc_name) -> Reading[dict]:
+    """Metering map from the ``doc#`` tracking row. Handles Map or JSON-string.
+
+    All three states are reachable and they price differently (GitHub #1079):
+
+    * **present** — the row is there. The map may be ``{}``, which is a real zero:
+      a run that consumed no metered unit costs $0.00 and that is a measurement.
+    * **absent** — there is no tracking row for this document. Nothing was recorded,
+      so there is no cost to report; pricing it as $0.00 would put a number in the
+      artifact that was never measured.
+    * **failed** — the table could not be read, or ``Metering`` would not decode.
+      Returning ``{}`` here is what made a deleted tracking table, a throttled
+      request and a genuinely unmetered run all report $0.00, and it is why
+      ``aggregate.augment_summary`` is a targeted backfill rather than a re-score.
+
+    The caller decides what to do; ``analyze.score_doc`` refuses to price anything
+    but ``present`` and records ``cost_unread`` instead of a zero.
+    """
     pk = f"doc#{run_id}/{doc_name}"
     try:
         r = ddb().get_item(
@@ -128,15 +344,24 @@ def doc_metering(tracking, run_id, doc_name):
             Key={"PK": {"S": pk}, "SK": {"S": "none"}},
             ProjectionExpression="Metering",
         )
-        item = r.get("Item")
-        if not item or "Metering" not in item:
-            return {}
-        m = ddb_to_py(item["Metering"])
-        if isinstance(m, str):
+    except Exception as exc:  # noqa: BLE001 - reported to the caller, not swallowed
+        return Reading.failed(f"{type(exc).__name__}: {exc}")
+    item = r.get("Item")
+    if not item:
+        return Reading.absent(f"no tracking row {pk}")
+    if "Metering" not in item:
+        # The row exists and carries no metering: nothing was metered for this
+        # document. A real zero, and the one state that legitimately prices to $0.
+        return Reading.present({})
+    m = ddb_to_py(item["Metering"])
+    if isinstance(m, str):
+        try:
             m = json.loads(m)
-        return m if isinstance(m, dict) else {}
-    except Exception:
-        return {}
+        except ValueError as exc:
+            return Reading.failed(f"Metering is not JSON: {exc}")
+    if not isinstance(m, dict):
+        return Reading.failed(f"Metering decoded to {type(m).__name__}, not a map")
+    return Reading.present(m)
 
 
 def doc_row(
@@ -232,24 +457,103 @@ def list_doc_prefixes(bucket, run_id):
     return docs
 
 
-def get_json(bucket, key):
+def _s3_object_is_absent(exc) -> bool:
+    """Does this ``get_object`` exception mean the object is not there?
+
+    Only a 404 does. ``AccessDenied``, a KMS key in pending deletion, a throttle and
+    a connection reset all mean the object's contents are unknown — and a missing
+    BUCKET is a failure too, not an absence: it says nothing about whether the
+    objects existed, and reading it as "this grid has no sections" is the shape that
+    produced #1079.
+    """
+    resp = getattr(exc, "response", None)
+    if not isinstance(resp, dict):
+        return False
+    code = str((resp.get("Error") or {}).get("Code") or "")
+    if code in ("NoSuchBucket", "NoSuchVersion"):
+        # Answered with a 404 status, and not an absent object: the bucket's contents
+        # are unknown, so reading this as "the document has no sections" is exactly
+        # the substitution #1079 is about.
+        return False
+    status = (resp.get("ResponseMetadata") or {}).get("HTTPStatusCode")
+    return code in ("NoSuchKey", "404", "NotFound") or status == 404
+
+
+MAX_READ_ERRORS_REPORTED = 3
+
+
+def read_json(bucket, key) -> Reading[Any]:
+    """One JSON object from S3, as a three-state :class:`Reading` (GitHub #1079).
+
+    This is the root of the absence-versus-failure class: every reader in the
+    harness goes through it, so a single ``None`` for "not there" and "could not be
+    read" propagated the ambiguity into every metric derived from S3. A 404 is an
+    absence; everything else — including a body that is not JSON, which means the
+    object exists and is not readable as a result — is a failure.
+    """
     try:
-        return json.loads(s3().get_object(Bucket=bucket, Key=key)["Body"].read())
-    except Exception:
-        return None
+        body = s3().get_object(Bucket=bucket, Key=key)["Body"].read()
+    except Exception as exc:  # noqa: BLE001 - classified, not swallowed
+        if _s3_object_is_absent(exc):
+            return Reading.absent(f"s3://{bucket}/{key} does not exist")
+        return Reading.failed(f"{key}: {type(exc).__name__}: {exc}")
+    try:
+        return Reading.present(json.loads(body))
+    except ValueError as exc:
+        return Reading.failed(f"{key}: not JSON: {exc}")
 
 
-def iter_section_results(bucket, doc_prefix):
-    for pg in (
-        s3()
-        .get_paginator("list_objects_v2")
-        .paginate(Bucket=bucket, Prefix=doc_prefix + "sections/")
-    ):
+def read_sections(bucket, doc_prefix) -> SectionRead:
+    """Every section ``result.json`` under one document prefix, plus what went unread.
+
+    Replaces a generator that dropped any object ``get_json`` could not parse, so a
+    section that failed to decrypt and a section that does not exist produced
+    identical output and a scorer downstream computed an accuracy over whichever
+    subset happened to read. The count of unreadable objects now comes back with the
+    sections, and ``SectionRead.complete`` is the question a scorer has to answer
+    before it reports a number.
+
+    A failure to LIST is carried on ``listing_error`` rather than raised, so a
+    130-run scoring pass survives one dead prefix — but ``SectionRead.sections``
+    raises for it, so surviving it still requires handling it.
+    """
+    sections: list[Any] = []
+    unreadable = 0
+    errors: list[str] = []
+    try:
+        pages = list(
+            s3()
+            .get_paginator("list_objects_v2")
+            .paginate(Bucket=bucket, Prefix=doc_prefix + "sections/")
+        )
+    except Exception as exc:  # noqa: BLE001 - reported on the result object
+        return SectionRead(
+            [], listing_error=f"{doc_prefix}sections/: {type(exc).__name__}: {exc}"
+        )
+    for pg in pages:
         for o in pg.get("Contents", []):
-            if o["Key"].endswith("result.json"):
-                sec = get_json(bucket, o["Key"])
-                if sec:
-                    yield sec
+            if not o["Key"].endswith("result.json"):
+                continue
+            read = read_json(bucket, o["Key"])
+            if read.is_present:
+                sec = read.value
+                if isinstance(sec, dict):
+                    sections.append(sec)
+                    continue
+                # Parsed, but not a section object. The old walk dropped anything
+                # falsy, which silently included this; it is malformed output, so it
+                # counts as unreadable rather than as a section that is not there.
+                read = Reading.failed(
+                    f"{o['Key']}: parsed as {type(sec).__name__}, not a section object"
+                )
+            # An object that was LISTED and then would not read is unreadable, not
+            # absent — the two are only the same if you ignore the listing. A 404
+            # here means it was deleted between the list and the get, which is still
+            # not a section this document does not have.
+            unreadable += 1
+            if len(errors) < MAX_READ_ERRORS_REPORTED:
+                errors.append(str(read.error))
+    return SectionRead(sections, unreadable, tuple(errors))
 
 
 # ----------------------------------------------------------------------------- GT matching

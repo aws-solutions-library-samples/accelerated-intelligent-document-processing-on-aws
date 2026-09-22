@@ -43,15 +43,13 @@ this directory cannot fall out of coverage unnoticed.
 
 from __future__ import annotations
 
-import sys
 from pathlib import Path
 
 import pytest
+from harness_import import harness_module
 
-sys.path.insert(0, "benchmarks/harness")
-
-analyze = pytest.importorskip("analyze")
-aggregate = pytest.importorskip("aggregate")
+analyze = harness_module("analyze")
+aggregate = harness_module("aggregate")
 
 
 def _leaf(confidence):

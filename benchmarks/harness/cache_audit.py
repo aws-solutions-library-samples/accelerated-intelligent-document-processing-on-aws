@@ -90,14 +90,21 @@ def cache_minimum_for(model_id: str) -> int | None:
     return None
 
 
-def doc_classes(bucket: str, run_id: str, doc_name: str) -> list[str]:
-    """The class each of a document's sections was extracted under."""
+def doc_classes(bucket: str, run_id: str, doc_name: str) -> tuple[list[str], str]:
+    """The class each of a document's sections was extracted under, and what went unread.
+
+    Returns the classes plus a reason string, empty when every section read. A section
+    that would not read shortens this list, which otherwise looks like a document with
+    fewer sections than it has — so the reason travels with the list (GitHub #1079).
+    """
+    read = lib.read_sections(bucket, f"{run_id}/{doc_name}/")
     out = []
-    for sec in lib.iter_section_results(bucket, f"{run_id}/{doc_name}/"):
-        cls = (sec.get("document_class") or {}).get("type")
-        if cls:
-            out.append(str(cls))
-    return out
+    if not read.listing_error:
+        for sec in read.sections:
+            cls = (sec.get("document_class") or {}).get("type")
+            if cls:
+                out.append(str(cls))
+    return out, read.why
 
 
 def audit_run(stack_res: dict, run_id: str) -> list[dict]:
@@ -120,8 +127,19 @@ def audit_run(stack_res: dict, run_id: str) -> list[dict]:
             if prefix.startswith(run_id)
             else prefix.strip("/")
         )
-        metering = lib.doc_metering(tracking, run_id, doc_name) or {}
-        classes = doc_classes(bucket, run_id, doc_name)
+        # A metering row that could not be READ yields no rows here and says so,
+        # rather than yielding the zero-token rows an empty map would (#1079). A
+        # cache audit whose token counts silently read zero reports a cache that is
+        # never hit, which is the opposite of the finding it exists to produce.
+        metering_read = lib.read_metering(tracking, run_id, doc_name)
+        if not metering_read.is_present:
+            print(
+                f"  ⚠ {run_id}/{doc_name}: metering {metering_read.state} "
+                f"({metering_read.error}) — contributing no rows rather than zeros"
+            )
+            continue
+        metering = metering_read.value
+        classes, sections_unread = doc_classes(bucket, run_id, doc_name)
         for key, units in metering.items():
             if not isinstance(units, dict):
                 continue
@@ -131,6 +149,7 @@ def audit_run(stack_res: dict, run_id: str) -> list[dict]:
             rec = {
                 "doc": f"{run_id}/{doc_name}",
                 "classes": classes,
+                "sections_unread": sections_unread or None,
                 "phase": phase,
                 "model": model,
             }
