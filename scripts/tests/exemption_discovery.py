@@ -86,12 +86,25 @@ PYTHON_PATHSPECS = (
     "feature-platform/*/tests/*.py",
     "security/threat-modeling/scripts/*.py",
     "benchmarks/tests/*.py",
+    # config_library holds a gate of its own now — test_config_library.py checks the
+    # shipped presets, including that none pins a model to an account-scoped Bedrock
+    # ARN. Without this glob an exclusion list added to that gate would be invisible
+    # to test_gate_exemption_registry.py, which is the one place such a list is meant
+    # to be impossible to add unregistered.
+    "config_library/*.py",
 )
 
 #: Non-Python files that carry exemptions, and the pattern that finds one in each.
 #: A gate exemption is not a Python idea; it lives wherever the gate does.
 #: Name fragments that mark a constant as an exemption candidate. The union of two
 #: independent surveys' vocabularies -- neither alone was sufficient.
+#:
+#: ``EXCLU``, not ``EXCLUD``. The longer fragment matches ``EXCLUDE``/``EXCLUDED`` and
+#: not ``EXCLUSION``, which is the ordinary English noun for one of these lists and the
+#: spelling ``TYPECHECK_SCOPE_EXCLUSIONS`` uses -- a live carve-out from the typecheck
+#: coverage gate that this scan therefore could not see, and that consequently sat
+#: unregistered while every meta-test passed. One letter of aperture, and it went the
+#: way a too-narrow aperture always goes here: quiet.
 NAME_VOCABULARY = (
     "EXEMPT",
     "ALLOW",
@@ -99,7 +112,7 @@ NAME_VOCABULARY = (
     "IGNORE",
     "QUARANTINE",
     "PRUNE",
-    "EXCLUD",
+    "EXCLU",
     "KNOWN_",
     "EXPECTED_",
     "WAIV",

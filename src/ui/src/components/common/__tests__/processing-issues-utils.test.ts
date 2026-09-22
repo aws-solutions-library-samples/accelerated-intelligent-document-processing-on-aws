@@ -36,6 +36,20 @@ describe('getSectionIssueStatus', () => {
     expect(status.count).toBe(1);
   });
 
+  it.each([
+    ['rule_validation_failed', 'rule_validation'],
+    ['rule_validation_not_consolidated', 'rule_validation'],
+    ['section_processing_failed', 'postprocessing'],
+  ])('labels the document-level failure code %s "Failed"', (code, stage) => {
+    // The three codes `idp_common.document_failure` writes (#1064). They mean the
+    // stage raised, exactly as `extraction_failed` does, so they must not read as
+    // the milder "Incomplete". `scripts/tests/test_failure_code_ui_parity.py` is
+    // what keeps the backend's set and the UI's in step.
+    const status = getSectionIssueStatus({ ProcessingIssues: [{ severity: 'error', code, stage, message: code }] });
+    expect(status.type).toBe('error');
+    expect(status.label).toBe('Failed');
+  });
+
   it('labels an error-severity detection that was NOT a failure "Incomplete"', () => {
     const status = getSectionIssueStatus({
       ProcessingIssues: [issue('error', 'extraction_rows_below_ocr_estimate')],
