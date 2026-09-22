@@ -79,12 +79,15 @@ stride emits one model call per character.
 
 from __future__ import annotations
 
+import ast
+import inspect
 import mmap
 import multiprocessing
 import os
 import re
 import signal
 import sys
+import textwrap
 import time
 
 import pytest
@@ -241,6 +244,36 @@ _OUTCOME_MEANINGS = {
 
 def _explain(outcome: str) -> str:
     return _OUTCOME_MEANINGS.get(outcome, f"unrecognised outcome {outcome!r}")
+
+
+def _returned_outcomes(function) -> set[str]:
+    """Every outcome string `function` can return, read from its **source**.
+
+    Read from source rather than from the imported object, and never compared against
+    a hardcoded list, because the direction that matters is an outcome being *added*.
+    A set built from `_OUTCOME_MEANINGS`, or a literal spelling out today's four,
+    agrees with itself: a fifth branch returning an undocumented verdict leaves such a
+    check passing while `_explain` prints "unrecognised outcome", which is the dead end
+    the explanations exist to remove. Same source-reading idiom as
+    `scripts/tests/exemption_discovery.py`, and for the same reason.
+
+    Walks into the returned expression rather than matching a `return (...)` pattern,
+    so a verdict reached through a conditional expression is still found.
+    """
+    tree = ast.parse(textwrap.dedent(inspect.getsource(function)))
+    outcomes = set()
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Return) or node.value is None:
+            continue
+        for candidate in ast.walk(node.value):
+            if (
+                isinstance(candidate, ast.Tuple)
+                and candidate.elts
+                and isinstance(candidate.elts[0], ast.Constant)
+                and isinstance(candidate.elts[0].value, str)
+            ):
+                outcomes.add(candidate.elts[0].value)
+    return outcomes
 
 
 def _run_isolated(text, max_chunk_size, token_size, overlap_percentage):
@@ -475,11 +508,33 @@ class TestTheIsolationHarness:
         assert _run_isolated("x" * 400, 100, 4, 10) == ("no-result", None)
 
     def test_every_outcome_the_harness_can_return_is_explained(self):
-        # A verdict with no entry would print "unrecognised outcome", which is the
-        # same dead end the single verdict was.
-        assert set(_OUTCOME_MEANINGS) == {"timed-out", "died", "killed", "no-result"}
+        # Closed over what `_run_isolated` can actually return, derived from its
+        # source, so a branch ADDED there fails here rather than shipping a verdict
+        # that prints "unrecognised outcome".
+        outcomes = _returned_outcomes(_run_isolated)
+        assert "returned" in outcomes, "the success outcome should still exist"
+        assert outcomes - {"returned"} == set(_OUTCOME_MEANINGS)
         for outcome in _OUTCOME_MEANINGS:
             assert "unrecognised" not in _explain(outcome)
+
+    def test_an_added_outcome_branch_would_be_noticed(self):
+        # The closure above is only worth as much as the extraction behind it, and an
+        # extraction that silently found nothing would make it vacuous. Proven against
+        # a stand-in carrying an undocumented fifth verdict, rather than by editing the
+        # real function — including one reached through a conditional expression,
+        # which a `return ("...", None)` pattern match would miss.
+        def _hypothetical():
+            if os.environ.get("a"):
+                return ("timed-out", None)
+            if os.environ.get("b"):
+                return ("stalled", None)
+            return ("returned", 1) if os.environ.get("c") else ("no-result", None)
+
+        found = _returned_outcomes(_hypothetical)
+        assert found == {"timed-out", "stalled", "returned", "no-result"}
+        assert found - {"returned"} != set(_OUTCOME_MEANINGS), (
+            "the undocumented verdict must make the closure assertion fail"
+        )
 
 
 @pytest.mark.unit
@@ -827,6 +882,29 @@ class TestChunkPagesOverlap:
         ]
         assert lengths == sorted(lengths)
         assert lengths[0] < lengths[1], "zero overlap must repeat less than 1% does"
+
+    def test_the_number_of_chunks_does_not_depend_on_the_overlap(self):
+        # Why the page chunker needs no equivalent of the character chunker's
+        # half-a-chunk bound, which is otherwise an unexplained asymmetry. Overlap is
+        # added when a chunk is built and never counted toward current_chunk_tokens,
+        # so it cannot change how pages are grouped: the chunk count — and so the
+        # number of model calls — is the same at every percentage, and the repeated
+        # content is at most one page per chunk. The worst case is already the ~2x
+        # that the character bound exists to enforce, so clamping here would cost
+        # context for no saving.
+        text = _paged(*[(n, f"P{n}" + "z" * 4000) for n in range(1, 21)])
+        counts = {
+            percentage: len(
+                _service()._chunk_pages_with_overlap(text, 200, 4, percentage)
+            )
+            for percentage in (0, 10, 50, 75, 100)
+        }
+        assert len(set(counts.values())) == 1, counts
+        total_at_max = sum(
+            len(chunk)
+            for chunk in _service()._chunk_pages_with_overlap(text, 200, 4, 100)
+        )
+        assert total_at_max < 2 * len(text), "content must stay within twice the source"
 
     @pytest.mark.parametrize("percentage", [1, 10, 25, 50, 100])
     def test_the_repeated_span_is_the_tail_of_the_previous_page(self, percentage):

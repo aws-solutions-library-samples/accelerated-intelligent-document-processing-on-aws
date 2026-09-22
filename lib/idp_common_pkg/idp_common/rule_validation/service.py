@@ -238,8 +238,16 @@ class RuleValidationService:
         #     calls. Half a chunk caps the count at twice the no-overlap count for
         #     any requested percentage.
         #
-        # The bound lives here rather than as a tighter `le=` on the config field so
-        # that a configuration which is legal today does not start being rejected.
+        # The bound lives here rather than as a tighter `le=` on the config field,
+        # and the difference is larger than "a legal value stops being legal".
+        # Pydantic validation is not field-scoped: a stored config carrying
+        # overlap_percentage 75 would fail RuleValidationConfig parsing *as a whole*,
+        # so an upgrade would break rule validation on a stack that was working — and
+        # on the paths that read config through a swallowing accessor it would break
+        # it without saying so. Clamping degrades one knob and logs it; rejecting
+        # stops the pipeline. Nor is the clipped range carrying much: a fact would
+        # have to be longer than half a chunk (16,000 characters at the shipped
+        # budget) to survive a 50% overlap but not a 75% one.
         bounded_overlap_chars = min(max(overlap_chars, 0), chunk_size_chars // 2)
         if bounded_overlap_chars != overlap_chars:
             logger.warning(
@@ -381,7 +389,18 @@ class RuleValidationService:
                 )
                 return [prev_pages[-1]]
             else:
-                # Single page: use overlap_percentage of the page as overlap
+                # Single page: use overlap_percentage of the page as overlap.
+                #
+                # Deliberately NOT bounded at half a page the way the character
+                # chunker bounds its overlap, because the cost argument that
+                # motivates that bound does not apply here. Overlap is added when a
+                # chunk is built and is never counted toward current_chunk_tokens, so
+                # it cannot change how pages are grouped: the number of chunks — and
+                # so of model calls — is invariant in overlap_percentage, and the
+                # repeated content is at most one page per chunk whatever the
+                # percentage. The worst case is therefore already the ~2x the
+                # character bound exists to enforce, and clamping here would cost
+                # context for no saving.
                 page_num, page_content = prev_pages[0]
                 overlap_size = len(page_content) * overlap_percentage // 100
                 if overlap_size <= 0:
