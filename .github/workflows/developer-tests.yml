@@ -140,6 +140,9 @@ jobs:
       - name: Run tests
         id: run-tests
         run: make test-cicd -C lib/idp_common_pkg
+
+      - name: Coverage ratchet (per-file, reads the report the step above writes)
+        run: make check-coverage-debt
         continue-on-error: false
 
       # `make test-cicd -C lib/idp_common_pkg` above covers only idp_common_pkg.

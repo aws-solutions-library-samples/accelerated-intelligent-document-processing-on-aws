@@ -395,7 +395,7 @@ now a **named list of individual files** rather than a directory. Any file you
 add, anywhere in the repository, is linted and format-checked from the moment it
 exists. The files that are skipped are the ones that already carried findings
 when the exclusions were narrowed: `ruff.toml`'s `[lint] exclude` names 84 files
-holding 193 pre-existing findings, and `[format] exclude` names 182 files that
+holding 193 pre-existing findings, and `[format] exclude` names 180 files that
 `ruff format` has never been run over. Both counts fall as files are paid off, and
 `scripts/tests/test_contributing_doc.py` reads them out of
 `scripts/lint_debt.json`, so they cannot drift from it. Two further entries in the
@@ -616,11 +616,20 @@ with the tree. It takes **about a minute** through `make` (48–60 s measured ac
 several trees; the bare `basedpyright` binary is ~47 s, but the `make` figure is the
 one CI pays).
 
-Errors fail it and warnings do not. There are **91** warnings today, and they are
-not one thing: `reportCallIssue` 34, `reportUnsupportedDunderAll` 26,
-`reportReturnType` 19, `reportImportCycles` 11, `reportDuplicateImport` 1. So
-clearing the two return/call rules — the pair most often discussed — takes the tree
-to 38 warnings, not to zero.
+It also resolves this repository's own packages, via `pyrightconfig.json`'s
+`extraPaths`. That matters more than it sounds: without it `idp_common` did not
+resolve, `reportMissingImports` is configured `"none"`, and so **no call into the
+shared library could produce a diagnostic** — the gate read every file and proved
+much less than that suggests. If you add a `lib/<something>` distribution, add its
+package root to `extraPaths`; the suite fails until you do.
+
+Errors fail it and warnings do not. To see today's warning split, run
+`make typecheck` and read the tally it prints rather than a list written here — it
+moves as files are added. Two things about it that do not move: `reportCallIssue` and
+`reportReturnType` are **errors** repo-wide and sit at zero, and the handful still
+reported as *warnings* come from the vendored `feature-platform/pii-anonymizer` tree,
+which is relaxed to warning level on purpose because its annotations are upstream's
+to fix.
 
 `make typecheck-pr` is a **convenience, not a gate**. It narrows `basedpyright`
 to the files you are editing so the answer comes back in a second or two, which

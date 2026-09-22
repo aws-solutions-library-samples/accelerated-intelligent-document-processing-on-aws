@@ -2221,6 +2221,62 @@
       ],
       "reason": "`description` is read by src/lambda/update_configuration/index.py, which POPS it off the configuration dict before IDPConfig is constructed and embeds it in the DynamoDB sort key the UI renders (Config#{version}#{description}). That pop is why IDPConfig models no such field, so the gate's own question -- does IDPConfig discard this key -- answers 'yes' and is the wrong question for this key. This is the one entry that exists because the gate's premise is false for a specific key, so it is recorded per key with its reader named rather than as a blanket allowance. Which consumers exist for a key is not computable from the tree; that the named reader still mentions it IS, and test_every_read_elsewhere_key_really_is_read asserts exactly that per member. The path names the PRODUCTION consumer deliberately: pointing it at a test that merely contains the string would leave the entry green after the real reader was deleted, which is the failure this premise check exists to prevent.",
       "ratchetGap": "The read is matched as source text rather than by resolving it at runtime, so a reader that moved the pop into a helper with a different spelling would fail the premise even though the key is still read -- a false alarm, which is the safe direction. Bounding it to one key with one named path and one marker is what keeps that cheap to review."
+    },
+    "scripts/tests/test_first_party_provenance_closure.py::EXEMPT": {
+      "kind": "exemption",
+      "memberKind": "directory",
+      "turnsOff": "the requirement that a test directory importing a first-party package have a provenance guard reachable from an ancestor conftest, per directory",
+      "premise": [
+        "JUDGEMENT"
+      ],
+      "ratchet": "universe-closure",
+      "reason": "The single member is lib/idp_common_pkg/manual_tests/agents: operator-run scripts that drive real Bedrock, Athena and DynamoDB against a deployed stack and bill model calls, so they are never collected by a suite and no suite result can be attributed to the wrong checkout. The premise -- 'pytest never collects this' -- is computable and IS computed rather than trusted: test_every_exempt_directory_is_genuinely_uncollected runs a real collection from lib/idp_common_pkg and fails if any of the directory's test modules appear. It is recorded as JUDGEMENT rather than naming a gate_premises predicate only because the computation belongs to the owning gate, which is where it lives; no predicate in gate_premises.py expresses 'not collected by pytest from a given rootdir'. Membership of the universe this exempts from is derived from git ls-files, so a new test directory is enforced by default rather than needing to be added.",
+      "ratchetEvidence": "scripts/tests/test_first_party_provenance_closure.py",
+      "crossReferences": [
+        "scripts/tests/test_first_party_provenance_closure.py::EXEMPT_COLLECTION_ROOT"
+      ]
+    },
+    "scripts/tests/test_first_party_provenance_closure.py::EXEMPT_COLLECTION_ROOT": {
+      "kind": "fixture",
+      "memberKind": "directory",
+      "turnsOff": "nothing",
+      "premise": [
+        "JUDGEMENT"
+      ],
+      "ratchet": "staleness",
+      "reason": "Not a carve-out: it is the input to verifying the carve-out above. Each entry names the rootdir a real pytest invocation would use for that directory, because a collection started anywhere else proves nothing about what a real run collects. test_no_exempt_entry_is_stale fails if an EXEMPT entry has no collection root, so this mapping cannot fall behind EXEMPT.",
+      "ratchetEvidence": "scripts/tests/test_first_party_provenance_closure.py",
+      "crossReferences": [
+        "scripts/tests/test_first_party_provenance_closure.py::EXEMPT"
+      ]
+    },
+    "scripts/check_coverage_debt.py::NOT_MEASURED": {
+      "kind": "exemption",
+      "memberKind": "path prefix",
+      "turnsOff": "the coverage ratchet's universe-closure requirement, per path prefix: a file under one of these need not appear in the per-file coverage baseline",
+      "premise": [
+        "JUDGEMENT"
+      ],
+      "ratchet": "non-vacuity",
+      "reason": "One member: idp_common/agents/analytics/assets, which holds SQL and prompt data files that happen to sit under a package directory rather than importable modules, so coverage.py reports nothing for them and there is no percentage to ratchet. Deliberately short, and meant to stay short: the honest way to have a module at 0% is to RECORD it at 0% and let the ratchet hold it there, not to exempt it from the baseline. JUDGEMENT rather than a gate_premises predicate because 'coverage.py emits no measurement for this path' is a property of the report, which the owning gate already reads -- a predicate would re-derive it from somewhere less authoritative.",
+      "ratchetEvidence": "scripts/tests/test_coverage_debt.py",
+      "crossReferences": [
+        "scripts/coverage_debt.json::coverage_debt.json"
+      ]
+    },
+    "scripts/coverage_debt.json::coverage_debt.json": {
+      "kind": "enforced-universe",
+      "memberKind": "file",
+      "turnsOff": "nothing",
+      "premise": [
+        "JUDGEMENT"
+      ],
+      "ratchet": "non-vacuity",
+      "reason": "Not a carve-out: the opposite. This is the ENFORCED set -- every tracked idp_common module and the coverage it must not fall below. It is discovered by the registry scanner because its filename matches the *_debt.json pattern the lint-debt baseline established, and it is registered so that similarity is recorded rather than mistaken for an exclusion list. Generated by `python3 scripts/check_coverage_debt.py --write`; never hand-edited. test_coverage_debt.py::test_the_recorded_baseline_is_not_empty is the non-vacuity ratchet, and it exists because the first version of the generator silently recorded zero files and reported success.",
+      "ratchetEvidence": "scripts/tests/test_coverage_debt.py",
+      "crossReferences": [
+        "scripts/check_coverage_debt.py::NOT_MEASURED"
+      ]
     }
   }
 }
