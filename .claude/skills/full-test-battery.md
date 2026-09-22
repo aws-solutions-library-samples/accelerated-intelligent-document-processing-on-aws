@@ -96,6 +96,72 @@ and the two chat rows at 2026-09-19.
 | chat-with-document | `cd src/lambda/chat_with_document_processor && pytest tests -q` | 42 pass |
 | chat-stream | `cd src/lambda/chat_stream_processor && pytest tests -q` | 32 pass |
 
+## Reading a gate result, and not running the same suite twice
+
+Two ways to mistake one measurement for another. They are together because they are
+the same error in opposite directions: the first reads a non-result as a pass, the
+second reads one result as two.
+
+⚠️ **A gate result is a count of passed tests plus zero failures. It is not an exit
+status.** Every suite here is longer than the assistant's 120-second Bash timeout, so
+they get wrapped — `timeout N ... > log 2>&1` in the background, then the log is
+tailed. A wrapper's exit code belongs to the **wrapper**: `timeout` returns its own
+status, and a shell pipeline returns the last command's. So a suite killed part-way
+reports success from the shell and its log tail looks exactly like a completed run —
+a column of dots, no failure section, nothing obviously wrong. Measured: `pytest
+scripts/tests/` killed by a 280-second `timeout` at **24%** of the way through,
+reported as exit 0.
+
+The check that actually distinguishes them is the **summary line**:
+
+```
+3165 passed, 47 skipped in 505.86s      # a result
+........................ [ 24%]        # not a result, whatever the shell said
+```
+
+So: read the totals, and treat a run that printed no summary line as not having run.
+Budget accordingly — `scripts/tests/` is ~8½ minutes and `test-packages-cicd` ~12, so
+a 600-second timeout is too small for either on a loaded machine.
+
+**`make test-packages-cicd` already runs `pytest scripts/tests/`** as its penultimate
+step. Running both reruns roughly 8 minutes of work, and — more misleading than the
+cost — two passes of the same suite read as independent evidence when they are one
+measurement. If you want a readable failure list, run `scripts/tests/` on its own
+with `-q --tb=no -rf`; if you want the gate signal, it is already inside
+`test-packages-cicd`. Do not run the two concurrently over one worktree either: one
+asserts a clean checkout while the other writes coverage into it, which produces
+phantom failures.
+
+Two invocation corrections for the CI-equivalent gates:
+
+- **`make lint-cicd` needs `FORCE=1`** to exercise the UI lint and `npm run
+  typecheck`. Without it, an unchanged `src/ui` checksum skips both while the target
+  still runs the vite build and still reports success — so a green `lint-cicd` on a
+  warm tree does not mean the UI was linted. CI is unaffected: `.checksum` is
+  gitignored, so a fresh checkout has none and the lint always runs. See
+  [#1152](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/1152).
+- **Run `make typecheck` with `env -u PYTHONPATH`.** `pyrightconfig.json`'s
+  `extraPaths` already puts the first-party roots on the import path; exporting
+  `PYTHONPATH` changes what the type gate can see rather than making its answer
+  trustworthy.
+
+⚠️ **`PYTHONPATH` for pytest has to name EVERY first-party root, not just
+`idp_common_pkg`.** The provenance guard (`scripts/tests/first_party_provenance.py`,
+wired into several conftests) checks each first-party package independently, and on a
+machine whose editable installs point at another checkout it refuses the run for
+whichever one it finds there. Setting only `lib/idp_common_pkg` gets as far as
+`idp_sdk resolves OUTSIDE the checkout under test` — which is the guard doing its job,
+not a defect, but it is a *refusal* rather than a failure and has to be read as
+"did not run":
+
+```bash
+W=$(pwd)   # from the worktree root
+export PYTHONPATH=$W/lib/idp_common_pkg:$W/lib/idp_sdk:$W/lib/idp_cli_pkg:$W/lib/idp_mcp_connector_pkg:$W/lib/idp_feature_sdk
+```
+
+That list is the same set as `FIRST_PARTY_EDITABLES` in the `Makefile`; keep them
+together.
+
 ## There is no standing failure set — green means green
 
 **Expected standing failures: 0.** A correctly installed tree passes every suite
