@@ -128,7 +128,7 @@ Leverage existing OCR data to rapidly iterate on classification and extraction c
 
 https://github.com/user-attachments/assets/28deadbb-378b-42b7-a5e2-f929af9b0e41
 
-**Related Documentation**: [IDP CLI - Rerun Inference](./idp-cli.md#rerun-inference)
+**Related Documentation**: [IDP CLI - Rerun Inference](./idp-cli.md#reprocess--rerun-inference)
 
 ---
 

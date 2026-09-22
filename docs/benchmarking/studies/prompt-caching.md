@@ -219,7 +219,7 @@ a workload whose prefix is a large fraction of the request. On `ocr-benchmark` t
 ~1,000–2,900 of ~7,800 input tokens; on a corpus of short documents with a big schema it
 could be most of the request, and there the same mechanism would dominate.
 
-Full A/B: [`config-guidance.md`](config-guidance.md) §7. Data:
+Full A/B: [`config-guidance.md`](../config-guidance.md) §7. Data:
 `benchmarks/results/v0.6.7/forcing-real-corpus/`.
 
 ## 7. Instrumentation note — why nobody noticed
@@ -260,5 +260,5 @@ AWS_PROFILE=default python3 benchmarks/harness/cache_audit.py \
 ```
 
 ---
-> See [Configuration Guidance](config-guidance.md) for which settings to pick, and
-> the [Benchmarking Guide](index.md) for how the suite is designed.
+> See [Configuration Guidance](../config-guidance.md) for which settings to pick, and
+> the [Benchmarking Guide](../index.md) for how the suite is designed.

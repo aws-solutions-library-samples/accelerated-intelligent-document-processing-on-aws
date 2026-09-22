@@ -208,7 +208,7 @@ Once you're confident the predictions are correct for a document:
 
 Repeat this for every document you want to include in your test set.
 
-For details on the editing interface, see [Web UI — Edit Data](./web-ui.md#edit-data). For details on the evaluation baseline concept, see [Evaluation Framework](./evaluation.md).
+For the editing interface in full — the tabbed layout, the bounding-box overlay, the confidence indicators and how baseline edits are recorded — see [Visual Editor](./human-review.md#visual-editor). For details on the evaluation baseline concept, see [Evaluation Framework](./evaluation.md).
 
 ## Step 5: Create the Test Set
 
