@@ -245,6 +245,14 @@ lint-cicd: ## CI/CD lint — checks only, no modifications
 
 	@echo -e "$(GREEN)All code quality checks passed!$(NC)"
 
+# Deliberately NOT a prerequisite of `lint` or `fastlint`: it reads the coverage
+# report that `make test-cicd -C lib/idp_common_pkg` writes, and the lint targets
+# never build one. Wired there it would find no report, exit 0, and pass vacuously --
+# a gate that cannot fail is worse than an absent one, because it reads as coverage.
+# Both CI configurations invoke it immediately after the test step instead.
+check-coverage-debt: ## Ratchet idp_common per-file coverage: fail if a file loses coverage, or a new module arrives unratcheted
+	@python3 scripts/check_coverage_debt.py
+
 check-lint-debt: ## Ratchet ruff's per-file exclusions: fail if an excluded file gains a finding, or is now clean (issue #975)
 	@# ruff.toml used to exclude five BARE directory names, which match at any
 	@# path depth, so 442 of 1230 tracked .py files were read by neither the
