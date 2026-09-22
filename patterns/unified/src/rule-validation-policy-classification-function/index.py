@@ -342,10 +342,23 @@ def _cleanup_rule_validation_files(bucket, input_key):
         logger.warning(
             f"Failed to clear rule validation files for {input_key}: {str(e)}"
         )
-        # #1101: this is not a best-effort tidy-up. The objects it removes are the
-        # previous run's `rule_validation/sections/*_responses.json`, and the
-        # orchestrator globs exactly that prefix when it consolidates — so a cleanup
-        # that silently did not happen means last run's verdicts are consolidated as
-        # if they were this run's. A transient S3 fault is worth a retry rather than
-        # that.
+        # This IS a best-effort tidy-up, and it only became one in #1143. The
+        # objects it removes are the previous run's
+        # `rule_validation/sections/*_responses.json`, and consolidation used to
+        # GLOB exactly that prefix — so a cleanup that silently did not happen meant
+        # last run's verdicts were consolidated as if they were this run's. #1101
+        # made a transient fault raise so it would be retried, which narrowed the
+        # window without closing it: a deterministic failure (`AccessDenied` from a
+        # missing `s3:ListBucket` or `s3:DeleteObject`, a bucket policy denial) was
+        # still caught here and the document still completed on mixed verdicts.
+        #
+        # Consolidation now reads the explicit per-section URIs this run produced
+        # (`rule-validation-orchestration-function`), so a surviving object is inert:
+        # it is not in the list, so it is not read. What remains is disk cost and a
+        # confusing prefix, which is what a warning is the right response to.
+        #
+        # The transient re-raise stays. It is no longer load-bearing for
+        # correctness, and it is kept because a retry is the right answer to a
+        # throttle or a reset connection on its own terms — not because the verdicts
+        # depend on it.
         reraise_if_transient(e, where="rule validation cleanup")

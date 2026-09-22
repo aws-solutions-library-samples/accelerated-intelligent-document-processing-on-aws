@@ -580,18 +580,72 @@ class RuleValidationOrchestratorService:
 
         return response
 
+    @staticmethod
+    def _section_keys_from_uris(
+        section_uris: List[str], output_bucket: str
+    ) -> List[str]:
+        """Convert this run's section URIs to keys in ``output_bucket``.
+
+        A URI naming a DIFFERENT bucket is dropped with a warning rather than
+        stripped down to something that happens to parse. Blind prefix-stripping
+        would leave ``s3://other/key`` unchanged, and the loader would then read
+        ``s3://<output_bucket>/s3://other/key`` -- a miss that looks exactly like a
+        section this run never wrote, which is the failure mode this whole change is
+        about not having.
+        """
+        keys: List[str] = []
+        for uri in section_uris:
+            if not uri.startswith("s3://"):
+                # Already a key.
+                keys.append(uri)
+                continue
+            bucket, _, key = uri[len("s3://") :].partition("/")
+            if bucket != output_bucket or not key:
+                logger.warning(
+                    "Skipping section result %s: it does not name a key in the "
+                    "document's output bucket %s",
+                    uri,
+                    output_bucket,
+                )
+                continue
+            keys.append(key)
+        return keys
+
     def load_section_results(
-        self, document_input_key: str, output_bucket: str
+        self,
+        document_input_key: str,
+        output_bucket: str,
+        section_uris: Optional[List[str]] = None,
     ) -> tuple[Dict[str, Any], bool]:
         """
-        Load all section results from S3.
+        Load this run's section results from S3.
         Returns: (all_responses, chunking_occurred)
+
+        ``section_uris`` are the objects THIS run wrote, as reported by the
+        per-section Map. Pass them. Globbing the prefix instead reads whatever is
+        there, and on a reprocessed document that includes the previous run's
+        verdicts for the same document — plausible enough to be consolidated and
+        acted on, so a rule whose verdict changed from ``Fail`` to ``Pass`` between
+        runs can be reported as ``Fail`` (#1143).
+
+        The glob survives for callers that genuinely have no list — a notebook, a
+        manual re-consolidation of an existing prefix — so the distinction is
+        ``None`` (no list available, read the prefix) versus ``[]`` (this run wrote
+        nothing, so there is nothing to consolidate). Those two must not collapse:
+        treating an empty list as "fall back to the prefix" would restore the defect
+        in exactly the case that triggers it, a run whose sections all failed.
         """
         try:
-            # List all section result files in sections subfolder
-            prefix = f"{document_input_key}/rule_validation/sections/"
-            pattern = f"{prefix}section_*_responses.json"
-            section_files = s3.find_matching_files(output_bucket, pattern)
+            if section_uris is None:
+                # No caller-supplied list: read the prefix. See the note above for
+                # what this cannot distinguish.
+                prefix = f"{document_input_key}/rule_validation/sections/"
+                pattern = f"{prefix}section_*_responses.json"
+                section_files = s3.find_matching_files(output_bucket, pattern)
+            else:
+                section_files = self._section_keys_from_uris(
+                    section_uris, output_bucket
+                )
 
             all_responses = {}
             chunking_occurred = False
@@ -1542,14 +1596,18 @@ tr:hover {
         document: Document,
         config: Dict[str, Any],
         multiple_sections: bool = None,
+        section_uris: Optional[List[str]] = None,
     ) -> Document:
         """
         Complete consolidation workflow: load, merge, summarize, and save all results.
+
+        ``section_uris`` is this run's section output list; see
+        :meth:`load_section_results` for why passing it matters.
         """
         try:
             # Load all section results and check if chunking occurred
             all_responses, chunking_occurred = self.load_section_results(
-                document.input_key, document.output_bucket
+                document.input_key, document.output_bucket, section_uris
             )
 
             if not all_responses:
@@ -1564,13 +1622,24 @@ tr:hover {
                 all_responses, config
             )
 
-            # Determine if summarization is needed: multiple sections OR chunking occurred
-            prefix = f"{document.input_key}/rule_validation/sections/"
-            pattern = f"{prefix}section_*_responses.json"
-            section_files = s3.find_matching_files(document.output_bucket, pattern)
-            num_sections = len(
-                [f for f in section_files if f.endswith("_responses.json")]
-            )
+            # Determine if summarization is needed: multiple sections OR chunking
+            # occurred. This counts THIS run's sections; the prefix is only listed
+            # when the caller supplied no list, for the same reason as in
+            # `load_section_results` -- a stale object left by a previous run would
+            # otherwise push the count past 1 and route a single-section document
+            # through LLM summarization, which is a cost and latency difference on
+            # top of the wrong verdicts (#1143).
+            if section_uris is None:
+                prefix = f"{document.input_key}/rule_validation/sections/"
+                pattern = f"{prefix}section_*_responses.json"
+                section_files = s3.find_matching_files(document.output_bucket, pattern)
+                num_sections = len(
+                    [f for f in section_files if f.endswith("_responses.json")]
+                )
+            else:
+                num_sections = len(
+                    [uri for uri in section_uris if uri.endswith("_responses.json")]
+                )
 
             needs_summarization = (num_sections > 1) or chunking_occurred
 
@@ -1711,10 +1780,13 @@ tr:hover {
         document: Document,
         config: Dict[str, Any],
         multiple_sections: bool = None,
+        section_uris: Optional[List[str]] = None,
     ) -> Document:
         """
         Synchronous wrapper for consolidate_and_save_all.
         Handles both regular Python scripts and Jupyter notebook environments.
+
+        ``section_uris`` is forwarded unchanged; see :meth:`load_section_results`.
         """
         import asyncio
         import concurrent.futures
@@ -1731,6 +1803,7 @@ tr:hover {
                             document,
                             config,
                             multiple_sections,
+                            section_uris,
                         ),
                     )
                     return future.result()
@@ -1741,6 +1814,7 @@ tr:hover {
                         document,
                         config,
                         multiple_sections,
+                        section_uris,
                     )
                 )
         except RuntimeError:
@@ -1753,6 +1827,7 @@ tr:hover {
                         document,
                         config,
                         multiple_sections,
+                        section_uris,
                     )
                 )
             finally:

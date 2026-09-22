@@ -138,15 +138,31 @@ def handler(event, context):
         )
         
         # Call consolidate_and_save - it handles:
-        # 1. Loading section results from S3 (using URIs from rule_validation_result)
+        # 1. Loading this run's section results from the URIs collected above
         # 2. Performing LLM orchestration (fact extraction → compliance decision)
         # 3. Consolidating results into final files
         # 4. Updating document.rule_validation_result with consolidated URIs
+        #
+        # #1143: the URIs are passed explicitly because consolidation used to GLOB
+        # `<input_key>/rule_validation/sections/section_*_responses.json` instead,
+        # and a reprocessed document reaches that prefix with the previous run's
+        # objects still in it whenever the cleanup step did not manage to delete
+        # them. Those verdicts are for the same document, so they consolidate
+        # plausibly rather than visibly wrong: a rule whose verdict changed between
+        # runs is reported at the stale value and the compliance decision follows
+        # it. The list below is what THIS run wrote, so the cleanup stops being
+        # load-bearing. `RuleValidationOrchestration` is reachable only from the
+        # section Map, whose `ResultPath` is `$.RuleValidationResults`, so the list
+        # is always available here; an empty one means this run produced no section
+        # output, which is a reason to consolidate nothing rather than to fall back
+        # to reading the prefix.
+        section_uris = [r["section_uri"] for r in section_results]
         logger.info(f"Consolidating rule validation results for {len(document.sections)} section(s)")
         updated_document = summarization_service.consolidate_and_save(
             document=document,
             config=config,
-            multiple_sections=True  # Always run orchestrator for fact extraction
+            multiple_sections=True,  # Always run orchestrator for fact extraction
+            section_uris=section_uris,
         )
         
         # Add section results to the consolidated rule_validation_result

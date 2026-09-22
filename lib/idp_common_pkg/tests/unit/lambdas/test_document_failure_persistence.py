@@ -43,7 +43,13 @@ from idp_common.document_failure import (
     SECTION_PROCESSING_FAILED_CODE,
 )
 from idp_common.dynamodb.service import DocumentDynamoDBService
-from idp_common.models import Document, ProcessingIssue, Section, Status
+from idp_common.models import (
+    Document,
+    ProcessingIssue,
+    RuleValidationResult,
+    Section,
+    Status,
+)
 from idp_common.utils.transient_errors import TransientError
 
 _SRC = os.path.join(os.path.dirname(__file__), "../../../../../patterns/unified/src")
@@ -814,3 +820,94 @@ def test_every_status_member_named_by_a_unified_handler_exists():
         "these handlers name Status members that do not exist, so the line raises "
         "AttributeError if it is ever reached: " + json.dumps(offenders, indent=2)
     )
+
+
+# ---------------------------------------------------------------------------
+# 4. rule-validation-orchestration-function: consolidation reads THIS run's
+#    section outputs (#1143)
+#
+# These live in this module because it is the only place the orchestration
+# handler is loaded from source; a second importlib loader elsewhere would be a
+# worse trade than the slightly broad file scope.
+# ---------------------------------------------------------------------------
+
+
+def _section_map_result(section_id: str, uri: str | None) -> dict:
+    """One entry of the section Map's output, as the consolidation state sees it."""
+    document = _document()
+    if uri is not None:
+        document.rule_validation_result = RuleValidationResult.for_section(
+            document_id=document.id, section_uri=uri
+        )
+    return {"section_id": section_id, "document": document.to_dict()}
+
+
+def _orch_capture_consolidate_kwargs(map_results: list[dict]) -> dict:
+    """Invoke the handler and return the kwargs it passed to consolidation."""
+    consolidator = MagicMock()
+    consolidator.consolidate_and_save.side_effect = lambda document, **kw: document
+
+    document = _document()
+    with (
+        patch.object(orchestration_index, "get_config", lambda **kw: {}),
+        patch.object(
+            orchestration_index,
+            "rule_validation",
+            MagicMock(RuleValidationOrchestratorService=lambda **kw: consolidator),
+        ),
+        patch.object(
+            orchestration_index,
+            "create_document_service",
+            lambda *a, **kw: MagicMock(),
+        ),
+        patch.dict(os.environ, {"WORKING_BUCKET": "", "REPORTING_BUCKET": ""}),
+    ):
+        orchestration_index.handler(
+            {
+                "Result": {"document": document.to_dict()},
+                "RuleValidationResults": map_results,
+            },
+            _Context(),
+        )
+
+    consolidator.consolidate_and_save.assert_called_once()
+    return consolidator.consolidate_and_save.call_args.kwargs
+
+
+@pytest.mark.unit
+def test_orchestration_passes_this_runs_section_uris_to_consolidation():
+    """The wiring that makes the cleanup step stop being load-bearing.
+
+    Consolidation used to glob ``<input_key>/rule_validation/sections/`` and so read
+    whatever was there, including an object a failed cleanup left from a previous run
+    of the same document. The handler already had the explicit per-section URIs in
+    hand and threw them away. This asserts they arrive, so removing the argument
+    fails here rather than in production on a reprocessed document.
+    """
+    kwargs = _orch_capture_consolidate_kwargs(
+        [
+            _section_map_result(
+                "1", "s3://out/doc/rule_validation/sections/section_1_responses.json"
+            ),
+            _section_map_result(
+                "2", "s3://out/doc/rule_validation/sections/section_2_responses.json"
+            ),
+        ]
+    )
+    assert kwargs["section_uris"] == [
+        "s3://out/doc/rule_validation/sections/section_1_responses.json",
+        "s3://out/doc/rule_validation/sections/section_2_responses.json",
+    ]
+
+
+@pytest.mark.unit
+def test_orchestration_passes_an_empty_list_not_none_when_no_section_wrote_output():
+    """``[]`` and ``None`` mean different things downstream, so this must be ``[]``.
+
+    ``None`` tells ``load_section_results`` to list the prefix. A run whose sections
+    all failed wrote nothing, so listing the prefix there consolidates the previous
+    run's verdicts in full — the worst case of #1143 rather than an edge of it.
+    """
+    kwargs = _orch_capture_consolidate_kwargs([_section_map_result("1", None)])
+    assert kwargs["section_uris"] == []
+    assert kwargs["section_uris"] is not None

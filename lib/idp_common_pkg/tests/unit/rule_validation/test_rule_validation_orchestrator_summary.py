@@ -1303,10 +1303,12 @@ class TestConsolidateAndSave:
 
     def _service_with_stubbed_workflow(self, returned):
         service = _service()
-        seen: list[tuple[object, object, object]] = []
+        seen: list[tuple[object, object, object, object]] = []
 
-        async def _workflow(document, config, multiple_sections=None):
-            seen.append((document, config, multiple_sections))
+        async def _workflow(
+            document, config, multiple_sections=None, section_uris=None
+        ):
+            seen.append((document, config, multiple_sections, section_uris))
             return returned
 
         service.consolidate_and_save_all = _workflow
@@ -1317,14 +1319,48 @@ class TestConsolidateAndSave:
         service, seen = self._service_with_stubbed_workflow(sentinel)
         document = MagicMock(name="document")
         config = {"rule_validation": {"semaphore": 1}}
+        uris = ["s3://bucket/doc/rule_validation/sections/section_1_responses.json"]
 
-        assert service.consolidate_and_save(document, config, True) is sentinel
-        assert seen == [(document, config, True)]
+        assert service.consolidate_and_save(document, config, True, uris) is sentinel
+        assert seen == [(document, config, True, uris)]
 
     def test_multiple_sections_defaults_to_none_when_not_given(self):
         service, seen = self._service_with_stubbed_workflow(MagicMock())
         service.consolidate_and_save(MagicMock(), {})
         assert seen[0][2] is None
+
+    def test_the_section_uri_list_is_forwarded_through_every_loop_branch(self):
+        """The wrapper has three call sites, one per event-loop environment.
+
+        Forwarding the list from only the branch a test happens to take would leave
+        the other two globbing the prefix -- and the notebook branch is the one that
+        looks least like production, so it is the one that would be missed (#1143).
+        """
+        import asyncio
+
+        uris = ["s3://bucket/doc/rule_validation/sections/section_1_responses.json"]
+
+        # No running loop: asyncio.run / run_until_complete path.
+        service, seen = self._service_with_stubbed_workflow(MagicMock())
+        service.consolidate_and_save(MagicMock(), {}, True, uris)
+        assert seen[0][3] == uris
+
+        # A loop already running: the coroutine is offloaded to a worker thread.
+        service, seen = self._service_with_stubbed_workflow(MagicMock())
+
+        async def probe():
+            return service.consolidate_and_save(MagicMock(), {}, True, uris)
+
+        asyncio.run(probe())
+        assert seen[0][3] == uris
+
+    def test_no_list_reaches_the_workflow_as_none_not_as_an_empty_list(self):
+        """``None`` and ``[]`` are different instructions downstream, so the wrapper
+        must not normalise one into the other: ``None`` means "list the prefix" and
+        ``[]`` means "this run wrote nothing"."""
+        service, seen = self._service_with_stubbed_workflow(MagicMock())
+        service.consolidate_and_save(MagicMock(), {})
+        assert seen[0][3] is None
 
     def test_it_works_from_inside_a_running_event_loop(self):
         # The notebook case: asyncio.run would raise here, so the wrapper offloads
@@ -1342,9 +1378,161 @@ class TestConsolidateAndSave:
     def test_a_failure_inside_the_workflow_propagates_to_the_caller(self):
         service = _service()
 
-        async def _workflow(document, config, multiple_sections=None):
+        async def _workflow(
+            document, config, multiple_sections=None, section_uris=None
+        ):
             raise RuntimeError("consolidation failed")
 
         service.consolidate_and_save_all = _workflow
         with pytest.raises(RuntimeError, match="consolidation failed"):
             service.consolidate_and_save(MagicMock(), {})
+
+
+@pytest.mark.unit
+class TestConsolidationReadsWhatThisRunWrote:
+    """#1143: the section list comes from the run, not from listing the prefix.
+
+    ``_cleanup_rule_validation_files`` deletes the previous run's objects under
+    ``<input_key>/rule_validation/``. Consolidation used to glob
+    ``<input_key>/rule_validation/sections/section_*_responses.json``, and the cleanup
+    prefix strictly contains that one, so an object the cleanup failed to delete was
+    consolidated as though this run had produced it. The verdicts are for the *same
+    document*, which is what makes the result plausible rather than obviously wrong:
+    a rule whose verdict moved from ``Fail`` to ``Pass`` between runs is reported at
+    the stale value and the compliance decision follows it.
+
+    #1101 made a **transient** cleanup failure raise, so it is retried. A
+    deterministic one — ``AccessDenied`` from a missing ``s3:ListBucket`` or
+    ``s3:DeleteObject``, a bucket policy denial — is still caught and logged at
+    WARNING, so the window stayed open for the most likely cause. Reading the explicit
+    list closes it regardless of why the cleanup did not happen.
+    """
+
+    THIS_RUN = "doc/rule_validation/sections/section_1_responses.json"
+    LAST_RUN = "doc/rule_validation/sections/section_9_responses.json"
+
+    def _both_objects_present(self, s3_mock):
+        """S3 holds this run's object and a survivor from the previous run."""
+        s3_mock.find_matching_files.return_value = [self.THIS_RUN, self.LAST_RUN]
+        s3_mock.get_json_content.side_effect = lambda uri: {
+            f"s3://bucket/{self.THIS_RUN}": {
+                "responses": {"Lending": [_response("r1", "Pass")]}
+            },
+            f"s3://bucket/{self.LAST_RUN}": {
+                "responses": {"Lending": [_response("r1", "Fail")]}
+            },
+        }[uri]
+
+    def test_a_surviving_object_is_not_consolidated(self):
+        with patch("idp_common.rule_validation.orchestrator.s3") as s3_mock:
+            self._both_objects_present(s3_mock)
+            responses, _ = _service().load_section_results(
+                "doc", "bucket", [f"s3://bucket/{self.THIS_RUN}"]
+            )
+
+        verdicts = [r["recommendation"] for r in responses["Lending"]]
+        assert verdicts == ["Pass"], (
+            "the previous run's Fail for the same rule was consolidated alongside "
+            "this run's Pass"
+        )
+        s3_mock.find_matching_files.assert_not_called()
+
+    def test_without_the_list_the_prefix_is_still_read(self):
+        """The discriminator. Same S3 state, no list — both verdicts arrive.
+
+        This is the behaviour every caller had before, and it is deliberately kept
+        for callers that genuinely have no list (a notebook re-consolidating an
+        existing prefix). It is also exactly the defect, which is why the workflow's
+        consolidation Lambda now always passes one.
+        """
+        with patch("idp_common.rule_validation.orchestrator.s3") as s3_mock:
+            self._both_objects_present(s3_mock)
+            responses, _ = _service().load_section_results("doc", "bucket")
+
+        assert sorted(r["recommendation"] for r in responses["Lending"]) == [
+            "Fail",
+            "Pass",
+        ]
+
+    def test_an_empty_list_consolidates_nothing_rather_than_falling_back(self):
+        """``[]`` and ``None`` must not collapse.
+
+        An empty list means this run wrote no section output — every section failed,
+        say. Falling back to the prefix there would consolidate the previous run's
+        verdicts *in their entirety*, which is the worst case of the defect rather
+        than an edge of it.
+        """
+        with patch("idp_common.rule_validation.orchestrator.s3") as s3_mock:
+            self._both_objects_present(s3_mock)
+            responses, chunked = _service().load_section_results("doc", "bucket", [])
+
+        assert responses == {}
+        assert chunked is False
+        s3_mock.find_matching_files.assert_not_called()
+
+    def test_a_uri_naming_another_bucket_is_dropped_not_mangled(self):
+        """Blind prefix-stripping would build ``s3://bucket/s3://other/key``.
+
+        That reads as a section this run never wrote, which is the failure this
+        change exists to remove — so the mismatch is reported instead.
+        """
+        with patch("idp_common.rule_validation.orchestrator.s3") as s3_mock:
+            keys = _service()._section_keys_from_uris(
+                [f"s3://bucket/{self.THIS_RUN}", "s3://other-bucket/some/key.json"],
+                "bucket",
+            )
+        assert keys == [self.THIS_RUN]
+        assert s3_mock.get_json_content.call_count == 0
+
+    def test_a_bare_key_is_accepted_unchanged(self):
+        assert _service()._section_keys_from_uris([self.THIS_RUN], "bucket") == [
+            self.THIS_RUN
+        ]
+
+    def test_the_section_count_comes_from_the_list_too(self):
+        """The prefix was listed twice, and the second one chooses the code path.
+
+        ``num_sections`` drives ``needs_summarization``: a stale object pushes the
+        count past 1, so a single-section document is routed through LLM
+        summarization. That is a cost and latency difference layered on top of the
+        wrong verdicts, and it is a second reader of the same prefix, so fixing only
+        the first would have left it.
+        """
+        service = _service()
+        one_uri = [f"s3://bucket/{self.THIS_RUN}"]
+
+        with patch("idp_common.rule_validation.orchestrator.s3") as s3_mock:
+            self._both_objects_present(s3_mock)
+            document = MagicMock()
+            document.input_key = "doc"
+            document.output_bucket = "bucket"
+            document.id = "doc-1"
+            document.metering = {}
+
+            captured = {}
+
+            def _record(all_responses, *args, **kwargs):
+                captured["count"] = len(all_responses)
+                return {}
+
+            service.save_policy_type_responses = MagicMock(return_value=[])
+            service._generate_consolidated_summary = MagicMock(side_effect=_record)
+            service.save_consolidated_summary = MagicMock(return_value="s3://b/k")
+            service._process_z3_cross_section_rules = _async_identity
+
+            import asyncio
+
+            asyncio.run(
+                service.consolidate_and_save_all(
+                    document, {}, multiple_sections=None, section_uris=one_uri
+                )
+            )
+
+        # One section and no chunking, so the no-LLM branch ran: it is the only path
+        # that reaches _generate_consolidated_summary directly.
+        service._generate_consolidated_summary.assert_called_once()
+        assert captured["count"] == 1
+
+
+async def _async_identity(all_responses, config):
+    return all_responses
