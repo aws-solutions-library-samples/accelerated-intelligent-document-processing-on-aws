@@ -212,7 +212,7 @@ the agentic path. 2 is the floor for any tool-based agent (tool call + close).
 - Scope: agentic path only. Simple/non-agentic integrated already single-shot — untouched.
 
 ## 9. Constraints
-`AWS_PROFILE=default` (acct 912625584728, us-west-2); never clobber `Config#default`; push to
+`AWS_PROFILE=default` (us-west-2); never clobber `Config#default`; push to
 `github` only; PR → `develop`; gates (ruff, typecheck-pr, unit, UI build) green; CHANGELOG +
 both doc tiers (extraction README + docs/assessment.md) updated.
 

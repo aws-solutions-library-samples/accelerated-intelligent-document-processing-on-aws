@@ -41,6 +41,7 @@ from idp_common.rule_validation.z3.smt_grammar import (
     is_identifier,
     tokenize,
 )
+from idp_common.rule_validation.z3.type_coercion import exact_numeric_reading
 from idp_common.rule_validation.z3.z3_validator import Z3Validator
 
 
@@ -191,6 +192,18 @@ class TestConstraintProblems:
         # time, which the companion tests in test_z3_validator_smt.py assert; the
         # value of pinning it here is that widening the check stays deliberate.
         assert constraint_problems(constraint, self.declared) == []
+
+    @pytest.mark.parametrize("spelling", ["nan", "inf", "infinity", "Infinity"])
+    def test_a_non_finite_spelling_is_refused_on_both_sides(self, spelling):
+        # The one place identifier shape and numeral spelling overlap. This check
+        # reports the token as an undeclared name; the numeric contract every
+        # reading goes through refuses the same value, because Z3 has no sort for
+        # one. Asserting both here is what would catch them diverging.
+        assert constraint_problems(f"(> income {spelling})", self.declared) == [
+            f"'{spelling}' is not a declared parameter"
+        ]
+        with pytest.raises(ValueError):
+            exact_numeric_reading(spelling, "Real")
 
 
 @pytest.mark.unit

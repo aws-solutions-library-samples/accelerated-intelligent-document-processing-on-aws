@@ -118,6 +118,38 @@ Document Data → [Path Extraction or LLM Extraction] → Parameter Values
    - `unsat` → **Fail** (rule violated)
    - `error` / missing parameters → **Information Not Found**
 
+### A numeric reading must be exact in its declared type
+
+A reading is checked against the type its parameter was declared as before it
+reaches the solver, and a numeric reading that cannot be represented in that type
+without losing information makes the rule report **Information Not Found** with
+the reason. A parameter declared `Int` whose reading comes back as `30.9` is the
+case worth knowing about: the reading is refused rather than truncated to `30`. A
+decimal that happens to be whole, such as `30.0` or `"30.0"`, still binds as
+`30`, and declaring the parameter `Real` accepts `30.9` exactly — `Real` readings
+are held as exact rationals, not rounded to a double, so an equality rule decides
+on the reading rather than on 17 digits of it.
+
+(`Bool` and `String` do convert rather than insist: `"Yes"` is read as true, and a
+numeric reading for a `String` parameter becomes its text.)
+
+**Declaring the right type is a correctness requirement, not type hygiene.** `Int`
+says the quantity is whole, so `days_late <= 30` cannot be evaluated against a
+reading of 30.9 — there is no whole number of days the document supports, and
+truncating to 30 would report a Pass while rounding to 31 would report a Fail
+against `days_late >= 31`. If the quantity you are reading is genuinely
+fractional, declare it `Real`. The constraint language compares `Int` and `Real`
+values against each other, so a `Real` parameter works with a whole-number
+threshold and you lose nothing by choosing it.
+
+⚠️ **The type you declare also shapes what the extraction model answers, and that
+happens before any of this can see it.** Asked for an `Int` from a document whose
+underlying fact was 30.9, a Bedrock model answered `31` — a whole number, which is
+accepted as exact, because nothing downstream can know the fact was fractional.
+The refusal above only fires when the model *reports* a fraction. So an `Int`
+parameter over a fractional quantity is not made safe by the check; declaring it
+`Real` is what makes the rule read the quantity it is about.
+
 ## Strict Mode (Default)
 
 Z3 validation enforces strict mode: if the RuleJSON is missing, the rule_id is not configured, or required parameters cannot be extracted from the document, the rule returns a hard failure or "Information Not Found" — it does NOT silently fall back to LLM-based reasoning. This ensures the configured engine always runs and misconfigurations are visible.
