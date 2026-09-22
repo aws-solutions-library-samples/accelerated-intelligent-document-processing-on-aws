@@ -17,6 +17,26 @@ from moto import mock_aws
 
 _LAMBDAS_DIR = Path(__file__).resolve().parent.parent / "lambdas"
 
+# These Lambdas import idp_common as an EXTERNAL dependency, and unlike
+# lib/idp_common_pkg's own suite nothing here puts the library's checkout on sys.path,
+# so the editable-install pointer is the only thing deciding which revision gets tested.
+# That went wrong: two failures in test_apply_feature_config_preset.py were read as a
+# code defect when the imported tree simply predated
+# idp_common/config/hook_reachability.py. The import is wrapped in a degradation path, so
+# the only signal was a log line saying the reachability check had been skipped.
+# Skipped only when the helper is genuinely absent (an export with no scripts/ tree).
+# See the note in lib/idp_common_pkg/tests/conftest.py: a blanket `except ImportError`
+# here would also swallow a renamed symbol and silently disable the guard.
+_GATE_DIR = Path(__file__).resolve().parents[3] / "scripts" / "tests"
+if (_GATE_DIR / "first_party_provenance.py").is_file():
+    sys.path.insert(0, str(_GATE_DIR))
+    try:
+        from first_party_provenance import assert_resolves_in
+
+        assert_resolves_in("idp_common", __file__)
+    finally:
+        sys.path.pop(0)
+
 
 def _load_module(module_dir: Path, module_alias: str):
     """Load `<module_dir>/index.py` as `module_alias`, forcing a fresh import.
