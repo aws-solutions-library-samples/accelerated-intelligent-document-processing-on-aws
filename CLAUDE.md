@@ -120,10 +120,52 @@ the gate evaluates against the tree.
 The **formatting** debt is deliberately unpaid: `ruff format` over that whole list
 is a mechanical, conflict-generating sweep that belongs in its own change.
 
-`basedpyright` covers every tracked `.py` file (`pyrightconfig.json`'s `include`
-previously named six paths and reached 432).
-`scripts/tests/test_pyright_config.py` derives that closure from `git ls-files`, so
-a new tree holding Python fails there rather than being silently uncovered.
+`basedpyright` covers **every tracked `.py` file**, and the identity is the property
+to rely on: `git ls-files '*.py' | wc -l` and `filesAnalyzed` agree **exactly**.
+`scripts/tests/test_pyright_config.py` derives that closure from `git ls-files`, so a
+new tree holding Python fails there rather than being silently uncovered
+(`include` previously named six paths and reached 432).
+
+**No figure is quoted, and putting one back is a test failure.** How many files the
+gate reads is scenery next to the fact that it reads all of them, and a literal goes
+stale within days — it moved four times across four `develop` merges during one change,
+with three documents carrying three different wrong numbers. `scripts/tests/test_documented_counts.py`
+holds that decision as a reintroduction guard. Measure it instead:
+
+```bash
+git ls-files '*.py' | wc -l          # must equal basedpyright's filesAnalyzed
+```
+
+⚠️ **Reading every file is not checking every call.** `basedpyright` honours
+`PYTHONPATH`, and `make typecheck` and both CIs invoke it without one; with
+`reportMissingImports` at `"none"`, `idp_common` did not resolve and **no call into
+the shared library could produce a diagnostic** — the boundary most of this
+repository uses to reach its own core. `filesAnalyzed` was **identical** either
+way, so the gate read every file, matched `git ls-files`, reported zero errors,
+and proved far less than that looks like. Eleven errors were behind it, three of them statements
+that raise on every execution (a `Status.ERROR` that is not in the enum, a keyword
+no parameter matches, a required argument omitted). Issue #1109.
+
+`pyrightconfig.json`'s **`extraPaths`** now names the five first-party package
+roots, so resolution is a property of the configuration rather than of how the gate
+was invoked. The entries are **relative** on purpose: pyright resolves them against
+the directory holding the config, so they cannot name another checkout — which
+matters because this environment carries editable installs of `idp_common` and
+`idp_sdk` pointing at a sibling worktree and at a different project entirely
+(#1094), and an `extraPaths` naming one of those resolves perfectly while saying
+nothing about this tree. Confident wrong answers are worse than silent ones.
+`test_pyright_config.py` asserts both halves — the entries stay relative and inside
+the repo, and a 0.5s live basedpyright probe confirms all five actually resolve
+through the values the config carries — and fails on the specific combination of
+`reportMissingImports: "none"` plus unresolvable first-party packages.
+
+`reportMissingImports` **stays** at `"none"`, measured rather than assumed: raised to
+`"warning"` with `extraPaths` live it reports 44 findings over 25 modules and **none
+is first-party**. About 38 are sibling-module imports in script and Lambda trees that
+are not packages (`from index import ...`, `processors.pdf_image_processor`), correct
+at runtime because the handler's own directory is on `sys.path`; the rest are
+genuinely uninstalled third-party distributions. So the rule is unusable above
+`"none"` here, and the gap it leaves is covered by the resolution assertions instead.
 
 ⚠️ **basedpyright has no ignore-file support**, so its walk reads gitignored build
 output — the one asymmetry with ruff, which honours the ignore file natively. `exclude`
@@ -301,6 +343,15 @@ skipped them — the same class of gap as the SRT/dep-audit note below. Now on b
 `scripts/sdlc/validate_service_role_permissions.py`, `make srt-scan` and
 `scripts/security/dep_audit.py`. The type gate is the whole-tree `make typecheck`;
 `make typecheck-pr` is a developer convenience and runs in neither CI.
+
+The type gate in both CIs is the **whole-tree** `make typecheck`, not
+`make typecheck-pr`. The PR-scoped form is a developer convenience and is in
+**neither** CI — a file-scoped check passes on a signature change whose broken caller
+sits in a file the diff did not touch, which is the ordinary shape of a type error.
+`scripts/sdlc/tests/test_typecheck_pr_changes.py::test_neither_ci_config_runs_this_script`
+asserts that, so naming it here as a CI gate would be a document contradicting a
+passing test; both CI configurations mention it only in comments recording that the
+whole-tree form replaced it.
 
 `make cfn-lint` and `make validate-buildspec` were in **neither** CI before — they
 sat in `lint`/`fastlint` but not `lint-cicd`, so a template or buildspec error
