@@ -54,9 +54,18 @@ class ConfigurationReader:
         self.manager = ConfigurationManager(table_name, region=region)
         logger.info(f"Initialized ConfigurationReader with ConfigurationManager")
 
+    # `as_dict` carries its default here, matching the implementation below and the
+    # docstring's "If True (default)". Without it neither overload accepted a call
+    # that omitted `as_dict`, so the documented default form resolved to no overload
+    # at all — the same defect as `get_merged_configuration` further down, which had
+    # callers and was therefore the one that showed up as an error.
     @overload
     def get_configuration(
-        self, config_type: str, *, as_dict: Literal[True], version: Optional[str] = None
+        self,
+        config_type: str,
+        *,
+        as_dict: Literal[True] = True,
+        version: Optional[str] = None,
     ) -> Optional[Dict[str, Any]]: ...
 
     @overload

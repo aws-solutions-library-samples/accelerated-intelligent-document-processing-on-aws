@@ -120,7 +120,7 @@ the identity rather than the number: `git ls-files '*.py' | wc -l` and
 `filesAnalyzed` agree exactly, which is what
 `scripts/tests/test_pyright_config.py` asserts by deriving the closure from `git
 ls-files` — so a new tree holding Python fails there rather than being silently
-uncovered. The figure was 1,318 when this paragraph was written and moves with
+uncovered. The figure was 1,330 when this paragraph was written and moves with
 almost every merge; measure it rather than quoting it. (`include` previously named
 six paths and reached 432 of the 1,230 tracked at that time.)
 

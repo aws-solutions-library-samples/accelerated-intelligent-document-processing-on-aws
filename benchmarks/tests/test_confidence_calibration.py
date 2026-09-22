@@ -326,8 +326,14 @@ def test_ece_and_the_verdict_come_from_the_shipped_curve():
 
     scored = analyze.score_calibration([section], truth["rows_typed"], LIST_KEY)
     assert scored["calibration_observations"] == 120
-    # Both are Optional on CalibrationHealth and None until there are enough
-    # observations; 120 is well past that, so assert it rather than rounding None.
+    # Both are Optional on CalibrationHealth, and they become None for *different*
+    # reasons — worth stating, because a fixture edit that trips one would otherwise
+    # fail against a comment blaming the other. `ece` is None only with no
+    # observations at all. `auroc` is None when either class is empty
+    # (`n_correct <= 0 or n_wrong <= 0`): it is a ranking statistic, so it is
+    # undefined without both a correct and an incorrect case, however many
+    # observations there are. This fixture supplies 120 of which every third is
+    # wrong, so both are defined; asserting that is cheaper than rounding None.
     assert health.ece is not None
     assert health.auroc is not None
     assert scored["calibration_ece"] == round(health.ece, 4)

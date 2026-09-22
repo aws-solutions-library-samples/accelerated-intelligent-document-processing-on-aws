@@ -480,6 +480,20 @@ def stale_clone(tmp_path: Path):
     (work / "mine.py").write_text("y = 2\n")
     _git(work, "add", "mine.py")
     _git(work, "commit", "-m", "mine")
+
+    # Merge the shared branch, which is what a real branch does before review. This
+    # is load-bearing for `test_the_file_list_excludes_commits_merged_into_the_base`:
+    # without it `theirs.py` is absent from the working tree, and
+    # `_python_files`' `Path(f).exists()` filter drops it under EVERY base ref — so
+    # the test passed against the old, defective implementation and was measuring
+    # nothing. With the merge, `theirs.py` exists on disk and is excluded only
+    # because the base ref and the three-dot diff are right.
+    _git(work, "merge", "github/develop", "--no-edit")
+    assert (work / "theirs.py").exists(), (
+        "the fixture's merge did not bring the base branch's file into the working "
+        "tree, so the exclusion test below cannot distinguish a correct base ref "
+        "from a stale one."
+    )
     return work
 
 
@@ -545,6 +559,53 @@ def test_the_file_list_excludes_commits_merged_into_the_base(
     assert "theirs.py" not in files, (
         f"selected {files}, which includes a file only the base branch changed. "
         "Its errors would be reported as this branch's."
+    )
+
+
+@pytest.mark.unit
+def test_the_replaced_ref_resolution_would_have_selected_the_base_branchs_file(
+    stale_clone, mod, monkeypatch
+) -> None:
+    """The back-reference, so the test above is a regression test and not a ratchet.
+
+    Without this, every assertion about `resolve_base_ref` fails against the previous
+    module only with `AttributeError: no attribute 'resolve_base_ref'` — which proves
+    the function is new, not that it fixed anything. This reimplements the ref
+    resolution that was replaced (``origin/<branch>...HEAD``, then
+    ``origin/<branch>``, then the local branch, two-dot) and measures it on the same
+    fixture: it selects `theirs.py`, a file only the base branch changed.
+
+    It is also the guard on the fixture. If someone removes the merge from
+    `stale_clone`, `theirs.py` stops existing on disk, `_python_files`' `exists()`
+    filter drops it under **every** base ref, and both this test and the one above
+    start passing for the wrong reason.
+    """
+    monkeypatch.chdir(stale_clone)
+
+    def replaced_resolution(target: str = "develop") -> tuple[list[str], str | None]:
+        for ref in (f"origin/{target}...HEAD", f"origin/{target}", target):
+            lines = mod._git_lines(["diff", "--name-only", ref])
+            if lines is None:
+                continue
+            return (
+                sorted(
+                    set(mod._python_files(lines)) | set(mod.get_uncommitted_files())
+                ),
+                ref,
+            )
+        return [], None
+
+    old_files, old_ref = replaced_resolution()
+    assert "theirs.py" in old_files, (
+        f"the replaced resolution selected {old_files} against {old_ref!r} and did "
+        "NOT include the base branch's file, so this fixture cannot tell the old "
+        "implementation from the new one. Check that `stale_clone` still merges the "
+        "shared branch — without that merge the file is absent from the working tree "
+        "and gets filtered out regardless of the base ref."
+    )
+    assert "theirs.py" not in mod.get_changed_files("develop"), (
+        "the current implementation selected the base branch's file too, so the fix "
+        "has regressed."
     )
 
 

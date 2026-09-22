@@ -605,18 +605,27 @@ make typecheck-pr    # fast local check of only the files changed vs TARGET_BRAN
 ```
 
 `make typecheck` is the gate. It is what both CI systems run, and it reads
-`pyrightconfig.json`'s 12-entry `include` — whose closure over every tracked
-`.py` file `scripts/tests/test_pyright_config.py` derives from `git ls-files`. It
-analyses **1273** files, which is exactly `git ls-files '*.py' | wc -l` and exactly
-the `filesAnalyzed` it reports, and takes **about a minute** through `make` (48–60 s
-measured across several trees; the bare `basedpyright` binary is ~47 s, but the
-`make` figure is the one CI pays).
+`pyrightconfig.json`'s `include` — whose closure over every tracked `.py` file
+`scripts/tests/test_pyright_config.py` derives from `git ls-files`. The property to
+rely on is that identity: **`filesAnalyzed` equals `git ls-files '*.py' | wc -l`
+exactly**, and the suite asserts it, so measure the count rather than reading one
+here — it was 1,330 when this paragraph was written and moves with almost every
+merge. A run takes **about a minute** through `make`.
 
-Errors fail it and warnings do not. There are **91** warnings today, and they are
-not one thing: `reportCallIssue` 34, `reportUnsupportedDunderAll` 26,
-`reportReturnType` 19, `reportImportCycles` 11, `reportDuplicateImport` 1. So
-clearing the two return/call rules — the pair most often discussed — takes the tree
-to 38 warnings, not to zero.
+It also resolves this repository's own packages, via `pyrightconfig.json`'s
+`extraPaths`. That matters more than it sounds: without it `idp_common` did not
+resolve, `reportMissingImports` is configured `"none"`, and so **no call into the
+shared library could produce a diagnostic** — the gate read every file and proved
+much less than that suggests. If you add a `lib/<something>` distribution, add its
+package root to `extraPaths`; the suite fails until you do.
+
+Errors fail it and warnings do not. To see today's warning split, run
+`make typecheck` and read the tally it prints rather than a list written here — it
+moves as files are added. Two things about it that do not move: `reportCallIssue` and
+`reportReturnType` are **errors** repo-wide and sit at zero, and the handful still
+reported as *warnings* come from the vendored `feature-platform/pii-anonymizer` tree,
+which is relaxed to warning level on purpose because its annotations are upstream's
+to fix.
 
 `make typecheck-pr` is a **convenience, not a gate**. It narrows `basedpyright`
 to the files you are editing so the answer comes back in a second or two, which

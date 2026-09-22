@@ -105,11 +105,19 @@ def test_model_limit(
     while current <= max_tokens:
         try:
             logger.debug(f"  Trying max_tokens={current:,}")
-            _ = bedrock_client.call_model(
+            # `invoke_model`, not `call_model`: the latter has never existed on
+            # BedrockClient, so every run of this script died here with
+            # "'BedrockClient' object has no attribute 'call_model'" — reported to
+            # the operator as "Check AWS credentials and permissions" by the handler
+            # below. The signature differs too: a system prompt plus Converse-format
+            # `content`, not a `messages` list.
+            _ = bedrock_client.invoke_model(
                 model_id=model_id,
-                messages=[{"role": "user", "content": test_prompt}],
+                system_prompt="Answer as briefly as possible.",
+                content=[{"text": test_prompt}],
                 max_tokens=current,
                 temperature=0.0,
+                context="ModelLimitDiscovery",
             )
 
             # Success - this limit works

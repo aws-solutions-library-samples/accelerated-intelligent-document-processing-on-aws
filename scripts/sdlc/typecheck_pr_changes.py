@@ -24,18 +24,24 @@ temporary config with ``include`` overridden — the earlier approach — put a
 ``pyrightconfig.temp.json`` in the repo root and made the run's settings a copy that
 could drift from the real one.
 
-**The base ref is resolved and reported, not assumed.** The comparison used to fall
-back to the *local* ``develop`` branch when ``origin/develop`` was missing — and this
-repository's GitHub remote is named ``github``, so on a clone where ``origin`` is the
-GitLab mirror that fallback is reached routinely. A local branch ref is only as fresh
-as the last checkout of it, and in a clone shared by several working trees it drifts:
-measured 44 commits behind ``github/develop``. Every commit merged in between is then
-attributed to the current branch, so the script reports type errors in other people's
-merged work, which reads as a regression the developer just introduced. Two sessions
-lost time to exactly that. ``resolve_base_ref`` now prefers a remote-tracking ref,
-**fails loudly** when the ref it would use is provably an ancestor of another
-candidate, and prints the ref, SHA and date it settled on in every case — including
-the one it cannot prove, a remote-tracking ref that has not itself been fetched.
+**The base ref is resolved and reported, not assumed.** The comparison asked for
+``origin/<branch>`` first — and in this repository ``origin`` is the **GitLab
+mirror**, while pull requests are opened against the ``github`` remote. So the first
+candidate succeeded and the answer was wrong: the stale ref was a *remote-tracking*
+one, not the local-branch fallback, which was never reached. Measured in one clone:
+``origin/develop`` 79 commits behind ``github/develop`` (local ``develop`` 85 behind),
+and **151** Python files selected where 10 had changed. Every commit merged in between
+is attributed to the current branch, so the script reports type errors in other
+people's merged work, which reads as a regression the developer just introduced. Two
+sessions lost time to exactly that.
+
+``resolve_base_ref`` now orders candidates by which remote a pull request is actually
+diffed against, **warns and continues with the fresher ref** when the preferred one is
+provably an ancestor of another candidate — it does not raise, because a correct base
+is available in that situation — and prints the ref, SHA and date it settled on in
+every case, including the one it cannot prove: a remote-tracking ref that has not
+itself been fetched. A fork remote is never allowed to override a preferred one, since
+a fork's ``develop`` can be ahead purely by carrying unmerged work.
 
 **It cannot report success without having checked something.** Three routes to a
 false pass are closed, and ``tests/test_typecheck_pr_changes.py`` drives each one:
@@ -110,9 +116,15 @@ def get_uncommitted_files() -> list[str]:
 #: Remotes to prefer when more than one carries the target branch, most
 #: authoritative first. `github` is where pull requests are opened and merged, so
 #: its remote-tracking ref is the base a PR will actually be diffed against;
-#: `origin` is the GitLab mirror. Any other remote — a contributor's fork, a
-#: colleague's — sorts after both, because a fork's `develop` can hold work that
-#: was never merged here and would narrow the diff rather than widen it.
+#: `origin` is the GitLab mirror and can lag it by weeks.
+#:
+#: Hardcoding a single remote name is the defect this replaces: the previous
+#: implementation asked for `origin/<branch>` first, which in this repository is the
+#: mirror rather than the remote a PR is diffed against.
+#:
+#: Any other remote — a contributor's fork, a colleague's — sorts after both, and is
+#: additionally never allowed to *override* a preferred remote below, because a
+#: fork's `develop` can carry work that was never merged here.
 #:
 #: A remote NAME is used only to order candidates, never to decide whether one
 #: exists: `_base_ref_candidates` derives that from the refs git actually has, so a
@@ -161,13 +173,15 @@ def _is_strictly_behind(ref: str, other: str) -> bool:
 def _base_ref_candidates(target_branch: str) -> list[str]:
     """Every ref that could serve as the comparison base, best first.
 
-    Remote-tracking refs before the local branch. The local branch is only as
-    fresh as the last time somebody checked it out and pulled, and in a clone
-    shared by several working trees it is routinely far behind: measured 44
-    commits behind `github/develop` on the machine this was fixed on. Diffing
-    against it attributes every commit merged in between to the current branch, so
-    the script reports type errors in other people's merged work and reads as a
-    regression the developer just caused.
+    Ordering is the whole fix. ANY of these refs can be arbitrarily stale, because a
+    remote-tracking ref only moves on `git fetch` and a local branch only on a
+    checkout and pull, so the question is which one is most likely to be the base a
+    pull request is actually diffed against. Measured in this clone: `origin/develop`
+    (the GitLab mirror) 79 commits behind `github/develop`, and local `develop` 85
+    behind. Diffing against a stale base attributes every commit merged in between to
+    the current branch, so the script reports type errors in other people's merged
+    work and reads as a regression the developer just caused — 151 Python files
+    selected against `origin/develop` where 10 had changed.
     """
     remotes = [line.strip() for line in (_git_lines(["remote"]) or []) if line.strip()]
     ordered = [r for r in REMOTE_PREFERENCE if r in remotes] + sorted(
@@ -182,9 +196,14 @@ def resolve_base_ref(target_branch: str = "develop") -> tuple[str | None, list[s
     """Pick the base ref to diff against, and report it rather than assuming it.
 
     Returns `(ref, messages)`. `ref` is None when no candidate exists at all.
-    `messages` always names the ref chosen, and additionally says so loudly when
-    the chosen ref is demonstrably stale — an ancestor of another candidate for the
-    same branch, which can only mean it has not been fetched.
+    `messages` always names the ref chosen, and additionally **warns** when the
+    preferred ref is demonstrably stale — an ancestor of another candidate for the
+    same branch.
+
+    It **warns and continues with a better base**; it does not raise or exit. That is
+    deliberate: there is a correct answer available in that situation (the fresher
+    ref), so refusing to do the work would be worse than doing it and saying what was
+    used. Nothing here is a gate — `make typecheck` is.
 
     Staleness is *demonstrable* only against a ref this clone already holds. A
     remote-tracking ref that has itself not been fetched recently cannot be
@@ -199,15 +218,26 @@ def resolve_base_ref(target_branch: str = "develop") -> tuple[str | None, list[s
     chosen = candidates[0]
     messages: list[str] = []
 
-    fresher = [ref for ref in candidates[1:] if _is_strictly_behind(chosen, ref)]
+    # A fresher candidate may override the preferred one only if it is itself from a
+    # preferred remote or is the local branch. A fork's `develop` can be "ahead"
+    # purely by carrying work that was never merged here, and taking it as the base
+    # would silently narrow the diff — the opposite failure to the one being fixed.
+    overridable = [
+        ref
+        for ref in candidates[1:]
+        if ref == target_branch or ref.split("/", 1)[0] in REMOTE_PREFERENCE
+    ]
+    fresher = [ref for ref in overridable if _is_strictly_behind(chosen, ref)]
     if fresher:
         behind = _git_lines(["rev-list", "--count", f"{chosen}..{fresher[0]}"]) or ["?"]
         messages.append(
-            f"⚠️  Base ref '{chosen}' is {behind[0]} commit(s) behind "
-            f"'{fresher[0]}', so it has not been fetched. Diffing against it would "
-            f"select every file changed by the commits in between and report their "
-            f"type errors as yours. Using '{fresher[0]}' instead; run "
-            f"'git fetch {fresher[0].split('/')[0]} {target_branch}' to refresh."
+            f"⚠️  Preferred base ref '{chosen}' is {behind[0]} commit(s) behind "
+            f"'{fresher[0]}'. Diffing against it would select every file changed by "
+            f"the commits in between and report their type errors as yours, so "
+            f"'{fresher[0]}' is being used instead. Either '{chosen}' has not been "
+            f"fetched recently, or the two remotes genuinely differ — this repository "
+            f"mirrors between two, and the mirror can lag. "
+            f"'git fetch --all' settles which."
         )
         chosen = fresher[0]
 
