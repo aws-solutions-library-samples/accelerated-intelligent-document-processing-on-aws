@@ -1248,7 +1248,7 @@
     },
     "scripts/tests/test_api_policy_counts_in_docs.py::ALL_DOCS": {
       "kind": "enforced-universe",
-      "turnsOff": "nothing. It is SCANNED_DOCS plus the partially-excluded documents, and it exists so the per-document comparison runs over an excluded page too — for the measures its exclusion does not name. A member adds coverage. Discovery matches it on the prose of the comment above it, which explains that an excluded document is still compared.",
+      "turnsOff": "nothing. It is SCANNED_DOCS plus the partially-excluded documents, and it exists so the per-document comparison runs over an excluded page too \u2014 for the measures its exclusion does not name. A member adds coverage. Discovery matches it on the prose of the comment above it, which explains that an excluded document is still compared.",
       "memberKind": "repo-relative path to a Markdown document",
       "premise": [
         "JUDGEMENT"
@@ -1416,7 +1416,7 @@
         "JUDGEMENT"
       ],
       "ratchet": "universe-closure",
-      "reason": "Whether a target CAN be a CI gate is a property of what it does — mutates the tree, prompts a human, needs AWS credentials, needs a deployed stack, reports rather than asserts — and none of that is readable from the Makefile. So one sentence per target, naming that target's own obstacle.",
+      "reason": "Whether a target CAN be a CI gate is a property of what it does \u2014 mutates the tree, prompts a human, needs AWS credentials, needs a deployed stack, reports rather than asserts \u2014 and none of that is readable from the Makefile. So one sentence per target, naming that target's own obstacle.",
       "ratchetGap": "The reasons themselves are unchecked prose. What is mechanical: no target IN THE UNIVERSE may be absent from both this list and CI; a listed target CI has since started running fails; a listed target that no longer exists fails. Read 'in the universe' precisely -- it is every target in the 5 sections GATE_SECTION_PREFIXES names, plus any check-shaped-by-name target in any other section except Stack tests. It is NOT every Makefile target, and the residual is stated on the GATE_SECTION_PREFIXES entry.",
       "memberKind": "make target",
       "crossReferences": [
@@ -1431,7 +1431,7 @@
         "JUDGEMENT"
       ],
       "ratchet": "staleness",
-      "reason": "Two of `make lint`'s prerequisites auto-fix, so `lint-cicd` cannot invoke them — it runs the check-only command instead, and that command's spelling is not derivable from the target's name. The substituted command must still be present in the recipe, so this relaxes how the gate is spelled and not whether it runs.",
+      "reason": "Two of `make lint`'s prerequisites auto-fix, so `lint-cicd` cannot invoke them \u2014 it runs the check-only command instead, and that command's spelling is not derivable from the target's name. The substituted command must still be present in the recipe, so this relaxes how the gate is spelled and not whether it runs.",
       "memberKind": "make target",
       "ratchetEvidence": "scripts/tests/test_ci_gate_parity.py"
     },
@@ -1456,20 +1456,6 @@
       "reason": "Build output and local work; the one gate that had the complete set from the start.",
       "memberKind": "path",
       "ratchetEvidence": "scripts/tests/test_classification_prompt_copies_in_sync.py"
-    },
-    "scripts/tests/test_codeowners.py::LINK_CHECK_EXCLUDED": {
-      "kind": "exemption",
-      "turnsOff": "the Markdown link check for two root documents",
-      "premise": [
-        "JUDGEMENT"
-      ],
-      "ratchet": "staleness",
-      "reason": "One is an append-only historical record; the other is being rewritten separately. Each is asserted to still exist and be reachable.",
-      "crossReferences": [
-        "scripts/tests/test_testing_doc.py::OVERCLAIM_EXEMPT"
-      ],
-      "memberKind": "path",
-      "ratchetEvidence": "scripts/tests/test_codeowners.py"
     },
     "scripts/tests/test_config_region_threading.py::REGIONLESS_ALLOWED": {
       "kind": "exemption",
@@ -2086,10 +2072,7 @@
       ],
       "ratchet": "none",
       "reason": "CHANGELOG.md must quote the corrected claim; it is an append-only historical record.",
-      "ratchetGap": "No staleness check, though the same premise is registered for the same file in test_codeowners.py.",
-      "crossReferences": [
-        "scripts/tests/test_codeowners.py::LINK_CHECK_EXCLUDED"
-      ],
+      "ratchetGap": "No staleness check: nothing fails if CHANGELOG.md stops carrying the phrasing this shields.",
       "memberKind": "path",
       "issues": [
         "986"

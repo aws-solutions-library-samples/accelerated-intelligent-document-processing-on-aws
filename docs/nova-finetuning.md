@@ -652,9 +652,9 @@ python scripts/model_finetuning/create_provisioned_throughput.py \
 
 - **IDP Common Library**: `genaiic-idp-accelerator/lib/idp_common_pkg/`
 - **Notebooks**: 
-  - [Dataset Preparation](../notebooks/finetuning_dataset_prep.ipynb)
-  - [Fine-tuning Service Demo](../notebooks/finetuning_model_service_demo.ipynb) 
-  - [Model Evaluation](../notebooks/finetuning_model_document_classification_evaluation.ipynb)
+  - [Dataset Preparation](../notebooks/misc/finetuning_dataset_prep.ipynb)
+  - [Fine-tuning Service Demo](../notebooks/misc/finetuning_model_service_demo.ipynb) 
+  - [Model Evaluation](../notebooks/misc/finetuning_model_document_classification_evaluation.ipynb)
 - **Python Scripts**:
   - `prepare_nova_finetuning_data.py`
   - `create_finetuning_job.py`

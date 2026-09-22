@@ -1819,14 +1819,14 @@ ls -la ~/eval-results/eval-run-001/invoice.pdf/evaluation/
 ```bash
 # View detailed evaluation metrics
 cat ~/eval-results/eval-run-001/invoice.pdf/evaluation/report.json | jq .
-
+```
 
 **View human-readable report:**
 
 ```bash
 # Markdown report with visual formatting
 cat ~/eval-results/eval-run-001/invoice.pdf/evaluation/report.md
-
+```
 
 ---
 
@@ -2548,7 +2548,6 @@ idp-cli config-activate --stack-name my-stack --config-profile default
 4. All new document processing will use this configuration
 
 **Note:** If BDA sync fails (when `use_bda` is enabled), the activation will be aborted to prevent processing errors.
-```
 
 **Notes:**
 - Sets the specified profile as active for all new document processing
