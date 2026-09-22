@@ -8170,6 +8170,34 @@ Resources:
       AlarmActions:
         - !Ref AlertsTopic
 
+  # Published by DynamoDBMessageLogger in idp_common.agents.common, which runs in
+  # AgentProcessorFunction and AgentChatProcessorFunction -- both in THIS stack, so
+  # unlike the two alarms above there is no nested-namespace indirection to reason
+  # about. Both functions set METRIC_NAMESPACE to !Ref AWS::StackName and both
+  # PutMetricData Conditions permit it.
+  AgentTranscriptMessageDroppedAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmDescription: !Sub "Messages are being dropped from agent conversation transcripts in ${AWS::StackName}. The agent's own answer to the user is unaffected -- what is lost is an entry in the stored transcript the analytics UI replays, so a conversation will show gaps. A message is dropped only after it has failed to append for the whole retry budget, which means sustained contention on one job's record (many sub-agents in one turn) or a read that kept failing (throttling on the agent table, or a missing grant). Diagnose from the AgentProcessorFunction and AgentChatProcessorFunction logs: the line beside every emit names the job id and the sequence number that was not persisted. See issue #1098 for why this is counted rather than only logged."
+      MetricName: AgentTranscriptMessageDropped
+      Namespace: !Ref AWS::StackName
+      Statistic: Sum
+      # Same reasoning as AssessmentConfidenceUnavailableAlarm rather than
+      # StaleOutputPurgeFailedAlarm: one drop is a tolerated outcome of a bounded
+      # retry under a burst, and it costs one transcript entry that nothing else
+      # depends on. A stream of them is a systemic cause and means transcripts are
+      # being recorded with gaps across the board, which is the condition worth
+      # waking someone for.
+      Period: 900
+      EvaluationPeriods: 1
+      Threshold: 10
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      # Published only on the drop path, so "no data" is the healthy state and must
+      # not hold the alarm in INSUFFICIENT_DATA.
+      TreatMissingData: notBreaching
+      AlarmActions:
+        - !Ref AlertsTopic
+
   ##########################################################################
   # Circuit Breaker Resources
   ##########################################################################
@@ -9358,6 +9386,12 @@ Resources:
           TRACKING_TABLE_NAME: !Ref TrackingTable
           LOOKUP_FUNCTION_NAME: !Ref LookupFunction
           STRANDS_LOG_LEVEL: !Ref LogLevel
+          # The namespace the transcript logger's AgentTranscriptMessageDropped
+          # counter lands in. Unset, idp_common.metrics falls back to GENAIDP,
+          # which this function's PutMetricData Condition does not permit, so the
+          # emit would AccessDenied and be swallowed -- a counter that exists and
+          # never arrives.
+          METRIC_NAMESPACE: !Ref AWS::StackName
           BEDROCK_REGION: !Ref AWS::Region
           CHAT_MESSAGES_TABLE: !Ref ChatMessagesTable
           CHAT_SESSIONS_TABLE: !Ref ChatSessionsTable
@@ -9448,17 +9482,24 @@ Resources:
                 - !Sub "arn:${AWS::Partition}:athena:${AWS::Region}:${AWS::AccountId}:datacatalog/*"
             - Effect: Allow
               Action:
-                # PutMetricData for emit_control_plane_cost_metric on the
-                # analytics agent's Athena calls. Scoped to the
-                # IDPControlPlane namespace. Round-6 review fix — was
-                # missing on Agent*ProcessorFunction, so every Athena call
-                # AccessDenied on emit and control_plane_hourly showed 0
-                # for analytics-agent's Athena spend.
+                # PutMetricData for two emitters with different namespaces.
+                # emit_control_plane_cost_metric writes the analytics agent's
+                # Athena spend to IDPControlPlane (round-6 review fix — this
+                # grant was missing on Agent*ProcessorFunction, so every Athena
+                # call AccessDenied on emit and control_plane_hourly showed 0
+                # for analytics-agent). The agent transcript logger's
+                # AgentTranscriptMessageDropped counter goes to the stack's own
+                # namespace, where the alarms and dashboards read. A
+                # single-namespace Condition silently denies whichever of the two
+                # it does not name, and the denial is swallowed by design on both
+                # emit paths — so both are listed.
                 - cloudwatch:PutMetricData
               Resource: "*"
               Condition:
                 StringEquals:
-                  "cloudwatch:namespace": IDPControlPlane
+                  "cloudwatch:namespace":
+                    - !Ref AWS::StackName
+                    - IDPControlPlane
             - Effect: Allow
               Action:
                 - glue:GetTable
@@ -10269,6 +10310,12 @@ Resources:
           TRACKING_TABLE_NAME: !Ref TrackingTable
           LOOKUP_FUNCTION_NAME: !Ref LookupFunction
           STRANDS_LOG_LEVEL: !Ref LogLevel
+          # The namespace the transcript logger's AgentTranscriptMessageDropped
+          # counter lands in. Unset, idp_common.metrics falls back to GENAIDP,
+          # which this function's PutMetricData Condition does not permit, so the
+          # emit would AccessDenied and be swallowed -- a counter that exists and
+          # never arrives.
+          METRIC_NAMESPACE: !Ref AWS::StackName
           AGENT_TABLE: !Ref AgentTable
           APPSYNC_API_URL: ""
           ATHENA_DATABASE: !Ref ReportingDatabase
@@ -10316,17 +10363,24 @@ Resources:
                 - !Sub "arn:${AWS::Partition}:athena:${AWS::Region}:${AWS::AccountId}:datacatalog/*"
             - Effect: Allow
               Action:
-                # PutMetricData for emit_control_plane_cost_metric on the
-                # analytics agent's Athena calls. Scoped to the
-                # IDPControlPlane namespace. Round-6 review fix — was
-                # missing on Agent*ProcessorFunction, so every Athena call
-                # AccessDenied on emit and control_plane_hourly showed 0
-                # for analytics-agent's Athena spend.
+                # PutMetricData for two emitters with different namespaces.
+                # emit_control_plane_cost_metric writes the analytics agent's
+                # Athena spend to IDPControlPlane (round-6 review fix — this
+                # grant was missing on Agent*ProcessorFunction, so every Athena
+                # call AccessDenied on emit and control_plane_hourly showed 0
+                # for analytics-agent). The agent transcript logger's
+                # AgentTranscriptMessageDropped counter goes to the stack's own
+                # namespace, where the alarms and dashboards read. A
+                # single-namespace Condition silently denies whichever of the two
+                # it does not name, and the denial is swallowed by design on both
+                # emit paths — so both are listed.
                 - cloudwatch:PutMetricData
               Resource: "*"
               Condition:
                 StringEquals:
-                  "cloudwatch:namespace": IDPControlPlane
+                  "cloudwatch:namespace":
+                    - !Ref AWS::StackName
+                    - IDPControlPlane
             - Effect: Allow
               Action:
                 - glue:GetTable

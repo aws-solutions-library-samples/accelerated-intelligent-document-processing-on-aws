@@ -88,7 +88,11 @@ def service_dir() -> Path:
 
 
 class _Sts:
-    def __init__(self, account="145026617366", arn=None, error=None):
+    # Every account id in this module is a documentation placeholder, and the four in
+    # use are kept distinct on purpose: the mismatch tests below assert that preflight
+    # refuses when the caller's account differs from the asserted one, so collapsing
+    # any two of them would make those tests pass for the wrong reason.
+    def __init__(self, account="123456789012", arn=None, error=None):
         self._account = account
         self._arn = arn or f"arn:aws:sts::{account}:assumed-role/Admin/x"
         self._error = error
@@ -161,7 +165,7 @@ def test_passes_when_account_owns_the_product():
         sts_client=_Sts(),
         catalog_client=_Catalog([_owned()]),
     )
-    assert result.account_id == "145026617366"
+    assert result.account_id == "123456789012"
     assert result.ownership_verified is True
     assert [p.entity_id for p in result.owned] == [_PRODUCT]
 
@@ -171,7 +175,7 @@ def test_refuses_account_that_owns_no_saas_products():
     with pytest.raises(SellerServiceError, match="owns no AWS Marketplace SaaS"):
         preflight(
             product_ids=[_PRODUCT],
-            sts_client=_Sts(account="912625584728"),
+            sts_client=_Sts(account="210987654321"),
             catalog_client=_Catalog([]),
         )
 
@@ -207,7 +211,7 @@ def test_account_assertion_mismatch_refuses():
     with pytest.raises(SellerServiceError, match="Account mismatch"):
         preflight(
             product_ids=[_PRODUCT],
-            sts_client=_Sts(account="145026617366"),
+            sts_client=_Sts(account="123456789012"),
             catalog_client=_Catalog([_owned()]),
             expected_account_id="111122223333",
         )
@@ -216,11 +220,11 @@ def test_account_assertion_mismatch_refuses():
 def test_account_assertion_match_passes():
     result = preflight(
         product_ids=[_PRODUCT],
-        sts_client=_Sts(account="145026617366"),
+        sts_client=_Sts(account="123456789012"),
         catalog_client=_Catalog([_owned()]),
-        expected_account_id="145026617366",
+        expected_account_id="123456789012",
     )
-    assert result.account_id == "145026617366"
+    assert result.account_id == "123456789012"
 
 
 def test_missing_credentials_gives_an_actionable_error():
@@ -278,7 +282,7 @@ def test_skip_ownership_check_still_honours_the_account_assertion():
     with pytest.raises(SellerServiceError, match="Account mismatch"):
         preflight(
             product_ids=[_PRODUCT],
-            sts_client=_Sts(account="145026617366"),
+            sts_client=_Sts(account="123456789012"),
             catalog_client=_Catalog([]),
             expected_account_id="999988887777",
             skip_ownership_check=True,

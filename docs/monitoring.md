@@ -376,6 +376,70 @@ One dashboard widget on the **unified pattern** dashboard (not the main one):
 **Confidence Assessment Degraded**, a 15-minute-period count with the alarm
 threshold drawn as an annotation so the trend and the trigger are read together.
 
+### Agent Transcript Messages Dropped
+
+The analytics UI replays an agent conversation from `agent_messages` on the job
+record, which is the **whole transcript held in one DynamoDB attribute**. Appending
+a message therefore means reading the array, growing it by one and writing it back,
+and every sub-agent in a turn does that against the *same* record — nothing caps how
+many sub-agents a turn may use. Each append is conditional on a version attribute so
+an overlapping writer is rejected rather than overwritten, and a rejected append is
+rebuilt on a fresh read with jittered backoff. A message that still cannot be stored
+after the retry budget is **dropped**.
+
+Dropping it is the deliberate choice: the alternative is writing the transcript
+unconditionally, which forces one message through at the cost of every message
+written since the read. What matters operationally is that the drop is **visible**,
+because the unguarded version of this append lost most of a transcript with every
+individual write reporting success
+([#1098](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/1098)).
+
+One metric in the stack's own namespace (`<StackName>`):
+
+- **`AgentTranscriptMessageDropped`** — published (value `1`) with no dimensions by
+  `DynamoDBMessageLogger` in `idp_common.agents.common`, once per message that could
+  not be stored. Both causes count: exhausting the conflict retries, and a read that
+  kept failing. It is emitted from `AgentProcessorFunction` and
+  `AgentChatProcessorFunction`, both of which set `METRIC_NAMESPACE` to the root
+  stack name and both of whose `cloudwatch:PutMetricData` grants permit that
+  namespace alongside `IDPControlPlane`. **No data means no transcript entry was
+  dropped.**
+
+One alarm publishes to `AlertsTopic`:
+
+- **`AgentTranscriptMessageDroppedAlarm`** — ten or more drops within 15 minutes.
+  Like `AssessmentConfidenceUnavailableAlarm`, and unlike
+  `StaleOutputPurgeFailedAlarm`, it deliberately does **not** fire on the first
+  occurrence: one drop is a tolerated outcome of a bounded retry under a burst and
+  costs a single transcript entry that nothing else depends on. A stream of them
+  means transcripts are being recorded with gaps across the board.
+
+**Diagnosing.** The log line beside every emit names the job id and the
+`sequence_number` that was not persisted, at ERROR in the emitting function's log
+group. Which log group depends on the entry point, and neither is under a
+`/aws/lambda/<StackName>-` prefix you can guess: `AgentProcessorFunction` and
+`AgentChatProcessorFunction` both declare no `LogGroupName`, so they take
+CloudFormation's generated name and list on the `<StackName>-` prefix with **no
+leading slash**. The two causes read differently:
+
+| Log line | Cause | Fix |
+|---|---|---|
+| `Gave up appending message ... after N attempts` | Sustained contention: many sub-agents writing one job record, or overlapping workflow retries doing so | Expected under a wide fan-out; if it is steady, look at how many agents the requests select. Selecting every available agent is one click in the UI |
+| `Could not read existing messages ... after N attempts` | The read itself kept failing — throughput on the agent table, or a transient service error | Check the agent table's throttling metrics. A read error that cannot succeed on retry (`AccessDeniedException`, `ValidationException`) is not retried and is logged once, so a single warning of that shape points at the grant or the request rather than at load |
+
+**What is lost while it is firing:** entries in the stored conversation transcript,
+so a replayed conversation shows gaps. The agent's own answer to the user, the job's
+outcome and every extracted result are unaffected — this metric watches a path whose
+failure the workflow reports as success.
+
+⚠️ This metric does **not** cover every way a transcript entry can be lost. Writes
+are queued on a thread pool that nothing drains in production, so whatever is still
+queued when the Lambda execution environment freezes is abandoned without reaching
+the drop path or this metric
+([#1110](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/1110)).
+Treat "no data" as "no message was dropped by the retry loop", not as "the
+transcript is complete".
+
 ## Log Groups
 
 The solution creates centralized logging across all components:
@@ -570,6 +634,7 @@ documents processed" genuinely means "no failures", and leaving alarms parked in
 | `WorkflowTrackerDLQAlarm` | Any message in the Workflow Tracker DLQ | `AlertsTopic` | — |
 | `StaleOutputPurgeFailedAlarm` | Any output-purge failure within 5 min | `AlertsTopic` | — |
 | `AssessmentConfidenceUnavailableAlarm` | `ConfidenceUnavailableThreshold` or more sections left with "no confidence scores" within 15 min, whether the confidence pass failed or never ran — something systemic, not a few awkward documents | `AlertsTopic` | `ConfidenceUnavailableThreshold` (default `10`) |
+| `AgentTranscriptMessageDroppedAlarm` | Ten or more agent conversation messages dropped from the stored transcript within 15 min — sustained write contention on one job record, or reads that keep failing | `AlertsTopic` | — |
 | `DataMartRollupDLQAlarm` | Any message in the reporting-rollup DLQ | `AlertsTopic` | — |
 | `BedrockServiceOutageAlarm` | Combined Bedrock error count exceeds the circuit-breaker threshold | `CircuitBreakerTopic` | `CircuitBreakerFailureThreshold` and the `CircuitBreakerTrigger*` toggles |
 
