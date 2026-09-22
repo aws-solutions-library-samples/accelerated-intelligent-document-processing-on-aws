@@ -158,6 +158,7 @@ The `z3-solver` package (~50 MB native shared object) is included in the `rule_v
 
 ## Limitations
 
+- The deployed pipeline extracts Z3 parameter values with the LLM call described above and validates them directly, so the library's **path-mapping** extractor (`DataExtractor`, reached through `ValidationSystem` or `Z3EngineAdapter`) is a route for notebooks and for code embedding the library rather than part of the pipeline. If you use it, note that it keeps no state between calls: one instance is safe to reuse across documents, and reading a document that has been modified in place returns the modified values.
 - Z3 results include `supporting_pages` collected from the extracted facts' page citations. These indicate which pages contained the evidence used for parameter extraction.
 - The SMT-LIB constraint language supports: arithmetic (`+`, `-`, `*`, `/`), comparison (`=`, `<`, `>`, `<=`, `>=`), logical (`and`, `or`, `not`, `=>`, `ite`), and type coercion for Int/Real/Bool/String.
 - String equality checks are exact (case-sensitive). For fuzzy matching, use the LLM engine.
