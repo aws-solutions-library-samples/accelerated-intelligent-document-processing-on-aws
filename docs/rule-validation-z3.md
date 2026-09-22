@@ -108,6 +108,24 @@ Document Data → [Path Extraction or LLM Extraction] → Parameter Values
    - `unsat` → **Fail** (rule violated)
    - `error` / missing parameters → **Information Not Found**
 
+### Parameter types are enforced, not coerced
+
+A reading is checked against the type its parameter was declared as before it
+reaches the solver, and a reading that cannot be represented in that type without
+losing information makes the rule report **Information Not Found** with the
+reason. A parameter declared `Int` whose reading comes back as `30.9` is the case
+worth knowing about: the reading is refused rather than truncated to `30`. A
+decimal that happens to be whole, such as `30.0` or `"30.0"`, still binds as
+`30`, and declaring the parameter `Real` accepts `30.9` exactly.
+
+This matters when you are choosing the type for a threshold rule. `Int` says the
+quantity is whole, so `days_late <= 30` cannot be evaluated against a reading of
+30.9 — there is no whole number of days the document supports, and truncating to
+30 would report a Pass while rounding to 31 would report a Fail against
+`days_late >= 31`. If the quantity you are reading is genuinely fractional,
+declare it `Real`; the constraint language compares `Int` and `Real` values
+against each other, so a `Real` parameter works with a whole-number threshold.
+
 ## Strict Mode (Default)
 
 Z3 validation enforces strict mode: if the RuleJSON is missing, the rule_id is not configured, or required parameters cannot be extracted from the document, the rule returns a hard failure or "Information Not Found" — it does NOT silently fall back to LLM-based reasoning. This ensures the configured engine always runs and misconfigurations are visible.

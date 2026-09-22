@@ -465,6 +465,40 @@ response_dict = {
 - Custom recommendations must match configured options
 - Missing required fields trigger validation errors
 
+### Readings the Z3 engine refuses to evaluate
+
+A parameter value reaches the Z3 solver by one of three routes — path-based
+extraction (`z3/data_extractor.py`), LLM extraction (`z3/rule_translator.py`,
+which is both the default for a rule with no `path_mappings` and the fallback
+when path extraction fails), and the orchestrator's production fact-extraction
+call, which hands parsed JSON straight to `Z3Validator.validate`. All three end at
+`Z3Validator._bind_values`.
+
+For the numeric types all three go through `coerce_numeric_reading`
+(`z3/type_coercion.py`), so what counts as a valid reading has one definition
+rather than one per route:
+
+| Declared | Accepted | Refused |
+|---|---|---|
+| `Int` | any reading that denotes a whole number, whatever its Python type or spelling — `42`, `42.0`, `Decimal("42.0")`, `Fraction(42)`, `"42"`, `"42.0"` | a fractional reading (`30.9`, `Decimal("30.9")`, `"30.9"`), a `bool`, a non-numeral, infinity, NaN |
+| `Real` | any finite numeral, whole or fractional | a `bool`, a non-numeral, infinity, NaN, a magnitude no `float` can hold |
+
+An `Int` reading is refused rather than truncated because `int()` rounds toward
+zero, moving the reading by up to a whole unit. That is enough to flip the verdict
+of any rule with an integer threshold, and to flip it in either direction
+depending on the comparator, so no rounding rule is sound: `days_late <= 30` read
+as 30.9 would report a Pass if truncated to 30, and `days_late >= 31` would report
+a Pass if rounded to 31. A refusal raises `ValidationError`, which every caller
+renders as **Information Not Found** for that one rule — the orchestrator's
+`_run_z3_validation` and `Z3RuleEngine.validate_rule` both put the reason in the
+rule's `reasoning`, and `ValidationSystem.validate_batch` records an error
+`ValidationResult` and carries on with the remaining rules.
+
+`Bool` and `String` keep their per-route conversions. They agree on everything
+except an integer read for a `Bool`, which path extraction maps to `True` and
+binding refuses; `tests/unit/rule_validation/test_z3_type_coercion.py` pins that
+difference so closing it stays a deliberate change.
+
 ## Performance Considerations
 
 ### Rate Limiting

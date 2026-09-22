@@ -23,6 +23,7 @@ import z3
 
 from .exceptions import ValidationError
 from .models import Parameter, RuleJSON, ValidationResult
+from .type_coercion import coerce_numeric_reading
 
 # Configure logging
 logger = logging.getLogger(__name__)
@@ -787,7 +788,9 @@ class Z3Validator:
                                 "actual_value": value,
                             },
                         )
-                    z3_value = z3.IntVal(int(value))
+                    z3_value = z3.IntVal(
+                        self._as_number(value, param, rule_id, extracted_values)
+                    )
 
                 elif param.type == "Real":
                     if isinstance(value, bool):
@@ -802,7 +805,9 @@ class Z3Validator:
                                 "actual_value": value,
                             },
                         )
-                    z3_value = z3.RealVal(float(value))
+                    z3_value = z3.RealVal(
+                        self._as_number(value, param, rule_id, extracted_values)
+                    )
 
                 elif param.type == "Bool":
                     if isinstance(value, bool):
@@ -870,6 +875,57 @@ class Z3Validator:
                         "parameter_type": param.type,
                     },
                 )
+
+    def _as_number(
+        self,
+        value: Any,
+        param: Parameter,
+        rule_id: str,
+        extracted_values: Dict[str, Any],
+    ) -> Any:
+        """
+        Convert a reading to its declared numeric type, or refuse to evaluate it.
+
+        This is the last point before the solver, so it is the one place every
+        route passes through — path-based extraction, LLM extraction, and a
+        hand-written `RuleWithValues` alike. A reading that cannot be represented
+        in its declared type without loss is refused here rather than truncated:
+        `int(30.9)` is 30, and a rule reading `days_late <= 30` would then report
+        a PASS for a document that is 30.9 days late. Rounding instead of
+        truncating is no better, because it is wrong for the opposite comparator
+        (`days_late >= 31` would report a PASS). See GitHub issue #1057.
+
+        A refusal surfaces as a `ValidationError`, which callers already treat as
+        "this rule could not be evaluated" — `Z3RuleEngine` reports the rule as
+        *Information Not Found* — rather than as a verdict.
+
+        Args:
+            value: The reading, known to be non-None.
+            param: Declaration the reading is being bound to.
+            rule_id: Rule ID for error context.
+            extracted_values: All readings, for error context.
+
+        Returns:
+            An `int` for an `Int` parameter, a `float` for a `Real` one.
+
+        Raises:
+            ValidationError: If the reading is not a value of that type, or
+                cannot be converted to it without losing information.
+        """
+        try:
+            return coerce_numeric_reading(value, param.type)
+        except ValueError as e:
+            raise ValidationError(
+                message=f"Cannot bind parameter '{param.name}': {e}",
+                operation="bind_values",
+                rule_id=rule_id,
+                parameter_values=extracted_values,
+                context={
+                    "parameter_name": param.name,
+                    "expected_type": param.type,
+                    "actual_value": value,
+                },
+            ) from None
 
     def _extract_model(
         self, z3_model: z3.ModelRef, z3_vars: Dict[str, Any]
