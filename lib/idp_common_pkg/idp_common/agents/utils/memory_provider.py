@@ -145,7 +145,8 @@ class DynamoDBMemoryHookProvider(HookProvider):
             session_id: The session ID for this conversation
             region_name: AWS region name for DynamoDB (defaults to us-west-2)
             max_message_size_kb: Maximum message size in KB before truncation
-            max_history_turns: Maximum number of conversation turns to load on initialization
+            max_history_turns: Maximum number of conversation turns to load on
+                initialization; 0 loads no history at all
             max_item_size_kb: Maximum item size in KB before creating new item (default 350KB)
         """
         self.table_name = table_name
@@ -566,12 +567,16 @@ class DynamoDBMemoryHookProvider(HookProvider):
             if current_turn:
                 turns.append(current_turn)
 
-            # Take only the last N turns
-            recent_turns = (
-                turns[-self.max_history_turns :]
-                if len(turns) > self.max_history_turns
-                else turns
-            )
+            # Take only the last N turns. Zero is a legal setting and means load no
+            # history at all; it has to be handled before the slice, because
+            # turns[-0:] is turns[0:] — every turn ever stored, the opposite of what
+            # was asked for.
+            if self.max_history_turns <= 0:
+                recent_turns = []
+            elif len(turns) > self.max_history_turns:
+                recent_turns = turns[-self.max_history_turns :]
+            else:
+                recent_turns = turns
 
             logger.info(
                 f"Loaded {len(recent_turns)} conversation turns from DynamoDB for session {self.session_id}"

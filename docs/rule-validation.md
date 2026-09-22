@@ -233,8 +233,19 @@ rule_validation:
 **Common Parameters** (top level):
 - `enabled`: Turns rule validation on or off
 - `semaphore`: Maximum number of concurrent API calls (default: 5)
-- `max_chunk_size`: Maximum characters per chunk (default: 8000)
-- `overlap_percentage`: Percentage of overlap between chunks to preserve context (default: 10%)
+- `max_chunk_size`: Maximum **tokens** per chunk (default: 8000). Multiplied by
+  `token_size`, the assumed characters per token (default: 4), to get the character
+  budget a chunk is measured against — 32,000 characters with the defaults
+- `overlap_percentage`: How much of the previous chunk is repeated at the start of the
+  next, to keep a fact that spans the boundary readable (0-100, default: 10).
+  ⚠️ **It does not govern every chunk boundary.** Chunking is page-aware, and when the
+  previous chunk held **more than one** complete page the whole of its last page is
+  repeated regardless of this setting — which is the usual case for a multi-page
+  document. The percentage applies where the previous chunk held a **single** page,
+  i.e. on documents whose pages are large relative to `max_chunk_size`, and to the
+  character-based fallback. In both of those, `0` repeats nothing. Values above 50 are
+  reduced to 50 by the character fallback, which logs that it did, because a smaller
+  stride multiplies the number of model calls rather than improving context
 - `recommendation_options`: Custom recommendation categories for your use case
 
 **Fact Extraction Parameters**:
