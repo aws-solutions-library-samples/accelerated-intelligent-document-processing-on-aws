@@ -83,6 +83,7 @@ import subprocess
 from pathlib import Path
 from typing import Any
 
+import first_party_provenance
 import pytest
 
 yaml = pytest.importorskip("yaml")
@@ -433,17 +434,15 @@ def code_defaults() -> dict[str, set[str]]:
     so both run and the results are unioned.
     """
     models = pytest.importorskip("idp_common.config.models")
-    # Same provenance guard as the SDK gate: idp_common is an editable install, so
-    # without PYTHONPATH pointing at this checkout the defaults could be read from
-    # a DIFFERENT tree than the file surfaces above — green for a fix that is not
-    # in the code under test.
-    module_path = Path(models.__file__).resolve()
-    assert module_path.is_relative_to(REPO_ROOT), (
-        f"idp_common.config.models resolved to {module_path}, outside the checkout "
-        f"under test ({REPO_ROOT}). Set PYTHONPATH to this checkout's "
-        "lib/idp_common_pkg — otherwise this fixture and the file-based fixtures "
-        "above describe two different trees."
-    )
+    # Provenance guard: idp_common is an editable install, so without PYTHONPATH
+    # pointing at this checkout the defaults could be read from a DIFFERENT tree than
+    # the file surfaces above — green for a fix that is not in the code under test.
+    #
+    # This was the tree's first copy of the check and is now routed through the shared
+    # helper, which answers the question more precisely: the hand-rolled version asked
+    # whether the module was UNDER `REPO_ROOT`, which accepts a git worktree nested at
+    # `.claude/worktrees/` even though that is a different revision.
+    first_party_provenance.assert_resolves_in("idp_common.config.models", __file__)
 
     acc: dict[str, set[str]] = {}
     _walk_model_values(models.IDPConfig().model_dump(mode="python"), "IDPConfig()", acc)
