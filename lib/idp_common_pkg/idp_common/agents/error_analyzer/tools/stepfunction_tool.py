@@ -181,7 +181,7 @@ def _get_execution_data(execution_arn: str) -> Dict[str, Any]:
     next_token: Optional[str] = None
     resolvable = False
 
-    for _page in range(max(1, int(max_pages))):
+    for page in range(max(1, int(max_pages))):
         kwargs: Dict[str, Any] = {
             "executionArn": execution_arn,
             "maxResults": 100,
@@ -189,14 +189,36 @@ def _get_execution_data(execution_arn: str) -> Dict[str, Any]:
         }
         if next_token:
             kwargs["nextToken"] = next_token
-        history_response = stepfunctions_client.get_execution_history(**kwargs)
+        try:
+            history_response = stepfunctions_client.get_execution_history(**kwargs)
+        except Exception as exc:  # noqa: BLE001 - any read failure is handled the same
+            # Keep what earlier pages gathered rather than losing the analysis.
+            #
+            # A page beyond the first is only ever fetched BECAUSE page one could not
+            # resolve the state, which is precisely the case that used to return a
+            # usable partial with a truncation warning. Letting this propagate would
+            # turn that into no analysis at all, and the extra pages multiply the
+            # chance of hitting a throttle — so the failure would land hardest on the
+            # executions this walk exists to serve. The first page is different: with
+            # no events at all there is nothing to analyse, so that one propagates.
+            if not events:
+                raise
+            logger.warning(
+                "Execution history page %d failed (%s); analysing the %d event(s) "
+                "already fetched and reporting the state as unresolved",
+                page + 1,
+                exc,
+                len(events),
+            )
+            next_token = "partial-read"  # keeps the unresolved flag true below
+            break
         events.extend(history_response.get("events", []))
         next_token = history_response.get("nextToken")
 
         # Stop as soon as the window explains the failure. Checked after each page
         # rather than by counting events, because how many events back the state sits
         # depends on the shape of the execution, not on a number.
-        resolvable = _failing_state_is_resolvable(events)
+        resolvable = _failing_state_is_resolvable(events, more_pages=bool(next_token))
         if resolvable or not next_token:
             break
 
@@ -207,7 +229,9 @@ def _get_execution_data(execution_arn: str) -> Dict[str, Any]:
     }
 
 
-def _failing_state_is_resolvable(events: List[Dict[str, Any]]) -> bool:
+def _failing_state_is_resolvable(
+    events: List[Dict[str, Any]], *, more_pages: bool
+) -> bool:
     """Can the failing state be named from the events fetched so far?
 
     ``events`` is newest-first, which is how the history is requested, so "older than"
@@ -218,14 +242,32 @@ def _failing_state_is_resolvable(events: List[Dict[str, Any]]) -> bool:
     ``_analyze_execution_timeline``). So the window is sufficient once it holds the
     failure the analysis will pick AND a state transition older than it.
 
+    ⚠️ **An execution-level failure alone is NOT sufficient while pages remain**, and
+    that exception is the whole reason this takes ``more_pages``. On a caught failure
+    the history reads, newest first::
+
+        ExecutionFailed
+        FailStateEntered: <handler>      <- the nearest older StateEntered
+        TaskFailed
+        TaskStateEntered: <the state that failed>
+
+    so "the picked failure has an older ``StateEntered``" is satisfied by the Catch
+    handler's own transition. Stopping there reports the handler — the misattribution
+    ``_analyze_execution_timeline`` exists to avoid — and, worse, reports it with
+    ``state_unresolved_due_to_truncation`` false, removing the one signal that the
+    answer might be wrong. Continuing instead reaches the ``TaskFailed`` and names the
+    real state; if the pages run out first, the flag stays true and the caller says so.
+
     Returns True when there is no failure at all: nothing is being explained, so there
     is nothing further back worth fetching.
     """
-    failure_index = None
+    task_level_index = None
     for index, event in enumerate(events):
         if event.get("type", "") in _TASK_LEVEL_FAILURE_EVENTS:
-            failure_index = index
+            task_level_index = index
             break
+
+    failure_index = task_level_index
     if failure_index is None:
         for index, event in enumerate(events):
             if event.get("type", "") in _FAILURE_EVENTS:
@@ -233,6 +275,10 @@ def _failing_state_is_resolvable(events: List[Dict[str, Any]]) -> bool:
                 break
     if failure_index is None:
         return True
+
+    if task_level_index is None and more_pages:
+        return False
+
     return any(
         event.get("type", "").endswith("StateEntered")
         for event in events[failure_index + 1 :]
