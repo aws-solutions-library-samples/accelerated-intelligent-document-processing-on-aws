@@ -36,19 +36,28 @@ inner classification was undone by the outer block, which swallowed the
 from __future__ import annotations
 
 import asyncio
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 import botocore.exceptions
 import pytest
 
+from idp_common.config.models import IDPConfig
 from idp_common.models import Document, Page, Section, Status
+from idp_common.rule_validation.policy_classification import (
+    PolicyClassificationService,
+)
 from idp_common.rule_validation.service import RuleValidationService
 from idp_common.utils.transient_errors import TransientError, is_transient_error
 
-# Transient by error code and by exception type, but under class names no Retry list
-# carries. These are the shapes observed from real bedrock-runtime calls.
+# Transient by error code or by exception type, but under class names no Retry list
+# carries. Provenance is per member rather than for the list, because it differs:
+# attaching one claim to the set would be wrong for whichever member it does not fit.
 TRANSIENT = [
     pytest.param(
+        # CONSTRUCTED. Botocore raises a bare `ClientError` when the wire code is not
+        # in the service's error map; `ThrottlingException` *is* in bedrock-runtime's,
+        # so this pairing cannot be induced there and is built to stand for the
+        # services where it can be.
         botocore.exceptions.ClientError(
             {"Error": {"Code": "ThrottlingException", "Message": "slow down"}},
             "Converse",
@@ -56,10 +65,12 @@ TRANSIENT = [
         id="bare-ClientError-throttle",
     ),
     pytest.param(
+        # OBSERVED from a live bedrock-runtime Converse with a 1 ms read timeout.
         botocore.exceptions.ReadTimeoutError(endpoint_url="https://bedrock"),
         id="ReadTimeoutError",
     ),
     pytest.param(
+        # OBSERVED from a live bedrock-runtime Converse with a 1 ms connect timeout.
         botocore.exceptions.ConnectTimeoutError(endpoint_url="https://bedrock"),
         id="ConnectTimeoutError",
     ),
@@ -309,27 +320,64 @@ def test_a_deterministic_consolidation_failure_still_returns_an_empty_result():
 # ---------------------------------------------------------------------------
 
 
+def _page_content_classifier() -> PolicyClassificationService:
+    """A classifier that can only decide by reading page text.
+
+    Two policy classes, because one short-circuits without any regex check, and
+    neither carries a document-name regex, so the page read is the only evidence
+    available and skipping it changes the answer.
+    """
+    cfg = IDPConfig()
+    cfg.policy_classes = [
+        {
+            "x-aws-idp-policy-type": "medicare",
+            "x-aws-idp-document-page-content-regex": r"(?i)medicare number",
+        },
+        {
+            "x-aws-idp-policy-type": "invoice",
+            "x-aws-idp-document-page-content-regex": r"(?i)invoice number",
+        },
+    ]
+    return PolicyClassificationService(config=cfg)
+
+
 @pytest.mark.unit
 @pytest.mark.parametrize("error", TRANSIENT)
 def test_a_transient_page_read_does_not_silently_change_the_classification(error):
-    from idp_common.rule_validation.policy_classification import (
-        PolicyClassificationService,
-    )
+    """Drive the real classifier, failing only the page read.
 
-    service = MagicMock(spec=PolicyClassificationService)
-    # Drive the real method against a stubbed S3 so only the read fails.
+    A page whose text could not be read is a page whose regexes never ran, so
+    `medicare` — evidenced only by that page's content — goes unmatched and none of
+    its rules are ever validated. Skipping the page is the right answer for a missing
+    or unparseable object, and
+    `test_policy_classification.py::test_page_content_regex_read_failure_swallowed`
+    holds that half in place. For a transient fault it silently changes the answer.
+    """
+    document = Document(id="unknown.pdf")
+    document.pages["1"] = Page(page_id="1", parsed_text_uri="s3://bucket/1.txt")
+
     with patch(
         "idp_common.rule_validation.policy_classification.s3.get_text_content",
         side_effect=error,
     ):
-        assert is_transient_error(error), "fixture precondition"
-        # The service is exercised through the public classify path in the sibling
-        # suite; here the contract under test is only that the read is not swallowed.
-        from idp_common.utils.transient_errors import reraise_if_transient
+        with pytest.raises(TransientError) as surfaced:
+            _page_content_classifier().classify_document(document)
 
-        with pytest.raises(TransientError):
-            try:
-                raise error
-            except Exception as e:  # noqa: BLE001 - mirrors the site under test
-                reraise_if_transient(e, where="policy classification page 1")
-    del service
+    assert surfaced.value.__cause__ is error
+
+
+@pytest.mark.unit
+def test_the_page_read_is_reached_at_all():
+    """Guard for the test above: if the fixture stopped exercising the page read, that
+    test would pass for the wrong reason on a `TransientError` raised elsewhere."""
+    document = Document(id="unknown.pdf")
+    document.pages["1"] = Page(page_id="1", parsed_text_uri="s3://bucket/1.txt")
+
+    with patch(
+        "idp_common.rule_validation.policy_classification.s3.get_text_content",
+        return_value="Claim submitted with Medicare Number 12345",
+    ) as read:
+        result = _page_content_classifier().classify_document(document)
+
+    read.assert_called_once()
+    assert result.matched_policy_types == ["medicare"]

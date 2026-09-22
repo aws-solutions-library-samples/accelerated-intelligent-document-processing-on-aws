@@ -206,13 +206,27 @@ def failure_is_transient(error: BaseException) -> bool:
     The class names that would agree *anyway* are the ones botocore derives from a
     modeled error code — a Bedrock ``ThrottlingException`` arrives as a class of that
     very name, and the task states list it. The ones that would not are the majority:
-    a bare ``ClientError`` carrying a throttling code (the shape botocore produces
-    when the code is not modeled on the operation), a ``ReadTimeoutError``, a
-    ``ConnectTimeoutError``, ``ModelTimeoutException``, ``ModelNotReadyException``,
-    ``InternalServerException``, a Strands wrapper around any of them. Each of those
-    is transient to this predicate, and each now reaches the state machine as
-    ``TransientError``, so a record withheld here is matched by a retry that is
-    actually coming.
+    a bare ``ClientError`` carrying the code ``ThrottlingException`` (the shape
+    botocore produces when the code is not in the service's error map), a
+    ``ReadTimeoutError``, a ``ConnectTimeoutError``, ``ModelTimeoutException``,
+    ``ModelNotReadyException``, ``InternalServerException``, a Strands wrapper around
+    any of them. Each of those is transient to this predicate, and each now reaches
+    the state machine as ``TransientError``, so for these a record withheld here is
+    matched by a retry that is actually coming.
+
+    ⚠️ **A throttle under one of AWS's OTHER spellings is invisible to this predicate,
+    and then nothing happens at all.** ``TRANSIENT_ERROR_NAMES`` carries
+    ``throttlingexception`` and not the legacy ``Throttling``, nor
+    ``RequestThrottled``, ``RequestThrottledException``, ``ThrottledException`` or
+    ``LimitExceededException``. A throttle arriving under one of those is judged
+    deterministic, so it is neither suppressed here **nor** retried by the state
+    machine: the document fails on the first attempt, though at least it fails with a
+    recorded diagnosis rather than silently. Bedrock does not use those spellings —
+    the observed case is a CloudFormation throttle, code ``Throttling``, in a bare
+    ``ClientError`` — but several services this pipeline calls do. Tracked in
+    `#1132 <https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/1132>`_;
+    it is a vocabulary gap in the shared predicate rather than anything specific to
+    these three sites.
 
     ⚠️ **One residual, shared with ``idp_common.extraction.failure``: a ladder that
     exhausts every attempt leaves the sections unmarked.** A Lambda cannot see which
