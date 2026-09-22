@@ -776,13 +776,13 @@
         "JUDGEMENT"
       ],
       "ratchet": "universe-closure",
-      "reason": "Roots known not to run in the shared gate. Each member carries its own reason in the constant, which is the authority -- this field records the judgement the reasons need rather than re-listing them, because an enumeration here goes stale the moment a member is added or paid off. Two members need that judgement recorded. `scripts` is the member whose reason is narrowest relative to the path it names: it is a mis-collection of ONE file, the live RBAC harness's test_email helper, so both consuming gates match it exactly rather than as a prefix -- inherited, it would exempt the four gate suites beneath it. `nested/bedrockkb/src/s3_vectors_manager` names one failing test, which is the most perishable kind of reason there is, so test_run_all_tests_registry.py computes it three ways: the node must still resolve to exactly one collected test, it must still fail, and its file must still pass without it, so fixing, renaming or deleting that test all invalidate the entry rather than leaving it standing. The remaining reasons are dependency availability, an absence of collectable tests, a source tree whose modules are named test_*, operator-run scripts, and one asymmetry in the safe direction (excluded from `make test` while both CIs run it directly). No single predicate is the premise for a set that heterogeneous.",
+      "reason": "Roots known not to run in the shared gate. Each member carries its own reason in the constant, which is the authority -- this field records the judgement the reasons need rather than re-listing them, because an enumeration here goes stale the moment a member is added or paid off. Two judgements need recording. First, `scripts` is the member whose reason is narrowest relative to the path it names: it is a mis-collection of ONE file, the live RBAC harness's test_email helper, so both consuming gates match it exactly rather than as a prefix -- inherited, it would exempt the four gate suites beneath it. Second, a reason blaming ONE failing test is the most perishable kind there is, because the day it is fixed the reason is false and the file's already-passing tests stay outside the gate. No member makes that claim today, so the check is a DETECTOR rather than a per-member computation: test_run_all_tests_registry.py reads the reasons and requires any that blames a single test or assertion to be registered with a pytest node id, at which point three checks compute it -- the node must resolve to exactly one collected test, it must still fail, and its file must pass without it, so fixing, renaming or deleting it all invalidate the entry. The remaining reasons are dependency availability, an absence of collectable tests, a source tree whose modules are named test_*, and operator-run scripts. No single predicate is the premise for a set that heterogeneous.",
       "crossReferences": [
         "lib/idp_common_pkg/pytest.ini::norecursedirs",
         "scripts/run_all_tests.py::RUN_ROOTS"
       ],
       "predicateConsidered": {
-        "collects_zero_tests": "It DOES apply to the subset whose reason makes that claim, and it is now applied: test_run_all_tests_registry.py runs the collector per member for every QUARANTINE reason matching that wording. It is recorded here rather than as this entry's premise because the constant's members are heterogeneous -- an unavailable dependency, a mis-collection, a source tree, an absence of tests, one failing test -- so no single predicate is the premise for the constant."
+        "collects_zero_tests": "It DOES apply to the subset whose reason makes that claim, and it is now applied: test_run_all_tests_registry.py runs the collector per member for every QUARANTINE reason matching that wording. It is recorded here rather than as this entry's premise because the constant's members are heterogeneous -- an unavailable dependency, a mis-collection, a source tree, an absence of tests -- so no single predicate is the premise for the constant. The 'one failing test' wording has its own detector, described in the reason above."
       },
       "memberKind": "path",
       "ratchetEvidence": [
@@ -1248,7 +1248,7 @@
     },
     "scripts/tests/test_api_policy_counts_in_docs.py::ALL_DOCS": {
       "kind": "enforced-universe",
-      "turnsOff": "nothing. It is SCANNED_DOCS plus the partially-excluded documents, and it exists so the per-document comparison runs over an excluded page too — for the measures its exclusion does not name. A member adds coverage. Discovery matches it on the prose of the comment above it, which explains that an excluded document is still compared.",
+      "turnsOff": "nothing. It is SCANNED_DOCS plus the partially-excluded documents, and it exists so the per-document comparison runs over an excluded page too \u2014 for the measures its exclusion does not name. A member adds coverage. Discovery matches it on the prose of the comment above it, which explains that an excluded document is still compared.",
       "memberKind": "repo-relative path to a Markdown document",
       "premise": [
         "JUDGEMENT"
@@ -1416,7 +1416,7 @@
         "JUDGEMENT"
       ],
       "ratchet": "universe-closure",
-      "reason": "Whether a target CAN be a CI gate is a property of what it does — mutates the tree, prompts a human, needs AWS credentials, needs a deployed stack, reports rather than asserts — and none of that is readable from the Makefile. So one sentence per target, naming that target's own obstacle.",
+      "reason": "Whether a target CAN be a CI gate is a property of what it does \u2014 mutates the tree, prompts a human, needs AWS credentials, needs a deployed stack, reports rather than asserts \u2014 and none of that is readable from the Makefile. So one sentence per target, naming that target's own obstacle.",
       "ratchetGap": "The reasons themselves are unchecked prose. What is mechanical: no target IN THE UNIVERSE may be absent from both this list and CI; a listed target CI has since started running fails; a listed target that no longer exists fails. Read 'in the universe' precisely -- it is every target in the 5 sections GATE_SECTION_PREFIXES names, plus any check-shaped-by-name target in any other section except Stack tests. It is NOT every Makefile target, and the residual is stated on the GATE_SECTION_PREFIXES entry.",
       "memberKind": "make target",
       "crossReferences": [
@@ -1431,7 +1431,7 @@
         "JUDGEMENT"
       ],
       "ratchet": "staleness",
-      "reason": "Two of `make lint`'s prerequisites auto-fix, so `lint-cicd` cannot invoke them — it runs the check-only command instead, and that command's spelling is not derivable from the target's name. The substituted command must still be present in the recipe, so this relaxes how the gate is spelled and not whether it runs.",
+      "reason": "Two of `make lint`'s prerequisites auto-fix, so `lint-cicd` cannot invoke them \u2014 it runs the check-only command instead, and that command's spelling is not derivable from the target's name. The substituted command must still be present in the recipe, so this relaxes how the gate is spelled and not whether it runs.",
       "memberKind": "make target",
       "ratchetEvidence": "scripts/tests/test_ci_gate_parity.py"
     },
@@ -1456,20 +1456,6 @@
       "reason": "Build output and local work; the one gate that had the complete set from the start.",
       "memberKind": "path",
       "ratchetEvidence": "scripts/tests/test_classification_prompt_copies_in_sync.py"
-    },
-    "scripts/tests/test_codeowners.py::LINK_CHECK_EXCLUDED": {
-      "kind": "exemption",
-      "turnsOff": "the Markdown link check for two root documents",
-      "premise": [
-        "JUDGEMENT"
-      ],
-      "ratchet": "staleness",
-      "reason": "One is an append-only historical record; the other is being rewritten separately. Each is asserted to still exist and be reachable.",
-      "crossReferences": [
-        "scripts/tests/test_testing_doc.py::OVERCLAIM_EXEMPT"
-      ],
-      "memberKind": "path",
-      "ratchetEvidence": "scripts/tests/test_codeowners.py"
     },
     "scripts/tests/test_config_region_threading.py::REGIONLESS_ALLOWED": {
       "kind": "exemption",
@@ -2086,10 +2072,7 @@
       ],
       "ratchet": "none",
       "reason": "CHANGELOG.md must quote the corrected claim; it is an append-only historical record.",
-      "ratchetGap": "No staleness check, though the same premise is registered for the same file in test_codeowners.py.",
-      "crossReferences": [
-        "scripts/tests/test_codeowners.py::LINK_CHECK_EXCLUDED"
-      ],
+      "ratchetGap": "No staleness check: nothing fails if CHANGELOG.md stops carrying the phrasing this shields.",
       "memberKind": "path",
       "issues": [
         "986"
@@ -2181,6 +2164,18 @@
       "ratchet": "none",
       "reason": "Enforced vocabulary.",
       "ratchetGap": "An unrecognised status would be silently uncounted."
+    },
+    "scripts/tests/test_documented_counts.py::DOCUMENTED_COUNTS": {
+      "kind": "enforced-universe",
+      "turnsOff": "nothing; it IS the set of counts whose stated value is asserted against the thing that produces it",
+      "premise": [
+        "JUDGEMENT"
+      ],
+      "ratchet": "non-vacuity",
+      "ratchetEvidence": "scripts/tests/test_documented_counts.py",
+      "reason": "Each entry pairs a count with the code that derives it, so the risk is a count nobody registered rather than a member escaping a check. Which phrasings in English carry a count cannot be computed. Two mechanisms make an entry non-vacuous, and they cover different members. For an entry naming documents, test_every_document_making_a_count_claim_states_a_pinned_one requires each named document to still contain a statement some pattern reads, so a dead entry and a claim reworded out of reach both fail. For an entry naming NO documents -- a guard against a deleted figure being reintroduced, where matching nothing is the correct state -- that check can say nothing, so test_no_pattern_is_one_that_could_never_match fires every pattern at a sample statement of the shape it is for. That second mechanism exists because a pattern that compiles and has one capturing group can still be unable to match anything: the requireable-contexts pattern spelled a literal space where both real sentences wrap across lines, so a derived number was computed and compared against nothing. The file scan is NOT a list -- it runs over every tracked .md/.py/.mk/.yml/.yaml and the Makefile from git ls-files, so no file is carved out of it, and test_this_module_does_not_match_its_own_patterns keeps that true by asserting the module needs no exclusion for itself (which is why the probes hold a placeholder where the number goes rather than spelling one out).",
+      "ratchetGap": "Three residuals. A NEW document inventing a phrasing none of the registered patterns match states an unchecked count; the per-document check closes this only for documents already registered. A registered pattern can still be narrower than the prose it is aimed at -- it is fired at a probe the same author wrote, so a shared misreading of the real sentence would satisfy both. And for an entry with no documents, nothing asserts the figure is actually absent from the tree: the patterns report a wrong one if it returns, but prose could state the count in an unregistered phrasing and go unseen.",
+      "memberKind": "other"
     }
   }
 }

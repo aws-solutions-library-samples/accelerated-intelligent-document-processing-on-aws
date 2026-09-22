@@ -3,8 +3,9 @@
 
 """Prove `scripts/check_lint_debt.py` fails for each thing it claims to catch.
 
-A ratchet nobody has watched fail is not a ratchet. `ruff.toml` excludes 85 files
-from `ruff check` and 186 from `ruff format --check`, so for those files the two
+A ratchet nobody has watched fail is not a ratchet. `ruff.toml` excludes a named list
+of files from `ruff check` and a longer one from `ruff format --check`
+(`check_lint_debt.py --summary` prints both), so for those files the two
 lint gates are silent by construction, and everything protecting them lives in
 that script. Each test below drives one failure mode and asserts the message
 names it — including the directions that a plain "does it still pass?" check

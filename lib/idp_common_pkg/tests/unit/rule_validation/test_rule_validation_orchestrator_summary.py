@@ -27,6 +27,7 @@ those two cells and the browser; these tests assert what the formatter does, not
 that the rendered page is safe.
 """
 
+import threading
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -121,17 +122,13 @@ class TestOrchestratorConstruction:
         second = asyncio.run(second_loop())
         assert second is not first
 
-    @pytest.mark.xfail(
-        strict=True,
-        reason="The stale-loop guard fires on every access, because a Semaphore's "
-        "_loop is None until first awaited, so the cache is cleared and the "
-        "configured concurrency limit never applies. See "
-        "https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/1053",
-    )
     def test_repeated_access_within_one_loop_returns_the_same_semaphore(self):
         # Both call sites write `async with self.semaphore:`, so the property is
         # re-evaluated per task. If it hands back a fresh Semaphore each time,
         # every task acquires its own and nothing is rate limited.
+        #
+        # Identity is necessary but not sufficient: TestSemaphoreActuallyBounds
+        # below counts how many model calls overlap.
         import asyncio
 
         async def probe():
@@ -139,6 +136,259 @@ class TestOrchestratorConstruction:
             return service.semaphore is service.semaphore
 
         assert asyncio.run(probe()) is True
+
+    def test_an_instance_built_without_init_still_resolves_the_semaphore(self):
+        # Several property suites build a service with `__new__` to skip config
+        # loading and then assign `_semaphore` themselves, so the property must
+        # not depend on an attribute only __init__ sets.
+        import asyncio
+
+        service = RuleValidationOrchestratorService.__new__(
+            RuleValidationOrchestratorService
+        )
+        assigned = asyncio.Semaphore(4)
+        service._semaphore = assigned
+
+        async def probe():
+            return service.semaphore
+
+        assert asyncio.run(probe()) is assigned
+
+    def test_a_semaphore_assigned_by_a_caller_is_not_replaced(self):
+        # Several existing suites set `service._semaphore` directly to control the
+        # limit, so an assigned semaphore has to survive the property.
+        import asyncio
+
+        async def probe():
+            service = _service({"rule_validation": {"semaphore": 5}})
+            assigned = asyncio.Semaphore(2)
+            service._semaphore = assigned
+            return service.semaphore is assigned and service.semaphore is assigned
+
+        assert asyncio.run(probe()) is True
+
+
+_MODEL_RESPONSE = {
+    "output": {
+        "message": {
+            "content": [
+                {
+                    "text": '<response>{"policy_type": "Lending", "rule": "r", '
+                    '"recommendation": "Pass", "reasoning": "because", '
+                    '"supporting_pages": ["1"]}</response>'
+                }
+            ]
+        }
+    },
+    "metering": {},
+}
+
+
+class _OverlapProbe:
+    """
+    A stand-in for ``bedrock.invoke_model`` that measures how many calls overlap.
+
+    It runs on the executor thread, like the real client, and reports the *peak*
+    number of simultaneous calls rather than the total. Total call count cannot
+    distinguish a working bound from a broken one — every rule is summarised
+    either way — which is why issue #1053 was invisible to the suite that
+    covered this method.
+
+    The rendezvous is what makes the peak a measurement rather than a hope. Each
+    call waits at a ``Barrier`` of width ``expected_peak``, so the call only
+    returns once that many calls are inside simultaneously; a sleep long enough
+    to *probably* overlap would let a real bound of 1 pass as a bound of 3 on an
+    unlucky schedule. A bound *below* ``expected_peak`` breaks the barrier and
+    the waiting calls raise, which the test reports.
+    """
+
+    def __init__(self, expected_peak: int) -> None:
+        self._lock = threading.Lock()
+        self._barrier = threading.Barrier(expected_peak)
+        self.in_flight = 0
+        self.peak = 0
+        self.calls = 0
+
+    def __call__(self, *_args, **_kwargs):
+        with self._lock:
+            self.calls += 1
+            self.in_flight += 1
+            self.peak = max(self.peak, self.in_flight)
+        try:
+            self._barrier.wait(timeout=30)
+        finally:
+            with self._lock:
+                self.in_flight -= 1
+        return _MODEL_RESPONSE
+
+
+@pytest.mark.unit
+class TestSemaphoreActuallyBoundsConcurrency:
+    """
+    The configured `rule_validation.semaphore` bounds concurrent Bedrock calls.
+
+    Both call sites spell it `async with self.semaphore:`, so what has to hold is
+    a property of the whole path — the property, the `asyncio.gather` over tasks,
+    and the executor the blocking client call is handed to — not of the property
+    alone. These tests measure the path.
+
+    Nothing here replaces the executor with an inline stand-in. Running the
+    submitted callable on the calling thread would make the observed peak 1
+    whatever the semaphore does, so the test would pass against the broken code;
+    the executor is a real `ThreadPoolExecutor`, its type is asserted, and each
+    test first measures the peak the executor admits **without** the semaphore in
+    the path. That control is the reason `peak == limit` is a statement about the
+    semaphore: it shows the same executor, on this machine, admits more.
+    """
+
+    def test_concurrent_summaries_are_bounded_by_the_configured_limit(self):
+        import asyncio
+        import concurrent.futures
+
+        limit = 3
+        workers = 9  # deliberately wider than `limit`; see the control below
+        rules = 12  # a whole number of `limit`-sized waves
+        assert workers > limit
+
+        service = _service({"rule_validation": {"semaphore": limit}})
+        control = _OverlapProbe(expected_peak=workers)
+        measured = _OverlapProbe(expected_peak=limit)
+
+        async def main():
+            loop = asyncio.get_running_loop()
+            executor = concurrent.futures.ThreadPoolExecutor(max_workers=workers)
+            loop.set_default_executor(executor)
+            assert isinstance(executor, concurrent.futures.ThreadPoolExecutor), (
+                "the calls must be handed to a real thread pool; an inline "
+                "stand-in serialises them and the measurement below means nothing"
+            )
+
+            # Control: the same executor, reached the same way the service
+            # reaches it (`run_in_executor(None, ...)`), with no semaphore in the
+            # path. Its peak is what bounds these calls when the semaphore does
+            # not. Exceptions are collected rather than raised for the same reason
+            # they are in the measured run below: a control that cannot reach
+            # `workers` overlapping calls breaks its barrier, and a bare
+            # `BrokenBarrierError` says nothing about why, where the assertion
+            # after `asyncio.run` names the reason.
+            control_results = await asyncio.gather(
+                *[loop.run_in_executor(None, control) for _ in range(workers)],
+                return_exceptions=True,
+            )
+
+            with patch("idp_common.bedrock.invoke_model", measured):
+                measured_results = await asyncio.gather(
+                    *[
+                        service._summarize_single_rule(
+                            model_id="model",
+                            system_prompt="s",
+                            prompt=f"rule {i}",
+                            temperature=0.0,
+                        )
+                        for i in range(rules)
+                    ],
+                    return_exceptions=True,
+                )
+            return control_results, measured_results
+
+        control_results, results = asyncio.run(main())
+
+        control_failed = [r for r in control_results if isinstance(r, BaseException)]
+        assert not control_failed, (
+            f"the control run raised: {control_failed[0]!r}. It submits {workers} "
+            f"callables straight to a {workers}-wide pool, so this means the "
+            f"executor is not admitting its declared width — the measured run's "
+            f"peak below would then be a statement about the executor, not the "
+            f"semaphore."
+        )
+        assert control.peak == workers, (
+            "the control did not reach the executor's full width, so this machine "
+            "cannot show that the executor is not what bounds the measured run"
+        )
+        assert control.peak > limit
+
+        failed = [r for r in results if isinstance(r, BaseException)]
+        assert not failed, (
+            f"a summarisation raised: {failed[0]!r}. A BrokenBarrierError here "
+            f"means fewer than {limit} calls were ever in flight at once, i.e. the "
+            f"bound is tighter than configured."
+        )
+        assert measured.calls == rules, "every rule must still be summarised"
+        assert measured.peak == limit, (
+            f"peak concurrent model calls was {measured.peak}, not the configured "
+            f"{limit}; the executor admitted {control.peak}"
+        )
+
+    def test_both_call_sites_share_one_bound(self):
+        # _summarize_single_rule and _extract_z3_values_from_facts each acquire
+        # `self.semaphore` independently. A per-call semaphore would let the two
+        # steps run `limit` calls *each*, so the bound has to be measured across
+        # a mixture of them.
+        import asyncio
+        import concurrent.futures
+
+        limit = 2
+        workers = 6
+        per_site = 3  # 3 + 3 calls, a whole number of `limit`-sized waves
+        assert workers > limit
+
+        service = _service(
+            {
+                "rule_validation": {
+                    "semaphore": limit,
+                    "fact_extraction": {"model": "model"},
+                }
+            }
+        )
+        control = _OverlapProbe(expected_peak=workers)
+        measured = _OverlapProbe(expected_peak=limit)
+        rule_json = {"parameters": [{"name": "income", "type": "Real"}]}
+
+        async def main():
+            loop = asyncio.get_running_loop()
+            executor = concurrent.futures.ThreadPoolExecutor(max_workers=workers)
+            loop.set_default_executor(executor)
+            assert isinstance(executor, concurrent.futures.ThreadPoolExecutor)
+
+            control_results = await asyncio.gather(
+                *[loop.run_in_executor(None, control) for _ in range(workers)],
+                return_exceptions=True,
+            )
+            assert not [r for r in control_results if isinstance(r, BaseException)], (
+                "the control run raised, so the executor is not admitting its "
+                "declared width and the peak below would be about the executor"
+            )
+
+            with patch("idp_common.bedrock.invoke_model", measured):
+                summaries = [
+                    service._summarize_single_rule(
+                        model_id="model",
+                        system_prompt="s",
+                        prompt=f"rule {i}",
+                        temperature=0.0,
+                    )
+                    for i in range(per_site)
+                ]
+                extractions = [
+                    service._extract_z3_values_from_facts(
+                        rule_json, {"facts": []}, f"rule {i}"
+                    )
+                    for i in range(per_site)
+                ]
+                return await asyncio.gather(
+                    *summaries, *extractions, return_exceptions=True
+                )
+
+        results = asyncio.run(main())
+
+        assert control.peak == workers
+        failed = [r for r in results if isinstance(r, BaseException)]
+        assert not failed, f"a call raised: {failed[0]!r}"
+        assert measured.calls == 2 * per_site
+        assert measured.peak == limit, (
+            f"peak concurrent model calls across both call sites was "
+            f"{measured.peak}, not the configured {limit}"
+        )
 
 
 @pytest.mark.unit

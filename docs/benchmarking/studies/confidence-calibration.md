@@ -469,10 +469,11 @@ being ignored. Delete it after a run, or leave it and do not stage it; do **not*
 `rm -rf benchmarks/paper`, which takes the three tracked figures and the README with it.
 
 Each arm reports its own `runs`, `docs` and `excl` counts, and the grid's totals appear
-in the trailing `skipped:` line. **That line has four buckets and two of them are
-normally non-zero, for unrelated reasons.** On the full v0.6.8 matrix above it reads
-`32 unsuccessful, 0 without exact per-cell truth, 55 with no confidence at all, 34 with
-confidence but no joinable cell`, and each of the last two needs its own reading:
+in the trailing `skipped:` line. **That line has five buckets, two of them are normally
+non-zero for unrelated reasons, and the fifth is not a statement about the runs at all.**
+On the full v0.6.8 matrix above the first four read `32 unsuccessful, 0 without exact
+per-cell truth, 55 with no confidence at all, 34 with confidence but no joinable cell`,
+and each of the last two needs its own reading:
 
 - **no confidence at all** — the run emitted no confidence leaf. This is *expected* at
   one per `confidence.mode: off` cell per document, and 49 of the 55 are exactly that.
@@ -491,10 +492,21 @@ confidence but no joinable cell`, and each of the last two needs its own reading
   and the assessment plainly succeeded. The per-arm `excl` column is where to localise
   it.
 
+The fifth bucket, **`UNREAD`**, is the one to read differently from the other four. Those
+four say what a run did; `UNREAD` says the harness could not look — the row's section
+objects were listed and then would not read, which is what a stack's KMS key entering
+pending deletion produces. A row here is *not* evidence that the arm emitted no
+confidence, and an arm carrying any of these is pooled over the rows that did read, so
+treat its figures as provisional and re-run the arm against a readable stack before
+quoting them. The line prints the underlying error, and it reads `0 UNREAD` on every grid
+in this study.
+
 So the escalation rule is per bucket, not on a pooled count: chase bucket three when it
-exceeds the off-cells, and read bucket four as an extraction figure. A summary whose
-stack no longer resolves to an output bucket prints a warning naming the stack, and says
-how many of its rows lacked a stored statistic and therefore could not contribute.
+exceeds the off-cells, read bucket four as an extraction figure, and treat any count in
+bucket five as invalidating the arm it appears in rather than as a small exclusion. A
+summary whose stack no longer resolves to an output bucket prints a warning naming the
+stack, and says how many of its rows lacked a stored statistic and therefore could not
+contribute.
 
 ### The per-release gate
 
