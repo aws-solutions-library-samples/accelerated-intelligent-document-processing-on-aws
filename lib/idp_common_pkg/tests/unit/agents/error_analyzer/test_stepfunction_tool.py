@@ -422,8 +422,10 @@ class TestBuildAnalysisSummary:
 
     def test_a_null_state_is_interpolated_literally_rather_than_defaulted(self):
         # `.get("state", "Unknown")` does not help when the key is PRESENT with
-        # value None, which is exactly what #1081 produces. This is why the
-        # user-visible sentence reads "at state 'None'".
+        # value None, so the user-visible sentence reads "at state 'None'" rather
+        # than "at state 'Unknown'". Worth pinning on its own: this is the shape
+        # that turned an unidentified state into a confident wrong answer in #1081,
+        # and it would do so again for any other cause of a null state.
         summary = _build_analysis_summary(
             "FAILED", {"failure_point": {"state": None, "details": {"error": "Boom"}}}
         )
@@ -552,9 +554,11 @@ class TestGetExecutionData:
         assert len(data["events"]) == 1
 
     def test_the_history_is_requested_newest_first(self):
-        # This is the flag that makes #1081 happen. Pinned deliberately: whoever
-        # fixes that issue has to decide between reversing the list and dropping
-        # this flag, and dropping it changes which events survive maxResults.
+        # Pinned deliberately. #1081 came down to a choice between correcting the
+        # order and dropping this flag, and the flag stays: with a cap of 100 and no
+        # pagination, newest-first is what keeps the events around the failure.
+        # Dropping it would change which events survive the cap, and on a long
+        # execution the surviving page might not reach the failure at all.
         with patch(f"{MODULE}.boto3.client") as factory:
             client = factory.return_value
             client.describe_execution.return_value = {}
@@ -607,8 +611,9 @@ class TestAnalyzeWorkflowExecution:
                         "startDate": start,
                         "stopDate": start + timedelta(seconds=30),
                     },
-                    # Chronological, so the analysis is the correct one. The tool's own
-                    # fetch supplies the reverse; see #1081.
+                    # Chronological. The real fetch supplies the reverse, which the
+                    # reverse-order class above covers; this case stubs the seam out
+                    # to isolate status and duration.
                     "events": CHRONOLOGICAL_HISTORY,
                 },
             ),
