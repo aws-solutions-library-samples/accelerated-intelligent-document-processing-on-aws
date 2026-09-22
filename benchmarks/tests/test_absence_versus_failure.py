@@ -52,8 +52,10 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import subprocess
 import sys
+from pathlib import Path
 
 import pytest
 from botocore.exceptions import ClientError
@@ -361,6 +363,31 @@ class TestReadMetering:
         ddb(item={"Metering": {"S": "{not json"}})
         assert lib.read_metering("t", "r", "d").is_failed
 
+    @pytest.mark.parametrize(
+        "attribute",
+        [
+            {"L": []},  # a list: ddb_to_py returns [], not a map
+            {"BOOL": False},
+            {"N": "0"},
+            {"B": b"x"},  # a type ddb_to_py does not handle at all, so None
+        ],
+        ids=["list", "bool", "number", "binary"],
+    )
+    def test_metering_that_decodes_to_something_other_than_a_map_is_a_failure(
+        self, ddb, attribute
+    ):
+        """Not ``present({})``, which would price to $0.00.
+
+        Reachable without a corrupt table: ``ddb_to_py`` returns ``None`` for any
+        attribute type outside ``M/N/S/L/BOOL``, and ``[]`` for a list, so an
+        attribute written with the wrong type lands here rather than on the
+        JSON-decode branch above.
+        """
+        ddb(item={"Metering": attribute})
+        read = lib.read_metering("t", "r", "d")
+        assert read.is_failed, f"{attribute} must not read as a priceable zero"
+        assert "not a map" in str(read.error)
+
     def test_a_readable_metering_map_is_present(self, ddb):
         ddb(item=METERED)
         read = lib.read_metering("t", "r", "d")
@@ -611,6 +638,68 @@ class TestCalibrationStudyCountsUnreadRows:
         assert "UNREAD" in out
         assert "KMS pending" in out
 
+    def test_an_arm_that_pooled_anything_carries_unread_on_its_own_row(
+        self, monkeypatch, tmp_path, capsys
+    ):
+        """The grid total is not enough: the arm's own figures are the provisional ones.
+
+        An arm with no readable row at all is dropped from the table entirely (nothing
+        pooled), so the case that needs the marker is the MIXED one — some rows read,
+        some did not — and that is the row a reader takes numbers off.
+        """
+        monkeypatch.setattr(aggregate, "_resolve_output_bucket", lambda _s: "bucket")
+        monkeypatch.setattr(
+            aggregate, "_truth_for", lambda *_a: {"rows_typed": TRUTH["rows_typed"]}
+        )
+        readable = lib.SectionRead([{"inference_result": {}}])
+        unread = lib.SectionRead([], unreadable=1, errors=("2: KMS pending",))
+        reads = {"r1/a/": readable, "r1/b/": unread}
+        monkeypatch.setattr(lib, "read_sections", lambda _b, prefix: reads[prefix])
+        monkeypatch.setattr(
+            analyze,
+            "score_calibration",
+            lambda *_a, **_k: {"calibration_curve": {"n": 1}},
+        )
+        monkeypatch.setattr(
+            analyze,
+            "pool_calibration",
+            lambda payloads: (
+                {
+                    "observations": 10,
+                    "correct": 9,
+                    "accuracy": 0.9,
+                    "ece": 0.01,
+                    "ece_mean_conf": 0.01,
+                    "auroc": None,
+                    "auroc_unbinned": None,
+                    "brier": 0.01,
+                    "bin_coverage": 1,
+                    "degenerate": False,
+                    "overconfident": False,
+                    "undiscriminating": False,
+                }
+                if payloads
+                else None
+            ),
+        )
+        path = _summary(
+            tmp_path,
+            [
+                {**CALIB_ROW, "run_id": "r1", "doc": "a"},
+                {**CALIB_ROW, "run_id": "r1", "doc": "b"},
+            ],
+        )
+        report = aggregate.calibration_study([path], corpus_dir=str(tmp_path))
+        (arm,) = report["arms"]
+        assert arm["excluded"]["unreadable"] == 1
+        assert arm["runs"] == 1
+        arm_line = next(
+            line
+            for line in capsys.readouterr().out.splitlines()
+            if line.startswith("separate|")
+        )
+        assert "UNREAD 1" in arm_line, arm_line
+
 
 # --------------------------------------------------------------------------- #
 # 8. Site 4 — the backfill asks every row, not just the first empty prefix
@@ -707,8 +796,21 @@ class TestTheBootstrapCannotSkipSilently:
         so passes straight through ``pytest.raises(RuntimeError)`` — the test would
         then report SKIPPED, and a green run would again mean nothing. Measured: a
         mutant that skips here left a ``pytest.raises`` version of this test
-        undetected. So the exception is caught at ``BaseException`` and its type is
-        asserted.
+        undetected.
+
+        ⚠️ **Catching at ``BaseException`` is only half of it, and the other half is
+        what does the work.** Widening the catch alone converts the skip into a
+        PASS — quieter than a skip, not louder — because the exception is swallowed
+        and nothing then objects. The assertion on the *type* is the check; the wide
+        catch only stops the outcome escaping before it can be examined.
+
+        This is not a repository-wide hazard, and the negative is worth recording so
+        nobody widens it into one. No production code here calls a pytest outcome
+        function, so no other ``pytest.raises`` site can receive one. The condition is
+        structural to this test: the thing under test *is* a test bootstrap, whose
+        failure mode is skipping. Note also that only skip-shaped outcomes are
+        silently green — ``pytest.fail``'s ``Failed`` is ``BaseException``-derived too
+        and surfaces loudly.
         """
         raised: BaseException | None = None
         try:
@@ -730,6 +832,9 @@ class TestTheBootstrapCannotSkipSilently:
             ("idp_common", False),  # first-party: the measurements are calls into it
             ("idp_common.evaluation", False),  # judged on the root package
             ("idp_sdk", False),
+            ("idp_cli", False),
+            ("idp_feature_sdk", False),
+            ("idp_mcp_connector", False),
             ("lib", False),  # a harness module
             ("analyze", False),
             ("aggregate", False),
@@ -741,6 +846,32 @@ class TestTheBootstrapCannotSkipSilently:
         import harness_import
 
         assert harness_import.skippable(missing) is may_skip, missing
+
+    def test_every_first_party_package_is_covered(self):
+        """Derived from the tree, and cross-checked against the installer's own list.
+
+        An authored list would err PERMISSIVE on a package added later — an
+        unrecognised name is exactly what becomes a skip — so the set is read off
+        ``lib/*/<import name>/`` and compared here against the distributions
+        ``FIRST_PARTY_EDITABLES`` installs, which is the authority on what ships.
+        """
+        import harness_import
+
+        derived = harness_import.first_party_import_names()
+        makefile = (Path(REPO) / "Makefile").read_text()
+        block = makefile.split("FIRST_PARTY_EDITABLES", 1)[1].split("\n\n", 1)[0]
+        distributions = re.findall(r"lib/([A-Za-z0-9_]+)", block)
+        assert len(distributions) == 5, distributions
+        for dist in distributions:
+            # lib/<dist>/<import name>/ — the import name may differ from the
+            # distribution directory (idp_common_pkg holds idp_common).
+            names = {
+                p.parent.name for p in (Path(REPO) / "lib" / dist).glob("*/__init__.py")
+            } - {"tests"}
+            assert names, f"no import package under lib/{dist}"
+            assert names <= derived, f"lib/{dist} ships {names - derived}, uncovered"
+            for name in names:
+                assert not harness_import.skippable(name), name
 
     def test_the_suite_runs_from_a_foreign_working_directory(self, tmp_path):
         """The half of #1079 instance 5 that CI could not see, measured directly.

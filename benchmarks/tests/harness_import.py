@@ -33,6 +33,7 @@ the missing module, rather than from a list of names allowed to be missing.
 
 from __future__ import annotations
 
+import glob
 import importlib
 import os
 import sys
@@ -41,10 +42,28 @@ import pytest
 
 BENCHMARKS = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 HARNESS = os.path.join(BENCHMARKS, "harness")
+REPO = os.path.dirname(BENCHMARKS)
 
-#: Import names this repository owns. A missing one is a fact about the tree, so it is
-#: reported as an error. Everything else is a fact about the environment.
-FIRST_PARTY_PREFIXES = ("idp_common", "idp_cli", "idp_sdk")
+
+def first_party_import_names() -> frozenset[str]:
+    """Import names this repository ships, read off the tree rather than listed.
+
+    A missing one is a fact about the tree and must be an error, never a skip. That
+    makes an authored list the wrong shape: it would err **permissive** the moment a
+    sixth package is added — the new name would be unrecognised, and unrecognised is
+    what becomes a skip. Deriving it means a package cannot be added without being
+    covered, which is the property the rest of this change is about.
+
+    Every one of them is a ``lib/<distribution>/<import name>/`` package, so the
+    import name is the directory holding an ``__init__.py`` one level under ``lib/``.
+    Test packages match that shape too and are harmless here: the effect of
+    membership is to report an ERROR rather than a skip, so a name wrongly included
+    fails loudly and a name wrongly omitted is the direction that hides.
+    """
+    return frozenset(
+        os.path.basename(os.path.dirname(path))
+        for path in glob.glob(os.path.join(REPO, "lib", "*", "*", "__init__.py"))
+    )
 
 
 def harness_path() -> str:
@@ -66,10 +85,10 @@ def skippable(missing: str | None) -> bool:
 
     * a module of this harness — the suites exist to exercise those, so one that will
       not import is the finding, not a reason to stop looking;
-    * a package this repository ships. ``idp_common`` in particular: the confidence
-      and coverage measurements are defined as calls into the shipped rule rather
-      than a lookalike, so skipping for it would retire the very comparison that
-      makes them worth anything.
+    * a package this repository ships, per :func:`first_party_import_names`.
+      ``idp_common`` in particular: the confidence and coverage measurements are
+      defined as calls into the shipped rule rather than a lookalike, so skipping for
+      it would retire the very comparison that makes them worth anything.
 
     Anything else is a statement about the environment — a bare checkout without
     ``boto3`` or ``yaml`` — and the harness's own contract is that scoring must not
@@ -79,7 +98,7 @@ def skippable(missing: str | None) -> bool:
     if not missing:
         return False
     root = missing.split(".")[0]
-    if root in FIRST_PARTY_PREFIXES:
+    if root in first_party_import_names():
         return False
     return not os.path.exists(os.path.join(HARNESS, f"{root}.py"))
 

@@ -161,6 +161,15 @@ that into `None`, and the grid read as one that had recorded no confidence at al
 would have been written into a committed artifact and published as a fact about that
 release.
 
+**Expect that state, rather than treating it as exotic.** It is the ordinary end of a
+torn-down benchmark stack: ten of the twelve stacks named in the committed summaries'
+`meta.stack` no longer exist, and in the deployment region a large fraction of the
+customer-managed KMS keys are in `PendingDeletion` at any time — 57 of 125 when this was
+last measured. A stack deleted last month leaves a bucket that still lists and no longer
+decrypts, so **re-reading an old grid from S3 is the case to design for, not the
+exception.** This is also why `--calibration` prefers the sufficient statistic committed
+in the summary and only reads S3 when a row has none.
+
 ## 2. Test-set + config registration
 - Each synthetic doc is uploaded to `s3://<stack>-testsetbucket-*/bench-<id>/input/` and
   registered as a test set (a `testset#bench-<id>` metadata row with `filePattern`).

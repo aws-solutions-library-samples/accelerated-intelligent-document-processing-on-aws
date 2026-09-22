@@ -118,10 +118,10 @@ def audit_run(stack_res: dict, run_id: str) -> list[dict]:
     bucket = stack_res["output_bucket"]
     rows = []
     for prefix in lib.list_doc_prefixes(bucket, run_id):
-        # `list_doc_prefixes` yields the full `runId/doc/` S3 prefix; `doc_metering`
+        # `list_doc_prefixes` yields the full `runId/doc/` S3 prefix; `read_metering`
         # keys on the BARE document name. Passing the prefix through builds a
-        # tracking key that does not exist and reports "no metering found" as
-        # though the run had failed.
+        # tracking key that does not exist, which now reads as an ABSENT metering row
+        # rather than as a run that cost nothing — but it is still the wrong key.
         doc_name = (
             prefix[len(run_id) :].strip("/")
             if prefix.startswith(run_id)

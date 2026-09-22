@@ -110,7 +110,20 @@ def main():
             or ib.get("ObjectStatus", {}).get("S") == "FAILED"
         ):
             continue
-        cls = (rows_a.get(doc, {}).get("classes") or ["(unknown)"])[0]
+        # The class label comes from the document's section objects, so a section that
+        # would not read can change WHICH class this document is grouped under — every
+        # figure below is per class, so a mislabelled document moves two rows at once.
+        # `cache_audit.doc_classes` reports that, and a reason nobody reads is the half
+        # of #1079 that stays open, so the document is excluded rather than grouped on
+        # a label derived from whatever decrypted.
+        row_a = rows_a.get(doc, {})
+        sections_unread = row_a.get("sections_unread") or (
+            rows_b.get(doc, {}).get("sections_unread")
+        )
+        if sections_unread:
+            unread_notes.append(f"{doc} classes: {sections_unread}")
+            continue
+        cls = (row_a.get("classes") or ["(unknown)"])[0]
         g = by_class[cls]
         g.n += 1
         # `_score` returns (score, unread_reason): a report that is not there and one

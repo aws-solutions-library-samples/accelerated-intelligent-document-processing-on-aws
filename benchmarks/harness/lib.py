@@ -281,6 +281,20 @@ def price_metering(metering):
     how a failed measurement becomes $0.00 in a published artifact. Passing one
     raises from ``Reading.__bool__`` below rather than pricing it, because
     ``reportArgumentType`` is disabled here and the type checker will not say so.
+
+    ⚠️ **This function still drops what it cannot price, and says nothing about it.**
+    An entry whose model has no ``pricing.yaml`` key, or whose unit that key does not
+    price, is skipped — so a model added to a run but not to the pricing table makes
+    every affected row price **below truth while still reporting a plausible non-zero
+    total**, because the other phases price normally. That is the same
+    absence-versus-failure defect as
+    [#1079](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/1079)
+    one layer along, on a successful read rather than a failed one, and it is tracked
+    as [#1146](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/1146).
+    Note what does **not** detect it: the absence of a zero cost. The row's cost is
+    non-zero and nothing about it reads as partial. All 14 pricing keys the committed
+    artifacts use are present with their full unit sets, so no published figure is
+    affected today — but check that before adding a model to a suite.
     """
     total = 0.0
     by = {}

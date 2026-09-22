@@ -249,7 +249,7 @@ CSV_COLS = [
     "wall_s",
     "cost",
     # Why a figure above is missing, when it is missing because it could not be READ
-    # rather than because there was nothing there (GitHub #1079). All three are null
+    # rather than because there was nothing there (GitHub #1079). All four are null
     # on a healthy row. They are in the CSV as well as the JSON because a reader
     # comparing two grids in a spreadsheet is exactly the reader who would otherwise
     # take a blank cost cell for a cheap run: `DictWriter(extrasaction="ignore")`
@@ -1588,6 +1588,12 @@ def _print_calibration(report):
             verdict.append("OVERCONFIDENT")
         if arm["undiscriminating"]:
             verdict.append("UNDISCRIMINATING")
+        # Per ARM, not only in the grid total. `excl` next to it pools five buckets, of
+        # which four are facts about the runs; this one says the arm's figures rest on
+        # whatever could be read, so it belongs where a reader meets that arm's
+        # numbers rather than only in the trailing summary (#1079).
+        if arm["excluded"].get("unreadable"):
+            verdict.append(f"UNREAD {arm['excluded']['unreadable']}")
         print(
             f"{name:34s} {arm['runs']:>5d} {len(arm['documents']):>5d} "
             f"{arm.get('excluded_total', 0):>5d} {arm['observations']:>7d} "
