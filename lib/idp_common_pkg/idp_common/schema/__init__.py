@@ -29,6 +29,7 @@ if TYPE_CHECKING:  # pragma: no cover - import-time typing only
         clean_schema_for_generation,
         create_pydantic_model_from_json_schema,
         nullable_leaves_for_transport,
+        nullable_required_containers_for_shard,
         validate_json_schema_for_pydantic,
     )
 
@@ -38,6 +39,7 @@ _LAZY_EXPORTS = {
     "clean_schema_for_generation": "idp_common.schema.pydantic_generator",
     "create_pydantic_model_from_json_schema": "idp_common.schema.pydantic_generator",
     "nullable_leaves_for_transport": "idp_common.schema.pydantic_generator",
+    "nullable_required_containers_for_shard": "idp_common.schema.pydantic_generator",
     "validate_json_schema_for_pydantic": "idp_common.schema.pydantic_generator",
 }
 
@@ -47,6 +49,7 @@ __all__ = [
     "clean_schema_for_generation",
     "create_pydantic_model_from_json_schema",
     "nullable_leaves_for_transport",
+    "nullable_required_containers_for_shard",
     "validate_json_schema_for_pydantic",
 ]
 

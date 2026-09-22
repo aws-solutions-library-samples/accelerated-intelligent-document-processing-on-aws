@@ -2373,20 +2373,31 @@ the Advanced extraction settings the Configuration editor renders — so choosin
 Advanced mode is the whole of the opt-in. Sharding then engages whenever the
 section exceeds one shard's budget, which at the shipped `max_pages_per_shard: 5`
 means any section over **five** pages of ordinary text, and fewer pages when they
-are dense enough to fill the shard token budget. Each shard agent gets **the whole
-section's** Pydantic model as its extraction tool, so the floor is enforced *per
-shard*, not at the merge. A shard sees only its page range, so a `minItems: 100`
-floor on a 17-page section — four shards at the shipped defaults — rejects every
-shard that holds fewer than 100 rows, and a shard over a cover page holds none at
-all. The document fails even though it genuinely contains 800 rows.
+are dense enough to fill the shard token budget. Each shard agent's extraction tool
+is built from a model that carries **the whole section's row-count bounds**, so the
+floor is enforced *per shard*, not at the merge. A shard sees only its page range, so
+a `minItems: 100` floor on a 17-page section — four shards at the shipped defaults —
+rejects every shard that holds fewer than 100 rows, and a shard over a cover page
+holds none at all. The document fails even though it genuinely contains 800 rows.
 
 There is no floor that is both useful and safe here: the only value every shard can
-satisfy is no floor. The relaxed per-shard *feedback* validator — which drops
-`required` and `minItems` precisely because a shard legitimately holds neither —
-governs the agent's self-correction round, not the tool boundary that rejects the
-call, so it does not rescue this. So **if the section shards, do not put `minItems`
-on its lists**; use `extraction.row_shortfall_action`, which is evaluated once on
-the merged section and is the only completeness lever here that is shard-aware.
+satisfy is no floor. The relaxed per-shard *feedback* validator, which drops
+`required` and `minItems` precisely because a shard legitimately holds neither,
+governs the agent's self-correction round rather than the tool boundary that rejects
+the call, so it does not rescue this. So **if the section shards, do not put
+`minItems` on its lists**; use `extraction.row_shortfall_action`, which is evaluated
+once on the merged section and is the only completeness lever here that is
+shard-aware.
+
+**`required` behaves differently, and needs no such warning.** A shard's tool does
+accept `null` for a required list or nested object, so a shard covering pages that
+contain none of a required table answers `null` — the answer its instruction asks for
+— and is not sent back to correct it. Presence is judged once on the *merged* section,
+against the real class schema, where a null property reads as absent and is reported
+by `extraction.validation` like any other required-property violation. That split is
+why a `required` list is safe on a section that shards and a section-sized `minItems`
+is not: a shard holding none of the rows can satisfy `required` (with `null`, or with
+`[]`), and can satisfy no row-count floor at all.
 
 Without `minItems`, the OCR-row estimate
 (`extraction_rows_below_ocr_estimate`) is what catches a partial Simple-mode list — it
