@@ -94,13 +94,14 @@ the optional knowledge base (`nested/bedrockkb/`), and multi-document discovery
 (`nested/multi-doc-discovery/`). Deployment is reproducible from source through
 `publish.py` or the `idp-cli deploy` command.
 
-Monitoring is concrete rather than aspirational. Fifteen `AWS::CloudWatch::Alarm`
+Monitoring is concrete rather than aspirational. 16 `AWS::CloudWatch::Alarm`
 resources are declared in `template.yaml`, and all alerting for the whole solution runs
-through them — the nested stacks declare none. Fourteen publish to the `AlertsTopic` SNS
-topic; the fifteenth, `BedrockServiceOutageAlarm`, publishes to `CircuitBreakerTopic`
+through them — the nested stacks declare none. Fifteen of the sixteen alarms publish to
+the `AlertsTopic` SNS topic; the sixteenth, `BedrockServiceOutageAlarm`, publishes to
+`CircuitBreakerTopic`
 and is the only conditional one, so it exists only when you enable the circuit breaker.
-The other fourteen are unconditional, which is why a default deployment has exactly
-fourteen. They fall into five groups:
+The other fifteen are unconditional, which is why a default deployment has exactly
+fifteen. They fall into five groups:
 
 | Alarm | What it detects |
 |---|---|
@@ -109,6 +110,7 @@ fourteen. They fall into five groups:
 | `DocumentQueueStalledAlarm` | A metric-math expression that fires only when the oldest message exceeds `QueueStalledAgeThresholdSeconds` (default 1800) *and* zero messages left the queue over six consecutive five-minute periods — a queue that is not draining, as distinct from one that is merely deep |
 | `QueueProcessorErrorsAlarm`, `ConcurrencyCounterDriftAlarm`, `ConcurrencyCounterUnderflowAlarm`, `ConcurrencyCounterNegativeAlarm`, `StaleOutputPurgeFailedAlarm` | Lambda errors on the queue processor; a concurrency counter that has drifted from the true running-execution count across three periods; the counter being asked to release a slot it did not hold, which means the same terminal execution was processed twice; the counter actually going negative, which raises the effective concurrency ceiling by that much and costs money silently; and a failed stale-output purge, after which a document can carry text from a previous document of the same name |
 | `AssessmentConfidenceUnavailableAlarm` | `ConfidenceUnavailableThreshold` (default ten) or more document sections degraded to "no confidence scores" in fifteen minutes. This is the one alarm here that watches a *successful* outcome: a deterministic confidence-model failure keeps the extraction and degrades the section rather than failing the document, so a systemic confidence failure produces no failed executions and nothing else on this list moves. It alarms on volume rather than on the first occurrence because one degraded section is an expected, self-limiting outcome |
+| `AgentTranscriptMessageDroppedAlarm` | Ten or more agent conversation messages dropped from the stored transcript in fifteen minutes. Like the row above it watches an outcome the agent itself reports as success — the user gets their answer and the workflow completes; what is lost is an entry in the transcript the analytics UI replays, so a conversation shows gaps. Sustained drops mean either contention on one job's record beyond what the bounded retry absorbs, or reads that keep failing |
 
 Two `AWS::CloudWatch::Dashboard` resources are created: one in `template.yaml` covering
 ingestion, queue depth, the concurrency counter and workflow outcomes, and one in
@@ -431,7 +433,7 @@ clears on its own — expected behavior, not a second fault. See
 **Decoupling and fault isolation.** SQS queues buffer ingestion from processing, so a
 downstream failure or a Bedrock throttle backs up in a queue rather than dropping work.
 The nested-stack split keeps a pipeline change from touching the ingestion, tracking and
-UI resources. It is also what buys room to grow: `template.yaml` declares 314 top-level
+UI resources. It is also what buys room to grow: `template.yaml` declares 315 top-level
 resources against CloudFormation's hard limit of 500 per stack, so if you plan to extend
 the solution through the `feature-platform/` mechanism, that remaining budget is the number
 to watch, and a new extension is better added as its own nested stack than as more

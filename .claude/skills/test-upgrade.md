@@ -16,8 +16,9 @@ CFN stack update apply cleanly, without rollback"**.
 > `AWS_PROFILE=default aws sts get-caller-identity` — the token expires often;
 > if it returns `ExpiredToken`, ask the user to refresh (`! aws sso login
 > --profile default`) before proceeding. Deploy target for this repo's test
-> work: account **912625584728**, region **us-west-2** (see the
-> `idpagentic-deploy-target` memory).
+> work: region **us-west-2**, in whichever account `AWS_PROFILE=default`
+> resolves to (the expected account id is in the `idpagentic-deploy-target`
+> memory, not in this file).
 >
 > **Stale AWS credential env vars shadow the profile.** `AWS_PROFILE=default`
 > on the command line does NOT override `AWS_ACCESS_KEY_ID` /
@@ -268,7 +269,7 @@ and delete them manually if doing a full cleanup.
 
 ## Checklist
 
-1. [ ] Creds valid (`sts get-caller-identity` → 912625584728); no stale
+1. [ ] Creds valid (`sts get-caller-identity` returns the expected account); no stale
        `AWS_ACCESS_KEY_ID`/`SESSION_TOKEN` env vars shadowing the profile
 2. [ ] Template URLs for FROM + TO grepped from CHANGELOG
 3. [ ] Required params confirmed from the FROM template

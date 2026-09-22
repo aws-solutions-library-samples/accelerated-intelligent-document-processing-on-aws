@@ -1,7 +1,7 @@
 # corefast v0.6.7 — NOT a valid release gate: the stack changed mid-run
 
 **Run:** `run-20260903-132030`, 171 runs (19 cells × 3 docs × 3 repeats), stack `IDP1`
-(us-west-2, acct 912625584728), scored 2026-09-03T17:46Z.
+(us-west-2), scored 2026-09-03T17:46Z.
 **Baseline compared against:** `results/baseline.json` — v0.6.6, stack `IDPRel066`,
 commit `7fb426b27`.
 **Costs** are estimates from `config_library/pricing.yaml`, rates as of 2026-09-02.
