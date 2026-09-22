@@ -386,7 +386,8 @@ This tests:
 - `BEDROCK_REGION`: AWS region for Bedrock/DynamoDB
 - `MEMORY_METHOD`: Memory storage method (default: "dynamodb")
 - `STREAMING_ENABLED`: Enable streaming (default: true)
-- `MAX_CONVERSATION_TURNS`: Max turns to load (default: 20)
+- `MAX_CONVERSATION_TURNS`: Max turns to load (default: 20). `0` loads no history at
+  all, which is how to turn conversation memory off
 - `MAX_MESSAGE_SIZE_KB`: Max message size (default: 8.5)
 - `APPSYNC_API_URL`: **Vestigial and always the empty string.** AppSync has been
   removed, but the root `template.yaml` still sets `APPSYNC_API_URL: ""` on about

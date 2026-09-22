@@ -218,25 +218,64 @@ class RuleValidationService:
         if estimated_tokens <= max_chunk_size:
             return [text]
 
-        # Calculate chunk size in characters
-        chunk_size_chars = max_chunk_size * token_size
+        # Calculate chunk size in characters. RuleValidationConfig validates both
+        # factors as > 0; the floor keeps the budget positive for a direct caller
+        # that did not come through the config model.
+        chunk_size_chars = max(1, max_chunk_size * token_size)
         overlap_chars = int(chunk_size_chars * (overlap_percentage / 100))
+
+        # Each pass advances `start` by chunk_size_chars - overlap_chars, so the
+        # overlap is what sets the stride and the resulting number of model calls.
+        # It is bounded at half a chunk, for two reasons that need different bounds
+        # and get the stricter one:
+        #
+        #   - Termination needs a stride of at least one character. overlap_percentage
+        #     is documented as 0-100 and 100 asks for a stride of zero.
+        #   - Cost needs a stride that is a *fraction* of the chunk. A one-character
+        #     stride terminates and is still ruinous: it emits len(text) -
+        #     chunk_size_chars + 1 chunks, one model call each, which on a 46,000
+        #     character document at the shipped 32,000-character chunk is ~14,000
+        #     calls. Half a chunk caps the count at twice the no-overlap count for
+        #     any requested percentage.
+        #
+        # The bound lives here rather than as a tighter `le=` on the config field,
+        # and the difference is larger than "a legal value stops being legal".
+        # Pydantic validation is not field-scoped: a stored config carrying
+        # overlap_percentage 75 would fail RuleValidationConfig parsing *as a whole*,
+        # so an upgrade would break rule validation on a stack that was working — and
+        # on the paths that read config through a swallowing accessor it would break
+        # it without saying so. Clamping degrades one knob and logs it; rejecting
+        # stops the pipeline. Nor is the clipped range carrying much: a fact would
+        # have to be longer than half a chunk (16,000 characters at the shipped
+        # budget) to survive a 50% overlap but not a 75% one.
+        bounded_overlap_chars = min(max(overlap_chars, 0), chunk_size_chars // 2)
+        if bounded_overlap_chars != overlap_chars:
+            logger.warning(
+                f"overlap_percentage={overlap_percentage} asks to repeat "
+                f"{overlap_chars} of every {chunk_size_chars} characters, which "
+                f"would leave too little forward progress per chunk; using "
+                f"{bounded_overlap_chars} instead. Lower overlap_percentage to at "
+                f"most 50 to control how much each chunk repeats."
+            )
+        overlap_chars = bounded_overlap_chars
 
         chunks = []
         start = 0
 
         while start < len(text):
-            end = start + chunk_size_chars
-            if end > len(text):
-                end = len(text)
+            end = min(start + chunk_size_chars, len(text))
+            chunks.append(text[start:end])
 
-            chunk = text[start:end]
-            chunks.append(chunk)
+            # This chunk reached the end of the text, so it is the last one.
+            # Deciding that here rather than after moving `start` is what makes
+            # the loop terminate: `end` has been clamped to len(text), so
+            # `end - overlap_chars` lands back inside the text for any non-zero
+            # overlap and the same tail slice would be emitted indefinitely.
+            if end >= len(text):
+                break
 
             # Move start position with overlap
             start = end - overlap_chars
-            if start >= len(text):
-                break
 
         return chunks
 
@@ -253,7 +292,8 @@ class RuleValidationService:
 
         Dynamic overlap strategy:
         - If previous chunk has multiple complete pages: use complete last page as overlap
-        - If previous chunk has only 1 complete page: use 10% of that page as overlap
+        - If previous chunk has only 1 complete page: use overlap_percentage of that
+          page as overlap, and nothing at all when that rounds down to no characters
 
         Args:
             text: The text to chunk with page markers
@@ -349,9 +389,29 @@ class RuleValidationService:
                 )
                 return [prev_pages[-1]]
             else:
-                # Single page: use 10% of page as overlap
+                # Single page: use overlap_percentage of the page as overlap.
+                #
+                # Deliberately NOT bounded at half a page the way the character
+                # chunker bounds its overlap, because the cost argument that
+                # motivates that bound does not apply here. Overlap is added when a
+                # chunk is built and is never counted toward current_chunk_tokens, so
+                # it cannot change how pages are grouped: the number of chunks — and
+                # so of model calls — is invariant in overlap_percentage, and the
+                # repeated content is at most one page per chunk whatever the
+                # percentage. The worst case is therefore already the ~2x the
+                # character bound exists to enforce, and clamping here would cost
+                # context for no saving.
                 page_num, page_content = prev_pages[0]
-                overlap_size = len(page_content) * overlap_percentage // 100  # True 10%
+                overlap_size = len(page_content) * overlap_percentage // 100
+                if overlap_size <= 0:
+                    # No overlap was asked for, so repeat nothing. Slicing with a
+                    # zero bound would not do that: page_content[-0:] is
+                    # page_content[0:], the whole page, so zero overlap would
+                    # produce the maximum overlap.
+                    logger.debug(
+                        f"Page chunk overlap single-page page={page_num} original_length={len(page_content)} overlap_percentage={overlap_percentage} overlap_size={overlap_size} no_overlap=True"
+                    )
+                    return []
                 overlap_content = page_content[-overlap_size:]
                 logger.debug(
                     f"Page chunk overlap single-page page={page_num} original_length={len(page_content)} overlap_percentage={overlap_percentage} overlap_size={overlap_size} overlap_length={len(overlap_content)}"

@@ -51,7 +51,8 @@ The rule validation service uses a three-step approach:
 - **Rate Limiting**: Built-in semaphore-based rate limiting for API calls to prevent throttling
 - **Intelligent Text Chunking**: 
   - Page-aware chunking that preserves page boundaries
-  - Configurable overlap (default 10%) for context preservation
+  - Configurable overlap (default 10%) for context preservation. `0` repeats nothing;
+    values above 50 are bounded to 50 by the character chunker
   - Automatic fallback to character-based chunking
   - Chunking always occurs for fact extraction, orchestrator always runs
 - **Customizable Recommendations**: 
@@ -527,10 +528,20 @@ if previous_chunk_pages:
 
 ### Fallback Chunking
 
-If no page markers found:
+Taken only when the page parser finds **no** pages at all — not merely when a
+document carries no markers, which is parsed as a single page numbered `0`. The way
+in is `<page-number>` markers with no content between any of them, which a section of
+whitespace-only OCR text produces: the split pattern's trailing `\s*` consumes the
+whitespace, so every page strips to empty and is dropped while those characters still
+count toward the length that decides whether chunking is needed at all.
+
 - Falls back to character-based chunking
-- Uses configurable overlap percentage
-- Preserves word boundaries
+- Uses configurable overlap percentage, bounded at half a chunk so that the number
+  of chunks — and so of model calls — stays within twice the no-overlap count. A
+  request above that is reduced and logged
+- ⚠️ Slices at raw character offsets. It does **not** preserve word boundaries, so a
+  boundary can fall inside a word or a number; the overlap is what keeps a value
+  split that way readable in the following chunk
 
 ## Error Handling
 
