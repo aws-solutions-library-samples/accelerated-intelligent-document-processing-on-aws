@@ -519,7 +519,7 @@
         "JUDGEMENT"
       ],
       "ratchet": "non-vacuity",
-      "reason": "Three shapes in this tree produce a 12-digit run that is not an identifier of any kind: the fractional part of a decimal literal (a point is a word boundary, so the run after it is bounded), the final group of an RFC-4122 UUID, and a slice of a longer hexadecimal digest. The gate evaluates all three per occurrence from the characters either side, so the verdict is computed rather than asserted; it is recorded as JUDGEMENT only because gate_premises.py holds no predicate for a textual shape and inventing one would give it a single caller. 260 of the tree's 954 candidates are one of these three: 215 hexadecimal digest, 34 UUID group, 11 decimal fraction.",
+      "reason": "Three shapes in this tree produce a 12-digit run that is not an identifier of any kind: the fractional part of a decimal literal (a point is a word boundary, so the run after it is bounded), the final group of an RFC-4122 UUID, and a slice of a longer hexadecimal digest. The gate evaluates all three per occurrence from the characters either side, so the verdict is computed rather than asserted; it is recorded as JUDGEMENT only because gate_premises.py holds no predicate for a textual shape and inventing one would give it a single caller. No per-rule totals are recorded here on purpose: they move with every merge (one study landing on develop took the decimal-fraction count from 11 to 76), so a figure written down would be stale within the week. `python3 scripts/check_account_ids.py --summary` prints the current split, and the non-vacuity ratchet is what asserts each rule still earns its place.",
       "memberKind": "textual shape rule",
       "ratchetEvidence": "scripts/check_account_ids.py",
       "issues": [
@@ -533,7 +533,7 @@
         "JUDGEMENT"
       ],
       "ratchet": "non-vacuity",
-      "reason": "Whether a 12-digit value is a private account id, one of AWS's published example ids, an AWS-owned service account, or simply document content that happens to be twelve digits long (a bank account number in a synthetic statement, the digits of a CUSIP, a build timestamp) is a fact about the outside world and about what the containing document represents. Nothing in this tree can decide it, so each of the 15 entries carries the reason its value is not private. Keyed by VALUE rather than by path on purpose: publicness is a property of the id, so one entry states the claim once and a reviewer reads the claim instead of a list of files.",
+      "reason": "Whether a 12-digit value is a private account id, one of AWS's published example ids, an AWS-owned service account, or simply document content that happens to be twelve digits long (a bank account number in a synthetic statement, the digits of a CUSIP, a build timestamp) is a fact about the outside world and about what the containing document represents. Nothing in this tree can decide it, so every entry carries the reason its value is not private. Keyed by VALUE rather than by path on purpose: publicness is a property of the id, so one entry states the claim once and a reviewer reads the claim instead of a list of files.",
       "memberKind": "AWS account id",
       "ratchetEvidence": "scripts/check_account_ids.py",
       "issues": [

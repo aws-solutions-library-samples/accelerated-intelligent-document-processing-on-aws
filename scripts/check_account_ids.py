@@ -23,8 +23,13 @@ for commit messages applies with more force to a tracked file, which everyone wh
 clones reads.
 
 HOW A 12-DIGIT NUMBER IS JUDGED. A bare 12-digit match is a weak signal: this tree holds
-954 such runs across 3,026 tracked text files, and all but a handful are benign. Each is
-resolved in three stages, and the gate fails only on what survives all three:
+upwards of a thousand such runs, and all but a handful are benign. Each is resolved in
+three stages, and the gate fails only on what survives all three:
+
+(No per-rule totals are quoted in this docstring. They move with every merge -- a single
+study landing on ``develop`` took the decimal-fraction count from 11 to 76 -- so a figure
+written here would be wrong within the week and would have to be corrected in three
+places. ``--summary`` prints the current split, which is the reproducible answer.)
 
 1. :data:`ACCOUNT_ID_EXCLUDED_SHAPES` — the run is not a standalone 12-digit number at
    all. A decimal fraction (``1128.611111111111``, ``99.781982421875``: ``.`` is a word
@@ -103,8 +108,8 @@ UUID_RE = re.compile(
 def _is_decimal_fraction(line: str, start: int, end: int) -> bool:
     """The run is the fractional part of a decimal number.
 
-    ``1128.611111111111`` and ``99.781982421875`` are OCR confidences and cache deltas;
-    this rule accounts for 11 occurrences today. The test is deliberately narrower than
+    ``1128.611111111111`` and ``99.781982421875`` are OCR confidences and cache deltas,
+    and any study that lands a table of them adds more. The test is deliberately narrower than
     "preceded by a point": a point alone also precedes a version segment and a
     dotted path component, and requiring a digit *before* the point means only an
     arithmetic literal is judged benign here.
@@ -140,8 +145,9 @@ def _in_hex_digest(line: str, start: int, end: int) -> bool:
     benchmark corpus names documents by MD5 --
     ``033f718b16cb597c065930410752c294.pdf`` -- and that digest contains a 12-digit run
     bounded by hex letters on both sides. It appears in every per-document row of every
-    benchmark ``summary.csv`` and ``summary.json``: this rule accounts for 215
-    occurrences in total, and 125 of them are that one document name.
+    benchmark ``summary.csv`` and ``summary.json``, which is 125 of this rule's
+    occurrences on its own -- and it is the reason the rule exists at all, since before
+    it the gate reported that one document name as an account id 125 times.
 
     The rule expands over hex characters in both directions and requires the maximal run
     to be long enough to be a digest AND to contain a hex *letter*. The letter is what
@@ -211,6 +217,18 @@ ACCOUNT_ID_ALLOWLIST = {
     "000000000000": (
         "All-zero account segment, used where an ARN needs a syntactically valid "
         "account and the value is irrelevant to what is being tested."
+    ),
+    "555555555555": (
+        "Hand-typed repeated-digit run, used as the final group of the UUID fixtures "
+        "that stand in for a Cognito `sub` and a Bedrock request id. Most of its "
+        "occurrences sit inside a well-formed UUID and are settled by the uuid-group "
+        "shape rule without reaching this list at all; the ones that need it are the "
+        "DELIBERATELY MALFORMED UUIDs in a negative test for a request-id extractor "
+        "(a 7-character first group, a non-hex first group), which by construction no "
+        "UUID pattern can match. Do not remove this entry on the grounds that the "
+        "shape rule covers the value: it covers most occurrences of it, and the "
+        "entry earns its place on the id's own merits -- 12 repeated digits in three "
+        "pairs is not an allocated account id."
     ),
     # The three below are not AWS account ids at all -- they are bank account numbers in
     # synthetic documents. They are listed here rather than as a shape rule because

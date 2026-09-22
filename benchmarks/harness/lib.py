@@ -28,12 +28,28 @@ def session():
     return _session
 
 
+_clients = {}
+
+
+def client(name):
+    """One cached client per service.
+
+    ``Session.client()`` parses the service model on every call, and the S3 client
+    was being rebuilt once per ``get_json`` — tens of thousands of times on a
+    release-wide calibration pass over stored runs. Everything here is sequential;
+    the cache is a latency fix and nothing more.
+    """
+    if name not in _clients:
+        _clients[name] = session().client(name)
+    return _clients[name]
+
+
 def s3():
-    return session().client("s3")
+    return client("s3")
 
 
 def ddb():
-    return session().client("dynamodb")
+    return client("dynamodb")
 
 
 # ----------------------------------------------------------------------------- pricing
@@ -240,15 +256,43 @@ def iter_section_results(bucket, doc_prefix):
 SEQ = re.compile(r"SEQ(\d{5})")
 
 
-def walk_confidence(node, out):
-    if isinstance(node, dict):
-        if isinstance(node.get("confidence"), (int, float)):
-            out.append(node["confidence"])
-        for v in node.values():
-            walk_confidence(v, out)
-    elif isinstance(node, list):
-        for v in node:
-            walk_confidence(v, out)
+def walk_confidence(explainability_info):
+    """``{field path: confidence}`` for one section's ``explainability_info``.
+
+    This used to append the bare scalar to a list and throw the path away, which
+    put a ceiling on everything the harness could say about confidence: a score
+    with no path cannot be joined to the cell it describes, so the only available
+    statistics were distributional (``mean_confidence``, ``pct_conf_below_0.9``)
+    and calibration against ground truth was unmeasurable on the one corpus that
+    has exact per-cell truth (GitHub #935).
+
+    The traversal is NOT implemented here. ``flatten_confidences`` is the rule the
+    product itself keys stored confidence curves by, and its sibling
+    ``flatten_values`` keys an ``inference_result`` identically — so a path from
+    one indexes straight into the other, which is the entire join. A private copy
+    of the walk in the harness would drift from the one the shipped curve uses,
+    and then a harness calibration number and a stored curve would disagree for
+    reasons that have nothing to do with the data.
+
+    Requires ``idp_common`` on ``PYTHONPATH`` (pinned in
+    benchmarks/matrices/METHODOLOGY.md). ``confidence_curve`` and ``curve_store``
+    are deliberately standard-library-only, so this import does not pull Stickler.
+    """
+    from idp_common.evaluation import flatten_confidences
+
+    return flatten_confidences(explainability_info)
+
+
+def confidence_values(explainability_info):
+    """Just the confidence scores, for the distribution-only statistics.
+
+    Paths are unique by construction, so this is the same multiset the old
+    list-appending walk produced and ``mean_confidence`` / ``pct_conf_below_0.9``
+    / ``n_conf_leaves`` are unchanged — verified against stored v0.6.9 sections
+    across scalar, table, multi-section and multi-instance shapes. The committed
+    baselines stay comparable.
+    """
+    return list(walk_confidence(explainability_info).values())
 
 
 def find_list(node, key_lc=("transactions",)):

@@ -264,10 +264,10 @@ def test_curve_keys_do_not_depend_on_how_many_instances_a_section_had():
     """The landmine: `prefix if len(node) == 1 else prefix[i]` keyed on list
     LENGTH, so a ONE-instance section produced `instances.NetPay` and a
     TWO-instance section `instances[0].NetPay` — keys that cannot join."""
-    from idp_common.evaluation.curve_store import _flatten_confidences
+    from idp_common.evaluation.curve_store import flatten_confidences
 
-    one = _flatten_confidences([{INSTANCES_KEY: [{"NetPay": _leaf(0.9)}]}])
-    two = _flatten_confidences(
+    one = flatten_confidences([{INSTANCES_KEY: [{"NetPay": _leaf(0.9)}]}])
+    two = flatten_confidences(
         [{INSTANCES_KEY: [{"NetPay": _leaf(0.9)}, {"NetPay": _leaf(0.8)}]}]
     )
     assert set(one) == {"instances[0].NetPay"}
@@ -279,29 +279,29 @@ def test_curve_keys_are_consistent_for_a_one_row_table_too():
     """Same bug, pre-existing and unrelated to multi-instance: a one-row table
     keyed as `Transactions.date` while a two-row table keyed
     `Transactions[0].date`."""
-    from idp_common.evaluation.curve_store import _flatten_confidences
+    from idp_common.evaluation.curve_store import flatten_confidences
 
-    one = _flatten_confidences([{"Transactions": [{"date": _leaf(0.9)}]}])
+    one = flatten_confidences([{"Transactions": [{"date": _leaf(0.9)}]}])
     assert set(one) == {"Transactions[0].date"}
 
 
 def test_the_outer_explainability_wrapper_still_adds_no_path_level():
     """explainability_info arrives wrapped in a single-element list; that one must
     NOT contribute an index."""
-    from idp_common.evaluation.curve_store import _flatten_confidences
+    from idp_common.evaluation.curve_store import flatten_confidences
 
-    assert set(_flatten_confidences([{"NetPay": _leaf(0.9)}])) == {"NetPay"}
+    assert set(flatten_confidences([{"NetPay": _leaf(0.9)}])) == {"NetPay"}
 
 
 def test_curve_values_and_confidences_use_matching_paths():
     from idp_common.evaluation.curve_store import (
-        _flatten_confidences,
-        _flatten_values,
+        flatten_confidences,
+        flatten_values,
     )
 
     expl = [{INSTANCES_KEY: [{"NetPay": _leaf(0.9)}, {"NetPay": _leaf(0.8)}]}]
     values = [{INSTANCES_KEY: [{"NetPay": "1.00"}, {"NetPay": "2.00"}]}]
-    assert set(_flatten_confidences(expl)) == set(_flatten_values(values))
+    assert set(flatten_confidences(expl)) == set(flatten_values(values))
 
 
 # --------------------------------------------------------------------------
