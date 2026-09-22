@@ -68,6 +68,9 @@ make cfn-lint
 
 # Same, but list every advisory warning in full
 make cfn-lint-warnings
+
+# Resolve every relative Markdown link, anchor and published-page target (offline)
+make check-markdown-links
 ```
 
 **The Python lint gates read every tracked `.py` file, and what they skip is a
@@ -176,6 +179,57 @@ entirely in CI and reports false positives against a stale copy locally — nois
 both. `scripts/tests/test_nested_stack_parameters.py` asserts that wiring directly
 against the **source** templates instead, and also covers the reverse direction
 (a required nested parameter the parent never passes) that E3043 ignores.
+
+**`make check-markdown-links`** resolves every relative link in every tracked
+`.md` file, discovered from `git ls-files` at run time. Five finding kinds, of
+which three are the checks proper: the path exists (`missing-path`,
+`escapes-repository`); an `#anchor` names a heading the target actually has
+(`missing-anchor`), slugified the way `github-slugger` does it (which is what
+both GitHub and Astro/Starlight use, so one implementation serves both); and a
+page the docs site **publishes** does not
+link relatively to a `docs/` page `docs-site/setup.sh` leaves unpublished
+(`unpublished-target`). That third one is the case review cannot catch — the link
+resolves in the repository and 404s on the site, because
+`docs-site/plugins/remark-rewrite-docs-links.mjs` only sends a target that
+*escapes* `docs/` to a GitHub blob URL. Use the blob URL at the call site, as
+`docs/threat-model.md` and `docs/external-idp.md` do. The remaining two kinds are
+the gate's own reading coverage: `unreadable-region` for a code fence that
+swallows content and `unrewritable-on-site` for a `.md` link the rewrite plugin's
+pattern does not match (a query string is the live shape). The published set is
+derived by **running** `setup.sh` against a throwaway root and reading its
+symlinks back, never by parsing it: its `README.md` filter is inside the
+top-level loop only, so three nested `README.md` pages *are* published and a
+plausible reading of the script gets that backwards.
+
+Two things it deliberately does not answer, both stated in the script's own
+docstring so a green run is not over-read. **External `http(s)` URLs are never
+fetched** — a blocking gate that needs egress red-lines the branch on somebody
+else's outage; `scripts/tests/test_well_architected_doc.py` keeps that check
+opt-in behind `CHECK_DOC_LINKS=1` for one page. And a **non-`.md`** relative link
+from a published page (`../samples/lending_package.pdf`, `./releases/`) is left
+alone by the rewrite plugin and so 404s on the site while resolving in the
+repository; the fix for that class belongs in the plugin rather than at 34 call
+sites. It *does* report a **code fence that swallows content** — one that never
+closes, or a ```` ```bash ```` opener inside a ```` ``` ```` block, which
+CommonMark cannot read as a closer — because everything inside a fence is
+invisible to every other check here, so a stray fence turns the gate off for the
+rest of the file. No exemption list: the illustrative placeholders in
+`.claude/skills/*.md` sit inside fenced blocks and so are not links, and a
+`CHANGELOG` entry citing a page deleted since gets a **version-pinned** blob URL
+(`/blob/v0.5.15/docs/alb-hosting.md`), which keeps the history accurate instead of
+carving the file out.
+
+⚠️ **The slugifier is the part to be careful with, and `[\w\- ]` is the wrong
+rule.** `github-slugger` keeps combining marks and variation selectors and drops
+`No`; Python's `\w` does the opposite. `⚠️` is U+26A0 **plus U+FE0F**, so 26
+headings here slug to an invisible leading character and a naive rule produces a
+slug one codepoint shorter that looks identical in a diff, a terminal and a review
+— a link written against it is broken on GitHub *and* on the site, and the gate
+passes it. `scripts/tests/test_markdown_links.py` therefore slugs **every heading
+in the tree** through the real `github-slugger` from `docs-site/node_modules` and
+compares, rather than trusting a table of hand-written cases; a table is what
+pinned that divergence in the first place. Keep the comparison, and if you change
+`SLUG_KEEP_CATEGORIES`, run it.
 
 ### Every gate exemption is registered — `scripts/tests/gate_exemptions.json`
 

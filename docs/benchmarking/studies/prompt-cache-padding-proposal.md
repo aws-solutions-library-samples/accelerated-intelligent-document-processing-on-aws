@@ -151,7 +151,7 @@ it.
    benefits, no behaviour-change gamble.
 6. **`extraction.forced_tool.enabled` also lifts a sub-minimum class** (+~820 prefix tokens,
    measured accuracy-neutral over 282 paired documents — see
-   [config-guidance §7](config-guidance.md)). Note it *taxes* already-caching classes
+   [config-guidance §7](../config-guidance.md)). Note it *taxes* already-caching classes
    (+6% to +23% prefix cost), so it is a per-config decision, not a per-class one.
 
 ### 5.3 Do — add the knob that is currently missing
@@ -211,4 +211,4 @@ AWS_PROFILE=default python3 benchmarks/harness/per_class_ab.py --stack <STACK> \
 
 ---
 > Mechanism: [prompt caching, measured](prompt-caching.md). Config advice:
-> [Configuration Guidance](config-guidance.md).
+> [Configuration Guidance](../config-guidance.md).

@@ -32,14 +32,32 @@ ASL_PATH = Path(__file__).resolve().parents[1] / "statemachine" / "workflow.asl.
 _UNQUOTED_PLACEHOLDER_RE = re.compile(r'"\s*:\s*\$\{[^}]+\}')
 
 # Every task whose Lambda handler re-raises TransientError: the in-process
-# extraction task, the assessment task, and all THREE shard-runtime tasks (plan,
-# shard, merge share one handler, so all three must list the name).
+# extraction task, the assessment task, all THREE shard-runtime tasks (plan,
+# shard, merge share one handler, so all three must list the name), and the three
+# rule-validation tasks (#1101).
 TASKS = (
     "ExtractionStep",
     "AssessmentStep",
     "ExtractionPlanStep",
     "ShardExtractionStep",
     "ExtractionMergeStep",
+    "PolicyClassificationStep",
+    "RuleValidationStep",
+    "RuleValidationOrchestration",
+)
+
+# Handler sources that must surface a transient cause under the listed name, one
+# per distinct Lambda behind ``TASKS``. Kept next to ``TASKS`` because the two are
+# one claim: the ASL entry is dead config without the handler, and the handler's
+# re-raise is a document failure without the ASL entry.
+HANDLER_SOURCES = (
+    # each wraps its WHOLE handler, so loads before the main call count too
+    "extraction_function/index.py",
+    "extraction_function/sfn_runtime_handler.py",
+    "assessment_function/index.py",
+    "rule-validation-policy-classification-function/index.py",
+    "rule-validation-function/index.py",
+    "rule-validation-orchestration-function/index.py",
 )
 
 
@@ -110,17 +128,44 @@ def test_the_deterministic_tool_use_failure_is_not_retried_by_name(states, task)
         )
 
 
-def test_the_handlers_actually_raise_the_listed_name():
-    """The ASL name is only useful if the three handlers re-raise under it."""
+@pytest.mark.parametrize("rel", HANDLER_SOURCES)
+def test_the_handlers_actually_raise_the_listed_name(rel):
+    """The ASL name is only useful if the handler re-raises under it."""
     src_dir = ASL_PATH.parents[1] / "src"
-    for (
-        rel
-    ) in (  # each wraps its WHOLE handler, so loads before the main call count too
-        "extraction_function/index.py",
-        "extraction_function/sfn_runtime_handler.py",
-        "assessment_function/index.py",
-    ):
-        text = (src_dir / rel).read_text(encoding="utf-8")
-        assert "transient_errors" in text and (
-            "raise_if_transient" in text or "TransientError(" in text
-        ), f"{rel} does not surface transient failures as TransientError"
+    text = (src_dir / rel).read_text(encoding="utf-8")
+    assert "transient_errors" in text and (
+        "raise_if_transient" in text or "TransientError(" in text
+    ), f"{rel} does not surface transient failures as TransientError"
+
+
+def test_the_rule_validation_service_classifies_before_it_swallows():
+    """#1101: the two ``except`` blocks in the rule-validation service that do NOT
+    re-raise must consult the classifier first.
+
+    This is the half a handler wrapper cannot cover. ``validate_document_async``
+    returns a FAILED document rather than raising, and ``_process_rule_question``
+    returns a fabricated "Information Not Found" verdict — so by the time either
+    reaches ``rule-validation-function``'s wrapper there is no exception left to
+    classify, and in the second case no failure at all. Both must call
+    ``raise_if_transient`` while the original exception is still in hand.
+    """
+    service = (
+        ASL_PATH.parents[3]
+        / "lib"
+        / "idp_common_pkg"
+        / "idp_common"
+        / "rule_validation"
+        / "service.py"
+    )
+    text = service.read_text(encoding="utf-8")
+    assert text.count("raise_if_transient(") >= 2, (
+        "rule_validation/service.py must classify in BOTH non-raising except "
+        "blocks — the per-rule fallback and the document-level one"
+    )
+    # The fabricated verdict must not be returned without the classifier having
+    # had its say first.
+    verdict_at = text.index('"recommendation": "Information Not Found"')
+    assert "raise_if_transient(" in text[:verdict_at], (
+        "the per-rule fallback returns a real verdict; a transient Bedrock fault "
+        "must be re-raised before it can be answered with one"
+    )

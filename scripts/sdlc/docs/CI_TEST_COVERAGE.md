@@ -1299,9 +1299,9 @@ but revisit:
 
 ## Related Documentation
 
-- [CHANGELOG.md](../../CHANGELOG.md) - Feature changes and test additions
-- [CLAUDE.md](../../CLAUDE.md) - Project architecture and build commands
-- [docs/test-studio.md](../../docs/test-studio.md) - Test Studio user guide
-- [scripts/sdlc/README.md](../README.md) - SDLC infrastructure setup
+- [CHANGELOG.md](../../../CHANGELOG.md) - Feature changes and test additions
+- [CLAUDE.md](../../../CLAUDE.md) - Project architecture and build commands
+- [docs/test-studio.md](../../../docs/test-studio.md) - Test Studio user guide
+- [scripts/sdlc/cfn/README.md](../cfn/README.md) - SDLC infrastructure setup
 - [scripts/sdlc/cfn/codepipeline-s3.yml](../cfn/codepipeline-s3.yml) - CodeBuild IAM permissions
 

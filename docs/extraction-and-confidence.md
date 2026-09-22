@@ -2138,8 +2138,10 @@ particularly easy to miss:
 - **A truncated run is *cheaper*.** Cost fell from $1.78 to $1.04 when a run
   truncated, so cost monitoring will not flag it either.
 
-So it must be detected structurally. Four signals are raised as
-[processing issues](#surfaced-in-the-ui), on **both** Simple and Advanced modes:
+So it must be detected structurally. Four signals are raised as processing
+issues — reaching the document list's **Processing Issues** column, the
+**Processing Report** tab and the tracking table's sparse
+`HasProcessingIssues` attribute — on **both** Simple and Advanced modes:
 
 | Code | Severity | Fires when |
 |---|---|---|

@@ -61,7 +61,14 @@ export default function remarkRewriteDocsLinks() {
       if (!url || url.startsWith("http") || url.startsWith("#")) return;
       if (!url.includes(".md")) return;
 
-      const match = url.match(/^([^#]*\.md)(#[a-zA-Z0-9_-]*)?$/);
+      // The anchor is taken verbatim and is deliberately NOT restricted to
+      // [a-zA-Z0-9_-]. github-slugger keeps combining marks, so the anchor of any
+      // heading opening on an emoji contains U+FE0F, and an anchor this pattern
+      // rejects is one the link keeps its ".md" suffix for — a 404 on a site that
+      // serves directory URLs, for the one spelling that works on GitHub.
+      // scripts/check_markdown_links.py mirrors this pattern and
+      // scripts/tests/test_markdown_links.py asserts the two still agree.
+      const match = url.match(/^([^#]*\.md)(#.*)?$/);
       if (!match) return;
       const [, mdPath, anchorPart] = match;
       const anchor = anchorPart || "";

@@ -117,6 +117,12 @@ class IDPAgent(Agent):
         self.agent_id = agent_id
         self.sample_queries = sample_queries or []
         self.mcp_client = mcp_client
+        # The tracker _setup_monitoring registers, kept so that __exit__ can drain its
+        # write pool. The registry does keep the tracker alive -- it stores the bound
+        # method `on_message_added`, whose `__self__` is the tracker -- but reaching it
+        # that way means walking a private callback table and matching on `__self__`,
+        # which is not an interface to build teardown on. A named attribute is.
+        self.message_tracker: Optional[Any] = None
 
         # Set up automatic monitoring if job_id and user_id are provided
         self._setup_monitoring(job_id, user_id, enable_monitoring)
@@ -175,6 +181,7 @@ class IDPAgent(Agent):
                 enabled=enable_monitoring,
             )
             self.hooks.add_hook(message_tracker)
+            self.message_tracker = message_tracker
             logger.info(f"Agent monitoring enabled for job: {job_id}, user: {user_id}")
 
         except Exception as e:
@@ -189,7 +196,36 @@ class IDPAgent(Agent):
         return self
 
     def __exit__(self, exc_type, exc_val, exc_tb):
-        """Context manager exit - properly closes MCP client if present."""
+        """
+        Context manager exit - drains transcript writes, then closes the MCP client.
+
+        This is the boundary at which the agent is finished with, and it is where a
+        queued transcript write is waited for. The tracker's messages are written on a
+        thread pool, and a Lambda invocation ends by the execution environment being
+        **frozen** rather than shut down: the process is not signalled and does not
+        exit, so an unfinished write is simply suspended and no interpreter-shutdown
+        hook runs. See ``DynamoDBMessageLogger.shutdown`` for the full account, for why
+        the drain is bounded rather than unconditional, and for why this is the right
+        boundary rather than the registry's own ``AfterInvocationEvent``.
+
+        Every tracker built in production belongs to an agent that passes through here,
+        and today that is the analytics path only: ``agent_processor``'s top-level agent
+        inside its ``with agent:``, and the sub-agents its orchestrator runs, each
+        inside a ``with specialized_agent:``. Agent chat builds no tracker at all -- it
+        passes neither ``job_id`` nor ``user_id``, and its functions have no
+        ``AGENT_TABLE`` -- so nothing there is waiting to be drained.
+
+        Draining before closing the MCP client, because the two are unrelated and MCP
+        teardown is the half that has been seen to raise.
+        """
+        if self.message_tracker:
+            try:
+                self.message_tracker.shutdown()
+            except Exception as e:
+                logger.warning(f"Error draining agent transcript writes: {e}")
+                # Don't propagate monitoring cleanup errors: monitoring is
+                # best-effort and must not turn a completed agent run into a failure.
+
         if self.mcp_client:
             try:
                 self.mcp_client.__exit__(exc_type, exc_val, exc_tb)

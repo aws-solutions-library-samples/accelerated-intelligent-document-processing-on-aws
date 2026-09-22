@@ -14,7 +14,9 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from idp_common import bedrock, s3, utils
 from idp_common.models import Document, RuleValidationResult
+from idp_common.rule_validation.concurrency import resolve_semaphore
 from idp_common.rule_validation.models import LLMResponse
+from idp_common.utils.transient_errors import reraise_if_transient
 
 logger = logging.getLogger(__name__)
 
@@ -94,6 +96,12 @@ def _normalize_page_reference(page: Any) -> Optional[Tuple[str, Tuple[int, int, 
 class RuleValidationOrchestratorService:
     """Service containing existing summarization methods from service.py."""
 
+    # Declared on the class so the `semaphore` property below resolves on an
+    # instance built without __init__ as well: several suites construct one with
+    # `__new__` and assign `_semaphore` themselves to pin a limit.
+    _semaphore = None
+    _semaphore_loop = None
+
     def __init__(self, config: Dict[str, Any] = None):
         # Convert dict to IDPConfig if needed (same as extraction/service pattern)
         if config is not None and isinstance(config, dict):
@@ -113,26 +121,22 @@ class RuleValidationOrchestratorService:
         # Initialize semaphore for async concurrency control (Pydantic already converted string to int)
         self.semaphore_limit = self.config.rule_validation.semaphore
         self._semaphore = None
+        self._semaphore_loop = None
 
     @property
     def semaphore(self):
-        """Lazy initialization of semaphore in current event loop."""
-        import asyncio
+        """
+        The one semaphore bounding this service's concurrent Bedrock calls.
 
-        try:
-            loop = asyncio.get_running_loop()
-            # Reset semaphore if bound to different event loop (notebook rerun scenario)
-            if (
-                self._semaphore is not None
-                and hasattr(self._semaphore, "_loop")
-                and self._semaphore._loop != loop
-            ):
-                self._semaphore = None
-        except RuntimeError:
-            pass
-
-        if self._semaphore is None:
-            self._semaphore = asyncio.Semaphore(self.semaphore_limit)
+        Built lazily so it binds to the loop that runs the work, and cached, so
+        that the ``async with self.semaphore:`` at both call sites contends a
+        single semaphore rather than one per task. See
+        :mod:`idp_common.rule_validation.concurrency`, which both rule-validation
+        services share.
+        """
+        self._semaphore, self._semaphore_loop = resolve_semaphore(
+            self._semaphore, self._semaphore_loop, lambda: self.semaphore_limit
+        )
         return self._semaphore
 
     def _generate_consolidated_summary(
@@ -440,6 +444,12 @@ class RuleValidationOrchestratorService:
             for i, result in enumerate(results):
                 if isinstance(result, Exception):
                     logger.error(f"Error in summarization task: {str(result)}")
+                    # #1101: `return_exceptions=True` turns a failed rule into an
+                    # object in this list, and `continue` drops that rule from
+                    # `final_responses` entirely — it gets no verdict and no error,
+                    # it simply is not in the consolidated summary. For a transient
+                    # fault the rule's answer is recoverable, so surface it.
+                    reraise_if_transient(result, where="rule validation summarization")
                     continue
 
                 metadata = task_metadata[i]
@@ -459,6 +469,11 @@ class RuleValidationOrchestratorService:
 
         except Exception as e:
             logger.error(f"Error in summarization: {str(e)}")
+            # #1101: returning `responses` substitutes the raw per-section
+            # fact-extraction dicts for the orchestrator's verdicts, which is a
+            # plausible degradation for a deterministic fault and a recoverable one
+            # for a throttle.
+            reraise_if_transient(e, where="rule validation summarization")
             return responses
 
     async def _summarize_single_rule(
@@ -612,6 +627,11 @@ class RuleValidationOrchestratorService:
 
         except Exception as e:
             logger.error(f"Error loading section results: {str(e)}")
+            # #1101: an empty mapping here is indistinguishable from "there was
+            # nothing to consolidate" — the caller logs exactly that and returns the
+            # document unchanged, so a transient S3 fault finishes the document with
+            # no rule-validation verdicts at all and no error recorded.
+            reraise_if_transient(e, where="rule validation section results")
             return {}, False
 
     def _get_rule_json_from_config(
@@ -1010,6 +1030,12 @@ class RuleValidationOrchestratorService:
                 f"Unhandled error processing Z3 rule_id='{rule_id}': {e}",
                 exc_info=True,
             )
+            # #1101: the `try` above includes `_extract_z3_values_from_facts`, which
+            # invokes Bedrock, so a throttle lands here and is answered with the
+            # verdict below — one of the configured `recommendation_options`, written
+            # to S3 and counted in the summary as though the solver had run.
+            # Deterministic faults (an unsolvable rule, missing parameters) keep it.
+            reraise_if_transient(e, where=f"rule validation z3 rule '{rule_id}'")
             return {
                 "policy_type": policy_type,
                 "rule": rule_description,
@@ -1664,6 +1690,16 @@ tr:hover {
 
         except Exception as e:
             logger.error(f"Error in consolidation workflow: {str(e)}")
+            # #1101: this is the swallow that made the orchestration handler's own
+            # failure path nearly unreachable. It wraps the whole consolidation —
+            # loading every section's results, the cross-section Z3 rules, the
+            # summarization LLM calls, both S3 writes — and then returns the document
+            # NORMALLY carrying an empty result. So the handler saw success, wrote
+            # the document, and returned a success response: a transient Bedrock or
+            # S3 fault finished the document with no verdicts, no failed status and
+            # no diagnosis anywhere, which is a worse outcome than the failure this
+            # issue was raised about.
+            reraise_if_transient(e, where="rule validation consolidation")
             # Store error result in document
             document.rule_validation_result = RuleValidationResult.for_consolidation(
                 document.id, [], "", 0

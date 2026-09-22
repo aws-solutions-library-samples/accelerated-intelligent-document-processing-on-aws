@@ -373,7 +373,7 @@ than raw metering:
 - `metering_docs_daily` — daily doc/pages rollup, day × config_version (`n_docs`, `sum_pages`), where `n_docs` is a doc-hours count (a doc processed across two hours counts twice)
 - `control_plane_hourly` — per-Lambda cost attribution for control-plane infra
 
-See [`docs/reporting-sql-layer.md`](../../../../../docs/reporting-sql-layer.md)
+See [`docs/reporting-sql-layer.md`](../../../../docs/reporting-sql-layer.md)
 for the tier picker (`<2h → raw`, `2-24h → hourly`, `>24h → daily`),
 the tagging model, and the migration path for the new `hour` partition
 key.

@@ -190,33 +190,53 @@ def failure_is_transient(error: BaseException) -> bool:
     The transient tier on all three of these task states is eight attempts at 2.5x
     backoff from a ten-second interval — most of three hours.
 
-    ⚠️ **"Transient" and "will be retried" are not the same test, and at these three
-    sites they can disagree.** Step Functions matches a Lambda failure by
-    ``errorType``, which is the exception's **class name**;
-    :func:`is_transient_error` judges by error *code* and ``__cause__`` chain. The
-    two agree for extraction and assessment, because those handlers wrap the whole
-    invocation in ``raise_if_transient``, which re-raises any transient cause as
-    ``TransientError`` — the one name ``ExtractionStep``, ``ExtractionMergeStep`` and
-    the assessment task all list. **None of these three handlers has that wrapper,
-    and none of their task states lists ``TransientError``**: they list only the
-    ``Lambda.CodeArtifact*`` pair and a nine-name throttling family.
+    **"Transient" and "will be retried" are the same test at these three sites,
+    and that is what makes this suppression sound.** Step Functions matches a Lambda
+    failure by ``errorType``, which is the exception's **class name**;
+    :func:`is_transient_error` judges by error *code* and ``__cause__`` chain. Those
+    are different questions, and a ``Retry.ErrorEquals`` list cannot ask the second
+    one — so the classification is answered in one place, here, and put on the wire
+    under one class name: ``raise_if_transient`` re-raises any transient cause as
+    ``TransientError``, and every task state whose handler can do that lists exactly
+    that name. Extraction and assessment have worked this way since #787; the three
+    rule-validation states (``PolicyClassificationStep``, ``RuleValidationStep``,
+    ``RuleValidationOrchestration``) joined them in #1101, which is what closed the
+    gap this docstring used to describe.
 
-    So the class names that agree here are the ones botocore derives from a modeled
-    error code — a Bedrock ``ThrottlingException`` arrives as a class of that very
-    name and is retried. A transient that arrives under some *other* class name — a
-    bare ``ClientError`` carrying a throttling code, or a ``ReadTimeoutError`` — is
-    suppressed by this predicate and **not** retried by the state machine, so the
-    document fails with nothing on its record. That residual is pinned by
-    ``test_a_transient_that_the_state_machine_will_not_retry_records_nothing`` and
-    tracked in
-    `#1101 <https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/1101>`_;
-    closing it means giving these handlers the same ``raise_if_transient`` wrapper
-    and their task states the ``TransientError`` name, which is a state-machine
-    change rather than a library one.
+    The class names that would agree *anyway* are the ones botocore derives from a
+    modeled error code — a Bedrock ``ThrottlingException`` arrives as a class of that
+    very name, and the task states list it. The ones that would not are the majority:
+    a bare ``ClientError`` carrying the code ``ThrottlingException`` (the shape
+    botocore produces when the code is not in the service's error map), a
+    ``ReadTimeoutError``, a ``ConnectTimeoutError``, ``ModelTimeoutException``,
+    ``ModelNotReadyException``, ``InternalServerException``, a Strands wrapper around
+    any of them. Each of those is transient to this predicate, and each now reaches
+    the state machine as ``TransientError``, so for these a record withheld here is
+    matched by a retry that is actually coming.
 
-    The other residual is the same one ``idp_common.extraction.failure`` carries: a
-    ladder that exhausts every attempt leaves the sections unmarked. The execution
-    still fails and the failure alarms still see it.
+    ⚠️ **A throttle under one of AWS's OTHER spellings is invisible to this predicate,
+    and then nothing happens at all.** ``TRANSIENT_ERROR_NAMES`` carries
+    ``throttlingexception`` and not the legacy ``Throttling``, nor
+    ``RequestThrottled``, ``RequestThrottledException``, ``ThrottledException`` or
+    ``LimitExceededException``. A throttle arriving under one of those is judged
+    deterministic, so it is neither suppressed here **nor** retried by the state
+    machine: the document fails on the first attempt, though at least it fails with a
+    recorded diagnosis rather than silently. Bedrock does not use those spellings —
+    the observed case is a CloudFormation throttle, code ``Throttling``, in a bare
+    ``ClientError`` — but several services this pipeline calls do. Tracked in
+    `#1132 <https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/1132>`_;
+    it is a vocabulary gap in the shared predicate rather than anything specific to
+    these three sites.
+
+    ⚠️ **One residual, shared with ``idp_common.extraction.failure``: a ladder that
+    exhausts every attempt leaves the sections unmarked.** A Lambda cannot see which
+    attempt it is on — Step Functions does not pass the retry count into the payload
+    unless the state is wired to send ``$$.State.RetryCount``, and no state here is —
+    so the final attempt runs exactly the code the first one did and suppresses the
+    record for the same reason. The execution still fails, and the failure alarms and
+    DLQ still count it; what is missing is the per-section diagnosis. Closing that
+    means either injecting the attempt number or catching the exhausted ladder in the
+    state machine, both of which are state-machine changes.
     """
     return is_transient_error(error)
 
