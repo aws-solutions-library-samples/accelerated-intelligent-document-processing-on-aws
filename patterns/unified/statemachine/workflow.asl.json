@@ -960,7 +960,8 @@
             "ThrottlingException",
             "ProvisionedThroughputExceededException",
             "RequestLimitExceeded",
-            "ServiceUnavailableException"
+            "ServiceUnavailableException",
+            "TransientError"
           ],
           "IntervalSeconds": 2,
           "MaxAttempts": 6,
@@ -1042,7 +1043,8 @@
                   "ThrottlingException",
                   "ProvisionedThroughputExceededException",
                   "RequestLimitExceeded",
-                  "ServiceUnavailableException"
+                  "ServiceUnavailableException",
+                  "TransientError"
                 ],
                 "IntervalSeconds": 10,
                 "MaxAttempts": 8,
@@ -1083,7 +1085,8 @@
             "ThrottlingException",
             "ProvisionedThroughputExceededException",
             "RequestLimitExceeded",
-            "ServiceUnavailableException"
+            "ServiceUnavailableException",
+            "TransientError"
           ],
           "IntervalSeconds": 10,
           "MaxAttempts": 8,

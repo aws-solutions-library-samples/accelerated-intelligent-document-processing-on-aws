@@ -286,17 +286,11 @@ class TestExtractLambdaRequestIds:
         assert result["failed_functions"] == ["OCRFunction"]
         assert result["function_request_map"] == {}
 
-    @pytest.mark.xfail(
-        strict=True,
-        reason="The ARN fallback guards `len(arn_parts) >= 6` and then indexes [6], "
-        "so a six-part lambda ARN raises IndexError instead of being skipped. See "
-        "https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/1061",
-    )
     def test_a_malformed_lambda_arn_is_skipped_rather_than_raising(self):
-        # Reached only when the resource has no ":function:" marker, `name` is
-        # empty, and the third ARN segment is "lambda". The call site wraps this in
-        # a try, so the IndexError surfaces as "document_found: false" with a
-        # message about list indices -- discarding every id already gathered.
+        # The fallback ARN split is reached only when the resource has no
+        # ":function:" marker, `name` is empty, and the third ARN segment is
+        # "lambda". A six-segment ARN cannot supply the segment the fallback reads,
+        # so the event contributes nothing.
         result = extract_lambda_request_ids(
             [
                 _lambda_event(
@@ -306,6 +300,25 @@ class TestExtractLambdaRequestIds:
             ]
         )
         assert result["failed_functions"] == []
+
+    def test_one_unparseable_arn_does_not_discard_the_other_events(self):
+        # The distinguishing case, and the reason the severity is not merely "one
+        # event is skipped": `extract_lambda_request_ids` is called inside
+        # `retrieve_document_context`'s try, so a raise anywhere in the loop is
+        # returned as {"document_found": False, "error": ...} and every request id
+        # and failed-function name already gathered goes with it. The agent stops
+        # there, because document_found is what drives its next step.
+        result = extract_lambda_request_ids(
+            [
+                _lambda_event("LambdaFunctionFailed", extra={"cause": UUID_A}),
+                _lambda_event(
+                    "LambdaFunctionFailed",
+                    resource="arn:aws:lambda:us-east-1:123456789012:function",
+                ),
+            ]
+        )
+        assert result["failed_functions"] == ["OCRFunction"]
+        assert result["all_request_ids"] == [UUID_A]
 
 
 def _payload(body: dict[str, Any]) -> dict[str, Any]:

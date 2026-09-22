@@ -295,6 +295,340 @@ class TestGenerateConsolidatedSummary:
         assert summary["overall_statistics"]["pass_count"] == 1
 
 
+@pytest.mark.unit
+class TestConsolidatedPageReferences:
+    """The `supporting_pages` aggregate: its element type, dedup and order.
+
+    Page references arrive from two engines. The solver path builds them with
+    `str(citation).split(",")` and so always yields `str`; the model path passes a
+    JSON array through unchanged and can yield `int`. A document routing some rules
+    to each mixes the two by construction, which is why these are asserted on both
+    shapes rather than on the `str` one the rest of the suite uses.
+
+    The aggregate's elements are `str` and that is a compatibility decision, not an
+    incidental one: this list is published in `consolidated_summary.json`, which
+    consumers outside this repository read. `str` is what
+    `LLMResponse.supporting_pages` already declares and coerces to, and what the
+    reporting layer serialises, so this makes the aggregate agree with the per-rule
+    lists instead of carrying whichever type a given model response happened to use.
+    """
+
+    def test_mixed_int_and_str_pages_are_one_page_each(self):
+        # int 1 and "1" are the same page. Held in a set unnormalised they are two
+        # members, and the published list shows page 1 and page 2 twice each.
+        summary = _service()._generate_consolidated_summary(
+            {
+                "Lending": [_response("r1", "Pass", pages=[1, 2])],
+                "Fraud": [_response("r2", "Pass", pages=["1", "2"])],
+            }
+        )
+        assert summary["supporting_pages"] == ["1", "2"]
+
+    def test_every_page_is_a_string(self):
+        summary = _service()._generate_consolidated_summary(
+            {"Lending": [_response("r1", "Pass", pages=[3, "1", 2])]}
+        )
+        assert summary["supporting_pages"] == ["1", "2", "3"]
+        assert all(isinstance(page, str) for page in summary["supporting_pages"])
+
+    def test_the_per_rule_list_keeps_whatever_the_model_returned(self):
+        # Only the aggregate is canonicalised. The per-rule list is the record of
+        # what came back, and the markdown table formats that one.
+        summary = _service()._generate_consolidated_summary(
+            {"Lending": [_response("r1", "Pass", pages=[2, 1])]}
+        )
+        assert summary["rule_details"]["Lending"]["rules"][0]["supporting_pages"] == [
+            2,
+            1,
+        ]
+
+    def test_non_numeric_references_have_a_stable_total_order(self):
+        # Every non-numeric reference used to map to sort key 0, leaving their
+        # relative order to set iteration -- which differs between interpreters
+        # because string hashing is randomised. Ordering them by their own text
+        # makes the published list reproducible.
+        pages = ["cover", "appendix", "schedule A", "exhibit", "notes"]
+        summary = _service()._generate_consolidated_summary(
+            {"Lending": [_response("r1", "Pass", pages=list(pages))]}
+        )
+        assert summary["supporting_pages"] == sorted(pages)
+
+    def test_numeric_references_sort_before_non_numeric_ones(self):
+        summary = _service()._generate_consolidated_summary(
+            {"Lending": [_response("r1", "Pass", pages=["appendix", "10", "2"])]}
+        )
+        assert summary["supporting_pages"] == ["2", "10", "appendix"]
+
+    @pytest.mark.parametrize(
+        "page",
+        [
+            pytest.param("²", id="superscript-two"),
+            pytest.param("₂", id="subscript-two"),
+            pytest.param("②", id="circled-two"),
+        ],
+    )
+    def test_a_digit_character_int_refuses_keeps_the_report(self, page):
+        # str.isdigit() is True for all three and int() raises ValueError on all
+        # three; str.isdecimal() is the predicate that matches what int() accepts.
+        # Guarding the parse is what keeps one odd character in one model response
+        # from discarding the whole document's statistics.
+        assert page.isdigit() and not page.isdecimal()
+        summary = _service()._generate_consolidated_summary(
+            {"Lending": [_response("r1", "Pass", pages=[page])]}
+        )
+        assert summary["overall_status"] == "COMPLETE"
+        assert summary["overall_statistics"]["pass_count"] == 1
+        assert summary["supporting_pages"] == [page]
+
+    def test_a_digit_string_past_the_int_conversion_limit_is_kept_as_text(self):
+        # int() refuses a decimal string longer than sys.get_int_max_str_digits()
+        # (4300 by default), so isdecimal() alone is not enough of a guard.
+        long_page = "1" * 5000
+        summary = _service()._generate_consolidated_summary(
+            {"Lending": [_response("r1", "Pass", pages=[long_page, "2"])]}
+        )
+        assert summary["overall_status"] == "COMPLETE"
+        assert summary["supporting_pages"] == ["2", long_page]
+
+    @pytest.mark.parametrize(
+        "page",
+        [pytest.param(["1"], id="list"), pytest.param({"page": 1}, id="dict")],
+    )
+    def test_an_unhashable_page_is_dropped_from_the_aggregate_not_raised_on(self, page):
+        # An unhashable element failed at `set.add`, before the sort was reached,
+        # so this shape lost the report without ever touching the sort key. It is
+        # dropped here rather than stringified: "{'page': 1}" in a page list is
+        # indistinguishable from a real reference, and the rule's own list below
+        # still records what arrived.
+        summary = _service()._generate_consolidated_summary(
+            {
+                "Lending": [
+                    _response("r1", "Pass", pages=[page, "4"]),
+                    _response("r2", "Fail", pages=["2"]),
+                ]
+            }
+        )
+        assert summary["overall_status"] == "COMPLETE"
+        assert summary["overall_statistics"]["total_rules"] == 2
+        assert summary["supporting_pages"] == ["2", "4"]
+        assert summary["rule_details"]["Lending"]["rules"][0]["supporting_pages"] == [
+            page,
+            "4",
+        ]
+
+    def test_a_boolean_is_not_treated_as_a_page_number(self):
+        # bool is an int subclass, so True would otherwise be collected as "True".
+        summary = _service()._generate_consolidated_summary(
+            {"Lending": [_response("r1", "Pass", pages=[True, "1"])]}
+        )
+        assert summary["supporting_pages"] == ["1"]
+
+    @pytest.mark.parametrize(
+        "pages",
+        [
+            pytest.param(None, id="null"),
+            pytest.param([], id="empty-list"),
+            pytest.param([None], id="null-element"),
+            pytest.param(["", "  "], id="blank-elements"),
+        ],
+    )
+    def test_empty_and_null_references_contribute_nothing(self, pages):
+        # Built directly rather than through `_response`, whose `pages=None` means
+        # "use the default" and would substitute ["1"].
+        summary = _service()._generate_consolidated_summary(
+            {
+                "Lending": [
+                    {
+                        "rule": "r1",
+                        "recommendation": "Pass",
+                        "supporting_pages": pages,
+                        "reasoning": "because",
+                    }
+                ]
+            }
+        )
+        assert summary["overall_status"] == "COMPLETE"
+        assert summary["overall_statistics"]["total_rules"] == 1
+        assert summary["supporting_pages"] == []
+
+    def test_surrounding_whitespace_does_not_create_a_second_page(self):
+        summary = _service()._generate_consolidated_summary(
+            {"Lending": [_response("r1", "Pass", pages=[" 1 ", "1"])]}
+        )
+        assert summary["supporting_pages"] == ["1"]
+
+    @pytest.mark.parametrize(
+        "pages",
+        [pytest.param(7, id="bare-int"), pytest.param("1,2", id="bare-string")],
+    )
+    def test_supporting_pages_that_is_not_a_list_does_not_decide_the_report(
+        self, pages
+    ):
+        # The field itself is model output too: a bare int is not iterable and a
+        # bare string iterates into characters, and neither should reach the
+        # aggregate or discard the statistics.
+        summary = _service()._generate_consolidated_summary(
+            {
+                "Lending": [
+                    _response("r1", "Pass", pages=pages),
+                    _response("r2", "Fail", pages=["3"]),
+                ]
+            }
+        )
+        assert summary["overall_status"] == "COMPLETE"
+        assert summary["overall_statistics"]["total_rules"] == 2
+        assert summary["supporting_pages"] == ["3"]
+
+
+@pytest.mark.unit
+class TestConsolidationFailureKeepsItsStatistics:
+    """What the broad `except` returns when something inside the method fails.
+
+    The method deliberately does not raise -- the caller writes whatever it returns
+    to S3 as the document's compliance report. What it returns on failure is the
+    thing that matters: a five-key stub reads exactly like a document on which no
+    rule was ever evaluated, which is what made the page-sort crash of #1052
+    expensive to diagnose. Nothing re-raises, so no `ProcessingIssue` is recorded
+    either (`rule_validation_not_consolidated` is attached by the orchestration
+    Lambda, and only when the handler itself raises) -- so the surviving statistics,
+    the `error` field and the banner the markdown formatter renders from it are what
+    make an instance visible at all.
+    """
+
+    @staticmethod
+    def _summary_failing_after_one_policy_type():
+        # "Fraud" is a str, so `.values()` raises AttributeError -- the same shape
+        # as the original report -- after "Lending" has been fully counted.
+        return _service()._generate_consolidated_summary(
+            {
+                "Lending": [
+                    _response("r1", "Pass", pages=["3"]),
+                    _response("r2", "Fail", pages=["1"]),
+                ],
+                "Fraud": "not-a-list",
+            }
+        )
+
+    def test_the_error_is_reported(self):
+        summary = self._summary_failing_after_one_policy_type()
+        assert summary["overall_status"] == "ERROR"
+        assert "values" in summary["error"]
+
+    def test_the_statistics_counted_before_the_failure_survive(self):
+        summary = self._summary_failing_after_one_policy_type()
+        statistics = summary["overall_statistics"]
+        assert statistics["total_rules"] == 2
+        assert statistics["pass_count"] == 1
+        assert statistics["fail_count"] == 1
+        assert statistics["pass_percentage"] == 50.0
+
+    def test_the_policy_types_processed_before_the_failure_survive(self):
+        summary = self._summary_failing_after_one_policy_type()
+        assert list(summary["rule_details"]) == ["Lending"]
+        assert len(summary["rule_details"]["Lending"]["rules"]) == 2
+        assert summary["rule_summary"]["Lending"]["total_rules"] == 2
+
+    def test_the_pages_collected_before_the_failure_survive_and_are_ordered(self):
+        summary = self._summary_failing_after_one_policy_type()
+        assert summary["supporting_pages"] == ["1", "3"]
+
+    def test_every_field_the_formatter_reads_is_present(self):
+        # The failure path used to drop the keys the markdown formatter reads, so
+        # the report it produced showed zeroes with no indication why.
+        summary = self._summary_failing_after_one_policy_type()
+        for key in (
+            "document_id",
+            "overall_status",
+            "total_policy_types",
+            "rule_summary",
+            "overall_statistics",
+            "supporting_pages",
+            "rule_details",
+            "generated_at",
+        ):
+            assert key in summary, key
+
+    def test_a_failure_before_anything_is_counted_still_reports_zeroes(self):
+        summary = _service()._generate_consolidated_summary({"Lending": "not-a-list"})
+        assert summary["overall_status"] == "ERROR"
+        assert summary["overall_statistics"]["total_rules"] == 0
+        assert summary["overall_statistics"]["pass_percentage"] == 0.0
+        assert summary["rule_details"] == {}
+
+    @staticmethod
+    def _summary_failing_inside_a_response():
+        # A response that is not a dict, after two good ones in the same policy
+        # type: `.get` raises, so the failure lands mid-way through one policy
+        # type's responses rather than between two policy types.
+        return _service()._generate_consolidated_summary(
+            {
+                "Lending": [
+                    _response("r1", "Pass", pages=["3"]),
+                    _response("r2", "Fail", pages=["1"]),
+                    "not-a-dict",
+                ]
+            }
+        )
+
+    def test_a_rule_is_counted_only_once_it_has_been_read(self):
+        # Counting before reading the response inflated total_rules by the failing
+        # one, so the report claimed three rules while its recommendation counts
+        # summed to two -- and pass_percentage was computed against the inflated
+        # denominator, understating it (33.33 rather than 50.0).
+        summary = self._summary_failing_inside_a_response()
+        statistics = summary["overall_statistics"]
+        assert statistics["total_rules"] == 2
+        assert sum(statistics["recommendation_counts"].values()) == 2
+        assert statistics["pass_percentage"] == 50.0
+
+    def test_the_rules_read_before_the_failure_are_still_detailed(self):
+        # The per-policy-type entry used to be attached only after the whole
+        # response list had been processed, so a failure inside it dropped every
+        # rule of that policy type from the report while still counting them.
+        summary = self._summary_failing_inside_a_response()
+        detail = summary["rule_details"]["Lending"]
+        assert [rule["rule"] for rule in detail["rules"]] == ["r1", "r2"]
+        assert detail["total_rules"] == 2
+        assert detail["pass_count"] == 1
+        assert detail["pass_percentage"] == 50.0
+
+    def test_the_rendered_report_shows_counts_that_agree_with_each_other(self):
+        # The one line an operator reads first. "3 (1 / 1 / 0)" is internally
+        # inconsistent and gives a reader reason to distrust the whole partial
+        # report, which is the opposite of what keeping the statistics is for.
+        summary = self._summary_failing_inside_a_response()
+        summary["document_id"] = "lending_package.pdf"
+        markdown = _service()._format_summary_as_markdown(summary)
+        line = next(line for line in markdown.splitlines() if "Rules Evaluated" in line)
+        assert ">2</span>" not in line
+        assert "| 2 (" in line
+        assert ">1</span> / <span" in line
+
+    def test_a_policy_type_whose_responses_could_not_be_read_at_all_is_not_claimed(
+        self,
+    ):
+        # The flatten step raises before any response is read, so there is nothing
+        # partial to report for that policy type and no entry is invented for it.
+        summary = self._summary_failing_after_one_policy_type()
+        assert "Fraud" not in summary["rule_details"]
+        assert "Fraud" not in summary["rule_summary"]
+
+    @pytest.mark.parametrize(
+        "responses",
+        [pytest.param(None, id="none"), pytest.param(7, id="not-a-mapping")],
+    )
+    def test_a_responses_argument_that_cannot_even_be_measured_does_not_raise(
+        self, responses
+    ):
+        # `len(all_responses)` is caller input like any other, so it is measured
+        # inside the guarded region: this method's contract is that it returns
+        # something writable to S3 whatever it is handed.
+        summary = _service()._generate_consolidated_summary(responses)
+        assert summary["overall_status"] == "ERROR"
+        assert summary["total_policy_types"] == 0
+        assert summary["generated_at"]
+
+
 def _summary_for_markdown(**overrides):
     # "pass_count" and "pass_percentage" are two of the field names
     # _generate_consolidated_summary emits, and this fixture reproduces that
@@ -526,6 +860,44 @@ class TestFormatSummaryAsMarkdown:
         assert "Income documented" in markdown
         assert "✅ Pass" in markdown
         assert "100.0%" in markdown
+
+    def test_a_consolidation_failure_is_stated_above_the_statistics(self):
+        # Statistics from a failed consolidation cover only the rules counted
+        # before the failure. Without this banner they render identically to
+        # complete ones, which is the report #1052 produced.
+        markdown = _service()._format_summary_as_markdown(
+            _summary_for_markdown(
+                overall_status="ERROR", error="'str' object has no attribute 'values'"
+            )
+        )
+        assert "Consolidation did not complete" in markdown
+        assert "'str' object has no attribute 'values'" in markdown
+        assert markdown.index("Consolidation did not complete") < markdown.index(
+            "## Overall Statistics"
+        )
+
+    def test_no_banner_appears_on_a_summary_that_completed(self):
+        markdown = _service()._format_summary_as_markdown(_summary_for_markdown())
+        assert "Consolidation did not complete" not in markdown
+
+    def test_html_in_the_error_text_is_escaped(self):
+        # The error string carries an exception message, which can contain
+        # document-derived text; this cell is interpolated into markdown the UI
+        # renders with rehypeRaw.
+        markdown = _service()._format_summary_as_markdown(
+            _summary_for_markdown(error='<script>alert("x")</script>')
+        )
+        assert "<script>" not in markdown
+        assert "&lt;script&gt;alert(&quot;x&quot;)&lt;/script&gt;" in markdown
+
+    def test_a_multiline_error_stays_inside_the_blockquote(self):
+        markdown = _service()._format_summary_as_markdown(
+            _summary_for_markdown(error="first line\nsecond line")
+        )
+        banner = next(
+            line for line in markdown.splitlines() if line.startswith("> Reason:")
+        )
+        assert "first line second line" in banner
 
 
 @pytest.mark.unit
