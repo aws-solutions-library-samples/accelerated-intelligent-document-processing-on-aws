@@ -775,6 +775,41 @@ class TestGetDocumentsByBatch:
                 f"{not_selected} would be DELETED by a request for batch-1"
             )
 
+    def test_an_empty_batch_id_selects_nothing_rather_than_everything(self):
+        """The largest case the delimiter closes, and the one worth naming.
+
+        The empty string is a substring of every key, so ``batch_id in object_key`` was
+        **universally true**: measured against a four-key table, ``batch_id=""`` selected
+        all four — including a key sharing no prefix with anything — and every selected
+        key was passed to the deleter. Requiring the delimiter makes it select none,
+        since no key starts with ``"/"``.
+
+        ⚠️ **Reachability is narrower than "an empty argument deletes everything", and
+        the distinction is worth keeping straight.** Both shipped entry points refuse a
+        falsy selector *before* this function is reached — the SDK raises
+        ``IDPConfigurationError("Must specify either batch_id or pattern")`` when both
+        are falsy, and the CLI counts selectors with ``if x`` and exits 1 at zero. So
+        the unbounded selection was reachable by a **direct call** to this public
+        library function, not from ``idp-cli delete-documents`` or
+        ``client.batch.delete_documents``.
+
+        It is still worth a named test rather than a footnote: the guard lives in a
+        different layer from the defect, so a refactor that moves or drops it re-opens
+        an unbounded delete, and this function is exported for callers who have no
+        guard at all.
+        """
+        table = _table()
+        table.scan.return_value = {
+            "Items": [
+                {"ObjectKey": "batch-1/a.pdf"},
+                {"ObjectKey": "batch-10/b.pdf"},
+                {"ObjectKey": "archive/batch-1x/c.pdf"},
+                {"ObjectKey": "other/d.pdf"},
+            ]
+        }
+
+        assert get_documents_by_batch(table, "") == []
+
     def test_a_batch_id_given_with_a_trailing_slash_behaves_the_same(self):
         """`--batch-id batch-1/` is an easy thing to type and must not select nothing."""
         table = _table()
