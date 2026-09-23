@@ -4074,13 +4074,20 @@ class TestMigrationInProgressGate:
         assert result.get("mode") == "backfill_daily_range"
 
     def test_migration_in_progress_parses_semicolon_delimited_marker(self, rollup):
-        # A well-formed marker string with state=in_progress should
-        # return True from _migration_in_progress; state=completed False.
+        # A well-formed marker string with state=in_progress AND a
+        # fresh started_at should return True from
+        # _migration_in_progress; state=completed False.
         rollup._migration_marker_name = lambda: "/idp/test-stack/marker"
+        fresh_started_at = (
+            datetime.now(timezone.utc) - timedelta(minutes=5)
+        ).isoformat()
         ssm = MagicMock()
         ssm.get_parameter.return_value = {
             "Parameter": {
-                "Value": "days=30;version=v1;state=in_progress;anchor=2026-09-22T14:00:00Z"
+                "Value": (
+                    f"days=30;version=v1;state=in_progress;"
+                    f"anchor=2026-09-22T14:00:00Z;started_at={fresh_started_at}"
+                )
             }
         }
         with patch("boto3.client", return_value=ssm):
@@ -4093,3 +4100,173 @@ class TestMigrationInProgressGate:
         }
         with patch("boto3.client", return_value=ssm):
             assert rollup._migration_in_progress() is False
+
+    def test_migration_in_progress_opens_gate_when_marker_is_stale(self, rollup):
+        # A marker stuck at state=in_progress past the age bound
+        # (default 2 h) must open the gate so scheduled rollups
+        # resume — the exact "purged window + muted reconciler" gap
+        # this bound was added to prevent.
+        rollup._migration_marker_name = lambda: "/idp/test-stack/marker"
+        stale_started_at = (datetime.now(timezone.utc) - timedelta(hours=3)).isoformat()
+        ssm = MagicMock()
+        ssm.get_parameter.return_value = {
+            "Parameter": {
+                "Value": (
+                    f"days=30;version=v1;state=in_progress;"
+                    f"anchor=2026-09-22T14:00:00Z;started_at={stale_started_at}"
+                )
+            }
+        }
+        with patch("boto3.client", return_value=ssm):
+            assert rollup._migration_in_progress() is False, (
+                "A stale in_progress marker must open the gate — "
+                "otherwise a hung state-machine execution disables "
+                "every scheduled rollup indefinitely, past 24 h the "
+                "reconciler's window has slid off the purged range, "
+                "and the DataMartRollupAbsenceAlarm cannot see it "
+                "because the Lambda IS being invoked."
+            )
+
+    def test_migration_in_progress_opens_gate_when_started_at_missing(self, rollup):
+        # A marker with state=in_progress but no readable started_at
+        # is treated as "definitely older than the bound" so the gate
+        # opens. Treating an unreadable timestamp as fresh would
+        # reproduce the indefinite-hold the bound was added to
+        # prevent, so the choice is deliberate.
+        rollup._migration_marker_name = lambda: "/idp/test-stack/marker"
+        ssm = MagicMock()
+        ssm.get_parameter.return_value = {
+            "Parameter": {"Value": "days=30;version=v1;state=in_progress"}
+        }
+        with patch("boto3.client", return_value=ssm):
+            assert rollup._migration_in_progress() is False
+
+    def test_migration_in_progress_accepts_iso_z_suffix(self, rollup):
+        # ``_write_marker`` emits ``started_at=<iso>`` where <iso>
+        # may end in ``Z`` (Python's ``datetime.utcnow().isoformat()
+        # + 'Z'`` shape) — the parser must accept both ``Z`` and
+        # ``+00:00``.
+        rollup._migration_marker_name = lambda: "/idp/test-stack/marker"
+        fresh_z = (datetime.now(timezone.utc) - timedelta(minutes=5)).strftime(
+            "%Y-%m-%dT%H:%M:%SZ"
+        )
+        ssm = MagicMock()
+        ssm.get_parameter.return_value = {
+            "Parameter": {
+                "Value": (f"days=30;version=v1;state=in_progress;started_at={fresh_z}")
+            }
+        }
+        with patch("boto3.client", return_value=ssm):
+            assert rollup._migration_in_progress() is True
+
+
+@pytest.mark.unit
+class TestDocumentSectionsDiscovery:
+    """F2 + F3 pin: the discovery function must (a) re-raise on
+    permission / not-found errors so a regression fires the DLQ
+    alarm rather than silently bucketing every historical row as
+    'unknown', and (b) validate ALL columns
+    ``_build_doc_class_cte`` reads, not just ``date``.
+    """
+
+    def _table_shape(
+        self,
+        name: str,
+        *,
+        partition_keys=("date", "hour"),
+        columns=("document_id", "document_class", "section_id", "type"),
+    ):
+        """Mimic a Glue ``get_tables`` TableList entry."""
+        return {
+            "Name": name,
+            "PartitionKeys": [{"Name": k} for k in partition_keys],
+            "StorageDescriptor": {
+                "Columns": [{"Name": c} for c in columns],
+            },
+        }
+
+    def _stub_glue(self, rollup, table_list):
+        rollup._document_sections_tables_cache = None
+        glue = MagicMock()
+        paginator = MagicMock()
+        paginator.paginate.return_value = [{"TableList": table_list}]
+        glue.get_paginator.return_value = paginator
+        return patch("boto3.client", return_value=glue)
+
+    def test_re_raises_on_access_denied(self, rollup):
+        from botocore.exceptions import ClientError
+
+        rollup._document_sections_tables_cache = None
+        glue = MagicMock()
+        paginator = MagicMock()
+        paginator.paginate.side_effect = ClientError(
+            {"Error": {"Code": "AccessDeniedException", "Message": "denied"}},
+            "GetTables",
+        )
+        glue.get_paginator.return_value = paginator
+        with patch("boto3.client", return_value=glue):
+            with pytest.raises(ClientError) as excinfo:
+                rollup._discover_document_sections_tables()
+        assert (
+            excinfo.value.response.get("Error", {}).get("Code")
+            == "AccessDeniedException"
+        )
+
+    def test_re_raises_on_entity_not_found(self, rollup):
+        from botocore.exceptions import ClientError
+
+        rollup._document_sections_tables_cache = None
+        glue = MagicMock()
+        paginator = MagicMock()
+        paginator.paginate.side_effect = ClientError(
+            {"Error": {"Code": "EntityNotFoundException", "Message": "no db"}},
+            "GetTables",
+        )
+        glue.get_paginator.return_value = paginator
+        with patch("boto3.client", return_value=glue):
+            with pytest.raises(ClientError):
+                rollup._discover_document_sections_tables()
+
+    def test_open_fallback_on_transient_client_error(self, rollup):
+        # A throttle or transient service error is NOT re-raised —
+        # falls back to an empty list so the rollup fires with
+        # 'unknown' bucketing rather than blocking the whole hour.
+        from botocore.exceptions import ClientError
+
+        rollup._document_sections_tables_cache = None
+        glue = MagicMock()
+        paginator = MagicMock()
+        paginator.paginate.side_effect = ClientError(
+            {"Error": {"Code": "ThrottlingException", "Message": "rate"}},
+            "GetTables",
+        )
+        glue.get_paginator.return_value = paginator
+        with patch("boto3.client", return_value=glue):
+            assert rollup._discover_document_sections_tables() == []
+
+    def test_validates_document_id_column(self, rollup):
+        # A crawler-emitted variant lacking ``document_id`` must be
+        # skipped — the CTE's SELECT would otherwise fail
+        # COLUMN_NOT_FOUND at Athena time and blank the whole rollup.
+        table = self._table_shape(
+            "document_sections_bad",
+            columns=("document_class", "section_id", "type"),
+        )
+        with self._stub_glue(rollup, [table]):
+            assert rollup._discover_document_sections_tables() == []
+
+    def test_validates_document_class_column(self, rollup):
+        # A variant lacking ``document_class`` must be skipped for
+        # the same reason.
+        table = self._table_shape(
+            "document_sections_bad",
+            columns=("document_id", "section_id", "type"),
+        )
+        with self._stub_glue(rollup, [table]):
+            assert rollup._discover_document_sections_tables() == []
+
+    def test_accepts_table_with_full_column_set(self, rollup):
+        table = self._table_shape("document_sections_invoice")
+        with self._stub_glue(rollup, [table]):
+            result = rollup._discover_document_sections_tables()
+        assert result == ["document_sections_invoice"]

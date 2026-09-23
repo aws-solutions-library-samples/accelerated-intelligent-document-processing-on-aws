@@ -5650,18 +5650,22 @@ Resources:
             - Effect: Allow
               Action:
                 - glue:GetDatabase
-                - glue:GetDatabases  # required by information_schema.schemata
+                - glue:GetDatabases
                 - glue:GetTable
-                - glue:GetTables     # required by information_schema.columns
-                # ^ Without GetTables, Athena's information_schema queries
-                # silently return 0 rows — no permission-denied error, just
-                # empty results. This broke the rollup Lambda's discovery of
-                # document_sections_* tables when the grant was missing:
-                # discovery returned 0 → doc_class CTE was empty → rollup
-                # INSERTs LEFT JOIN'd against an empty CTE → every historical
-                # row's document_class fell through COALESCE fallback to
-                # 'unknown'. GetTable (singular) is NOT sufficient — Athena
-                # needs GetTables (plural) to enumerate a schema.
+                # ``glue:GetTables`` (plural) is what the rollup
+                # Lambda's ``_discover_document_sections_tables`` calls
+                # directly to enumerate the ``document_sections_*``
+                # tables it needs to build the ``doc_class`` CTE. On
+                # a missing grant, ``get_tables`` raises
+                # ``AccessDeniedException``, the discovery function
+                # re-raises it (not the open-fallback path), and the
+                # rollup fires the DLQ alarm — an operator sees the
+                # regression rather than the CTE quietly collapsing to
+                # every historical row bucketing as ``'unknown'``.
+                # ``GetTable`` (singular) alone is not sufficient
+                # because the discovery pattern needs to enumerate a
+                # schema by name prefix.
+                - glue:GetTables
                 - glue:GetPartitions
                 - glue:CreatePartition
                 - glue:BatchCreatePartition
@@ -6049,6 +6053,11 @@ Resources:
 
   DataMartMigrationStateMachineRole:
     Type: AWS::IAM::Role
+    Metadata:
+      cfn_nag:
+        rules_to_suppress:
+          - id: W11
+            reason: "X-Ray daemon actions and CloudWatch Logs log-delivery actions genuinely require Resource=*: the X-Ray tracing API accepts no resource ARN, and CloudWatch Logs log-delivery calls (logs:CreateLogDelivery / GetLogDelivery / UpdateLogDelivery / DeleteLogDelivery / ListLogDeliveries) also accept no resource ARN. The sibling DataMartRollupFunction role at line 5497 carries an equivalent W12 suppression for the same reason."
     Properties:
       PermissionsBoundary:
         !If [
@@ -6092,9 +6101,16 @@ Resources:
           PolicyDocument:
             Version: "2012-10-17"
             Statement:
-              # SFN uses CloudWatch Logs resource-policy on the log group,
-              # not IAM — but these actions are required for the SFN service
-              # to create log deliveries. Scoped to this stack's log group.
+              # SFN uses CloudWatch Logs resource-policy on the log
+              # group, not IAM — but these log-delivery actions must
+              # target Resource=* because the CloudWatch Logs API does
+              # not accept resource-level scoping for the log-delivery
+              # family. Attempting a per-log-group ARN on any of
+              # ``logs:CreateLogDelivery`` / ``GetLogDelivery`` /
+              # ``UpdateLogDelivery`` / ``DeleteLogDelivery`` /
+              # ``ListLogDeliveries`` returns MalformedPolicyDocument
+              # on stack update. See the ``cfn_nag`` W11 suppression on
+              # the role above for the same reason on the X-Ray policy.
               - Effect: Allow
                 Action:
                   - logs:CreateLogDelivery

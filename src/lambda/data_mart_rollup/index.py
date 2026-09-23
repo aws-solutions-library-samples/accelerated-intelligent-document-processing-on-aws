@@ -168,15 +168,15 @@ _data_plane_arn_cache: Optional[List[str]] = None
 # Per-invocation cache of the ``document_sections_*`` table list. Both
 # ``_rollup_metering_hourly`` and ``_rollup_metering_docs_hourly`` need it to
 # derive ``document_class`` for historical rows whose raw-metering column is
-# NULL. Discovered once per invocation via ``information_schema.columns`` —
-# same query as the read-side ``discover_document_sections_tables`` in
-# ``analytics_document_service.py`` — and cleared alongside the other caches in
-# ``handler`` so a Glue-crawler-added new class shows up on the next fire.
+# NULL. Discovered once per invocation via Glue's ``GetTables`` API (see
+# ``_discover_document_sections_tables``) and cleared alongside the other
+# caches in ``handler`` so a Glue-crawler-added new class shows up on the
+# next fire.
 _document_sections_tables_cache: Optional[List[str]] = None
 
 # Safe character set for double-quoting ``document_sections_*`` table names in
-# the CTE UNION. Matches the read-side widget's guard at
-# ``analytics_cost_service.py:1807-1817`` — hyphens (e.g.
+# the CTE UNION. Matches the read-side widget's guard applied to
+# ``analytics_cost_service.get_cost_by_document_type`` — hyphens (e.g.
 # ``document_sections_1099-int``) and spaces are legal Glue table names but
 # would parse as arithmetic without quoting; anything outside this set is
 # skipped as a defense against SQL injection via Glue table names.
@@ -694,23 +694,39 @@ def _discover_document_sections_tables() -> List[str]:
     """Discover ``document_sections_*`` tables in the reporting database.
 
     Uses the Glue ``GetTables`` API rather than an Athena
-    ``information_schema.columns`` query. Two reasons the previous
-    Athena-based discovery was worse: (a) it took ~5-10 s cold and
-    added an Athena query per invocation, (b) a missing
-    ``glue:GetTables`` grant made information_schema silently return
-    zero rows, so a permissions regression looked identical to "no
-    document_sections_* tables exist" — the failure mode the template
-    comment on the grant explicitly documents. Direct Glue GetTables
-    is sub-second, needs no additional IAM (the grant is already
-    present on this Lambda's role — required by the previous Athena
-    path anyway) and raises loudly on a missing permission.
+    ``information_schema.columns`` query. Direct Glue is sub-second
+    (vs ~5-10 s cold for the Athena path) and needs no additional
+    IAM. Permission failures are re-raised (see below) — under the
+    previous Athena path, a missing ``glue:GetTables`` grant made
+    ``information_schema`` return zero rows silently, which looked
+    identical to "no ``document_sections_*`` tables exist" until an
+    operator ran ``glue:GetTables`` directly.
 
-    Only tables that actually have a ``date`` partition column are
-    returned — the Glue crawler sometimes creates malformed variants
-    (e.g. ``document_sections_date_2026_03_19``, ``..._parquet``) that
-    lack it; a subsequent query filtering on ``"date"`` against those
-    fails with COLUMN_NOT_FOUND and blanks the whole rollup for the
-    hour.
+    Only tables that carry the FULL set of columns
+    ``_build_doc_class_cte`` reads — ``document_id``,
+    ``document_class.type``, and the ``date`` partition — are
+    returned. The Glue crawler sometimes emits malformed variants
+    (e.g. ``document_sections_date_2026_03_19``, ``..._parquet``)
+    that lack one of these; a subsequent query filtering on any
+    missing column fails with COLUMN_NOT_FOUND and blanks the whole
+    rollup for the hour.
+
+    Two error classes distinguished:
+
+    * ``AccessDeniedException`` / ``EntityNotFoundException`` — the
+      failure mode the earlier switch away from ``information_schema``
+      was justified by making loud. Re-raised so it surfaces as a
+      Lambda error, fires the DLQ alarm, and does NOT silently
+      degrade every historical row to ``'unknown'``. A permissions
+      regression here is exactly the case an operator must see.
+
+    * Any other exception (transient Glue error, throttle, service
+      hiccup) — logged and treated as "no tables found" for this
+      invocation. The rollup fires with the CTE evaluating to no
+      rows, LEFT JOIN produces NULL for dc.document_class, and
+      COALESCE picks metering.document_class (populated for
+      post-widening writers) or ``'unknown'``. The next fire retries
+      discovery from scratch.
 
     Cached per-invocation via ``_document_sections_tables_cache`` —
     cleared in ``handler`` so a new class the Glue crawler added since
@@ -737,11 +753,15 @@ def _discover_document_sections_tables() -> List[str]:
                         name,
                     )
                     continue
-                # Confirm the ``date`` column exists as either a
-                # partition key OR a regular column. The crawler's
-                # canonical shape lists ``date`` (and ``hour``) as
-                # partition keys, but a defensive check on both catches
-                # any variant the crawler emits.
+                # Confirm every column ``_build_doc_class_cte`` will
+                # read is present — ``date`` (partition or column),
+                # ``document_id`` (regular column), and the nested
+                # ``document_class.type`` (regular column with a dotted
+                # name, so match by prefix ``document_class`` since Glue
+                # stores struct fields under the parent column name).
+                # A malformed crawler variant lacking any of the three
+                # would fail with COLUMN_NOT_FOUND at Athena time and
+                # blank the whole rollup for the hour.
                 partition_keys = {
                     (p.get("Name") or "") for p in table.get("PartitionKeys") or []
                 }
@@ -749,16 +769,49 @@ def _discover_document_sections_tables() -> List[str]:
                     (c.get("Name") or "")
                     for c in (table.get("StorageDescriptor") or {}).get("Columns") or []
                 }
-                if "date" not in partition_keys and "date" not in storage_columns:
+                all_names = partition_keys | storage_columns
+                if "date" not in all_names:
+                    logger.debug("Skipping %s: no 'date' column/partition", name)
+                    continue
+                if "document_id" not in storage_columns:
+                    logger.debug("Skipping %s: no 'document_id' column", name)
+                    continue
+                if "document_class" not in storage_columns:
+                    logger.debug("Skipping %s: no 'document_class' column", name)
                     continue
                 names.append(name)
+    except ClientError as exc:
+        # Permission / not-found errors are the failure mode this
+        # discovery path was written to make loud. Re-raise so the
+        # invocation errors, the DLQ alarm fires, and a permissions
+        # regression cannot silently bucket every historical row as
+        # 'unknown' — the exact regression class the switch away from
+        # information_schema was meant to eliminate.
+        code = exc.response.get("Error", {}).get("Code", "")
+        if code in ("AccessDeniedException", "EntityNotFoundException"):
+            logger.error(
+                "Glue:GetTables discovery failed with %s — this looks "
+                "identical to 'no document_sections_* tables exist' but "
+                "is a permissions or catalog regression that MUST be "
+                "fixed. Re-raising so the DLQ alarm fires.",
+                code,
+            )
+            raise
+        # Every other ClientError (throttle, transient service error)
+        # falls through to the open-fallback path below.
+        logger.warning(
+            "Failed to discover document_sections_* tables via "
+            "glue:GetTables (%s: %s); falling back to empty list. "
+            "Historical rows without raw metering.document_class will "
+            "bucket as 'unknown' for this rollup fire.",
+            code or "ClientError",
+            exc,
+        )
+        _document_sections_tables_cache = []
+        return _document_sections_tables_cache
     except Exception as exc:  # noqa: BLE001
-        # Discovery must not fail the rollup — falling back to an
-        # empty list means the CTE has no rows, LEFT JOIN produces
-        # NULL for dc.document_class, and COALESCE picks
-        # metering.document_class (populated for post-widening
-        # writers) or 'unknown'. Raising here would take the whole
-        # hourly rollup down over one operator-visible Glue hiccup.
+        # Non-ClientError exception (networking, dependency, code
+        # bug). Same open-fallback shape — the next fire retries.
         logger.warning(
             "Failed to discover document_sections_* tables via "
             "glue:GetTables (%s); falling back to empty list. Historical "
@@ -779,11 +832,12 @@ def _build_doc_class_cte(target_date: Optional[str] = None) -> str:
     """Build the ``doc_class`` CTE that derives ``document_class`` per
     document from ``document_sections_*``.
 
-    Mirrors the read-side widget's 0/1/N rule
-    (``analytics_cost_service.py:1836-1867``): 0 distinct classes → 'unknown',
-    1 → that class, >1 → 'mixed'. Excluded sections are NOT filtered
-    here — ``Section.excluded`` is not persisted to ``document_sections_*``
-    tables, so this CTE is a *fallback* for historical rows only, whose
+    Mirrors the read-side 0/1/N rule (see
+    ``analytics_cost_service.get_cost_by_document_type``): 0 distinct
+    classes → 'unknown', 1 → that class, >1 → 'mixed'. Excluded
+    sections are NOT filtered here — ``Section.excluded`` is not
+    persisted to ``document_sections_*`` tables, so this CTE is a
+    *fallback* for historical rows only, whose
     ``metering.document_class`` (which does apply the filter) is NULL.
     Post-widening writers write ``metering.document_class`` directly and
     the ``COALESCE(m.document_class, dc.document_class, 'unknown')`` in
@@ -798,12 +852,15 @@ def _build_doc_class_cte(target_date: Optional[str] = None) -> str:
     partitions per rollup INSERT), which crushed S3 with
     ``HIVE_S3_THROTTLING`` on any real-volume stack — the CTE fanned
     out ~600 parallel S3 GETs per query and Athena's worker fleet blew
-    past the per-prefix 5500 GET/s cap. Root cause of the 2026-09-22
-    migration failure. The ±1 day slop covers the timing gap between
-    per-pipeline-step metering rows (written throughout processing) and
-    the ``document_sections_*`` write (at pipeline end), which can span
-    a UTC-day boundary. Callers that don't know the target date (none
-    today; here for defensive symmetry) get the old unfiltered CTE.
+    past the per-prefix 5500 GET/s cap. The ±1 day slop covers the
+    UTC-day-boundary case: a document processed near midnight can land
+    its metering rows in ``date=X`` while the ``document_sections_*``
+    write for the same document lands in ``date=X+1`` (metering is
+    written once at workflow completion, but the section-tables write
+    is a separate Glue-crawler-driven pass that runs on its own
+    cadence), so pruning to a single day would miss the join for those
+    documents. Callers that don't know the target date (none today;
+    here for defensive symmetry) get the old unfiltered CTE.
 
     Returns a CTE fragment ready to be embedded in a ``WITH ... INSERT``
     query. If no ``document_sections_*`` tables exist (fresh stack, no
@@ -2497,8 +2554,61 @@ def _run_backfill_daily_range(anchor: datetime, days: int) -> Dict[str, Any]:
     return results
 
 
+# Bound the ``state=in_progress`` gate by marker age. A hung /
+# aborted state-machine execution can leave the marker stuck
+# ``in_progress`` — that is by design (both MigrationHadFailures
+# and MigrationHadMapFailure keep the marker so resume works). Left
+# unbounded, the gate would then disable the scheduled hourly /
+# daily / reconciler rollups indefinitely with no signal any alarm
+# can see, and the reconciler's own 24 h scan window would slide
+# past the purged migration window before the operator noticed.
+# Bounding at ~2× the p95 migration wall-clock (30-45 min today)
+# means a hung migration goes UNGATED past this threshold: the
+# reconciler resumes and, because rollup writes remain idempotent,
+# rebuilds whatever the state machine's re-run would have written
+# — the migration is safe to resume against reconciler-populated
+# partitions.
+_MIGRATION_IN_PROGRESS_STALE_SECONDS = 2 * 60 * 60
+
+
+def _parse_marker_started_at(value: str) -> Optional[datetime]:
+    """Extract the ``started_at=<iso>`` segment from the marker payload,
+    returning a timezone-aware datetime or None if absent/malformed.
+    ``_write_marker`` writes ``started_at`` as an ISO-8601 UTC string
+    (``datetime.utcnow().isoformat() + "Z"`` shape or ``+00:00`` shape,
+    both accepted here). A marker missing the segment (pre-versioning
+    write, or ``state=completed`` which doesn't need it) reads as None.
+    """
+    for segment in value.split(";"):
+        segment = segment.strip()
+        if not segment.startswith("started_at="):
+            continue
+        ts = segment[len("started_at=") :].strip()
+        if not ts:
+            return None
+        # Accept both ``...Z`` and ``...+00:00`` — datetime.fromisoformat
+        # in 3.11+ handles ``Z``, but 3.10 doesn't, so normalise.
+        if ts.endswith("Z"):
+            ts = ts[:-1] + "+00:00"
+        try:
+            parsed = datetime.fromisoformat(ts)
+        except ValueError:
+            logger.warning(
+                "Migration marker started_at=%r is not a valid ISO-8601 "
+                "timestamp; treating as no start-time.",
+                ts,
+            )
+            return None
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=timezone.utc)
+        return parsed
+    return None
+
+
 def _migration_in_progress() -> bool:
-    """Return True iff the SSM migration marker records ``state=in_progress``.
+    """Return True iff the SSM migration marker records
+    ``state=in_progress`` **and** the marker's ``started_at`` is
+    younger than ``_MIGRATION_IN_PROGRESS_STALE_SECONDS``.
 
     Reconciler + hourly cron consult this before touching any rollup
     partition. Both scan the trailing 24 h window; the migration state
@@ -2518,6 +2628,21 @@ def _migration_in_progress() -> bool:
     at both ends without a distributed lock. The check is one
     ``ssm:GetParameter`` (~10 ms, already in the rollup Lambda's IAM
     policy) — cheap enough to run on every hourly / reconciler fire.
+
+    Age bound (``_MIGRATION_IN_PROGRESS_STALE_SECONDS``, default 2 h):
+    a hung / aborted state-machine execution leaves the marker stuck
+    ``in_progress`` (correct — both MigrationHadFailures and
+    MigrationHadMapFailure keep it so resume works), and without the
+    age bound this gate would then disable scheduled rollups
+    indefinitely with no alarm surface — the Lambda would still be
+    invoked and return ``{"skipped": "migration_in_progress"}``, so
+    ``DataMartRollupAbsenceAlarm`` (zero-invocations) cannot see it,
+    and past 24 h the reconciler's window slides past the purged
+    migration window and can no longer heal the gap on its own. Once
+    the marker crosses the age bound the gate opens; the reconciler
+    resumes writing and, because rollup writes remain idempotent, a
+    later state-machine resume against reconciler-populated
+    partitions is safe.
 
     Fails OPEN on a read error: if SSM is unreachable, the scheduled
     rollup runs. The alternative (fail closed) would silently disable
@@ -2547,11 +2672,44 @@ def _migration_in_progress() -> bool:
     # Marker payload is ``;``-delimited ``key=value`` segments; match
     # ``state=in_progress`` as a delimited token so ``state=in_progress_XYZ``
     # is not treated as a match.
+    is_in_progress = False
     for segment in value.split(";"):
         segment = segment.strip()
         if segment == "state=in_progress":
-            return True
-    return False
+            is_in_progress = True
+            break
+    if not is_in_progress:
+        return False
+    # Apply the age bound. A missing / malformed ``started_at`` is
+    # treated as "definitely older than the bound" so the gate opens
+    # rather than latching forever on a marker whose age we cannot
+    # read — the alternative (treat as fresh) would reproduce the
+    # exact indefinite-hold this bound exists to prevent.
+    started_at = _parse_marker_started_at(value)
+    if started_at is None:
+        logger.warning(
+            "Migration marker has state=in_progress but no readable "
+            "started_at — opening the gate. Marker payload: %r",
+            value,
+        )
+        return False
+    age_seconds = (datetime.now(timezone.utc) - started_at).total_seconds()
+    if age_seconds > _MIGRATION_IN_PROGRESS_STALE_SECONDS:
+        logger.warning(
+            "Migration marker has state=in_progress since %s "
+            "(age %.0fs > stale bound %ds) — opening the gate so "
+            "scheduled rollups resume. Investigate the last "
+            "DataMartMigrationStateMachine execution; a re-run against "
+            "reconciler-populated partitions is safe because rollup "
+            "writes are idempotent. See "
+            "docs/data-mart-migration-runbook.md § 'state=in_progress "
+            "stuck without alarm firing'.",
+            started_at.isoformat(),
+            age_seconds,
+            _MIGRATION_IN_PROGRESS_STALE_SECONDS,
+        )
+        return False
+    return True
 
 
 def _run_reconcile(anchor: datetime) -> Dict[str, Any]:
@@ -3926,14 +4084,18 @@ _EMPTY_SENTINEL_TTL_SECONDS = 12 * 60 * 60
 
 def _partition_marked_empty(table: str, date: str, hour: Optional[str] = None) -> bool:
     """Returns True if a previous rollup wrote an ``_empty`` sentinel
-    for this partition AND the sentinel is still fresh (< 24 h old).
+    for this partition AND the sentinel is still fresh (<
+    ``_EMPTY_SENTINEL_TTL_SECONDS``, currently 12 h).
     Reconciler use case: an hour that produced 0 rows on its scheduled
     write would otherwise be re-attempted on every :35 fire — the
     SELECT-based ``_partition_already_written`` probe returns False on
     any partition that never had data written, so nothing tells the
     reconciler "we already tried and there was nothing here". The
-    sentinel closes that loop, and the 24 h TTL prevents a stale
-    sentinel from hiding late-arriving data.
+    sentinel closes that loop, and the TTL prevents a stale sentinel
+    from hiding late-arriving data — the TTL is deliberately less
+    than the reconciler's 24 h scan window (see the block comment
+    on ``_EMPTY_SENTINEL_TTL_SECONDS``) so every empty hour gets a
+    guaranteed re-check pass while it is still in scope.
     """
     if not REPORTING_BUCKET:
         return False

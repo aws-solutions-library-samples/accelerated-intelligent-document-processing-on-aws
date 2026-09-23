@@ -597,9 +597,12 @@ dependency-sensitive; tracks are independent.
   table rather than the full retention window — without that prune a
   20-table stack fanning out one rollup would peak past S3's
   per-prefix 5500 GET/s cap and trip `HIVE_S3_THROTTLING`. The ±1 day
-  slop covers the timing gap between per-pipeline-step metering
-  writes and the `document_sections_*` write at pipeline end, which
-  can span a UTC-day boundary. `document_sections_*` UNION runs
+  slop covers the UTC-day-boundary case — a document processed near
+  midnight can land its metering row in `date=X` while the
+  `document_sections_*` write for the same document lands in
+  `date=X+1` (they are separate writers on separate cadences), so
+  pruning to a single day would miss the join for those documents.
+  `document_sections_*` UNION runs
   offline once per rollup hour, not per widget query. Consumers that
   `SUM` across the grain are unaffected by the new dimension; a naive
   `COUNT(*)` on rollup rows would over-count. Migration to the
