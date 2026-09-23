@@ -2932,6 +2932,26 @@ idp-cli config-sync-bda --stack-name my-stack --direction bda-to-idp --mode merg
 idp-cli config-sync-bda --stack-name my-stack --config-profile v2
 ```
 
+**What a failing sync reports.** A sync that cannot read the BDA project fails with an
+error instead of proceeding. That matters most in `replace` mode, where the side being
+read is the source of truth: an unreadable project is not an empty one, and treating it
+as empty would remove every document class from the profile (`bda-to-idp`) or create a
+second blueprint for every class (`idp-to-bda`). A transient error — a throttle, or a
+missing permission — is therefore safe to retry rather than something to recover from.
+
+A class is also reported failed when its blueprint was created but could not be
+associated with the project: the blueprint exists, but BDA does not recognise that
+document type until it is in the project's blueprint list.
+
+**Properties BDA cannot represent are reported as warnings.** BDA supports neither
+objects nested inside objects nor arrays whose items nest further, so those properties
+are dropped from the blueprint and each one is named in the sync's warnings, with the
+class it belongs to. A property whose value is not a schema object at all — `null`, or a
+string where an object was meant — is reported the same way. Read the warnings on every
+sync: a class can succeed with a whole line-items section missing from what it extracts.
+To keep such a section, flatten the schema so the nested structure sits in a top-level
+`$defs` definition referenced by `$ref`.
+
 ---
 
 ### `chat`
