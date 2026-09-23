@@ -345,3 +345,353 @@ class TestWiring:
             (REPO_ROOT / "scripts" / "coverage_debt.json").read_text()
         )["trees"]["idp_common"]["total"]
         assert floor <= recorded, f"floor {floor} exceeds recorded {recorded:.2f}"
+
+
+def _fake_tree(tmp_path: Path, name: str = "faketree") -> "ccd.Tree":
+    """A tree rooted in `tmp_path`, so `--write` cannot touch the real baseline.
+
+    Registered by monkeypatching TREES, not by editing the real registry: these tests
+    exercise the orchestration, and doing that against the nine real trees would make
+    them depend on whichever reports happen to be lying around from the last run.
+    """
+    root = tmp_path / name
+    (root / "pkg").mkdir(parents=True, exist_ok=True)
+    return ccd.Tree(name, str(root), "pkg")
+
+
+def _install(monkeypatch, tmp_path, trees, baseline: dict | None = None) -> Path:
+    """Point the module at a throwaway registry and baseline file."""
+    monkeypatch.setattr(ccd, "TREES", tuple(trees))
+    monkeypatch.setattr(ccd, "TREES_BY_NAME", {t.name: t for t in trees})
+    monkeypatch.setattr(ccd, "REPO_ROOT", tmp_path)
+    path = tmp_path / "coverage_debt.json"
+    if baseline is not None:
+        path.write_text(json.dumps(baseline), encoding="utf-8")
+    monkeypatch.setattr(ccd, "BASELINE", path)
+    return path
+
+
+def _write_tree_report(tree, rates: dict[str, float], total: float = 80.0) -> Path:
+    report = ccd.report_path(tree)
+    report.parent.mkdir(parents=True, exist_ok=True)
+    classes = "\n".join(
+        f'<class filename="{n}" line-rate="{r / 100}"/>' for n, r in rates.items()
+    )
+    report.write_text(
+        f'<?xml version="1.0" ?><coverage line-rate="{total / 100}">'
+        f"<sources><source>{ccd.tree_root(tree) / tree.cov}</source></sources>"
+        f"<packages><package><classes>{classes}</classes></package></packages>"
+        f"</coverage>\n",
+        encoding="utf-8",
+    )
+    return report
+
+
+@pytest.mark.unit
+class TestCheckOrchestration:
+    """`check()` across trees. Every tree is checked, and an unchecked one is named.
+
+    The per-tree comparison is covered above; what is asserted here is the part that
+    decides the exit code and what the operator is told. A gate that passes while
+    measuring nothing is the specific failure this whole ratchet exists to prevent, so
+    "a tree with no report" must not read as "a tree that is fine".
+    """
+
+    def test_a_tree_with_no_report_is_skipped_and_named_not_silently_passed(
+        self, monkeypatch, tmp_path
+    ):
+        tree = _fake_tree(tmp_path)
+        _install(monkeypatch, tmp_path, [tree], {"trees": {}})
+        code, problems, skipped = ccd.check()
+        assert (code, problems, skipped) == (0, [], [tree.name]), (
+            "an unmeasured tree must be reported as unchecked; returning it as a pass "
+            "is how a gate reads green while checking nothing"
+        )
+
+    def test_a_report_with_no_recorded_baseline_is_a_problem_not_a_pass(
+        self, monkeypatch, tmp_path
+    ):
+        """A measured-but-unrecorded tree is unratcheted, which is the state the ratchet
+        exists to rule out -- so it fails rather than being accepted silently."""
+        tree = _fake_tree(tmp_path)
+        _install(monkeypatch, tmp_path, [tree], {"trees": {}})
+        _write_tree_report(tree, {"mod.py": 90.0})
+        monkeypatch.setattr(ccd, "tracked_source_files", lambda t: ["pkg/mod.py"])
+        code, problems, skipped = ccd.check()
+        assert code == 1 and skipped == []
+        assert any("no recorded baseline" in p for p in problems), problems
+
+    def test_problems_from_several_trees_are_all_reported_and_each_is_labelled(
+        self, monkeypatch, tmp_path
+    ):
+        """Not just the first. A loop that returned early would hide the second tree's
+        regression behind the first one's, and the label is what tells them apart."""
+        a, b = _fake_tree(tmp_path, "alpha"), _fake_tree(tmp_path, "beta")
+        _install(
+            monkeypatch,
+            tmp_path,
+            [a, b],
+            {
+                "trees": {
+                    "alpha": {"total": 90.0, "files": {"pkg/mod.py": 90.0}},
+                    "beta": {"total": 90.0, "files": {"pkg/mod.py": 90.0}},
+                }
+            },
+        )
+        _write_tree_report(a, {"mod.py": 50.0})
+        _write_tree_report(b, {"mod.py": 40.0})
+        monkeypatch.setattr(ccd, "tracked_source_files", lambda t: ["pkg/mod.py"])
+        code, problems, _ = ccd.check()
+        assert code == 1
+        assert any(p.startswith("[alpha]") for p in problems), problems
+        assert any(p.startswith("[beta]") for p in problems), problems
+
+    def test_one_healthy_tree_does_not_mask_another_trees_regression(
+        self, monkeypatch, tmp_path
+    ):
+        a, b = _fake_tree(tmp_path, "good"), _fake_tree(tmp_path, "bad")
+        _install(
+            monkeypatch,
+            tmp_path,
+            [a, b],
+            {
+                "trees": {
+                    "good": {"total": 90.0, "files": {"pkg/mod.py": 90.0}},
+                    "bad": {"total": 90.0, "files": {"pkg/mod.py": 90.0}},
+                }
+            },
+        )
+        _write_tree_report(a, {"mod.py": 95.0})
+        _write_tree_report(b, {"mod.py": 20.0})
+        monkeypatch.setattr(ccd, "tracked_source_files", lambda t: ["pkg/mod.py"])
+        code, problems, _ = ccd.check()
+        assert code == 1
+        assert all("[good]" not in p for p in problems), problems
+
+
+@pytest.mark.unit
+class TestWriteBaseline:
+    """`--write`. The claim worth testing is what it does to trees it did NOT measure."""
+
+    def test_a_tree_with_no_report_keeps_its_recorded_baseline(
+        self, monkeypatch, tmp_path
+    ):
+        """The load-bearing property of `--write`.
+
+        `make coverage-all --only one_tree` followed by `--write` must not erase the
+        other eight trees' baselines. If it did, the routine act of re-recording one
+        tree would silently un-ratchet everything else, and the next run would report
+        no problems because there would be nothing left to compare against.
+        """
+        measured, untouched = (
+            _fake_tree(tmp_path, "measured"),
+            _fake_tree(tmp_path, "untouched"),
+        )
+        path = _install(
+            monkeypatch,
+            tmp_path,
+            [measured, untouched],
+            {
+                "trees": {
+                    "untouched": {"total": 77.0, "files": {"pkg/old.py": 77.0}},
+                }
+            },
+        )
+        _write_tree_report(measured, {"mod.py": 90.0})
+        monkeypatch.setattr(ccd, "tracked_source_files", lambda t: ["pkg/mod.py"])
+        ccd.write_baseline()
+        written = json.loads(path.read_text())["trees"]
+        assert written["untouched"] == {"total": 77.0, "files": {"pkg/old.py": 77.0}}, (
+            "a partial run must not discard another tree's baseline"
+        )
+        assert written["measured"]["files"] == {"pkg/mod.py": 90.0}
+
+    def test_an_untracked_file_in_the_report_is_not_recorded(
+        self, monkeypatch, tmp_path
+    ):
+        """Build output and stray files appear in a report but are not source.
+
+        Recording them would pin coverage for paths git does not track, and the
+        staleness check would then fail the moment they were cleaned up.
+        """
+        tree = _fake_tree(tmp_path)
+        path = _install(monkeypatch, tmp_path, [tree], {"trees": {}})
+        _write_tree_report(tree, {"mod.py": 90.0, "generated.py": 12.0})
+        monkeypatch.setattr(ccd, "tracked_source_files", lambda t: ["pkg/mod.py"])
+        ccd.write_baseline()
+        assert set(json.loads(path.read_text())["trees"][tree.name]["files"]) == {
+            "pkg/mod.py"
+        }
+
+    def test_the_written_file_records_the_tolerance_and_how_to_regenerate_it(
+        self, monkeypatch, tmp_path
+    ):
+        """It is generated, so it has to say so in itself.
+
+        A hand-edited baseline is indistinguishable from a recorded one once committed,
+        and the tolerance is the number a reader needs to interpret any entry.
+        """
+        tree = _fake_tree(tmp_path)
+        path = _install(monkeypatch, tmp_path, [tree], {"trees": {}})
+        _write_tree_report(tree, {"mod.py": 90.0})
+        monkeypatch.setattr(ccd, "tracked_source_files", lambda t: ["pkg/mod.py"])
+        ccd.write_baseline()
+        data = json.loads(path.read_text())
+        assert data["tolerancePct"] == ccd.TOLERANCE_PCT
+        assert "do not hand-edit" in " ".join(data["$comment"]).lower()
+        assert "--write" in data["generator"]
+
+
+@pytest.mark.unit
+class TestTheCommandLine:
+    """Exit codes and what is printed. This is the surface CI and a human both read."""
+
+    def test_a_clean_check_exits_zero_and_says_how_much_it_checked(
+        self, monkeypatch, tmp_path, capsys
+    ):
+        tree = _fake_tree(tmp_path)
+        _install(
+            monkeypatch,
+            tmp_path,
+            [tree],
+            {"trees": {tree.name: {"total": 90.0, "files": {"pkg/mod.py": 90.0}}}},
+        )
+        _write_tree_report(tree, {"mod.py": 90.0})
+        monkeypatch.setattr(ccd, "tracked_source_files", lambda t: ["pkg/mod.py"])
+        monkeypatch.setattr(sys, "argv", ["check_coverage_debt.py"])
+        assert ccd.main() == 0
+        out = capsys.readouterr().out
+        assert "1 file(s) across 1 tree(s)" in out, out
+
+    def test_a_clean_check_still_names_the_trees_it_could_not_check(
+        self, monkeypatch, tmp_path, capsys
+    ):
+        """Exit 0 with a tree unmeasured is the dangerous case: the run looks like
+        success. It has to say which trees its success does not cover."""
+        measured, absent = (
+            _fake_tree(tmp_path, "measured"),
+            _fake_tree(tmp_path, "absent"),
+        )
+        _install(
+            monkeypatch,
+            tmp_path,
+            [measured, absent],
+            {"trees": {"measured": {"total": 90.0, "files": {"pkg/mod.py": 90.0}}}},
+        )
+        _write_tree_report(measured, {"mod.py": 90.0})
+        monkeypatch.setattr(ccd, "tracked_source_files", lambda t: ["pkg/mod.py"])
+        monkeypatch.setattr(sys, "argv", ["check_coverage_debt.py"])
+        assert ccd.main() == 0
+        out = capsys.readouterr().out
+        assert "not checked" in out and "absent" in out, out
+
+    def test_a_regression_exits_one_and_prints_every_problem(
+        self, monkeypatch, tmp_path, capsys
+    ):
+        tree = _fake_tree(tmp_path)
+        _install(
+            monkeypatch,
+            tmp_path,
+            [tree],
+            {
+                "trees": {
+                    tree.name: {
+                        "total": 90.0,
+                        "files": {"pkg/a.py": 90.0, "pkg/b.py": 90.0},
+                    }
+                }
+            },
+        )
+        _write_tree_report(tree, {"a.py": 30.0, "b.py": 20.0})
+        monkeypatch.setattr(
+            ccd, "tracked_source_files", lambda t: ["pkg/a.py", "pkg/b.py"]
+        )
+        monkeypatch.setattr(sys, "argv", ["check_coverage_debt.py"])
+        assert ccd.main() == 1
+        out = capsys.readouterr().out
+        assert "pkg/a.py" in out and "pkg/b.py" in out, out
+
+    def test_the_failure_output_says_the_gate_reports_rather_than_decides(
+        self, monkeypatch, tmp_path, capsys
+    ):
+        """Neither branch here is protected, so a red result informs a human who then
+        decides. Output that read as a refusal would misstate what it can do."""
+        tree = _fake_tree(tmp_path)
+        _install(
+            monkeypatch,
+            tmp_path,
+            [tree],
+            {"trees": {tree.name: {"total": 90.0, "files": {"pkg/a.py": 90.0}}}},
+        )
+        _write_tree_report(tree, {"a.py": 10.0})
+        monkeypatch.setattr(ccd, "tracked_source_files", lambda t: ["pkg/a.py"])
+        monkeypatch.setattr(sys, "argv", ["check_coverage_debt.py"])
+        assert ccd.main() == 1
+        assert "does not decide" in capsys.readouterr().out
+
+    def test_summary_prints_each_recorded_tree_and_exits_zero(
+        self, monkeypatch, tmp_path, capsys
+    ):
+        tree = _fake_tree(tmp_path)
+        _install(
+            monkeypatch,
+            tmp_path,
+            [tree],
+            {"trees": {tree.name: {"total": 83.14, "files": {"pkg/a.py": 90.0}}}},
+        )
+        monkeypatch.setattr(sys, "argv", ["check_coverage_debt.py", "--summary"])
+        assert ccd.main() == 0
+        out = capsys.readouterr().out
+        assert tree.name in out and "83.14" in out, out
+
+    def test_summary_with_no_baseline_says_so_rather_than_printing_an_empty_table(
+        self, monkeypatch, tmp_path, capsys
+    ):
+        _install(monkeypatch, tmp_path, [_fake_tree(tmp_path)])
+        monkeypatch.setattr(sys, "argv", ["check_coverage_debt.py", "--summary"])
+        assert ccd.main() == 0
+        assert "no coverage baseline" in capsys.readouterr().out
+
+    def test_write_records_and_exits_zero(self, monkeypatch, tmp_path, capsys):
+        tree = _fake_tree(tmp_path)
+        path = _install(monkeypatch, tmp_path, [tree], {"trees": {}})
+        _write_tree_report(tree, {"mod.py": 90.0})
+        monkeypatch.setattr(ccd, "tracked_source_files", lambda t: ["pkg/mod.py"])
+        monkeypatch.setattr(sys, "argv", ["check_coverage_debt.py", "--write"])
+        assert ccd.main() == 0
+        assert json.loads(path.read_text())["trees"][tree.name]["files"]
+        assert "recorded 1 file(s)" in capsys.readouterr().out
+
+
+@pytest.mark.unit
+class TestReportResolution:
+    """Which file each tree's figure is read from."""
+
+    def test_the_per_tree_report_is_preferred(self, monkeypatch, tmp_path):
+        tree = _fake_tree(tmp_path)
+        _install(monkeypatch, tmp_path, [tree])
+        report = _write_tree_report(tree, {"mod.py": 90.0})
+        assert ccd._resolve_report(tree) == report
+
+    def test_a_tree_with_no_report_resolves_to_none(self, monkeypatch, tmp_path):
+        tree = _fake_tree(tmp_path)
+        _install(monkeypatch, tmp_path, [tree])
+        assert ccd._resolve_report(tree) is None
+
+    def test_the_legacy_coverage_xml_fallback_applies_only_to_idp_common(
+        self, monkeypatch, tmp_path
+    ):
+        """`make test-cicd -C lib/idp_common_pkg` writes `coverage.xml`, so that one
+        name is accepted for that one tree -- otherwise the existing CI step would
+        stop feeding this gate. Extending the fallback to every tree would make a
+        stale `coverage.xml` in any package silently stand in for a real measurement.
+        """
+        legacy = tmp_path / "legacy.xml"
+        legacy.write_text('<?xml version="1.0" ?><coverage line-rate="0.5"/>\n')
+        monkeypatch.setattr(ccd, "LEGACY_IDP_COMMON_REPORT", legacy)
+        other = _fake_tree(tmp_path, "not_idp_common")
+        idp = ccd.Tree("idp_common", str(tmp_path / "idpc"), "pkg")
+        (tmp_path / "idpc" / "pkg").mkdir(parents=True, exist_ok=True)
+        _install(monkeypatch, tmp_path, [idp, other])
+        assert ccd._resolve_report(idp) == legacy
+        assert ccd._resolve_report(other) is None
