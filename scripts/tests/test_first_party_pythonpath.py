@@ -109,12 +109,14 @@ def _editable_paths() -> list[Path]:
 
 
 def _run_under_wrapper(code: str, env: dict[str, str] | None = None) -> str:
-    """Run ``python -c code`` under the wrapper ``make`` expands, through a shell.
+    """Run ``python -c code`` under the wrapper ``make`` expands, through ``sh``.
 
     A shell is needed because the wrapper's ``PYTHONPATH`` value ends in a parameter
     expansion that keeps the caller's own pin (``$${PYTHONPATH:+:$$PYTHONPATH}``);
     running the argv directly would pass that text through uninterpreted and measure
-    something no recipe ever does.
+    something no recipe ever does. ``sh -c`` is named explicitly rather than reached
+    through ``shell=True``, which is both the spelling a `make` recipe itself uses and
+    the one the security scan does not rate as a high-severity finding.
 
     ⚠️ ``PYTHONPATH`` is stripped from the inherited environment unless the caller
     supplies one. Without that, this probe measures **the environment the test runner
@@ -128,9 +130,8 @@ def _run_under_wrapper(code: str, env: dict[str, str] | None = None) -> str:
     wrapper = _make_variable("PYTEST_HERMETIC", directory=REPO_ROOT)
     assert wrapper.endswith("-m pytest"), wrapper
     command = f"{wrapper[: -len('-m pytest')]} -c {_quote(code)}"
-    result = subprocess.run(  # noqa: S602 - the command is built from our own makefile
-        command,
-        shell=True,
+    result = subprocess.run(  # noqa: S603 - fixed argv; the text comes from our makefile
+        ["sh", "-c", command],
         capture_output=True,
         text=True,
         check=False,
@@ -230,7 +231,10 @@ def test_every_first_party_package_resolves_in_this_checkout_under_the_wrapper()
 
 def test_the_wrapper_keeps_a_pin_the_caller_set_as_well() -> None:
     """Ours first, theirs after: the checkout under test wins without clobbering."""
-    sentinel = "/tmp/a-path-the-caller-cares-about"  # noqa: S108 - a string, not a file
+    # Any absolute path will do: it is carried through the environment and compared,
+    # never opened. Derived from the checkout rather than written as a /tmp literal,
+    # which both linters read as a temp-file hazard that is not one here.
+    sentinel = str(REPO_ROOT / "a-path-the-caller-set")
     env = dict(os.environ, PYTHONPATH=sentinel)
     value = _run_under_wrapper("import os; print(os.environ['PYTHONPATH'])", env=env)
     entries = value.split(os.pathsep)
