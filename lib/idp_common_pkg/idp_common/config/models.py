@@ -474,9 +474,10 @@ class ForcedToolConfig(BaseModel):
             "Send the document schema as a forced Converse tool instead of "
             "describing it in the prompt. OFF by default: forcing constrains the "
             "response SHAPE, not the values in it, so it is not self-evidently an "
-            "improvement and is gated on a measured win. Routes that cannot carry "
-            "a toolConfig (a custom Lambda hook, GPT-5.x) fall back to the prompt "
-            "automatically, and the reason is recorded in the section metadata. "
+            "improvement and is gated on a measured win. Models that cannot carry "
+            "a toolConfig (a custom Lambda hook, GPT-5.x) or that reject a forced "
+            "toolChoice (Claude Opus 5.5) fall back to the prompt automatically, "
+            "and the reason is recorded in the section metadata. "
             "Property names Bedrock rejects are sanitized on the way out and "
             "restored on the way back, so no extracted field is renamed."
         ),

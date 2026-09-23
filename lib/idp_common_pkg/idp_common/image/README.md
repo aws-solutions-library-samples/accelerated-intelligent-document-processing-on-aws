@@ -175,7 +175,7 @@ Two limits of this uniform clamp, stated plainly:
   failure on a family that does enforce it. The cost is some resolution on a
   >20-image non-Claude request.
 - **On high-resolution-tier models it is a real reduction, not a free one.** The
-  tier target for Claude 4.7+/Opus 5/Sonnet 5 is a ~2,576 px long edge (a
+  tier target for Claude 4.7+/Opus 5/Opus 5.5/Sonnet 5 is a ~2,576 px long edge (a
   4,784-patch cap), so 2,000 px sits about 20% below the resolution the model would
   otherwise have received, and costs roughly 15% of the image tokens — 15% fewer
   28 px patches is 15% less visual information. On standard-tier models (Sonnet 4.6,
