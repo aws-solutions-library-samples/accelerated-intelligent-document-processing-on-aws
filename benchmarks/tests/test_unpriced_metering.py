@@ -145,6 +145,38 @@ def _metering_item(metering: dict) -> dict:
     return {"Metering": av(metering)}
 
 
+def _unbound_cost_calls(tree: ast.AST) -> list[int]:
+    """Line numbers of ``*_cost(...)`` calls NOT bound by tuple unpacking.
+
+    Used by the class guard below and by its own probes, so the two cannot drift —
+    a guard tested through a re-implementation of itself proves nothing about the
+    guard.
+    """
+    unpacked = {
+        id(node.value)
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Assign)
+        and len(node.targets) == 1
+        and isinstance(node.targets[0], ast.Tuple)
+        and isinstance(node.value, ast.Call)
+    }
+    out = []
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        func = node.func
+        name = (
+            func.id
+            if isinstance(func, ast.Name)
+            else func.attr
+            if isinstance(func, ast.Attribute)
+            else ""
+        )
+        if name.endswith("_cost") and id(node) not in unpacked:
+            out.append(node.lineno)
+    return out
+
+
 @pytest.fixture
 def read_metering(monkeypatch):
     """``lib.read_metering`` over a fake table holding one row."""
@@ -380,6 +412,9 @@ class TestEveryDropIsReported:
         assert not priced.complete
         assert described in priced.unpriced[0]
         assert "inputTokens" in priced.unpriced[0]
+        # The metering key too: the reason has to say WHICH entry, or a reader of a
+        # grid with several phases cannot act on it.
+        assert f"Extraction/{REAL_MODEL}" in priced.unpriced[0]
         assert priced.partial_total == 0.0
 
     def test_several_unpriceable_entries_are_all_named(
@@ -521,21 +556,68 @@ class TestScoreDocWithholdsAPartialCost:
         assert set(row["cost_by_phase"]) == {"OCR", "Extraction"}
         assert set(row["cost_by_key"]) == {REAL_OCR, REAL_MODEL}
 
+    # Three metering keys in ONE phase, with counts chosen so that rounding each
+    # accumulation step to five places gives a different answer from rounding the sum
+    # once. `round(a, 5)` then `round(a + b, 5)` yields 0.00009 here; `round(a + b +
+    # c, 5)` yields 0.00010. The keys are three that appear together on real rows.
+    #
+    # ⚠️ A fixture with one key per phase cannot discriminate the rounding order at
+    # all — there is no accumulation to round. Measured: with one key per phase,
+    # changing `score_doc` to accumulate unrounded and round once left the suite
+    # green.
+    _ROUNDING_SENSITIVE = {
+        "Extraction/bedrock/us.amazon.nova-lite-v1:0": {"inputTokens": 1000},
+        "Extraction/lambda/requests": {"requests": 9},
+        "Extraction/lambda/duration": {"gb_seconds": 2},
+    }
+
+    @staticmethod
+    def _per_step_phases(metering: dict) -> dict[str, float]:
+        """`cost_by_phase` computed the way it was before `by_meter_key` existed:
+        one `price_metering` call per metering key, rounded at every accumulation."""
+        out: dict[str, float] = {}
+        for key, units in metering.items():
+            phase = key.split("/")[0]
+            out[phase] = round(
+                out.get(phase, 0.0) + lib.price_metering({key: units}).total, 5
+            )
+        return out
+
+    def test_the_fixture_below_really_does_discriminate_the_rounding_order(self):
+        """Otherwise the next assertion is about nothing.
+
+        Rounding once at the end is the natural way to write the replacement, and it
+        would change `cost_by_phase` for a row like this — making a freshly scored
+        grid incomparable with every committed one. This asserts the fixture can see
+        that difference before asserting the code does not make it.
+        """
+        metering = self._ROUNDING_SENSITIVE
+        for key in metering:
+            assert key.split("/", 1)[1] in lib.PRICING, key
+        per_step = self._per_step_phases(metering)
+        at_end = round(
+            sum(lib.price_metering({k: u}).total for k, u in metering.items()), 5
+        )
+        assert per_step["Extraction"] != at_end, (
+            "the counts no longer produce a rounding difference, so the assertion "
+            f"below cannot fail: {per_step} vs {at_end}"
+        )
+
     def test_the_phase_breakdown_is_arithmetically_unchanged(self, scored_doc):
         """Deriving phases from ``by_meter_key`` must give the same numbers as the
         per-entry re-pricing it replaced, or every committed grid's `cost_by_phase`
         becomes incomparable with a freshly scored one."""
-        metering = {
-            f"OCR/{REAL_OCR}": {"pages": 3},
-            f"Extraction/{REAL_MODEL}": {"inputTokens": 1000, "outputTokens": 70},
-            f"Assessment/{REAL_MODEL}": {"inputTokens": 900},
-        }
-        expected = {}
-        for key, units in metering.items():
-            phase = key.split("/")[0]
-            one = lib.price_metering({key: units})
-            expected[phase] = round(expected.get(phase, 0.0) + one.total, 5)
-        assert scored_doc(metering)["cost_by_phase"] == expected
+        for metering in (
+            self._ROUNDING_SENSITIVE,
+            {
+                f"OCR/{REAL_OCR}": {"pages": 3},
+                f"Extraction/{REAL_MODEL}": {"inputTokens": 1000, "outputTokens": 70},
+                f"Assessment/{REAL_MODEL}": {"inputTokens": 900},
+            },
+        ):
+            assert scored_doc(metering)["cost_by_phase"] == self._per_step_phases(
+                metering
+            ), metering
 
     def test_an_unpriced_entry_withholds_every_cost_figure(
         self, scored_doc, unpriced_model
@@ -598,6 +680,23 @@ class TestTheExclusionIsVisibleDownstream:
         # Counted apart from the unread ones: the remedies differ, an unread row
         # needs the stack back and an unpriced one needs a pricing entry.
         assert stats["n_cost_unread"] == 0
+
+    def test_the_count_is_over_successful_runs_only(self):
+        """A run that FAILED contributes no cost figure for a different reason, so
+        counting it here would make the shortfall look bigger than the sample it
+        actually thinned."""
+        rows = [
+            {"cell": "c", "success": True, "cost": 0.30},
+            {
+                "cell": "c",
+                "success": False,
+                "cost": None,
+                "cost_unpriced": "1 unpriceable metering entry: ...",
+            },
+        ]
+        stats = aggregate.cell_stats(rows)["c"]
+        assert stats["n_success"] == 1
+        assert stats["n_cost_unpriced"] == 0
 
     def test_compare_cells_prints_the_shortfall_and_names_its_cause(self, tmp_path):
         cur, base = tmp_path / "cur.json", tmp_path / "base.json"
@@ -715,55 +814,69 @@ class TestTheOtherCallSites:
         assert out["n_docs"] == 2
         assert "cannot price" in capsys.readouterr().out
 
-    def test_no_harness_module_uses_a_cost_result_as_a_number(self):
-        """A class guard over the call sites, not a check on the three known ones.
+    def test_every_cost_call_in_the_harness_is_bound_by_tuple_unpacking(self):
+        """A class guard over the call sites, not a check on the known ones.
 
-        ``per_class_ab`` read ``rc._cost(ib) - rc._cost(ia)`` — a fifth site that a
-        grep for ``price_metering`` does not find, because it goes through
-        ``real_corpus_ab``. ``basedpyright`` reports it (subtracting two tuples), and
-        the whole-tree type gate runs in both CIs, so that is the primary cover; this
-        is the cheaper one that names the file and the line.
+        ``per_class_ab`` read ``rc._cost(ib) - rc._cost(ia)`` — a site a grep for
+        ``price_metering`` does not find, because it goes through ``real_corpus_ab``.
 
-        The rule: a call to ``_cost`` must be bound by tuple unpacking. Using its
-        result in arithmetic or a comparison means the caller believes it is a number,
-        which is the shape that loses the reason.
+        **The rule is positional, not a list of bad shapes:** a ``*_cost`` call must be
+        the value of an assignment whose target is a tuple. Enumerating the ways a
+        result can be misused does not work, and the reason is measured rather than
+        argued — a guard that flagged a call appearing directly inside a ``BinOp``,
+        ``Compare`` or ``UnaryOp`` missed ``(rc._cost(b)[0] or 0.0) - (rc._cost(a)[0]
+        or 0.0)``, which is the *silent* spelling: it pools a withheld cost as zero,
+        which is #1146 restored. ``basedpyright`` does not object to it either —
+        subscripting is legal on the tuple and ``or 0.0`` removes the ``None`` — so it
+        passed both covers while the two louder spellings passed neither.
+
+        Requiring tuple unpacking is deliberately stricter than "is not used as a
+        number": it also rejects stashing the whole tuple in a list to unpack later.
+        That is a shape nothing here needs, and the strictness is the point — the
+        reason has to be handled where the cost is obtained.
         """
         harness = Path(lib.__file__).parent
+        files = sorted(harness.glob("*.py"))
+        assert len(files) > 5, f"harness not found at {harness}"
         offenders = []
-        for path in sorted(harness.glob("*.py")):
-            tree = ast.parse(path.read_text())
-            for node in ast.walk(tree):
-                if not isinstance(node, (ast.BinOp, ast.Compare, ast.UnaryOp)):
-                    continue
-                for child in ast.iter_child_nodes(node):
-                    if (
-                        isinstance(child, ast.Call)
-                        and isinstance(func := child.func, (ast.Name, ast.Attribute))
-                        and (
-                            func.id if isinstance(func, ast.Name) else func.attr
-                        ).endswith("_cost")
-                    ):
-                        offenders.append(f"{path.name}:{child.lineno}")
+        for path in files:
+            offenders += [
+                f"{path.name}:{lineno}"
+                for lineno in _unbound_cost_calls(ast.parse(path.read_text()))
+            ]
         assert not offenders, (
-            "a (cost, unpriced_reason) tuple is being used as a number, so the reason "
-            f"is discarded and the arithmetic is wrong: {offenders}"
+            "a (cost, unpriced_reason) result is being used without unpacking its "
+            "reason, so a withheld cost can be pooled as a number: "
+            f"{offenders}"
         )
 
-    def test_the_guard_above_is_not_vacuous(self, tmp_path):
-        """The same rule, run over the shape it exists to reject."""
-        offending = tmp_path / "fake_ab.py"
-        offending.write_text("x = rc._cost(b) - rc._cost(a)\n")
-        tree = ast.parse(offending.read_text())
-        found = [
-            child.lineno
-            for node in ast.walk(tree)
-            if isinstance(node, (ast.BinOp, ast.Compare, ast.UnaryOp))
-            for child in ast.iter_child_nodes(node)
-            if isinstance(child, ast.Call)
-            and isinstance(child.func, ast.Attribute)
-            and child.func.attr.endswith("_cost")
-        ]
-        assert found == [1, 1]
+    @pytest.mark.parametrize(
+        "source",
+        [
+            "x = rc._cost(b) - rc._cost(a)",
+            "x = rc._cost(b)[0] - rc._cost(a)[0]",
+            "x = (rc._cost(b)[0] or 0.0) - (rc._cost(a)[0] or 0.0)",
+            "g.cost.append(rc._cost(b))",
+            "if rc._cost(b) > rc._cost(a): pass",
+            "total += classification_cost(m)[0]",
+        ],
+        ids=["subtract", "subscript", "subscript-or-zero", "stash", "compare", "sum"],
+    )
+    def test_the_guard_rejects_every_way_of_dropping_the_reason(self, source):
+        """Run through the real collector, including the spelling that defeated the
+        first version of this guard and the type checker at the same time."""
+        assert _unbound_cost_calls(ast.parse(source + "\n"))
+
+    @pytest.mark.parametrize(
+        "source",
+        [
+            "cb, pb = rc._cost(ib)",
+            "cost, tokens, why = classification_cost(m)",
+        ],
+        ids=["two", "three"],
+    )
+    def test_the_guard_accepts_tuple_unpacking(self, source):
+        assert not _unbound_cost_calls(ast.parse(source + "\n"))
 
     def test_score_run_prices_a_clean_run(self, monkeypatch):
         monkeypatch.setattr(lib, "list_doc_prefixes", lambda *a, **k: ["r/clean/"])
@@ -782,6 +895,10 @@ class TestTheOtherCallSites:
         assert out["classification_cost"] > 0
         assert out["classification_cost_per_page"] > 0
         assert out["classification_cost_unpriced"] is None
+        # The count of documents whose metering could not be READ keeps its own key,
+        # named for what it counts so that it is not read as the new one.
+        assert "classification_cost_unread_docs" in out
+        assert out["classification_cost_unread_docs"] is None
 
 
 # --------------------------------------------------------------------------- #
