@@ -174,23 +174,42 @@ _OUTCOME_DETAIL_KEYS = {
     "LambdaFunctionSucceeded": "lambdaFunctionSucceededEventDetails",
     "LambdaFunctionFailed": "lambdaFunctionFailedEventDetails",
     "LambdaFunctionTimedOut": "lambdaFunctionTimedOutEventDetails",
+    # ⚠️ The *Failed-to-even-start family, which is what a THROTTLE or a permission
+    # failure at invoke time produces -- precisely the errors the workflow's retry
+    # ladders enumerate. Omitting these left `failed_functions` empty for that whole
+    # class of failure, which is the one an operator is most likely to be looking at.
+    # Their scheduling predecessor exists, so the causal walk resolves them.
+    "LambdaFunctionScheduleFailed": "lambdaFunctionScheduleFailedEventDetails",
+    "LambdaFunctionStartFailed": "lambdaFunctionStartFailedEventDetails",
     "TaskSucceeded": "taskSucceededEventDetails",
     "TaskFailed": "taskFailedEventDetails",
     "TaskTimedOut": "taskTimedOutEventDetails",
+    "TaskStartFailed": "taskStartFailedEventDetails",
+    "TaskSubmitFailed": "taskSubmitFailedEventDetails",
     "TaskStateEntered": "stateEnteredEventDetails",
     "TaskStateExited": "stateExitedEventDetails",
 }
 
+#: Events that carry a STATE's identity rather than an invocation's, and so must
+#: never be resolved causally. See the note at the resolution site: such an event
+#: precedes its own scheduling event, so a backwards walk can only find another
+#: task's.
+_STATE_TRANSITION_EVENTS = frozenset({"TaskStateEntered", "TaskStateExited"})
+
 #: Failure events that should contribute a failed function name. Both families are
-#: needed because this workflow uses **both** Lambda integration styles: 14 task
+#: needed because this workflow uses **both** Lambda integration styles: 15 task
 #: states name a function ARN directly (giving ``LambdaFunction*`` events) and 9 go
 #: through ``arn:<partition>:states:::lambda:invoke`` (giving ``Task*`` events), so
 #: reading either family alone leaves a third of the pipeline unattributable.
 _FAILURE_EVENTS_WITH_A_FUNCTION = (
     "LambdaFunctionFailed",
     "LambdaFunctionTimedOut",
+    "LambdaFunctionScheduleFailed",
+    "LambdaFunctionStartFailed",
     "TaskFailed",
     "TaskTimedOut",
+    "TaskStartFailed",
+    "TaskSubmitFailed",
 )
 
 #: How far back along ``previousEventId`` to look for the scheduling event.
@@ -273,8 +292,14 @@ def _resolve_invoked_function(
     so the event physically before a failure routinely belongs to a different
     iteration and a different function.
     """
+    # No visited-set. The `for` bounds the walk by construction, so a cycle in
+    # `previousEventId` terminates at the bound and returns None — which is the same
+    # answer a visited-set gives, a few iterations later. A visited-set was here, and
+    # removing it changed no test result in either direction: with the bound present
+    # there is no input that distinguishes the two. Defensive code no test can tell
+    # apart from its own absence is code nobody can maintain or safely change, so it
+    # is gone rather than kept with a test that only appears to cover it.
     current: Optional[Dict[str, Any]] = event
-    seen: set = set()
     for _ in range(_MAX_CAUSAL_HOPS + 1):
         if current is None:
             return None
@@ -282,9 +307,8 @@ def _resolve_invoked_function(
         if current_id in invoked_by_id:
             return invoked_by_id[current_id]
         previous_id = current.get("previousEventId")
-        if previous_id in (None, 0) or previous_id in seen:
+        if previous_id in (None, 0):
             return None
-        seen.add(previous_id)
         current = events_by_id.get(previous_id)
     return None
 
@@ -335,13 +359,30 @@ def extract_lambda_request_ids(
             event_detail = event.get(_OUTCOME_DETAIL_KEYS[event_type])
 
             if event_detail is not None:
-                # The real function name, resolved causally from this event's own
-                # scheduling event. Falls back to the STATE name, which is all a
-                # TaskStateEntered/Exited event carries and is still useful for
-                # keying a request id.
-                function_name = _resolve_invoked_function(
-                    event, events_by_id, invoked_by_id
-                ) or (event_detail.get("name") or None)
+                if event_type in _STATE_TRANSITION_EVENTS:
+                    # ⚠️ A state-transition event is NEVER resolved causally, and the
+                    # reason is structural rather than a tuning choice: a
+                    # `TaskStateEntered` event *precedes* its own scheduling event, so
+                    # walking backwards from it can only ever find somebody else's.
+                    # In a linear history the service points a state's
+                    # `TaskStateEntered` at the previous state's `TaskStateExited`, so
+                    # the walk leaves the state entirely and lands on the PREVIOUS
+                    # task's `LambdaFunctionScheduled`. Measured: a request id carried
+                    # in `ClassificationStep`'s `stateEnteredEventDetails.input` was
+                    # keyed under `OCRFunction`, overwriting OCRFunction's own correct
+                    # id — worse than keying it under the state name, which is what
+                    # this did before.
+                    #
+                    # The state name is the only identity such an event carries, and
+                    # it is the right key for a request id found in the state's input
+                    # or output.
+                    function_name = event_detail.get("name") or None
+                else:
+                    # An outcome event follows its own scheduling event, so the walk
+                    # runs in the direction where the answer exists.
+                    function_name = _resolve_invoked_function(
+                        event, events_by_id, invoked_by_id
+                    )
 
                 # Extract request ID from multiple fields
                 for field_name, field_value in event_detail.items():
