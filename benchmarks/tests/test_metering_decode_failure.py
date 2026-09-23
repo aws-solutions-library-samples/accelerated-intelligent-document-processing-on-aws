@@ -40,8 +40,11 @@ What these tests pin
    ``cmd_analyse`` functions end to end, asserting the *arithmetic*: an excluded
    document changes ``n_pairs`` and the mean, so a test that only checked for a
    printed warning would pass while the zero was still being averaged in.
-6. A third local decoder cannot be written without failing a guard: the
-   ``"Metering"`` literal is confined to ``lib.py``.
+6. A third local decoder fails a guard — two independent rules, because the first
+   one alone was walked past: the ``"Metering"`` literal is confined to ``lib.py``,
+   and so is deciding whether a ``ddb_to_py`` result is a map. The second is what
+   catches a decoder that builds the attribute name at runtime. Their residual is
+   written out where they are implemented rather than left to be discovered.
 
 What is NOT claimed
 -------------------
@@ -593,11 +596,19 @@ class TestTheDecoderCannotBeDuplicated:
     recognise a decoder: reading the attribute at all requires naming it, and the
     name may be written in exactly one module.
 
-    ⚠️ **What it does not catch**, stated rather than left to be discovered: a
-    computed name (``"Meter" + "ing"``), a name imported from elsewhere, or a
-    constant defined in another module. Nothing here needs any of those, and the
-    behavioural tests above are the primary cover — this is the cheap extra that
-    names the file.
+    Two **independent** rules, because one was not enough and the gap was found by
+    trying rather than by reading: naming the attribute is caught by the first, and a
+    *computed* name (``"Meter" + "ing"``) walks past it and is caught by the second,
+    which is about decoding rather than about naming. Each rule's reach is written
+    where it is implemented.
+
+    ⚠️ **What neither catches**, stated because a guard whose limits are unstated is
+    how the last one in this repository failed: a decoder that neither names the
+    attribute as a literal nor tests the decoded value with ``isinstance(..., dict)``
+    — for example one reaching it through a constant imported from another module and
+    checking the type some other way. No ast rule closes that, and the behavioural
+    tests above are the primary cover; these two are the cheap extra that name the
+    file and line for the shapes somebody writes by accident.
     """
 
     @staticmethod
@@ -622,6 +633,115 @@ class TestTheDecoderCannotBeDuplicated:
             "a second module names the `Metering` attribute, which means a second "
             f"decoder: {naming}. Call lib.metering_of_item(item) instead."
         )
+
+    @staticmethod
+    def _modules_decoding_into_a_dict_test() -> dict[str, list[int]]:
+        """Modules that call ``ddb_to_py`` and then ask whether the result is a dict.
+
+        The second rule, and it is about the decoding rather than about the attribute
+        name — which is what lets it catch a decoder that builds the name at runtime.
+        A metering decoder has to do both of these things: get a value out of
+        ``ddb_to_py`` and decide whether it came back as a map. Reading
+        ``ObjectStatus`` or ``Sections`` through ``ddb_to_py`` does neither, so the
+        rule does not touch the legitimate callers.
+        """
+
+        def _calls_the_decoder(expression: ast.AST) -> bool:
+            """Anywhere in the assigned expression, not just at its root.
+
+            ⚠️ This is the part to keep whole-subtree. Requiring the call to *be* the
+            assigned value missed ``m = lib.ddb_to_py(item.get(attr)) if attr in item
+            else None`` — an ``IfExp``, and the shape the original decoders were
+            written in — while catching the same decoder written without the
+            conditional. Measured: the conditional form walked past and the plain
+            form did not, which is a guard sensitive to spelling rather than to what
+            the code does.
+            """
+            return any(
+                isinstance(node, ast.Call)
+                and isinstance(fn := node.func, (ast.Name, ast.Attribute))
+                and (fn.id if isinstance(fn, ast.Name) else fn.attr) == "ddb_to_py"
+                for node in ast.walk(expression)
+            )
+
+        out = {}
+        for path in sorted(Path(HARNESS).glob("*.py")):
+            tree = ast.parse(path.read_text())
+            decoded = {
+                target.id
+                for node in ast.walk(tree)
+                if isinstance(node, ast.Assign) and _calls_the_decoder(node.value)
+                for target in node.targets
+                if isinstance(target, ast.Name)
+            }
+            lines = [
+                node.lineno
+                for node in ast.walk(tree)
+                if isinstance(node, ast.Call)
+                and isinstance(node.func, ast.Name)
+                and node.func.id == "isinstance"
+                and len(node.args) == 2
+                and isinstance(node.args[0], ast.Name)
+                and node.args[0].id in decoded
+                and isinstance(node.args[1], ast.Name)
+                and node.args[1].id == "dict"
+            ]
+            if lines:
+                out[path.name] = lines
+        return out
+
+    def test_only_lib_decides_whether_a_decoded_value_is_a_metering_map(self):
+        naming = self._modules_decoding_into_a_dict_test()
+        assert "lib.py" in naming, (
+            "lib.py no longer decodes into a dict test, so this rule measures nothing"
+        )
+        assert set(naming) == {"lib.py"}, (
+            "a second module decodes a DynamoDB attribute and asks whether it is a "
+            f"map, which is a metering decoder however it names the attribute: {naming}"
+        )
+
+    def test_the_second_rule_sees_a_computed_attribute_name(
+        self, tmp_path, monkeypatch
+    ):
+        """The spelling that walks past the first rule.
+
+        Found by trying it rather than by reading: the first rule was written, the
+        defect was reintroduced with ``"Meter" + "ing"``, and the whole suite stayed
+        green. That is the same failure the ``_cost`` guard in #1146 had.
+        """
+        (tmp_path / "lib.py").write_text("m = ddb_to_py(x)\nok = isinstance(m, dict)\n")
+        # Written as a conditional expression, which is how both original decoders
+        # were written and which an earlier version of this rule did not see.
+        (tmp_path / "sneaky_ab.py").write_text(
+            'attr = "Meter" + "ing"\n'
+            "m = lib.ddb_to_py(item.get(attr)) if attr in item else None\n"
+            "out = m if isinstance(m, dict) else {}\n"
+        )
+        monkeypatch.setattr(
+            "test_metering_decode_failure.HARNESS", str(tmp_path), raising=False
+        )
+        # The first rule does not see it...
+        assert set(self._modules_naming_the_attribute()) == set()
+        # ...and the second does.
+        assert set(self._modules_decoding_into_a_dict_test()) == {
+            "lib.py",
+            "sneaky_ab.py",
+        }
+
+    def test_the_second_rule_leaves_the_legitimate_decoders_alone(
+        self, tmp_path, monkeypatch
+    ):
+        """Reading a non-metering attribute is not a metering decoder."""
+        (tmp_path / "lib.py").write_text("m = ddb_to_py(x)\nok = isinstance(m, dict)\n")
+        (tmp_path / "fine_ab.py").write_text(
+            "status = lib.ddb_to_py(item.get(status_attr))\n"
+            "secs = lib.ddb_to_py(item.get(sections_attr)) or []\n"
+            "ok = isinstance(secs, list)\n"
+        )
+        monkeypatch.setattr(
+            "test_metering_decode_failure.HARNESS", str(tmp_path), raising=False
+        )
+        assert set(self._modules_decoding_into_a_dict_test()) == {"lib.py"}
 
     def test_the_guard_sees_a_second_module_that_names_it(self, tmp_path, monkeypatch):
         """Run through the real collector over a synthetic harness directory."""
