@@ -105,6 +105,7 @@ class DynamoDBClient:
         expression_attribute_names: Optional[Dict[str, str]] = None,
         expression_attribute_values: Optional[Dict[str, Any]] = None,
         return_values: str = "ALL_NEW",
+        condition_expression: Optional[str] = None,
     ) -> Dict[str, Any]:
         """
         Update an item in the DynamoDB table.
@@ -115,6 +116,14 @@ class DynamoDBClient:
             expression_attribute_names: Optional attribute name mappings
             expression_attribute_values: Optional attribute value mappings
             return_values: What to return after the update
+            condition_expression: Optional ConditionExpression, evaluated by
+                DynamoDB against the item as it exists at write time. This is the
+                only way a read-modify-write through this client can detect that
+                the state it read has since changed: without one, every writer
+                succeeds and the loser's data is gone with nothing reporting it.
+                Raises DynamoDBError with error_code
+                ``ConditionalCheckFailedException`` if the condition fails, which
+                is the caller's signal to re-read and retry.
 
         Returns:
             Dict containing the response from DynamoDB
@@ -134,6 +143,9 @@ class DynamoDBClient:
 
             if expression_attribute_values:
                 update_params["ExpressionAttributeValues"] = expression_attribute_values
+
+            if condition_expression:
+                update_params["ConditionExpression"] = condition_expression
 
             response = self.table.update_item(**update_params)
             logger.debug(f"Successfully updated item with key: {key}")
