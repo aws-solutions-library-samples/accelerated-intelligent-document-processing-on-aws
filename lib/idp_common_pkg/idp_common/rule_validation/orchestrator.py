@@ -93,6 +93,25 @@ def _normalize_page_reference(page: Any) -> Optional[Tuple[str, Tuple[int, int, 
     return text, (_NON_NUMERIC_PAGE_RANK, 0, text)
 
 
+def is_section_results_key(key: str) -> bool:
+    """Is ``key`` one of the per-section rule-validation result objects?
+
+    One predicate rather than one per call site. The loader required both halves —
+    ``_responses.json`` **and** ``section_`` — while the section count checked only the
+    suffix, so a key the loader skipped was still counted: measured with two keys under
+    the right prefix where one lacked ``section_``, one object was read and the count
+    came back 2, taking the LLM summarization branch for a single-section document.
+    That is the same wrong-branch cost #1143 was about, arriving through a different
+    dropped key.
+
+    Not reachable from the pipeline, which always writes
+    ``section_<id>_responses.json``. It is reachable through ``section_uris``, which is
+    a documented parameter, and a count that disagrees with what was read is worth
+    removing rather than documenting.
+    """
+    return key.endswith("_responses.json") and "section_" in key
+
+
 class RuleValidationOrchestratorService:
     """Service containing existing summarization methods from service.py."""
 
@@ -658,7 +677,7 @@ class RuleValidationOrchestratorService:
             chunking_occurred = False
 
             for file_key in section_files:
-                if file_key.endswith("_responses.json") and "section_" in file_key:
+                if is_section_results_key(file_key):
                     logger.debug(f"Loading section results from: {file_key}")
 
                     # Load section responses
@@ -1652,7 +1671,7 @@ tr:hover {
                 pattern = f"{prefix}section_*_responses.json"
                 section_files = s3.find_matching_files(document.output_bucket, pattern)
                 num_sections = len(
-                    [f for f in section_files if f.endswith("_responses.json")]
+                    [f for f in section_files if is_section_results_key(f)]
                 )
             else:
                 # Counted from the keys the loader actually READ, not from the raw
@@ -1662,7 +1681,7 @@ tr:hover {
                 # defect this change exists to remove, reintroduced on the defensive
                 # path.
                 num_sections = len(
-                    [key for key in section_keys if key.endswith("_responses.json")]
+                    [key for key in section_keys if is_section_results_key(key)]
                 )
 
             needs_summarization = (num_sections > 1) or chunking_occurred

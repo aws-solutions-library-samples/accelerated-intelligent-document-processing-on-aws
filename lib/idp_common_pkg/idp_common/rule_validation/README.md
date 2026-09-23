@@ -428,8 +428,14 @@ reported at the stale value ([#1143](https://github.com/aws-solutions-library-sa
 The list is also what the section count is taken from, so a stale object otherwise
 routes a single-section document through LLM summarization.
 
-A URI naming a bucket other than the document's `output_bucket` is dropped with a
-warning rather than read, and does not count towards the section total.
+**A URI the loader will not read does not count towards the section total either.**
+Two are dropped: one naming a bucket other than the document's `output_bucket`, which
+is logged as a warning, and one whose key is not a per-section result — the key must
+end `_responses.json` **and** contain `section_`, which is the shape
+`RuleValidationService` writes (`section_<id>_responses.json`). Both the load and the
+count apply that one predicate, so the count is always of the objects actually read;
+they used to differ, and a key the loader skipped still pushed the count past one and
+bought an unnecessary LLM summarization.
 
 ### Customizing Recommendation Options
 
@@ -991,8 +997,8 @@ orchestrator = RuleValidationOrchestratorService(config=config)
 
 # Consolidate section results. Omitting `section_uris` reads every object under
 # `<input_key>/rule_validation/sections/`, which is what you want when
-# re-consolidating a prefix by hand and NOT what a pipeline run wants -- see the note
-# below.
+# re-consolidating a prefix by hand and NOT what a pipeline run wants -- see
+# "`section_uris`: pass this run's list, or accept the prefix" above.
 updated_document = orchestrator.consolidate_and_save(
     document=document,
     config=config,

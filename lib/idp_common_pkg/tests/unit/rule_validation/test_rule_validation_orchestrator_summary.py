@@ -1489,6 +1489,68 @@ class TestConsolidationReadsWhatThisRunWrote:
             self.THIS_RUN
         ]
 
+    def test_the_section_count_agrees_with_what_the_loader_read(self):
+        """The count and the load must apply the SAME rule to a key.
+
+        The loader required `_responses.json` **and** `section_` while the count checked
+        only the suffix, so a key the loader skipped was still counted. Measured with
+        two keys under the right prefix where one lacks `section_`: one object read,
+        count 2, LLM summarization branch taken for a single-section document — the same
+        wrong-branch cost as the defect this change is about, arriving through a
+        different dropped key.
+
+        Not reachable from the pipeline, which always writes
+        `section_<id>_responses.json`, but reachable through `section_uris`, which is a
+        documented parameter. Both call sites now share one predicate, and this asserts
+        the consequence rather than the sharing, so an inlined copy that drifts fails
+        here too.
+        """
+        service = _service()
+        uris = [
+            "s3://bucket/doc/rule_validation/sections/section_1_responses.json",
+            # Right bucket, right prefix, right suffix -- but not a section result.
+            "s3://bucket/doc/rule_validation/sections/aggregate_responses.json",
+        ]
+
+        with patch("idp_common.rule_validation.orchestrator.s3") as s3_mock:
+            s3_mock.get_json_content.return_value = {
+                "responses": {"Lending": [_response("r1", "Pass")]}
+            }
+            document = MagicMock()
+            document.input_key = "doc"
+            document.output_bucket = "bucket"
+            document.id = "doc-1"
+            document.metering = {}
+
+            service.save_policy_type_responses = MagicMock(return_value=[])
+            service._generate_consolidated_summary = MagicMock(return_value={})
+            service.save_consolidated_summary = MagicMock(return_value="s3://b/k")
+            service._process_z3_cross_section_rules = _async_identity
+
+            summarized = {"called": False}
+
+            async def _never(*args, **kwargs):
+                summarized["called"] = True
+                return {}
+
+            service._summarize_responses_with_llm = _never
+
+            import asyncio
+
+            asyncio.run(
+                service.consolidate_and_save_all(
+                    document, {}, multiple_sections=None, section_uris=uris
+                )
+            )
+
+        assert s3_mock.get_json_content.call_count == 1, (
+            "the loader read a key it should have skipped"
+        )
+        assert not summarized["called"], (
+            "a single-section document was routed through LLM summarization because a "
+            "key the loader skipped was still counted"
+        )
+
     def test_a_dropped_uri_does_not_count_towards_the_section_total(self):
         """The count must come from the keys that were READ, not from the raw list.
 
