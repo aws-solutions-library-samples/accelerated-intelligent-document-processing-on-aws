@@ -448,8 +448,17 @@ def _add_entry_to_pricing_config(
             logger.info(f"{config_key} not found in ConfigurationTable, skipping")
             return
 
-        item = _decompress_config_item(raw_item)
-        pricing_list: List[Dict[str, Any]] = item.get("pricing", [])
+        # Built from the row before anything is appended, and the order matters.
+        # On an uncompressed row `_decompress_config_item` returns the *same* dict
+        # it was handed, so `item` and `raw_item` are one object and the list under
+        # `pricing` is one list: appending to it in place would edit the very value
+        # the guard is supposed to name, leaving the condition describing content
+        # that has never been stored, and the write refused on every attempt with
+        # nothing competing at all. Hence a guard captured first, and copies rather
+        # than the row's own containers.
+        guard = _pricing_write_guard(raw_item)
+        item = dict(_decompress_config_item(raw_item))
+        pricing_list: List[Dict[str, Any]] = list(item.get("pricing", []))
 
         # Check if entry already exists. On a rebuilt attempt this is also what
         # makes the retry converge rather than loop: if the writer that won the
@@ -469,9 +478,7 @@ def _add_entry_to_pricing_config(
 
         # Write back, refusing to overwrite content that moved under us.
         try:
-            _write_pricing_config(
-                config_table, item, guard=_pricing_write_guard(raw_item)
-            )
+            _write_pricing_config(config_table, item, guard=guard)
         except config_table.meta.client.exceptions.ConditionalCheckFailedException:
             logger.info(
                 f"{config_key} changed while adding {new_entry['name']}; "

@@ -170,6 +170,11 @@ def _add_other_deployments_entry(table: Any) -> None:
     )
 
 
+def _legacy_row(pricing: List[Dict[str, Any]]) -> Dict[str, Any]:
+    """A row in the pre-compression shape, with `pricing` at the top level."""
+    return {"Configuration": "DefaultPricing", "pricing": pricing}
+
+
 def _operator_edits_pricing(table: Any) -> None:
     """The other real writer: a pricing edit saved from the UI.
 
@@ -223,16 +228,43 @@ class TestPricingAppendUnderOverlap:
         assert harness.wrapper.rejections == 1
 
     @mock_aws
-    def test_a_legacy_uncompressed_row_is_guarded_too(self, mod):
-        # Rows written before compression keep `pricing` at the top level, so the
-        # guard has to name that attribute instead. Either writer migrates the row
-        # on its next write, which the guard also detects.
-        legacy = {
-            "Configuration": "DefaultPricing",
-            "pricing": [_entry("bedrock/nova-pro")],
-        }
+    def test_an_uncontended_append_to_a_legacy_row_is_not_refused(self, mod):
+        """The guard must describe stored content, not content built from it.
+
+        Rows written before compression keep `pricing` at the top level, and on
+        such a row the decompressing read returns the row object itself -- so a
+        guard built from it after the list has been appended to names content that
+        has never been stored, and the write is refused on every attempt with
+        nothing competing at all. That is a way for the guard to be false by
+        construction rather than a lost conflict, so it is asserted with **no**
+        competitor: a contended test cannot see it, because the competitor's own
+        write migrates the row to the compressed format and the second attempt then
+        reads a fresh object and succeeds.
+        """
         harness = _Harness(
-            {"DefaultPricing": legacy}, competitor=_operator_edits_pricing
+            {"DefaultPricing": _legacy_row([_entry("bedrock/nova-pro")])}
+        )
+        mod._add_entry_to_pricing_config(
+            harness.wrapper, "DefaultPricing", _entry(DEPLOYMENT_ARN)
+        )
+        assert _names(harness.pricing("DefaultPricing")) == {
+            "bedrock/nova-pro",
+            DEPLOYMENT_ARN,
+        }
+        assert harness.wrapper.rejections == 0
+        assert harness.wrapper.writes == 1
+
+    @mock_aws
+    def test_a_legacy_row_is_guarded_against_another_legacy_writer(self, mod):
+        # The contended version of the same branch. The competitor stays in the
+        # legacy shape on purpose: one that wrote the compressed shape would move
+        # the row off this branch after the first attempt, so the retry would be
+        # measuring the compressed path.
+        harness = _Harness(
+            {"DefaultPricing": _legacy_row([_entry("bedrock/nova-pro")])},
+            competitor=lambda table: table.put_item(
+                Item=_legacy_row([_entry("bedrock/nova-lite")])
+            ),
         )
         mod._add_entry_to_pricing_config(
             harness.wrapper, "DefaultPricing", _entry(DEPLOYMENT_ARN)
@@ -273,9 +305,10 @@ class TestPricingAppendUnderOverlap:
         #
         # The competitor has to write *different* content on every read, not the
         # same content repeatedly: the guard compares stored content, so a writer
-        # that rewrites an identical body legitimately leaves the condition
-        # holding. Getting this wrong is what made the first version of this test
-        # report a successful append after one rebuild.
+        # that rewrites an identical body legitimately leaves the condition holding
+        # and the append succeeds on the next attempt. A competitor that repeats one
+        # body therefore does not exhaust the budget and this assertion would not
+        # hold.
         moves = iter(range(1, 100))
         harness = _Harness(
             {"DefaultPricing": _compressed_row("DefaultPricing", {"pricing": []})},
