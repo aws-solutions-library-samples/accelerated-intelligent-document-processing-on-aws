@@ -76,6 +76,17 @@ CAPACITY_ENV = {
     "RECOMMENDATION_HIGH_PAGE_THRESHOLD": "20",
     "BEDROCK_MODEL_QUOTA_CODES": json.dumps({"us.amazon.nova-lite-v1:0": "L-TPM"}),
     "BEDROCK_MODEL_RPM_QUOTA_CODES": json.dumps({"us.amazon.nova-lite-v1:0": "L-RPM"}),
+    # A region and dummy credentials, because three of the quota tests construct a real
+    # Service Quotas client before failing on the mapping. A developer machine supplies a
+    # region from ~/.aws/config and CI does not, so without these the file passes locally
+    # and fails in CI with "You must specify a region" -- and the repo's hermeticity gate
+    # does not catch it, because that gate asserts a suite COLLECTS without a region, and
+    # collection is not where a client is built. Set here rather than in the three tests
+    # so the whole module is region-independent by construction.
+    "AWS_DEFAULT_REGION": "us-east-1",
+    "AWS_ACCESS_KEY_ID": "testing",
+    "AWS_SECRET_ACCESS_KEY": "testing",  # nosec B105 - dummy moto credential
+    "AWS_SESSION_TOKEN": "testing",  # nosec B105 - dummy moto credential
 }
 
 

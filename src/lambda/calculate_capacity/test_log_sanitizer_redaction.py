@@ -118,7 +118,12 @@ def test_a_present_but_empty_credential_is_distinguishable_from_an_absent_one():
     failure, and collapsing both to the placeholder loses the one an operator can
     act on.
     """
-    clean = sanitize_event_for_logging({"password": None, "apiKey": ""})
+    payload = {
+        # nosec B105 - the key NAME is the input under test; there is no secret here
+        "password": None,
+        "apiKey": "",
+    }
+    clean = sanitize_event_for_logging(payload)
     assert clean["password"] is None
     assert clean["apiKey"] == REDACTED
 

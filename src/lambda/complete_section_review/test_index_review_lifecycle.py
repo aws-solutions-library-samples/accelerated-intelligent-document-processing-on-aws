@@ -129,8 +129,8 @@ def aws(monkeypatch):
     for name, value in {
         "AWS_DEFAULT_REGION": "us-east-1",
         "AWS_ACCESS_KEY_ID": "testing",
-        "AWS_SECRET_ACCESS_KEY": "testing",
-        "AWS_SESSION_TOKEN": "testing",
+        "AWS_SECRET_ACCESS_KEY": "testing",  # nosec B105 - dummy moto credential
+        "AWS_SESSION_TOKEN": "testing",  # nosec B105 - dummy moto credential
         "TRACKING_TABLE_NAME": TRACKING_TABLE,
         "OUTPUT_BUCKET": OUTPUT_BUCKET,
         "TEST_SET_BUCKET": TEST_SET_BUCKET,

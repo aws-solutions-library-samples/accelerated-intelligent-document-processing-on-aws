@@ -66,8 +66,8 @@ TRACKING_TABLE = "capacity-tracking"
 CAPACITY_ENV = {
     "AWS_DEFAULT_REGION": "us-east-1",
     "AWS_ACCESS_KEY_ID": "testing",
-    "AWS_SECRET_ACCESS_KEY": "testing",
-    "AWS_SESSION_TOKEN": "testing",
+    "AWS_SECRET_ACCESS_KEY": "testing",  # nosec B105 - dummy moto credential
+    "AWS_SESSION_TOKEN": "testing",  # nosec B105 - dummy moto credential
     "TRACKING_TABLE": TRACKING_TABLE,
     "METERING_TABLE_NAME": TRACKING_TABLE,
     "LAMBDA_MEMORY_GB": "2.0",
@@ -2091,7 +2091,7 @@ def test_the_invocation_event_is_logged_with_its_identity_redacted(wired, capsys
     event = dict(HAPPY_INPUT)
     event["identity"] = {
         "claims": {"email": "operator@example.com"},
-        "token": "abc.def",
+        "token": "abc.def",  # nosec B105 - an opaque request id, not a credential
     }
     index.lambda_handler(event, None)
     printed = capsys.readouterr().out
