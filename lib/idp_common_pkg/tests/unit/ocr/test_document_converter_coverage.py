@@ -1231,19 +1231,16 @@ class TestTableElement:
             ["r1c0", "r1c1", "r1c2"],
         ]
 
-    def test_no_row_of_a_real_docx_table_is_marked_as_a_header(self):
-        """Pins current behaviour, and it is a defect.
+    def test_the_first_row_of_a_real_docx_table_is_marked_as_a_header(self):
+        """The header row keeps its emphasis in the rendered page image (#1157).
 
-        `is_header = table.rows[0] == row` relies on `==`, but `table.rows[idx]`
-        builds a fresh `_Row` each access and `python-docx` gives `_Row` no
-        `__eq__`, so the comparison is identity against a different object and is
-        always false. The header row therefore loses its bold and its grey
-        background in the rendered page, leaving a model no visual cue for which
-        row names the columns.
-
-        The same helper reports `True` when handed `MagicMock` rows in a plain
-        list, because those do compare equal by identity — which is why a
-        mock-based test of this function reports the opposite of the truth."""
+        This asserted the opposite until the comparison was fixed:
+        `is_header = table.rows[0] == row` relied on `==`, but `table.rows[idx]`
+        builds a fresh `_Row` on each access and `python-docx` gives `_Row` no
+        `__eq__`, so it was identity against a different object and false for every
+        row. Every table in every `.docx` lost its header bold and grey background in
+        the page image, leaving a vision model no cue for which row names the columns,
+        while the page *text* was unaffected — so nothing downstream could notice."""
         document = Document()
         table = document.add_table(rows=2, cols=1)
         table.cell(0, 0).text = "Header"
@@ -1252,12 +1249,62 @@ class TestTableElement:
         element = DocumentConverter._build_table_element(table)
         assert element is not None
         assert [cell["is_header"] for row in element["data"] for cell in row] == [
-            False,
+            True,
             False,
         ]
 
-        # A fresh _Row per access is the mechanism.
+    def test_a_fresh_row_object_per_access_is_still_the_underlying_hazard(self):
+        """The property that made the old comparison wrong, pinned on its own.
+
+        Kept because the fix reads an index and an XML element rather than comparing
+        `_Row` objects, and the reason for that is only visible here: if a future
+        python-docx gave `_Row` a value `__eq__`, a reader would have no way to tell
+        from the code why the indirection was there. Measured on python-docx 1.2.0.
+        """
+        document = Document()
+        table = document.add_table(rows=2, cols=1)
+
         assert table.rows[0] is not table.rows[0]
+        assert table.rows[0] != table.rows[0]
+        # The XML element behind it IS stable, which is what the fix relies on.
+        assert table.rows[0]._tr is table.rows[0]._tr
+
+    def test_the_formats_own_header_flag_is_preferred_over_the_first_row(self):
+        """`<w:trPr><w:tblHeader/>` is what Word writes for "repeat as header row".
+
+        It can mark more than one row, which a first-row rule cannot express, so where
+        the author set it that is the signal used. Two-row headers are ordinary in
+        financial tables — a spanning title above the column names.
+        """
+        from docx.oxml.ns import qn
+
+        document = Document()
+        table = document.add_table(rows=3, cols=1)
+        for idx in range(3):
+            table.cell(idx, 0).text = f"row-{idx}"
+
+        # Mark rows 0 and 1 as repeating header rows.
+        for idx in (0, 1):
+            tr_pr = table.rows[idx]._tr.get_or_add_trPr()
+            tr_pr.append(tr_pr.makeelement(qn("w:tblHeader"), {}))
+
+        element = DocumentConverter._build_table_element(table)
+        assert element is not None
+        assert [row[0]["is_header"] for row in element["data"]] == [True, True, False]
+
+    def test_a_table_whose_only_marked_header_is_not_the_first_row(self):
+        """The discriminating case for preferring the flag: a marked row that a
+        first-row rule would miss, and a first row it would wrongly emphasise."""
+        from docx.oxml.ns import qn
+
+        document = Document()
+        table = document.add_table(rows=3, cols=1)
+        tr_pr = table.rows[1]._tr.get_or_add_trPr()
+        tr_pr.append(tr_pr.makeelement(qn("w:tblHeader"), {}))
+
+        element = DocumentConverter._build_table_element(table)
+        assert element is not None
+        assert [row[0]["is_header"] for row in element["data"]] == [False, True, False]
 
     def test_a_table_with_no_rows_is_reported_as_absent(self):
         """Returning an element with empty data would put a zero-row table into

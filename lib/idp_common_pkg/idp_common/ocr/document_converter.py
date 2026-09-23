@@ -649,14 +649,53 @@ class DocumentConverter:
         }
 
     @staticmethod
+    def _header_row_indices(table) -> set:
+        """Which rows of a ``python-docx`` table are header rows.
+
+        ⚠️ **Do not compare ``_Row`` objects.** ``table.rows[idx]`` builds a *fresh*
+        ``_Row`` on every access and ``python-docx`` defines no ``__eq__`` on it, so
+        ``==`` is identity against a different object: measured on python-docx 1.2.0,
+        ``table.rows[0] is table.rows[0]`` is ``False`` and
+        ``table.rows[0] == row`` is ``False`` for **every** row including the first.
+        That is what made every header row lose its bold and its grey background in
+        the rendered page image, leaving a vision model no cue for which row names the
+        columns. The underlying ``_tr`` XML element *is* stable, which is why the
+        fallback below indexes rather than comparing.
+
+        The format's own signal is preferred where the author set it:
+        ``<w:trPr><w:tblHeader/></w:trPr>`` is what Word writes for "repeat as header
+        row at the top of each page", and it can mark more than one row, which a
+        first-row rule cannot express. Most tables do not carry it — it is only
+        written when the author ticks that box — so the first row is the fallback,
+        which is the ordinary convention and what a reader expects to see emphasised.
+        """
+        try:
+            from docx.oxml.ns import qn
+
+            tbl_header = qn("w:tblHeader")
+        except Exception:  # pragma: no cover - python-docx is an ocr extra
+            tbl_header = None
+
+        marked = set()
+        if tbl_header is not None:
+            for idx, row in enumerate(table.rows):
+                tr_pr = getattr(row._tr, "trPr", None)
+                if tr_pr is not None and tr_pr.find(tbl_header) is not None:
+                    marked.add(idx)
+        if marked:
+            return marked
+        return {0} if len(table.rows) else set()
+
+    @staticmethod
     def _build_table_element(table) -> dict | None:
         """Build a table element dict from a python-docx Table."""
         table_data = []
-        for row in table.rows:
+        header_rows = DocumentConverter._header_row_indices(table)
+        for idx, row in enumerate(table.rows):
             row_data = []
+            is_header = idx in header_rows
             for cell in row.cells:
                 cell_text = cell.text.strip()
-                is_header = table.rows[0] == row
                 row_data.append(
                     {
                         "text": cell_text,
