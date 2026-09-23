@@ -5502,12 +5502,12 @@ Resources:
           - id: W89
             reason: "Function only interacts with AWS APIs (Athena, Glue, CloudWatch, S3) — no VPC needed"
           - id: W92
-            reason: "ReservedConcurrentExecutions=1 already pins concurrency; the setting is present, not absent"
+            reason: "ReservedConcurrentExecutions=12 pins concurrency (was 1, bumped to accommodate the migration state machine's Map MaxConcurrency=8 + 3 scheduled crons + 1 headroom); the setting is present, not absent"
           - id: W12
             reason: "cloudwatch:GetMetricData and resourcegroupstaggingapi:GetResources require * resource — no partition-level scoping available"
       # checkov:skip=CKV_AWS_116: "Not SQS-triggered; DLQ not applicable to EventBridge scheduled invocations"
       # checkov:skip=CKV_AWS_117: "Function does not require VPC access"
-      # checkov:skip=CKV_AWS_115: "Concurrency pinned to 1 to prevent idempotency check race — no headroom desired"
+      # checkov:skip=CKV_AWS_115: "Concurrency pinned to 12 (see ReservedConcurrentExecutions block comment below for the load-bearing rationale — pairs with migration state machine's MaxConcurrency=8, backstopped by HeadObject-skip per partition + Athena ClientRequestToken dedup)"
       # checkov:skip=CKV_AWS_173: "Environment variables contain only configuration"
     Properties:
       PermissionsBoundary:
@@ -5581,8 +5581,26 @@ Resources:
       #   headroom slot = 12. Chosen to stay well under Athena's default
       #   20 DML-concurrency per workgroup (8 chunks × 2 arms = 16
       #   concurrent Athena queries, leaves 4 for the routine crons).
-      # Idempotency guards (HeadObject-skip per partition, Athena
-      # ClientRequestToken dedup) make concurrent invocations safe.
+      #
+      # How the residual fresh-salt race from (1) is closed at =12:
+      # the HeadObject-skip in each rollup arm (``_partition_already_written``)
+      # fires BEFORE the Athena INSERT is issued. Once the first writer's
+      # parquet lands, a concurrent second writer's HeadObject probe hits
+      # HTTP 200 and short-circuits, so the fresh-salt branch never runs.
+      # The narrow remaining window is [first writer's Athena SUCCEEDED →
+      # first writer's S3 PutObject ACKed] where the second's HeadObject
+      # can still 404 — bounded by S3 write latency (~tens of ms) and
+      # only reachable when TWO concurrent invocations both HIT the
+      # cached-failure branch for the same partition, which itself
+      # requires each to have observed a prior FAILED QueryExecutionId
+      # against the same idempotency key. That state does not arise in
+      # the state machine (per-chunk retries are sequential inside SFN
+      # Retry, not concurrent) or on the routine cron path (each cron
+      # is a single invocation for its (table_name, partition) tuple).
+      # It could arise only if Lambda async retries of a hard-timed-out
+      # invocation overlapped in wall time — the scheduled invokes are
+      # protected by ``MaximumEventAgeInSeconds: 3600`` below, and the
+      # SFN chunks use SFN Retry not Lambda async.
       ReservedConcurrentExecutions: 12
       # Async failures (Athena down for all 3 async retries) land in the
       # DLQ so an operator sees the data-hole instead of the hour silently

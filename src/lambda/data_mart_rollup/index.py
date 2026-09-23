@@ -1940,7 +1940,17 @@ def _check_hours_failed(
             failing_chunks,
         )
     return {
-        "all_hours_clean": total_failed == 0 and total_partial == 0,
+        # Floor on total_attempted > 0: a zero-work aggregation (empty
+        # chunk_results AND daily_result=None, or PlanChunks having
+        # produced 0 chunks) would otherwise satisfy the two ``==0``
+        # conditions and route the state machine to WriteCompletedMarker
+        # with nothing actually populated. That is never the intended
+        # signal — if the state machine reached the aggregator with no
+        # work observed, treat it as unclean so the operator sees the
+        # anomaly instead of a false-success marker.
+        "all_hours_clean": (
+            total_attempted > 0 and total_failed == 0 and total_partial == 0
+        ),
         # ``total_*`` are unit-agnostic sums (chunk hours + daily
         # units) preserved for the state machine's Choice state and
         # for backward compatibility with any operator consuming this
@@ -1982,7 +1992,29 @@ def _run_backfill_daily_range(anchor: datetime, days: int) -> Dict[str, Any]:
     Returns a per-day success/failure summary the state machine's
     ``CheckMigrationSuccess`` aggregator consumes alongside the chunk
     results — same shape (``hours_attempted/succeeded/partial/failed``,
-    treating each day as one "hour" for aggregation purposes).
+    treating each day as one "hour" for aggregation purposes). Each
+    counter increments once per DAY iterated, not per hour; the field
+    names are ``hours_*`` because that is what ``_check_hours_failed``'s
+    ``_extract`` shape expects (the aggregator sums this alongside the
+    chunk_hours_* contributions into ``daily_units_*`` and ``total_*``
+    fields, where the ``daily_units_*`` breakdown is the truthful
+    per-day view — see the state machine's CheckMigrationSuccess
+    ResultSelector). Renaming the return dict keys here would break
+    ``_extract`` without a coordinated aggregator change.
+
+    Budget behaviour: this function iterates days sequentially inside
+    one Lambda invocation. Per-day work is typically 5-10 s (small
+    Athena INSERTs), so 30 days finishes in 150-300 s — well within
+    the 900 s Lambda budget. At the upper bound of the accepted range
+    (days=90) with worst-case Athena warmups (~20 s per day = 1800 s
+    total) the invocation will hit Lambda's 900 s timeout mid-run;
+    the state machine's BackfillDailyRange Retry (MaxAttempts=5,
+    ErrorEquals includes States.Timeout) then re-fires. Because each
+    day's rollup is idempotent (HeadObject-skip in ``_run_daily``),
+    every retry HeadObject-skips the days already completed and picks
+    up from where the previous attempt left off. 5 × 900 s = 4500 s of
+    forward-progress budget covers the 90-day worst case; typical
+    ``Days: 30`` deployments complete on the first attempt.
     """
     if days < 1 or days > 90:
         raise ValueError(f"backfill_daily_range: days={days} out of range (1..90)")
@@ -2059,12 +2091,18 @@ def _run_reconcile(anchor: datetime) -> Dict[str, Any]:
     S3). Non-trivial only when a gap is present, in which case it does
     exactly the work the scheduled rollup would have done.
 
-    Anchored to ``anchor - 1h`` at the top (not ``anchor``) so the
+    Range end is the top-of-hour of ``anchor`` itself (an exclusive
+    upper bound). At :35 that resolves to :00 of the current hour, so
+    the last hour actually processed is the interval ``[prev-hour-top,
+    current-hour-top)`` — i.e. the previous fully-sealed hour. The
     reconciler never chases the CURRENT hour — which is by definition
     still in flight when this runs at :35 of the hour.
     """
-    # The latest hour that could possibly be written is the previous fully-
-    # sealed one — i.e. ``anchor - 1h`` truncated to the top of that hour.
+    # ``end`` is the exclusive upper bound of the half-open range passed
+    # to ``_run_backfill``: the last hour written is the one immediately
+    # before ``end``. Truncating ``anchor`` to top-of-hour gives the
+    # boundary at the start of the current in-flight hour, so the last
+    # hour processed is the previous fully-sealed one.
     end = anchor.replace(minute=0, second=0, microsecond=0)
     start = end - timedelta(hours=24)
     logger.info(
@@ -2097,13 +2135,28 @@ def _purge_s3_prefix(bucket: str, prefix: str) -> int:
         # Delete in batches of 1000 (S3 hard cap on DeleteObjects).
         for start in range(0, len(contents), 1000):
             batch = contents[start : start + 1000]
-            s3_client.delete_objects(
+            resp = s3_client.delete_objects(
                 Bucket=bucket,
                 Delete={
                     "Objects": [{"Key": obj["Key"]} for obj in batch],
                     "Quiet": True,
                 },
             )
+            # ``Quiet=True`` suppresses the successful-Deleted list, NOT
+            # ``Errors``. A silent partial failure here (S3 5xx, IAM,
+            # transient throttling on a subset of keys) would leave
+            # pre-widening parquet in place and cause the widening rewrite
+            # to be skipped by ``_partition_already_written``. Surface
+            # the failure so SFN's InitialPurge Retry (MaxAttempts=2)
+            # fires — the second call HeadObject-skips the already-deleted
+            # keys and retries only the survivors.
+            errors = resp.get("Errors") or []
+            if errors:
+                sample = errors[:5]
+                raise RuntimeError(
+                    f"S3 DeleteObjects reported {len(errors)} error(s) under "
+                    f"s3://{bucket}/{prefix} — first {len(sample)}: {sample!r}"
+                )
             total += len(batch)
     return total
 
@@ -3628,12 +3681,18 @@ def _run_athena(
             # (dedup wins), but every subsequent async-retry gets a
             # different one (breaks lock).
             #
-            # This is the ONE window ``ClientRequestToken`` can't close, and
-            # it's why ``DataMartRollupFunction`` sets
-            # ``ReservedConcurrentExecutions: 1`` in template.yaml — do not
-            # remove that property. Two concurrent restarts of the same
-            # partition landing in DIFFERENT wall-clock seconds get different
-            # tokens and would both INSERT.
+            # This is the ONE window ``ClientRequestToken`` can't close.
+            # Historically ``DataMartRollupFunction`` set
+            # ``ReservedConcurrentExecutions: 1`` in template.yaml to make
+            # this window unreachable; 2.1.6 raised it to 12 so the migration
+            # state machine's Map (MaxConcurrency=8) can run in parallel.
+            # The residual race is closed by the ``_partition_already_written``
+            # HeadObject-skip firing BEFORE the Athena INSERT in each rollup
+            # arm — see the ReservedConcurrentExecutions block comment in
+            # template.yaml for the full argument. Do not drop the reserved
+            # concurrency below the state machine's MaxConcurrency=8; also
+            # do not remove the HeadObject-skip, which is now what makes
+            # the concurrent-restart case idempotent.
             #
             # The salt can't be derived from the event anchor time instead:
             # the anchor is identical across async retries by design (that's
@@ -3642,7 +3701,7 @@ def _run_athena(
             # reinstate exactly the cached-failure lock this branch exists to
             # break. The two requirements — differ across sequential retries,
             # match across concurrent duplicates — have no single-token
-            # solution, hence the concurrency pin.
+            # solution, hence the HeadObject-skip as the outer guard.
             fresh_salt = str(int(time.time()))
             # Round-23 (#2208): input token was truncated to 116 chars
             # above so the "-r<10-digit-timestamp>" suffix (12 chars)

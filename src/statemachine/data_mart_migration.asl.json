@@ -190,11 +190,19 @@
         }
       },
       "ResultPath": "$.chunk_results",
+      "Catch": [
+        {
+          "ErrorEquals": ["States.ALL"],
+          "Comment": "A chunk that exhausts its 3-attempt inner Retry fails the whole Map — without this Catch the state machine would end in the terminal FAILED state before CheckMigrationSuccess could run, and operators would lose the failing_chunks aggregation. Route to MigrationHadFailures directly, preserving the marker=in_progress semantic that lets a re-invocation resume. The Map's partial ItemProcessor outputs are not available on the failure path in ASL, so the aggregated failing_chunks list must be reconstructed from CloudWatch Logs — see the runbook. The caught error object is preserved on $.map_error for the Fail state's Cause.",
+          "ResultPath": "$.map_error",
+          "Next": "MigrationHadFailures"
+        }
+      ],
       "Next": "BackfillDailyRange"
     },
     "BackfillDailyRange": {
       "Type": "Task",
-      "Comment": "Iterate each day in the retention window and invoke the daily-rollup INSERTs. Runs AFTER MigrateChunks so metering_hourly / metering_docs_hourly are fully populated (the daily rollups aggregate from those). Single Lambda invocation because per-day daily rollup work is small (~5-10 s per day × 30 days ≈ 150-300 s, fits in Lambda's 900 s budget). Without this task, metering_daily and metering_docs_daily stay empty for 30 days waiting for the scheduled 00:15 UTC daily rollup to catch up one day at a time.",
+      "Comment": "Iterate each day in the retention window and invoke the daily-rollup INSERTs. Runs AFTER MigrateChunks so metering_hourly / metering_docs_hourly are fully populated (the daily rollups aggregate from those). Single Lambda invocation because per-day daily rollup work is small (~5-10 s per day × 30 days ≈ 150-300 s, fits in Lambda's 900 s budget). Without this task, metering_daily and metering_docs_daily stay empty for 30 days waiting for the scheduled 00:15 UTC daily rollup to catch up one day at a time. Retry MaxAttempts=5 (was 3) — at the upper bound of the [1,90] Days range (90 × 20s worst-case = 1800s) the first Lambda hits its 900s timeout and SFN Retry re-fires; because _run_daily is idempotent (HeadObject-skip per partition), each retry HeadObject-skips already-completed days and makes progress on the remainder. 5 attempts × 900s = 75 min covers the 90-day worst case; typical 30-day usage completes on attempt 1.",
       "Resource": "arn:${Partition}:states:::lambda:invoke",
       "Parameters": {
         "FunctionName": "${DataMartRollupFunctionArn}",
@@ -216,7 +224,7 @@
             "Lambda.TooManyRequestsException",
             "States.Timeout"
           ],
-          "MaxAttempts": 3,
+          "MaxAttempts": 5,
           "IntervalSeconds": 60,
           "BackoffRate": 2
         }
@@ -240,7 +248,15 @@
         "total_failed.$": "$.Payload.total_failed",
         "total_succeeded.$": "$.Payload.total_succeeded",
         "total_partial.$": "$.Payload.total_partial",
-        "failing_chunks.$": "$.Payload.failing_chunks"
+        "failing_chunks.$": "$.Payload.failing_chunks",
+        "chunk_hours_attempted.$": "$.Payload.chunk_hours_attempted",
+        "chunk_hours_succeeded.$": "$.Payload.chunk_hours_succeeded",
+        "chunk_hours_partial.$": "$.Payload.chunk_hours_partial",
+        "chunk_hours_failed.$": "$.Payload.chunk_hours_failed",
+        "daily_units_attempted.$": "$.Payload.daily_units_attempted",
+        "daily_units_succeeded.$": "$.Payload.daily_units_succeeded",
+        "daily_units_partial.$": "$.Payload.daily_units_partial",
+        "daily_units_failed.$": "$.Payload.daily_units_failed"
       },
       "ResultPath": "$.migration_check",
       "Retry": [
@@ -301,9 +317,9 @@
     },
     "MigrationHadFailures": {
       "Type": "Fail",
-      "Comment": "At least one chunk reported hours_failed > 0. The marker stays state=in_progress so restarting the state machine (via CustomResource re-fire or manual StartExecution) will resume from the failed chunks — the Purge is skipped, already-written chunks are HeadObject-skipped, only the failing hours are retried. Alarm on this failure via SFN's built-in CloudWatch integration.",
+      "Comment": "Reached either from MigrationOutcome (CheckMigrationSuccess reported all_hours_clean=false because at least one chunk had hours_failed > 0 or hours_partial > 0 or the aggregator saw no work at all) OR from MigrateChunks' Catch (a chunk exhausted its inner Retry, failing the whole Map before CheckMigrationSuccess could aggregate). In both cases the marker stays state=in_progress so restarting the state machine (via CustomResource re-fire or manual StartExecution) will resume: the Purge is skipped, already-written chunks are HeadObject-skipped, only the failing hours are retried. On the Map-catch path the failing_chunks aggregation from CheckMigrationSuccess is not available on this state's input (ASL surfaces the caught error, not the Map's partial ItemProcessor outputs) — operators consult the state-machine execution history and CloudWatch Logs for the failing chunk's identity. Alarm on this failure via SFN's built-in CloudWatch integration.",
       "Error": "MigrationIncomplete",
-      "Cause": "One or more chunks reported hours_failed > 0. Marker left as state=in_progress. Restart the state machine (or wait for the next CustomResource fire) to resume."
+      "Cause": "Migration ended without all_hours_clean=true (either an aggregator failure or a Map inner-Retry exhaustion). Marker left as state=in_progress. Restart the state machine (or wait for the next CustomResource fire) to resume."
     }
   }
 }

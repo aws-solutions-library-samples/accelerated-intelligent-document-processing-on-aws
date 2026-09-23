@@ -2823,16 +2823,22 @@ class TestCheckHoursFailed:
         assert len(result["failing_chunks"]) == 1
         assert result["failing_chunks"][0]["hours_partial"] == 4
 
-    def test_empty_chunk_results_returns_clean(self, rollup):
-        """Degenerate case — no chunks means no failures. State machine
-        contract should never reach this state (0-day window is
-        rejected by _plan_migration_chunks) but the aggregator must
-        not blow up on the edge."""
+    def test_empty_chunk_results_reported_unclean(self, rollup):
+        """Degenerate case — no chunks AND no daily result means the
+        aggregator saw no work at all. The state machine contract
+        should never reach this state (0-day window is rejected by
+        _plan_migration_chunks) but if it does, the aggregator must
+        report ``all_hours_clean=False`` so the state machine goes to
+        MigrationHadFailures rather than writing a completed marker
+        over an empty table set. Prior behaviour (returning True on
+        zero work) would have short-circuited to WriteCompletedMarker
+        without any rows populated."""
         result = rollup.handler(
             {"mode": "check_hours_failed", "chunk_results": []},
             None,
         )
-        assert result["all_hours_clean"] is True
+        assert result["all_hours_clean"] is False
+        assert result["total_attempted"] == 0
 
     def test_accepts_bare_payload_or_backfill_wrapper(self, rollup):
         """Depending on the Map state's ResultSelector, the chunk
@@ -2979,6 +2985,13 @@ class TestPurgeS3PrefixHelper:
         }
         with patch.object(rollup, "s3_client", MagicMock()) as mock_s3:
             mock_s3.get_paginator.return_value.paginate.return_value = [big_page]
+            # Return an explicit dict with no Errors key so
+            # ``_purge_s3_prefix``'s response.Errors check treats each
+            # batch as fully successful. Without this, MagicMock's
+            # default ``.get("Errors")`` returns another MagicMock
+            # (truthy), which would trip the RuntimeError guard added
+            # for the DeleteObjects partial-failure surfacing.
+            mock_s3.delete_objects.return_value = {}
             deleted = rollup._purge_s3_prefix("test-bucket", "metering_hourly/")
         assert deleted == 2500
         assert mock_s3.delete_objects.call_count == 3
@@ -2987,6 +3000,28 @@ class TestPurgeS3PrefixHelper:
             for call in mock_s3.delete_objects.call_args_list
         ]
         assert batch_sizes == [1000, 1000, 500]
+
+    def test_purge_raises_when_delete_objects_reports_errors(self, rollup):
+        """S3 ``DeleteObjects`` with ``Quiet=True`` still returns any
+        ``Errors``; a silent partial-failure would leave old-schema
+        parquet in place and cause ``_partition_already_written`` to
+        skip the widening rewrite. ``_purge_s3_prefix`` must surface
+        those failures so SFN's InitialPurge Retry re-fires (idempotent
+        on the survivors)."""
+        page = {"Contents": [{"Key": "metering_hourly/a.parquet"}]}
+        with patch.object(rollup, "s3_client", MagicMock()) as mock_s3:
+            mock_s3.get_paginator.return_value.paginate.return_value = [page]
+            mock_s3.delete_objects.return_value = {
+                "Errors": [
+                    {
+                        "Key": "metering_hourly/a.parquet",
+                        "Code": "AccessDenied",
+                        "Message": "denied",
+                    }
+                ]
+            }
+            with pytest.raises(RuntimeError, match="DeleteObjects reported"):
+                rollup._purge_s3_prefix("test-bucket", "metering_hourly/")
 
     def test_purge_requires_bucket_and_prefix(self, rollup):
         with pytest.raises(ValueError, match="requires bucket and prefix"):
