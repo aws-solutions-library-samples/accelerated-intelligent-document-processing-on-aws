@@ -123,11 +123,17 @@ def _reachable_models() -> list[Reached]:
 
 
 REACHED = _reachable_models()
-#: Models that keep an undeclared key instead of dropping it, so there is nothing to
-#: report about one. Derived from ``model_config``, and the premise is measured in
-#: ``test_an_extra_allow_model_really_keeps_the_key_it_is_not_warned_about``.
-OPEN_MODELS = [r for r in REACHED if r.model.model_config.get("extra") == "allow"]
-CLOSED_MODELS = [r for r in REACHED if r.model.model_config.get("extra") != "allow"]
+
+
+def _keeps_extras(model: type[BaseModel]) -> bool:
+    """Whether this model retains an undeclared key instead of dropping it.
+
+    There is deliberately **no list** of the models that do. A model here is either
+    asserted to report a dropped key or asserted to keep it — the two tests below
+    cover the same universe with no member in neither, so a model cannot be excluded
+    from the report's guarantee by being left off a list.
+    """
+    return model.model_config.get("extra") == "allow"
 
 
 def _nest(steps: tuple[tuple[str, str], ...], leaf: dict) -> dict:
@@ -169,7 +175,10 @@ def test_the_walk_reaches_the_whole_config_tree():
     assert {IDPConfig, OCRConfig, ImageConfig} <= reached
     assert models_module.ValidationConfig in reached
     assert models_module.ErrorAnalyzerParameters in reached
-    assert OPEN_MODELS, "no extra='allow' model was reached; that premise is untested"
+    assert any(_keeps_extras(r.model) for r in REACHED), (
+        "no extra='allow' model was reached, so the other half of the universe below "
+        "is untested"
+    )
 
 
 def test_the_production_traversal_agrees_with_an_independent_walk():
@@ -198,19 +207,45 @@ def test_the_production_traversal_agrees_with_an_independent_walk():
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.parametrize("reached", CLOSED_MODELS, ids=lambda r: r.path or "IDPConfig")
-def test_every_model_in_the_tree_reports_a_key_it_will_drop(reached: Reached):
-    """The class, not the instance: one bogus key inside each model, in turn."""
-    data = _nest(reached.steps, {BOGUS: "value"})
+@pytest.mark.parametrize("reached", REACHED, ids=lambda r: r.path or "IDPConfig")
+def test_every_model_in_the_tree_answers_for_a_key_it_is_handed(reached: Reached):
+    """The class, not the instance: one bogus key inside each model, in turn.
+
+    Both halves of the universe in one test, so there is no list of models the
+    report is not expected to cover. A model that drops the key must name it; a
+    model that keeps it must be *measured* keeping it, because "deliberately open"
+    is only true while ``extra="allow"`` is still there.
+    """
+    leaf: dict = {BOGUS: "value"}
+    if _keeps_extras(reached.model):
+        leaf.update(_required_placeholders(reached.model))
+    data = _nest(reached.steps, leaf)
     findings = collect_ignored_config_keys(data, IDPConfig, include_top_level=True)
     paths = [f.path for f in findings]
-    assert _expected_path(reached.steps, BOGUS) in paths, (
-        f"{reached.model.__name__} at '{reached.path}' drops '{BOGUS}' and the walk "
-        f"did not report it; got {paths}"
+
+    if not _keeps_extras(reached.model):
+        assert _expected_path(reached.steps, BOGUS) in paths, (
+            f"{reached.model.__name__} at '{reached.path}' drops '{BOGUS}' and the "
+            f"walk did not report it; got {paths}"
+        )
+        return
+
+    assert paths == [], (
+        f"{reached.model.__name__} keeps an undeclared key, so reporting one would be "
+        f"a false positive; got {paths}"
+    )
+    kept = _descend(IDPConfig(**data), reached.steps)
+    assert BOGUS in kept.model_dump(), (
+        f"{reached.model.__name__} is not reported on the premise that extra='allow' "
+        "keeps the key, and it did not keep it"
     )
 
 
-@pytest.mark.parametrize("reached", CLOSED_MODELS, ids=lambda r: r.path or "IDPConfig")
+@pytest.mark.parametrize(
+    "reached",
+    [r for r in REACHED if not _keeps_extras(r.model)],
+    ids=lambda r: r.path or "IDPConfig",
+)
 def test_every_model_in_the_tree_reports_through_idpconfig_construction(
     reached: Reached, caplog
 ):
@@ -247,10 +282,12 @@ def _misnesting_cases() -> list[tuple[str, tuple[tuple[str, str], ...], str, str
     validators rather than merely being unused.
     """
     cases = []
-    for reached in CLOSED_MODELS:
+    for reached in REACHED:
+        if _keeps_extras(reached.model):
+            continue
         for name, field in reached.model.model_fields.items():
-            shape, child = _target(field.annotation)
-            if child is None or child.model_config.get("extra") == "allow":
+            _shape, child = _target(field.annotation)
+            if child is None or _keeps_extras(child):
                 continue
             owned = sorted(set(child.model_fields) - set(reached.model.model_fields))
             if not owned:
@@ -490,28 +527,6 @@ def _required_placeholders(model: type[BaseModel]) -> dict:
             annotation = typing.get_args(annotation)[0]
         out[name] = samples.get(annotation, "placeholder")
     return out
-
-
-@pytest.mark.parametrize("reached", OPEN_MODELS, ids=lambda r: r.path)
-def test_an_extra_allow_model_really_keeps_the_key_it_is_not_warned_about(
-    reached: Reached,
-):
-    """``extra="allow"`` is the other reason a key is not a finding, also computed.
-
-    Nothing is dropped, so there is nothing to warn about — but that is a property of
-    ``model_config``, and a model that stopped allowing extras while staying on this
-    list would be silently dropping keys again.
-    """
-    leaf = {BOGUS: "kept"}
-    leaf.update(_required_placeholders(reached.model))
-    data = _nest(reached.steps, leaf)
-    assert collect_ignored_config_keys(data, IDPConfig, include_top_level=True) == []
-
-    stored = _descend(IDPConfig(**data), reached.steps)
-    assert BOGUS in stored.model_dump(), (
-        f"{reached.model.__name__} is exempt because extra='allow' keeps the key, and "
-        "it did not"
-    )
 
 
 # ---------------------------------------------------------------------------
