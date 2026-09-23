@@ -1001,8 +1001,17 @@ Lambda functions reference the `idp_common_pkg` library:
 
 The build system uses checksums to avoid rebuilding UI unnecessarily:
 - Checksum stored in `src/ui/.checksum` and root `.checksum`
-- `make ui-lint` skips linting if checksum unchanged
-- Speeds up CI/CD and local development
+- `make ui-lint` skips **both** eslint and `tsc` when `src/ui` matches the stored
+  checksum, and reports that as a `⏭️  UI lint SKIPPED` line rather than a green
+  tick, because a cache hit is not a pass. `FORCE=1` runs them regardless
+- `make lint-cicd` passes `UI_LINT_NO_SKIP=1`, so the CI-equivalent target cannot
+  take the cache. `.checksum` is gitignored, so CI itself never had a stored hash
+  to hit; making the local mirror behave the same way is what keeps its green mark
+  meaning the same thing in both places. `lint` and `fastlint` keep the cache,
+  which is the iteration latency it was added for
+- Enforced by `test_the_ui_lint_skip_is_reported_as_a_skip` and
+  `test_lint_cicd_cannot_skip_the_ui_lint` in
+  `scripts/tests/test_ci_gate_parity.py`
 
 ## Sample Documents
 
