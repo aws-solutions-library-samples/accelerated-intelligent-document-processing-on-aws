@@ -402,10 +402,18 @@ def handler(event: Dict[str, Any], context) -> Dict[str, Any]:
                 for cls, props in warnings_by_class.items():
                     warning_details.append(f"{cls}: {', '.join(props)}")
 
+                # The per-property reason is on each entry of the `warnings` array.
+                # This summary covers all of them, which is why it no longer names
+                # only the definition-level nesting limit: a property nested at the
+                # top level, and one whose value is not a schema object at all, are
+                # also dropped and are also reported here.
                 message += (
-                    f". WARNING: Some properties were skipped due to a current BDA limitation - "
-                    f"nested arrays and objects within schema definitions are not yet supported. "
-                    f"To include these properties, flatten your schema by moving nested structures to top-level $defs. "
+                    f". WARNING: Some properties were skipped and are not part of "
+                    f"the extraction contract. Most are a current BDA limitation - "
+                    f"objects and arrays nested inside objects are not yet "
+                    f"supported - and can be included by flattening the schema so "
+                    f"the nested structures sit in top-level $defs. See the "
+                    f"warnings list for the reason per property. "
                     f"Skipped: {'; '.join(warning_details)}"
                 )
 
