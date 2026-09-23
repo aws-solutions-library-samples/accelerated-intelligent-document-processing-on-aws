@@ -23,6 +23,7 @@
     "**/dist",
     "**/cdk.out",
     "notebooks/**/*.ipynb",
+    "**/*-converted.py",
     "feature-platform/idp-data-generator/idp_common_pkg/**",
     "feature-platform/idp-data-generator/bootstrap-processor/idp_common_pkg/**"
   ],

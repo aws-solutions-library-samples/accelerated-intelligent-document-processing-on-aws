@@ -403,13 +403,14 @@
         "JUDGEMENT"
       ],
       "ratchet": "staleness",
-      "reason": "Generated, vendored and build-output trees. Members split by why they are here rather than sharing one reason: the cache and artifact directory names (**/build, **/dist, **/.venv, **/.aws-sam, **/cdk.out, **/node_modules, **/__pycache__) are bare on purpose, since such a directory is build output wherever it sits, while the two named paths under feature-platform/idp-data-generator are specific staged trees and each carries its own reason and its own computed premise in scripts/tests/test_pyright_config.py::STAGED_BUILD_OUTPUT_EXEMPT. notebooks/**/*.ipynb is a scope decision recorded in TYPECHECK_SCOPE_EXCLUSIONS in the same file. What makes the array as a whole trustworthy is not this reason but the closure tests around it: every include path must exist, every first-party distribution must be covered, no exclude may shadow an include, every tracked .py must be reached, and the walk must reach nothing an ignore rule covers.",
+      "reason": "Generated, vendored and build-output trees. Members split by why they are here rather than sharing one reason, and every category is now either computed per member or carries its own record. The bare cache and artifact directory names (**/build, **/dist, **/.venv, **/.aws-sam, **/cdk.out, **/node_modules, **/__pycache__) are bare on purpose, since such a directory is build output wherever it sits -- and that claim is computed rather than asserted: each leaf must satisfy vcs_ignored_build_output, which is what stops `**/<name>` becoming the spelling that excludes anything without a reason (**/notebooks has the same shape and does not qualify). The two named paths under feature-platform/idp-data-generator are specific staged trees, each with its own reason and computed premise in scripts/tests/test_pyright_config.py::STAGED_BUILD_OUTPUT_EXEMPT. notebooks/**/*.ipynb is a scope decision recorded in TYPECHECK_SCOPE_EXCLUSIONS in the same file. **/*-converted.py is a generated filename shape recorded in GENERATED_ARTIFACT_EXCLUSIONS there. What makes the array as a whole trustworthy is not this reason but the closure tests around it: every include path must exist, every first-party distribution must be covered, no exclude may shadow an include, every tracked .py must be reached, the walk must reach nothing an ignore rule covers, and every exclude entry must fall in one of those four categories or fail.",
       "memberKind": "path",
       "ratchetEvidence": "scripts/tests/test_pyright_config.py",
       "crossReferences": [
         "scripts/tests/test_pyright_config.py::STAGED_BUILD_OUTPUT_EXEMPT",
         "scripts/tests/test_pyright_config.py::TYPECHECK_SCOPE_EXCLUSIONS",
-        "ruff.toml::exclude"
+        "ruff.toml::exclude",
+        "scripts/tests/test_pyright_config.py::GENERATED_ARTIFACT_EXCLUSIONS"
       ]
     },
     "ruff.toml::exclude": {
@@ -576,9 +577,9 @@
         "Makefile::ARN_PARTITION_EXEMPT"
       ],
       "predicateConsidered": {
-        "not_a_nested_stack_of_parent": "True of all nine paths and irrelevant to the premise. None is a template the parent stack instantiates \u2014 they are a CI configuration, two deployment helpers, two of their tests, a credential-vendor template and three configuration presets \u2014 and nothing claims otherwise. What makes a line unredactable is that the id on it is read as a value, which is a fact about the surrounding code rather than about stack topology.",
+        "not_a_nested_stack_of_parent": "True of all nine paths and irrelevant to the premise. None is a template the parent stack instantiates — they are a CI configuration, two deployment helpers, two of their tests, a credential-vendor template and three configuration presets — and nothing claims otherwise. What makes a line unredactable is that the id on it is read as a value, which is a fact about the surrounding code rather than about stack topology.",
         "built_separately_from_main_stack": "True for the SDLC paths and the presets, and irrelevant for the same reason: whether one publish run builds a path says nothing about whether an account id inside it is consulted at run time. The count pin bounds the entry instead.",
-        "file_absent_or_untracked": "False for all nine \u2014 every path is tracked and present. The gate re-measures that on every run, because an entry whose line has moved or been redacted shields nothing and is failed as stale."
+        "file_absent_or_untracked": "False for all nine — every path is tracked and present. The gate re-measures that on every run, because an entry whose line has moved or been redacted shields nothing and is failed as stale."
       },
       "memberKind": "deployable path",
       "ratchetEvidence": "scripts/check_account_ids.py",
@@ -1269,7 +1270,7 @@
     },
     "scripts/tests/test_api_policy_counts_in_docs.py::ALL_DOCS": {
       "kind": "enforced-universe",
-      "turnsOff": "nothing. It is SCANNED_DOCS plus the partially-excluded documents, and it exists so the per-document comparison runs over an excluded page too \u2014 for the measures its exclusion does not name. A member adds coverage. Discovery matches it on the prose of the comment above it, which explains that an excluded document is still compared.",
+      "turnsOff": "nothing. It is SCANNED_DOCS plus the partially-excluded documents, and it exists so the per-document comparison runs over an excluded page too — for the measures its exclusion does not name. A member adds coverage. Discovery matches it on the prose of the comment above it, which explains that an excluded document is still compared.",
       "memberKind": "repo-relative path to a Markdown document",
       "premise": [
         "JUDGEMENT"
@@ -1437,7 +1438,7 @@
         "JUDGEMENT"
       ],
       "ratchet": "universe-closure",
-      "reason": "Whether a target CAN be a CI gate is a property of what it does \u2014 mutates the tree, prompts a human, needs AWS credentials, needs a deployed stack, reports rather than asserts \u2014 and none of that is readable from the Makefile. So one sentence per target, naming that target's own obstacle.",
+      "reason": "Whether a target CAN be a CI gate is a property of what it does — mutates the tree, prompts a human, needs AWS credentials, needs a deployed stack, reports rather than asserts — and none of that is readable from the Makefile. So one sentence per target, naming that target's own obstacle.",
       "ratchetGap": "The reasons themselves are unchecked prose. What is mechanical: no target IN THE UNIVERSE may be absent from both this list and CI; a listed target CI has since started running fails; a listed target that no longer exists fails. Read 'in the universe' precisely -- it is every target in the 5 sections GATE_SECTION_PREFIXES names, plus any check-shaped-by-name target in any other section except Stack tests. It is NOT every Makefile target, and the residual is stated on the GATE_SECTION_PREFIXES entry.",
       "memberKind": "make target",
       "crossReferences": [
@@ -1452,7 +1453,7 @@
         "JUDGEMENT"
       ],
       "ratchet": "staleness",
-      "reason": "Two of `make lint`'s prerequisites auto-fix, so `lint-cicd` cannot invoke them \u2014 it runs the check-only command instead, and that command's spelling is not derivable from the target's name. The substituted command must still be present in the recipe, so this relaxes how the gate is spelled and not whether it runs.",
+      "reason": "Two of `make lint`'s prerequisites auto-fix, so `lint-cicd` cannot invoke them — it runs the check-only command instead, and that command's spelling is not derivable from the target's name. The substituted command must still be present in the recipe, so this relaxes how the gate is spelled and not whether it runs.",
       "memberKind": "make target",
       "ratchetEvidence": "scripts/tests/test_ci_gate_parity.py"
     },
@@ -2313,6 +2314,20 @@
       ],
       "reason": "All five are deferred rather than exempt in principle, and the deferral is forced by order-sensitivity: adding raise_if_transient to a handler CONVERTS a modeled ThrottlingException into TransientError, so doing that without adding the name to the state's Retry list would REMOVE retryability that exists today. Both halves have to land per state and neither is in this change; none of the five handlers swallows, so what is lost meanwhile is the retry rather than the diagnosis. Each entry carries what is specific to that handler -- OCRStep calls a model only on the bedrock backend, ClassificationStep once per page, SummarizationStep once over the whole document at the end of the pipeline, EvaluationStep only through the LLM-judge comparators, and RecordEvaluationFailure on a deliberately shorter transient tier because it runs on the failure path -- and the gate asserts those reasons are distinct, because length plus a substring would accept five identical strings. Whether a handler SHOULD convert is a judgement about its failure modes, which no predicate computes; what the gate computes is membership of the universe, from the ASL Resource placeholder through DefinitionSubstitutions to the granted IAM actions of the target function and of any role it references.",
       "ratchetGap": "The predicate answers 'permitted to invoke a model', not 'does invoke one', so an entry can be justified by a grant its handler never uses. It reads actions out of Action: position rather than out of the block's raw text, which is what stops an ARN's wildcard REGION (arn:<partition>:bedrock:*::foundation-model/*, twelve of them here) being read as a bedrock:* action -- there is no such action in this template, and reading one put a data-automation-only function in the universe. What remains loose is the action pattern itself: any future action whose name begins InvokeModel or Converse would qualify regardless of what it does. Over-inclusion is the safe direction for a closure. The closure is also one-directional by design: a state that is NOT Bedrock-capable may still list TransientError legitimately (PolicyClassificationStep does, for DynamoDB and S3 transients), so nothing here detects a listing that is no longer needed."
+    },
+    "scripts/tests/test_pyright_config.py::GENERATED_ARTIFACT_EXCLUSIONS": {
+      "kind": "exemption",
+      "turnsOff": "basedpyright type checking, and the ignored-.py walk assertion in the same file, for files matching one generated-filename glob",
+      "premise": [
+        "vcs_ignored_generated_filename"
+      ],
+      "ratchet": "universe-closure",
+      "reason": "The one member covers `<nb>-converted.py`, which `srt assess` writes beside each notebook to run bandit over it and deletes when it finishes. While those files exist the tree holds gitignored .py inside basedpyright's walk, which is the condition the walk assertion in the same file is about -- so a suite run overlapping a scan failed for the duration and passed afterwards with nothing changed in the tree.",
+      "memberKind": "pyrightconfig exclude pattern naming a filename glob",
+      "ratchetEvidence": "scripts/tests/test_pyright_config.py",
+      "crossReferences": [
+        "pyrightconfig.json::exclude"
+      ]
     }
   }
 }

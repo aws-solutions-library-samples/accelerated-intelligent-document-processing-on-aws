@@ -177,6 +177,24 @@ fails there naming the directory. Two staged copies of `lib/idp_common_pkg` unde
 computes per path. Before that check existed those copies put 20 errors on
 `make typecheck` for anyone who had packaged that feature locally, and none in CI.
 
+`exclude` is itself closed, because `exclude` beats `include` and an entry there is
+the cheapest way to remove a tree from the type gate. Every pattern in it must fall
+in one of four categories or the gate fails naming it: a bare `**/<directory>` name,
+a staged build tree (`STAGED_BUILD_OUTPUT_EXEMPT`), a scope decision over tracked
+files (`TYPECHECK_SCOPE_EXCLUSIONS`), or a filename another tool writes into the tree
+while it runs (`GENERATED_ARTIFACT_EXCLUSIONS`). The bare-directory category is
+**derived rather than listed** — the leaf must satisfy
+`gate_premises.vcs_ignored_build_output` — so `**/notebooks` does not qualify by
+having the same shape as `**/build`.
+
+⚠️ **`make srt-scan` and the offline suite may be run concurrently.** For the
+duration of a scan the tree holds an `<nb>-converted.py` beside every notebook (the
+scan's own nbconvert step, so bandit can read them), which is gitignored `.py` inside
+basedpyright's walk. `**/*-converted.py` is excluded, so neither `make typecheck` nor
+the walk assertion reports them; before that, an overlapping suite run failed once
+and then could not be made to fail again, which is the most expensive shape a red
+mark can have.
+
 **`make cfn-lint`** discovers templates by **content** (anything declaring
 `AWSTemplateFormatVersion`), not by filename, so a new template cannot be added
 without being covered. `make check-arn-partitions` uses the **same** discovery
