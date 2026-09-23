@@ -4675,12 +4675,13 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
         ⚠️ This relaxation reaches the agent's **self-correction feedback** only. It
         is passed as ``schema_validator``, which ``structured_output_async`` consults
         after a tool call; the ``extraction_tool`` itself is built from
-        ``data_format``, the whole-section transport model, so a ``minItems`` floor
-        IS enforced per shard at the tool boundary and a section-sized floor is
-        unsatisfiable by any shard. Relaxing that too would mean generating a
-        per-shard transport model; until then, ``row_shortfall_action`` is the
-        shard-aware completeness lever. See the ``extraction_list_truncated`` entry
-        in this package's README.
+        ``data_format``, which is the **shard** transport model
+        (:meth:`_shard_transport_model`). That model relaxes *presence* for a required
+        container and carries every **row-count bound** unchanged, so a ``minItems``
+        floor IS enforced per shard at the tool boundary and a section-sized floor is
+        unsatisfiable by any shard. ``row_shortfall_action`` is the shard-aware
+        completeness lever. See the ``extraction_list_truncated`` entry in this
+        package's README.
         """
         return self._build_schema_validator(shard_scoped=True)
 
