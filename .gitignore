@@ -128,6 +128,12 @@ config_library/samples-manifest.json
 api-test-results/
 zap-reports/
 
+# Per-root JUnit XML plus the run summary that `make test`
+# (scripts/run_all_tests.py) writes. One machine's run, not a repository fact —
+# and the XML records that machine's hostname. The standing-failure verdict is
+# decided in the process that produced these, so nothing reads them back.
+/test-reports/
+
 # Local scratch / capture artifacts — never committed. Some contain customer
 # references from live-stack captures and must never reach a fork or upstream.
 .playwright-mcp/
