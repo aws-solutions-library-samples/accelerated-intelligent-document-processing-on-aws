@@ -2328,6 +2328,17 @@
       "crossReferences": [
         "pyrightconfig.json::exclude"
       ]
+    },
+    "scripts/tests/test_alerts_topic_subscription.py::OPERATOR_OPT_OUT_GUARDS": {
+      "kind": "exemption",
+      "turnsOff": "the assertion that an SNS subscription serving an alarm carries no CloudFormation Condition other than the alarm's own -- for one named condition, which may therefore make the subscription absent while the alarm exists",
+      "premise": [
+        "JUDGEMENT"
+      ],
+      "ratchet": "staleness",
+      "reason": "Whether a condition being false is an operator's deliberate choice or an accident is a fact about what the deployer was asked for, not about the tree: ShouldSubscribeAdminToAlerts is true on a default deployment and false only when AdminEmail is empty or is the CI sentinel address that can never confirm a subscription, which is an opt-out. Nothing here computes intent. What the owning gate does require is that the condition's own definition be pinned by a separate test in the same file, so the exemption cannot be satisfied by a condition whose meaning is free to change: test_admin_email_is_subscribed_to_alerts pins this one. Discovered by the OPT_OUT fragment added to exemption_discovery.NAME_VOCABULARY for issue #1163 -- before that widening this surface was matched by neither the name vocabulary nor the prose fallback.",
+      "memberKind": "CloudFormation condition name",
+      "ratchetEvidence": "scripts/tests/test_alerts_topic_subscription.py"
     }
   }
 }

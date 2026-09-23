@@ -344,14 +344,40 @@ So:
   refused is the increment with no such reason beside it.
 
 Membership is **derived** and only the judgement is authored:
-`scripts/tests/exemption_discovery.py` finds exemption surfaces by constant name, by
-the prose of the attached comment (a constant whose comment argues for an exclusion is
-one, whatever it is called), in the `Makefile` and `make/*.mk`, in `scripts/*.sh`, in
-`ruff.toml` and `pyrightconfig.json`, and in the three JSON baselines. It reads
-**source**, not imported modules, because two of these constants change after import.
-It discovers through `git ls-files`, so it cannot report findings against build output
-or a sibling worktree. The meta-test fails in **both** directions — unregistered, and
-registered-but-vanished.
+`scripts/tests/exemption_discovery.py` finds exemption surfaces by constant name
+(`NAME_VOCABULARY`), by the prose of the attached comment (`EXEMPTION_PROSE`), in the
+`Makefile` and `make/*.mk`, in `scripts/*.sh`, in `ruff.toml` and `pyrightconfig.json`,
+and in the three JSON baselines. It reads **source**, not imported modules, because two
+of these constants change after import. It discovers through `git ls-files` —
+**including files you have not committed**, so the verdict does not change at `git add`
+time — so it cannot report findings against build output or a sibling worktree. The
+meta-test fails in **both** directions — unregistered, and registered-but-vanished.
+
+**Name your exemption constant with a word from the vocabulary.** The name route is
+what carries discovery; the prose route is a safety net over it, not an equivalent.
+Both are wording lists, so both have a reach, and it is written out in
+`exemption_discovery.py` rather than left to be inferred: the name vocabulary covers
+the words for what a gate *does* (`EXEMPT`, `EXCLU`, `ALLOW`, `SKIP`, `SUPPRESS`,
+`WAIV`, …) and the words for what the members *are* (`NOT_A`, `_ELSEWHERE`,
+`TOLERAT`, `BENIGN`, `FALSE_POSITIV`, `OPT_OUT`, …), and the prose list covers four
+families of phrasing, each named in the comment above it. A comment can still argue
+for an exclusion in words neither list holds — "read by a different consumer, so the
+gate does not flag it" is matched by nothing — which is why the name is the reliable
+route.
+
+**A dead pattern in either vocabulary is a failure.** A fragment that matches nothing
+in the tree today is doing its job (it is there to recognise a constant not yet
+written), so in-tree matching is *not* the rule; what is pinned instead is that every
+fragment and every phrase demonstrably **works**.
+`scripts/tests/test_exemption_discovery.py` drives the real collector over a synthetic
+checkout per pattern — Python constant, `Makefile` variable and shell variable for each
+name fragment, an attached comment for each prose phrase — so a pattern that can never
+fire fails there. The ways one has been or could be inert are all covered: a
+mis-cased duplicate (names are compared uppercased, comments lowercased), a regex
+metacharacter that corrupts the alternation `TEXT_SOURCES` builds from the vocabulary,
+and a fragment eaten by the polarity guard that keeps `DISALLOWED` from reading as an
+allowlist. A hit is also asserted to be **attributable** to the fragment under test, a
+guard added after `"Exempt"` beside `"EXEMPT"` left every probe green.
 
 ### CI parity between GitHub and GitLab
 
