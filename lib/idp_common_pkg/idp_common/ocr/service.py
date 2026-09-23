@@ -142,18 +142,19 @@ class OcrService:
                 self.enhanced_features = False
 
             # Extract resize configuration (type-safe access)
+            # Both are `int | None` by the time they arrive: `ImageConfig`'s
+            # `parse_dimensions` validator normalises an empty value to None and
+            # REJECTS one it cannot read, so neither a string nor an unreadable value
+            # reaches here. This block used to re-do the empty-string normalisation
+            # twice and wrap the conversion in `except (ValueError, TypeError)`, which
+            # made four statements and two branches unreachable — including the only
+            # place that logged "Invalid resize configuration values", the diagnostic
+            # written for exactly the case the validator had already discarded (#1158).
             target_width = self.config.ocr.image.target_width
             target_height = self.config.ocr.image.target_height
 
-            # Normalize None and empty strings to None for consistent handling
-            if isinstance(target_width, str) and not target_width.strip():
-                target_width = None
-            if isinstance(target_height, str) and not target_height.strip():
-                target_height = None
-
-            # Apply sizing configuration logic
             if target_width is None and target_height is None:
-                # No sizing configuration provided (None or empty strings) - apply sensible defaults
+                # Not configured: apply the out-of-memory ceiling.
                 self.resize_config = {
                     "target_width": DEFAULT_TARGET_WIDTH,
                     "target_height": DEFAULT_TARGET_HEIGHT,
@@ -164,48 +165,15 @@ class OcrService:
                     f"does not bind for A4/Letter at {DEFAULT_DPI} dpi)"
                 )
             else:
-                # Handle empty strings by converting to None for validation
-                if isinstance(target_width, str) and not target_width.strip():
-                    target_width = None
-                if isinstance(target_height, str) and not target_height.strip():
-                    target_height = None
-
-                # If after handling empty strings we still have values, use them
-                if target_width is not None or target_height is not None:
-                    # Explicit configuration provided - validate and use it
-                    try:
-                        self.resize_config = {
-                            "target_width": (
-                                int(target_width) if target_width is not None else None
-                            ),
-                            "target_height": (
-                                int(target_height)
-                                if target_height is not None
-                                else None
-                            ),
-                        }
-                        logger.info(
-                            f"Using configured image sizing: {target_width}x{target_height}"
-                        )
-                    except (ValueError, TypeError):
-                        logger.warning(
-                            f"Invalid resize configuration values: width={target_width}, height={target_height}. "
-                            f"Falling back to defaults: {DEFAULT_TARGET_WIDTH}x{DEFAULT_TARGET_HEIGHT}"
-                        )
-                        self.resize_config = {
-                            "target_width": DEFAULT_TARGET_WIDTH,
-                            "target_height": DEFAULT_TARGET_HEIGHT,
-                        }
-                else:
-                    # After handling empty strings, we have None values - apply defaults
-                    self.resize_config = {
-                        "target_width": DEFAULT_TARGET_WIDTH,
-                        "target_height": DEFAULT_TARGET_HEIGHT,
-                    }
-                    logger.info(
-                        f"Invalid image sizing configuration provided, applying default ceiling: "
-                        f"{DEFAULT_TARGET_WIDTH}x{DEFAULT_TARGET_HEIGHT} (out-of-memory guard)"
-                    )
+                # One or both configured. A single dimension is meaningful — the other
+                # stays None and the resize keeps the aspect ratio.
+                self.resize_config = {
+                    "target_width": target_width,
+                    "target_height": target_height,
+                }
+                logger.info(
+                    f"Using configured image sizing: {target_width}x{target_height}"
+                )
 
             # Extract preprocessing configuration (type-safe)
             preprocessing_value = self.config.ocr.image.preprocessing
@@ -2751,6 +2719,42 @@ class OcrService:
             # Default to PDF for unknown binary files
             return "pdf"
 
+    def _textract_client_for_embedded_images(self):
+        """A Textract client for OCR'ing an image embedded in a converted document.
+
+        Created on demand rather than read off ``self``. ``__init__`` assigns
+        ``self.textract_client`` only in its ``textract`` arm, while the
+        embedded-image path is reached for **any** backend that has no image handling
+        of its own — so the assignment and the use were guarded by different
+        conditions, and the gap was silent because the caller's broad ``except``
+        turned a missing attribute into a placeholder string.
+
+        Resolving it here closes that for every backend at once rather than adding an
+        arm per backend, which is what would have to be remembered next time. A
+        ``.docx`` is dispatched on file type before the backend is consulted, so this
+        is reachable whenever ``ocr.backend`` is set to anything that lands in the
+        Textract branch — and the OCR function's role grants
+        ``textract:DetectDocumentText`` unconditionally, so the call is permitted
+        there regardless of which backend is configured.
+        """
+        existing = getattr(self, "textract_client", None)
+        if existing is not None:
+            return existing
+
+        adaptive_config = Config(
+            retries={"max_attempts": 100, "mode": "adaptive"},
+            max_pool_connections=self.max_workers * 3,
+        )
+        logger.info(
+            "Creating a Textract client to OCR an embedded image under the %r "
+            "backend, which has no embedded-image path of its own",
+            self.backend,
+        )
+        self.textract_client = boto3.client(
+            "textract", region_name=self.region, config=adaptive_config
+        )
+        return self.textract_client
+
     def _ocr_image_bytes(self, img_bytes: bytes) -> str:
         """OCR raw image bytes and return extracted text.
 
@@ -2793,9 +2797,20 @@ class OcrService:
                 return bedrock.extract_text_from_response(response_with_metering)
 
             else:
-                # Textract backend (default)
-                textract_result = self.textract_client.detect_document_text(
-                    Document={"Bytes": img_bytes}
+                # Textract, for the textract backend and for any backend with no
+                # embedded-image path of its own. Resolved through the accessor
+                # rather than the attribute: `self.textract_client` is only assigned
+                # in the `textract` arm of `__init__`, so under `backend="bda"` the
+                # attribute did not exist, the access raised `AttributeError`, the
+                # broad `except` below caught it, and this returned the literal
+                # "[Image - OCR failed]". A scanned page or screenshot pasted into a
+                # Word document therefore contributed nothing to the page text, and
+                # the document completed successfully with that content missing
+                # (#1158).
+                textract_result = (
+                    self._textract_client_for_embedded_images().detect_document_text(
+                        Document={"Bytes": img_bytes}
+                    )
                 )
                 # Extract text from LINE blocks
                 lines = []
@@ -2805,7 +2820,15 @@ class OcrService:
                 return "\n".join(lines)
 
         except Exception as e:
-            logger.warning(f"Failed to OCR embedded image: {e}")
+            # Names the consequence, not just the error. This placeholder is the
+            # page's only record of the image, so the content is gone from the text a
+            # downstream extraction reads.
+            logger.warning(
+                "Failed to OCR an embedded image under the %r backend, so its "
+                "content is absent from the page text: %s",
+                self.backend,
+                e,
+            )
             return "[Image - OCR failed]"
 
     def _process_non_pdf_document(

@@ -464,10 +464,27 @@ class BDABlueprintCreator:
             logger.error(f"Error updating blueprint: {e}")
             raise e
 
-    def list_blueprints(self, projectArn, projectStage):
+    def list_blueprints(self, projectArn, projectStage="LIVE"):
+        """Read the blueprint list a project associates in one stage.
+
+        Args:
+            projectArn (str): ARN of the data automation project.
+            projectStage (str): Which of the project's stages to read —
+                ``GetDataAutomationProject`` offers ``DEVELOPMENT`` and ``LIVE``.
+                Forwarded as given. The two stages hold independent blueprint
+                lists, so reading one while asking for the other returns a list
+                that looks plausible and belongs to the wrong contract; the
+                caller's next action (comparing, syncing or deleting against it)
+                is then taken against the wrong stage.
+
+        Returns:
+            dict: the project's ``customOutputConfiguration``, or ``None`` when
+            the project declares none — it is optional on the response, so a
+            project configured for standard output only has no blueprint list.
+        """
         try:
             project = self.bedrock_client.get_data_automation_project(
-                projectArn=projectArn, projectStage="LIVE"
+                projectArn=projectArn, projectStage=projectStage
             )
             project = project.get("project", None)
             customOutputConfiguration = project.get("customOutputConfiguration", None)
@@ -475,7 +492,10 @@ class BDABlueprintCreator:
             return customOutputConfiguration
 
         except Exception as e:
-            logger.error(f"Error updating blueprint: {e}")
+            logger.error(
+                f"Error reading blueprints of project {projectArn} "
+                f"(stage {projectStage}): {e}"
+            )
             raise e
 
     def delete_blueprint(self, blueprint_arn, blueprint_version):
