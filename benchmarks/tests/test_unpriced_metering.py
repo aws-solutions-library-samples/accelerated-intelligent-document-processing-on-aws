@@ -248,12 +248,61 @@ class TestPricedWillNotHandOverAShortTotal:
     def test_a_priced_key_that_costs_nothing_still_appears_per_meter_key(
         self, read_metering
     ):
-        """Otherwise a phase whose only entry priced to 0.00 vanishes from the
-        breakdown, which looks like a phase that did not run."""
-        priced = lib.price_metering(read_metering({f"OCR/{REAL_OCR}": {"pages": 0}}))
+        """Otherwise a phase whose entry cost 0.00 vanishes from the breakdown, which
+        reads as a phase that did not run — and `cost_by_phase` carried it as 0.0
+        before this change, so its absence would also make grids incomparable.
+
+        ⚠️ The discriminating input is a key that resolves to a pricing entry and
+        whose units that entry does **not** list. A ``pages: 0`` entry does not
+        discriminate: the unit prices, to zero, so the accumulation records the key
+        whether or not it was pre-seeded. Measured — the pre-seeding mutation
+        survived the ``pages: 0`` form of this test.
+        """
+        no_chargeable_unit = {"totalTokens": 5000, "requests": 1}
+        assert not set(no_chargeable_unit) & set(lib.PRICING[REAL_MODEL])
+        priced = lib.price_metering(
+            read_metering(
+                {
+                    f"Extraction/{REAL_MODEL}": no_chargeable_unit,
+                    f"OCR/{REAL_OCR}": {"pages": 0},
+                }
+            )
+        )
         assert priced.complete
         assert priced.total == 0.0
-        assert priced.by_meter_key == {f"OCR/{REAL_OCR}": 0.0}
+        assert priced.by_meter_key == {
+            f"Extraction/{REAL_MODEL}": 0.0,
+            f"OCR/{REAL_OCR}": 0.0,
+        }
+
+    def test_a_phase_whose_entry_cost_nothing_survives_into_score_doc(
+        self, monkeypatch
+    ):
+        """The consumer's shape: `cost_by_phase` names the phase, carrying 0.0.
+
+        This pins the output rather than the pre-seeding — `score_doc` defaults a
+        missing `by_meter_key` entry to 0.0, so it survives that regression on its
+        own. The test above is the one that discriminates it.
+        """
+        monkeypatch.setattr(
+            lib, "doc_row", lambda *a, **k: {"ObjectStatus": "COMPLETED"}
+        )
+        monkeypatch.setattr(
+            lib,
+            "read_metering",
+            lambda *a, **k: lib.Reading.present(
+                {
+                    f"Extraction/{REAL_MODEL}": {"totalTokens": 5000},
+                    f"OCR/{REAL_OCR}": {"pages": 2},
+                }
+            ),
+        )
+        monkeypatch.setattr(lib, "read_sections", lambda *a, **k: lib.SectionRead([]))
+        row = analyze.score_doc("b", "t", "r", "d", None)
+        assert row["cost_by_phase"] == {
+            "Extraction": 0.0,
+            "OCR": round(2 * lib.PRICING[REAL_OCR]["pages"], 5),
+        }
 
 
 # --------------------------------------------------------------------------- #
