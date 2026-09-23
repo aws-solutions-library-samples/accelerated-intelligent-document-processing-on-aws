@@ -200,6 +200,16 @@ its response. The recorded `type` values are `nested_object`, `nested_array` and
 or a bare string — which cannot be described to BDA at all and used to fail the whole
 class with a raw `TypeError`).
 
+Two known imprecisions in that report. The harmless one: on the **update** path each
+dropped property is recorded **twice**, because `_check_for_updates` runs the transform to
+diff against the existing blueprint and the update itself runs it again;
+`_skipped_properties` is a per-instance list and nothing de-duplicates it. The one that
+can still lose a warning: `_current_class` is a single instance attribute while `_process_classes_parallel` runs
+`_process_single_class` on up to `BDA_SYNC_MAX_WORKERS` threads, so a drop can in
+principle be filed against a sibling class — and because the collection filters on that
+label, it is then omitted from its real class's warnings rather than merely misfiled. It
+does not reproduce under natural scheduling ([#1193](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/1193)).
+
 ### Failing to associate a blueprint fails its class
 
 Creating a blueprint and then failing to write it into the project leaves it existing in
@@ -207,6 +217,13 @@ the account but absent from the extraction contract, so that document type is no
 recognised. `_process_classes_parallel` and `_convert_aws_standard_blueprints_parallel`
 therefore downgrade the affected classes to `status: failed` with the reason, rather
 than reporting a clean sync.
+
+The downgrade is **all-or-nothing**, and deliberately so: the association is one bulk
+call, and nothing in its failure says which entries did not land. It is conservative in
+the right direction but imprecise in one case — `bulk_update_data_automation_project`
+*merges* into the project's existing list, so a class whose blueprint was already
+associated and unchanged is still recognised, yet is downgraded too, and the message says
+the association failed rather than that it could not be confirmed.
 
 ### The project ARN is read through one accessor
 
@@ -220,8 +237,17 @@ that create the project do.
 
 `bda_blueprint_service.py` and `schema_converter.py` carry
 `# pyright: reportArgumentType=error`, which is off repo-wide. Both files are at zero
-findings under it, so a new site that reads the attribute directly fails `make
-typecheck`.
+findings under it, so a new site that reads the attribute directly and passes it to an
+**annotated** parameter fails `make typecheck`.
+
+⚠️ That qualifier is the whole point of having two halves. Where the callee has no
+annotations the type checker sees nothing: reverting one of the
+`list_blueprints(self._project_arn, "LIVE")` calls to the raw attribute produces **zero**
+diagnostics, because `BDABlueprintCreator.list_blueprints` is unannotated. The accessor
+raising at runtime is what catches that case, and the pragma is what catches a site the
+runtime tests do not exercise. Neither is sufficient alone, and the tests in
+`TestProjectArnIsRequiredWhereItIsUsed` assert both — including that the pragma line is
+still present, since deleting it leaves every gate green.
 
 ### Deletes are per-blueprint and their failures are returned
 
@@ -231,6 +257,10 @@ returning the ARNs it could not delete. Those are orphans that the project-scope
 retrieval can no longer see; `cleanup_orphaned_blueprints` lists account-wide and will
 still find them. Note that `BDABlueprintCreator.delete_blueprint` reports failure by
 returning `False` rather than raising, so its return value is the signal to read.
+
+⚠️ That returned list is **discarded by the only production caller**, so today a failed
+delete reaches CloudWatch and nothing the user sees, while the sync still reports success
+([#1194](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/1194)).
 
 ## Blueprint Optimization
 

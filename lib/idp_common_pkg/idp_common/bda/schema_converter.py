@@ -6,8 +6,9 @@ to Bedrock Document Analysis blueprint schema format.
 """
 
 # `reportArgumentType` is off repo-wide but on for this file, which has no findings:
-# the two `str = None` defaults that produced them are `Optional[str]`. See the note
-# at the top of bda_blueprint_service.py.
+# the two `str = None` defaults that produced them are `Optional[str]`. See the note at
+# the top of bda_blueprint_service.py for what this does and does not catch, and for
+# why deleting this line is itself a test failure rather than a green diff.
 # pyright: reportArgumentType=error
 
 import json

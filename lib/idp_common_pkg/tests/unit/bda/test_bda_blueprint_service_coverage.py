@@ -71,12 +71,14 @@ No AWS call is made: `boto3` is patched at the module boundary and both collabor
 from __future__ import annotations
 
 import json
+from pathlib import Path
 from typing import Any
 from unittest.mock import MagicMock, patch
 
 import pytest
 from botocore.exceptions import ClientError
 
+from idp_common.bda import bda_blueprint_service
 from idp_common.bda.bda_blueprint_service import BdaBlueprintService
 
 MODULE = "idp_common.bda.bda_blueprint_service"
@@ -2694,6 +2696,33 @@ class TestProjectArnIsRequiredWhereItIsUsed:
 
         assert service._project_arn == RECORDED_ARN
 
+    @staticmethod
+    def _armless_service() -> Any:
+        """A service with no project ARN whose per-class work still *succeeds*.
+
+        The wiring matters. Left as a bare `_service()`, `create_blueprint` answers a
+        plain `MagicMock`, so `result["status"] != "success"`, every class fails,
+        `blueprints_to_associate` is empty and the association step is skipped
+        entirely — at which point `assert_not_called()` below passes for a reason that
+        has nothing to do with the ARN. That is how the
+        `process-classes-parallel` case was vacuous: reverting its call site to the raw
+        attribute left the suite green.
+        """
+        service = _service()
+        service.dataAutomationProjectArn = None
+        service.config_manager.get_configuration.return_value = None
+        service.blueprint_creator.create_blueprint.return_value = {
+            "status": "success",
+            "blueprint": {
+                "blueprintArn": "arn:aws:bedrock:::blueprint/bp-1",
+                "blueprintName": "idp-Invoice-aaaa",
+            },
+        }
+        service.blueprint_creator.create_blueprint_version_without_project_update.return_value = {
+            "blueprint": {"blueprintVersion": "2"}
+        }
+        return service
+
     @pytest.mark.parametrize(
         "call",
         [
@@ -2718,6 +2747,11 @@ class TestProjectArnIsRequiredWhereItIsUsed:
                 lambda s: s._process_classes_parallel([_idp_class()], []),
                 id="process-classes-parallel",
             ),
+            # Redundant rather than vacuous, and the distinction is worth keeping
+            # straight: reverting phase 2's call site to the raw attribute also leaves
+            # this green, but there the behaviour is genuinely preserved, by
+            # `_retrieve_all_blueprints` raising `ValueError` on a falsy ARN. Two
+            # independent guards on one path is the reason, not an untested one.
             pytest.param(
                 lambda s: s.create_blueprints_from_custom_configuration(
                     version="v1", sync_direction="idp_to_bda", sync_mode="replace"
@@ -2730,9 +2764,7 @@ class TestProjectArnIsRequiredWhereItIsUsed:
         """The assertion is on what must *not* happen: a call reaching BDA with no
         project to name. Two of these swallow the RuntimeError by design, so asserting
         on the exception alone would not cover them."""
-        service = _service()
-        service.dataAutomationProjectArn = None
-        service.config_manager.get_configuration.return_value = None
+        service = self._armless_service()
 
         try:
             call(service)
@@ -2742,3 +2774,45 @@ class TestProjectArnIsRequiredWhereItIsUsed:
         service.blueprint_creator.update_project_with_custom_configurations.assert_not_called()
         service.blueprint_creator.bulk_update_data_automation_project.assert_not_called()
         service.blueprint_creator.list_blueprints.assert_not_called()
+
+    def test_the_association_step_is_reached_and_then_refuses(self):
+        """The positive half, which is what makes the case above non-vacuous.
+
+        Reaching the association step at all requires every class to have succeeded, so
+        asserting that each comes back `failed` *naming the missing ARN* proves both
+        that the step was entered and that the accessor is what stopped it. A fixture
+        that never got there would report `success`.
+        """
+        service = self._armless_service()
+
+        status, updated, _ = service._process_classes_parallel(
+            [_idp_class("Invoice"), _idp_class("Receipt")], []
+        )
+
+        assert [entry["status"] for entry in status] == ["failed", "failed"]
+        assert all("no BDA project ARN" in entry["error"] for entry in status)
+        assert len(updated) == 2
+        service.blueprint_creator.bulk_update_data_automation_project.assert_not_called()
+
+    @pytest.mark.parametrize(
+        "module_path",
+        ["bda_blueprint_service.py", "schema_converter.py"],
+    )
+    def test_the_reportargumenttype_pragma_is_still_here(self, module_path):
+        """The static half is a line in a file, and nothing else checks it is there.
+
+        Deleting `# pyright: reportArgumentType=error` restores the repo-wide `"none"`
+        for that file, so the rule stops reporting — and every gate stays green while
+        the protection is gone. Measured: with the line removed and one of the nine
+        sites reverted to the raw attribute, `basedpyright` reports 0 diagnostics and
+        this suite passes. That is a control that exists and is never consulted, which
+        is the failure mode this repository keeps re-finding, so the presence of the
+        line is asserted rather than assumed.
+        """
+        bda_dir = Path(bda_blueprint_service.__file__ or "").parent
+        source = (bda_dir / module_path).read_text(encoding="utf-8")
+
+        assert "# pyright: reportArgumentType=error" in source, (
+            f"{module_path} no longer enables reportArgumentType, so the nine project-"
+            f"ARN sites are unguarded by the type checker again and nothing else fails."
+        )

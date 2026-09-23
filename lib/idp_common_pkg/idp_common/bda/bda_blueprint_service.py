@@ -4,10 +4,22 @@
 # `reportArgumentType` is off repo-wide (about 416 findings across the tree, its own
 # change with its own ratchet). It is on for this file, which has none: the
 # `Optional[str]` project ARN that used to reach nine `str` parameters from here is
-# read through `_project_arn`, so a tenth site cannot be added without this failing.
+# read through `_project_arn`.
+#
+# ⚠️ This catches a new site only where the *callee* is annotated. Reverting one of
+# the `list_blueprints(self._project_arn, "LIVE")` calls to the raw attribute produces
+# **zero** diagnostics, because `BDABlueprintCreator.list_blueprints` carries no
+# annotations at all — the third hiding mechanism, alongside this rule being off and
+# the attribute being Optional. So this half is not sufficient on its own: what
+# catches that case is `_project_arn` raising at runtime, which the tests in
+# `TestProjectArnIsRequiredWhereItIsUsed` assert per method. The two halves overlap
+# deliberately; neither covers the other's blind spot.
+#
 # This is the inverse of an exemption — a rule enabled locally, not disabled — so it
-# is not registered in scripts/tests/gate_exemptions.json; what it needs instead is
-# to stay at zero, which `make typecheck` enforces.
+# is not registered in scripts/tests/gate_exemptions.json. What it needs is to stay at
+# zero, which `make typecheck` enforces, and to stay *present*, which
+# `test_the_reportargumenttype_pragma_is_still_here` enforces: deleting this line
+# leaves every gate green while silently withdrawing the protection.
 # pyright: reportArgumentType=error
 import json
 import logging
@@ -1084,6 +1096,19 @@ class BdaBlueprintService:
         them in its response. A drop that is only logged is invisible: the class
         is reported ``success`` with no warnings while a whole section has left
         its extraction contract.
+
+        ⚠️ ``_current_class`` is one instance attribute and ``_process_classes_parallel``
+        runs ``_process_single_class`` on up to ``BDA_SYNC_MAX_WORKERS`` threads, so the
+        label here is racy. Because ``_process_single_class`` collects by filtering on
+        that label, a mislabelled drop is *omitted* from its real class's warnings
+        rather than merely misfiled — the exact outcome this recorder exists to
+        prevent. It does not reproduce under natural scheduling, only under a forced
+        interleaving; the remedy (pass the class explicitly, or make both this list and
+        the label thread-local) is issue #1193.
+
+        Note also that the update path records each drop twice: ``_check_for_updates``
+        runs the transform to diff, and the update runs it again. Nothing
+        de-duplicates.
         """
         self._skipped_properties.append(
             {
@@ -2309,6 +2334,11 @@ class BdaBlueprintService:
                 # Synchronize deletes only in replace mode (remove BDA blueprints not in IDP)
                 # In merge mode, keep existing BDA-only blueprints alive
                 if sync_mode == "replace":
+                    # ⚠️ The orphaned ARNs this returns are discarded here, so a
+                    # failed delete reaches CloudWatch and nothing the caller or the
+                    # UI sees, while the sync still reports success. That is the same
+                    # "only logged is invisible" standard applied to dropped schema
+                    # properties and not applied here. Issue #1194.
                     self._synchronize_deletes(
                         existing_blueprints=existing_blueprints,
                         blueprints_updated=blueprints_updated,
