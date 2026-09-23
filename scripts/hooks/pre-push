@@ -67,6 +67,15 @@
 #   * It keys on the branch name, so `develop` and `main` are shared wherever
 #     this hook is installed.
 #
+# One thing NEITHER half refuses: another session standing in the same working
+# directory. Both reason about branches and destinations, not about who else is in
+# the directory, so when several assistant sessions share one checkout a `git
+# switch` by either moves the tree under the other silently -- and a push from
+# there sends whatever that tree now holds. The PreToolUse half REPORTS it (see
+# `tenancy_notices` in check_shared_branch.py) and refuses nothing, because a
+# per-command hook cannot tell a deliberate switch from a collision. The
+# convention that avoids it is a `git worktree` per session (#1087).
+#
 # Override: ALLOW_SHARED_BRANCH=1 git push ...
 #
 # This is a local convention, not an enforced control. Branch protection on this

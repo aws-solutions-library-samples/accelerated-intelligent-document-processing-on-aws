@@ -297,6 +297,22 @@ while `HEAD` happens to sit on `develop` or `main` is refused. Every refusal say
 which basis it used, so you can tell that case from a real one — and the override
 gets you past it.
 
+**Work in your own working directory, not somebody else's.** The guard reasons about
+branches and destinations, not about who else is standing in the checkout, so two
+people — or two assistant sessions — sharing one working tree can pull it out from
+under each other with an ordinary `git switch`, and nothing refuses that or warns
+about it. Use a worktree instead of switching branches in a checkout somebody else is
+using:
+
+```bash
+git worktree add ../idp-my-change -b fix/my-change origin/develop
+```
+
+The `PreToolUse` half of the guard prints a line when it notices another session's id
+was the last to run a git command where you are, and when the branch moved between two
+of your own commands. That is a notice, not a refusal: a per-command hook cannot tell
+a deliberate branch switch from a collision.
+
 ### Where the domain conventions live
 
 The per-domain conventions, checklists and gotchas are in **`.claude/skills/`**.

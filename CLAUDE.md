@@ -968,6 +968,24 @@ around it:
 - History written onto a shared branch by anything other than `git commit` —
   `merge`, `cherry-pick`, `revert`, `rebase`, `am`. Those are local until pushed,
   and the push is what gets refused.
+- **Another session standing in the same working directory.** Every question above is
+  about a *branch or a destination*; none is about who else is in the directory. Where
+  several sessions share the repository root — one working tree, not a worktree each —
+  a `git switch` by either moves the tree under the other, with no refusal and no
+  warning, because as far as git is concerned nothing unusual happened. A session can
+  then test a branch it did not check out, or commit a file another session edited,
+  with every gate green. This one **is reported, and never refused**
+  ([#1087](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/1087)):
+  before a `commit`, `push`, `switch` or `checkout` the `PreToolUse` half records the
+  session id and the branch in the working tree's own git directory, and prints one
+  stderr line when the id that was last there is a different one, and another when the
+  branch moved between two of this session's commands. Refusing would mean refusing one
+  session's deliberate branch switch, which a per-command hook cannot tell apart from a
+  collision, so **the thing that actually prevents this is the convention**: an
+  assistant session that is not the one holding the main checkout works in
+  `git worktree add <path> -b <branch>`. The record is keyed on
+  `git rev-parse --absolute-git-dir`, which is per working tree, so a worktree is its
+  own tenant rather than a co-tenant of the checkout it came from.
 
 Neither half looks at *which* remote, so pushing `develop` to a personal fork is
 refused too, and both key on the branch *name*, so a commit onto `main` in an
