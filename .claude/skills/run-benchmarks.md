@@ -288,20 +288,40 @@ without saying so (advanced/large runs are survivorship-sensitive). Costs are
 estimates from `config_library/pricing.yaml` (state the rate date). Any capped or
 skipped cell must appear in `meta.json`, not vanish.
 
-### A figure that could not be read is null, never zero
+### A figure that could not be read — or priced — is null, never zero
 
-The harness may continue past a failed read; it may not record the failure as a
+The harness may continue past something it could not measure; it may not record it as a
 value. Every reader returns a three-state `lib.Reading` — present / absent / failed —
 and zero is not the sentinel for either empty state, because zero is a real answer for
-most of these metrics. Before quoting a number from a grid, check the four places a
-read failure surfaces. All four are null or zero on a clean run.
+most of these metrics. Pricing follows the same rule: `lib.price_metering` returns a
+`lib.Priced` whose `.total` is unavailable unless every metering entry priced, so an
+entry that contributed nothing cannot be read as one that cost nothing. Before quoting a
+number from a grid, check the five places this surfaces. All five are null or zero on a
+clean run.
 
 | Where | Key | Means |
 |---|---|---|
 | a row | `cost_unread` | the metering row was not read, so `cost` and `tokens` are null rather than `$0.00` |
+| a row | `cost_unpriced` | the metering row read fine and `pricing.yaml` cannot price something in it, so `cost`, `cost_by_phase` and `cost_by_key` are null. The tokens stay — they are what says how much cost is missing |
 | a row | `sections_unread` / `sections_unreadable` | some section objects would not read, so the row carries **no** quality metric at all |
-| a cell | `n_cost_unread` / `n_sections_unread` | that cell's means are over fewer runs than `n_success` |
+| a cell | `n_cost_unread` / `n_cost_unpriced` / `n_sections_unread` | that cell's means are over fewer runs than `n_success` |
 | `--calibration` | the `UNREAD` bucket on the `skipped:` line | rows nobody could measure — **not** runs that emitted no confidence |
+
+⚠️ **`cost_unpriced` is the one with no zero to give it away.** A row whose metering
+could not be read has every cost figure null. A row carrying an **unpriced model** has
+every other phase priced normally, so its total is non-zero and plausible while being
+strictly below truth, and no number in the artifact looks wrong. Adding a model arm is
+exactly when it happens, so the run introducing the thing being measured is the run at
+risk. Check `pricing.yaml` **before** launching a grid with a new model in it; a unit
+test covers the `config_matrix.yaml` model axes, but a metering key can also name a
+Textract feature or a Lambda hook that no axis mentions.
+
+A unit that a matched pricing entry does **not** list is a different matter and is a
+real `$0.00`: `pricing.yaml` omits units that do not apply, and every Bedrock call
+meters `totalTokens` and `requests`, which Bedrock does not charge for. That rule is
+shared with the product's own cost reporting (`idp_common/reporting/README.md`) and the
+two are required to agree, so reporting the unit axis here would both mark every Bedrock
+entry in every row unpriceable and put the two implementations out of step.
 
 `--compare` prints the cell-level version under `MEASURED OVER FEWER RUNS THAN IT
 LOOKS`. A non-zero count there makes the arm's figures provisional: re-run against a
