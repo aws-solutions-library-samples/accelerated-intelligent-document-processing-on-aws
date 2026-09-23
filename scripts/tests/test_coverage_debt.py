@@ -347,7 +347,7 @@ class TestWiring:
         assert floor <= recorded, f"floor {floor} exceeds recorded {recorded:.2f}"
 
 
-def _fake_tree(tmp_path: Path, name: str = "faketree") -> "ccd.Tree":
+def _fake_tree(tmp_path: Path, name: str = "faketree"):
     """A tree rooted in `tmp_path`, so `--write` cannot touch the real baseline.
 
     Registered by monkeypatching TREES, not by editing the real registry: these tests

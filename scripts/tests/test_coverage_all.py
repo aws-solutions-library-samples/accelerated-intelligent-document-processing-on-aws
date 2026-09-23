@@ -70,7 +70,7 @@ class _Recorder:
         return subprocess.CompletedProcess(cmd, self.returncode)
 
 
-def _fake_tree(tmp_path: Path, name: str) -> "ccd.Tree":
+def _fake_tree(tmp_path: Path, name: str):
     (tmp_path / name).mkdir(parents=True, exist_ok=True)
     return ccd.Tree(name, name, "pkg")
 
