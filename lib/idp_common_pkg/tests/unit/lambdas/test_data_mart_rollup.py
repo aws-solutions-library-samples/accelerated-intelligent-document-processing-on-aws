@@ -2740,6 +2740,43 @@ class TestPlanMigrationChunks:
                     None,
                 )
 
+    def test_plan_off_midnight_fire_covers_earliest_day_end_to_end(self, rollup):
+        """Regression: off-midnight CustomResource fires must produce a
+        plan whose earliest day is FULLY covered (24 hours in
+        metering_hourly), so ``_run_backfill_daily_range``'s per-day
+        aggregation for that day sums all 24 hours rather than the tail
+        slice implied by the anchor's hour-of-day.
+
+        Prior behaviour: ``start = end - timedelta(days=days)`` without
+        top-of-day truncation gave a 14:35 UTC fire a start of
+        ``(anchor.replace(minute=0)) - 30d`` = ``anchor_date - 30d
+        14:00``, so ``metering_hourly`` for the earliest day had rows
+        only for hours 14-23 (10 rows). ``_run_backfill_daily_range``
+        then aggregated ``metering_daily`` for that day from those 10
+        rows — the earliest daily row was short 14 hours of data.
+
+        Fixed by truncating ``start`` to top-of-day. Every day in the
+        planned range now has 24-hour coverage in ``metering_hourly``.
+        """
+        result = rollup.handler(
+            {
+                "mode": "plan_migration_chunks",
+                "days": 30,
+                "chunk_hours": 1,
+                "time": "2026-09-22T14:35:00Z",  # off-midnight fire
+            },
+            None,
+        )
+        chunks = result["chunks"]
+        assert chunks, "expected non-empty plan"
+        # First chunk starts at top-of-day, not mid-hour.
+        assert chunks[0]["start"] == "2026-08-23T00:00:00+00:00"
+        # Last chunk ends at top-of-anchor-hour (still exclusive of the
+        # current in-flight hour).
+        assert chunks[-1]["end"] == "2026-09-22T14:00:00+00:00"
+        # Total hours covered: 30 days × 24 + 14 (hours 00-13 of anchor day) = 734.
+        assert result["count"] == 30 * 24 + 14
+
 
 @pytest.mark.unit
 class TestCheckHoursFailed:

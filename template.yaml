@@ -6199,11 +6199,14 @@ Resources:
               Resource: !Ref DataMartMigrationStateMachine
             # ForceFresh=true → delete the SSM marker so the state
             # machine's CheckMarker takes the full-flow branch. Scoped
-            # to this stack's marker path.
+            # to this stack's marker path. Only DeleteParameter is
+            # granted — the dispatcher never reads the marker
+            # (ssm:GetParameter is called only from the rollup Lambda's
+            # own role in _check_marker_state, not from here). Kept
+            # to least privilege.
             - Effect: Allow
               Action:
                 - ssm:DeleteParameter
-                - ssm:GetParameter
               Resource:
                 - !Sub "arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/idp/${AWS::StackName}/data-mart-rollup/*"
       InlineCode: |

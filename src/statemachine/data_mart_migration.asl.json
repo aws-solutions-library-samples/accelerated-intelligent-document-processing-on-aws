@@ -31,6 +31,13 @@
           "MaxAttempts": 6,
           "IntervalSeconds": 30,
           "BackoffRate": 2
+        },
+        {
+          "Comment": "Lambda.Unknown catches Python-side exceptions the rollup Lambda didn't classify — a boto3 transient network flake that escaped the client's own retry, an intermittent DynamoDB / Athena / S3 error, etc. Narrow MaxAttempts=2 (vs 6 for Lambda-service errors) so transient issues recover without wasting cycles retrying a genuine code bug six times before failing.",
+          "ErrorEquals": ["Lambda.Unknown"],
+          "MaxAttempts": 2,
+          "IntervalSeconds": 30,
+          "BackoffRate": 2
         }
       ],
       "Next": "RouteOnMarkerState"
@@ -78,6 +85,13 @@
           "MaxAttempts": 2,
           "IntervalSeconds": 30,
           "BackoffRate": 2
+        },
+        {
+          "Comment": "Lambda.Unknown — Python-side exception from _purge_rollup_prefixes_task (e.g., a transient S3 5xx that escaped boto3's client retry). Narrow MaxAttempts=2 covers the transient, does not extend retry to a persistent bug.",
+          "ErrorEquals": ["Lambda.Unknown"],
+          "MaxAttempts": 2,
+          "IntervalSeconds": 30,
+          "BackoffRate": 2
         }
       ],
       "ResultPath": "$.purge_result",
@@ -105,6 +119,13 @@
             "Lambda.TooManyRequestsException"
           ],
           "MaxAttempts": 6,
+          "IntervalSeconds": 30,
+          "BackoffRate": 2
+        },
+        {
+          "Comment": "Lambda.Unknown catches Python-side exceptions the rollup Lambda didn't classify — a boto3 transient network flake that escaped the client's own retry, an intermittent DynamoDB / Athena / S3 error, etc. Narrow MaxAttempts=2 (vs 6 for Lambda-service errors) so transient issues recover without wasting cycles retrying a genuine code bug six times before failing.",
+          "ErrorEquals": ["Lambda.Unknown"],
+          "MaxAttempts": 2,
           "IntervalSeconds": 30,
           "BackoffRate": 2
         }
@@ -138,6 +159,13 @@
             "Lambda.TooManyRequestsException"
           ],
           "MaxAttempts": 6,
+          "IntervalSeconds": 30,
+          "BackoffRate": 2
+        },
+        {
+          "Comment": "Lambda.Unknown catches Python-side exceptions the rollup Lambda didn't classify — a boto3 transient network flake that escaped the client's own retry, an intermittent DynamoDB / Athena / S3 error, etc. Narrow MaxAttempts=2 (vs 6 for Lambda-service errors) so transient issues recover without wasting cycles retrying a genuine code bug six times before failing.",
+          "ErrorEquals": ["Lambda.Unknown"],
+          "MaxAttempts": 2,
           "IntervalSeconds": 30,
           "BackoffRate": 2
         }
@@ -180,6 +208,13 @@
                 "MaxAttempts": 3,
                 "IntervalSeconds": 60,
                 "BackoffRate": 2
+              },
+              {
+                "Comment": "Lambda.Unknown — Python-side exception from _run_backfill on a single chunk (transient Athena/S3 error that escaped _run_athena's own retry, or a boto3 network flake). Narrow MaxAttempts=2 — the inner Retry already gives 3 attempts on Lambda.* errors, so extending indefinitely on generic Python exceptions would mask real bugs. Idempotent per-partition HeadObject-skip makes the second attempt cheap when the first succeeded partially.",
+                "ErrorEquals": ["Lambda.Unknown"],
+                "MaxAttempts": 2,
+                "IntervalSeconds": 60,
+                "BackoffRate": 2
               }
             ],
             "ResultSelector": {
@@ -193,9 +228,9 @@
       "Catch": [
         {
           "ErrorEquals": ["States.ALL"],
-          "Comment": "A chunk that exhausts its 3-attempt inner Retry fails the whole Map — without this Catch the state machine would end in the terminal FAILED state before CheckMigrationSuccess could run, and operators would lose the failing_chunks aggregation. Route to MigrationHadFailures directly, preserving the marker=in_progress semantic that lets a re-invocation resume. The Map's partial ItemProcessor outputs are not available on the failure path in ASL, so the aggregated failing_chunks list must be reconstructed from CloudWatch Logs — see the runbook. The caught error object is preserved on $.map_error for the Fail state's Cause.",
+          "Comment": "A chunk that exhausts its 3-attempt inner Retry fails the whole Map — without this Catch the state machine would end in the terminal FAILED state before CheckMigrationSuccess could run, and operators would lose all diagnostic detail. Route to MigrationHadMapFailure (distinct from MigrationHadFailures) so the Fail state can surface $.map_error via CausePath — ASL Fail states cannot express conditional Cause based on whether the state was reached via Catch or via Choice, so two Fail states is the least-drift way to get the caught error into the SFN execution history. Marker stays state=in_progress on both paths so a restart resumes.",
           "ResultPath": "$.map_error",
-          "Next": "MigrationHadFailures"
+          "Next": "MigrationHadMapFailure"
         }
       ],
       "Next": "BackfillDailyRange"
@@ -225,6 +260,13 @@
             "States.Timeout"
           ],
           "MaxAttempts": 5,
+          "IntervalSeconds": 60,
+          "BackoffRate": 2
+        },
+        {
+          "Comment": "Lambda.Unknown — Python-side exception from _run_backfill_daily_range (transient Athena error mid-loop). Narrow MaxAttempts=2 — the primary retry (5×) covers the States.Timeout path; this handles Python exceptions specifically without extending the runway indefinitely for real bugs.",
+          "ErrorEquals": ["Lambda.Unknown"],
+          "MaxAttempts": 2,
           "IntervalSeconds": 60,
           "BackoffRate": 2
         }
@@ -270,6 +312,13 @@
           "MaxAttempts": 6,
           "IntervalSeconds": 30,
           "BackoffRate": 2
+        },
+        {
+          "Comment": "Lambda.Unknown catches Python-side exceptions the rollup Lambda didn't classify — a boto3 transient network flake that escaped the client's own retry, an intermittent DynamoDB / Athena / S3 error, etc. Narrow MaxAttempts=2 (vs 6 for Lambda-service errors) so transient issues recover without wasting cycles retrying a genuine code bug six times before failing.",
+          "ErrorEquals": ["Lambda.Unknown"],
+          "MaxAttempts": 2,
+          "IntervalSeconds": 30,
+          "BackoffRate": 2
         }
       ],
       "Next": "MigrationOutcome"
@@ -310,6 +359,13 @@
           "MaxAttempts": 6,
           "IntervalSeconds": 30,
           "BackoffRate": 2
+        },
+        {
+          "Comment": "Lambda.Unknown catches Python-side exceptions the rollup Lambda didn't classify — a boto3 transient network flake that escaped the client's own retry, an intermittent DynamoDB / Athena / S3 error, etc. Narrow MaxAttempts=2 (vs 6 for Lambda-service errors) so transient issues recover without wasting cycles retrying a genuine code bug six times before failing.",
+          "ErrorEquals": ["Lambda.Unknown"],
+          "MaxAttempts": 2,
+          "IntervalSeconds": 30,
+          "BackoffRate": 2
         }
       ],
       "ResultPath": "$.marker_write_completed",
@@ -317,9 +373,15 @@
     },
     "MigrationHadFailures": {
       "Type": "Fail",
-      "Comment": "Reached either from MigrationOutcome (CheckMigrationSuccess reported all_hours_clean=false because at least one chunk had hours_failed > 0 or hours_partial > 0 or the aggregator saw no work at all) OR from MigrateChunks' Catch (a chunk exhausted its inner Retry, failing the whole Map before CheckMigrationSuccess could aggregate). In both cases the marker stays state=in_progress so restarting the state machine (via CustomResource re-fire or manual StartExecution) will resume: the Purge is skipped, already-written chunks are HeadObject-skipped, only the failing hours are retried. On the Map-catch path the failing_chunks aggregation from CheckMigrationSuccess is not available on this state's input (ASL surfaces the caught error, not the Map's partial ItemProcessor outputs) — operators consult the state-machine execution history and CloudWatch Logs for the failing chunk's identity. Alarm on this failure via SFN's built-in CloudWatch integration.",
+      "Comment": "Reached from MigrationOutcome's Default branch — CheckMigrationSuccess reported all_hours_clean=false because at least one chunk had hours_failed > 0 or hours_partial > 0, or the aggregator saw no work at all. Marker stays state=in_progress so restarting the state machine (via CustomResource re-fire or manual StartExecution) resumes: the Purge is skipped, already-written chunks are HeadObject-skipped, only the failing hours are retried. Operators inspect $.migration_check.failing_chunks in the SFN execution history for the specific chunk / hour / arm identity. Alarm on this failure via SFN's built-in CloudWatch integration.",
       "Error": "MigrationIncomplete",
-      "Cause": "Migration ended without all_hours_clean=true (either an aggregator failure or a Map inner-Retry exhaustion). Marker left as state=in_progress. Restart the state machine (or wait for the next CustomResource fire) to resume."
+      "Cause": "Aggregator reported all_hours_clean=false. See $.migration_check.failing_chunks in the SFN execution history for specifics. Marker left as state=in_progress. Restart the state machine (or wait for the next CustomResource fire) to resume."
+    },
+    "MigrationHadMapFailure": {
+      "Type": "Fail",
+      "Comment": "Reached from MigrateChunks' Catch — a chunk exhausted its 3-attempt inner Retry, failing the whole Map before CheckMigrationSuccess could aggregate. The caught error object is on $.map_error and gets surfaced via CausePath below so the SFN execution history shows the exception name + message directly (no CloudWatch log-hunt for the identity of the failing chunk). Marker stays state=in_progress — same recovery semantic as MigrationHadFailures (restart resumes, HeadObject-skip preserves prior progress).",
+      "ErrorPath": "$.map_error.Error",
+      "CausePath": "$.map_error.Cause"
     }
   }
 }

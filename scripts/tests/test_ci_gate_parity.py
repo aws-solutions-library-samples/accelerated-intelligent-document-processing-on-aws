@@ -235,21 +235,6 @@ GATES_DELIBERATELY_OUT_OF_CI = {
         "directory. A coverage report is an artifact, not an assertion: this "
         "target's pass/fail is exactly `test-capacity`'s."
     ),
-    "coverage": (
-        "Measures idp_common coverage and prints the table worst-covered first. It "
-        "asserts nothing by construction — it runs the package suite with the "
-        "aggregate floor disabled (`COV_FLOOR=`), discards its output and ignores "
-        "its exit status — so there is no verdict for a CI to carry. The ratchet it "
-        "reports on does run in both CIs: the aggregate floor inside "
-        "`test-cicd -C lib/idp_common_pkg`, and the per-file baseline asserted by "
-        "`scripts/tests/test_coverage_debt.py` under `test-packages-cicd`."
-    ),
-    "coverage-table": (
-        "Reprints the table from the last measurement without re-measuring. Reading "
-        "a local report is not an assertion, and in CI there would be no report to "
-        "read — the same vacuity the Makefile comment above the target records as "
-        "the reason it is not wired into `lint` either."
-    ),
     "test-circuit-breaker": (
         "Three circuit-breaker test paths under src/lambda, verbosely. Same "
         "residual as `test-capacity`: covered by `make test`, not by a CI target."

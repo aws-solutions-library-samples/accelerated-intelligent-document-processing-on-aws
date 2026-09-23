@@ -49,6 +49,27 @@ QUERY_OUTPUT_LOCATION = os.environ.get("ATHENA_QUERY_OUTPUT_LOCATION", "")
 REPORTING_BUCKET = os.environ.get("REPORTING_BUCKET", "")
 STACK_NAME = os.environ.get("STACK_NAME", "")
 
+# Load-time guard. Every stack embeds its ``StackName`` into the SSM
+# parameter path so the marker is per-stack. An empty ``STACK_NAME``
+# would collapse the path to ``/idp//data-mart-rollup/…`` which every
+# stack in the account then shares — one stack's ``state=completed``
+# marker would short-circuit every other stack's migration and route
+# it away from InitialPurge, leaving the fresh stack's rollup tables
+# empty and untouched. Fail fast at import so a misconfigured deployment
+# surfaces in the first invocation's cold-start rather than in a silent
+# data hole. Placed at the TOP of the module (before any use of
+# STACK_NAME in a module-level constant expression) so no downstream
+# fallback like ``STACK_NAME or 'unknown'`` can ever take effect — a
+# future refactor moving the guard down would resurrect the fallback
+# constant silently.
+if not STACK_NAME:
+    raise RuntimeError(
+        "STACK_NAME environment variable is empty; refusing to compute the SSM "
+        "migration marker path because '/idp//data-mart-rollup/migration-complete' "
+        "would collide across every stack in the account. Ensure the Lambda's "
+        "Environment sets STACK_NAME to !Ref AWS::StackName."
+    )
+
 # Pricing constants — US-East-1 defaults. Sub-cent precision doesn't
 # matter; these are best-effort estimates surfaced on the dashboard's
 # Control Plane KPI, not billing-grade numbers.
@@ -403,7 +424,7 @@ def _run_hourly(anchor: Optional[datetime] = None) -> Dict[str, Any]:
 # and any async-retry attempts must produce the exact same token for
 # Athena to dedupe them) so it is derived from the stack name only —
 # NOT invocation-scoped state like time or random.
-_IDEMPOTENCY_KEY_PREFIX = f"idp-rollup-{STACK_NAME or 'unknown'}"
+_IDEMPOTENCY_KEY_PREFIX = f"idp-rollup-{STACK_NAME}"
 
 
 # Round-18 review fix (finding #1985): single source of truth for
@@ -1547,22 +1568,6 @@ def _run_backfill(
 # (2026-09-22) and CHANGELOG entry for the retry-safe purge that this
 # design supersedes.
 
-if not STACK_NAME:
-    # Load-time guard. Every stack embeds its ``StackName`` into the
-    # SSM parameter path so the marker is per-stack. An empty
-    # ``STACK_NAME`` collapses that to ``/idp//data-mart-rollup/…``,
-    # which every stack in the account then shares — one stack's
-    # ``state=completed`` marker would short-circuit every other
-    # stack's migration and route it away from InitialPurge, leaving
-    # the fresh stack's rollup tables empty and untouched. Fail fast
-    # at import so a misconfigured deployment surfaces in the first
-    # invocation's cold-start rather than in a silent data hole.
-    raise RuntimeError(
-        "STACK_NAME environment variable is empty; refusing to compute the SSM "
-        "migration marker path because '/idp//data-mart-rollup/migration-complete' "
-        "would collide across every stack in the account. Ensure the Lambda's "
-        "Environment sets STACK_NAME to !Ref AWS::StackName."
-    )
 _MIGRATION_MARKER_NAME = f"/idp/{STACK_NAME}/data-mart-rollup/migration-complete"
 
 
@@ -1662,7 +1667,16 @@ def _check_marker_state(days: int, version: Optional[str] = None) -> Dict[str, A
         # Strict: a marker with no version= segment (pre-versioning) or a
         # different version string is a mismatch → full flow. See docstring
         # for why silent-accept was rejected.
-        version_match = marker_version == version
+        #
+        # ``.strip()`` on the CALLER side too — the parsed marker side
+        # has already been stripped (see the ``val.strip()`` in the
+        # segment loop above). Without symmetric normalisation, a
+        # ``MigrationVersion="v1 "`` (trailing whitespace, easy to
+        # introduce via a CFN parameter default or a template edit)
+        # would never match a marker written from the same string
+        # (which stored it as ``"v1 "`` but parses it back as ``"v1"``)
+        # and force a full destructive re-migration on every deploy.
+        version_match = marker_version == (version or "").strip()
 
     if days_match and version_match and marker_state == "completed":
         return {
@@ -1796,8 +1810,23 @@ def _plan_migration_chunks(
     ``mode: backfill`` fits comfortably in 900 s (SFN Lambda-task budget).
 
     Anchor is the CFN CustomResource fire time (via EventBridge event
-    ``time`` field, or now() fallback). Both bounds are hour-truncated
-    to keep partition alignment.
+    ``time`` field, or now() fallback). ``end`` is anchor truncated to
+    top-of-hour (an exclusive upper bound — the current in-flight hour
+    is not part of the migration). ``start`` is ``end - days`` truncated
+    to top-of-DAY.
+
+    Why top-of-day on the low end and top-of-hour on the high end:
+    ``_run_backfill_daily_range`` (which runs AFTER MigrateChunks
+    finishes) aggregates ``metering_daily`` from ``metering_hourly`` on
+    a whole-day basis. If MigrateChunks' start were mid-day — as it
+    would be for any off-midnight CustomResource fire — the earliest
+    day's ``metering_hourly`` rows would cover only a tail slice (e.g.
+    hours 14-23 for a 14:35 UTC fire), and the earliest ``metering_daily``
+    row would then be short 14 hours of data. Extending ``start`` down
+    to top-of-day gives every day in the range full 24-hour coverage
+    in ``metering_hourly`` before the daily aggregation runs. Overshoot
+    is at most 24 hours of extra work; on chunk_hours=1 that's 24
+    additional chunks that HeadObject-skip fast if already rolled up.
     """
     if days < 1 or days > 90:
         raise ValueError(f"plan_migration_chunks: days={days} out of range (1..90)")
@@ -1807,7 +1836,9 @@ def _plan_migration_chunks(
         )
 
     end = anchor.replace(minute=0, second=0, microsecond=0)
-    start = end - timedelta(days=days)
+    start = (end - timedelta(days=days)).replace(
+        hour=0, minute=0, second=0, microsecond=0
+    )
     chunks: List[Dict[str, str]] = []
     cursor = start
     delta = timedelta(hours=chunk_hours)
@@ -1934,11 +1965,29 @@ def _check_hours_failed(
                 }
             )
     if failing_chunks:
+        # Compact WARNING summary (safely under CloudWatch's 256 KB
+        # per-event cap even on a 720-chunk migration where every chunk
+        # partial-fails). Full detail follows at INFO, one event per
+        # chunk, so a postmortem always has the per-chunk failures
+        # regardless of how many chunks failed.
         logger.warning(
-            "check_hours_failed: %d chunk(s) had failing/partial hours: %s",
+            "check_hours_failed: %d chunk(s) had failing/partial hours "
+            "(first %d ranges: %s); full detail below at INFO",
             len(failing_chunks),
-            failing_chunks,
+            min(len(failing_chunks), 5),
+            [(fc.get("start"), fc.get("end")) for fc in failing_chunks[:5]],
         )
+        for i, fc in enumerate(failing_chunks):
+            logger.info(
+                "failing_chunk %d/%d: %s → %s hours_failed=%s hours_partial=%s failures=%s",
+                i + 1,
+                len(failing_chunks),
+                fc.get("start"),
+                fc.get("end"),
+                fc.get("hours_failed"),
+                fc.get("hours_partial"),
+                fc.get("failures"),
+            )
     return {
         # Floor on total_attempted > 0: a zero-work aggregation (empty
         # chunk_results AND daily_result=None, or PlanChunks having
@@ -3548,13 +3597,20 @@ def _run_athena(
     try:
         response = athena_client.start_query_execution(**kwargs)
     except ClientError as e:
-        # Match on the structured error code, not on the free-form
-        # message. botocore's message wording changes across versions
-        # and localisations; the code is stable. Athena raises
-        # ``InvalidRequestException`` with a message about "Idempotent
-        # parameters do not match" when a ClientRequestToken is reused
-        # against a different QueryString; keep the message check as a
-        # secondary guard so the branch fires on either signal.
+        # Match on BOTH the structured error code AND the free-form
+        # message text. Athena raises the specific idempotency-mismatch
+        # case as either ``IdempotentParameterMismatchException`` or
+        # (in some botocore versions) the broader
+        # ``InvalidRequestException`` code — but ``InvalidRequestException``
+        # on its own covers many unrelated Athena failure modes we must
+        # not treat as an idempotency mismatch (bad SQL, missing
+        # workgroup, malformed OutputLocation, etc.). The additional
+        # ``"Idempotent" in error_msg`` guard narrows the broad code
+        # class down to the specific case the fresh-salt branch is
+        # designed for. The AND is deliberate; a prior comment saying
+        # "either signal" was wrong — narrowing on either alone lets
+        # unrelated ``InvalidRequestException``s spuriously salt and
+        # retry.
         error = e.response.get("Error", {}) or {}
         error_code = error.get("Code", "")
         error_msg = error.get("Message", "") or str(e)
@@ -3594,13 +3650,10 @@ def _run_athena(
         # re-execute than to trust an unknown state and hit the cached-
         # failure loop the round-19 fix was meant to break).
         initial_state: Optional[str] = None
-        _AthenaBotoCoreError: Any
-        _AthenaClientError: Any
+        # ``ClientError`` is module-scoped (import at top of file); the
+        # BotoCoreError parent class is not, so it needs the local import.
         from botocore.exceptions import (  # noqa: PLC0415
             BotoCoreError as _AthenaBotoCoreError,
-        )
-        from botocore.exceptions import (
-            ClientError as _AthenaClientError,
         )
 
         for probe_attempt in range(3):
@@ -3608,7 +3661,7 @@ def _run_athena(
                 initial = athena_client.get_query_execution(QueryExecutionId=query_id)
                 initial_state = initial["QueryExecution"]["Status"]["State"]
                 break
-            except (_AthenaClientError, _AthenaBotoCoreError) as e:
+            except (ClientError, _AthenaBotoCoreError) as e:
                 logger.warning(
                     f"Cached-failure probe for {query_id} attempt "
                     f"{probe_attempt + 1}/3 failed ({e})"
@@ -3749,7 +3802,7 @@ def _run_athena_query_with_results(
     all_rows: List[List[str]] = []
     next_token: Optional[str] = None
     first_page = True
-    for page in range(_MAX_RESULT_PAGES):
+    for _page in range(_MAX_RESULT_PAGES):
         kwargs: Dict[str, Any] = {"QueryExecutionId": query_id}
         if next_token:
             kwargs["NextToken"] = next_token
