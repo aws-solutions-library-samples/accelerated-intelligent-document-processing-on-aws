@@ -3136,6 +3136,7 @@ IDP_CONFIG_DEPRECATED_FIELDS = {
 #     today and a test fails if one appears, because the guarantee this walk offers
 #     would otherwise narrow silently.
 
+
 #: Top-level keys ``IDPConfig`` **relocates** rather than drops, and their
 #: destination. Read by the rename in ``log_deprecated_fields`` and skipped by the
 #: walk, from one definition, because the two answers must agree: a relocated key
@@ -3146,9 +3147,15 @@ IDP_CONFIG_DEPRECATED_FIELDS = {
 #: This is the one rename that lives here rather than in ``migrations/``, which is
 #: why it needs saying twice-over: a caller that migrates first — as this walk's
 #: callers must — still has not seen it.
-LEGACY_TOP_LEVEL_RENAMES: Dict[str, str] = {
-    # Renamed in v0.5.9.
-    "rule_classes": "policy_classes",
+class LegacyRename(NamedTuple):
+    """Where a renamed top-level key goes, and the release that moved it."""
+
+    to: str
+    since: str
+
+
+LEGACY_TOP_LEVEL_RENAMES: Dict[str, LegacyRename] = {
+    "rule_classes": LegacyRename(to="policy_classes", since="v0.5.9"),
 }
 
 #: Keys a model deliberately stopped declaring, reported as *deprecated* rather
@@ -3878,7 +3885,8 @@ class IDPConfig(BaseModel):
             # Apply the renames this model performs itself rather than in
             # migrations/ — one definition, LEGACY_TOP_LEVEL_RENAMES, so that the
             # unknown-key walk below knows these keys are relocated and not lost.
-            for old_name, new_name in LEGACY_TOP_LEVEL_RENAMES.items():
+            for old_name, rename in LEGACY_TOP_LEVEL_RENAMES.items():
+                new_name = rename.to
                 if old_name not in data:
                     continue
                 if new_name not in data:
@@ -3896,7 +3904,8 @@ class IDPConfig(BaseModel):
                 logger.warning(
                     "Both '%s' (deprecated) and '%s' are present in this "
                     "configuration; DISCARDING '%s' (%d %s). '%s' was renamed to "
-                    "'%s' — merge these entries into '%s' or they will not be used.",
+                    "'%s' in %s — merge these entries into '%s' or they will not be "
+                    "used.",
                     old_name,
                     new_name,
                     old_name,
@@ -3904,6 +3913,7 @@ class IDPConfig(BaseModel):
                     "entry" if count == 1 else "entries",
                     old_name,
                     new_name,
+                    rename.since,
                     new_name,
                 )
                 del data[old_name]

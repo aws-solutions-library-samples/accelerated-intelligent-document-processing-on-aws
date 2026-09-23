@@ -884,18 +884,46 @@ def test_every_relocated_key_really_lands_on_its_new_name():
     about, introduced by the mechanism meant to prevent a false alarm.
     """
     assert models_module.LEGACY_TOP_LEVEL_RENAMES, "the map is empty; delete the code"
-    for old_name, new_name in models_module.LEGACY_TOP_LEVEL_RENAMES.items():
+    for old_name, rename in models_module.LEGACY_TOP_LEVEL_RENAMES.items():
         assert old_name not in IDPConfig.model_fields, (
             f"'{old_name}' is a declared field, so nothing renames it"
         )
-        assert new_name in IDPConfig.model_fields, (
-            f"'{old_name}' is said to become '{new_name}', which is not a field"
+        assert rename.to in IDPConfig.model_fields, (
+            f"'{old_name}' is said to become '{rename.to}', which is not a field"
         )
+        assert rename.since, f"'{old_name}' names no release; the warning quotes it"
         sentinel = [{"name": "zz-rename-zz"}]
-        landed = getattr(IDPConfig(**{old_name: sentinel}), new_name)
+        landed = getattr(IDPConfig(**{old_name: sentinel}), rename.to)
         assert landed == sentinel, (
-            f"'{old_name}' did not arrive at '{new_name}': {landed}"
+            f"'{old_name}' did not arrive at '{rename.to}': {landed}"
         )
+
+
+def test_the_discard_warning_still_names_the_release_that_renamed_the_key():
+    """The loud both-keys-present warning is an operator's only notice of data loss.
+
+    Rewriting the hardcoded rename as a loop over the map dropped "in v0.5.9" from
+    that message — a small thing an operator uses to work out which guidance they
+    followed — so the release now travels in the map with the destination.
+    """
+    with_both = {
+        "policy_classes": [{"x-aws-idp-policy-type": "kept", "rule_properties": {}}],
+        "rule_classes": [{"x-aws-idp-policy-type": "lost", "rule_properties": {}}],
+    }
+    logger = logging.getLogger("idp_common.config.models")
+    records: list[str] = []
+    handler = logging.Handler()
+    handler.emit = lambda record: records.append(record.getMessage())  # type: ignore[method-assign]
+    logger.addHandler(handler)
+    try:
+        IDPConfig(**with_both)
+    finally:
+        logger.removeHandler(handler)
+
+    discards = [line for line in records if "DISCARDING" in line]
+    assert discards, records
+    assert "renamed to 'policy_classes' in v0.5.9" in discards[0], discards[0]
+    assert "(1 entry)" in discards[0], discards[0]
 
 
 def test_no_field_in_the_tree_holds_a_model_the_walk_declines_to_enter():
