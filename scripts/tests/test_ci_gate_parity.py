@@ -151,6 +151,21 @@ CHECK_SHAPED_NAME_SUFFIXES = ("-check", "-checks", "-lint", "-test", "-tests")
 #: that CI has since started running must be deleted, or it pre-exempts whatever next
 #: takes the name) and :func:`test_every_registered_target_still_exists` (staleness).
 GATES_DELIBERATELY_OUT_OF_CI = {
+    # --- reporting tools that cannot fail, so cannot gate ----------------------
+    "coverage": (
+        "Measures and PRINTS a coverage table; it has no threshold and no non-zero "
+        "exit on any coverage value, so there is nothing for CI to gate on. The gate "
+        "over the same data is `check-coverage-debt`, which IS reached by both CIs "
+        "(immediately after each one's idp_common test step, because it reads the "
+        "report that step writes). Wiring this target into CI would add ~90s per run "
+        "to print a table nobody reads there."
+    ),
+    "coverage-table": (
+        "The same table without re-measuring — it reads the last run's report. Same "
+        "reasoning as `coverage` above: no threshold, no failure mode, nothing to "
+        "gate. Registered separately rather than folded in because this registry is "
+        "per-target by design: one entry, one target's worth of reason."
+    ),
     # --- aggregates whose CI form is a different target -------------------------
     "lint": (
         "Developer aggregate. Its CI form is `lint-cicd`, and that lint-cicd is not "
