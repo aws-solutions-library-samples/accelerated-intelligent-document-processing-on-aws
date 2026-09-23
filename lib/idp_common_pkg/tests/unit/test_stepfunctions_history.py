@@ -390,6 +390,32 @@ class TestToChronological:
         history = _caught_failure()
         assert to_chronological(history.events) == history.events
 
+    def test_incomparable_timestamps_leave_the_order_alone(self):
+        """Not an edge case invented for coverage: the two readers carry timestamps in
+        different types.
+
+        `idp_common.monitoring.stepfunctions_service` serialises them to ISO strings
+        while the error-analyzer tool keeps the `datetime` objects boto3 returns, so a
+        list assembled from both compares `str` to `datetime` and raises `TypeError`. The
+        order is then genuinely unknowable, and leaving it as given is the only honest
+        answer — reversing on a failed comparison would corrupt a page that was already
+        chronological. This branch is in the one implementation both readers now share,
+        so an uncovered branch here is uncovered for both.
+        """
+        mixed = [
+            {"type": "TaskStateEntered", "timestamp": "2026-03-01T10:00:00+00:00"},
+            {"type": "ExecutionFailed", "timestamp": _T0 + timedelta(seconds=9)},
+        ]
+        assert [event["type"] for event in to_chronological(mixed)] == [
+            "TaskStateEntered",
+            "ExecutionFailed",
+        ]
+        # And the reverse arrangement is equally left alone, because nothing was learned.
+        assert [event["type"] for event in to_chronological(list(reversed(mixed)))] == [
+            "ExecutionFailed",
+            "TaskStateEntered",
+        ]
+
     def test_a_page_without_ids_falls_back_to_the_two_timestamps(self):
         """Not a real API page, so the direction can only be inferred."""
         newest_first = [

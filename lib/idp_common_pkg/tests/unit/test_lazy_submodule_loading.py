@@ -128,6 +128,31 @@ class TestOneModuleObjectPerName:
         with pytest.raises(AttributeError, match="no attribute 'not_a_submodule'"):
             idp_common.not_a_submodule
 
+    @pytest.mark.parametrize("name", ["Document", "Page", "Section", "Status"])
+    def test_a_re_exported_model_is_the_submodule_s_own_object(self, name):
+        """`idp_common.Document` and `idp_common.models.Document` must be one class.
+
+        Asserted as **identity**, not as "the attribute exists". Truthiness passes under
+        the two-module-objects condition this class is about: two imports of `models.py`
+        give two `Document` classes, both truthy, and `isinstance` against the wrong one
+        fails at the point of use rather than here. Identity is the property; existence is
+        not.
+        """
+        assert getattr(idp_common, name) is getattr(idp_common.models, name)
+
+    def test_the_config_re_exports_are_the_config_module_s_own_objects(self):
+        """`IDPConfig` and `get_config` reach one level deeper than the models do —
+        through `config` to `config.models` — so they are worth asserting separately."""
+        assert idp_common.IDPConfig is idp_common.config.models.IDPConfig
+        assert idp_common.get_config is idp_common.config.get_config
+
+    def test_every_re_exported_name_in_dunder_all_resolves(self):
+        """Closure over `__all__`: a promised name that is neither a lazy submodule nor
+        handled by one of the re-export branches raises `AttributeError` for whichever
+        caller reaches it first, and `__all__` is where a reader looks for the promise."""
+        for name in idp_common.__all__:
+            assert getattr(idp_common, name) is not None, name
+
 
 @pytest.mark.unit
 class TestTheLoaderIsStillLazy:
