@@ -5,9 +5,11 @@
 Test configuration and fixtures for idp_cli tests
 """
 
+import json
 import os
 import sys
 from pathlib import Path
+from typing import NamedTuple
 
 import pytest
 
@@ -145,6 +147,133 @@ def no_outbound_http(monkeypatch):
         )
 
     monkeypatch.setattr(URLLib3Session, "send", _refuse)
+
+
+class ApiCall(NamedTuple):
+    """One AWS API call a command made, as botocore received it."""
+
+    service: str
+    operation: str
+    params: dict
+
+
+class ApiCallLog(list):
+    """The AWS API calls a command made, in order, with a couple of accessors."""
+
+    def of(self, operation: str) -> list[ApiCall]:
+        """Every call to `operation`, e.g. `of("CreateStack")`."""
+        return [call for call in self if call.operation == operation]
+
+    def only(self, operation: str) -> ApiCall:
+        """The single call to `operation`; fails if there were none or several.
+
+        Asserting "exactly one" is usually the interesting half. A command that
+        submits `CreateStack` twice, or that submits it once per page of some
+        paginated input, is a defect a `MagicMock` would absorb silently.
+        """
+        matches = self.of(operation)
+        assert len(matches) == 1, (
+            f"expected exactly one {operation} call, got {len(matches)}: "
+            f"{[c.operation for c in self]}"
+        )
+        return matches[0]
+
+    def operations(self) -> list[str]:
+        return [call.operation for call in self]
+
+
+@pytest.fixture
+def api_calls(monkeypatch):
+    """
+    Record the AWS API calls a command makes, with the exact parameters botocore got.
+
+    Opt-in, and composes with `moto`: it wraps `BaseClient._make_api_call` and then
+    delegates, so under `mock_aws` the call still really happens and the service state
+    is still there to read back afterwards.
+
+    It exists because the two questions this CLI is judged on are *which* API call a
+    command made and with *what* — which CloudFormation parameters, which capability
+    flags, which region, whether `DisableRollback` was set — and for several of those
+    `describe_stacks` cannot answer: moto fills every parameter the template declares
+    with its default, so a parameter the command never submitted is indistinguishable
+    from one it submitted at the default value. The submitted request is the only place
+    that distinction is visible.
+    """
+    from botocore.client import BaseClient
+
+    calls = ApiCallLog()
+    original = BaseClient._make_api_call
+
+    def _recording(self, operation_name, api_params):
+        calls.append(
+            ApiCall(self.meta.service_model.service_name, operation_name, api_params)
+        )
+        return original(self, operation_name, api_params)
+
+    monkeypatch.setattr(BaseClient, "_make_api_call", _recording)
+    return calls
+
+
+#: The CloudFormation parameters the root template declares that this CLI passes by
+#: name. A test template must declare a superset of whatever the command under test
+#: submits, because CloudFormation (and moto) reject an undeclared parameter — which
+#: is itself the defect that shipped as `EnableHITL` and is worth keeping reachable.
+IDP_TEMPLATE_PARAMETERS = (
+    "AdminEmail",
+    "MaxConcurrentWorkflows",
+    "LogLevel",
+    "CustomConfigPath",
+    "DataRetentionInDays",
+    "ErrorThreshold",
+    "ExternalIdPType",
+    "ExternalIdPEmailMutable",
+    "EnableJobsApi",
+)
+
+
+@pytest.fixture
+def cfn_template_file(tmp_path):
+    """
+    Write a small but genuinely valid CloudFormation template and return its path.
+
+    Used with `moto` so the deploy path runs `CreateStack`/`UpdateStack` for real and
+    the submitted parameter set can be read back. Real enough for CloudFormation to
+    accept and to validate parameters against, and small enough to stay under the
+    51,200-byte inline limit — over that the SDK diverts to an S3 upload, which is a
+    different code path and not the one most tests mean to exercise.
+
+    Call it with `extra_parameters=` to declare a parameter a specific test submits.
+    """
+
+    def _write(
+        extra_parameters: tuple[str, ...] = (), outputs: dict | None = None
+    ) -> str:
+        parameters = {
+            name: {"Type": "String", "Default": ""}
+            for name in (*IDP_TEMPLATE_PARAMETERS, *extra_parameters)
+        }
+        template = {
+            "AWSTemplateFormatVersion": "2010-09-09",
+            "Description": "Test double for the IDP root template",
+            "Parameters": parameters,
+            "Resources": {"Topic": {"Type": "AWS::SNS::Topic", "Properties": {}}},
+            "Outputs": {
+                name: {"Value": value}
+                for name, value in (
+                    outputs
+                    or {
+                        "ApplicationWebURL": "https://idp.example.invalid/",
+                        "S3InputBucketName": "input-bucket",
+                        "S3OutputBucketName": "output-bucket",
+                    }
+                ).items()
+            },
+        }
+        path = tmp_path / "idp-main-test.json"
+        path.write_text(json.dumps(template), encoding="utf-8")
+        return str(path)
+
+    return _write
 
 
 FIRST_PARTY_UNDER_TEST = (
