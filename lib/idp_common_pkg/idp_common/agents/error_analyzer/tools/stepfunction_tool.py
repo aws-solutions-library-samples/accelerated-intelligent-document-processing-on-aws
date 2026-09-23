@@ -180,6 +180,12 @@ def _get_execution_data(execution_arn: str) -> Dict[str, Any]:
     events: List[Dict[str, Any]] = []
     next_token: Optional[str] = None
     resolvable = False
+    # A page failed mid-walk. Tracked separately from ``next_token`` so that variable
+    # only ever holds a token the service gave us: overloading it with a sentinel
+    # string made the two states indistinguishable to a reader, and the sentinel's
+    # value was arbitrary while being assigned to a name containing "token", which a
+    # secret scanner reads as a hardcoded credential.
+    read_incomplete = False
 
     for page in range(max(1, int(max_pages))):
         kwargs: Dict[str, Any] = {
@@ -210,7 +216,7 @@ def _get_execution_data(execution_arn: str) -> Dict[str, Any]:
                 exc,
                 len(events),
             )
-            next_token = "partial-read"  # keeps the unresolved flag true below
+            read_incomplete = True  # keeps the unresolved flag true below
             break
         events.extend(history_response.get("events", []))
         next_token = history_response.get("nextToken")
@@ -225,7 +231,8 @@ def _get_execution_data(execution_arn: str) -> Dict[str, Any]:
     return {
         "execution_response": execution_response,
         "events": events,
-        "state_unresolved_due_to_truncation": bool(next_token) and not resolvable,
+        "state_unresolved_due_to_truncation": (read_incomplete or bool(next_token))
+        and not resolvable,
     }
 
 
