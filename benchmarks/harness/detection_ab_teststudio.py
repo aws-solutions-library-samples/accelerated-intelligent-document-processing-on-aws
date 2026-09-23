@@ -216,28 +216,40 @@ def _score(bucket, run_id, doc):
 
 
 def _tokens(item):
-    m = lib.ddb_to_py(item.get("Metering")) if "Metering" in item else None
-    if isinstance(m, str):
-        try:
-            m = json.loads(m)
-        except ValueError:
-            m = None
+    """``(input tokens, output tokens, unread_reason)``.
+
+    Both counts are null when the reason is not, because the caller averages them
+    across paired documents: a zero from a metering row that would not read moves a
+    token mean exactly as a measured zero does, and the mean carries nothing that
+    says which it was (GitHub #1205). This was a local decoder answering ``{}`` for
+    anything it could not decode, one function below ``_score``, which had already
+    been given the three-state treatment — so the two halves of the same row
+    disagreed about what an unreadable row means.
+    """
+    read = lib.metering_of_item(item)
+    if not read.is_present:
+        return None, None, f"metering {read.state}: {read.error}"
     inp = outp = 0.0
-    if isinstance(m, dict):
-        for svc in m.values():
-            if not isinstance(svc, dict):
+    unreadable = []
+    for key, svc in read.value.items():
+        if not isinstance(svc, dict):
+            continue
+        for k, raw in svc.items():
+            kl = k.lower()
+            if "token" not in kl or not ("input" in kl or "output" in kl):
                 continue
-            for k, v in svc.items():
-                try:
-                    v = float(v)
-                except (TypeError, ValueError):
-                    continue
-                kl = k.lower()
-                if "token" in kl and "input" in kl:
-                    inp += v
-                elif "token" in kl and "output" in kl:
-                    outp += v
-    return inp, outp
+            try:
+                v = float(raw)
+            except (TypeError, ValueError):
+                unreadable.append(f"{key!r} unit {k!r}={raw!r}")
+                continue
+            if "input" in kl:
+                inp += v
+            else:
+                outp += v
+    if unreadable:
+        return None, None, "token count is not a number: " + "; ".join(unreadable)
+    return inp, outp, None
 
 
 def _suspected(item):
@@ -279,7 +291,7 @@ def cmd_analyse(a):
         for arm, r in arms.items():
             rows = {}
             for key, item in _docs_of_run(res["tracking_table"], r["run_id"]).items():
-                inp, outp = _tokens(item)
+                inp, outp, tok_unread = _tokens(item)
                 score, unread = _score(res["output_bucket"], r["run_id"], key)
                 rows[key] = {
                     "status": lib.ddb_to_py(item.get("ObjectStatus")),
@@ -287,6 +299,10 @@ def cmd_analyse(a):
                     "score_unread": unread,
                     "in_tok": inp,
                     "out_tok": outp,
+                    # Why the two counts above are null, when they are. Sits beside
+                    # `score_unread` because it is the same fact about the other half
+                    # of the row (#1205).
+                    "tokens_unread": tok_unread,
                     "suspected": _suspected(item),
                 }
             data[arm] = rows
@@ -300,6 +316,16 @@ def cmd_analyse(a):
                 print(
                     f"      ⚠ {len(unread_docs)} document(s) whose evaluation report "
                     f"could not be READ (not absent): {rows[unread_docs[0]]['score_unread']}"
+                )
+            # The same, for the metering half of the row. Reported separately because
+            # a document can score fine and carry an unreadable metering row, and
+            # only the token figures below are affected by that one (#1205).
+            tok_unread_docs = [k for k, v in rows.items() if v["tokens_unread"]]
+            if tok_unread_docs:
+                print(
+                    f"      ⚠ {len(tok_unread_docs)} document(s) whose METERING could "
+                    "not be read, contributing no token figures rather than zeros: "
+                    f"{rows[tok_unread_docs[0]]['tokens_unread']}"
                 )
 
         common = sorted(set(data["off"]) & set(data["on"]))
@@ -331,8 +357,24 @@ def cmd_analyse(a):
             print(f"    sign test on {better + worse} discordant pairs: p = {p:.4f}")
 
         for label, field in (("INPUT tokens", "in_tok"), ("OUTPUT tokens", "out_tok")):
-            x = [data["off"][d][field] for d in scored]
-            y = [data["on"][d][field] for d in scored]
+            # A document whose metering would not read contributes to NEITHER arm's
+            # mean: including it in one and not the other would compare two different
+            # document sets, and including a zero for it is the defect (#1205).
+            both = [
+                d
+                for d in scored
+                if data["off"][d][field] is not None
+                and data["on"][d][field] is not None
+            ]
+            if len(both) < len(scored):
+                print(
+                    f"  {label}: over {len(both)} of {len(scored)} scored document(s) "
+                    "— the rest carried a metering row that would not read"
+                )
+            x = [data["off"][d][field] for d in both]
+            y = [data["on"][d][field] for d in both]
+            if not x:
+                continue
             mx, my = statistics.mean(x), statistics.mean(y)
             if not mx:
                 continue

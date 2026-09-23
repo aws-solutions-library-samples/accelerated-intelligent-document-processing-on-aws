@@ -174,6 +174,20 @@ What the callers do with that:
   unassessed one.
 - **`aggregate.augment_summary` asks every row** rather than probing the first empty
   prefix, and leaves an unreadable row un-augmented.
+- **There is one metering decoder, `lib.metering_of_item`**, and everything that reads
+  a `Metering` attribute goes through it — `lib.read_metering` is that function plus a
+  `GetItem`. Splitting them apart is the fix for a specific way this class comes back:
+  a caller working from a `Scan` rather than a key could not reuse a reader that did
+  its own fetch, so it wrote a local one, and a local one written to get a number out
+  answers `{}` for everything it cannot decode. Two had
+  ([#1205](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/1205)).
+  The paired real-corpus A/Bs (`real_corpus_ab.py`, `detection_ab_teststudio.py`) now
+  **exclude** a document whose metering will not decode from the cost and token means
+  rather than contributing a zero to both, name it in the console output *and* in the
+  summary artifact (`excluded` / `n_excluded`, and `tokens_unread` per row), and print
+  the surviving denominator next to the token table. A zero in a paired mean is
+  indistinguishable from a measurement, and these means are what a cache or token
+  claim rests on.
 
 The failure that motivated all of this cost nothing only by luck. A release stack's KMS
 key entered pending deletion, so every object in its output bucket was present, listable

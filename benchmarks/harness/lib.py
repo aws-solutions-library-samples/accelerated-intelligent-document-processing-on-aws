@@ -469,20 +469,71 @@ def ddb_to_py(v):
     return None
 
 
+def metering_of_item(item, where: str = "") -> Reading[dict]:
+    """The ``Metering`` attribute of ONE tracking row, as a three-state reading.
+
+    **This is the only decoder.** It exists as a separate function because
+    ``read_metering`` welded the fetch to the classification, so a caller that
+    already held a row — anything working from a ``Scan`` rather than a ``GetItem``
+    — could not reuse it and wrote its own. Two did, and both collapsed the states
+    back to ``{}`` for everything they could not decode
+    ([#1205](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/1205)),
+    which prices to a confident, complete $0.00 and sums into a token mean as a
+    zero. A convention repeated at each site is what produced them; one function
+    both fetchers and scanners can call is what stops the next one.
+
+    The three states, and why ``{}`` cannot stand in for two of them:
+
+    * **present** — the attribute decoded. The map may be ``{}``, and that is a real
+      measurement: a document that metered nothing costs $0.00. Note the shipped
+      writer omits the attribute entirely in that case (``if document.metering:``),
+      so the empty map arrives as an absent attribute rather than an empty one.
+    * **absent** — there is no row at all. Nothing was recorded, so there is no cost
+      to report; $0.00 would be a number that was never measured.
+    * **failed** — the attribute is there and will not decode. ``where`` is folded
+      into the reason so a caller holding many rows can say which one.
+
+    ⚠️ **The reachable failure states are decode states only**, which is narrower
+    than ``read_metering``'s: a caller that holds a row has already survived the
+    fetch, so the throttled request and the deleted table cannot arrive here — they
+    surface out of the ``Scan`` instead. What does arrive is any encoding this
+    decoder does not recognise, and the set is a property of ``ddb_to_py``: it
+    answers ``None`` for every attribute type outside ``M/N/S/L/BOOL``, a ``float``
+    for ``N``, a ``list`` for ``L`` and a ``bool`` for ``BOOL``, none of which is a
+    map. The shipped writer stores a JSON **string** (``json.dumps(...,
+    default=str)`` in both write paths), so the ``S`` branch is the ordinary path
+    here and not an edge case — which is exactly why a future change to that
+    encoding needs to arrive as a reported failure rather than as $0.00.
+    """
+    if not item:
+        return Reading.absent(f"no tracking row{f' {where}' if where else ''}")
+    if "Metering" not in item:
+        # The row exists and carries no metering: nothing was metered for this
+        # document. A real zero, and the one state that legitimately prices to $0.
+        return Reading.present({})
+    prefix = f"{where}: " if where else ""
+    m = ddb_to_py(item["Metering"])
+    if isinstance(m, str):
+        try:
+            m = json.loads(m)
+        except ValueError as exc:
+            return Reading.failed(f"{prefix}Metering is not JSON: {exc}")
+    if not isinstance(m, dict):
+        return Reading.failed(
+            f"{prefix}Metering decoded to {type(m).__name__}, not a map"
+        )
+    return Reading.present(m)
+
+
 def read_metering(tracking, run_id, doc_name) -> Reading[dict]:
     """Metering map from the ``doc#`` tracking row. Handles Map or JSON-string.
 
-    All three states are reachable and they price differently (GitHub #1079):
-
-    * **present** — the row is there. The map may be ``{}``, which is a real zero:
-      a run that consumed no metered unit costs $0.00 and that is a measurement.
-    * **absent** — there is no tracking row for this document. Nothing was recorded,
-      so there is no cost to report; pricing it as $0.00 would put a number in the
-      artifact that was never measured.
-    * **failed** — the table could not be read, or ``Metering`` would not decode.
-      Returning ``{}`` here is what made a deleted tracking table, a throttled
-      request and a genuinely unmetered run all report $0.00, and it is why
-      ``aggregate.augment_summary`` is a targeted backfill rather than a re-score.
+    Fetch plus :func:`metering_of_item`, which is where the three states and the
+    reasoning about them live. This adds the one state a row-holding caller cannot
+    reach: the table read itself failing. Returning ``{}`` for that is what made a
+    deleted tracking table, a throttled request and a genuinely unmetered run all
+    report $0.00 (GitHub #1079), and it is why ``aggregate.augment_summary`` is a
+    targeted backfill rather than a re-score.
 
     The caller decides what to do; ``analyze.score_doc`` refuses to price anything
     but ``present`` and records ``cost_unread`` instead of a zero.
@@ -496,22 +547,7 @@ def read_metering(tracking, run_id, doc_name) -> Reading[dict]:
         )
     except Exception as exc:  # noqa: BLE001 - reported to the caller, not swallowed
         return Reading.failed(f"{type(exc).__name__}: {exc}")
-    item = r.get("Item")
-    if not item:
-        return Reading.absent(f"no tracking row {pk}")
-    if "Metering" not in item:
-        # The row exists and carries no metering: nothing was metered for this
-        # document. A real zero, and the one state that legitimately prices to $0.
-        return Reading.present({})
-    m = ddb_to_py(item["Metering"])
-    if isinstance(m, str):
-        try:
-            m = json.loads(m)
-        except ValueError as exc:
-            return Reading.failed(f"Metering is not JSON: {exc}")
-    if not isinstance(m, dict):
-        return Reading.failed(f"Metering decoded to {type(m).__name__}, not a map")
-    return Reading.present(m)
+    return metering_of_item(r.get("Item"), where=pk)
 
 
 def doc_row(

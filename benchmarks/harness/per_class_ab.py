@@ -45,6 +45,11 @@ def _sign_p(better, worse):
     return min(1.0, 2 * sum(comb(n, i) for i in range(k + 1)) / (2**n))
 
 
+def _t(t) -> str:
+    """A t statistic for printing, or ``—`` when there is not one. See ``_paired``."""
+    return f"{t:+.2f}" if isinstance(t, (int, float)) else "—"
+
+
 def _paired(deltas):
     if len(deltas) < 2:
         return None
@@ -217,13 +222,16 @@ def main():
         w = sum(by_class[c].worse for c in keys)
         ndocs = sum(by_class[c].n for c in keys)
         print(f"\n{label} pooled ({len(keys)} classes, {ndocs} docs)")
+        # `t` is null when the paired deltas have zero spread — two arms agreeing
+        # exactly on every document is enough. The summary table above already used
+        # `—` for that; these two lines formatted it unconditionally and raised.
         if s_acc:
             print(
-                f"  accuracy Δ {s_acc[0]:+.4f}  sd {s_acc[1]:.4f}  t {s_acc[2]:+.2f}  "
+                f"  accuracy Δ {s_acc[0]:+.4f}  sd {s_acc[1]:.4f}  t {_t(s_acc[2])}  "
                 f"n={s_acc[3]}   better {b} / worse {w}  sign p={_sign_p(b, w):.4f}"
             )
         if s_cost:
-            print(f"  cost Δ     {s_cost[0]:+.5f}  t {s_cost[2]:+.2f}  n={s_cost[3]}")
+            print(f"  cost Δ     {s_cost[0]:+.5f}  t {_t(s_cost[2])}  n={s_cost[3]}")
 
     if a.json:
         json.dump(out, open(a.json, "w"), indent=2)

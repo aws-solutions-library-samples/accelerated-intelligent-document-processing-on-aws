@@ -323,6 +323,18 @@ shared with the product's own cost reporting (`idp_common/reporting/README.md`) 
 two are required to agree, so reporting the unit axis here would both mark every Bedrock
 entry in every row unpriceable and put the two implementations out of step.
 
+**The paired real-corpus A/Bs have the same property, in their own keys.**
+`real_corpus_ab.py` and `detection_ab_teststudio.py` compare arms by averaging per
+document, where a zero is indistinguishable from a measurement — so a document whose
+metering will not decode contributes to **neither** arm's cost or token mean. Check
+`excluded` / `n_excluded` in the corpus's `summary.json`, `tokens_unread` on a detection
+row, and the surviving denominator printed beside the token table (`over N of M paired
+document(s)`), before quoting a token or cash figure from either. All of them are null
+or equal to the paired count on a clean run. Everything that reads a `Metering`
+attribute goes through `lib.metering_of_item`; if you need one from a row you already
+have rather than from a key, call that rather than decoding it locally, which is how two
+of these came to answer `{}` for anything they could not read.
+
 `--compare` prints the cell-level version under `MEASURED OVER FEWER RUNS THAN IT
 LOOKS`. A non-zero count there makes the arm's figures provisional: re-run against a
 readable stack before quoting them, and do not publish the arm on the strength of what
