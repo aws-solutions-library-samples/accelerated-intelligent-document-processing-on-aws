@@ -373,17 +373,21 @@ def test_a_real_field_written_one_level_up_is_reported_with_the_path_it_belongs_
         for path in _every_path_declaring(key)
         if path[: len(here)] == here and path != here + (key,)
     ]
-    if len(places) == 1:
-        assert finding.suggestion, (
-            f"'{key}' is declared at exactly one place under '{parent_path}' "
-            f"({places[0]}), so naming only the key reads as a false positive"
+    nearest = min((len(p) for p in places), default=0)
+    closest = [p for p in places if len(p) == nearest]
+    if len(closest) == 1:
+        expected = ".".join(closest[0])
+        assert finding.suggestion == expected, (
+            f"'{key}' is declared at exactly one nearest place under "
+            f"'{parent_path}' ({expected}), so that is the answer owed; got "
+            f"{finding.suggestion}"
         )
-        assert finding.suggestion.split(".")[-1] == key
         assert finding.suggestion != written
     else:
         assert finding.suggestion is None, (
-            f"'{key}' is declared at {len(places)} places under '{parent_path}' "
-            f"({places}), so any single suggestion is a guess: {finding.suggestion}"
+            f"'{key}' is declared at {len(closest)} places equally near under "
+            f"'{parent_path}' ({closest}), so any single suggestion is a guess: "
+            f"{finding.suggestion}"
         )
 
 
@@ -402,6 +406,27 @@ def test_the_issues_own_witness_names_the_exact_path_it_belongs_at():
     assert IDPConfig(**{"ocr": {"dpi": "abc"}}).ocr.image.dpi is None
     with pytest.raises(ValidationError):
         ImageConfig(dpi="abc")
+
+
+@pytest.mark.parametrize(
+    "where",
+    ["ocr", "classification", "extraction", "extraction.confidence"],
+)
+def test_the_same_misnested_key_is_answered_for_each_place_it_can_be_written(where):
+    """``dpi`` written at four different levels must get four different answers.
+
+    ``ImageConfig`` hangs off four models, so one witness cannot show that the answer
+    depends on where the key was written: ``ocr.image.dpi`` is also the first
+    candidate in tree order, so an implementation that ignored the written prefix
+    entirely would answer that witness correctly and the other three wrongly.
+    """
+    data: dict = {"dpi": 300}
+    for segment in reversed(where.split(".")):
+        data = {segment: data}
+    findings = collect_ignored_config_keys(data, IDPConfig)
+    assert [(f.path, f.suggestion) for f in findings] == [
+        (f"{where}.dpi", f"{where}.image.dpi")
+    ]
 
 
 def test_an_ambiguous_key_is_reported_with_no_suggestion_at_all():
@@ -715,19 +740,24 @@ def test_a_suppressed_path_is_one_this_repository_ships(dotted):
 
     A path nobody ships is an operator's own typo, and staying quiet about that is
     the defect. When the shipped copy goes, so does the entry.
+
+    The check is on the **path**, resolved through the merged defaults, not on the
+    key name appearing somewhere in some file: grepping for ``output_format:`` at any
+    depth in any system-defaults file passes on a coincidence, and a suppression
+    resting on a coincidence is the shape of the defect ``gate_exemptions.json``
+    exists to catch.
     """
-    leaf = dotted.split(".")[-1]
-    shipped = [
-        path
-        for path in (REPO_ROOT / "lib/idp_common_pkg/idp_common/config").glob(
-            "system_defaults/*.yaml"
+    from idp_common.config.merge_utils import merge_config_with_defaults
+
+    merged = merge_config_with_defaults({}, "pattern-2", validate=False)
+    node: object = merged
+    for segment in dotted.split("."):
+        assert isinstance(node, dict) and segment in node, (
+            f"'{dotted}' is suppressed because this repository ships it in its own "
+            f"defaults, and the merged pattern-2 default configuration has no "
+            f"'{segment}' there — delete the entry"
         )
-        if f"{leaf}:" in path.read_text(encoding="utf-8")
-    ]
-    assert shipped, (
-        f"'{dotted}' is suppressed because this repository ships it in its own system "
-        "defaults, and no system-defaults file mentions it any more"
-    )
+        node = node[segment]
 
 
 # ---------------------------------------------------------------------------
@@ -767,6 +797,106 @@ def test_the_top_level_deprecated_set_is_registered_once():
     assert DEPRECATED_CONFIG_FIELDS_BY_MODEL[IDPConfig] == frozenset(
         IDP_CONFIG_DEPRECATED_FIELDS
     )
+
+
+@pytest.mark.parametrize("key", sorted(IDP_CONFIG_DEPRECATED_FIELDS))
+def test_a_key_the_loader_relocates_is_never_reported_as_no_longer_used(key):
+    """Derived over the whole deprecated set, because one member was not deprecated.
+
+    ``rule_classes`` is listed as deprecated and is **renamed** to
+    ``policy_classes`` by ``IDPConfig``'s own validator — it carries policy rules and
+    they are honoured. Telling the author it "is no longer used and will be ignored"
+    is an instruction to delete working rules, which is a worse failure than the
+    silence this change removes.
+
+    The rename lives in ``models.py`` rather than in ``migrations/``, so a caller
+    that migrates first — as every caller of the walk must — still has not seen it.
+    That is the trap, so the property is asserted over every member of the set rather
+    than for the one member that had it: whether the value **survives** decides
+    whether the report may call the key unused.
+    """
+    sentinel = "zz-relocation-sentinel-zz"
+    probe: object = [{"name": sentinel}]
+    try:
+        dumped = repr(IDPConfig(**{key: probe}).model_dump())
+    except ValidationError:
+        pytest.skip(f"'{key}' is a declared field and cannot carry a probe value")
+
+    relocated = sentinel in dumped
+    findings = collect_ignored_config_keys(
+        {key: probe}, IDPConfig, include_top_level=True
+    )
+    if relocated:
+        assert findings == [], (
+            f"'{key}' is relocated on load and its value survives, so reporting it "
+            f"at all says something false: {[f.describe() for f in findings]}"
+        )
+    else:
+        assert [f.kind for f in findings] == ["deprecated"], (
+            f"'{key}' is dropped on load, so it should be reported as deprecated; "
+            f"got {[(f.path, f.kind) for f in findings]}"
+        )
+
+
+def test_every_relocated_key_really_lands_on_its_new_name():
+    """The rename map is the shared authority, so each entry has to work.
+
+    An entry that names a destination the loader does not write would make the walk
+    silent about a key that really is dropped — the exact silence this change is
+    about, introduced by the mechanism meant to prevent a false alarm.
+    """
+    assert models_module.LEGACY_TOP_LEVEL_RENAMES, "the map is empty; delete the code"
+    for old_name, new_name in models_module.LEGACY_TOP_LEVEL_RENAMES.items():
+        assert old_name not in IDPConfig.model_fields, (
+            f"'{old_name}' is a declared field, so nothing renames it"
+        )
+        assert new_name in IDPConfig.model_fields, (
+            f"'{old_name}' is said to become '{new_name}', which is not a field"
+        )
+        sentinel = [{"name": "zz-rename-zz"}]
+        landed = getattr(IDPConfig(**{old_name: sentinel}), new_name)
+        assert landed == sentinel, (
+            f"'{old_name}' did not arrive at '{new_name}': {landed}"
+        )
+
+
+def test_no_field_in_the_tree_holds_a_model_the_walk_declines_to_enter():
+    """Closure over the one gap: a field naming several models is never entered.
+
+    ``_nested_model_target`` answers ``(None, None)`` for an annotation with more
+    than one model in it, because nothing in the annotation says which member a value
+    is. Keys under such a field are dropped and would go unreported — unlike the two
+    documented exclusions, where nothing is dropped at all.
+
+    No field is shaped that way today. A discriminated union is an ordinary way to
+    evolve a config schema, so this fails when one appears rather than letting the
+    guarantee narrow in silence: the models the walk reaches would simply stop
+    including that subtree, and every parametrisation here would shrink with it.
+    """
+    offenders = []
+    for reached in REACHED:
+        for name, field in reached.model.model_fields.items():
+            if (
+                _models_anywhere_in(field.annotation)
+                and _target(field.annotation)[1] is None
+            ):
+                offenders.append(f"{reached.model.__name__}.{name}: {field.annotation}")
+    assert not offenders, (
+        "these fields carry a config model the unknown-key walk will not enter, so "
+        "keys inside them are dropped with no diagnostic. Teach "
+        "`_nested_model_target` the shape (a discriminated union can be resolved "
+        "through its discriminator) rather than leaving the gap:\n  "
+        + "\n  ".join(offenders)
+    )
+
+
+def _models_anywhere_in(annotation) -> bool:
+    """Whether any Pydantic model appears anywhere in an annotation."""
+    while hasattr(annotation, "__metadata__"):
+        annotation = typing.get_args(annotation)[0]
+    if isinstance(annotation, type) and issubclass(annotation, BaseModel):
+        return True
+    return any(_models_anywhere_in(arg) for arg in typing.get_args(annotation))
 
 
 def test_exactly_one_top_level_deprecated_name_is_also_a_declared_field():

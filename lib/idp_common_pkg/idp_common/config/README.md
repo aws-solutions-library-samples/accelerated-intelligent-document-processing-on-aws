@@ -66,11 +66,20 @@ if not result["valid"]:
 
 ### A key no field matches is reported, at every depth
 
-⚠️ **Every model here takes Pydantic's default `extra="ignore"`.** Three take
-`extra="allow"`; none takes `extra="forbid"`. So a key no field matches is
-**dropped during validation**, and the setting the author believes they changed
-simply is not set — which is indistinguishable from a working configuration,
-because the shipped default is in force and the run completes.
+⚠️ **Of the models reachable from `IDPConfig`, three take `extra="allow"`, none
+takes `extra="forbid"`, and every other one takes Pydantic's default
+`extra="ignore"`.** So a key no field matches is **dropped during validation**, and
+the setting the author believes they changed simply is not set — which is
+indistinguishable from a working configuration, because the shipped default is in
+force and the run completes.
+
+That scope is exactly `IDPConfig`'s tree. This module holds three other root
+models: `PricingConfig` and `ModelConfigLimitsConfig` take `extra="forbid"` (they
+raise, which is better than reporting) and `SchemaConfig` takes `extra="allow"`.
+But `ModelLimitEntry`, nested inside `ModelConfigLimitsConfig`, takes the default,
+so a mistyped key in a per-model limit row is still dropped in silence —
+[#1211](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/1211).
+The walk below takes any root model, so covering that is a call site.
 
 `IDPConfig.log_deprecated_fields` reports those keys. It walks the whole model
 tree, so a key at any depth is named with its **dotted path**:
@@ -81,10 +90,14 @@ default stays in force): extraction.validation.enabld (did you mean
 extraction.validation.enabled?), ocr.dpi (did you mean ocr.image.dpi?)
 ```
 
-`validate_config()` puts the same findings in `result["warnings"]`, which is
-where the CLI shows them — the moment a typo is cheap to fix. Top-level keys are
-included there and left to `IDPConfig`'s two long-standing messages in the
-model, so one key never produces two warnings.
+`validate_config()` puts the same findings in `result["warnings"]`, which is where
+`idp-cli config validate` shows them — the moment a typo is cheap to fix. It reports
+**nested keys only**: depth 0 already has three reporters (`IDPConfig`'s own two
+messages, plus a block each in `idp_cli`'s `config validate` and `idp_sdk`'s
+`ConfigOperation.validate`), and two things they know that a generic walk does not
+are what make "it will be ignored" false at that level — `description` is popped and
+stored by `update_configuration`, and `rule_classes` is renamed to `policy_classes`
+on load. Below depth 0 this is the only reporter, so nothing is said twice.
 
 **It reports; it does not reject.** `extra` is unchanged on every model, so a
 stored configuration that loads today still loads. Rejecting would refuse
@@ -110,6 +123,18 @@ Three things to know before using it:
   document whose keys are the author's (`classes`, `policy_classes`, a hook's
   `args`), so the walk does not enter it. A model with `extra="allow"` *keeps* an
   undeclared key, so nothing is dropped and there is nothing to report.
+- ⚠️ **One thing is a gap rather than a decision:** a field whose annotation names
+  *more than one* model — a discriminated union — is not entered, because nothing
+  in the annotation says which member a value is, and keys in there **are** dropped.
+  No field in the tree is shaped that way today, and
+  `test_no_field_in_the_tree_holds_a_model_the_walk_declines_to_enter` fails when one
+  appears, because otherwise the guarantee narrows silently: the models the walk
+  reaches would stop including that subtree and every derived parametrisation would
+  shrink with it.
+- **One path is suppressed**, `discovery.output_format`, a dead knob this repository
+  ships in its own system defaults. The reasoning, the ratchets and why it is not in
+  `scripts/tests/gate_exemptions.json` are written at
+  `SUPPRESSED_IGNORED_KEY_PATHS`.
 - **The mis-nested case is the sharp one.** `dpi` is a real field of
   `ImageConfig`; written as `ocr.dpi` it is dropped, and `ImageConfig`'s
   validator never runs — so `ocr.dpi: "abc"` is accepted in silence while

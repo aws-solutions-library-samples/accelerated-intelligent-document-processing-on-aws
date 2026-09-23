@@ -3095,19 +3095,30 @@ IDP_CONFIG_DEPRECATED_FIELDS = {
 # Reporting a key the configuration models will drop, at any depth
 # --------------------------------------------------------------------------- #
 #
-# Every model here takes Pydantic's default ``extra="ignore"`` (three deliberately
-# take ``extra="allow"``, and none takes ``extra="forbid"``), so a key no field
-# matches is discarded during validation. At the top level ``IDPConfig`` logs a
-# warning about that; below the top level nothing did, so a misspelled or
-# mis-nested key left the shipped default in force with no diagnostic anywhere —
-# and a default is indistinguishable from a working setting.
+# Of the models **reachable from ``IDPConfig``**, three take ``extra="allow"``,
+# none takes ``extra="forbid"`` and the rest take Pydantic's default
+# ``extra="ignore"`` — so a key no field matches is discarded during validation. At
+# the top level ``IDPConfig`` logs a warning about that; below the top level nothing
+# did, so a misspelled or mis-nested key left the shipped default in force with no
+# diagnostic anywhere — and a default is indistinguishable from a working setting.
 #
-# The walk below reports those keys with their dotted path. It reports; it never
-# rejects. ``extra`` is unchanged on every model, so a stored configuration that
-# loads today still loads.
+# The scope of that sentence is exactly ``IDPConfig``'s tree, and this module holds
+# three other root models that are **not** in it. ``PricingConfig`` and
+# ``ModelConfigLimitsConfig`` take ``extra="forbid"``, which is a better answer than
+# reporting; ``SchemaConfig`` takes ``extra="allow"`` and drops nothing. But
+# ``ModelLimitEntry``, nested inside ``ModelConfigLimitsConfig``, takes the default,
+# so a mistyped key in a per-model limit row is still dropped in silence — the same
+# defect in a different record, tracked as
+# https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/1211.
+# The walk below takes any root model, so covering it is a call site rather than new
+# machinery.
 #
-# Two things bound what it calls unknown, and both are properties of the model
-# tree rather than a list kept in step with it:
+# The walk reports those keys with their dotted path. It reports; it never rejects.
+# ``extra`` is unchanged on every model, so a stored configuration that loads today
+# still loads.
+#
+# Three things bound what it calls unknown. The first two are properties of the
+# model tree rather than lists kept in step with it; the third is a limitation:
 #
 #   * It descends only where a field's annotation names a model. A field typed
 #     ``Dict[str, Any]`` or ``List[Dict[str, Any]]`` is a free-form document whose
@@ -3118,6 +3129,27 @@ IDP_CONFIG_DEPRECATED_FIELDS = {
 #     Such a model *keeps* an undeclared key, so the key is not dropped and there
 #     is nothing to warn about. It is still descended into, because its declared
 #     model-typed fields are ordinary.
+#   * ⚠️ It does not enter a field whose annotation names **more than one** model —
+#     a discriminated union — because nothing in the annotation says which member a
+#     given value is. Keys in there *are* dropped, so unlike the two cases above
+#     this is a gap rather than a decision. No field in the tree is shaped that way
+#     today and a test fails if one appears, because the guarantee this walk offers
+#     would otherwise narrow silently.
+
+#: Top-level keys ``IDPConfig`` **relocates** rather than drops, and their
+#: destination. Read by the rename in ``log_deprecated_fields`` and skipped by the
+#: walk, from one definition, because the two answers must agree: a relocated key
+#: works, so reporting it as "no longer used" sends the author to delete a setting
+#: that is in force. ``rule_classes`` carries policy rules, and that is exactly how
+#: hand-written configs ended up with rule validation that never fired.
+#:
+#: This is the one rename that lives here rather than in ``migrations/``, which is
+#: why it needs saying twice-over: a caller that migrates first — as this walk's
+#: callers must — still has not seen it.
+LEGACY_TOP_LEVEL_RENAMES: Dict[str, str] = {
+    # Renamed in v0.5.9.
+    "rule_classes": "policy_classes",
+}
 
 #: Keys a model deliberately stopped declaring, reported as *deprecated* rather
 #: than *unknown*. This changes the wording of a finding and never suppresses one,
@@ -3138,19 +3170,27 @@ DEPRECATED_CONFIG_FIELDS_BY_MODEL: Dict[type, frozenset[str]] = {
 #: in its own configuration. A warning the operator did not cause and cannot act
 #: on, on every load, is what teaches them to ignore the line on the day it is
 #: about their own typo. One entry per path — never per subtree — and each entry
-#: names the register that *does* report the key, so nothing here is unreported
-#: overall, only unreported from this particular place.
+#: names where the same fact is already **recorded**, so silence here is not
+#: silence everywhere.
 #:
-#: Deliberately not in ``scripts/tests/gate_exemptions.json``: that registry
-#: governs a gate turned off for a file, a line or a rule, and its discovery does
-#: not read this tree (``exemption_discovery.PYTHON_PATHSPECS`` covers gates, not
-#: the library), so an entry there would fail
-#: ``test_no_registered_exemption_has_vanished``. The ratchets that registry asks
-#: for live in ``tests/unit/config/test_unknown_nested_keys.py`` instead, one per
-#: entry: non-vacuity (the path must still be one the models drop, or it is
-#: pre-suppressing whatever next occupies it), closure (it must still be shipped in
-#: this repository's own defaults or presets, which is the entire justification), and
-#: a pin on the size of this map so a second entry arrives as a failure.
+#: *Recorded*, not reported: nothing in the tree emits a finding for
+#: ``discovery.output_format``. The fact lives in the prose of another exemption,
+#: and what the gate holding it does with the key is excuse a parity finding.
+#:
+#: Not in ``scripts/tests/gate_exemptions.json``, and the reason is a measured
+#: trade-off rather than a claim that this is not an exemption — it is one, for two
+#: gates. ``exemption_discovery.PYTHON_PATHSPECS`` does not read the library, so an
+#: entry would fail ``test_no_registered_exemption_has_vanished``; adding the
+#: narrowest glob that would find this (``lib/idp_common_pkg/idp_common/config/*.py``)
+#: discovers six surfaces, five of them unrelated to this change and two of them
+#: function-locals, each then owing an authored judgement. A registry that asks for
+#: judgements on noise is how a reviewer learns to rubber-stamp it, which is the
+#: failure that registry exists to prevent. So the ratchets it would ask for live in
+#: ``tests/unit/config/test_unknown_nested_keys.py`` instead, one per entry:
+#: non-vacuity (the path must still be one the models drop, or it is pre-suppressing
+#: whatever next occupies it), closure (the path must still be shipped in this
+#: repository's own system defaults, which is the entire justification), and a pin on
+#: the size of this map so a second entry arrives as a failure.
 SUPPRESSED_IGNORED_KEY_PATHS: Dict[str, str] = {
     "discovery.output_format": (
         "Shipped in system_defaults/base-discovery.yaml, so it is on the default "
@@ -3295,14 +3335,17 @@ def _suggest_path(
     wrong path is worse than no path: it sends the author to edit something that was
     already correct, and it is the reading that makes them distrust the next warning.
 
-    1. *Mis-nesting.* The key is a real field somewhere **inside where it was
-       written** — ``dpi`` under ``ocr`` — and that place is **unique**. Then the
-       answer is exact. Uniqueness is the whole condition: ``enabled`` is declared at
-       21 paths, nine of them under ``extraction``, so an ``extraction.enabled``
-       cannot be resolved to one of them and gets no hint rather than an arbitrary
-       one. Requiring the candidate to sit under the written prefix is what stops a
-       ``hitl.model`` being answered with ``classification.model``, a different
-       section the author said nothing about.
+    1. *Mis-nesting.* The key is a real field **inside where it was written** —
+       ``dpi`` under ``ocr`` — and the **nearest** such place is unambiguous: one
+       candidate, alone at the shallowest depth below what was written. Then the
+       answer is exact. Depth breaks the ordinary case (``extraction.dpi`` has
+       ``extraction.image.dpi`` a level down and ``extraction.confidence.image.dpi``
+       two, and the near one is what was meant), and a tie at that depth declines:
+       ``enabled`` is declared at eight distinct places one level under
+       ``extraction``, so ``extraction.enabled`` gets no hint rather than one of the
+       eight. Requiring the candidate to sit under the written prefix at all is what
+       stops a ``hitl.model`` being answered with ``classification.model``, a section
+       the author said nothing about.
     2. *Misspelling.* Failing that, a close name among the **siblings** — the fields
        of the model the key was actually written in.
     """
@@ -3314,8 +3357,11 @@ def _suggest_path(
         for path in _field_path_index(root).get(key, ())
         if path != written and path[: len(here)] == here
     ]
-    if len(candidates) == 1:
-        return ".".join(candidates[0])
+    if candidates:
+        nearest = min(len(path) for path in candidates)
+        closest = [path for path in candidates if len(path) == nearest]
+        if len(closest) == 1:
+            return ".".join(closest[0])
 
     close = difflib.get_close_matches(
         key, list(model.model_fields.keys()), n=1, cutoff=_SUGGESTION_CUTOFF
@@ -3343,10 +3389,15 @@ def collect_ignored_config_keys(
     Args:
         data: The configuration mapping as written, before validation.
         model: The root model to interpret it against, normally ``IDPConfig``.
-        include_top_level: Report depth-0 keys too. ``IDPConfig`` already logs
-            those in two messages of its own, so its validator leaves this off and
-            a caller wanting the whole picture (``merge_utils.validate_config``)
-            turns it on.
+        include_top_level: Report depth-0 keys too. Off by default and **no
+            production caller turns it on**, deliberately: depth 0 already has
+            three reporters (``IDPConfig``'s own two messages, and a block each in
+            ``idp_cli`` and ``idp_sdk``), and two of the things they know a generic
+            walk does not — that ``update_configuration`` pops and stores
+            ``description``, and that ``TOP_LEVEL_KEY_EXEMPT`` in
+            ``scripts/tests/test_preset_keys_are_read.py`` is where such a key is
+            recorded — are what make "it will be ignored" false for those keys.
+            Consult that list before enabling this for anything a person reads.
 
     Returns:
         Findings sorted by dotted path. Empty when every key is read.
@@ -3367,6 +3418,9 @@ def collect_ignored_config_keys(
             if field is None:
                 if keeps_extra:
                     # The model retains this key, so it is not being dropped.
+                    continue
+                if not prefix and key in LEGACY_TOP_LEVEL_RENAMES:
+                    # Relocated on load, not dropped: the setting works.
                     continue
                 if not prefix and not include_top_level:
                     continue
@@ -3821,29 +3875,38 @@ class IDPConfig(BaseModel):
 
             data = migrate_config(data)
 
-            # Migrate rule_classes → policy_classes (renamed in v0.5.9)
-            if "rule_classes" in data and "policy_classes" not in data:
-                data["policy_classes"] = data.pop("rule_classes")
-                logger.info("Migrated config key 'rule_classes' → 'policy_classes'")
-            elif "rule_classes" in data:
-                # Both keys present: policy_classes wins and rule_classes is
-                # dropped. Say so loudly — this discards user-supplied rules, and
-                # because 'rule_classes' is a known-deprecated key it does not
-                # trip the unknown-field warning either. Silently losing it is
-                # how hand-written and notebook-produced configs ended up with
-                # rule validation that never fired.
-                discarded = data.get("rule_classes")
+            # Apply the renames this model performs itself rather than in
+            # migrations/ — one definition, LEGACY_TOP_LEVEL_RENAMES, so that the
+            # unknown-key walk below knows these keys are relocated and not lost.
+            for old_name, new_name in LEGACY_TOP_LEVEL_RENAMES.items():
+                if old_name not in data:
+                    continue
+                if new_name not in data:
+                    data[new_name] = data.pop(old_name)
+                    logger.info("Migrated config key '%s' → '%s'", old_name, new_name)
+                    continue
+                # Both keys present: the new name wins and the old one is dropped.
+                # Say so loudly — this discards user-supplied content, and because
+                # the old name is a known-deprecated key it does not trip the
+                # unknown-field warning either. Silently losing it is how
+                # hand-written and notebook-produced configs ended up with rule
+                # validation that never fired.
+                discarded = data.get(old_name)
                 count = len(discarded) if isinstance(discarded, (list, dict)) else 1
                 logger.warning(
-                    "Both 'rule_classes' (deprecated) and 'policy_classes' are "
-                    "present in this configuration; DISCARDING 'rule_classes' "
-                    "(%d %s). 'rule_classes' was renamed to 'policy_classes' in "
-                    "v0.5.9 — merge these entries into 'policy_classes' or they "
-                    "will not be used.",
+                    "Both '%s' (deprecated) and '%s' are present in this "
+                    "configuration; DISCARDING '%s' (%d %s). '%s' was renamed to "
+                    "'%s' — merge these entries into '%s' or they will not be used.",
+                    old_name,
+                    new_name,
+                    old_name,
                     count,
                     "entry" if count == 1 else "entries",
+                    old_name,
+                    new_name,
+                    new_name,
                 )
-                del data["rule_classes"]
+                del data[old_name]
 
             # Get all field names defined in the model
             defined_fields = set(cls.model_fields.keys())

@@ -215,9 +215,11 @@ extraction.validation.enabled?), ocr.dpi (did you mean ocr.image.dpi?)
 
 Two places to look for it:
 
-- **When you upload with the CLI.** `idp-cli config validate` and a config upload
-  list these as warnings. This is the cheap moment — the file is in front of you.
-- **On load, in CloudWatch.** The same line appears at `WARNING` from the Lambda
+- **Before you upload.** `idp-cli config validate <file>` lists them as warnings,
+  with the path. This is the cheap moment — the file is in front of you. Note that
+  `idp-cli config-upload` does **not** print them: it checks only whether the
+  configuration is valid, and an ignored key does not make it invalid.
+- **On load, in CloudWatch.** The same finding appears at `WARNING` from the Lambda
   that loaded the configuration. Search the log group for
   `Ignoring unknown` after changing a configuration.
 

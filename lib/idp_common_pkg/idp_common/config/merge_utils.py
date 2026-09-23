@@ -622,7 +622,7 @@ def validate_config(
         result["errors"].append(f"Pydantic validation failed: {str(e)}")
         return result
 
-    # Keys the models will drop, at any depth. Reported against the config as
+    # Keys the models will drop below the top level. Reported against the config as
     # SUBMITTED rather than against `merged`, so every path named is one the author
     # actually wrote and can go and fix — which is the whole value of catching it
     # here, while they are still present, rather than in a Lambda log later.
@@ -657,8 +657,16 @@ def _validate_ignored_keys(config: Dict[str, Any], result: Dict[str, Any]) -> No
     fixing a typo is cheap, and told *where* — the dotted path, plus the declared
     field the key most plausibly meant when there is one.
 
-    Top-level keys are included here even though ``IDPConfig`` logs about those
-    itself: that log line goes to a Lambda, and this result is what the CLI prints.
+    ⚠️ **Nested keys only, measured rather than assumed.** Depth 0 already has three
+    reporters: ``IDPConfig``'s own two messages, a block in ``idp_cli``'s
+    ``config validate`` and another in ``idp_sdk``'s ``ConfigOperation.validate``,
+    which appends its own ``Unknown field '<key>' found`` after this function
+    returns. Adding a fourth put two differently-worded warnings about one key in
+    front of the same reader. It also repeated two things those reporters get right
+    and a generic walk cannot: ``description`` is not an ``IDPConfig`` field but
+    ``update_configuration`` pops and stores it, and ``rule_classes`` is renamed on
+    load — so "it will be ignored, leaving the default in force" was false for both.
+    Below depth 0 this is the only reporter, so nothing is said twice.
 
     The migration chain runs first, on a copy. A legacy-shaped key is relocated on
     load rather than dropped — ``extraction.agentic.validation`` becomes
@@ -672,9 +680,7 @@ def _validate_ignored_keys(config: Dict[str, Any], result: Dict[str, Any]) -> No
     from idp_common.config.migrations import migrate_config
     from idp_common.config.models import IDPConfig, collect_ignored_config_keys
 
-    findings = collect_ignored_config_keys(
-        migrate_config(deepcopy(config)), IDPConfig, include_top_level=True
-    )
+    findings = collect_ignored_config_keys(migrate_config(deepcopy(config)), IDPConfig)
     for finding in findings:
         if finding.kind == "deprecated":
             result["warnings"].append(
