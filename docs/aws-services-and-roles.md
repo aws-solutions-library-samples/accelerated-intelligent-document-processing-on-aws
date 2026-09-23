@@ -308,14 +308,14 @@ The solution creates various IAM roles to run different components of the system
   * KMS on the stack CMK
 
 * **Data-Mart Migration State-Machine Role** (`DataMartMigrationStateMachine`, invoked by the CFN custom-resource dispatcher on every `MigrationVersion` change):
-  * `lambda:InvokeFunction` on `DataMartRollupFunction` only — the state machine drives every migration step by invoking that Lambda in task modes (`check_marker_state`, `purge_rollup_prefixes`, `write_marker`, `plan_migration_chunks`, `backfill`, `backfill_daily_range`, `check_hours_failed`)
-  * `logs:CreateLogGroup`, `logs:CreateLogStream`, `logs:PutLogEvents`, `logs:DescribeLogGroups`, `logs:DescribeResourcePolicies`, `logs:GetLogDelivery`, `logs:UpdateLogDelivery`, `logs:PutResourcePolicy`, `logs:PutLogEvents` — standard SFN CloudWatch Logs delivery
-  * X-Ray write permissions when `EnableXRayTracing=true` (via the SAM-attached policy)
+  * `lambda:InvokeFunction` on `DataMartRollupFunction` only — the state machine drives every migration step by invoking that Lambda in task modes (`check_marker_state`, `check_lake_state`, `purge_rollup_prefixes`, `write_marker`, `plan_migration_chunks`, `backfill`, `backfill_daily_range`, `check_hours_failed`)
+  * CloudWatch Logs delivery — `logs:CreateLogDelivery`, `logs:GetLogDelivery`, `logs:UpdateLogDelivery`, `logs:DeleteLogDelivery`, `logs:ListLogDeliveries`, `logs:PutResourcePolicy`, `logs:DescribeResourcePolicies`, `logs:DescribeLogGroups` (`*` resource — the SFN service creates the delivery, not the state machine itself)
+  * X-Ray write permissions — `xray:PutTraceSegments`, `xray:PutTelemetryRecords`, `xray:GetSamplingRules`, `xray:GetSamplingTargets`. Granted **unconditionally** in the current template (the earlier iteration of this document described them as conditional on `EnableXRayTracing=true`; the template does not gate them)
 
 * **Data-Mart Migration Dispatcher Role** (`DataMartMigrationDispatcherFunction`, CFN custom-resource entry point):
   * `states:StartExecution` on `DataMartMigrationStateMachine` only — starts the state machine asynchronously and returns SUCCESS to CFN immediately; the migration continues after the CustomResource completes
   * `ssm:DeleteParameter` on `/idp/<stack-name>/data-mart-rollup/*` — deletes the SSM migration marker on `ForceFresh=true` (so the state machine's `CheckMarker` sees `ParameterNotFound` and takes the full-flow branch), and cleans it up on stack Delete so a same-name recreate starts clean. Read access is deliberately NOT granted here — the marker is read from the rollup Lambda's own role, not this one
-  * KMS on the stack CMK
+  * No KMS grant on the dispatcher role. An earlier iteration of this document listed "KMS on the stack CMK" here; the template does not attach a KMS statement to `DataMartMigrationDispatcherFunction`. The dispatcher does not encrypt or decrypt any customer data — its only writes are `states:StartExecution` (no customer-data payload beyond `days` / `chunk_hours` / `version` / `anchor`) and `ssm:DeleteParameter`; the SSM parameter's own encryption is handled by SSM's service-owned key, not the stack CMK
 
 * **Metering Hour Migration Lambda Role** (`MeteringHourMigrationFunction`, one-shot CFN custom resource):
   * `s3:ListBucket` (reporting bucket) for listing pre-migration parquet files

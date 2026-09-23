@@ -364,20 +364,38 @@ class TestCsvConversion:
         assert "KEEPME" in text
         assert "| a | b |" in text
 
-    def test_a_ragged_row_loses_its_extra_fields(self):
-        """Pins current behaviour, and it is a content-loss defect.
+    def test_a_ragged_row_keeps_its_extra_fields(self):
+        """A row wider than the header keeps every field (#1158).
 
-        A row with more fields than the header takes the `csv.reader` fallback,
-        and `_format_csv_as_table` then drops every cell past `len(rows[0])`
-        because `col_widths` is sized from the header alone. Nothing is logged at
-        row scope, so a CSV whose last column is only present on some rows arrives
-        at extraction with that column silently missing."""
+        A row with more fields than the header is exactly what pushes `pd.read_csv`
+        into `ParserError` and therefore into this `csv.reader` fallback — so the path
+        reached *because* the file is ragged was the one discarding the ragged data.
+        `col_widths` was sized from the header alone and the cell loop was guarded by
+        `col_idx < len(col_widths)`, so every field past the header's width was
+        dropped, with nothing logged at row scope. The rendered markdown was
+        well-formed, so a CSV whose last column appears on only some rows reached
+        extraction with that column silently missing."""
         converter = _converter()
         pages = converter.convert_csv_to_pages("a,b\n1,2\n3,4,DROPPED\n")
 
         text = "\n".join(t for _, t in pages)
-        assert "| 3 | 4 |" in text
-        assert "DROPPED" not in text
+        assert "DROPPED" in text
+
+    def test_every_row_is_rendered_at_the_tables_full_width(self):
+        """The pipe count must be the same on every line.
+
+        A markdown table with a ragged pipe count is parsed inconsistently by
+        downstream readers, so a short row is padded rather than left narrow — which
+        also means the header and the widened data rows line up.
+        """
+        converter = _converter()
+        table = converter._format_csv_as_table([["a", "b"], ["1"], ["3", "4", "EXTRA"]])
+
+        pipe_counts = {line.count("|") for line in table.split("\n")}
+        assert len(pipe_counts) == 1, (
+            f"rows rendered at differing widths: {sorted(pipe_counts)}"
+        )
+        assert "EXTRA" in table
 
     def test_a_header_only_csv_returns_a_page_with_no_text_at_all(self):
         """Pins current behaviour, and it is a content-loss defect.
@@ -922,7 +940,7 @@ class TestWordPageGeometry:
             "</w:sectPr></w:body>"
         )
 
-        geometry = DocumentConverter._extract_page_geometry(body, qn("w:sectPr"), qn)
+        geometry = _converter(150)._extract_page_geometry(body, qn("w:sectPr"), qn)
 
         assert geometry["usable_height_px"] == int((11906 - 1440) / 1440 * 150)
         assert geometry["usable_width_px"] == int((16838 - 1440) / 1440 * 150)
@@ -931,7 +949,7 @@ class TestWordPageGeometry:
 
     def test_a_body_without_sectpr_falls_back_to_us_letter(self):
         body = parse_xml(f"<w:body {nsdecls('w')}/>")
-        geometry = DocumentConverter._extract_page_geometry(body, qn("w:sectPr"), qn)
+        geometry = _converter(150)._extract_page_geometry(body, qn("w:sectPr"), qn)
         assert geometry == {"usable_height_px": 1350, "usable_width_px": 975}
 
     def test_a_sectpr_missing_its_attributes_falls_back_to_us_letter(self):
@@ -940,20 +958,21 @@ class TestWordPageGeometry:
         body = parse_xml(
             f"<w:body {nsdecls('w')}><w:sectPr><w:pgSz/><w:pgMar/></w:sectPr></w:body>"
         )
-        geometry = DocumentConverter._extract_page_geometry(body, qn("w:sectPr"), qn)
+        geometry = _converter(150)._extract_page_geometry(body, qn("w:sectPr"), qn)
         assert geometry == {"usable_height_px": 1350, "usable_width_px": 975}
 
-    def test_the_layout_budget_ignores_the_converters_dpi(self):
-        """Pins current behaviour, and it is a defect.
+    def test_the_layout_budget_scales_with_the_converters_dpi(self):
+        """The budget must track the canvas it will be drawn on (#1156).
 
-        `_extract_page_geometry` converts twips at a hardcoded 150 dpi while the
+        `_extract_page_geometry` converted twips at a hardcoded 150 dpi while the
         canvas `_render_word_page` draws on is sized from `self.dpi`. Every real
-        .docx has a `<w:sectPr>`, so this path — not the dpi-aware
-        `_default_page_geometry` — is what paginates Word documents, and
-        `OcrService` builds the converter at 300 dpi by default. Below 150 dpi the
-        budget exceeds the canvas and the overflow is drawn off the bottom edge;
-        above it the budget is smaller than the canvas and pages come back part
-        empty and too numerous."""
+        `.docx` has a `<w:sectPr>`, so this path — not the dpi-aware
+        `_default_page_geometry` — is what paginates Word documents, and `OcrService`
+        builds the converter at 300 dpi by default. So at the production default the
+        budget filled 45% of the canvas and a document became roughly 2.2x the pages
+        it has, each separately uploaded, OCR'd, classified and billed; below 150 it
+        inverted and the overflow was drawn off the bottom edge.
+        """
         body = parse_xml(
             f"<w:body {nsdecls('w')}>"
             '<w:sectPr><w:pgSz w:w="12240" w:h="15840"/>'
@@ -962,21 +981,103 @@ class TestWordPageGeometry:
         )
 
         budgets = {
-            dpi: DocumentConverter._extract_page_geometry(body, qn("w:sectPr"), qn)
+            dpi: _converter(dpi)._extract_page_geometry(body, qn("w:sectPr"), qn)
             for dpi in (72, 150, 300)
         }
-        assert {g["usable_height_px"] for g in budgets.values()} == {1350}
+        # 9 usable inches (11 less two 1-inch margins) at each dpi.
+        assert budgets[72]["usable_height_px"] == 648
+        assert budgets[150]["usable_height_px"] == 1350
+        assert budgets[300]["usable_height_px"] == 2700
 
-        # The dpi-aware helper, by contrast, tracks the canvas it draws on.
-        assert _converter(72)._default_page_geometry()["usable_height_px"] == 720
-        assert _converter(300)._default_page_geometry()["usable_height_px"] == 3000
+    @pytest.mark.parametrize("dpi", [72, 150, 300, 600])
+    @pytest.mark.parametrize(
+        "margin_twips",
+        [
+            1440,  # 1 inch, Word's default
+            720,  # 0.5 inch, Word's "Narrow" preset
+            360,  # 0.25 inch, the point where the unclamped ratio crosses 1.0
+            144,  # 0.1 inch
+            0,  # no margin at all
+        ],
+    )
+    def test_the_budget_never_exceeds_the_canvas(self, dpi, margin_twips):
+        """The budget must never exceed the drawable canvas, at any DPI **and any
+        document margin**.
 
-    def test_text_survives_even_when_the_rendered_page_overflows_its_canvas(self):
-        """The consequence of the budget mismatch above, stated as the thing that
-        is still true: at 72 dpi a page is packed past the canvas and the excess is
-        clipped out of the image, but none of it is missing from the page text.
-        Downstream text extraction is therefore intact; only what a model sees in
-        the image is not."""
+        ⚠️ **Parametrised over the margin, not only the DPI, and that is the point.**
+        The budget is the DOCUMENT's usable area from `<w:pgMar>` while the canvas is
+        always `page_height - 2 * 0.5in`, so the ratio is `(11 - 2*doc_margin) / 10` —
+        a property of the margin, not a constant. A version of this test that
+        hardcoded a 1-inch `w:pgMar` and varied only the DPI reported a reassuring
+        0.90 everywhere and could not see that a document with margins under a quarter
+        inch has a budget *larger* than the canvas at every DPI, including the
+        production default. Measured without the clamp at 300 DPI: ink reaches the
+        canvas edge on four pages from a 0.25 inch margin down, with the page text
+        complete — the same silent-loss signature the DPI mismatch had.
+        """
+        converter = _converter(dpi)
+        body = parse_xml(
+            f"<w:body {nsdecls('w')}>"
+            '<w:sectPr><w:pgSz w:w="12240" w:h="15840"/>'
+            f'<w:pgMar w:top="{margin_twips}" w:bottom="{margin_twips}" '
+            f'w:left="{margin_twips}" w:right="{margin_twips}"/>'
+            "</w:sectPr></w:body>"
+        )
+
+        budget = converter._extract_page_geometry(body, qn("w:sectPr"), qn)
+        canvas_h = converter.page_height - 2 * converter.margin
+
+        assert budget["usable_height_px"] <= canvas_h, (
+            f"at {dpi} dpi with a {margin_twips}-twip margin the budget is "
+            f"{budget['usable_height_px']} px against a {canvas_h} px canvas; the "
+            "overflow is drawn off the bottom edge while staying in the page text"
+        )
+
+    @pytest.mark.parametrize("dpi", [72, 150, 300, 600])
+    def test_a_one_inch_document_still_fills_most_of_its_canvas(self, dpi):
+        """The other direction, kept separate from the clamp: the budget must not be a
+        small fraction of the canvas either, or pages break early and multiply. Only
+        meaningful for a margin the clamp does not bind on, which is why it is its own
+        case rather than a second assertion above.
+        """
+        converter = _converter(dpi)
+        body = parse_xml(
+            f"<w:body {nsdecls('w')}>"
+            '<w:sectPr><w:pgSz w:w="12240" w:h="15840"/>'
+            '<w:pgMar w:top="1440" w:bottom="1440" w:left="1440" w:right="1440"/>'
+            "</w:sectPr></w:body>"
+        )
+
+        budget = converter._extract_page_geometry(body, qn("w:sectPr"), qn)
+        canvas_h = converter.page_height - 2 * converter.margin
+        assert budget["usable_height_px"] / canvas_h >= 0.85
+
+    def test_the_width_budget_is_not_clamped(self):
+        """Width is computed and never consumed by the layout, which wraps on the
+        converter's own text width. Clamping it would report a landscape page as
+        narrower than the document is — for no reader — so the clamp is height only,
+        and this pins that so a later "symmetry" tidy-up fails here.
+        """
+        converter = _converter(150)
+        body = parse_xml(
+            f"<w:body {nsdecls('w')}>"
+            '<w:sectPr><w:pgSz w:w="16838" w:h="11906"/>'
+            '<w:pgMar w:top="720" w:bottom="720" w:left="720" w:right="720"/>'
+            "</w:sectPr></w:body>"
+        )
+
+        budget = converter._extract_page_geometry(body, qn("w:sectPr"), qn)
+        canvas_w = converter.page_width - 2 * converter.margin
+        assert budget["usable_width_px"] > canvas_w
+
+    def test_a_low_dpi_page_is_no_longer_drawn_past_its_bottom_margin(self):
+        """The rendered consequence, asserted on the IMAGE rather than the text.
+
+        At 72 dpi the budget used to exceed the canvas, so a page carried more lines
+        than it could render and the excess was clipped out of the page image while
+        remaining in the page text. A text assertion cannot fail for that, which is
+        why this measures the ink bounding box.
+        """
         converter = _converter(72)
         lines = [f"LINE{i:03d} body text for this paragraph" for i in range(80)]
 
@@ -985,15 +1086,18 @@ class TestWordPageGeometry:
                 document.add_paragraph(line)
 
         pages = converter.convert_word_to_pages(_docx_bytes(build))
+
+        # Text is still complete -- that was never the defect.
         text = "\n".join(t for _, t in pages)
         for line in lines:
             assert line in text, f"{line!r} lost from the page text"
 
-        first = _open(pages[0][0])
-        bbox = _ink_bbox(first)
+        bbox = _ink_bbox(_open(pages[0][0]))
         assert bbox is not None
-        assert bbox[3] >= converter.page_height - converter.margin, (
-            "expected the first page to be drawn past its bottom margin"
+        assert bbox[3] < converter.page_height - converter.margin, (
+            f"ink reaches y={bbox[3]} on a page whose bottom margin starts at "
+            f"{converter.page_height - converter.margin}, so content is being drawn "
+            "off the rendered page"
         )
 
 
@@ -1231,19 +1335,16 @@ class TestTableElement:
             ["r1c0", "r1c1", "r1c2"],
         ]
 
-    def test_no_row_of_a_real_docx_table_is_marked_as_a_header(self):
-        """Pins current behaviour, and it is a defect.
+    def test_the_first_row_of_a_real_docx_table_is_marked_as_a_header(self):
+        """The header row keeps its emphasis in the rendered page image (#1157).
 
-        `is_header = table.rows[0] == row` relies on `==`, but `table.rows[idx]`
-        builds a fresh `_Row` each access and `python-docx` gives `_Row` no
-        `__eq__`, so the comparison is identity against a different object and is
-        always false. The header row therefore loses its bold and its grey
-        background in the rendered page, leaving a model no visual cue for which
-        row names the columns.
-
-        The same helper reports `True` when handed `MagicMock` rows in a plain
-        list, because those do compare equal by identity — which is why a
-        mock-based test of this function reports the opposite of the truth."""
+        This asserted the opposite until the comparison was fixed:
+        `is_header = table.rows[0] == row` relied on `==`, but `table.rows[idx]`
+        builds a fresh `_Row` on each access and `python-docx` gives `_Row` no
+        `__eq__`, so it was identity against a different object and false for every
+        row. Every table in every `.docx` lost its header bold and grey background in
+        the page image, leaving a vision model no cue for which row names the columns,
+        while the page *text* was unaffected — so nothing downstream could notice."""
         document = Document()
         table = document.add_table(rows=2, cols=1)
         table.cell(0, 0).text = "Header"
@@ -1252,12 +1353,106 @@ class TestTableElement:
         element = DocumentConverter._build_table_element(table)
         assert element is not None
         assert [cell["is_header"] for row in element["data"] for cell in row] == [
-            False,
+            True,
             False,
         ]
 
-        # A fresh _Row per access is the mechanism.
+    def test_a_fresh_row_object_per_access_is_still_the_underlying_hazard(self):
+        """The property that made the old comparison wrong, pinned on its own.
+
+        Kept because the fix reads an index and an XML element rather than comparing
+        `_Row` objects, and the reason for that is only visible here: if a future
+        python-docx gave `_Row` a value `__eq__`, a reader would have no way to tell
+        from the code why the indirection was there. Measured on python-docx 1.2.0.
+        """
+        document = Document()
+        table = document.add_table(rows=2, cols=1)
+
         assert table.rows[0] is not table.rows[0]
+        assert table.rows[0] != table.rows[0]
+        # The XML element behind it IS stable, which is what the fix relies on.
+        assert table.rows[0]._tr is table.rows[0]._tr
+
+    def test_the_formats_own_header_flag_is_preferred_over_the_first_row(self):
+        """`<w:trPr><w:tblHeader/>` is what Word writes for "repeat as header row".
+
+        It can mark more than one row, which a first-row rule cannot express, so where
+        the author set it that is the signal used. Two-row headers are ordinary in
+        financial tables — a spanning title above the column names.
+        """
+        from docx.oxml.ns import qn
+
+        document = Document()
+        table = document.add_table(rows=3, cols=1)
+        for idx in range(3):
+            table.cell(idx, 0).text = f"row-{idx}"
+
+        # Mark rows 0 and 1 as repeating header rows.
+        for idx in (0, 1):
+            tr_pr = table.rows[idx]._tr.get_or_add_trPr()
+            tr_pr.append(tr_pr.makeelement(qn("w:tblHeader"), {}))
+
+        element = DocumentConverter._build_table_element(table)
+        assert element is not None
+        assert [row[0]["is_header"] for row in element["data"]] == [True, True, False]
+
+    @pytest.mark.parametrize("off_value", ["0", "false", "off", "FALSE", " Off "])
+    def test_an_explicitly_disabled_header_flag_is_not_a_header(self, off_value):
+        """`w:tblHeader` is a `CT_OnOff`, so presence is not truth.
+
+        `<w:tblHeader w:val="0"/>` means the author marked that row as **not** a
+        repeating header. Reading only `find(...) is not None` counted it as one —
+        measured for `0`, `false` and `off` — and the consequence is worse than
+        ignoring the flag entirely: the excluded row gained emphasis, and because a
+        non-empty result suppresses the first-row fallback, the genuine header row lost
+        its own at the same time. So the assertion here is two-sided.
+        """
+        from docx.oxml.ns import qn
+
+        document = Document()
+        table = document.add_table(rows=3, cols=1)
+        for idx in range(3):
+            table.cell(idx, 0).text = f"row-{idx}"
+
+        tr_pr = table.rows[1]._tr.get_or_add_trPr()
+        tr_pr.append(tr_pr.makeelement(qn("w:tblHeader"), {qn("w:val"): off_value}))
+
+        element = DocumentConverter._build_table_element(table)
+        assert element is not None
+        flags = [row[0]["is_header"] for row in element["data"]]
+        assert flags == [True, False, False], (
+            "an explicitly disabled flag must neither mark its own row nor suppress "
+            f"the first-row fallback; got {flags}"
+        )
+
+    @pytest.mark.parametrize("on_value", ["1", "true", "on", "TRUE"])
+    def test_an_explicitly_enabled_header_flag_is_honoured(self, on_value):
+        """The other half, so the reader is a value test rather than a denylist that
+        happens to reject everything."""
+        from docx.oxml.ns import qn
+
+        document = Document()
+        table = document.add_table(rows=3, cols=1)
+        tr_pr = table.rows[1]._tr.get_or_add_trPr()
+        tr_pr.append(tr_pr.makeelement(qn("w:tblHeader"), {qn("w:val"): on_value}))
+
+        element = DocumentConverter._build_table_element(table)
+        assert element is not None
+        assert [row[0]["is_header"] for row in element["data"]] == [False, True, False]
+
+    def test_a_table_whose_only_marked_header_is_not_the_first_row(self):
+        """The discriminating case for preferring the flag: a marked row that a
+        first-row rule would miss, and a first row it would wrongly emphasise."""
+        from docx.oxml.ns import qn
+
+        document = Document()
+        table = document.add_table(rows=3, cols=1)
+        tr_pr = table.rows[1]._tr.get_or_add_trPr()
+        tr_pr.append(tr_pr.makeelement(qn("w:tblHeader"), {}))
+
+        element = DocumentConverter._build_table_element(table)
+        assert element is not None
+        assert [row[0]["is_header"] for row in element["data"]] == [False, True, False]
 
     def test_a_table_with_no_rows_is_reported_as_absent(self):
         """Returning an element with empty data would put a zero-row table into
@@ -2167,45 +2362,54 @@ class TestMarkdownPager:
         assert pages[0][1] == "# Title\nbody line"
         assert _ink_bbox(_open(pages[0][0])) is not None
 
-    def test_a_repeated_table_header_pushes_the_last_rows_off_the_image(self):
-        """Pins current behaviour, and it is a defect.
+    def test_a_continuation_page_fits_its_repeated_header_within_the_budget(self):
+        """A continuation page must not be handed more lines than it can render.
 
-        `_ensure_table_headers` prepends two lines to a continuation page without
-        reducing that page's line budget, so a full continuation page carries 42
-        lines onto a canvas that holds 40. The two lines that do not fit are
-        dropped by the `break  # Page is full` guard.
+        The repeated header used to be prepended to a continuation page without
+        reducing that page's line budget, so a **full** interior page carried
+        `lines_per_page + 2` lines onto a canvas that renders `lines_per_page`, and the
+        `break  # Page is full` guard dropped the overflow from the IMAGE while it
+        stayed in the page text. `ocr/service.py` builds its OCR blocks from the page
+        text, so text-based extraction was unaffected and nothing reported the
+        discrepancy; a vision-capable classification or extraction call shown that page
+        did not see its last rows (#1158).
 
-        They stay in the page text, and `ocr/service.py` builds its OCR blocks
-        from the page text, so text-based extraction is unaffected. What is
-        affected is the page image uploaded alongside it: a vision model shown
-        page 2 of a three-page table does not see its last two rows, and nothing
-        reports the discrepancy."""
+        ⚠️ **This needs a table long enough to FILL an interior page, and how long
+        depends on the DPI.** `_converter()` in this file is 72 DPI, where
+        `lines_per_page` is 40 and a 100-row CSV already over-fills page 2 — measured,
+        `handed=[40, 42, 24]`. At 150 DPI the budget is 83 lines and the same CSV does
+        NOT reproduce it: page 2 holds 21 of 83, the two extra fit, and before and after
+        are identical. 300 rows is used here because it puts **six** interior pages over
+        budget rather than one, so the assertion has margin at either DPI rather than
+        depending on which converter the fixture happens to build.
+        """
         converter = _converter()
-        content = "id,label\n" + "\n".join(f"{i},L{i:03d}" for i in range(100))
+        content = "id,label\n" + "\n".join(f"{i},L{i:03d}" for i in range(300))
 
         pages = converter.convert_csv_to_pages(content)
-        assert len(pages) == 3
+        assert len(pages) >= 3, "need an interior page for this to say anything"
 
-        # Conservation across three pages, not two: the pager advances by the
-        # number of *original* lines it consumed, and advancing by the number it
-        # rendered instead would skip two rows at every interior seam — which only
-        # a document with an interior page can show.
+        # Conservation first: no row may be lost or duplicated at a seam.
         all_text = "\n".join(t for _, t in pages)
-        for i in range(100):
+        for i in range(300):
             assert all_text.count(f"L{i:03d}") == 1, f"row L{i:03d} duplicated or lost"
 
-        middle_text, middle_image = pages[1][1], pages[1][0]
         lines_per_page = (converter.page_height - 2 * converter.margin) // 18
-        assert len(middle_text.split("\n")) == lines_per_page + 2
+        for page_number, (_, page_text) in enumerate(pages, start=1):
+            handed = len(page_text.split("\n"))
+            assert handed <= lines_per_page, (
+                f"page {page_number} was handed {handed} lines onto a canvas that "
+                f"renders {lines_per_page}; the excess is dropped from the image while "
+                "remaining in the page text, which no text assertion can detect"
+            )
 
-        # Both pages' ink stops at the same place even though the middle page was
-        # handed two more lines than the first.
-        first_bottom = _ink_bbox(_open(pages[0][0]))
-        middle_bottom = _ink_bbox(_open(middle_image))
-        assert first_bottom is not None and middle_bottom is not None
-        assert middle_bottom[3] == first_bottom[3]
-        # The rows that were dropped from the image are still in the text.
-        assert "L077" in middle_text
+        # And the interior page really does repeat the header, which is the feature
+        # whose budget this is: a fix that simply stopped prepending would satisfy the
+        # assertion above and lose the header instead. Matched on the column names
+        # rather than a literal prefix, because the pandas path pads cells to width.
+        first_line = pages[1][1].split("\n")[0]
+        assert first_line.startswith("|") and "id" in first_line, first_line
+        assert "label" in first_line, first_line
 
     def test_a_wrapped_line_at_the_foot_of_a_page_stops_at_the_margin(self):
         """The inner break: a line that wraps into more rows than are left must
@@ -2276,29 +2480,36 @@ class TestEnsureTableHeaders:
             "table_ranges": [(0, 50)],
         }
 
-    def test_a_page_starting_mid_table_is_given_the_header_back(self):
+    def test_a_page_starting_mid_table_is_told_to_repeat_the_header(self):
         """Without this, the continuation page is a body of rows with no column
-        names — unparseable as markdown and ambiguous to a model."""
-        page = ["| 41 | 42 |", "| 43 | 44 |"]
-        result = _converter()._ensure_table_headers(page, self._info(), 41)
+        names — unparseable as markdown and ambiguous to a model.
 
-        assert result == ["| a | b |", "| --- | --- |"] + page
+        Asserted through `_table_header_lines`, which returns the lines rather than
+        prepending them, because the caller has to SUBTRACT their count from the page's
+        budget before choosing the chunk. The wrapper that prepended without doing that
+        is gone: it had no production caller once the budget was fixed, and keeping a
+        function whose only callers are its own tests, behind a warning about its
+        hazard, is worse than deleting it.
+        """
+        assert DocumentConverter._table_header_lines(self._info(), 41) == [
+            "| a | b |",
+            "| --- | --- |",
+        ]
 
-    def test_a_page_starting_at_the_table_header_is_left_alone(self):
-        """It already contains the header; prepending would duplicate it."""
-        page = ["| a | b |", "| --- | --- |", "| 1 | 2 |"]
-        assert _converter()._ensure_table_headers(page, self._info(), 0) == page
+    def test_a_page_starting_at_the_table_header_needs_no_repeat(self):
+        """It already contains the header; repeating it would duplicate it."""
+        assert DocumentConverter._table_header_lines(self._info(), 0) == []
 
-    def test_a_page_starting_after_the_table_is_left_alone(self):
-        page = ["prose after the table"]
-        assert _converter()._ensure_table_headers(page, self._info(), 90) == page
+    def test_a_page_starting_after_the_table_needs_no_repeat(self):
+        assert DocumentConverter._table_header_lines(self._info(), 90) == []
 
-    def test_an_empty_page_or_a_document_with_no_tables_is_left_alone(self):
-        converter = _converter()
-        assert converter._ensure_table_headers([], self._info(), 41) == []
-        assert converter._ensure_table_headers(
-            ["x"], {"headers": [], "table_ranges": []}, 41
-        ) == ["x"]
+    def test_a_document_with_no_tables_needs_no_repeat(self):
+        assert (
+            DocumentConverter._table_header_lines(
+                {"headers": [], "table_ranges": []}, 41
+            )
+            == []
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -2462,20 +2673,17 @@ class TestEmptyPage:
     def test_it_scales_with_the_converters_dpi(self):
         assert _open(_converter(300)._create_empty_page()).size == (2550, 3300)
 
-    def test_the_last_resort_bytes_do_not_decode(self):
-        """Pins current behaviour, and it is a defect.
+    def test_the_last_resort_bytes_decode(self):
+        """The literal that ships when image creation is impossible must DECODE.
 
-        When image creation itself is impossible the hardcoded literal at the foot
-        of `_create_empty_page` is what ships downstream. Pillow parses its header
-        — it reports a 1x1 JPEG — but decoding raises `OSError: broken data
-        stream`, because the `SOF0` marker declares one component while the
-        following component specs and the `SOS` marker describe three, and the
-        scan itself is a single byte.
-
-        A header-only check therefore passes and the file is uploaded to S3 as an
-        apparently valid page image. It fails later, in whatever first decodes it
-        — Textract, a Bedrock image block, or the UI's page preview — with an
-        error that points at the consumer rather than at this literal."""
+        `load()` is the assertion, not `open()` (#1158). The previous literal parsed
+        as a 1x1 JPEG and then raised `OSError: broken data stream` on decode, because
+        its `SOF0` marker declared one component while the component specifications
+        that followed and the `SOS` marker described three, and its scan was a single
+        byte. A header-only validity check therefore passed and the file was uploaded
+        to S3 as an apparently valid page image, failing later in whatever first
+        decoded it — Textract, a Bedrock image block, or the UI's page preview — with
+        an error pointing at the consumer rather than at the producer."""
         converter = _converter()
         with patch.object(dc_module.Image, "new", side_effect=OSError("no canvas")):
             img_bytes = converter._create_empty_page()
@@ -2483,8 +2691,16 @@ class TestEmptyPage:
         assert img_bytes.startswith(b"\xff\xd8") and img_bytes.endswith(b"\xff\xd9")
         img = Image.open(io.BytesIO(img_bytes))
         assert (img.format, img.size) == ("JPEG", (1, 1))
-        with pytest.raises(OSError, match="broken data stream"):
-            img.load()
+        img.load()  # the whole point: this used to raise
+
+    def test_the_last_resort_constant_itself_decodes(self):
+        """Asserted on the constant as well as through the fallback path, so a future
+        edit to the literal is caught even if nothing exercises `_create_empty_page`'s
+        deepest rung. It is produced by Pillow rather than hand-assembled for the same
+        reason."""
+        img = Image.open(io.BytesIO(dc_module._MINIMAL_WHITE_JPEG))
+        img.load()
+        assert (img.format, img.size) == ("JPEG", (1, 1))
 
     def test_a_zero_byte_save_falls_through_to_a_minimal_jpeg(self):
         """The middle rung of the ladder: the full-size save produced nothing, so

@@ -5537,9 +5537,12 @@ def _reconcile_test_set_tracking_entry(s3_client, bucket, prefix, existing_row):
             "AND (attribute_not_exists(#sig) OR #sig = :old_sig)"
         )
 
-        # Use boto3 directly here (rather than db_client.update_item) because
-        # DynamoDBClient.update_item does not expose ConditionExpression, and
-        # the race guards are the whole reason for this write's condition.
+        # This write goes to the table directly rather than through
+        # DynamoDBClient. `DynamoDBClient.update_item` accepts a
+        # `condition_expression` and surfaces the rejection as a DynamoDBError with
+        # error_code "ConditionalCheckFailedException", which is the only part of
+        # the error this handler reads — so either route expresses the race guards
+        # below. Prefer the wrapper in new code.
         try:
             _get_tracking_table().update_item(
                 Key={"PK": f"testset#{prefix}", "SK": "metadata"},

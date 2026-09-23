@@ -105,6 +105,23 @@ PYTHON_PATHSPECS = (
 #: coverage gate that this scan therefore could not see, and that consequently sat
 #: unregistered while every meta-test passed. One letter of aperture, and it went the
 #: way a too-narrow aperture always goes here: quiet.
+#:
+#: **The second group names an exclusion without using either of those words.** Three
+#: constants spelled ``NOT_A_PRESET``, ``NOT_AN_IDP_CONFIG`` and ``READ_ELSEWHERE`` --
+#: each a live carve-out from a preset-scanning gate, each with a comment stating the
+#: exclusion in plain terms -- were matched by nothing here, and became discoverable only
+#: when they were renamed. Whether a carve-out is registered must not depend on whether
+#: its author happened to reach for a word in this list, so the list now covers the ways
+#: an exclusion gets named when the author is describing what the members *are* rather
+#: than what the gate does with them. ``OPT_OUT`` found a live unregistered one on
+#: arrival (a named CloudFormation condition allowed to suppress an alarm subscription);
+#: the rest match nothing today and are forward-looking, which is the point of a
+#: vocabulary and is why "matches something in this tree" is not the liveness rule
+#: applied to them. What *is* pinned is that every fragment here demonstrably works:
+#: ``test_exemption_discovery.py`` drives the real collector over a synthetic checkout
+#: per fragment, on all three surfaces it has to work on, so a fragment that can never
+#: match -- wrong case, a regex metacharacter that breaks :func:`_text_pattern`, a
+#: polarity guard that eats it -- fails there instead of sitting quietly dead.
 NAME_VOCABULARY = (
     "EXEMPT",
     "ALLOW",
@@ -121,6 +138,33 @@ NAME_VOCABULARY = (
     "PINNED_",
     "PENDING_",
     "UNCOVERED",
+    # Named for what the members are, not for what the gate does with them.
+    "NOT_A",
+    # ``NON_`` is the same semantic family as ``NOT_A`` one prefix apart, and leaving it
+    # out while adding ``NOT_A`` would have been the ``EXCLU``-not-``EXCLUD`` mistake
+    # again. It is the widest fragment here -- it finds required-key sets and orderings
+    # as well as carve-outs -- and that cost is accepted: the registry can record a
+    # ``fixture`` in one line, and the alternative was ``NON_MODEL_CHOICES`` and
+    # ``NON_SELECTABLE_DEFAULTS`` staying invisible beside a ``NOT_A`` that was added to
+    # catch exactly their shape.
+    "NON_",
+    # ``OPEN_`` is here for the authorization case specifically:
+    # ``FUNCTION_URL_OPEN_ROUTES`` turns the per-user identity check off for named
+    # routes, its own comment cites ``ALLOWED_UNAUTH_METHODS`` in the same file as the
+    # model it follows, and that sibling was discovered while this one was not -- purely
+    # because one name happens to contain ``ALLOW``.
+    "OPEN_",
+    # A permitted difference is an exclusion from an equality assertion.
+    "PERMIT",
+    "_ELSEWHERE",
+    "TOLERAT",
+    "BENIGN",
+    "FALSE_POSITIV",
+    "BYPASS",
+    "GRANDFATHER",
+    "ACCEPTED",
+    "DEMOT",
+    "OPT_OUT",
 )
 
 
@@ -130,7 +174,18 @@ NAME_VOCABULARY = (
 #: the identically-named Python constant was found -- one vocabulary in two places, drifting,
 #: which is the shape this whole change is about.
 def _text_pattern(case: str) -> str:
-    alternation = "|".join(v.strip("_") for v in NAME_VOCABULARY)
+    """The Make/shell variable pattern for :data:`NAME_VOCABULARY`, verbatim.
+
+    Fragments go in **unaltered** apart from case, so these two surfaces match exactly
+    what :func:`_matches_name` matches on the Python one. They used to have their
+    underscores stripped, which made the text surfaces quietly BROADER: ``KNOWN_`` also
+    matched ``WELL_KNOWN``, and — the case that surfaced it — ``NON_`` became a bare
+    ``non``, so the shell surface reported a variable named ``canonical`` as an exemption.
+    A false positive here is not harmless: the registry's remedy is to write a judgement
+    for it, and a registry that asks for judgements on noise trains people to rubber-stamp
+    it.
+    """
+    alternation = "|".join(NAME_VOCABULARY)
     if case == "upper":
         return rf"^([A-Z][A-Z0-9_]*(?:{alternation})[A-Z0-9_]*)\s*[:?+]?="
     return rf"^([a-zA-Z_][a-zA-Z0-9_]*(?:{alternation.lower()})[a-zA-Z0-9_]*)="
@@ -198,6 +253,32 @@ JSON_REGISTRY_GLOBS = (
 #: its name. This is the half that closes the aperture: ``DEPLOYMENT_ROLE_TEMPLATES``
 #: is found by "are assumed by CloudFormation ... never by stack runtime code", not
 #: by anything in its name.
+#:
+#: **What it reads, stated rather than left to be inferred from the list.** The claim
+#: that discovery finds "a constant whose comment argues for an exclusion, whatever it
+#: is called" is broader than any phrase list can be, so here is the actual reach, in
+#: four families:
+#:
+#: 1. The gate's coverage described as an absence: "does not cover", "does not scan",
+#:    "not covered", "never part of", "out of scope".
+#: 2. The absence marked as intentional: "deliberately not", "deliberately excludes",
+#:    "deliberately absent", "skipped so". The third of these is how an exclusion reads
+#:    when it is expressed as an omission from an *inclusion* list rather than as an
+#:    entry on an exclusion list, and nothing else here reaches that spelling.
+#: 3. The vocabulary of exclusion itself, in prose rather than in a name: "exempt",
+#:    "exclusion", "excluded", "allowlist", "allow-list".
+#: 4. A claim about the members that is the reason for the carve-out: "are assumed",
+#:    "should never have", "may legitimately", "not real aws services", "not a defect".
+#:
+#: Matching is substring, against the comment lowercased, so a phrase carrying an
+#: uppercase letter can never fire. That is one of the ways a phrase is silently dead,
+#: and ``test_exemption_discovery.py`` pins every phrase against it by driving the real
+#: collector over a synthetic comment per phrase.
+#:
+#: The boundary is real and worth knowing rather than guessing at: a comment reading
+#: "read by a different consumer, so the gate does not flag it" is a comment arguing for
+#: an exclusion and is matched by none of the above. Naming a constant in the vocabulary
+#: above is the reliable route; this is the safety net, not the mechanism.
 EXEMPTION_PROSE = (
     "does not cover",
     "does not scan",

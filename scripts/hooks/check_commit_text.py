@@ -2,12 +2,22 @@
 # Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
 # SPDX-License-Identifier: MIT-0
 
-"""Block internal-only content from reaching a public commit message or PR body.
+"""Block internal-only content, and CI suppression, from a public commit or PR body.
 
 Registered as a ``PreToolUse`` hook on ``Bash`` in ``.claude/settings.json``. It
 reads the hook payload on stdin, and when the command is one that *publishes*
 text — ``git commit``, ``git tag``, ``gh pr create`` and friends — scans that
 command for content that is never legitimate in this repository, which is public.
+
+It refuses two different things, and the second is about the gates rather than
+about the reader. A commit message carrying one of the directives in
+:data:`CI_SUPPRESSION_DIRECTIVES` suppresses **every** gate on **both** CI
+platforms — neither configuration opts into that and neither can switch it off in
+YAML, because both honour the markers natively — and since no check is required on
+this repository's branches (issue #933), the pull request does not merely merge with
+a red check: it merges with nothing having run and nothing to see. That has already
+happened here, and what reached ``develop`` through it broke the security gate for
+every branch cut afterwards (#1072).
 
 Why a hook and not a git hook: ``core.hooksPath`` on an Amazon-managed machine
 points at git-defender, so a repo ``commit-msg`` hook or ``.githooks`` directory
@@ -99,6 +109,59 @@ PUBLISHING = re.compile(
     r")\b"
 )
 
+# The commit-message directives that suppress CI, as each platform documents them.
+# GitHub Actions skips a `push`- or `pull_request`-triggered run when the head commit
+# message contains any of `[skip ci]`, `[ci skip]`, `[no ci]`, `[skip actions]` or
+# `[actions skip]`; GitLab skips pipeline CREATION for `[skip ci]` and `[ci skip]`.
+# The union is what has to be refused, since one platform honouring a directive is
+# enough to take its gates out, and the hyphenated spellings are included because a
+# reader typing one means the same thing and platforms have accepted both.
+#
+# Matched case-insensitively and anywhere in the command, which is where a `-m` body
+# and a heredoc body both appear.
+CI_SUPPRESSION_DIRECTIVES = (
+    "[skip ci]",
+    "[ci skip]",
+    "[no ci]",
+    "[skip actions]",
+    "[actions skip]",
+)
+
+CI_SUPPRESSION = re.compile(
+    r"\[\s*(?:skip[ \-_]ci|ci[ \-_]skip|no[ \-_]ci|skip[ \-_]actions|actions[ \-_]skip)"
+    r"\s*\]",
+    re.IGNORECASE,
+)
+
+# Per-command override, in the same family as ALLOW_SHARED_BRANCH in
+# check_shared_branch.py: there is a legitimate case (a branch nobody will merge), and
+# a guard with no way out gets removed rather than argued with.
+#
+# Read from the COMMAND TEXT rather than from this process's environment, because an
+# inline `VAR=1 git commit ...` prefix never reaches the hook's environment — the hook
+# runs before the command does. Anchored to a command boundary so that the same
+# characters inside a commit message do not waive anything.
+ALLOW_SKIP_CI = "ALLOW_SKIP_CI"
+_OVERRIDE = re.compile(
+    rf"(?:^|[;&|(\n]|&&|\|\|)\s*(?:\w+=\S+\s+)*{ALLOW_SKIP_CI}=(\S+)"
+)
+_AFFIRMATIVE = frozenset({"1", "true", "yes", "y", "on"})
+
+CI_SUPPRESSION_REMEDY = (
+    "That directive suppresses EVERY gate on BOTH CI platforms — lint, types, tests, "
+    "the security scan and the dependency audit — and no check on this repository is "
+    "a required status check (issue #933), so the pull request does not show red: it "
+    "shows nothing, and a reviewer has no way to tell it apart from a clean run.\n"
+    "Drop the directive. If the work genuinely does not need the gates, it still costs "
+    "nothing to let them run.\n"
+    f"To do it deliberately anyway, put the override in front of the command:\n"
+    f"  {ALLOW_SKIP_CI}=1 <your command>\n"
+    "Note that a commit already carrying one of these directives is reported by "
+    "scripts/tests/test_no_skip_ci_markers.py on the NEXT pull request whose checks "
+    "run, so the marker does not stay invisible — it just moves the discovery to "
+    "somebody else."
+)
+
 REMEDY = (
     "This repository is public and a merged commit message cannot be edited; a "
     "force-push does not retract one either, because GitHub keeps a merged PR's "
@@ -146,6 +209,23 @@ def findings(command: str) -> list[str]:
     return list(dict.fromkeys(hits))
 
 
+def ci_suppression(command: str) -> str | None:
+    """The CI-suppressing directive in ``command``, or ``None``."""
+    match = CI_SUPPRESSION.search(command)
+    return match.group(0) if match else None
+
+
+def override_set(command: str) -> bool:
+    """Whether the command carries an affirmative ``ALLOW_SKIP_CI`` prefix.
+
+    Only an affirmative value counts, so spelling out ``ALLOW_SKIP_CI=0`` leaves the
+    check on rather than reading as permission — the same choice the shared-branch
+    guard makes.
+    """
+    match = _OVERRIDE.search(command)
+    return bool(match) and match.group(1).strip().strip("\"'").lower() in _AFFIRMATIVE
+
+
 def main() -> int:
     try:
         payload = json.load(sys.stdin)
@@ -159,6 +239,25 @@ def main() -> int:
     command = tool_input.get("command", "") if isinstance(tool_input, dict) else ""
     if not isinstance(command, str) or not is_publishing(command):
         return 0
+
+    directive = ci_suppression(command)
+    if directive:
+        if override_set(command):
+            # An override that is honoured says so, for the same reason the
+            # shared-branch guard's does: a check believed on and actually off is
+            # worse than no check.
+            print(
+                f"commit-text guard: {ALLOW_SKIP_CI} is set, so the CI-suppressing "
+                f"directive {directive!r} in this command is not refused.",
+                file=sys.stderr,
+            )
+        else:
+            print(
+                f"Blocked: this command would publish the CI-suppressing directive "
+                f"{directive!r}.\n\n" + CI_SUPPRESSION_REMEDY,
+                file=sys.stderr,
+            )
+            return 2
 
     hits = findings(command)
     if not hits:

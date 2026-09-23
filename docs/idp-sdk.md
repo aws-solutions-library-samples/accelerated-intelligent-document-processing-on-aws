@@ -577,7 +577,10 @@ print(f"Downloaded {result.files_downloaded} source files")
 Permanently delete documents and their associated data from InputBucket, OutputBucket, and DynamoDB. Select documents by batch ID or wildcard pattern.
 
 **Parameters:**
-- `batch_id` (str, optional): Batch identifier (selects all docs containing this string)
+- `batch_id` (str, optional): Batch identifier. Selects documents **under** that
+  batch — the id is matched as a leading path segment, so `batch-1` selects
+  `batch-1/a.pdf` and **not** `batch-10/b.pdf`. Use `pattern` for substring or
+  wildcard selection.
 - `pattern` (str, optional): Wildcard pattern to match document keys (e.g., `"batch-123/*.pdf"`, `"*invoice*"`)
 - `status_filter` (str, optional): Filter by document status (e.g., "FAILED", "COMPLETED")
 - `stack_name` (str, optional): Stack name override

@@ -1526,11 +1526,19 @@ class TestControlPlaneRowBuilding:
     def test_partition_check_reraises_on_transient_error(self, rollup):
         """A transient Athena throttle on the idempotency probe must NOT
         fall through to fail-open — that would let an INSERT run against
-        an already-populated partition and permanently double-count."""
-        with patch.object(
-            rollup,
-            "_run_athena_query_with_results",
-            side_effect=RuntimeError("ThrottlingException: Rate exceeded"),
+        an already-populated partition and permanently double-count.
+        The F4 fix switched the primary probe to S3 ListObjectsV2 (much
+        cheaper); the Athena SELECT-1 is the fallback when S3 can't
+        answer. To exercise the fallback path (which is where the
+        re-raise semantic lives), we force ``REPORTING_BUCKET=""`` so
+        the S3 branch is skipped."""
+        with (
+            patch.object(rollup, "REPORTING_BUCKET", ""),
+            patch.object(
+                rollup,
+                "_run_athena_query_with_results",
+                side_effect=RuntimeError("ThrottlingException: Rate exceeded"),
+            ),
         ):
             with pytest.raises(RuntimeError, match="Throttling"):
                 rollup._partition_already_written(
@@ -1542,11 +1550,20 @@ class TestControlPlaneRowBuilding:
         but Athena's Glue catalog view may transiently report them as
         missing until the first partition materializes. TABLE_NOT_FOUND
         is the ONE error we treat as 'not yet written' — everything else
-        propagates."""
-        with patch.object(
-            rollup,
-            "_run_athena_query_with_results",
-            side_effect=RuntimeError("TABLE_NOT_FOUND: metering_hourly does not exist"),
+        propagates.
+
+        Fallback-path only — F4's S3 List primary probe short-circuits
+        before reaching the Athena SELECT; force the fallback by
+        clearing REPORTING_BUCKET."""
+        with (
+            patch.object(rollup, "REPORTING_BUCKET", ""),
+            patch.object(
+                rollup,
+                "_run_athena_query_with_results",
+                side_effect=RuntimeError(
+                    "TABLE_NOT_FOUND: metering_hourly does not exist"
+                ),
+            ),
         ):
             assert (
                 rollup._partition_already_written(

@@ -778,7 +778,11 @@ class BatchOperation:
         Specify either ``batch_id`` or ``pattern`` to select documents.
 
         Args:
-            batch_id: Batch identifier (selects all docs containing this string)
+            batch_id: Batch identifier. Selects documents **under** that batch —
+                the id is matched as a leading path segment, so ``batch-1`` selects
+                ``batch-1/a.pdf`` and not ``batch-10/b.pdf``. For substring or
+                wildcard selection pass ``pattern`` instead, where the breadth is
+                visible in what you wrote.
             pattern: Wildcard pattern to match document keys (e.g. ``"batch-123/*.pdf"``)
             status_filter: Optional status filter (e.g., 'FAILED', 'COMPLETED')
             stack_name: Optional stack name override

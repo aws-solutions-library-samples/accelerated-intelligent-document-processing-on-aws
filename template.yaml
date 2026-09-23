@@ -5983,8 +5983,15 @@ Resources:
       #   * On any subsequent stack update where MigrationVersion is
       #     unchanged: dispatcher is a no-op (CustomResource has no delta).
       #   * On a stack update that DOES change MigrationVersion: dispatcher
-      #     starts SFN; CheckMarker sees state=completed for the same days
-      #     value → short-circuits (MigrationAlreadyDone). No re-run.
+      #     starts SFN; CheckMarker sees state=completed with a version
+      #     that DOES NOT MATCH the request → treats it as a version
+      #     mismatch and routes to full flow (destructive InitialPurge
+      #     + re-migration). That is the INTENDED destructive re-migration
+      #     path — bump MigrationVersion in this file only when the
+      #     rollup Lambda now produces schema/aggregate output the
+      #     existing rows don't reflect. An earlier version of this
+      #     comment described a version bump as short-circuiting; that
+      #     was incorrect and would have been dangerous to rely on.
       # Leaving this 'true' in a shipped template would destructively
       # re-migrate on every version bump — the exact landmine the
       # customer-normal-day short-circuit is designed to prevent.
@@ -6536,21 +6543,25 @@ Resources:
           Value: !Ref DataMartRollupFunction
       Statistic: Sum
       # Four consecutive 1-hour windows with zero invocations trip the
-      # alarm — 4 h detection latency, ~zero false positives (a live
-      # stack fires at least :05 + :35 per hour). Was Period=3600 +
-      # EvaluationPeriods=2 (2 h latency), which fires a spurious
-      # alarm-then-OK pair on every fresh deploy: a new alarm evaluates
-      # the last N hours immediately, and on a stack created mid-hour
-      # those N hours have no Invocations datapoint at all, so all N
-      # fill as breaching (because ``TreatMissingData: breaching``
-      # below) before the first :05 cron runs — and with OKActions
-      # wired to AlertsTopic the operator gets a paged alarm on
-      # install. Widening to 4 datapoints of 4 requires 4 consecutive
-      # dead hours, which no cold-start reaches (the hourly cron fires
-      # within the first hour of any successful install), so the
-      # spurious pair disappears. Real outages of ≥ 4 h are still
-      # caught — and any real outage of that duration is already a
-      # data-hole event separately visible via the DLQ alarm.
+      # alarm — 4 h detection latency.
+      #
+      # ⚠️ Fresh-install noise is UNAVOIDABLE, not eliminated. CloudWatch
+      # treats an alarm whose entire evaluation range is missing as
+      # breaching regardless of EvaluationPeriods / DatapointsToAlarm —
+      # a new alarm created at t=0 will move to ALARM on its first
+      # evaluation even at ``EvaluationPeriods=4`` because all 4
+      # historical hours are absent by construction. Once the first
+      # scheduled invocation records a datapoint, the alarm returns to
+      # OK. Operators receive one alarm→OK pair on every fresh install;
+      # widen the window (which this bump 2→4 does) only mitigates the
+      # LATENCY of the follow-up OK notification, not the fact that
+      # the initial ALARM fires. An earlier version of this comment
+      # claimed the bump removed the pair — that claim was incorrect.
+      # The real fix would need a warmup-aware alarm (Custom::Alarm
+      # that only enables actions after the first data point), which
+      # is out of scope for this template.
+      # Real outages of ≥ 4 h are still caught — and any real outage
+      # of that duration is separately visible via the DLQ alarm.
       Period: 3600
       EvaluationPeriods: 4
       DatapointsToAlarm: 4

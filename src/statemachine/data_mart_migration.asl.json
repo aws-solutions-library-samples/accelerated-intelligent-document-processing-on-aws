@@ -4,7 +4,7 @@
   "States": {
     "CheckMarker": {
       "Type": "Task",
-      "Comment": "Read the SSM migration marker and return a routing decision (short_circuit | skip_purge | full_flow). Compares marker against BOTH days AND version — a future MigrationVersion bump for a new schema change must NOT short-circuit against a completed marker from the prior version. See _check_marker_state in the rollup Lambda for the backward-compat rule that treats a marker with no version= segment as matching (one-time transition).",
+      "Comment": "Read the SSM migration marker and return a routing decision (short_circuit | skip_purge | full_flow). Compares marker against BOTH days AND version — a future MigrationVersion bump for a new schema change must NOT short-circuit against a completed marker from the prior version. `_check_marker_state` treats a marker with NO `version=` segment (pre-versioning) OR a DIFFERENT version string as a MISMATCH and routes to full flow (destructive InitialPurge + re-migration). That is the intended behaviour — silent-accept of an unversioned marker would let a schema-widening deploy short-circuit against completed rollup partitions from the earlier schema and leave the customer's rollup tables at the old grain. An earlier version of this comment described the pre-versioning case as `treated as matching`; that was incorrect.",
       "Resource": "arn:${Partition}:states:::lambda:invoke",
       "Parameters": {
         "FunctionName": "${DataMartRollupFunctionArn}",
@@ -17,7 +17,8 @@
       "ResultSelector": {
         "should_short_circuit.$": "$.Payload.should_short_circuit",
         "should_skip_purge.$": "$.Payload.should_skip_purge",
-        "state.$": "$.Payload.state"
+        "state.$": "$.Payload.state",
+        "anchor.$": "$.Payload.anchor"
       },
       "ResultPath": "$.marker_check",
       "Retry": [
@@ -44,7 +45,7 @@
     },
     "RouteOnMarkerState": {
       "Type": "Choice",
-      "Comment": "Route based on the marker check. Completed → done (no work). In-progress from prior run → skip purge, only re-run backfill. Otherwise → full flow starting with purge.",
+      "Comment": "Route based on the marker check. Completed → done (no work). In-progress from prior run → skip purge, adopt the persisted anchor so PlanChunks plans against the ORIGINAL window (not a fresh dispatcher anchor that has drifted), then only re-run backfill. Otherwise → full flow starting with the empty-lake probe.",
       "Choices": [
         {
           "Variable": "$.marker_check.should_short_circuit",
@@ -54,10 +55,22 @@
         {
           "Variable": "$.marker_check.should_skip_purge",
           "BooleanEquals": true,
-          "Next": "PlanChunks"
+          "Next": "AdoptMarkerAnchor"
         }
       ],
       "Default": "CheckLakeState"
+    },
+    "AdoptMarkerAnchor": {
+      "Type": "Pass",
+      "Comment": "Resume path — overwrite the dispatcher-stamped $.anchor with the anchor persisted in the marker by the ORIGINAL execution's WriteInProgressMarker. Without this, a state-machine restart after a failed first run computes a fresh anchor whose window has drifted (crossed UTC midnight, or just moved forward N hours). PlanChunks would then plan chunks whose start is later than the ORIGINAL run's start, so any dates the failed run PURGED that fall before the new window's start never get rebuilt — a silent data-loss on resume. The marker persists ``anchor=<ISO>`` inside its ``;``-delimited payload (see _write_marker); CheckMarker returns it as ``$.marker_check.anchor``. If the marker was written before this fix (no anchor= segment), $.marker_check.anchor is null and this Pass leaves $.anchor as the caller's value — same behaviour as before for markers written under the earlier schema.",
+      "Parameters": {
+        "days.$": "$.days",
+        "chunk_hours.$": "$.chunk_hours",
+        "version.$": "$.version",
+        "anchor.$": "$.marker_check.anchor",
+        "marker_check.$": "$.marker_check"
+      },
+      "Next": "PlanChunks"
     },
     "MigrationAlreadyDone": {
       "Type": "Succeed",
@@ -149,7 +162,7 @@
     },
     "WriteInProgressMarker": {
       "Type": "Task",
-      "Comment": "Write the SSM marker as state=in_progress IMMEDIATELY after purge, BEFORE any backfill chunk runs. This is load-bearing: any state-machine restart (via CustomResource re-fire, operator intervention, etc.) will read this marker and SKIP the purge — chunks already written survive. Includes 'version' so CheckMarker on a future run can compare it against the request's MigrationVersion.",
+      "Comment": "Write the SSM marker as state=in_progress IMMEDIATELY after purge, BEFORE any backfill chunk runs. This is load-bearing: any state-machine restart (via CustomResource re-fire, operator intervention, etc.) will read this marker and SKIP the purge — chunks already written survive. Persists `anchor` too so the resume path can re-adopt the ORIGINAL window (see AdoptMarkerAnchor above). Also includes 'version' so CheckMarker on a future run can compare it against the request's MigrationVersion.",
       "Resource": "arn:${Partition}:states:::lambda:invoke",
       "Parameters": {
         "FunctionName": "${DataMartRollupFunctionArn}",
@@ -157,7 +170,8 @@
           "mode": "write_marker",
           "state": "in_progress",
           "days.$": "$.days",
-          "version.$": "$.version"
+          "version.$": "$.version",
+          "anchor.$": "$.anchor"
         }
       },
       "Retry": [
@@ -228,6 +242,11 @@
       "Comment": "Iterate each 1 h chunk, invoking mode: backfill per chunk. MaxConcurrency=8 pairs with the rollup Lambda's ReservedConcurrentExecutions=12 to run 8 chunks in parallel × 2 Athena INSERTs each = 16 concurrent DML queries, leaving 4 slots under Athena's default 20-per-workgroup DML concurrency for the scheduled crons that share this Lambda. Cuts a 720-hour migration from ~2 h serial → ~20 min. Idempotency guards (HeadObject-skip per partition + Athena ClientRequestToken dedup) make the parallel writes safe. SFN-native Retry replaces the async Lambda retries the earlier design relied on.",
       "ItemsPath": "$.plan.chunks",
       "MaxConcurrency": 8,
+      "ItemSelector": {
+        "start.$": "$$.Map.Item.Value.start",
+        "end.$": "$$.Map.Item.Value.end",
+        "anchor.$": "$.anchor"
+      },
       "ItemProcessor": {
         "ProcessorConfig": {
           "Mode": "INLINE"
@@ -244,7 +263,8 @@
                 "mode": "backfill",
                 "start.$": "$.start",
                 "end.$": "$.end",
-                "arms": ["metering_hourly", "metering_docs_hourly"]
+                "arms": ["metering_hourly", "metering_docs_hourly"],
+                "anchor.$": "$.anchor"
               }
             },
             "Retry": [
@@ -396,7 +416,7 @@
     },
     "WriteCompletedMarker": {
       "Type": "Task",
-      "Comment": "Migration succeeded end-to-end: write the SSM marker as state=completed so future state-machine invocations short-circuit at CheckMarker. This is the ONLY completion signal customers should watch — CFN UPDATE_COMPLETE fires immediately after the CustomResource dispatcher returns and is decoupled from actual migration completion. Includes 'version' so a future migration for a different schema change routes to full flow instead of short-circuiting against this one.",
+      "Comment": "Migration succeeded end-to-end: write the SSM marker as state=completed so future state-machine invocations short-circuit at CheckMarker. This is the ONLY completion signal customers should watch — CFN UPDATE_COMPLETE fires immediately after the CustomResource dispatcher returns and is decoupled from actual migration completion. Persists `anchor` in the marker so the resume-anchor path is symmetric across both terminal marker writes. Includes 'version' so a future MigrationVersion bump routes to full flow instead of short-circuiting against this one — that IS the intended destructive re-migration path (contrast with an earlier version of this comment that mis-described the version bump as a short-circuit).",
       "Resource": "arn:${Partition}:states:::lambda:invoke",
       "Parameters": {
         "FunctionName": "${DataMartRollupFunctionArn}",
@@ -404,7 +424,8 @@
           "mode": "write_marker",
           "state": "completed",
           "days.$": "$.days",
-          "version.$": "$.version"
+          "version.$": "$.version",
+          "anchor.$": "$.anchor"
         }
       },
       "Retry": [

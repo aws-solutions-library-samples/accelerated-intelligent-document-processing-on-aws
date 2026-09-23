@@ -45,6 +45,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+from first_party_paths import pinned_environment  # noqa: E402
 from standing_failures import (  # noqa: E402
     BaselineError,
     compare,
@@ -453,6 +454,15 @@ def run_gate(roots: list[str], integration: bool) -> int:
     elif _PYTEST_WORKERS not in ("0", "1", "") and not _xdist_available():
         print("⚠️ pytest-xdist not installed — running serially", flush=True)
 
+    # Pin this checkout's own first-party packages onto every child's PYTHONPATH.
+    # Without it `import idp_common` follows the editable-install pointer in the
+    # interpreter's site-packages, which on a host sharing one interpreter between
+    # checkouts names whichever tree last ran an install — so the gate reports on
+    # that tree, and reports green while doing it, because the package it imported
+    # is a real revision of this one (#1094). Built once: the value is absolute and
+    # identical for every root.
+    child_env = pinned_environment(REPO_ROOT)
+
     REPORT_DIR.mkdir(parents=True, exist_ok=True)
     failures: list[str] = []
     unexplained: list[str] = []
@@ -482,6 +492,7 @@ def run_gate(roots: list[str], integration: bool) -> int:
                 root,
             ],
             cwd=REPO_ROOT,
+            env=child_env,
         )
         root_failures = failing_node_ids(xml_path, root)
         observed.update(root_failures)

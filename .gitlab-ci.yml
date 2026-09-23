@@ -85,11 +85,12 @@ workflow:
 code_checks:
   stage: fast_checks
   interruptible: true
-  # Larger runner (4 vCPU / 16 GB, same as SRT): the Vite production build and
+  # Larger runner (16 vCPU / 64 GB, size:2xlarge): the Vite production build
   # tsc/eslint are CPU-bound and ran ~6 min on the default small runner vs
   # seconds locally; more cores also make `pytest -n auto` worthwhile.
   tags:
-    - size:large
+    - size:2xlarge
+    - arch:arm64
   # Cheap, no-AWS checks — run on EVERY push (any branch) and every MR, so
   # developers get lint/typecheck/unit feedback (emailed by GitLab on failure)
   # without waiting for an MR, and this gates the expensive deploy.

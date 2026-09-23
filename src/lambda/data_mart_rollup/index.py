@@ -49,26 +49,45 @@ QUERY_OUTPUT_LOCATION = os.environ.get("ATHENA_QUERY_OUTPUT_LOCATION", "")
 REPORTING_BUCKET = os.environ.get("REPORTING_BUCKET", "")
 STACK_NAME = os.environ.get("STACK_NAME", "")
 
-# Load-time guard. Every stack embeds its ``StackName`` into the SSM
-# parameter path so the marker is per-stack. An empty ``STACK_NAME``
-# would collapse the path to ``/idp//data-mart-rollup/…`` which every
-# stack in the account then shares — one stack's ``state=completed``
-# marker would short-circuit every other stack's migration and route
-# it away from InitialPurge, leaving the fresh stack's rollup tables
-# empty and untouched. Fail fast at import so a misconfigured deployment
-# surfaces in the first invocation's cold-start rather than in a silent
-# data hole. Placed at the TOP of the module (before any use of
-# STACK_NAME in a module-level constant expression) so no downstream
-# fallback like ``STACK_NAME or 'unknown'`` can ever take effect — a
-# future refactor moving the guard down would resurrect the fallback
-# constant silently.
-if not STACK_NAME:
-    raise RuntimeError(
-        "STACK_NAME environment variable is empty; refusing to compute the SSM "
-        "migration marker path because '/idp//data-mart-rollup/migration-complete' "
-        "would collide across every stack in the account. Ensure the Lambda's "
-        "Environment sets STACK_NAME to !Ref AWS::StackName."
-    )
+# The STACK_NAME guard runs on first USE of the marker path
+# (``_require_stack_name`` below), NOT at import time. An import-time
+# raise broke unit tests that load this module via
+# ``importlib.util.exec_module`` without setting STACK_NAME first
+# (``scripts/tests/test_data_plane_component_labels.py`` and the
+# rollup-Lambda test module both do this so CI can exercise pure-
+# Python helpers on a machine with no default region and no
+# stack env vars). Deferring to first-use preserves the same
+# fail-fast in production — every marker-touching mode calls
+# ``_require_stack_name`` before computing the path — without
+# holding module import hostage to the env var. Same protection
+# against ``/idp//data-mart-rollup/…`` cross-stack marker collision;
+# just enforced at the callsite where it matters instead of at the
+# top of the file.
+
+
+def _require_stack_name() -> str:
+    """Return ``STACK_NAME`` or raise if empty.
+
+    Called from every code path that computes the SSM marker parameter
+    path — an empty ``STACK_NAME`` would collapse the path to
+    ``/idp//data-mart-rollup/…`` which every stack in the account then
+    shares, and one stack's ``state=completed`` marker would short-
+    circuit every other stack's migration into destroying its rollup
+    tables. Raising here surfaces the misconfiguration on the first
+    marker-touching invocation of a cold-start Lambda rather than at
+    import time, which lets test tooling load the module without a
+    live environment.
+    """
+    if not STACK_NAME:
+        raise RuntimeError(
+            "STACK_NAME environment variable is empty; refusing to compute "
+            "the SSM migration marker path because "
+            "'/idp//data-mart-rollup/migration-complete' would collide "
+            "across every stack in the account. Ensure the Lambda's "
+            "Environment sets STACK_NAME to !Ref AWS::StackName."
+        )
+    return STACK_NAME
+
 
 # Pricing constants — US-East-1 defaults. Sub-cent precision doesn't
 # matter; these are best-effort estimates surfaced on the dashboard's
@@ -183,7 +202,14 @@ def handler(event: Dict[str, Any], _context: Any) -> Dict[str, Any]:
     global _bedrock_pricing_map, _bedrock_pricing_unavailable
     global _stack_tree_cache, _data_plane_arn_cache
     global _document_sections_tables_cache
+    global _MIGRATION_NONCE
     _lambda_memory_cache.clear()
+    # Reset the migration nonce at every entry. Only ``mode: backfill``
+    # dispatched from the state machine's BackfillChunk will re-populate
+    # it (see below); every other mode — routine hourly cron, reconciler,
+    # daily cron, manual invokes — leaves it None so their idempotency
+    # tokens stay deterministic on (table, date, hour) alone.
+    _MIGRATION_NONCE = None
     _bedrock_pricing_map = None
     _bedrock_pricing_unavailable = False
     _stack_tree_cache = None
@@ -213,6 +239,21 @@ def handler(event: Dict[str, Any], _context: Any) -> Dict[str, Any]:
         # "metering_docs_hourly"]`` to skip the arms the migration doesn't
         # own — see the arms-restriction note in _run_backfill's docstring). See
         # docs/reporting-sql-layer.md §10 Track D.
+        #
+        # F2 fix: when the caller passes ``anchor`` (state-machine's
+        # BackfillChunk does, reconciler does not), that anchor becomes
+        # this invocation's migration nonce and gets folded into every
+        # ``_idempotency_key`` for the duration of the invocation. Two
+        # migration state-machine executions produce DIFFERENT anchors,
+        # so their post-purge re-INSERTs generate different ClientRequestTokens
+        # and Athena treats them as fresh submissions instead of
+        # returning the prior execution's cached (now-stale, since the
+        # parquet was purged) success. Within a single execution's
+        # per-chunk retries, the anchor is stable, so intra-execution
+        # retries still dedup correctly. ``global _MIGRATION_NONCE``
+        # already declared at the top of ``handler`` — Python function
+        # scope covers the whole body.
+        _MIGRATION_NONCE = event.get("anchor") or None
         start_raw = event.get("start")
         end_raw = event.get("end")
         if not (start_raw and end_raw):
@@ -268,11 +309,17 @@ def handler(event: Dict[str, Any], _context: Any) -> Dict[str, Any]:
         state = event.get("state")
         days = int(event.get("days", 30))
         version = event.get("version")  # e.g. "v1" — see _write_marker
+        # Persist the dispatcher-stamped anchor into the marker so the
+        # resume path (marker=in_progress) can read it back and re-use
+        # the ORIGINAL anchor's window on retry — see F1's shared-anchor
+        # note and F6's resume-drift note in the ASL Comment on
+        # RouteOnMarkerState.
+        anchor = event.get("anchor")
         if state not in ("in_progress", "completed"):
             raise ValueError(
                 f"write_marker state must be 'in_progress' or 'completed'; got {state!r}"
             )
-        return _write_marker(state, days, version=version)
+        return _write_marker(state, days, version=version, anchor=anchor)
     if mode == "check_lake_state":
         # Cheap emptiness probe used by the state machine on the
         # full-flow branch (marker absent / mismatched version). On a
@@ -460,6 +507,18 @@ def _run_hourly(anchor: Optional[datetime] = None) -> Dict[str, Any]:
 # NOT invocation-scoped state like time or random.
 _IDEMPOTENCY_KEY_PREFIX = f"idp-rollup-{STACK_NAME}"
 
+# Per-invocation migration nonce, set by the backfill dispatch when the
+# caller passes ``anchor`` (state-machine BackfillChunk does). Folded
+# into every ``_idempotency_key`` so cross-execution migration re-INSERTs
+# get FRESH ClientRequestTokens even when the (table, date, hour) tuple
+# is the same. Athena's 24 h ClientRequestToken cache would otherwise
+# return the prior execution's cached success — but that prior success
+# wrote parquet that has since been PURGED by the second execution's
+# InitialPurge, so the "cached success" is a lie about current state
+# and the sentinel-detection then locks the (still-empty) partition
+# as ``_empty``. See F2 in the review batch that introduced this.
+_MIGRATION_NONCE: Optional[str] = None
+
 
 # Round-18 review fix (finding #1985): single source of truth for
 # "is this Athena/Glue error a table-not-found error?". Round 6/7/8/11/
@@ -567,6 +626,20 @@ def _idempotency_key(table: str, date: str, hour: Optional[str] = None) -> str:
     core = f"{table}-{date}"
     if hour:
         core = f"{core}-{hour}"
+    # Fold in the per-invocation migration nonce so cross-execution
+    # post-purge re-INSERTs get a fresh ClientRequestToken — see the
+    # ``_MIGRATION_NONCE`` block-comment near the top of this module.
+    # Nonce is a full ISO 8601 timestamp; hash-truncate to 12 chars
+    # so it discriminates cross-execution without pushing the token
+    # over the 128-char cap. When the caller didn't pass anchor
+    # (routine hourly / reconciler / daily cron), _MIGRATION_NONCE is
+    # None and the token stays deterministic on (table, date, hour) —
+    # same behaviour as before the fix, so scheduled crons' Athena
+    # dedup is unchanged.
+    if _MIGRATION_NONCE:
+        import hashlib  # noqa: PLC0415
+
+        core = f"{core}-m{hashlib.sha1(_MIGRATION_NONCE.encode()).hexdigest()[:12]}"  # nosec B324
     # Round-18 fix: put the DISCRIMINATOR FIRST, then the stack-scoped
     # prefix. If the total exceeds 128 chars, truncation lops off the
     # stack-name suffix (bloat), not the (table, date, hour) tuple that
@@ -730,11 +803,21 @@ def _build_doc_class_cte(target_date: Optional[str] = None) -> str:
         f'            SELECT document_id, "document_class.type" AS doc_type FROM "{t}"{date_filter}'
         for t in tables
     )
+    # The dead ``WHEN COUNT(DISTINCT doc_type) = 0 THEN 'unknown'``
+    # branch that lived here was unreachable — the inner subquery
+    # filters ``WHERE doc_type IS NOT NULL`` BEFORE ``GROUP BY
+    # document_id``, so every remaining group has at least one non-null
+    # doc_type and COUNT(DISTINCT doc_type) is always ≥ 1. Removed;
+    # the 0/1/N rule collapses to a 1/N rule against the pre-filtered
+    # rows. A doc that appears in no ``document_sections_*`` row at
+    # all doesn't reach the GROUP BY at all (LEFT JOIN falls through
+    # to NULL in the outer rollup, then COALESCE picks metering.document_class
+    # or ``'unknown'``) — the fallback is already covered by the outer
+    # COALESCE.
     return (
         "doc_class AS (\n"
         "    SELECT document_id,\n"
         "           CASE\n"
-        "               WHEN COUNT(DISTINCT doc_type) = 0 THEN 'unknown'\n"
         "               WHEN COUNT(DISTINCT doc_type) = 1 THEN MIN(doc_type)\n"
         "               ELSE 'mixed'\n"
         "           END AS document_class\n"
@@ -1633,7 +1716,17 @@ def _run_backfill(
 # the dispatcher does not do. See the CHANGELOG entry for the retry-safe
 # purge that this design supersedes.
 
-_MIGRATION_MARKER_NAME = f"/idp/{STACK_NAME}/data-mart-rollup/migration-complete"
+
+def _migration_marker_name() -> str:
+    """Compose the SSM migration-marker parameter path.
+
+    Called from every marker touchpoint (``_check_marker_state``,
+    ``_write_marker``) so the ``STACK_NAME`` presence check fires
+    ONCE per invocation, on the code path that actually needs it,
+    instead of at module import (which broke test tooling that
+    loaded this module via importlib without setting STACK_NAME).
+    """
+    return f"/idp/{_require_stack_name()}/data-mart-rollup/migration-complete"
 
 
 def _check_marker_state(days: int, version: Optional[str] = None) -> Dict[str, Any]:
@@ -1672,15 +1765,17 @@ def _check_marker_state(days: int, version: Optional[str] = None) -> Dict[str, A
           "should_skip_purge": <bool>,
         }
     """
+    marker_name = _migration_marker_name()
     ssm_client = boto3.client("ssm")
     try:
-        response = ssm_client.get_parameter(Name=_MIGRATION_MARKER_NAME)
+        response = ssm_client.get_parameter(Name=marker_name)
         value = response.get("Parameter", {}).get("Value", "")
     except ssm_client.exceptions.ParameterNotFound:
         return {
             "state": "absent",
             "days": None,
             "version": None,
+            "anchor": None,
             "value": None,
             "should_short_circuit": False,
             "should_skip_purge": False,
@@ -1720,6 +1815,7 @@ def _check_marker_state(days: int, version: Optional[str] = None) -> Dict[str, A
     marker_days = marker_segments.get("days")
     marker_state = marker_segments.get("state")
     marker_version: Optional[str] = marker_segments.get("version")
+    marker_anchor: Optional[str] = marker_segments.get("anchor")
 
     days_match = marker_days == str(days)
     if version is None:
@@ -1748,6 +1844,7 @@ def _check_marker_state(days: int, version: Optional[str] = None) -> Dict[str, A
             "state": "completed",
             "days": days,
             "version": marker_version,
+            "anchor": marker_anchor,
             "value": value,
             "should_short_circuit": True,
             "should_skip_purge": False,
@@ -1757,6 +1854,7 @@ def _check_marker_state(days: int, version: Optional[str] = None) -> Dict[str, A
             "state": "in_progress",
             "days": days,
             "version": marker_version,
+            "anchor": marker_anchor,
             "value": value,
             "should_short_circuit": False,
             "should_skip_purge": True,
@@ -1765,6 +1863,7 @@ def _check_marker_state(days: int, version: Optional[str] = None) -> Dict[str, A
         "state": "unrecognised",
         "days": None,
         "version": marker_version,
+        "anchor": marker_anchor,
         "value": value,
         "should_short_circuit": False,
         "should_skip_purge": False,
@@ -1775,6 +1874,7 @@ def _write_marker(
     state: str,
     days: int,
     version: Optional[str] = None,
+    anchor: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Write the SSM migration marker to the given state.
 
@@ -1804,16 +1904,34 @@ def _write_marker(
     # caller's ``version = ""``, evaluate them unequal, and route to
     # full InitialPurge every time — destructive on every deploy.
     version_segment = f"version={version};" if version is not None else ""
+    # ``anchor`` persisted in the marker so a resume path (marker=in_progress
+    # after a failed run) can read back the ORIGINAL anchor from the
+    # marker and plan chunks against the same window the failed first
+    # run purged — not against a fresh dispatcher-stamped anchor that
+    # has drifted (e.g., across UTC midnight or over the intervening
+    # hours). Without persisting it, the resume path would plan against
+    # a NEW anchor whose start is later than the ORIGINAL anchor's
+    # start, and any dates that got purged by the first run and fall
+    # before the new window's start would never be rebuilt. The marker
+    # is then written ``completed`` over rollup tables missing those
+    # oldest days silently.
+    anchor_segment = f"anchor={anchor};" if anchor else ""
     if state == "in_progress":
-        value = f"days={days};{version_segment}state=in_progress;started_at={now_iso}"
+        value = (
+            f"days={days};{version_segment}{anchor_segment}"
+            f"state=in_progress;started_at={now_iso}"
+        )
         description = (
             "Data-mart rollup migration marker. state=in_progress means the "
             "state machine has completed the S3 purge but not confirmed all "
-            "chunks; a restart of the state machine must SKIP the purge to "
-            "preserve prior chunk writes."
+            "chunks; a restart of the state machine must SKIP the purge and "
+            "REUSE the persisted anchor to preserve prior chunk writes."
         )
     elif state == "completed":
-        value = f"days={days};{version_segment}state=completed;completed_at={now_iso}"
+        value = (
+            f"days={days};{version_segment}{anchor_segment}"
+            f"state=completed;completed_at={now_iso}"
+        )
         description = (
             "Data-mart rollup migration marker — state=completed. Delete "
             "this parameter (or bump ForceFresh on the CustomResource) to "
@@ -1823,14 +1941,15 @@ def _write_marker(
         raise ValueError(
             f"_write_marker: state must be 'in_progress' or 'completed'; got {state!r}"
         )
+    marker_name = _migration_marker_name()
     ssm_client.put_parameter(
-        Name=_MIGRATION_MARKER_NAME,
+        Name=marker_name,
         Value=value,
         Type="String",
         Overwrite=True,
         Description=description,
     )
-    logger.info("Wrote migration marker: %s = %s", _MIGRATION_MARKER_NAME, value)
+    logger.info("Wrote migration marker: %s = %s", marker_name, value)
     return {"marker": value, "state": state, "days": days}
 
 
@@ -3698,18 +3817,20 @@ def _empty_partition_sentinel_key(
 
 
 # Empty-sentinel TTL — how long a partition stays "known empty" before
-# the reconciler is allowed to re-check it. Set to 24 h so a late-arriving
-# batch of raw metering rows for a previously-empty hour gets caught on
-# the next day's :35 fire; without a TTL the sentinel would be permanent
-# and any late writes would silently miss the rollup. Balances two
-# failure modes: (a) an unnecessarily-frequent re-check on a truly-empty
-# hour wastes an Athena query per day per hour, (b) an infrequent
-# re-check on a hour that later got data misses those rows on the
-# rollup. 24 h matches the reconciler's own trailing-24-hour scan
-# window: an hour that receives late data more than 24 h after original
-# emptiness was recorded was already out of reconciler range under the
-# previous design.
-_EMPTY_SENTINEL_TTL_SECONDS = 24 * 60 * 60
+# the reconciler is allowed to re-check it. Set to 12 h, deliberately
+# LESS than the reconciler's 24 h trailing scan window: the reconciler
+# must get a chance to re-check the sentinel WHILE the hour is still
+# in its trailing-24h scope, otherwise the hour rolls out of the
+# reconciler's window before the sentinel expires and the partition
+# is effectively permanently unrolled even if late data lands. A 12 h
+# TTL means every empty hour gets one guaranteed re-check pass
+# during its second half in the reconciler's window; scheduled
+# hourly at :05 also catches it during its own hour bucket. A prior
+# 24 h TTL matched the reconciler's window exactly, which meant the
+# expiration and the hour's exit from scope raced and the reconciler
+# lost that race for most alignments — see F3 in the review batch
+# that identified this.
+_EMPTY_SENTINEL_TTL_SECONDS = 12 * 60 * 60
 
 
 def _partition_marked_empty(table: str, date: str, hour: Optional[str] = None) -> bool:
@@ -3856,6 +3977,39 @@ def _partition_already_written(
     """
     if _partition_marked_empty(table, date, hour):
         return True
+    # Fast path: S3 List. Athena writes parquet under the target
+    # partition prefix; a single non-sentinel object there means data
+    # landed. 10-100× cheaper than the Athena SELECT-1 probe (~ms vs
+    # ~500 ms), doesn't spend workgroup DML slots, and doesn't emit
+    # AthenaBytesScanned noise on the rollup-lambda component metric.
+    # Reconciler on a healthy stack (48 arm-hour probes per :35 fire ×
+    # 24 fires = ~1150 probes/day) then costs 1150 S3 HEADs instead of
+    # 1150 Athena queries. Athena SELECT is retained ONLY as a fallback
+    # for the case where S3 List genuinely can't answer (bucket
+    # unconfigured, list error, permission blip).
+    if REPORTING_BUCKET:
+        prefix = (
+            f"{table}/date={date}/hour={hour}/"
+            if hour is not None
+            else f"{table}/date={date}/"
+        )
+        try:
+            resp = s3_client.list_objects_v2(
+                Bucket=REPORTING_BUCKET, Prefix=prefix, MaxKeys=2
+            )
+            for obj in resp.get("Contents") or []:
+                key = obj.get("Key") or ""
+                if not key.endswith("/_empty"):
+                    return True
+            return False
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "S3 List for idempotency probe on %s failed (%s); "
+                "falling back to Athena SELECT-1",
+                prefix,
+                exc,
+            )
+            # fall through
     where = f"date = '{date}'"
     if hour is not None:
         where += f" AND hour = '{hour}'"
@@ -3865,7 +4019,9 @@ def _partition_already_written(
         # LIMIT-1 partition-pruned SELECTs and would otherwise emit one
         # AthenaBytesScanned metric per rollup fire per table, drowning
         # the rollup-lambda component's real Athena cost signal in noise.
-        # Round-9 review fix.
+        # Round-9 review fix. Reached only when the S3 List above
+        # returned False AND we can't yet distinguish "genuinely empty"
+        # from "S3 lag / eventual consistency".
         rows = _run_athena_query_with_results(sql, emit_self_cost=False)
         return bool(rows)
     except Exception as e:

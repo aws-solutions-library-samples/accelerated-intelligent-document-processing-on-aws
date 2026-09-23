@@ -52,6 +52,51 @@ def is_legacy_ole2_office_file(content: bytes) -> bool:
     return content[: len(_OLE2_MAGIC)] == _OLE2_MAGIC
 
 
+#: A 1x1 white JPEG, used as the last resort when image creation itself fails — so it
+#: is what every failure handler in this module can end up shipping as a page image.
+#:
+#: ⚠️ **It has to DECODE, not merely parse.** The literal here previously declared one
+#: component in its ``SOF0`` marker while the component specifications that followed
+#: and the ``SOS`` marker described three, and its scan was a single byte. Pillow read
+#: the header and reported ``JPEG (1, 1) L`` — so a header-only validity check passed
+#: and the file was written to S3 as an apparently valid page image — while
+#: ``Image.open(...).load()`` raised ``OSError: broken data stream when reading image
+#: file``. The failure then surfaced in whatever first decoded it, a Textract call, a
+#: Bedrock image block or the UI page preview, pointing at the consumer rather than at
+#: the producer (#1158).
+#:
+#: Produced by Pillow rather than hand-assembled, and
+#: ``test_the_last_resort_bytes_decode`` loads it, so a literal that only looks like a
+#: JPEG cannot return here.
+_MINIMAL_WHITE_JPEG = b"\xff\xd8\xff\xe0\x00\x10JFIF\x00\x01\x01\x00\x00\x01\x00\x01\x00\x00\xff\xdb\x00C\x00\x02\x01\x01\x01\x01\x01\x02\x01\x01\x01\x02\x02\x02\x02\x02\x04\x03\x02\x02\x02\x02\x05\x04\x04\x03\x04\x06\x05\x06\x06\x06\x05\x06\x06\x06\x07\t\x08\x06\x07\t\x07\x06\x06\x08\x0b\x08\t\n\n\n\n\n\x06\x08\x0b\x0c\x0b\n\x0c\t\n\n\n\xff\xc0\x00\x0b\x08\x00\x01\x00\x01\x01\x01\x11\x00\xff\xc4\x00\x1f\x00\x00\x01\x05\x01\x01\x01\x01\x01\x01\x00\x00\x00\x00\x00\x00\x00\x00\x01\x02\x03\x04\x05\x06\x07\x08\t\n\x0b\xff\xc4\x00\xb5\x10\x00\x02\x01\x03\x03\x02\x04\x03\x05\x05\x04\x04\x00\x00\x01}\x01\x02\x03\x00\x04\x11\x05\x12!1A\x06\x13Qa\x07\"q\x142\x81\x91\xa1\x08#B\xb1\xc1\x15R\xd1\xf0$3br\x82\t\n\x16\x17\x18\x19\x1a%&'()*456789:CDEFGHIJSTUVWXYZcdefghijstuvwxyz\x83\x84\x85\x86\x87\x88\x89\x8a\x92\x93\x94\x95\x96\x97\x98\x99\x9a\xa2\xa3\xa4\xa5\xa6\xa7\xa8\xa9\xaa\xb2\xb3\xb4\xb5\xb6\xb7\xb8\xb9\xba\xc2\xc3\xc4\xc5\xc6\xc7\xc8\xc9\xca\xd2\xd3\xd4\xd5\xd6\xd7\xd8\xd9\xda\xe1\xe2\xe3\xe4\xe5\xe6\xe7\xe8\xe9\xea\xf1\xf2\xf3\xf4\xf5\xf6\xf7\xf8\xf9\xfa\xff\xda\x00\x08\x01\x01\x00\x00?\x00\xfd\xfc\xaf\xff\xd9"
+
+
+#: ``w:val`` spellings that turn a ``CT_OnOff`` element OFF. Absent means ON, which is
+#: why this is a denylist rather than an allowlist.
+_ON_OFF_FALSE = frozenset({"0", "false", "off"})
+
+
+def _on_off_is_true(element, val_attr) -> bool:
+    """Is a ``CT_OnOff`` element's value true?
+
+    ⚠️ **Presence is not truth for this element type.** ``<w:tblHeader/>`` with no
+    ``w:val`` means on, but ``<w:tblHeader w:val="0"/>`` means the author explicitly
+    marked that row as **not** a repeating header. Testing only ``find(...) is not
+    None`` read all of ``0``, ``false`` and ``off`` as a header — measured — and the
+    consequence is worse than ignoring the flag: a row marked off was emphasised, and
+    because a non-empty result suppresses the first-row fallback, the genuine header
+    row lost its emphasis at the same time.
+
+    python-docx does not model this element, so the attribute is read directly.
+    """
+    if val_attr is None:  # pragma: no cover - only when python-docx is absent
+        return True
+    value = element.get(val_attr)
+    if value is None:
+        return True
+    return str(value).strip().lower() not in _ON_OFF_FALSE
+
+
 class DocumentConverter:
     """Converter for various document formats to images and text."""
 
@@ -524,15 +569,37 @@ class DocumentConverter:
             "usable_width_px": self.page_width - 2 * self.margin,
         }
 
-    @staticmethod
-    def _extract_page_geometry(body, _w_sectPr, qn) -> dict:
+    def _extract_page_geometry(self, body, _w_sectPr, qn) -> dict:
         """Read ``<w:sectPr>`` from the document body to get page dimensions.
 
-        Converts twips (1/20 of a point, 1440 twips = 1 inch) into pixels
-        at 150 DPI (the converter default).
+        Converts twips (1/20 of a point, 1440 twips = 1 inch) into pixels at **this
+        converter's** DPI, which is what the page is rendered at.
+
+        ⚠️ **The DPI here has to be the converter's, not a constant.** It was
+        hardcoded to 150 while the drawable canvas is sized from ``self.dpi``, and
+        every real ``.docx`` contains a ``<w:sectPr>`` — so this path, not the
+        DPI-aware :meth:`_default_page_geometry`, is what paginates Word documents.
+        At the production default of 300 the budget came to 1350 px against a 3000 px
+        canvas, so pages broke at 45% fill and a document was split into roughly
+        2.2x the pages it has, each separately uploaded, OCR'd, classified and
+        billed. Below 150 it inverted: at 72 the 1350 px budget exceeded a 720 px
+        canvas and the remainder was drawn off the bottom edge. Page *text* was
+        correct in both directions, which is why neither surfaced (#1156).
+
+        The budget keeps the **document's own** margins from ``<w:pgMar>`` rather than
+        the converter's, because that is what makes the page count match how the
+        document paginates in Word. For a 1-inch document that leaves the budget at
+        about 0.90 of the canvas, and the spare canvas is whitespace rather than lost
+        content.
+
+        ⚠️ **That ratio is a property of the margin, not a constant**, which is why the
+        return value is clamped to the canvas — see the note at the ``return``. A
+        document with margins under a quarter inch has a budget *larger* than the
+        canvas at every DPI, and without the clamp its overflow is drawn off the
+        bottom edge with the page text intact, which is the same silent-loss shape.
         """
         _TWIPS_PER_INCH = 1440
-        _DPI = 150  # match converter default
+        _DPI = self.dpi
 
         sect = body.find(".//" + _w_sectPr)
         if sect is None:
@@ -576,8 +643,30 @@ class DocumentConverter:
             page_w_twips - margin_left_twips - margin_right_twips
         ) / _TWIPS_PER_INCH
 
+        # ⚠️ Clamped to the canvas, and HEIGHT ONLY.
+        #
+        # Scaling the budget with the DPI is not sufficient on its own: the budget is
+        # the DOCUMENT's usable area (`w:pgMar`) while the canvas is always
+        # `page_height - 2 * 0.5in`, so the ratio is `(11 - 2*doc_margin) / 10` and
+        # exceeds 1.0 for any document whose margins are under a quarter inch — at
+        # every DPI, including the production default. Measured at 300 DPI on a
+        # 600-paragraph document, paragraphs drawn beyond the canvas: 0 at a 1in,
+        # 0.5in and 0.25in margin, 12 at 0.1in and 24 at 0in. Word's "Narrow" preset
+        # is 0.5in and clears it with 15 px to spare; a deliberately tight margin does
+        # not. `text_missing` was 0 in every case — the same silent-loss signature as
+        # the DPI mismatch itself, so nothing downstream would report it.
+        #
+        # Width is deliberately NOT clamped: `usable_width_px` is computed here and
+        # never consumed by the layout, which wraps on `self.page_width - 2 *
+        # self.margin`. Clamping it would also make a landscape document's width
+        # budget smaller than the value the geometry is asked for, which is what
+        # `test_sectpr_twips_are_converted_to_pixels` reads (a landscape-A4 budget of
+        # 1604 px against a 1125 px portrait canvas) — a clamp there would report a
+        # page narrower than the document is, for no reader.
         return {
-            "usable_height_px": int(usable_h_inches * _DPI),
+            "usable_height_px": min(
+                int(usable_h_inches * _DPI), self.page_height - 2 * self.margin
+            ),
             "usable_width_px": int(usable_w_inches * _DPI),
         }
 
@@ -649,14 +738,58 @@ class DocumentConverter:
         }
 
     @staticmethod
+    def _header_row_indices(table) -> set:
+        """Which rows of a ``python-docx`` table are header rows.
+
+        ⚠️ **Do not compare ``_Row`` objects.** ``table.rows[idx]`` builds a *fresh*
+        ``_Row`` on every access and ``python-docx`` defines no ``__eq__`` on it, so
+        ``==`` is identity against a different object: measured on python-docx 1.2.0,
+        ``table.rows[0] is table.rows[0]`` is ``False`` and
+        ``table.rows[0] == row`` is ``False`` for **every** row including the first.
+        That is what made every header row lose its bold and its grey background in
+        the rendered page image, leaving a vision model no cue for which row names the
+        columns. The underlying ``_tr`` XML element *is* stable, which is why the
+        fallback below indexes rather than comparing.
+
+        The format's own signal is preferred where the author set it:
+        ``<w:trPr><w:tblHeader/></w:trPr>`` is what Word writes for "repeat as header
+        row at the top of each page", and it can mark more than one row, which a
+        first-row rule cannot express. Most tables do not carry it — it is only
+        written when the author ticks that box — so the first row is the fallback,
+        which is the ordinary convention and what a reader expects to see emphasised.
+        """
+        try:
+            from docx.oxml.ns import qn
+
+            tbl_header = qn("w:tblHeader")
+            val_attr = qn("w:val")
+        except Exception:  # pragma: no cover - python-docx is an ocr extra
+            tbl_header = None
+            val_attr = None
+
+        marked = set()
+        if tbl_header is not None:
+            for idx, row in enumerate(table.rows):
+                tr_pr = getattr(row._tr, "trPr", None)
+                if tr_pr is None:
+                    continue
+                element = tr_pr.find(tbl_header)
+                if element is not None and _on_off_is_true(element, val_attr):
+                    marked.add(idx)
+        if marked:
+            return marked
+        return {0} if len(table.rows) else set()
+
+    @staticmethod
     def _build_table_element(table) -> dict | None:
         """Build a table element dict from a python-docx Table."""
         table_data = []
-        for row in table.rows:
+        header_rows = DocumentConverter._header_row_indices(table)
+        for idx, row in enumerate(table.rows):
             row_data = []
+            is_header = idx in header_rows
             for cell in row.cells:
                 cell_text = cell.text.strip()
-                is_header = table.rows[0] == row
                 row_data.append(
                     {
                         "text": cell_text,
@@ -1495,13 +1628,38 @@ class DocumentConverter:
             return "\n".join(fallback_parts)
 
     def _format_csv_as_table(self, rows: List[List[str]]) -> str:
-        """Format CSV rows as a readable table in proper markdown format."""
+        """Format CSV rows as a readable table in proper markdown format.
+
+        ⚠️ **Column count comes from the WIDEST row, not from the header.** This is
+        the fallback ``convert_csv_to_pages`` reaches when ``pandas`` raises, and the
+        commonest reason it raises is a row with more fields than the header — so the
+        path reached *because* the file is ragged was the one discarding the ragged
+        data. Sizing from ``rows[0]`` and guarding the cell loop with ``col_idx <
+        len(col_widths)`` dropped every field past the header's width, silently and at
+        row scope: ``a,b`` then ``1,2`` then ``3,4,DROPPED`` rendered as ``| 3 | 4 |``
+        with nothing logged. The text was well-formed markdown, so nothing downstream
+        could tell (#1158).
+
+        Short rows are padded for the same reason: a markdown table with a ragged
+        pipe count is parsed inconsistently by downstream readers, where a padded one
+        is unambiguous.
+        """
         if not rows:
             return ""
 
+        column_count = max(len(row) for row in rows)
+        if column_count > len(rows[0]):
+            logger.warning(
+                "CSV has %d field(s) in its widest row but %d in its header; "
+                "widening the table to keep the extra fields rather than dropping "
+                "them",
+                column_count,
+                len(rows[0]),
+            )
+
         # Calculate column widths without truncation
         col_widths = []
-        for col_idx in range(len(rows[0])):
+        for col_idx in range(column_count):
             max_width = 0
             for row in rows:
                 if col_idx < len(row):
@@ -1511,11 +1669,13 @@ class DocumentConverter:
         # Format rows as markdown table
         formatted_rows = []
         for row_idx, row in enumerate(rows):
-            formatted_cells = []
-            for col_idx, cell in enumerate(row):
-                if col_idx < len(col_widths):
-                    cell_str = str(cell)  # Include all text without truncation
-                    formatted_cells.append(cell_str)
+            # Every row is rendered at the table's full width: extra fields are kept
+            # and missing ones are blank, so no cell is dropped and the pipe count is
+            # the same on every line.
+            formatted_cells = [
+                str(row[col_idx]) if col_idx < len(row) else ""
+                for col_idx in range(column_count)
+            ]
 
             # Proper markdown table format with leading and trailing pipes
             formatted_row = "| " + " | ".join(formatted_cells) + " |"
@@ -1576,15 +1736,23 @@ class DocumentConverter:
             original_line_idx = 0
 
             while original_line_idx < len(original_lines):
-                # Get a chunk of original lines for this page
-                page_original_lines = original_lines[
-                    original_line_idx : original_line_idx + lines_per_page
-                ]
+                # A continuation page repeats the table header, and those lines have
+                # to come OUT of the page's budget before the chunk is taken. They
+                # used to be prepended afterwards, so a full interior page carried
+                # `lines_per_page + 2` lines onto a canvas that renders
+                # `lines_per_page`, and the "Page is full" guard below dropped the
+                # overflow from the IMAGE while it stayed in the page text — measured
+                # on a 100-row CSV as page 2 holding 42 lines with its ink stopping at
+                # exactly the same y as page 1's 40 (#1158).
+                header_lines = self._table_header_lines(table_info, original_line_idx)
+                # At least one content line, or a table whose header fills the page
+                # would advance by nothing and loop forever.
+                content_budget = max(1, lines_per_page - len(header_lines))
 
-                # Check if this page starts in the middle of a table
-                page_text_lines = self._ensure_table_headers(
-                    page_original_lines, table_info, original_line_idx
-                )
+                page_original_lines = original_lines[
+                    original_line_idx : original_line_idx + content_budget
+                ]
+                page_text_lines = header_lines + page_original_lines
 
                 # Create the page text from processed markdown
                 page_text = "\n".join(page_text_lines)
@@ -1754,35 +1922,25 @@ class DocumentConverter:
 
         return table_info
 
-    def _ensure_table_headers(
-        self, page_lines: List[str], table_info: dict, start_line_idx: int
-    ) -> List[str]:
+    @staticmethod
+    def _table_header_lines(table_info: dict, start_line_idx: int) -> List[str]:
+        """The header lines a page starting mid-table must repeat, or an empty list.
+
+        Separate from the prepending so the caller can subtract their count from the
+        page's line budget *before* choosing the chunk. Prepending without that is
+        what pushed the last rows of a continuation page off the rendered image while
+        leaving them in the page text (#1158).
         """
-        Ensure that if a page starts in the middle of a table, it includes the table header.
+        if not table_info["table_ranges"]:
+            return []
 
-        Args:
-            page_lines: Lines for this page
-            table_info: Table structure information
-            start_line_idx: Starting line index in the original document
-
-        Returns:
-            Modified page lines with table headers if needed
-        """
-        if not page_lines or not table_info["table_ranges"]:
-            return page_lines
-
-        # Check if this page starts in the middle of a table
         for table_start, table_end in table_info["table_ranges"]:
             if table_start < start_line_idx <= table_end:
-                # This page starts in the middle of a table
-                # Find the corresponding header
                 for header_idx, header_line, separator_line in table_info["headers"]:
                     if table_start <= header_idx <= table_end:
-                        # Add the header and separator to the beginning of the page
-                        result_lines = [header_line, separator_line] + page_lines
-                        return result_lines
+                        return [header_line, separator_line]
 
-        return page_lines
+        return []
 
     def _create_empty_page(self) -> bytes:
         """Create an empty white page image."""
@@ -1818,6 +1976,6 @@ class DocumentConverter:
             logger.error(f"Error creating empty page: {str(e)}")
             # Fall through to hardcoded minimal JPEG
 
-        # Return a hardcoded minimal valid 1x1 white JPEG
+        # Return a hardcoded minimal 1x1 white JPEG
         logger.warning("Using hardcoded minimal JPEG")
-        return b"\xff\xd8\xff\xe0\x00\x10JFIF\x00\x01\x01\x01\x00H\x00H\x00\x00\xff\xdb\x00C\x00\x08\x06\x06\x07\x06\x05\x08\x07\x07\x07\t\t\x08\n\x0c\x14\r\x0c\x0b\x0b\x0c\x19\x12\x13\x0f\x14\x1d\x1a\x1f\x1e\x1d\x1a\x1c\x1c $.' \",#\x1c\x1c(7),01444\x1f'9=82<.342\xff\xc0\x00\x11\x08\x00\x01\x00\x01\x01\x01\x11\x00\x02\x11\x01\x03\x11\x01\xff\xc4\x00\x14\x00\x01\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x08\xff\xc4\x00\x14\x10\x01\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\xff\xda\x00\x0c\x03\x01\x00\x02\x11\x03\x11\x00\x3f\x00\x80\xff\xd9"
+        return _MINIMAL_WHITE_JPEG

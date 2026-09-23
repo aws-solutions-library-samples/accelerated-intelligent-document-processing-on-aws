@@ -5,9 +5,15 @@ This module provides functionality to convert extraction response JSON
 to Bedrock Document Analysis blueprint schema format.
 """
 
+# `reportArgumentType` is off repo-wide but on for this file, which has no findings:
+# the two `str = None` defaults that produced them are `Optional[str]`. See the note at
+# the top of bda_blueprint_service.py for what this does and does not catch, and for
+# why deleting this line is itself a test failure rather than a green diff.
+# pyright: reportArgumentType=error
+
 import json
 import logging
-from typing import Any, Dict
+from typing import Any, Dict, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -174,8 +180,8 @@ class SchemaConverter:
     def from_file(
         cls,
         extraction_file_path: str,
-        document_class: str = None,
-        description: str = None,
+        document_class: Optional[str] = None,
+        description: Optional[str] = None,
     ) -> Dict[str, Any]:
         """
         Create a blueprint schema from an extraction response file.
