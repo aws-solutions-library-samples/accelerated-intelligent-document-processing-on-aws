@@ -19,8 +19,11 @@ mis-classify a finding are the parts worth pinning:
 No network: every test drives the pure functions directly.
 """
 
+import json
 import pathlib
+import subprocess
 import sys
+import urllib.error
 
 import pytest
 
@@ -29,6 +32,13 @@ if str(SCRIPT_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPT_DIR))
 
 import dep_audit  # noqa: E402
+
+
+def subprocess_result(code, out, err):
+    """A CompletedProcess, so the generator-failure path can be driven without
+    actually running `generate-dep-manifest.sh` (which resolves every dependency in
+    the repository and takes minutes)."""
+    return subprocess.CompletedProcess(["bash", "x"], code, out, err)
 
 
 class TestParseNodeManifest:
@@ -313,3 +323,446 @@ class TestEmptyManifestIsNotAPass:
         # what we want to prove here.
         with pytest.raises(AssertionError, match="must bail out"):
             dep_audit.main(["--no-generate"])
+
+
+def _manifests(tmp_path, monkeypatch, py="pillow==12.3.0\n", node="nanoid@3.3.18\n"):
+    """Point the gate at throwaway manifests, both populated."""
+    p, n = tmp_path / "py.txt", tmp_path / "node.txt"
+    p.write_text(py, encoding="utf-8")
+    n.write_text(node, encoding="utf-8")
+    monkeypatch.setattr(dep_audit, "PYTHON_MANIFEST", p)
+    monkeypatch.setattr(dep_audit, "NODE_MANIFEST", n)
+    return p, n
+
+
+def _osv(monkeypatch, hits, details, allowlist=None):
+    """Replace both OSV calls, so no test in this file touches the network.
+
+    A live call would make the suite's result depend on the advisory database on
+    the day it ran, which is the opposite of what a gate's own tests should assert.
+    """
+    monkeypatch.setattr(dep_audit, "query_osv", lambda pkgs: hits)
+    monkeypatch.setattr(
+        dep_audit, "_http_get_json", lambda url: details[url.rsplit("/", 1)[-1]]
+    )
+    monkeypatch.setattr(dep_audit, "load_allowlist", lambda: allowlist or {})
+
+
+def _advisory(severity="HIGH", summary="a hole", fixed="9.9.9", name="pillow"):
+    return {
+        "id": "GHSA-test",
+        "database_specific": {"severity": severity} if severity else {},
+        "summary": summary,
+        "affected": [
+            {
+                "package": {"name": name},
+                "ranges": [{"events": [{"introduced": "0"}, {"fixed": fixed}]}],
+            }
+        ],
+    }
+
+
+@pytest.mark.unit
+class TestTheGateDecision:
+    """What exit code the audit produces, which is the only thing CI reads.
+
+    Everything below is about the distinction the module docstring insists on: an
+    audit that did not run must not look like an audit that passed. Exit 1 means
+    "ran, found something"; exit 2 means "did not run"; exit 0 means "ran, clean".
+    Collapsing 2 into 0 is the failure mode with no symptom.
+    """
+
+    def test_a_high_finding_exits_1_and_names_the_package_and_the_fix(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        _manifests(tmp_path, monkeypatch)
+        _osv(
+            monkeypatch,
+            {"PyPI|pillow|12.3.0": ["GHSA-aaaa"]},
+            {"GHSA-aaaa": _advisory("HIGH", fixed="12.4.0")},
+        )
+        assert dep_audit.main(["--no-generate"]) == 1
+        out = capsys.readouterr().out
+        assert "GATING" in out and "pillow@12.3.0" in out
+        assert "12.4.0" in out, "the remedy has to be in the output to be actionable"
+
+    def test_no_findings_exits_0(self, tmp_path, monkeypatch, capsys):
+        _manifests(tmp_path, monkeypatch)
+        _osv(monkeypatch, {}, {})
+        assert dep_audit.main(["--no-generate"]) == 0
+        assert "No dependency vulnerabilities" in capsys.readouterr().out
+
+    def test_a_finding_below_the_threshold_is_reported_but_does_not_gate(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        """Informational, not invisible. A MODERATE advisory still has to be readable
+        in the log, or nobody discovers it until it is upgraded to HIGH upstream."""
+        _manifests(tmp_path, monkeypatch)
+        _osv(
+            monkeypatch,
+            {"PyPI|pillow|12.3.0": ["GHSA-mod"]},
+            {"GHSA-mod": _advisory("MODERATE")},
+        )
+        assert dep_audit.main(["--no-generate"]) == 0
+        out = capsys.readouterr().out
+        assert "BELOW THRESHOLD" in out and "GHSA-mod" in out
+
+    def test_the_severity_flag_moves_the_threshold(self, tmp_path, monkeypatch, capsys):
+        """The same advisory, gating or not depending only on --severity.
+
+        Asserting one direction would pass against a hardcoded threshold; both
+        directions on identical input is what pins the flag to the decision.
+        """
+        for severity, expected in (("HIGH", 0), ("MODERATE", 1)):
+            _manifests(tmp_path, monkeypatch)
+            _osv(
+                monkeypatch,
+                {"PyPI|pillow|12.3.0": ["GHSA-mod"]},
+                {"GHSA-mod": _advisory("MODERATE")},
+            )
+            assert (
+                dep_audit.main(["--no-generate", "--severity", severity]) == expected
+            ), severity
+            capsys.readouterr()
+
+    def test_a_cvss_only_advisory_is_surfaced_but_does_not_gate(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        """The documented known limit, asserted so the docstring stays true.
+
+        A record with a CVSS vector and no qualitative label ranks below the gate. That
+        is a deliberate choice, not an oversight, and it is only defensible while the
+        finding is still printed -- so both halves are checked.
+        """
+        _manifests(tmp_path, monkeypatch)
+        advisory = {
+            "id": "PYSEC-x",
+            "severity": [{"score": "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H"}],
+            "summary": "cvss only",
+            "affected": [],
+        }
+        _osv(monkeypatch, {"PyPI|pillow|12.3.0": ["PYSEC-x"]}, {"PYSEC-x": advisory})
+        assert dep_audit.main(["--no-generate"]) == 0
+        out = capsys.readouterr().out
+        assert "UNKNOWN-CVSS" in out and "PYSEC-x" in out
+
+    def test_an_advisory_with_no_published_fix_says_so_rather_than_printing_nothing(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        """A blank remedy reads as "no information"; the reason matters here.
+
+        Some advisories have no `fixed` event because the fix shipped outside the
+        registry, which means every version matches and there is nothing to bump to.
+        """
+        _manifests(tmp_path, monkeypatch)
+        advisory = {
+            "id": "GHSA-nofix",
+            "database_specific": {"severity": "HIGH"},
+            "summary": "abandoned package",
+            "affected": [
+                {
+                    "package": {"name": "pillow"},
+                    "ranges": [{"events": [{"introduced": "0"}]}],
+                    "database_specific": {
+                        "last_known_affected_version_range": "<= 12.3.0"
+                    },
+                }
+            ],
+        }
+        _osv(
+            monkeypatch,
+            {"PyPI|pillow|12.3.0": ["GHSA-nofix"]},
+            {"GHSA-nofix": advisory},
+        )
+        assert dep_audit.main(["--no-generate"]) == 1
+        out = capsys.readouterr().out
+        assert "no fix published" in out
+        assert "last known affected range" in out and "<= 12.3.0" in out
+
+
+@pytest.mark.unit
+class TestAllowlistSuppressionEndToEnd:
+    """The allowlist is the only way a HIGH finding can stop gating, so its effect on
+    the exit code is asserted here rather than only at the lookup level."""
+
+    def test_an_allowlisted_high_finding_does_not_gate_but_is_still_printed(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        """Suppressed is not hidden. A triaged finding stays visible with its reason,
+        because the reason is what a later reader has to re-evaluate."""
+        _manifests(tmp_path, monkeypatch)
+        _osv(
+            monkeypatch,
+            {"PyPI|pillow|12.3.0": ["GHSA-aaaa"]},
+            {"GHSA-aaaa": _advisory("HIGH")},
+            allowlist={
+                "GHSA-aaaa": {"id": "GHSA-aaaa", "reason": "not reachable here"}
+            },
+        )
+        assert dep_audit.main(["--no-generate"]) == 0
+        out = capsys.readouterr().out
+        assert "ALLOWLISTED" in out and "not reachable here" in out
+
+    def test_an_entry_scoped_to_another_package_does_not_suppress_this_one(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        """Scoping has to bite at the gate, not just in the lookup helper.
+
+        An entry written for one package silently covering every package is how an
+        allowlist stops being a triage record and becomes a blanket off-switch.
+        """
+        _manifests(tmp_path, monkeypatch)
+        _osv(
+            monkeypatch,
+            {"PyPI|pillow|12.3.0": ["GHSA-aaaa"]},
+            {"GHSA-aaaa": _advisory("HIGH")},
+            allowlist={
+                "GHSA-aaaa|somethingelse": {"id": "GHSA-aaaa", "reason": "other pkg"}
+            },
+        )
+        assert dep_audit.main(["--no-generate"]) == 1
+        assert "GATING" in capsys.readouterr().out
+
+    def test_an_allowlist_entry_with_no_reason_is_reported_as_such(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        """It still suppresses -- refusing would break the gate on a data error -- but
+        it says the justification is missing, which is what makes it fixable."""
+        _manifests(tmp_path, monkeypatch)
+        _osv(
+            monkeypatch,
+            {"PyPI|pillow|12.3.0": ["GHSA-aaaa"]},
+            {"GHSA-aaaa": _advisory("HIGH")},
+            allowlist={"GHSA-aaaa": {"id": "GHSA-aaaa"}},
+        )
+        assert dep_audit.main(["--no-generate"]) == 0
+        assert "(no reason given)" in capsys.readouterr().out
+
+    def test_a_missing_allowlist_file_is_an_empty_allowlist_not_a_crash(
+        self, monkeypatch, tmp_path
+    ):
+        monkeypatch.setattr(dep_audit, "ALLOWLIST", tmp_path / "absent.json")
+        assert dep_audit.load_allowlist() == {}
+
+
+@pytest.mark.unit
+class TestAnAuditThatDidNotRunIsNotAPass:
+    """Every route to exit 2. Each one is a case where the answer is unknown."""
+
+    def test_an_absent_manifest_exits_2(self, tmp_path, monkeypatch, capsys):
+        monkeypatch.setattr(dep_audit, "PYTHON_MANIFEST", tmp_path / "nope.txt")
+        monkeypatch.setattr(dep_audit, "NODE_MANIFEST", tmp_path / "also-nope.txt")
+        assert dep_audit.main(["--no-generate"]) == 2
+        assert "manifest(s) not found" in capsys.readouterr().err
+
+    def test_a_failing_manifest_generator_exits_2_and_shows_both_streams(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        """Its stdout AND stderr, both on stdout in order.
+
+        Interleaving a captured stderr onto the real stderr scrambles the ordering in a
+        CI log, which once buried the actual cause above the output it belonged to.
+        """
+        _manifests(tmp_path, monkeypatch)
+        monkeypatch.setattr(dep_audit, "missing_tools", lambda: [])
+        monkeypatch.setattr(
+            dep_audit.subprocess,
+            "run",
+            lambda *a, **k: subprocess_result(3, "the stdout", "the stderr"),
+        )
+        assert dep_audit.main([]) == 2
+        out = capsys.readouterr().out
+        assert "the stdout" in out and "the stderr" in out
+        assert out.index("the stdout") < out.index("the stderr")
+        assert "exit 3" in out
+
+    def test_osv_being_unreachable_exits_2_rather_than_reporting_clean(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        """The most important single assertion in this file.
+
+        A network failure that returned 0 would be indistinguishable from a clean
+        audit, and every subsequent green build would mean nothing.
+        """
+        _manifests(tmp_path, monkeypatch)
+
+        def boom(_pkgs):
+            raise RuntimeError("OSV request failed after 3 attempts: timed out")
+
+        monkeypatch.setattr(dep_audit, "query_osv", boom)
+        assert dep_audit.main(["--no-generate"]) == 2
+        err = capsys.readouterr().err
+        assert "did not complete" in err and "false pass" in err
+
+    def test_a_failure_fetching_severities_also_exits_2(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        """The second OSV call, not just the first.
+
+        Package matching succeeding while severity lookup fails leaves every finding
+        unclassified, so the threshold comparison would be meaningless -- but the
+        earlier call having succeeded makes this the easier half to leave unguarded.
+        """
+        _manifests(tmp_path, monkeypatch)
+        monkeypatch.setattr(
+            dep_audit, "query_osv", lambda p: {"PyPI|pillow|12.3.0": ["GHSA-aaaa"]}
+        )
+
+        def boom(_url):
+            raise RuntimeError("OSV request failed after 3 attempts: 503")
+
+        monkeypatch.setattr(dep_audit, "_http_get_json", boom)
+        assert dep_audit.main(["--no-generate"]) == 2
+        assert "did not complete" in capsys.readouterr().err
+
+
+@pytest.mark.unit
+class TestHttpRetries:
+    """The helpers retry, then raise -- they must not return a partial answer."""
+
+    def test_a_get_retries_then_raises_runtime_error(self, monkeypatch):
+        calls = {"n": 0}
+
+        def fail(*a, **k):
+            calls["n"] += 1
+            raise urllib.error.URLError("nope")
+
+        monkeypatch.setattr(dep_audit.urllib.request, "urlopen", fail)
+        monkeypatch.setattr(dep_audit.time, "sleep", lambda s: None)
+        with pytest.raises(RuntimeError, match="failed after 2 attempts"):
+            dep_audit._http_get_json("https://example.invalid/x", retries=2)
+        assert calls["n"] == 2
+
+    def test_a_post_retries_then_raises_runtime_error(self, monkeypatch):
+        calls = {"n": 0}
+
+        def fail(*a, **k):
+            calls["n"] += 1
+            raise TimeoutError
+
+        monkeypatch.setattr(dep_audit.urllib.request, "urlopen", fail)
+        monkeypatch.setattr(dep_audit.time, "sleep", lambda s: None)
+        with pytest.raises(RuntimeError, match="failed after 3 attempts"):
+            dep_audit._http_post_json("https://example.invalid/x", {"queries": []})
+        assert calls["n"] == 3
+
+    def test_a_transient_failure_followed_by_success_returns_the_answer(
+        self, monkeypatch
+    ):
+        """Retrying is only worth having if a later attempt is actually used."""
+        state = {"n": 0}
+
+        class _Resp:
+            def read(self):
+                return b'{"ok": true}'
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a):
+                return False
+
+        def sometimes(*a, **k):
+            state["n"] += 1
+            if state["n"] == 1:
+                raise urllib.error.URLError("first one fails")
+            return _Resp()
+
+        monkeypatch.setattr(dep_audit.urllib.request, "urlopen", sometimes)
+        monkeypatch.setattr(dep_audit.time, "sleep", lambda s: None)
+        assert dep_audit._http_get_json("https://example.invalid/x") == {"ok": True}
+
+
+@pytest.mark.unit
+class TestBatching:
+    """OSV's batch endpoint has limits, so packages are chunked."""
+
+    def test_more_packages_than_the_batch_size_are_sent_in_several_requests(
+        self, monkeypatch, capsys
+    ):
+        """A single oversized request is rejected by OSV, and the failure is a
+        RuntimeError that exits 2 -- so the whole gate depends on this chunking."""
+        monkeypatch.setattr(dep_audit, "BATCH_SIZE", 2)
+        sent = []
+
+        def fake_post(url, payload, retries=3):
+            sent.append(len(payload["queries"]))
+            return {"results": [{} for _ in payload["queries"]]}
+
+        monkeypatch.setattr(dep_audit, "_http_post_json", fake_post)
+        pkgs = [("PyPI", f"p{i}", "1.0") for i in range(5)]
+        dep_audit.query_osv(pkgs)
+        capsys.readouterr()
+        assert sent == [2, 2, 1]
+
+    def test_every_packages_hits_are_keyed_by_ecosystem_name_and_version(
+        self, monkeypatch, capsys
+    ):
+        """The key is what the allowlist's package scoping and the report both use.
+
+        `zip` pairs each result with its query by position, so a chunking change that
+        broke the ordering would attribute one package's advisories to another.
+        """
+        monkeypatch.setattr(dep_audit, "BATCH_SIZE", 2)
+
+        def fake_post(url, payload, retries=3):
+            return {
+                "results": [
+                    {"vulns": [{"id": f"GHSA-{q['package']['name']}"}]}
+                    for q in payload["queries"]
+                ]
+            }
+
+        monkeypatch.setattr(dep_audit, "_http_post_json", fake_post)
+        pkgs = [("PyPI", "alpha", "1.0"), ("npm", "beta", "2.0")]
+        hits = dep_audit.query_osv(pkgs)
+        capsys.readouterr()
+        assert hits == {
+            "PyPI|alpha|1.0": ["GHSA-alpha"],
+            "npm|beta|2.0": ["GHSA-beta"],
+        }
+
+    def test_a_package_with_no_advisories_is_absent_rather_than_an_empty_list(
+        self, monkeypatch, capsys
+    ):
+        """Downstream iterates `hits.items()`, so an empty entry would print a package
+        heading with no findings under it."""
+
+        monkeypatch.setattr(
+            dep_audit, "_http_post_json", lambda u, p, retries=3: {"results": [None]}
+        )
+        hits = dep_audit.query_osv([("PyPI", "clean", "1.0")])
+        capsys.readouterr()
+        assert hits == {}
+
+
+@pytest.mark.unit
+class TestTheJsonReport:
+    def test_the_json_report_carries_all_three_buckets_and_the_threshold(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        """The machine-readable output has to agree with the printed one.
+
+        A report that omitted `allowlisted` would make a suppressed finding look
+        absent to anything consuming the JSON rather than the log.
+        """
+        _manifests(tmp_path, monkeypatch)
+        _osv(
+            monkeypatch,
+            {"PyPI|pillow|12.3.0": ["GHSA-high", "GHSA-mod", "GHSA-ok"]},
+            {
+                "GHSA-high": _advisory("HIGH"),
+                "GHSA-mod": _advisory("MODERATE"),
+                "GHSA-ok": _advisory("HIGH"),
+            },
+            allowlist={"GHSA-ok": {"id": "GHSA-ok", "reason": "triaged"}},
+        )
+        out = tmp_path / "report.json"
+        assert dep_audit.main(["--no-generate", "--json", str(out)]) == 1
+        capsys.readouterr()
+        report = json.loads(out.read_text())
+        assert report["severity_threshold"] == "HIGH"
+        assert [f["id"] for f in report["gating"]] == ["GHSA-high"]
+        assert [f["id"] for f in report["allowlisted"]] == ["GHSA-ok"]
+        assert [f["id"] for f in report["below_threshold"]] == ["GHSA-mod"]
+        assert report["packages_audited"] == 2
