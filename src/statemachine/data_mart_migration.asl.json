@@ -114,7 +114,7 @@
     },
     "PlanChunks": {
       "Type": "Task",
-      "Comment": "Compute the list of (start, end) time ranges to iterate. Each chunk is 24 h by default — a size that fits comfortably in one 900 s Lambda invocation of mode: backfill with margin for the doc_class CTE + 4 rollup arms per hour.",
+      "Comment": "Compute the list of (start, end) time ranges to iterate. The CFN CustomResource passes ChunkHours=1 (see template.yaml::DataMartMigrationCustomResource), which is the ACTUAL default in production — 720 one-hour chunks over the 30 d window. plan_migration_chunks's Lambda-side default of 24 h only applies to a caller that omits the ChunkHours field entirely (never happens through the dispatcher). 1 h chunks are used deliberately so per-chunk retries have the tightest possible blast radius.",
       "Resource": "arn:aws:states:::lambda:invoke",
       "Parameters": {
         "FunctionName": "${DataMartRollupFunctionArn}",
@@ -225,7 +225,7 @@
     },
     "CheckMigrationSuccess": {
       "Type": "Task",
-      "Comment": "Aggregate the Map state's per-chunk results PLUS the daily-backfill result. Returns all_hours_clean=true only if EVERY chunk AND the daily backfill reported hours_failed=0. Partial-hour failures (some rollup arms succeeded, others didn't for one hour) don't block completion — the scheduled hourly + reconciler will fill those arms later. Passes chunk_results and daily_result as separate fields because ASL has no ArrayConcat intrinsic; the aggregator in the Lambda handles the union.",
+      "Comment": "Aggregate the Map state's per-chunk results PLUS the daily-backfill result. Returns all_hours_clean=true only when EVERY chunk AND the daily backfill reported hours_failed=0 AND hours_partial=0 — both counters must be zero. In the migration context a partial-hour result (some rollup arms succeeded, others didn't for the same hour) IS a blocker because a customer table with rows silently missing is not an acceptable end state; the 2026-09-22 incident on qs1 where 38 chunks reported partial and zero rows landed in metering_hourly is why _check_hours_failed treats partial as unclean. Routine hourly-cron ops treat partial as tolerated (reconciler will fill later), but MIGRATION does not. Passes chunk_results and daily_result as separate fields because ASL has no ArrayConcat intrinsic; the aggregator in the Lambda handles the union.",
       "Resource": "arn:aws:states:::lambda:invoke",
       "Parameters": {
         "FunctionName": "${DataMartRollupFunctionArn}",

@@ -6172,10 +6172,39 @@ Resources:
             try:
                 request_type = event["RequestType"]
                 if request_type == "Delete":
-                    # Nothing to undo — the rollup tables are always recomputable
-                    # from raw metering + document_sections_*. Deleting the stack
-                    # tears them down via their own Glue::Table resources.
-                    _send_cfn_response(event, "SUCCESS", "Delete: no-op")
+                    # Rollup TABLES are always recomputable from raw
+                    # metering + document_sections_*; their Glue::Table
+                    # resources own their own teardown. But the SSM
+                    # migration marker at ${MIGRATION_MARKER_NAME} does
+                    # NOT get torn down by the stack — SSM parameters
+                    # under /idp/${AWS::StackName}/... are not owned by
+                    # a CFN resource in this template. A stack recreate
+                    # under the same StackName would then inherit a
+                    # state=completed marker and short-circuit the
+                    # migration on the fresh empty rollup tables. Delete
+                    # the marker here so a same-name recreate starts
+                    # clean. Silent on ParameterNotFound (idempotent).
+                    try:
+                        ssm_client.delete_parameter(Name=MIGRATION_MARKER_NAME)
+                        logger.info(
+                            "Delete: removed SSM marker %s",
+                            MIGRATION_MARKER_NAME,
+                        )
+                    except ssm_client.exceptions.ParameterNotFound:
+                        logger.info(
+                            "Delete: SSM marker %s already absent",
+                            MIGRATION_MARKER_NAME,
+                        )
+                    except Exception as marker_err:  # noqa: BLE001
+                        # Never block the stack Delete on a marker cleanup
+                        # error — the marker is soft state, the stack
+                        # deletion is not. Log and continue.
+                        logger.warning(
+                            "Delete: failed to remove SSM marker %s: %s",
+                            MIGRATION_MARKER_NAME,
+                            marker_err,
+                        )
+                    _send_cfn_response(event, "SUCCESS", "Delete: cleaned up SSM marker")
                     return
 
                 props = event.get("ResourceProperties", {})
@@ -6410,11 +6439,13 @@ Resources:
       EvaluationPeriods: 2
       Threshold: 0
       ComparisonOperator: LessThanOrEqualToThreshold
-      # `notBreaching` for a Sum metric: an hour that reported no data
-      # points ALSO trips the alarm (a Lambda with zero invocations
-      # emits no Invocations sample at all). That is exactly the case
-      # we want to catch — the alternative `ignore` would silence the
-      # very outage this alarm exists to page on.
+      # ``breaching`` for a Sum metric: an hour that reported no data
+      # points TRIPS the alarm (a Lambda with zero invocations emits
+      # no Invocations sample at all — the metric goes missing rather
+      # than reading zero). That is exactly the case we want to catch.
+      # ``notBreaching`` would do the opposite (treat missing data as
+      # within threshold, i.e. healthy) and ``ignore`` would silence
+      # the very outage this alarm exists to page on.
       TreatMissingData: breaching
       AlarmActions:
         - !Ref AlertsTopic

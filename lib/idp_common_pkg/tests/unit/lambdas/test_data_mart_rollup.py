@@ -2554,21 +2554,24 @@ class TestCheckMarkerState:
         assert result["should_short_circuit"] is False
         assert result["should_skip_purge"] is False
 
-    def test_ssm_read_error_returns_absent_conservative(self, rollup):
-        """A transient SSM outage (not ParameterNotFound) → treated as
-        absent, so the state machine takes the full-flow branch. This
-        documents the conservative choice: one lost migration attempt
-        vs. leaving tables in mixed state forever."""
+    def test_ssm_read_error_propagates(self, rollup):
+        """A non-``ParameterNotFound`` SSM error (throttle, IAM denial,
+        service outage) MUST propagate — coercing it to ``state=absent``
+        routes the state machine's Choice into the destructive
+        InitialPurge branch on a stack whose migration was already
+        completed. Preferred behaviour: the state machine's Lambda-error
+        Retry catches transient SDK errors up to 6× with backoff, and a
+        persistent failure fails the execution visibly rather than
+        silently destroying customer rollup data on a routine
+        CustomResource re-fire."""
         with patch.object(rollup, "boto3", MagicMock()) as mock_boto3:
             ssm_mock = mock_boto3.client.return_value
             ssm_mock.exceptions.ParameterNotFound = type(
                 "ParameterNotFound", (Exception,), {}
             )
             ssm_mock.get_parameter.side_effect = RuntimeError("SSM regional outage")
-            result = rollup.handler({"mode": "check_marker_state", "days": 30}, None)
-        assert result["state"] == "absent"
-        assert result["should_short_circuit"] is False
-        assert result["should_skip_purge"] is False
+            with pytest.raises(RuntimeError, match="SSM regional outage"):
+                rollup.handler({"mode": "check_marker_state", "days": 30}, None)
 
 
 @pytest.mark.unit

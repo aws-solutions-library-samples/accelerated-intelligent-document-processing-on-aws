@@ -1413,6 +1413,21 @@ def _run_backfill(
     # start of 14:00 — better to be explicit.
     start_hour = start_dt.replace(minute=0, second=0, microsecond=0)
     end_hour = end_dt.replace(minute=0, second=0, microsecond=0)
+    # Post-truncation validation: a sub-hour input range (e.g.
+    # T00:00Z → T00:30Z) passes the raw ``start_dt < end_dt`` check but
+    # truncates to ``start_hour == end_hour``, so the while-loop below
+    # iterates zero times, ``hours_attempted`` stays at 0, and
+    # ``_check_hours_failed`` reports ``all_hours_clean=True`` — the
+    # state machine's WriteCompletedMarker task then writes a marker
+    # over rollup tables that received zero data. Reject the range
+    # explicitly so the state machine surfaces the caller's mistake
+    # instead of silently completing.
+    if not (start_hour < end_hour):
+        raise ValueError(
+            f"backfill hour-aligned range ({start_hour.isoformat()} → "
+            f"{end_hour.isoformat()}) covers less than one full hour after "
+            "truncation; supply a range spanning at least one whole hour."
+        )
 
     results: Dict[str, Any] = {
         "mode": "backfill",
@@ -1435,6 +1450,18 @@ def _run_backfill(
         selected_arms = all_arms
     else:
         arms_set = set(arms)
+        # An explicit empty list is a programming error, not "run no
+        # work quietly". The inner arm-loop would iterate zero times
+        # per hour, hour_ok/hour_fail would both stay 0, and the
+        # ``if hour_fail == 0`` branch would tick ``hours_succeeded``
+        # for every hour — leading to a false ``all_hours_clean=True``
+        # and a state=completed marker over rollup tables that
+        # received zero writes. Reject explicitly.
+        if not arms_set:
+            raise ValueError(
+                "backfill arms=[] is invalid — pass None to run every arm, "
+                "or a non-empty list of arm labels."
+            )
         unknown = arms_set - {label for label, _ in all_arms}
         if unknown:
             raise ValueError(
@@ -1508,10 +1535,16 @@ def _run_backfill(
 # has 720 hours × 4 rollup arms at ~5-10 s each = 1-2 h of serialized
 # work, well past Lambda's 900 s timeout. Async-retry-on-Lambda gave us
 # only ~45 min budget across 3 attempts. The state machine's Map state
-# chunks the range into 24 h slices, each fitting in one 900 s Lambda
-# invocation, with SFN-native per-chunk retry replacing async retries.
-# See live-fire incident on idp-dev-qs1 (2026-09-22) and CHANGELOG entry
-# for the retry-safe purge that this design supersedes.
+# chunks the range into fine-grained slices (production default:
+# ``ChunkHours=1`` from the CFN CustomResource, so 720 one-hour chunks
+# on a 30 d migration — a tight per-chunk retry blast radius), each
+# fitting in one 900 s Lambda invocation, with SFN-native per-chunk
+# retry replacing async retries. ``plan_migration_chunks`` accepts
+# ``chunk_hours`` up to 168 as its own default fallback of 24 h, but
+# that fallback only applies when the caller omits the field — which
+# the dispatcher does not do. See live-fire incident on idp-dev-qs1
+# (2026-09-22) and CHANGELOG entry for the retry-safe purge that this
+# design supersedes.
 
 _MIGRATION_MARKER_NAME = f"/idp/{STACK_NAME}/data-mart-rollup/migration-complete"
 
@@ -1565,19 +1598,19 @@ def _check_marker_state(days: int, version: Optional[str] = None) -> Dict[str, A
             "should_short_circuit": False,
             "should_skip_purge": False,
         }
-    except Exception as exc:  # noqa: BLE001
-        logger.warning(
-            "check_marker_state: SSM read failed (%s) — treating as absent",
-            exc,
-        )
-        return {
-            "state": "absent",
-            "days": None,
-            "version": None,
-            "value": None,
-            "should_short_circuit": False,
-            "should_skip_purge": False,
-        }
+    # Non-``ParameterNotFound`` errors (SSM throttling, IAM denial,
+    # transient service errors) MUST propagate. Previously this handler
+    # coerced any read failure to ``state="absent"`` and returned it —
+    # ``absent`` routes the state machine's ``RouteOnMarkerState`` Choice
+    # to the DEFAULT branch (``InitialPurge``), which deletes every S3
+    # object under the four rollup prefixes. On a stack whose migration
+    # was already completed, a transient SSM 5xx or a bad-window
+    # ``ssm:GetParameter`` throttle would silently destroy the customer's
+    # populated rollup data on a routine CustomResource re-fire. The
+    # state machine has ``Retry`` configured for Lambda.* errors so a
+    # bubbled exception is retried up to 6 times with 30 s / backoff — a
+    # persistent read failure fails the whole execution visibly instead
+    # of masquerading as "no marker → clean slate".
 
     days_match = f"days={days}" in value
     # Version comparison: extract ``version=<x>;`` segment from the
@@ -1651,7 +1684,16 @@ def _write_marker(
     """
     ssm_client = boto3.client("ssm")
     now_iso = datetime.now(timezone.utc).isoformat()
-    version_segment = f"version={version};" if version else ""
+    # ``is not None`` intentionally — an empty string means "the caller
+    # is using versioning but the version identifier itself is blank",
+    # which _check_marker_state's ``if version is None`` branch treats
+    # differently from a missing segment. Using ``if version`` (falsy)
+    # here caused every deploy with ``MigrationVersion=""`` to write a
+    # marker without a ``version=`` segment; the next _check_marker_state
+    # would parse ``marker_version = None`` and compare it against the
+    # caller's ``version = ""``, evaluate them unequal, and route to
+    # full InitialPurge every time — destructive on every deploy.
+    version_segment = f"version={version};" if version is not None else ""
     if state == "in_progress":
         value = f"days={days};{version_segment}state=in_progress;started_at={now_iso}"
         description = (
@@ -1890,6 +1932,14 @@ def _run_backfill_daily_range(anchor: datetime, days: int) -> Dict[str, Any]:
             mdd = day_result.get("metering_docs_daily", {}) or {}
             md_ok = "error" not in md
             mdd_ok = "error" not in mdd
+            # NOTE on the elif/else branches: today's ``_run_daily``
+            # raises on ANY sub-INSERT failure (see the ``if errors:
+            # raise`` guard at the end of _run_daily), so a return
+            # value from ``_run_daily(...)`` always has md_ok=mdd_ok=True
+            # in practice — the elif/else branches below never fire and
+            # partial-day failures surface via the outer ``except`` clause
+            # instead. Kept as defence-in-depth for a future _run_daily
+            # that returns rather than raises on per-table failure.
             if md_ok and mdd_ok:
                 results["hours_succeeded"] += 1
             elif md_ok or mdd_ok:
@@ -1964,9 +2014,10 @@ def _purge_s3_prefix(bucket: str, prefix: str) -> int:
     """Delete every object under ``s3://<bucket>/<prefix>``. Returns the
     total number of objects deleted.
 
-    Used by ``_run_backfill_migrate`` to empty the rollup S3 prefixes
-    before repopulation. Paginates + batches — S3 ``delete_objects``
-    caps at 1000 keys per call.
+    Used by ``_purge_rollup_prefixes_task`` (the state machine's
+    ``InitialPurge`` Task) to empty the rollup S3 prefixes before
+    repopulation. Paginates + batches — S3 ``delete_objects`` caps at
+    1000 keys per call.
     """
     if not bucket or not prefix:
         raise ValueError(
