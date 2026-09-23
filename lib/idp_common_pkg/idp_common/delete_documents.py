@@ -68,6 +68,53 @@ def _is_document_output(key: str, object_key: str) -> bool:
     return key.startswith(f"{object_key.rstrip('/')}/")
 
 
+def _require_selector(name: str, value: object) -> str:
+    """Refuse a selector that names nothing, ahead of any table scan.
+
+    Both public selectors return ``List[str]``, and that return type has no room to
+    report a failure: ``[]`` is the ordinary, correct answer for "that batch holds no
+    documents". So a selector that cannot name anything has to be refused by raising,
+    and what the shipped callers do with each outcome is what settles it — a raise
+    becomes something the caller can act on (the SDK re-raises it as
+    ``IDPProcessingError``; the CLI prints it and exits 1), while ``[]`` becomes a
+    reported **success** in both (``BatchDeletionResult(success=True,
+    deleted_count=0)``, and "No documents found for batch: …" with exit 0).
+
+    ``None`` is the shape this arrives in — ``batch_id=record.get("id")`` where the id
+    is absent — and it used to be raised inside the handler that wrapped the filter
+    loop, swallowed there, and returned as an empty selection that the deleter then
+    reported as a successful no-op.
+
+    **The empty string is refused too**, because neither reading of it is what a caller
+    meant: it selected *every* document in the table before the selectors were narrowed
+    (the empty string is a substring of every key) and selects *none* after. A caller
+    who wants every document says so explicitly with ``pattern="*"``, where the breadth
+    is visible in what they wrote.
+
+    Args:
+        name: Parameter name to quote back to the caller.
+        value: The selector as given.
+
+    Returns:
+        ``value``, once it is known to be a usable selector.
+
+    Raises:
+        TypeError: ``value`` is not a ``str``.
+        ValueError: ``value`` is the empty string.
+    """
+    if not isinstance(value, str):
+        raise TypeError(
+            f"{name} must be a str naming the documents to select, "
+            f"got {type(value).__name__}"
+        )
+    if not value:
+        raise ValueError(
+            f"{name} must name the documents to select and cannot be empty; "
+            'to select every document pass pattern="*"'
+        )
+    return value
+
+
 def calculate_shard(timestamp: str) -> Tuple[str, str]:
     """
     Calculate shard information from timestamp.
@@ -605,6 +652,32 @@ def _scan_all_document_keys(
     return items
 
 
+# ⚠️ Neither selector below catches anything, and that is a decision per exception
+# class rather than a missing handler. Both used to wrap the scan and the filter loop in
+# `except Exception: log; return object_keys`, and every class that can arise in there
+# is one whose answer must not be an empty selection:
+#
+# * Everything the scan can fail with. The DynamoDB service model declares five error
+#   shapes for `Scan` — `ProvisionedThroughputExceededException`, `ThrottlingException`,
+#   `RequestLimitExceeded`, `ResourceNotFoundException`, `InternalServerError` — and
+#   with the generic ones (`AccessDeniedException`, `ValidationException`) they are all
+#   `ClientError`; the client-side family (`EndpointConnectionError` and its siblings)
+#   is `BotoCoreError`. Returning `[]` for any of them hands the caller a result it
+#   cannot tell apart from "that batch is empty", and both shipped callers turn that
+#   into a reported success. A throttled scan therefore read as a completed delete.
+# * `TypeError` / `ValueError` / `AttributeError` from a selector the caller should not
+#   have passed. Those are the caller's own bug, they are refused by
+#   `_require_selector` ahead of the scan, and the handler is what used to hide them.
+#
+# Two shapes of the old behaviour were worse than a single wrong answer. A fault
+# *mid-pagination* discarded every page already collected and returned `[]`. A fault
+# *mid-loop* returned the keys matched so far, so a **partial** selection went to the
+# deleter and was reported as a complete delete.
+#
+# Propagating cannot widen a delete — a raise selects nothing, so the safe direction
+# the handler existed for is kept. What changes is that the caller hears about it.
+
+
 def get_documents_by_batch(
     tracking_table, batch_id: str, status_filter: Optional[str] = None
 ) -> List[str]:
@@ -620,18 +693,22 @@ def get_documents_by_batch(
         status_filter: Optional status filter ('COMPLETED', 'FAILED', 'PROCESSING', etc.)
 
     Returns:
-        List of object keys
-    """
-    object_keys = []
+        List of object keys. An empty list means the batch holds no matching
+        documents, and nothing else: a failure raises rather than returning ``[]``.
 
-    try:
-        items = _scan_all_document_keys(tracking_table, status_filter)
-        for item in items:
-            object_key = item.get("ObjectKey", "")
-            if _is_in_batch(object_key, batch_id):
-                object_keys.append(object_key)
-    except Exception as e:
-        logger.error(f"Error getting documents for batch {batch_id}: {str(e)}")
+    Raises:
+        TypeError: ``batch_id`` is not a string.
+        ValueError: ``batch_id`` is empty.
+        botocore.exceptions.ClientError: the table scan was rejected or throttled.
+        botocore.exceptions.BotoCoreError: the scan could not be issued at all.
+    """
+    _require_selector("batch_id", batch_id)
+
+    object_keys = []
+    for item in _scan_all_document_keys(tracking_table, status_filter):
+        object_key = item.get("ObjectKey", "")
+        if _is_in_batch(object_key, batch_id):
+            object_keys.append(object_key)
 
     return object_keys
 
@@ -651,21 +728,26 @@ def get_documents_by_pattern(
 
     Args:
         tracking_table: DynamoDB table resource
-        pattern: Wildcard pattern to match against object keys
+        pattern: Wildcard pattern to match against object keys. ``"*"`` is the
+            explicit way to select every document.
         status_filter: Optional status filter ('COMPLETED', 'FAILED', 'PROCESSING', etc.)
 
     Returns:
-        List of matching object keys
-    """
-    object_keys = []
+        List of matching object keys. An empty list means nothing matched, and
+        nothing else: a failure raises rather than returning ``[]``.
 
-    try:
-        items = _scan_all_document_keys(tracking_table, status_filter)
-        for item in items:
-            object_key = item.get("ObjectKey", "")
-            if fnmatch.fnmatch(object_key, pattern):
-                object_keys.append(object_key)
-    except Exception as e:
-        logger.error(f"Error getting documents for pattern {pattern}: {str(e)}")
+    Raises:
+        TypeError: ``pattern`` is not a string.
+        ValueError: ``pattern`` is empty.
+        botocore.exceptions.ClientError: the table scan was rejected or throttled.
+        botocore.exceptions.BotoCoreError: the scan could not be issued at all.
+    """
+    _require_selector("pattern", pattern)
+
+    object_keys = []
+    for item in _scan_all_document_keys(tracking_table, status_filter):
+        object_key = item.get("ObjectKey", "")
+        if fnmatch.fnmatch(object_key, pattern):
+            object_keys.append(object_key)
 
     return object_keys

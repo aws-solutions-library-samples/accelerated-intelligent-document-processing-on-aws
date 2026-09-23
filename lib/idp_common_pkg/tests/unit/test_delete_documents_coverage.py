@@ -11,7 +11,7 @@ listing — recoverable, and visible. Deleting too much is unrecoverable. Both d
 are therefore asserted, and where a selector is broader than its documentation says, the
 test pins the actual breadth rather than the intended one.
 
-Four things shape these tests.
+Five things shape these tests.
 
 **The list-entry cleanup has three fallback strategies and they are asserted
 separately.** `delete_list_entries_robust` tries an exact shard+timestamp delete, then a
@@ -36,14 +36,25 @@ signal, so it is asserted for each step independently.
 **Shard arithmetic is asserted at the boundaries**, since 6 shards of 4 hours means the
 interesting inputs are 0, 3, 4, 23 and the invalid ones either side.
 
+**An empty selection has one meaning, so a failure cannot use it.** The two selectors
+return `List[str]`, and `[]` is the ordinary answer for "that batch holds no documents"
+— which is why a handler that returned `[]` for a missing selector or a throttled scan
+reported a failure as a successful no-op. `TestASelectorFailureIsNotReportedAsSuccess`
+asserts the outcome the *caller* sees for each class of failure, not merely that
+something was raised somewhere inside, and derives its DynamoDB faults from the
+botocore service model rather than from a hand-written error shape.
+
 No AWS call is made: the table and S3 client are `MagicMock`s throughout.
 """
 
 from __future__ import annotations
 
+from functools import lru_cache
 from unittest.mock import MagicMock
 
 import pytest
+from boto3.dynamodb.types import TypeDeserializer
+from botocore.exceptions import BotoCoreError, ClientError, EndpointConnectionError
 
 from idp_common.delete_documents import (
     _delete_run_records,
@@ -775,7 +786,7 @@ class TestGetDocumentsByBatch:
                 f"{not_selected} would be DELETED by a request for batch-1"
             )
 
-    def test_an_empty_batch_id_selects_nothing_rather_than_everything(self):
+    def test_an_empty_batch_id_is_refused_rather_than_selecting_anything(self):
         """The largest case the delimiter closes, and the one worth naming.
 
         The empty string is a substring of every key, so ``batch_id in object_key`` was
@@ -797,6 +808,11 @@ class TestGetDocumentsByBatch:
         different layer from the defect, so a refactor that moves or drops it re-opens
         an unbounded delete, and this function is exported for callers who have no
         guard at all.
+
+        The refusal is now what closes it, and it is the stronger form: no key can be
+        returned at all, and the scan is never issued, so neither reading of an empty
+        selector — "everything" or "nothing" — can reach the deleter. `""` is not a
+        batch and a caller who wants every document asks with `pattern="*"`.
         """
         table = _table()
         table.scan.return_value = {
@@ -808,7 +824,9 @@ class TestGetDocumentsByBatch:
             ]
         }
 
-        assert get_documents_by_batch(table, "") == []
+        with pytest.raises(ValueError, match="batch_id"):
+            get_documents_by_batch(table, "")
+        table.scan.assert_not_called()
 
     def test_a_batch_id_given_with_a_trailing_slash_behaves_the_same(self):
         """`--batch-id batch-1/` is an easy thing to type and must not select nothing."""
@@ -837,12 +855,14 @@ class TestGetDocumentsByBatch:
         table.scan.return_value = {"Items": [{"PK": "doc#x"}]}
         assert get_documents_by_batch(table, "batch") == []
 
-    def test_a_scan_error_returns_an_empty_list(self):
-        # Returning [] means the caller deletes nothing, which is the safe direction for
-        # a selector feeding a delete -- but it is indistinguishable from "no matches".
+    def test_a_scan_error_reaches_the_caller_instead_of_reading_as_no_matches(self):
+        # Deleting nothing is the safe direction and a raise keeps it -- nothing is
+        # selected either way. What `[]` cannot do is tell the caller apart from "no
+        # matches", which is why the fault is not converted into one.
         table = _table()
         table.scan.side_effect = RuntimeError("throttled")
-        assert get_documents_by_batch(table, "batch") == []
+        with pytest.raises(RuntimeError, match="throttled"):
+            get_documents_by_batch(table, "batch")
 
     def test_the_status_filter_is_forwarded(self):
         table = _table()
@@ -883,7 +903,258 @@ class TestGetDocumentsByPattern:
         table.scan.return_value = {"Items": [{"ObjectKey": "batch-1/sub/deep.pdf"}]}
         assert get_documents_by_pattern(table, "batch-1/*") == ["batch-1/sub/deep.pdf"]
 
-    def test_a_scan_error_returns_an_empty_list(self):
+    def test_a_scan_error_reaches_the_caller_instead_of_reading_as_no_matches(self):
         table = _table()
         table.scan.side_effect = RuntimeError("no")
-        assert get_documents_by_pattern(table, "*") == []
+        with pytest.raises(RuntimeError, match="no"):
+            get_documents_by_pattern(table, "*")
+
+
+# ---------------------------------------------------------------------------
+# What the caller is told when a selection cannot be made (#1187)
+# ---------------------------------------------------------------------------
+
+
+@lru_cache(maxsize=1)
+def _dynamodb_client():
+    """A DynamoDB client built offline, for its **modelled** exception classes.
+
+    No call is made and no credential is used: botocore builds the client, and its
+    `exceptions` factory, from the bundled service model alone. Placeholder credentials
+    are passed explicitly because the gated pytest wrapper strips the AWS environment.
+    """
+    import botocore.session
+
+    return botocore.session.get_session().create_client(
+        "dynamodb",
+        region_name="us-east-1",
+        aws_access_key_id="testing",
+        aws_secret_access_key="testing",
+    )
+
+
+def _scan_error_codes() -> list[str]:
+    """Every error shape the service model declares for ``Scan``.
+
+    Derived, not listed. A hand-written set of codes records a belief about what
+    DynamoDB raises, and the decision under test here — that no class arising in the
+    scan may be turned into an empty selection — is only as good as the set it was made
+    against. Five today, and every one of them is an operational fault rather than
+    anything a caller could have got right: three throttles, a missing table, and a
+    server-side error. The generic codes botocore does not model per operation
+    (`AccessDeniedException`, `ValidationException`) arrive as the same `ClientError`.
+    """
+    model = _dynamodb_client().meta.service_model
+    return sorted(shape.name for shape in model.operation_model("Scan").error_shapes)
+
+
+def _modelled_scan_error(code: str) -> ClientError:
+    """The exception boto3 itself raises for ``code`` on a ``Scan``."""
+    return _dynamodb_client().exceptions.from_code(code)(
+        {"Error": {"Code": code, "Message": f"{code} from the service"}}, "Scan"
+    )
+
+
+def _numeric_object_key():
+    """The value the resource layer yields for an ``ObjectKey`` stored as a number.
+
+    `Table.scan` deserializes attributes before the caller sees them, so a record whose
+    key was written as `N` arrives as a `Decimal` and neither selector can match it.
+    Taken from boto3's own deserializer rather than invented, because the point of the
+    fixture is that the failure is one the table can really produce.
+    """
+    return TypeDeserializer().deserialize({"N": "5"})
+
+
+def _populated_table() -> MagicMock:
+    """A table holding two documents of `batch-2`, so a selector has work to do."""
+    table = _table()
+    table.scan.return_value = {
+        "Items": [{"ObjectKey": "batch-2/a.pdf"}, {"ObjectKey": "batch-2/b.pdf"}]
+    }
+    return table
+
+
+@pytest.mark.unit
+class TestASelectorFailureIsNotReportedAsSuccess:
+    """The outcome a caller reads when the selection could not be made.
+
+    The defect (#1187) was not that something raised — it did, inside the selector —
+    but that the raise was converted into `[]` and the deleter then returned
+    `success=True, deleted_count=0, total_count=0`. Measured on the code before this
+    change, against a two-document table with `batch_id=None`: the selector logged
+    `'NoneType' object has no attribute 'rstrip'` at ERROR and returned `[]`, and the
+    delete reported exactly that success.
+
+    So every assertion here is about what the caller gets back, driven the way a direct
+    library caller drives it — select, then delete what was selected — and each class
+    of failure is covered separately, since narrowing a handler one class at a time is
+    how the other classes quietly lose their guarantee. The reachable path is the direct
+    one: the CLI and the SDK both refuse a falsy selector in their own layer first.
+    """
+
+    def _select_and_delete(self, table, s3, batch_id=..., pattern=...):
+        """Select, then delete the selection — one operation from where the caller sits.
+
+        That is where the wrong signal showed: the selector's ERROR line went to the log
+        while the *return value* of the pair said the delete had succeeded.
+        """
+        if pattern is ...:
+            keys = get_documents_by_batch(table, batch_id)
+        else:
+            keys = get_documents_by_pattern(table, pattern)
+        return delete_documents(keys, table, s3, "in", "out")
+
+    def test_a_missing_batch_selector_is_refused_rather_than_reported_as_a_no_op(self):
+        table, s3 = _populated_table(), _s3()
+
+        with pytest.raises(TypeError, match="batch_id"):
+            self._select_and_delete(table, s3, batch_id=None)
+
+        assert s3.delete_object.call_count == 0
+        assert table.delete_item.call_count == 0
+
+    def test_a_missing_pattern_selector_is_refused_rather_than_reported_as_a_no_op(
+        self,
+    ):
+        table, s3 = _populated_table(), _s3()
+
+        with pytest.raises(TypeError, match="pattern"):
+            self._select_and_delete(table, s3, pattern=None)
+
+        assert s3.delete_object.call_count == 0
+
+    @pytest.mark.parametrize(
+        "bad",
+        [None, 0, 7, b"batch-2", ["batch-2"], {"batch_id": "batch-2"}],
+        ids=["none", "zero", "int", "bytes", "list", "dict"],
+    )
+    def test_any_non_string_selector_is_refused_by_both_selectors(self, bad):
+        """A `batch_id` read out of a record can be any of these, not only `None`.
+
+        `bytes` is the one worth spelling out: before this it raised a `TypeError` in
+        the batch selector and was swallowed like the rest, while `0` raised an
+        `AttributeError` — two classes and one silent `[]`, which is why the refusal is
+        by type at the entry rather than by class at the handler.
+        """
+        for call in (get_documents_by_batch, get_documents_by_pattern):
+            table = _populated_table()
+            with pytest.raises(TypeError, match="must be a str"):
+                call(table, bad)
+            table.scan.assert_not_called()
+
+    def test_an_empty_selector_is_refused_by_both_selectors(self):
+        for call, name in (
+            (get_documents_by_batch, "batch_id"),
+            (get_documents_by_pattern, "pattern"),
+        ):
+            table = _populated_table()
+            with pytest.raises(ValueError, match=name):
+                call(table, "")
+            table.scan.assert_not_called()
+
+    def test_a_batch_that_holds_nothing_still_reports_success(self):
+        """The refusal must not swallow the ordinary answer.
+
+        An empty batch is not an error — cleaning up after a run that produced nothing
+        is a legitimate no-op — and that is the whole reason `[]` cannot also stand for
+        a failure. If this test and the ones above cannot both pass, the fix is wrong.
+        """
+        result = self._select_and_delete(_populated_table(), _s3(), batch_id="batch-9")
+
+        assert result["success"] is True
+        assert (result["deleted_count"], result["total_count"]) == (0, 0)
+
+    @pytest.mark.parametrize("code", _scan_error_codes())
+    def test_every_fault_the_service_model_declares_for_scan_reaches_the_caller(
+        self, code
+    ):
+        """A throttle, a missing table or a server error is not "the batch is empty".
+
+        Each of these used to be logged and returned as `[]`, which both callers report
+        as a success: the SDK as `BatchDeletionResult(success=True, deleted_count=0)`,
+        the CLI as "No documents found for batch: …" with exit 0. The error code is
+        asserted too, because a caller that wants to retry a throttle needs to be able
+        to tell it from a missing table.
+        """
+        table, s3 = _populated_table(), _s3()
+        table.scan.side_effect = _modelled_scan_error(code)
+
+        with pytest.raises(ClientError) as raised:
+            self._select_and_delete(table, s3, batch_id="batch-2")
+
+        assert raised.value.response["Error"]["Code"] == code
+        assert s3.delete_object.call_count == 0
+
+    def test_a_client_side_botocore_failure_reaches_the_caller(self):
+        """The other family: the request never got as far as a service error.
+
+        `EndpointConnectionError` is a `BotoCoreError`, not a `ClientError`, so a
+        handler narrowed to service errors alone would still convert this one into an
+        empty selection.
+        """
+        table = _populated_table()
+        table.scan.side_effect = EndpointConnectionError(
+            endpoint_url="https://dynamodb.us-east-1.amazonaws.com/"
+        )
+
+        with pytest.raises(BotoCoreError):
+            self._select_and_delete(table, _s3(), batch_id="batch-2")
+
+    def test_a_fault_part_way_through_pagination_is_not_reported_as_an_empty_batch(
+        self,
+    ):
+        """Losing pages already collected is the worst-reported version of this.
+
+        Measured before the change: the first page's keys were discarded with the
+        exception and `[]` came back, so a batch of any size read as empty whenever the
+        second page was throttled.
+        """
+        table, s3 = _populated_table(), _s3()
+        table.scan.side_effect = [
+            {
+                "Items": [{"ObjectKey": "batch-2/a.pdf"}],
+                "LastEvaluatedKey": {"PK": "x"},
+            },
+            _modelled_scan_error("ProvisionedThroughputExceededException"),
+        ]
+
+        with pytest.raises(ClientError):
+            self._select_and_delete(table, s3, batch_id="batch-2")
+
+        assert s3.delete_object.call_count == 0
+
+    @pytest.mark.parametrize(
+        "call, selector, failing_class",
+        [
+            (get_documents_by_batch, "batch-2", AttributeError),
+            (get_documents_by_pattern, "batch-2/*", TypeError),
+        ],
+        ids=["batch", "pattern"],
+    )
+    def test_a_fault_in_the_filter_loop_is_not_reported_as_a_complete_delete(
+        self, call, selector, failing_class
+    ):
+        """The partial selection, which is the only case that deleted anything.
+
+        A record whose `ObjectKey` was stored as a number comes back as a `Decimal`, and
+        neither predicate can take one. The old handler sat *outside* the loop but
+        returned the list built so far, so of two matching documents the first was
+        selected, deleted and reported as a complete success — measured: one key
+        returned, one `delete_object`, `success=True`. Both predicates are covered
+        because they fail with different classes on the same record.
+        """
+        table, s3 = _populated_table(), _s3()
+        table.scan.return_value = {
+            "Items": [
+                {"ObjectKey": "batch-2/a.pdf"},
+                {"ObjectKey": _numeric_object_key()},
+                {"ObjectKey": "batch-2/b.pdf"},
+            ]
+        }
+
+        with pytest.raises(failing_class):
+            keys = call(table, selector)
+            delete_documents(keys, table, s3, "in", "out")
+
+        assert s3.delete_object.call_count == 0

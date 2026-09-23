@@ -587,9 +587,17 @@ Permanently delete documents and their associated data from InputBucket, OutputB
 - `dry_run` (bool, optional): If True, simulate deletion without actually deleting (default: False)
 - `continue_on_error` (bool, optional): Continue deleting if one document fails (default: True)
 
-**Note:** Must specify either `batch_id` or `pattern` (not both).
+**Note:** Must specify either `batch_id` or `pattern` (not both). A missing or empty
+selector raises `IDPConfigurationError` before anything is read.
 
 **Returns:** `BatchDeletionResult` with `success`, `deleted_count`, `failed_count`, `total_count`, `dry_run`, and `results` (list of DocumentDeletionResult)
+
+⚠️ **A failure while selecting the documents raises `IDPProcessingError`; it is not
+reported as a success with nothing deleted.** `success=True, deleted_count=0` means the
+selector matched no documents — an empty batch, or a status filter nothing satisfied —
+and nothing else. A throttled or rejected table scan, or a table that does not exist,
+reaches you as an exception naming the cause, so a retry is your decision to make rather
+than something the result hides.
 
 ```python
 # Delete entire batch

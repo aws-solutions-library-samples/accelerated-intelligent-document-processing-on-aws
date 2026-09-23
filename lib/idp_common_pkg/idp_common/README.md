@@ -20,6 +20,7 @@ The IDP Common library provides these main modules:
 - **[BDA](bda/README.md)**: Bedrock Data Automation integration
 - **[Document Service Factory](docs_service_README.md)**: The `create_document_service()` entry point Lambdas use to record document state (always DynamoDB-backed)
 - **Document Failure** (`document_failure.py`): recording *why* a document failed before the handler re-raises — see [Recording a document-level failure](#-recording-a-document-level-failure) below
+- **Document deletion** (`delete_documents.py`): the irreversible cleanup path behind `idp-cli delete-documents`, the SDK's `batch.delete_documents()` and the UI's delete action — see [Selecting documents to delete](#-selecting-documents-to-delete) below
 - **[Reporting](reporting/README.md)**: Analytics data storage
 - **[Assessment](assessment/README.md)**: Confidence scoring and bounding boxes
 - **[Discovery](discovery/README.md)**: Document class and schema discovery
@@ -575,6 +576,41 @@ The module imports nothing outside the standard library, deliberately — the Co
 deployment harness (`scripts/sdlc/codebuild_deployment.py`) is one of its two callers
 and cannot afford `strands`, which the other one (the error-analyzer agent tool) pulls
 in.
+
+## 🧹 Selecting documents to delete
+
+`delete_documents.py` deletes customer data irreversibly, so its two selectors —
+`get_documents_by_batch(table, batch_id)` and `get_documents_by_pattern(table, pattern)`
+— are held to two rules that are easy to lose in a refactor.
+
+**A selector matches by path segment, not by substring.** `batch-1` selects
+`batch-1/a.pdf` and not `batch-10/b.pdf`; the purge of a document's outputs covers
+`invoice.pdf` and everything under `invoice.pdf/`, not `invoice.pdf.bak/`. A caller who
+wants a broad match asks for it with `get_documents_by_pattern`, where the breadth is
+visible in the argument. The predicates are named functions (`_is_in_batch`,
+`_is_document_output`) for that reason: a selector in front of an irreversible operation
+is worth reading on its own.
+
+**An empty result means "nothing matched", and a failure raises.** Both selectors return
+`List[str]`, which has no room to report a failure, and an empty list is the ordinary
+answer for an empty batch — so a handler that returned `[]` on error reported a failure
+as a successful no-op: `delete_documents([])` answers `success=True, deleted_count=0`.
+So:
+
+- A selector that is not a string raises `TypeError`, and an empty string raises
+  `ValueError`, both before any scan is issued. `None` is the shape this arrives in —
+  `batch_id=record.get("id")` where the id is absent — and the empty string is refused
+  because neither reading of it ("everything", "nothing") is what a caller meant. Use
+  `pattern="*"` to select every document.
+- A scan failure propagates. Nothing is caught, and that is per exception class rather
+  than an omission: every shape DynamoDB declares for `Scan` is an operational fault
+  (three throttles, a missing table, a server error, all `ClientError`), the client-side
+  family is `BotoCoreError`, and both shipped callers turn an empty selection into a
+  reported success. Propagating cannot widen a delete, since a raise selects nothing.
+
+Callers need not add their own handling to stay safe, but should expect to see these:
+`idp_sdk`'s `batch.delete_documents()` re-raises as `IDPProcessingError` and
+`idp-cli delete-documents` prints the cause and exits 1.
 
 ## 📝 Best Practices
 
