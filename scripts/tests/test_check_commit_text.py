@@ -29,7 +29,13 @@ SETTINGS = REPO_ROOT / ".claude" / "settings.json"
 
 sys.path.insert(0, str(HOOK.parent))
 
-from check_commit_text import findings, is_publishing  # noqa: E402
+from check_commit_text import (  # noqa: E402
+    CI_SUPPRESSION_DIRECTIVES,
+    ci_suppression,
+    findings,
+    is_publishing,
+    override_set,
+)
 
 
 def _run(payload: object) -> subprocess.CompletedProcess[str]:
@@ -203,6 +209,96 @@ def test_hook_allows_on_malformed_stdin() -> None:
         check=False,
     )
     assert result.returncode == 0, result.stderr
+
+
+# --------------------------------------------------------------------------- #
+# CI suppression
+# --------------------------------------------------------------------------- #
+@pytest.mark.unit
+@pytest.mark.parametrize("directive", CI_SUPPRESSION_DIRECTIVES)
+def test_every_documented_directive_is_recognised(directive: str) -> None:
+    """One platform honouring a directive is enough to take its gates out."""
+    assert ci_suppression(f"git commit -m 'fix: thing {directive}'") == directive
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("text", ["[SKIP CI]", "[Ci Skip]", "[skip-ci]", "[ skip ci ]"])
+def test_spelling_variants_are_recognised(text: str) -> None:
+    """Matched case-insensitively, and the hyphen and spacing variants count too."""
+    assert ci_suppression(f"git commit -m 'fix: thing {text}'")
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "text",
+    [
+        # Text that talks about CI without suppressing it. A hook that blocked these
+        # would be removed by the first person it inconvenienced.
+        "fix: skip the ci step in the docs example",
+        "docs: explain [skip] and [ci] as separate tokens",
+        "test: assert ci_suppression() returns None",
+        "chore: bump ci-skip-detector to 2.0",
+    ],
+)
+def test_text_that_only_looks_like_a_directive_is_allowed(text: str) -> None:
+    assert ci_suppression(f"git commit -m '{text}'") is None
+
+
+@pytest.mark.unit
+def test_a_heredoc_body_is_seen_too() -> None:
+    """The body of a `-F -` commit is in the command text, which is why this works."""
+    command = "git commit -q -F - <<'MSG'\nsubject\n\n[skip ci]\nMSG"
+    assert ci_suppression(command)
+
+
+@pytest.mark.unit
+def test_the_hook_blocks_a_directive_and_says_what_it_costs() -> None:
+    result = _run(_bash("git commit -m 'chore: tidy [skip ci]'"))
+    assert result.returncode == 2, result.stderr
+    assert "skip ci" in result.stderr
+    # The reason has to name the consequence, not just the rule: "every gate on both
+    # platforms, and nothing shows red" is the part that is not obvious.
+    assert "BOTH CI platforms" in result.stderr
+    assert "933" in result.stderr
+
+
+@pytest.mark.unit
+def test_a_read_only_command_mentioning_a_directive_is_ignored() -> None:
+    """Only publishing commands are scanned, so searching for one is not blocked."""
+    assert _run(_bash("git log --grep='[skip ci]'")).returncode == 0
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "prefix",
+    ["ALLOW_SKIP_CI=1", "ALLOW_SKIP_CI=true", "ALLOW_SKIP_CI=yes", "ALLOW_SKIP_CI=on"],
+)
+def test_the_override_lets_it_through_and_says_so(prefix: str) -> None:
+    """An honoured override is announced: a check believed on and actually off is worse.
+
+    It is read from the command TEXT because an inline assignment never reaches this
+    process's environment — the hook runs before the command does.
+    """
+    result = _run(_bash(f"{prefix} git commit -m 'chore: tidy [skip ci]'"))
+    assert result.returncode == 0, result.stderr
+    assert "ALLOW_SKIP_CI is set" in result.stderr
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("value", ["0", "false", "no", "off", "maybe"])
+def test_a_non_affirmative_override_leaves_the_check_on(value: str) -> None:
+    """``=0`` must not read as "set"; the other two guards make the same choice."""
+    command = f"ALLOW_SKIP_CI={value} git commit -m 'chore: tidy [skip ci]'"
+    assert not override_set(command)
+    assert _run(_bash(command)).returncode == 2
+
+
+@pytest.mark.unit
+def test_the_override_is_not_honoured_from_inside_the_message() -> None:
+    """Anchored to a command boundary, so quoting it in prose waives nothing."""
+    command = "git commit -m 'docs: describe ALLOW_SKIP_CI=1 usage [skip ci]'"
+    assert not override_set(command)
+    assert _run(_bash(command)).returncode == 2
 
 
 # --------------------------------------------------------------------------- #

@@ -209,6 +209,24 @@ pytest -v --tb=short         # Verbose with short tracebacks
 pytest --cov=idp_common --cov-report=html   # Coverage report
 ```
 
+⚠️ **A bare `pytest` is not pinned to this checkout; a `make` target is.** The `make`
+lines above go through `PYTEST_HERMETIC`, which exports an absolute `PYTHONPATH` naming
+every `lib/*` package root of the checkout the makefile belongs to. The three bare
+`pytest` lines inherit whatever the editable-install pointer in the interpreter's
+`site-packages` says, which on this host is rewritten by any `pip install -e` in any
+checkout. Pin them yourself — **every** root, because the packages import each other,
+and absolute, because a subprocess that changes directory drops a relative entry:
+
+```bash
+W=$(git rev-parse --show-toplevel)
+export PYTHONPATH=$W/lib/idp_common_pkg:$W/lib/idp_sdk:$W/lib/idp_cli_pkg:$W/lib/idp_mcp_connector_pkg:$W/lib/idp_feature_sdk
+```
+
+The provenance guard wired into several conftests prepends those roots for you and warns
+that it did; where it cannot, it refuses, and a refusal reading `REFUSED:` means the run
+**did not happen** rather than that a test failed. `python3
+scripts/check_first_party_deps.py` says whether the environment itself points here.
+
 ## Writing a gate exemption
 
 Turning a gate off for anything means registering it in

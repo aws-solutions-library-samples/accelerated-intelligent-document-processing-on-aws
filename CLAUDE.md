@@ -451,6 +451,14 @@ nothing checked.
 push** as well as MRs; GitHub's workflows are `pull_request`-only, so a direct push
 to `develop` runs nothing on GitHub.
 
+⚠️ **Parity does not survive a CI-suppressing commit message.** `[skip ci]` and its
+four siblings are honoured natively by both platforms, so one of them in a head commit
+takes *every* gate above out on *both* — the strongest thing in this file and the
+weakest, at the same time. What detects it is the `check-commit-text` hook before the
+commit exists, and `scripts/tests/test_no_skip_ci_markers.py` afterwards; both are
+described under that hook below, including the case neither can catch on the pull
+request that causes it.
+
 ### Visible is not blocking — `make check-branch-protection`
 
 Parity between the two CIs only means both *run* the gates. Whether a red gate can
@@ -578,6 +586,35 @@ cd lib/idp_cli_pkg && python -m pytest -v
 pytest -m "unit"
 pytest -m "integration"
 ```
+
+#### A run measures the checkout you started it from — through `make`
+
+`import idp_common` follows the editable-install pointer in the interpreter's
+`site-packages`, not the checkout a suite lives in, and on a machine where `python3`
+resolves to a shared interpreter every `pip install -e` anywhere on the host rewrites
+that pointer for everyone. One of this repo's own gates is such a writer
+(`lib/idp_common_pkg`'s `test-unit-cicd` reinstalls unless `SKIP_INSTALL=1`). The
+resulting run is **green and about another tree**, which is why it cost several
+sessions a day each ([#1094](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/1094)).
+
+`PYTEST_HERMETIC` in `make/hermetic_aws.mk` — the wrapper every pytest invocation in
+both Makefiles goes through — now exports an absolute `PYTHONPATH` naming every
+`lib/*` package root of the checkout that makefile belongs to, and
+`scripts/run_all_tests.py` passes the same value to every subprocess `make test`
+starts. The set is derived from `lib/*/pyproject.toml`, so a new package under `lib/`
+is covered without being listed; `FIRST_PARTY_PYTHONPATH=` suppresses the pin for the
+deliberate case of testing an installed copy.
+
+⚠️ **Running `pytest` directly, pin it yourself: every root, and absolute.** The
+packages import each other, so `PYTHONPATH=lib/idp_common_pkg` alone is refused by the
+next one, and a relative pin is lost by any subprocess that changes directory. The
+guard in `scripts/tests/first_party_provenance.py` will prepend this checkout's roots
+and tell you it did; when it cannot (the package was already imported, or this tree has
+no copy) it refuses, and **its refusal means the run did not happen** — it opens with
+`REFUSED:` for that reason. `scripts/check_first_party_deps.py` answers the
+environment-level question, "from source *and from which tree*", and fails on an
+editable pointer into another checkout. `IDP_ALLOW_FOREIGN_FIRST_PARTY=1` downgrades
+both to a note.
 
 ### Security Scanning
 
@@ -900,6 +937,31 @@ restated here. If it blocks a string that is legitimately public, add that strin
 to the allowlist in the script with a comment saying why, rather than loosening the
 pattern. Run its tests with `make test-hooks`.
 
+**It also refuses a commit message that suppresses CI.** `[skip ci]`, `[ci skip]`,
+`[no ci]`, `[skip actions]` and `[actions skip]` are honoured **natively by both
+platforms** — neither CI configuration opts in and neither can switch it off in YAML
+— so one of them in a commit message takes out lint, types, tests, the security scan
+and the dependency audit at once. With no required status check on this repository
+(#933) the pull request then does not show red: it shows *nothing*, which a reviewer
+cannot tell apart from a clean run. That has already happened here, and the commit it
+let through broke the security gate for every branch cut from `develop` afterwards
+([#1072](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/1072)).
+`ALLOW_SKIP_CI=1` in front of the command overrides it, per command, and an honoured
+override prints a line saying so. Note the override is read from the **command text**,
+because an inline assignment never reaches the hook's own environment — the hook runs
+before the command does.
+
+`scripts/tests/test_no_skip_ci_markers.py` is the other half, and it runs in both CIs
+(inside `make test-packages-cicd`). It scans the commits after a pinned start point
+and fails on any that carries one of those directives. **Its bound is worth knowing:
+the commit that carries the marker takes this gate with it when it is the head commit
+— GitHub decides whether to run at all from the head commit's message — so that case
+is caught on the next pull request whose checks do run, not on the one that introduced
+it.** A marked commit anywhere else in a branch is caught on its own pull request.
+Seventeen commits before the start point carry a directive and cannot be reworded now;
+the gate pins that count, so moving the start point forward over a new one fails
+instead of passing quietly.
+
 #### The `check-shared-branch` guard
 
 Changes reach `develop` and `main` through a pull request. Nothing on GitHub
@@ -995,6 +1057,24 @@ around it:
 - History written onto a shared branch by anything other than `git commit` —
   `merge`, `cherry-pick`, `revert`, `rebase`, `am`. Those are local until pushed,
   and the push is what gets refused.
+- **Another session standing in the same working directory.** Every question above is
+  about a *branch or a destination*; none is about who else is in the directory. Where
+  several sessions share the repository root — one working tree, not a worktree each —
+  a `git switch` by either moves the tree under the other, with no refusal and no
+  warning, because as far as git is concerned nothing unusual happened. A session can
+  then test a branch it did not check out, or commit a file another session edited,
+  with every gate green. This one **is reported, and never refused**
+  ([#1087](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/1087)):
+  before a `commit`, `push`, `switch` or `checkout` the `PreToolUse` half records the
+  session id and the branch in the working tree's own git directory, and prints one
+  stderr line when the id that was last there is a different one, and another when the
+  branch moved between two of this session's commands. Refusing would mean refusing one
+  session's deliberate branch switch, which a per-command hook cannot tell apart from a
+  collision, so **the thing that actually prevents this is the convention**: an
+  assistant session that is not the one holding the main checkout works in
+  `git worktree add <path> -b <branch>`. The record is keyed on
+  `git rev-parse --absolute-git-dir`, which is per working tree, so a worktree is its
+  own tenant rather than a co-tenant of the checkout it came from.
 
 Neither half looks at *which* remote, so pushing `develop` to a personal fork is
 refused too, and both key on the branch *name*, so a commit onto `main` in an

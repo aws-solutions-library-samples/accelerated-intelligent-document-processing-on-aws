@@ -122,9 +122,9 @@ tests in `test_apply_feature_config_preset.py`
 (`test_remove_hands_the_pipeline_back_to_default_then_deletes` and
 `test_remove_keeps_an_active_profile_when_there_is_no_default_to_fall_back_to`) were
 misread as a standing failure of this repo for exactly that reason. With
-`idp_common` unimportable that file reports `2 failed, 18 passed`; with
-`PYTHONPATH=<checkout>/lib/idp_common_pkg` exported it reports `20 passed`, on the
-same interpreter and the same commit. Measured identically under Python 3.12 and
+`idp_common` unimportable that file reports `2 failed, 18 passed`; with the pin the
+`make` targets export (`PYTHONPATH` naming every `lib/*` package root, absolute) it
+reports `20 passed`, on the same interpreter and the same commit. Measured identically under Python 3.12 and
 3.13, so it is not a version incompatibility. Check that
 `python3 -c "import idp_common; print(idp_common.__file__)"` resolves inside your own
 checkout before reading anything else — an editable install can silently point at a
@@ -163,7 +163,7 @@ Adding an exclusion, or lifting one of these, fails that guard until this table 
 the registry agree — it is checked in both directions, so a row that outlives the
 exclusion it describes fails too.
 
-### A run can measure the wrong checkout, and two suites refuse to
+### A run can measure the wrong checkout, and the `make` targets pin against it
 
 `idp_common` and the SDKs are **editable installs**, so `import idp_common` reads
 whatever pointer is in the active interpreter's `site-packages` — not necessarily this
@@ -175,23 +175,49 @@ so running the gate repoints the pointer as a side effect.
 
 Nothing raises when this happens. The imported package is real and self-consistent, just
 a different revision, so it shows up as an unrelated-looking assertion failure or as a
-**green run whose coverage number describes another tree**. `scripts/tests/first_party_provenance.py`
-turns that into an immediate, explanatory failure, and is called from
-`lib/idp_common_pkg/tests/conftest.py`,
-`feature-platform/main-stack-extensions/tests/conftest.py`,
-`scripts/tests/test_model_surface_consistency.py` and
-`lib/idp_sdk/tests/unit/test_config_operations_region.py`.
+**green run whose coverage number describes another tree**.
 
-It compares **checkout identity**, deriving each side's root by walking up to `.git`, so
-a git worktree validates against itself and passes while a worktree *nested inside*
-another checkout is correctly refused. Pin a one-off run with
-`PYTHONPATH=lib/idp_common_pkg`; fix it durably by installing with the interpreter you
-actually want (`<your-venv>/bin/python -m pip install -e "lib/idp_common_pkg[test]"`, by
-path and never by bare name — see [dependency-confusion.md](dependency-confusion.md)).
-`IDP_ALLOW_FOREIGN_FIRST_PARTY=1` downgrades the failure to a warning when you are
-deliberately testing an installed copy; it is a per-invocation switch, so it is not in
-`scripts/tests/gate_exemptions.json`, for the reason that file records for
-`ALLOW_SHARED_BRANCH`.
+**Through `make`, the pin is applied for you.** `PYTEST_HERMETIC` in
+`make/hermetic_aws.mk` — the wrapper every pytest invocation in both Makefiles goes
+through — exports an absolute `PYTHONPATH` naming every first-party root of the checkout
+the makefile belongs to, and `scripts/run_all_tests.py` passes the same value to each of
+the pytest subprocesses `make test` starts. The set is derived from
+`lib/*/pyproject.toml`, the same rule that decides what `FIRST_PARTY_EDITABLES` installs,
+so a package added under `lib/` is pinned without anyone adding it anywhere;
+`scripts/tests/test_first_party_pythonpath.py` asserts the three implementations of that
+rule agree, and measures the wrapper by importing all five packages under it. A caller's
+own `PYTHONPATH` is kept, after the pin. `make test FIRST_PARTY_PYTHONPATH=` suppresses
+it, for deliberately testing an installed copy.
+
+**Running `pytest` directly, pin it yourself — every root, and absolute.** The packages
+import each other, so a pin naming `lib/idp_common_pkg` alone is refused by the next one;
+and a relative pin is dropped by any subprocess started in another directory, which
+several suites do start. `scripts/tests/first_party_provenance.py` is what refuses, and it
+is called from `lib/idp_common_pkg/tests/conftest.py`,
+`feature-platform/main-stack-extensions/tests/conftest.py`, `scripts/tests/conftest.py`,
+`scripts/tests/test_model_surface_consistency.py` and
+`lib/idp_sdk/tests/unit/test_config_operations_region.py`. It compares **checkout
+identity**, deriving each side's root by walking up to `.git`, so a git worktree validates
+against itself and passes while a worktree *nested inside* another checkout is correctly
+refused. Before refusing it tries to repair: it puts this checkout's own roots first on
+`sys.path` and reports having done so, since that fixes the process in hand and not the
+environment. It still refuses when the package was already imported — re-importing one
+other modules hold references to leaves two live copies — and when this checkout has no
+copy to prefer. **A refusal is not a failing test; it is a run that did not happen**, and
+the message says so, because a collection error at the end of a long log reads as "some
+tests failed".
+
+Fix it durably by installing with the interpreter you actually want
+(`<your-venv>/bin/python -m pip install -e "lib/idp_common_pkg[test]"`, by path and never
+by bare name — see [dependency-confusion.md](dependency-confusion.md)).
+`scripts/check_first_party_deps.py`, which runs in both CIs and after every `make setup`,
+reports an editable pointer into another checkout as a failure — it answers "from source,
+and from *which* source", where answering only the first half is how this condition stayed
+invisible while the control that looked like it covered it was green.
+`IDP_ALLOW_FOREIGN_FIRST_PARTY=1` downgrades both that failure and the pytest-side
+refusal to a note when you are deliberately testing an installed copy; it is a
+per-invocation switch, so it is not in `scripts/tests/gate_exemptions.json`, for the
+reason that file records for `ALLOW_SHARED_BRANCH`.
 
 ## 2. Static gates (lint, types, and hand-written scanners)
 

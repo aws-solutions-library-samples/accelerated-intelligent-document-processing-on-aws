@@ -48,13 +48,38 @@ worktrees under ``.claude/worktrees/`` and ``/tmp`` are a normal way to work her
 check keyed to one canonical path would fail every one of them and train people to set
 the escape hatch by default. ``.git`` is a **file** in a worktree and a directory in a
 primary checkout, so existence rather than type is the test.
+
+**It repairs what it can, and refuses only what it cannot.** A check that can only
+refuse teaches people to work around it, and the fix — an absolute ``PYTHONPATH``
+naming every first-party root — is mechanical, so :func:`assert_resolves_in` applies it
+itself: before importing anything it puts this checkout's own package roots at the
+front of ``sys.path``, which is enough to win against an editable install's pointer.
+Two cases remain refusals, and neither can be repaired here:
+
+* the module is **already imported**. Re-importing it would mean deleting it from
+  ``sys.modules`` while other modules hold references to the objects it defines, which
+  leaves two live copies of one package and breaks ``isinstance`` in ways far harder to
+  diagnose than the refusal;
+* this checkout does not contain the package at all, so there is nothing local to
+  prefer.
+
+A repair is reported rather than performed silently. It fixed *this* process; the
+environment is still pointing elsewhere, so the next command that does not go through
+a pinned invocation measures the wrong tree again.
+
+**The refusal says it did not run.** The failure it reports is one whose whole danger
+is being mistaken for a result, and a collection error at the bottom of a long log is
+read as "some tests failed" more often than as "no test ran". So the message leads with
+that, and the remedy it prints names **every** root, because a pin naming
+``lib/idp_common_pkg`` alone is refused again by the very next package.
 """
 
 from __future__ import annotations
 
 import os
+import sys
 import warnings
-from importlib import import_module
+from importlib import import_module, util
 from pathlib import Path
 
 #: Environment variable that downgrades a mismatch to a warning.
@@ -100,6 +125,60 @@ def checkout_root(anchor: str | Path) -> Path:
     return path.parent
 
 
+def first_party_roots(root: str | Path) -> list[Path]:
+    """Every first-party package root in the checkout at ``root``, sorted.
+
+    A directory under ``lib/`` holding a ``pyproject.toml`` is one. The rule is
+    derived rather than listed so that a package added under ``lib/`` is pinned
+    without anyone remembering to add it, and it is spelled out again here — rather
+    than imported from ``scripts/first_party_paths.py`` — because ``conftest.py``
+    loads this file by path and it must stay free of imports from the tree.
+    ``scripts/tests/test_first_party_pythonpath.py`` asserts the two agree, and that
+    both agree with what ``FIRST_PARTY_EDITABLES`` installs.
+    """
+    return sorted(p.parent for p in Path(root).glob("lib/*/pyproject.toml"))
+
+
+def pin_checkout(root: str | Path) -> list[str]:
+    """Put ``root``'s own first-party roots at the front of ``sys.path``.
+
+    Returns the entries added, newest first, or an empty list when they were all
+    there already. Idempotent, and it never removes anything: an editable install's
+    pointer is consulted after ``sys.path``, so prepending is enough to win without
+    taking anything away from a caller who put an entry there deliberately.
+    """
+    added: list[str] = []
+    for package_root in reversed(first_party_roots(root)):
+        entry = str(package_root)
+        if entry in sys.path:
+            continue
+        sys.path.insert(0, entry)
+        added.append(entry)
+    return added
+
+
+def _origin(module_name: str) -> Path | None:
+    """Where ``module_name`` would be imported from as things stand, without importing.
+
+    Used to tell a repair from a run that was already correct, so that only a genuine
+    repair is reported. ``find_spec`` locates a top-level module without executing it;
+    anything it raises means "cannot tell", which is reported as no answer.
+    """
+    try:
+        spec = util.find_spec(module_name)
+    except (ImportError, ValueError, AttributeError):
+        return None
+    if spec is None or not spec.origin:
+        return None
+    return Path(spec.origin).resolve()
+
+
+def _pytest_remedy(root: Path) -> str:
+    """The pinned pytest invocation for ``root``, naming every package root."""
+    pin = os.pathsep.join(str(p) for p in first_party_roots(root))
+    return f"    PYTHONPATH={pin} python -m pytest ..."
+
+
 def assert_resolves_in(module_name: str, anchor: str | Path) -> None:
     """Fail unless ``module_name`` resolves inside the checkout containing ``anchor``.
 
@@ -121,10 +200,20 @@ def assert_resolves_in(module_name: str, anchor: str | Path) -> None:
     A module that cannot be imported at all is left alone: that is an environment
     problem this function has nothing useful to add to, and raising here would mask the
     real ``ImportError`` from whichever test actually needs the module.
+
+    **Repair comes before the import, deliberately.** :func:`pin_checkout` runs while
+    ``module_name`` may still be unimported, so the local copy is preferred on the
+    first import rather than swapped in afterwards — and the pin covers every root at
+    once, so a package this checkout imports *through* another (``idp_sdk`` imports
+    ``idp_common``) is pinned too.
     """
     root = checkout_root(anchor)
     if not (root / ".git").exists():
         return
+
+    was_imported = module_name in sys.modules
+    before = None if was_imported else _origin(module_name)
+    added = pin_checkout(root)
 
     try:
         module = import_module(module_name)
@@ -139,19 +228,51 @@ def assert_resolves_in(module_name: str, anchor: str | Path) -> None:
 
     resolved = Path(source).resolve()
     if checkout_root(resolved) == root:
+        # Reported only when this call actually changed the answer: `added` empty means
+        # the roots were already on sys.path and nothing was repaired, and a `before`
+        # of None means the import had already happened or could not be located, in
+        # which case there is nothing truthful to say about what it would have been.
+        if added and before is not None and checkout_root(before) != root:
+            warnings.warn(
+                f"{module_name} would have been imported from {before}, outside the "
+                f"checkout under test. This run was repaired by putting {root}'s own "
+                f"package roots first on sys.path, so what follows does describe this "
+                f"tree — but the environment still points at the other one, so any "
+                f"command that does not carry the same pin measures that tree instead. "
+                f"Repoint it with:\n"
+                f"    <your-venv>/bin/python -m pip install -e "
+                f"'{root / 'lib' / 'idp_common_pkg'}[test]'",
+                UserWarning,
+                stacklevel=2,
+            )
         return
 
+    already = (
+        "\nIt was already imported before this check ran, so it could not be "
+        "repaired here: re-importing a package other modules already hold "
+        "references to leaves two live copies of it, which is harder to diagnose "
+        "than this refusal."
+        if was_imported
+        else ""
+    )
     message = (
-        f"{module_name} resolves OUTSIDE the checkout under test, so this run would "
-        f"report on a different revision of it.\n"
+        f"REFUSED: nothing in this run was tested against {root}.\n"
+        f"Read this as 'did not run', not as 'failed' — no result below it describes "
+        f"the checkout you started it from.\n\n"
+        f"{module_name} resolves OUTSIDE that checkout, so the run would report on a "
+        f"different revision of it.\n"
         f"  checkout under test : {root}\n"
         f"  {module_name} came from : {resolved}\n"
         f"Any pass, failure or coverage figure from this run describes that tree, not "
-        f"this one.\n"
-        f"Fix it for this invocation:\n"
-        f"    PYTHONPATH={root / 'lib' / 'idp_common_pkg'} python -m pytest ...\n"
-        f"or durably, by installing with the interpreter you actually want rather than "
-        f"whichever one is first on PATH:\n"
+        f"this one.{already}\n"
+        f"Fix it for this invocation — every root, and absolute, because these packages "
+        f"import each other and a relative pin is lost by any subprocess that changes "
+        f"directory:\n"
+        f"{_pytest_remedy(root)}\n"
+        f"Through make, that pin is applied for you: `make test` and every `make test-*` "
+        f"target set it themselves.\n"
+        f"Durably, install with the interpreter you actually want rather than whichever "
+        f"one is first on PATH:\n"
         f"    <your-venv>/bin/python -m pip install -e "
         f"'{root / 'lib' / 'idp_common_pkg'}[test]'\n"
         f"Install by PATH, never by bare name: these distribution names on public PyPI "

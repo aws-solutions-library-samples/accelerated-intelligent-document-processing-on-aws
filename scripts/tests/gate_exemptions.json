@@ -722,6 +722,31 @@
       "ratchetGap": "Same as ALLOWED_EMAILS: no staleness check.",
       "memberKind": "literal string"
     },
+    "scripts/hooks/check_commit_text.py::CI_SUPPRESSION_DIRECTIVES": {
+      "kind": "enforced-universe",
+      "memberKind": "CI directive",
+      "turnsOff": "nothing -- it is the set of commit-message directives the hook REFUSES, so the hazard here is a member missing from it rather than a carve-out in it",
+      "premise": [
+        "JUDGEMENT"
+      ],
+      "ratchet": "universe-closure",
+      "reason": "Each member is a directive one of the two CI platforms honours natively, taken from that platform's documentation: GitHub Actions skips a push- or pull_request-triggered run on any of the five, GitLab skips pipeline creation on two of them. Whether a platform still honours a given spelling is a fact about that platform and not about this tree, so no predicate in gate_premises.py can decide it. What is checkable here, and is checked, is that the list a reader sees and the regex that actually runs agree in both directions, and that prose merely mentioning CI is not matched.",
+      "ratchetEvidence": [
+        "scripts/tests/test_no_skip_ci_markers.py",
+        "scripts/tests/test_check_commit_text.py"
+      ]
+    },
+    "scripts/hooks/check_shared_branch.py::TENANCY_SUBCOMMANDS": {
+      "kind": "exemption",
+      "memberKind": "git subcommand",
+      "turnsOff": "the co-tenancy notice for every git subcommand other than the four listed",
+      "premise": [
+        "JUDGEMENT"
+      ],
+      "ratchet": "universe-closure",
+      "reason": "The notice is advice rather than a verdict, and it costs a file read plus a `git rev-parse` on every command it applies to, so it is limited to the four subcommands where standing in a working tree somebody else moved changes the outcome: `commit` and `push` write, `switch` and `checkout` move the tree. `git status` in a loop gains nothing from it and would pay for it every time. Which subcommands matter is a judgement about what the notice is for rather than a property of this tree, so no predicate in gate_premises.py can decide it; what the ratchet does instead is derive the set from the guard's own vocabulary (the switch spellings plus commit and push) and require equality, so a subcommand the guard learns to judge later cannot be left unaccounted for here.",
+      "ratchetEvidence": "scripts/tests/test_check_shared_branch.py"
+    },
     "scripts/lint_debt.json::lint_debt.json": {
       "kind": "exemption",
       "memberKind": "path",

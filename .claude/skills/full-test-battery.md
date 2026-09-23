@@ -201,22 +201,40 @@ Two invocation corrections for the CI-equivalent gates:
   (#1109). So what matters is that `extraPaths` **stays** populated, which
   `scripts/tests/test_pyright_config.py` asserts — not which way you invoke the gate.
 
-⚠️ **`PYTHONPATH` for pytest has to name EVERY first-party root, not just
-`idp_common_pkg`.** The provenance guard (`scripts/tests/first_party_provenance.py`,
-wired into several conftests) checks each first-party package independently, and on a
-machine whose editable installs point at another checkout it refuses the run for
-whichever one it finds there. Setting only `lib/idp_common_pkg` gets as far as
-`idp_sdk resolves OUTSIDE the checkout under test` — which is the guard doing its job,
-not a defect, but it is a *refusal* rather than a failure and has to be read as
-"did not run":
+**Through `make`, the pin is applied for you.** Every pytest invocation in both
+Makefiles goes through `PYTEST_HERMETIC` (`make/hermetic_aws.mk`), which exports an
+absolute `PYTHONPATH` naming every first-party root of the checkout that makefile
+belongs to, and `scripts/run_all_tests.py` hands the same value to each subprocess
+`make test` starts. So `make test`, `make test-packages-cicd`, `make test-hooks` and
+`make test-cicd -C lib/idp_common_pkg` measure the tree you ran them from, in a
+worktree as much as in the main checkout. `make <target> FIRST_PARTY_PYTHONPATH=`
+suppresses the pin, for deliberately testing an installed copy.
+
+⚠️ **Running `pytest` by hand, `PYTHONPATH` has to name EVERY first-party root and be
+absolute.** The provenance guard (`scripts/tests/first_party_provenance.py`, wired into
+several conftests) checks each first-party package independently, so a pin naming only
+`lib/idp_common_pkg` gets as far as `idp_sdk resolves OUTSIDE the checkout under test`;
+a relative pin is dropped by any subprocess that changes directory. The guard repairs
+what it can — it puts the checkout's own roots first on `sys.path` and says it did, so
+a bare `pytest scripts/tests` now runs against the right tree and warns that the
+environment still points elsewhere. What it cannot repair it refuses, and **a refusal
+is not a failure, it is a run that did not happen**: the message opens with `REFUSED:`
+and names the pin that works.
 
 ```bash
 W=$(pwd)   # from the worktree root
 export PYTHONPATH=$W/lib/idp_common_pkg:$W/lib/idp_sdk:$W/lib/idp_cli_pkg:$W/lib/idp_mcp_connector_pkg:$W/lib/idp_feature_sdk
 ```
 
-That list is the same set as `FIRST_PARTY_EDITABLES` in the `Makefile`; keep them
-together.
+That list is the same set as `FIRST_PARTY_EDITABLES` in the `Makefile`, and both are
+now derived from `lib/*/pyproject.toml` rather than typed —
+`scripts/tests/test_first_party_pythonpath.py` fails if they disagree.
+
+**`scripts/check_first_party_deps.py` tells you whether the environment itself is
+pointing at this checkout** (`make install-first-party` runs it, and so do both CIs).
+It reports an editable pointer into another checkout as a failure, naming both trees.
+That is the fastest way to find out that this machine's shared interpreter has been
+repointed by another session.
 
 ## There is no standing failure set — green means green
 

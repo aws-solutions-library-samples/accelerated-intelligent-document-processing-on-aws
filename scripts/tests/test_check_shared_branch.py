@@ -1968,6 +1968,179 @@ def test_install_target_reports_plainly_when_hooks_are_not_redirected(
 
 
 # --------------------------------------------------------------------------- #
+# co-tenancy: another session standing in the same working directory (#1087)
+# --------------------------------------------------------------------------- #
+# These are ADVICE, so the assertions come in pairs: the notice appears when the
+# condition holds, and the command is still allowed in every case. A version of this
+# that refused would pass a test looking only for the message.
+SESSION_A = "aaaaaaaa-1111-2222-3333-444444444444"
+SESSION_B = "bbbbbbbb-5555-6666-7777-888888888888"
+
+
+def _bash_as(command: str, cwd: Path, session: str) -> dict[str, object]:
+    payload = _bash(command, cwd)
+    payload["session_id"] = session
+    return payload
+
+
+def _notices(command: str, cwd: Path, session: str) -> list[str]:
+    collected: list[str] = []
+    assert decide(_bash_as(command, cwd, session), collected) is None
+    return collected
+
+
+@pytest.mark.unit
+def test_the_first_command_in_a_directory_says_nothing(repo: Path) -> None:
+    """Nothing to compare against yet, and a notice then would be noise."""
+    _checkout(repo, "feature/thing")
+    assert _notices("git commit -m x", repo, SESSION_A) == []
+
+
+@pytest.mark.unit
+def test_the_same_session_twice_says_nothing(repo: Path) -> None:
+    _checkout(repo, "feature/thing")
+    _notices("git commit -m x", repo, SESSION_A)
+    assert _notices("git commit -m y", repo, SESSION_A) == []
+
+
+@pytest.mark.unit
+def test_a_second_session_in_the_same_directory_is_reported(repo: Path) -> None:
+    """The condition #1087 describes: two sessions, one working tree."""
+    _checkout(repo, "feature/thing")
+    _notices("git commit -m x", repo, SESSION_A)
+    lines = _notices("git commit -m y", repo, SESSION_B)
+    assert any("another session" in line for line in lines), lines
+    assert any(SESSION_A[:8] in line for line in lines), lines
+    # The remedy is the convention that avoids it, not a rule nothing enforces.
+    assert any("git worktree add" in line for line in lines), lines
+
+
+@pytest.mark.unit
+def test_a_branch_that_moved_under_this_session_is_reported(repo: Path) -> None:
+    """The consequence, rather than the co-tenancy itself.
+
+    A session that ran a command on ``feature/thing`` and comes back to find the tree on
+    another branch is about to test or commit something other than what it thinks. The
+    other branch here is a second feature branch rather than ``develop`` or ``main``,
+    which would be refused outright and so could not show the notice.
+    """
+    _checkout(repo, "feature/thing")
+    _notices("git commit -m x", repo, SESSION_A)
+    _git_in(repo, "switch", "-q", "-c", "feature/theirs")
+    lines = _notices("git commit -m y", repo, SESSION_A)
+    assert any("is now on feature/theirs" in line for line in lines), lines
+
+
+@pytest.mark.unit
+def test_a_session_switching_branches_itself_is_not_reported(repo: Path) -> None:
+    """The false positive that would make this unusable, and the reason it records
+    where the command LEAVES head rather than where it found it."""
+    _checkout(repo, "feature/thing")
+    _notices("git switch -c fix/mine && git commit -m x", repo, SESSION_A)
+    # What that command would have done, done for real: the hook only inspects.
+    assert _git_in(repo, "switch", "-q", "-c", "fix/mine").returncode == 0
+    assert _notices("git commit -m y", repo, SESSION_A) == []
+
+
+@pytest.mark.unit
+def test_the_notice_never_refuses(repo: Path) -> None:
+    """Advice, not a verdict: a co-tenancy notice must not change the exit status."""
+    _checkout(repo, "feature/thing")
+    _notices("git commit -m x", repo, SESSION_A)
+    result = _run_hook(_bash_as("git commit -m y", repo, SESSION_B))
+    assert result.returncode == 0, result.stderr
+    assert "another session" in result.stderr
+
+
+@pytest.mark.unit
+def test_a_refusal_is_not_replaced_by_a_notice(repo: Path) -> None:
+    """The refusals still win: a notice must not become a way past one."""
+    _checkout(repo, "develop")
+    _notices("git status", repo, SESSION_A)
+    result = _run_hook(_bash_as("git commit -m y", repo, SESSION_B))
+    assert result.returncode == 2, result.stderr
+    assert "shared branch" in result.stderr
+
+
+@pytest.mark.unit
+def test_without_a_session_id_nothing_is_reported(repo: Path) -> None:
+    """Two sessions would look like one, so a notice would be a guess."""
+    _checkout(repo, "feature/thing")
+    collected: list[str] = []
+    assert decide(_bash("git commit -m x", repo), collected) is None
+    assert collected == []
+
+
+@pytest.mark.unit
+def test_every_subcommand_the_guard_judges_is_accounted_for_by_the_notice() -> None:
+    """Universe closure on ``TENANCY_SUBCOMMANDS``, which is registered as an exemption.
+
+    That constant decides which commands get a co-tenancy notice, and the risk in it is
+    a subcommand left **unaccounted** for: if the guard learns to judge another one, the
+    question of whether standing in somebody else's working tree matters for it has to
+    be answered rather than defaulted. So the set is derived from the guard's own
+    vocabulary — the two switch spellings, plus the two commands that write — and
+    equality is required, in both directions.
+    """
+    judged = check_shared_branch.SWITCH_SUBCOMMANDS | {"commit", "push"}
+    assert check_shared_branch.TENANCY_SUBCOMMANDS == judged, (
+        "TENANCY_SUBCOMMANDS and the subcommands this guard judges have drifted: "
+        f"{sorted(check_shared_branch.TENANCY_SUBCOMMANDS ^ judged)} is in one and not "
+        "the other. Decide whether the new subcommand should carry the notice, and "
+        "update scripts/tests/gate_exemptions.json's reason if the answer is no."
+    )
+
+
+@pytest.mark.unit
+def test_a_read_only_command_does_not_pay_for_the_check(repo: Path) -> None:
+    """`git status` in a loop should not read and write a state file each time."""
+    _checkout(repo, "feature/thing")
+    _notices("git status", repo, SESSION_A)
+    state = (
+        Path(_git_in(repo, "rev-parse", "--absolute-git-dir").stdout.strip())
+        / check_shared_branch.TENANCY_FILE
+    )
+    assert not state.exists()
+
+
+@pytest.mark.unit
+def test_the_state_lives_in_the_working_tree_s_own_git_dir(repo: Path) -> None:
+    """Per working tree, not per repository, and never in a shared temp directory.
+
+    A worktree's git dir is ``<main>/.git/worktrees/<name>``, so keying on it is what
+    makes the record about the directory somebody is standing in. A predictable path
+    under ``/tmp`` would be writable by anything on the host.
+    """
+    _checkout(repo, "feature/thing")
+    _notices("git commit -m x", repo, SESSION_A)
+    git_dir = Path(_git_in(repo, "rev-parse", "--absolute-git-dir").stdout.strip())
+    assert (git_dir / check_shared_branch.TENANCY_FILE).is_file()
+    assert git_dir.is_relative_to(repo)
+
+
+@pytest.mark.unit
+def test_an_unwritable_git_dir_does_not_break_the_command(
+    repo: Path, monkeypatch
+) -> None:
+    """Fails open, like every other unknown here."""
+    _checkout(repo, "feature/thing")
+
+    def refuse(*args: object, **kwargs: object) -> None:
+        raise OSError("read-only file system")
+
+    monkeypatch.setattr(Path, "write_text", refuse)
+    assert _notices("git commit -m x", repo, SESSION_A) == []
+
+
+@pytest.mark.unit
+def test_a_directory_that_is_not_a_repository_says_nothing(tmp_path: Path) -> None:
+    """No git dir, nothing to key the record on."""
+    plain = tmp_path / "plain"
+    plain.mkdir()
+    assert _notices("git commit -m x", plain, SESSION_A) == []
+
+
+# --------------------------------------------------------------------------- #
 # both halves are reachable
 # --------------------------------------------------------------------------- #
 @pytest.mark.unit
