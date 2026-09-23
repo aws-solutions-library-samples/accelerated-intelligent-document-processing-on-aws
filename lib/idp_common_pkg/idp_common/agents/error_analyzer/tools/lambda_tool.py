@@ -9,6 +9,7 @@ import json
 import logging
 import os
 from datetime import datetime
+from collections.abc import Hashable
 from typing import Any, Dict, List, Optional
 
 import boto3
@@ -256,6 +257,12 @@ def _function_name_from_task_parameters(parameters: Any) -> Optional[str]:
     target = parameters.get("FunctionName")
     if not isinstance(target, str) or not target:
         return None
+    # A bare name is accepted; anything containing a colon that is not a function
+    # ARN is refused rather than guessed at. That refuses a QUALIFIED bare name —
+    # `MyFunction:PROD` or `MyFunction:3`, a real function plus an alias or
+    # version. Unreachable from this workflow, whose nine optimized states all pass
+    # full ARNs, and refusing is the safe direction: the alternative is splitting on
+    # a colon and hoping, which is the positional read #1128 removed.
     return _function_name_from_arn(target) or (target if ":" not in target else None)
 
 
@@ -337,8 +344,15 @@ def extract_lambda_request_ids(
     # that field, so `failed_functions` was always empty and
     # `primary_failed_function` always None in production (#1171).
     invoked_by_id = _index_invoked_functions(execution_events)
+    # `Hashable` rather than only `is not None`: an unhashable `id` would raise while
+    # building this dict, and the caller's broad `except` turns any raise here into
+    # `document_found: False`, discarding every request id and failed-function name
+    # already gathered. Unreachable from a real history, where `id` is an integer — but
+    # the cost of being wrong is total, and the guard is one predicate.
     events_by_id = {
-        event["id"]: event for event in execution_events if event.get("id") is not None
+        event["id"]: event
+        for event in execution_events
+        if event.get("id") is not None and isinstance(event.get("id"), Hashable)
     }
 
     for event in execution_events:

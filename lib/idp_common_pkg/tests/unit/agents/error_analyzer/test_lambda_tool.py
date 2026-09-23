@@ -891,6 +891,17 @@ class TestTheFixtureMatchesTheServiceApiModel:
     * ``resource`` is **absent** from the shapes the parser is forbidden to read it
       from — so if AWS ever adds it, this fails and the parser can be simplified
       deliberately rather than the invariant rotting silently.
+
+    ⚠️ **Two limits worth knowing before reading a pass here as "the fixtures are
+    right".** It spans the three shared builders — ``_direct_chain``,
+    ``_optimized_chain`` and ``_state_event`` — and not the handful of histories
+    written inline elsewhere in this file, which are currently valid but unchecked. And
+    it constrains **keys and fields, not sequences**: event *ordering* is not in the
+    API model, so a history assembled in an order the service cannot emit passes every
+    assertion here. That gap is not hypothetical — a schedule-failure case built from
+    ``_direct_chain`` placed a ``Scheduled`` and a ``Started`` event before a failure
+    *to schedule*, and asserted a capability the parser does not have. It is the same
+    species as the defect this class exists to prevent, one layer up.
     """
 
     @staticmethod
@@ -1138,17 +1149,78 @@ class TestTheInvokeTimeFailureFamily:
     even though the scheduling predecessor the walk needs was right there.
     """
 
-    @pytest.mark.parametrize(
-        "outcome", ["LambdaFunctionScheduleFailed", "LambdaFunctionStartFailed"]
-    )
-    def test_a_direct_invocation_that_never_started_still_names_its_function(
-        self, outcome
-    ):
+    def test_a_direct_invocation_that_failed_to_start_names_its_function(self):
+        """`LambdaFunctionStartFailed` follows a successful `LambdaFunctionScheduled`,
+        so the walk has somewhere to land. This is the throttle case."""
         result = extract_lambda_request_ids(
-            _direct_chain(outcome, detail={"error": "Lambda.TooManyRequestsException"})
+            _direct_chain(
+                "LambdaFunctionStartFailed",
+                detail={"error": "Lambda.TooManyRequestsException"},
+            )
         )
         assert result["failed_functions"] == ["OCRFunction"]
         assert result["primary_failed_function"] == "OCRFunction"
+
+    def test_a_schedule_failure_names_nothing_because_it_has_no_scheduled_event(self):
+        """⚠️ **The one invoke-time type this does NOT attribute**, asserted at the
+        answer it actually gives rather than the one the other three give.
+
+        A schedule failure is what Step Functions emits *instead of*
+        `LambdaFunctionScheduled`, so there is no scheduling event for the causal walk
+        to land on and the failure contributes no function name. The history below is
+        the shape the service can produce; building it with `_direct_chain` instead
+        would place a `Scheduled` **and** a `Started` event before a failure *to
+        schedule*, which asserts a capability the code does not have against a history
+        that cannot occur.
+
+        **Status of the two halves.** The *consequence* is measured — this history
+        gives `[]` and `None`, while the `_direct_chain` shape gives `['OCRFunction']`.
+        The *ordering* is strongly-supported inference rather than measurement: the API
+        reference documents only "details about a failed Lambda function schedule
+        event", and no live execution was observed. What supports it is the model —
+        `LambdaFunctionScheduledEventDetails.resource` is a **required** member, so a
+        scheduling attempt that failed because the resource could not be resolved
+        cannot have emitted one.
+
+        Not a regression: the previous parser did not read this event type at all, so
+        the outcome is the same empty value. Giving it the enclosing state's name is
+        the better eventual behaviour and is deliberately not done here — reaching for
+        the state name is how the `TaskStateEntered` cross-attribution arose, so it
+        wants its own change and its own measurement. Tracked separately.
+        """
+        history = [
+            {
+                "type": "TaskStateEntered",
+                "id": 1,
+                "previousEventId": 0,
+                "stateEnteredEventDetails": {"name": "OCRStep", "input": "{}"},
+            },
+            {
+                "type": "LambdaFunctionScheduleFailed",
+                "id": 2,
+                "previousEventId": 1,
+                "lambdaFunctionScheduleFailedEventDetails": {
+                    "error": "Lambda.AccessDeniedException",
+                    "cause": "not authorized to perform: lambda:InvokeFunction",
+                },
+            },
+        ]
+
+        result = extract_lambda_request_ids(history)
+        assert result["failed_functions"] == []
+        assert result["primary_failed_function"] is None
+
+    def test_the_event_type_is_still_read_so_a_later_fallback_would_work(self):
+        """`LambdaFunctionScheduleFailed` stays in the parser's maps even though it
+        resolves to no name today. Reading it costs nothing, and it is what a
+        state-name fallback would attach to when one is added."""
+        from idp_common.agents.error_analyzer.tools.lambda_tool import (
+            _FAILURE_EVENTS_WITH_A_FUNCTION,
+            _OUTCOME_DETAIL_KEYS,
+        )
+
+        assert "LambdaFunctionScheduleFailed" in _OUTCOME_DETAIL_KEYS
+        assert "LambdaFunctionScheduleFailed" in _FAILURE_EVENTS_WITH_A_FUNCTION
 
     @pytest.mark.parametrize("outcome", ["TaskStartFailed", "TaskSubmitFailed"])
     def test_an_optimized_invocation_that_never_started_names_its_function(
