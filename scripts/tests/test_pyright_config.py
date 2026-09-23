@@ -677,9 +677,16 @@ def test_the_typecheck_walk_reaches_no_ignored_python() -> None:
     same commit is green on a clean checkout and in CI, red for anyone who has
     packaged the feature. A gate with that property cannot be used to decide anything.
 
-    The remedy for a failure here is an `exclude` pattern plus an entry in
-    `STAGED_BUILD_OUTPUT_EXEMPT` with the reason for that path — not a wider
-    `exclude`, and not a bare directory name, which would match at every depth.
+    The remedy for a failure here is an `exclude` pattern plus a record of it, and
+    **which record depends on what the artifact is keyed by**: a tree a local build
+    stages goes in `STAGED_BUILD_OUTPUT_EXEMPT` as `<path>/**`, while something named by
+    its filename wherever it lands — a tool writing `<x>-converted.py` beside each
+    notebook — goes in `GENERATED_ARTIFACT_EXCLUSIONS` as a filename glob. The two are
+    not interchangeable: `vcs_ignored_generated_filename` refuses a pattern whose final
+    component is not a wildcard, so a `<path>/**` entry registered as a generated
+    filename fails, and a filename glob registered as a staged tree has no directory to
+    ask about. Neither is a wider `exclude`, and neither is a bare directory name outside
+    the derived build-output category.
     """
     includes = _include_paths()
     reached = [
@@ -695,9 +702,13 @@ def test_the_typecheck_walk_reaches_no_ignored_python() -> None:
         + "\n  ".join(trees[:10])
         + "\n\nThese are not part of this repository — an ignore rule covers them — "
         "and basedpyright has no way to know that: it has no ignore-file support, so "
-        "`exclude` is the only mechanism. Add a `<path>/**` entry to pyrightconfig "
-        "`exclude` and register the path in STAGED_BUILD_OUTPUT_EXEMPT in this file "
-        "with the reason for that one path."
+        "`exclude` is the only mechanism. Add a pyrightconfig `exclude` pattern and "
+        "register it in this file with the reason for that one entry, in whichever "
+        "record matches what the artifact is keyed by: STAGED_BUILD_OUTPUT_EXEMPT for a "
+        "tree a local build stages (as `<path>/**`), or GENERATED_ARTIFACT_EXCLUSIONS "
+        "for a filename another tool writes wherever it runs (as a filename glob, e.g. "
+        "`**/*-converted.py`). The two are not interchangeable — the generated-filename "
+        "premise refuses a pattern whose final component is not a wildcard."
     )
 
 
