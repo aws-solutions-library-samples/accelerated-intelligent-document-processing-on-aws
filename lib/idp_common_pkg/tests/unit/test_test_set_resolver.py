@@ -2035,13 +2035,7 @@ class TestTestSetResolver:
         assert job["status"] == "RUNNING"
 
     def test_a_merged_harvest_still_completes_the_job(self, labeling_env):
-        """The merge must also settle the derived status, not just the lists.
-
-        Pending documents are tracked by name so that the winner's lists can be
-        subtracted from them exactly. If they were still counted, a pass that
-        waited on a document the winner had already resolved would keep reporting
-        RUNNING and the job would never close.
-        """
+        """The merge must settle the derived status, not only the lists."""
         table, s3 = labeling_env
         stale_job = self._two_document_labeling_job(table, s3)
         table.update_item(
@@ -2056,6 +2050,72 @@ class TestTestSetResolver:
         assert sorted(job["harvestedFiles"]) == ["a.pdf", "b.pdf"]
         assert job["labeled"] == 2
         assert job["status"] == "COMPLETED"
+
+    def test_a_document_the_winner_resolved_stops_counting_as_pending(
+        self, labeling_env
+    ):
+        """The one assertion that `pending_files` exists for.
+
+        Pending documents are tracked by name rather than counted so the winner's
+        lists can be subtracted from them exactly. The case that needs it is a pass
+        that is *still waiting* on a document the winner has already resolved: with
+        a bare count, the subtraction cannot be expressed, the pass reports RUNNING
+        on a job that is finished, and the row's own status contradicts its lists
+        until the next poll rewrites it.
+
+        `b.pdf` is deliberately left un-processed in the tracking table, so this
+        pass counts it pending rather than harvesting it -- which is what the other
+        merge tests cannot reproduce, because in those the pass resolves every
+        document itself and the subtraction is a no-op.
+        """
+        table, s3 = labeling_env
+        _seed_test_set(table, "ts1", fileCount=2)
+        uri = _seed_pipeline_result(
+            s3, "ts1-run/a.pdf/sections/1/result.json", {"vendor": "a.pdf"}
+        )
+        _seed_completed_run(
+            table,
+            "ts1-run",
+            "ts1",
+            ["a.pdf", "b.pdf"],
+            {"a.pdf": [{"Id": "1", "OutputJSONUri": uri}]},
+        )
+        # b.pdf has no COMPLETED tracking record, so this pass waits on it.
+        table.put_item(
+            Item={
+                "PK": "doc#ts1-run/b.pdf",
+                "SK": "none",
+                "ObjectStatus": "RUNNING",
+            }
+        )
+        table.put_item(
+            Item={
+                "PK": "testset#ts1",
+                "SK": "labeljob#ts1-run",
+                "testSetId": "ts1",
+                "jobId": "ts1-run",
+                "status": "RUNNING",
+                "total": 2,
+                "labeled": 0,
+            }
+        )
+        stale_job = self._stored_job(table)
+
+        # Another harvest got b.pdf, which this pass cannot.
+        table.update_item(
+            Key={"PK": "testset#ts1", "SK": "labeljob#ts1-run"},
+            UpdateExpression="SET harvestedFiles = :h",
+            ExpressionAttributeValues={":h": ["b.pdf"]},
+        )
+
+        test_set_index._harvest_label_job(stale_job)
+
+        job = self._stored_job(table)
+        assert sorted(job["harvestedFiles"]) == ["a.pdf", "b.pdf"]
+        assert job["labeled"] == 2
+        assert job["status"] == "COMPLETED", (
+            "the document the other harvest resolved was still counted as pending"
+        )
 
     def test_an_overlapping_harvest_does_not_lose_a_recorded_failure(
         self, labeling_env

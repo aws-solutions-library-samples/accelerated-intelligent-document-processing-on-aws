@@ -3267,6 +3267,12 @@ def _harvest_label_job(job, deadline=None):
             expr_names["#er"] = "error"
         expr_values[":exp_h"] = expected_done
         expr_values[":exp_f"] = expected_failed
+        # List equality in a condition is order-sensitive -- DynamoDB compares the
+        # document, not the set -- so this holds only because every writer of these
+        # two attributes stores them sorted, a few lines above. A future writer that
+        # stores an unsorted list makes the condition permanently false and turns
+        # every harvest into an exhausted budget, so keep the `sorted(...)` when
+        # touching either.
         condition = (
             "(attribute_not_exists(#h) OR #h = :exp_h) "
             "AND (attribute_not_exists(#f) OR #f = :exp_f)"

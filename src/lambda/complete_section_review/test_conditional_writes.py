@@ -201,7 +201,13 @@ class TestCompleteSectionReviewHistoryAppend:
             competitor=_append_other_reviewers_entry,
         )
         self._run(mod, harness)
-        assert _reviewers(harness.history()) == {"rev-0", OTHER_REVIEWER, "rev-1"}
+        history = harness.history()
+        assert _reviewers(history) == {"rev-0", OTHER_REVIEWER, "rev-1"}
+        # Pins the operand order of `list_append`, which nothing else here does:
+        # swapping it prepends instead of appending, leaving the stored array in
+        # reverse chronological order with every content assertion still green.
+        assert history[0]["reviewedBy"] == "rev-0"
+        assert history[-1]["reviewedBy"] == "rev-1"
 
     @mock_aws
     def test_the_first_entry_lands_when_the_attribute_is_absent(self, mod):
