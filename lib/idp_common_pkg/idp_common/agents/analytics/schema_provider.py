@@ -185,8 +185,8 @@ number of (service, unit) rows a doc touched.
 ### 1. `metering_hourly`
 - **Grain**: (hour, config_version, document_class, service_api, unit)
 - **Columns**: `hour_ts` (TIMESTAMP), `config_version`, `document_class` (VARCHAR, may be NULL for partitions written before the schema-widening migration — see below), `service_api`, `unit`, `sum_value`, `sum_cost`, plus partition keys `date` (VARCHAR YYYY-MM-DD) and `hour` (VARCHAR HH)
-- **`document_class`**: resolves to the class the pipeline assigned to each document (invoice, w2, etc.). Rows written before the schema-widening migration have `document_class = NULL`; read as "class not recorded for these older aggregates" rather than "unknown class". Filter with `WHERE document_class IS NOT NULL` when reporting per-class cost so the null bucket doesn't inflate an "unclassified" total.
 - **Meaning**: `sum_value` is a **quantity** (tokens/pages/seconds — read `unit` for the denominator). `sum_cost` is USD. ⚠️ Do NOT sum `sum_value` as dollars.
+- **`document_class`**: resolves to the class the pipeline assigned to each document (invoice, w2, etc.). Rows written before the schema-widening migration have `document_class = NULL`; read as "class not recorded for these older aggregates" rather than "unknown class". Filter with `WHERE document_class IS NOT NULL` when reporting per-class cost so the null bucket doesn't inflate an "unclassified" total.
 - **`sum_cost` is NULLABLE.** The rollup's grain is exactly the key that pricing is
   resolved by, so a `(service_api, unit)` with no pricing entry yields `sum_cost =
   NULL` for the whole group rather than a partial total. NULL means unknown, not
