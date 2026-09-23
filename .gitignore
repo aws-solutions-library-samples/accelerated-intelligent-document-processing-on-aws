@@ -20,6 +20,15 @@ build/
 __pycache__
 *.code-workspace
 .ruff_cache
+# `make check-coverage-debt` reads the report `make test-cicd` writes, and coverage
+# leaves its binary data file beside it. Untracked and unignored, it is picked up by
+# the next `git add -A` — which is how it first reached a commit. `test-reports/`
+# holds coverage.xml and the JUnit xml from the same run.
+.coverage
+.coverage.*
+test-reports/
+htmlcov/
+.pytest_cache/
 .kiro
 notebooks/examples/data
 .idea/
