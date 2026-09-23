@@ -66,27 +66,34 @@ make typecheck     # basedpyright
 
 `make typecheck` fails with `make: basedpyright: No such file or directory` if the
 tool is absent — it is not in the `[test]` extra. `pip install basedpyright` (CI
-installs it via `npm install -g basedpyright`). Compare its output against the
-baseline on `develop` rather than reading it absolutely: it reports **0 errors / 42
-warnings** on a clean tree (2026-09-22), over every tracked `.py` file — the number of
-those is not worth quoting, and `git ls-files '*.py' | wc -l` must equal the
-`filesAnalyzed` it prints. Errors are the gate, so a
-single one is a regression; the warnings are a standing set (`reportUnsupportedDunderAll`
-on several `__init__.py` re-export lists, one duplicate import). Note **which files a
-diagnostic lands in shifts with the installed dependency set** — `z3-solver` moves two
-of the warnings between `rule_validation/z3/__init__.py` and the validator itself — so
-compare the **totals**, and check that no diagnostic names a file your change touched.
+installs it via `npm install -g basedpyright`).
 
-**Measure that baseline rather than trusting the figure above**, which is the same
-advice this page gives about every other count on it: the warning total is a literal
-in prose and nothing in the tree pins it, so it goes stale the way the error count
-did.
+**Errors are the gate, and `develop` is at zero, so any error is yours.** That is the
+durable half and it needs no comparison: a single error is a regression. The eleven
+errors this page once told you to expect were resolvable-import failures, fixed when
+`pyrightconfig.json` gained `extraPaths`
+([#1109](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/1109)).
+Check also that `git ls-files '*.py' | wc -l` equals the `filesAnalyzed` the run
+prints — the gate reads every tracked `.py` file and that identity is the property to
+rely on, rather than any figure for how many there are.
+
+⚠️ **The warning total is a standing set, and it is not stable enough to quote here.**
+It has been measured at both 42 and 43 on different machines in the same week, and
+nothing in the tree pins it — the set is `reportUnsupportedDunderAll` on several
+`__init__.py` re-export lists plus a duplicate import, and which file a diagnostic
+lands in shifts with the installed dependency set (`z3-solver` moves two of them
+between `rule_validation/z3/__init__.py` and the validator itself). So a number
+written here tells you less than a measurement, and it goes stale the way the error
+count did. Measure `develop` on the machine you are judging from:
 
 ```bash
 git worktree add -q /tmp/dev-typecheck github/develop && cd /tmp/dev-typecheck
 make typecheck 2>&1 | tail -1     # the "N errors, M warnings, K notes" line
 cd - && git worktree remove /tmp/dev-typecheck --force
 ```
+
+Then compare **totals** against that, not against a literal, and check that no
+diagnostic names a file your change touched.
 
 Per-suite (isolated) — `PP=<checkout>/lib/idp_common_pkg`:
 
