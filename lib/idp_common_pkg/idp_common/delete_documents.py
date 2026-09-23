@@ -701,8 +701,12 @@ def get_documents_by_batch(
         ValueError: ``batch_id`` is empty.
         botocore.exceptions.ClientError: the table scan was rejected or throttled.
         botocore.exceptions.BotoCoreError: the scan could not be issued at all.
+        AttributeError: a scanned record's ``ObjectKey`` is not a string — a
+            ``Decimal`` is what an attribute written as ``N`` deserializes to.
+            Raised rather than skipped: this list feeds a delete, and a record the
+            predicate cannot read is a record whose membership is unknown.
     """
-    _require_selector("batch_id", batch_id)
+    batch_id = _require_selector("batch_id", batch_id)
 
     object_keys = []
     for item in _scan_all_document_keys(tracking_table, status_filter):
@@ -737,12 +741,16 @@ def get_documents_by_pattern(
         nothing else: a failure raises rather than returning ``[]``.
 
     Raises:
-        TypeError: ``pattern`` is not a string.
+        TypeError: ``pattern`` is not a string, or a scanned record's ``ObjectKey``
+            is not one — ``fnmatch`` answers the same class for both, so read the
+            message to tell the caller's bug from a malformed record. The record is
+            not skipped: this list feeds a delete, and one the predicate cannot read
+            is one whose membership is unknown.
         ValueError: ``pattern`` is empty.
         botocore.exceptions.ClientError: the table scan was rejected or throttled.
         botocore.exceptions.BotoCoreError: the scan could not be issued at all.
     """
-    _require_selector("pattern", pattern)
+    pattern = _require_selector("pattern", pattern)
 
     object_keys = []
     for item in _scan_all_document_keys(tracking_table, status_filter):

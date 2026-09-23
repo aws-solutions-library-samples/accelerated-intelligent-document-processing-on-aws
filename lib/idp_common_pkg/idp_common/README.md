@@ -607,6 +607,12 @@ So:
   (three throttles, a missing table, a server error, all `ClientError`), the client-side
   family is `BotoCoreError`, and both shipped callers turn an empty selection into a
   reported success. Propagating cannot widen a delete, since a raise selects nothing.
+- A record the predicate cannot read propagates too, rather than being skipped. An
+  `ObjectKey` written as a DynamoDB `N` arrives as a `Decimal`, and a selector that
+  skipped it would return a **partial** list — which is the one shape of the old
+  behaviour that actually deleted something and called it complete. Note that
+  `get_documents_by_pattern` answers `TypeError` for this and for a caller who passed a
+  non-string pattern, so the message is what distinguishes them.
 
 Callers need not add their own handling to stay safe, but should expect to see these:
 `idp_sdk`'s `batch.delete_documents()` re-raises as `IDPProcessingError` and
