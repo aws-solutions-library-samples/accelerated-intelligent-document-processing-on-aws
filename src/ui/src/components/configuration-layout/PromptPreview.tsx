@@ -534,11 +534,7 @@ export const schemaDivergenceFor = (
   return {
     wrapped: Boolean(selectedClass?.[X_AWS_IDP_MULTI_INSTANCE]),
     probe: boolish(detection.enabled, false) && mode === 'simple' && isExtraction,
-    forcedTool:
-      boolish(forcedTool.enabled, false) &&
-      mode === 'simple' &&
-      isExtraction &&
-      modelCanBeForced(extraction.model),
+    forcedTool: boolish(forcedTool.enabled, false) && mode === 'simple' && isExtraction && modelCanBeForced(extraction.model),
     restatesSchema: boolish(agentic.restate_schema_in_system_prompt, true) && mode === 'advanced' && isExtraction,
   };
 };
