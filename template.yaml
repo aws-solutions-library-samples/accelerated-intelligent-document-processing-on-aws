@@ -5606,10 +5606,11 @@ Resources:
       EventInvokeConfig:
         MaximumRetryAttempts: 2
         # Cap async retry age at 1h so a throttled invocation
-        # (ReservedConcurrentExecutions: 1 + a still-running previous
-        # invoke) doesn't silently retry against Lambda's 6h default
-        # MaximumEventAge — that would push a data-hole DLQ signal
-        # hours past when the operator needs to see it.
+        # (all 12 reserved slots busy with a Map-fan-out chunk plus the
+        # scheduled hourly / daily / reconciler crons) doesn't silently
+        # retry against Lambda's 6h default MaximumEventAge — that
+        # would push a data-hole DLQ signal hours past when the
+        # operator needs to see it.
         MaximumEventAgeInSeconds: 3600
         DestinationConfig:
           OnFailure:
@@ -5800,12 +5801,18 @@ Resources:
                   - ShouldCreateReportingBucket
                   - !Sub "${ReportingBucket.Arn}/metering_docs_daily/*"
                   - !Sub "arn:${AWS::Partition}:s3:::${ReportingBucketName}/metering_docs_daily/*"
-            # SSM Parameter for the backfill-migrate idempotency marker.
-            # Path is `/idp/<stack>/data-mart-rollup/migration-complete`.
-            # Presence blocks re-execution of `mode: backfill_migrate` for
-            # the same `days=` value so a routine stack update does not
-            # re-run the ~30-45 min purge+repopulate cycle. Written after
-            # a successful migration; delete manually to force re-run.
+            # SSM Parameter for the two-phase migration marker driven
+            # by the DataMartMigrationStateMachine. Path is
+            # `/idp/<stack>/data-mart-rollup/migration-complete`.
+            # Written as `state=in_progress` after InitialPurge and as
+            # `state=completed` only after all chunks + daily backfill
+            # succeed. CheckMarker routes on the tuple (state, days,
+            # version, anchor) so a MigrationVersion bump re-runs the
+            # full flow instead of short-circuiting. To force a re-run
+            # of a completed migration, bump `ForceFresh: "true"` on
+            # the CustomResource (the dispatcher then deletes the
+            # marker before starting the state machine); manual
+            # deletion is not needed.
             - Effect: Allow
               Action:
                 - ssm:GetParameter
@@ -5907,11 +5914,14 @@ Resources:
       OKActions:
         - !Ref AlertsTopic
 
-  # One-shot Custom Resource — invokes the rollup Lambda in
-  # `mode: backfill_migrate` on stack upgrade so the four per-document
-  # rollup tables are repopulated at the widened (document_class) grain.
-  # Idempotent via an SSM Parameter marker; a second stack update with the
-  # same MigrationVersion + Days is a no-op. See docs/reporting-sql-layer.md §10.
+  # One-shot Custom Resource — starts the DataMartMigrationStateMachine
+  # (Step Functions, STANDARD type) on stack upgrade so the four
+  # per-document rollup tables are repopulated at the widened
+  # (document_class) grain. Idempotent via a two-phase SSM marker; a
+  # second stack update with the same MigrationVersion + Days is a no-op.
+  # ``mode: backfill_migrate`` from the pre-SFN Lambda-only design is
+  # retained as a deprecated no-op so queued async retries from that
+  # design succeed cleanly. See docs/reporting-sql-layer.md §10.
   #
   # Handled by the small dispatcher Lambda `DataMartMigrationDispatcherFunction`
   # (inline code) which async-invokes the rollup Lambda so the CFN response
@@ -6313,12 +6323,48 @@ Resources:
                     return
 
                 props = event.get("ResourceProperties", {})
-                days = int(props.get("Days", 30))
+                try:
+                    days = int(props.get("Days", 30))
+                except (TypeError, ValueError):
+                    _send_cfn_response(
+                        event,
+                        "FAILED",
+                        f"Days must be an integer; got {props.get('Days')!r}",
+                    )
+                    return
                 # Default aligns with the runbook and the CustomResource's
                 # shipped ``ChunkHours: 1`` — a downstream template that
                 # omits this property should get the safe 1-hour slice,
                 # not a 24-hour slice the code was never sized against.
-                chunk_hours = int(props.get("ChunkHours", 1))
+                try:
+                    chunk_hours = int(props.get("ChunkHours", 1))
+                except (TypeError, ValueError):
+                    _send_cfn_response(
+                        event,
+                        "FAILED",
+                        f"ChunkHours must be an integer; got {props.get('ChunkHours')!r}",
+                    )
+                    return
+                # Range-check both. Refusing at dispatch surfaces the error
+                # in the stack event stream; without this it would return
+                # CFN SUCCESS and then fail inside the state machine
+                # (caught by DataMartMigrationStateMachineFailureAlarm),
+                # which is a slower and less-obvious diagnosis path.
+                # Bounds match ``_plan_migration_chunks``'s own guards.
+                if not 1 <= days <= 90:
+                    _send_cfn_response(
+                        event,
+                        "FAILED",
+                        f"Days must be in [1, 90]; got {days}",
+                    )
+                    return
+                if not 1 <= chunk_hours <= 168:
+                    _send_cfn_response(
+                        event,
+                        "FAILED",
+                        f"ChunkHours must be in [1, 168]; got {chunk_hours}",
+                    )
+                    return
                 # MigrationVersion is what CFN diffs on to fire this handler.
                 # Passing it into the state machine is what lets CheckMarker
                 # distinguish a completed marker for a DIFFERENT MigrationVersion
@@ -6459,7 +6505,16 @@ Resources:
       SourceArn: !GetAtt DataMartRollupHourlySchedule.Arn
 
   # Daily rollup: writes metering_daily for the previous fully-sealed UTC day.
-  # Fires at 00:15 to allow the 23:xx hourly rollup to complete first.
+  # Fires at 00:25 UTC — deliberately past the 23:xx hourly's 15-minute
+  # Lambda timeout (hourly starts at 00:05, times out at 00:20 at worst)
+  # so the daily is not concurrent with the terminal hourly on the day
+  # boundary. This concurrency was serialised for free while the rollup
+  # Lambda's ReservedConcurrentExecutions was 1; that pin now sits at
+  # 12 to serve the migration state machine's parallel Map chunks, so
+  # the serialisation guarantee has to come from the schedule instead.
+  # A concurrent daily reading a half-written hour 23 would trip
+  # ``_require_hourly_matches_raw_metering`` and rely on the two async
+  # retries to heal.
   DataMartRollupDailySchedule:
     Type: AWS::Events::Rule
     # See the hourly schedule above for the DependsOn rationale.
@@ -6474,7 +6529,7 @@ Resources:
       - DataPlaneLambdaHourlyTable
     Properties:
       Description: Daily trigger for the data-mart rollup Lambda (metering_daily).
-      ScheduleExpression: "cron(15 0 * * ? *)"
+      ScheduleExpression: "cron(25 0 * * ? *)"
       State: ENABLED
       Targets:
         - Id: DataMartRollupDaily

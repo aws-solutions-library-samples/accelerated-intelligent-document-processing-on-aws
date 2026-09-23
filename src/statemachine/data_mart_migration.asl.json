@@ -55,14 +55,26 @@
         {
           "Variable": "$.marker_check.should_skip_purge",
           "BooleanEquals": true,
-          "Next": "AdoptMarkerAnchor"
+          "Next": "RouteOnResumeAnchor"
         }
       ],
       "Default": "CheckLakeState"
     },
+    "RouteOnResumeAnchor": {
+      "Type": "Choice",
+      "Comment": "Resume path only. Two sub-branches based on whether the marker persisted an anchor: (a) marker has an anchor — take AdoptMarkerAnchor so the ORIGINAL run's window is restored; (b) marker has no anchor (intermediate build predating anchor persistence) — skip AdoptMarkerAnchor because it would overwrite $.anchor with null and PlanChunks would then plan against ``_parse_anchor_time``'s ``now()`` fallback, drifting the window past any dates the failed run purged. Keeping the caller's dispatcher-stamped $.anchor in the null-marker case is the best available answer — CheckMarker only routes here on a version match, so the caller's anchor is at least in the neighbourhood of the ORIGINAL run's anchor for stacks whose retention window is longer than the time between the failed run and the retry. Both sub-branches converge on WriteInProgressMarker so ``started_at`` is refreshed — see the Comment on WriteInProgressMarker below.",
+      "Choices": [
+        {
+          "Variable": "$.marker_check.anchor",
+          "IsNull": true,
+          "Next": "WriteInProgressMarker"
+        }
+      ],
+      "Default": "AdoptMarkerAnchor"
+    },
     "AdoptMarkerAnchor": {
       "Type": "Pass",
-      "Comment": "Resume path — overwrite the dispatcher-stamped $.anchor with the anchor persisted in the marker by the ORIGINAL execution's WriteInProgressMarker. Without this, a state-machine restart after a failed first run computes a fresh anchor whose window has drifted (crossed UTC midnight, or just moved forward N hours). PlanChunks would then plan chunks whose start is later than the ORIGINAL run's start, so any dates the failed run PURGED that fall before the new window's start never get rebuilt — a silent data-loss on resume. The marker persists ``anchor=<ISO>`` inside its ``;``-delimited payload (see _write_marker); CheckMarker returns it as ``$.marker_check.anchor``. If the marker was written before this fix (no anchor= segment), $.marker_check.anchor is null and this Pass leaves $.anchor as the caller's value — same behaviour as before for markers written under the earlier schema.",
+      "Comment": "Resume path — overwrite the dispatcher-stamped $.anchor with the anchor persisted in the marker by the ORIGINAL execution's WriteInProgressMarker. Without this, a state-machine restart after a failed first run computes a fresh anchor whose window has drifted (crossed UTC midnight, or just moved forward N hours). PlanChunks would then plan chunks whose start is later than the ORIGINAL run's start, so any dates the failed run PURGED that fall before the new window's start never get rebuilt — a silent data-loss on resume. The marker persists ``anchor=<ISO>`` inside its ``;``-delimited payload (see _write_marker); CheckMarker returns it as ``$.marker_check.anchor``. Only reached when RouteOnResumeAnchor has confirmed $.marker_check.anchor is non-null, so this Pass always sets a real anchor. Then routes to WriteInProgressMarker (rather than straight to PlanChunks) so ``started_at`` is refreshed on the marker: without that, a resume more than ``_MIGRATION_IN_PROGRESS_STALE_SECONDS`` (2 h) after the ORIGINAL run's start opens the ``_migration_in_progress`` gate on the scheduled hourly / daily / reconciler crons, and their nonce-free ClientRequestTokens then race the migration chunks' nonce-bearing ones with no distributed lock — the race the gate exists to close. InitialPurge is upstream of WriteInProgressMarker on the full-flow branch, so the resume path still skips it.",
       "Parameters": {
         "days.$": "$.days",
         "chunk_hours.$": "$.chunk_hours",
@@ -70,7 +82,7 @@
         "anchor.$": "$.marker_check.anchor",
         "marker_check.$": "$.marker_check"
       },
-      "Next": "PlanChunks"
+      "Next": "WriteInProgressMarker"
     },
     "MigrationAlreadyDone": {
       "Type": "Succeed",
@@ -162,7 +174,7 @@
     },
     "WriteInProgressMarker": {
       "Type": "Task",
-      "Comment": "Write the SSM marker as state=in_progress IMMEDIATELY after purge, BEFORE any backfill chunk runs. This is load-bearing: any state-machine restart (via CustomResource re-fire, operator intervention, etc.) will read this marker and SKIP the purge — chunks already written survive. Persists `anchor` too so the resume path can re-adopt the ORIGINAL window (see AdoptMarkerAnchor above). Also includes 'version' so CheckMarker on a future run can compare it against the request's MigrationVersion.",
+      "Comment": "Write the SSM marker as state=in_progress with a fresh ``started_at``. Reached from TWO paths: (1) the full-flow branch immediately after InitialPurge — load-bearing so any state-machine restart reads this marker and SKIPS the purge; (2) the resume branch via RouteOnResumeAnchor / AdoptMarkerAnchor — refreshes ``started_at`` so the ``_migration_in_progress`` gate on scheduled hourly / daily / reconciler crons does not open in the middle of the resume (see the 2 h stale bound at ``_MIGRATION_IN_PROGRESS_STALE_SECONDS``). Persists ``anchor`` so the next resume can re-adopt the ORIGINAL window (see AdoptMarkerAnchor above). Also includes ``version`` so CheckMarker on a future run can compare it against the request's MigrationVersion.",
       "Resource": "arn:${Partition}:states:::lambda:invoke",
       "Parameters": {
         "FunctionName": "${DataMartRollupFunctionArn}",

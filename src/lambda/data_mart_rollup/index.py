@@ -2065,9 +2065,12 @@ def _check_lake_state() -> Dict[str, Any]:
         contents = resp.get("Contents") or []
         return {"is_empty": not contents}
     except Exception as exc:  # noqa: BLE001
-        # Fail closed: on any list error, proceed with the full flow
-        # rather than accidentally short-circuit past data the operator
-        # was expecting to see rolled up.
+        # Fail open with respect to the empty-lake short-circuit — i.e.
+        # on any list error report the lake as not-empty so the state
+        # machine takes the full flow rather than accidentally
+        # short-circuiting past data the operator was expecting to see
+        # rolled up. "Full flow on doubt" is the conservative outcome
+        # for this decision, even though it is also the slower path.
         logger.warning(
             "check_lake_state: ListObjectsV2 failed (%s); reporting as "
             "not-empty so the migration proceeds",
@@ -2714,7 +2717,9 @@ def _migration_in_progress() -> bool:
 
 def _run_reconcile(anchor: datetime) -> Dict[str, Any]:
     """Re-run the four per-document hourly rollups across the trailing
-    24 h to fill in gaps left by missed schedules.
+    24 h to fill in gaps left by missed schedules, and also cover the
+    previous full UTC day's daily rollups so the migration-gate
+    deferral of the 00:25 daily cron has a self-heal path.
 
     Idempotent — already-written partitions are no-ops via the
     ``HeadObject``-skip guard in each rollup fn. Cheap when nothing is
@@ -2729,6 +2734,18 @@ def _run_reconcile(anchor: datetime) -> Dict[str, Any]:
     current-hour-top)`` — i.e. the previous fully-sealed hour. The
     reconciler never chases the CURRENT hour — which is by definition
     still in flight when this runs at :35 of the hour.
+
+    Daily self-heal: the migration-gate at the mode dispatcher defers
+    ``mode: "daily"`` while the SSM marker is ``state=in_progress``.
+    A migration whose anchor falls in the last minutes of a UTC day
+    and finishes just after 00:25 UTC therefore has its 00:25 daily
+    cron skipped for the anchor's own day, and that day is outside
+    ``_run_backfill_daily_range``'s window (which ends exclusive of
+    the anchor's day). Without reconciler coverage that would be a
+    permanent hole. Reconcile now attempts ``_run_daily`` for the
+    previous full UTC day too; it is idempotent (HeadObject-skip
+    inside ``_run_daily``), so on a normal day when the 00:25 daily
+    ran successfully the extra call is a fast no-op.
 
     Deferral while a migration is running is enforced by the mode
     dispatch in ``handler`` — see ``_migration_in_progress``.
@@ -2745,7 +2762,26 @@ def _run_reconcile(anchor: datetime) -> Dict[str, Any]:
         start.isoformat(),
         end.isoformat(),
     )
-    return _run_backfill(start.isoformat(), end.isoformat())
+    result = _run_backfill(start.isoformat(), end.isoformat())
+    # Daily self-heal for the previous full UTC day. Isolated in its
+    # own try/except so a daily-only failure (e.g. the sub-hourly
+    # completeness check raising because the hourly cron itself
+    # failed on that day) doesn't propagate to the hourly reconciler
+    # result — the hourly's own async retries handle that class.
+    try:
+        daily_result = _run_daily(anchor)
+        result["daily"] = daily_result
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(
+            "Reconcile: daily self-heal for previous UTC day failed "
+            "(%s); the migration-gate coverage gap this pass is meant "
+            "to close therefore requires either the next :35 reconciler "
+            "fire (once hourly catches up) or a manual mode=daily "
+            "invoke. Hourly reconcile above is unaffected.",
+            exc,
+        )
+        result["daily_error"] = str(exc)
+    return result
 
 
 def _purge_s3_prefix(bucket: str, prefix: str) -> int:

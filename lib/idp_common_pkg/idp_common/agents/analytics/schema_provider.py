@@ -186,7 +186,12 @@ number of (service, unit) rows a doc touched.
 - **Grain**: (hour, config_version, document_class, service_api, unit)
 - **Columns**: `hour_ts` (TIMESTAMP), `config_version`, `document_class` (VARCHAR, may be NULL for partitions written before the schema-widening migration — see below), `service_api`, `unit`, `sum_value`, `sum_cost`, plus partition keys `date` (VARCHAR YYYY-MM-DD) and `hour` (VARCHAR HH)
 - **Meaning**: `sum_value` is a **quantity** (tokens/pages/seconds — read `unit` for the denominator). `sum_cost` is USD. ⚠️ Do NOT sum `sum_value` as dollars.
-- **`document_class`**: resolves to the class the pipeline assigned to each document (invoice, w2, etc.). Rows written before the schema-widening migration have `document_class = NULL`; read as "class not recorded for these older aggregates" rather than "unknown class". Filter with `WHERE document_class IS NOT NULL` when reporting per-class cost so the null bucket doesn't inflate an "unclassified" total.
+- **`document_class`**: resolves to the class the pipeline assigned to each document (`invoice`, `w2`, `1099`, etc.). Three special values a per-class report has to handle:
+  - **`NULL`** — rows written before the schema-widening migration. Read as "class not recorded for these older aggregates" rather than "unknown class". Filter with `WHERE document_class IS NOT NULL` when reporting per-class cost so the null bucket doesn't inflate an "unclassified" total.
+  - **`'unknown'`** — post-migration row whose per-document classification path returned nothing (no `document_sections_*` fallback match either). Distinct from `NULL`: the pipeline ran, the join was attempted, no class was resolved. Report as its own bucket or filter with `document_class NOT IN ('unknown', 'mixed')` when the question is about known-class-only cost.
+  - **`'mixed'`** — post-migration row for a document whose sections resolved to more than one class (a packet containing e.g. a W2 and an invoice). Same filter rule as `'unknown'`: exclude it when the question is about single-class totals.
+
+  Every post-widening row goes through `COALESCE(m.document_class, dc.document_class, 'unknown')` on the write path, so the three-way partition above covers every value the column can take on a stack whose migration has completed.
 - **`sum_cost` is NULLABLE.** The rollup's grain is exactly the key that pricing is
   resolved by, so a `(service_api, unit)` with no pricing entry yields `sum_cost =
   NULL` for the whole group rather than a partial total. NULL means unknown, not
