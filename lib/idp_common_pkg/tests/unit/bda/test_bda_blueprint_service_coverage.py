@@ -2312,6 +2312,77 @@ class TestSyncDirectionAndMode:
 
         service.blueprint_creator.delete_blueprint.assert_not_called()
 
+    def test_a_blueprint_that_could_not_be_deleted_is_reported_to_the_caller(
+        self, service
+    ):
+        """The delete is attempted only after the project's blueprint list has been
+        rewritten without it — BDA refuses to delete a blueprint a project still
+        associates — so a failure leaves one that no project-scoped read can see and
+        that only the account-wide cleanup will remove. It used to be logged and
+        nothing else, so the sync reported success and the user was never told that
+        cleanup was outstanding."""
+        self._config(service, [_idp_class(class_id="Invoice")])
+        orphan = _bda_blueprint("Receipt", name="idp-Receipt-oldbbbb", version="3")
+        _wire_project(service, [orphan])
+        # `delete_blueprint` reports failure by returning False rather than raising.
+        service.blueprint_creator.delete_blueprint.return_value = False
+
+        status = service.create_blueprints_from_custom_configuration(
+            version="v1", sync_direction="idp_to_bda", sync_mode="replace"
+        )
+
+        assert service.orphaned_blueprint_arns == [orphan["blueprintArn"]]
+        # And it is NOT an entry in the per-class list, because callers count that
+        # list into "classes synced" / "classes failed" and no class failed here.
+        assert status == [{"status": "success", "class": "Invoice"}]
+
+    def test_a_sync_that_deletes_cleanly_reports_no_orphans(self, service):
+        self._config(service, [_idp_class(class_id="Invoice")])
+        orphan = _bda_blueprint("Receipt", name="idp-Receipt-oldbbbb", version="3")
+        _wire_project(service, [orphan])
+        service.blueprint_creator.delete_blueprint.return_value = True
+
+        service.create_blueprints_from_custom_configuration(
+            version="v1", sync_direction="idp_to_bda", sync_mode="replace"
+        )
+
+        assert service.orphaned_blueprint_arns == []
+
+    def test_a_later_sync_does_not_report_an_earlier_sync_s_orphans(self, service):
+        """Otherwise the report is unfalsifiable: once one delete failed, every later
+        sync on the same service would keep naming it as outstanding."""
+        self._config(service, [_idp_class(class_id="Invoice")])
+        orphan = _bda_blueprint("Receipt", name="idp-Receipt-oldbbbb", version="3")
+        _wire_project(service, [orphan])
+        service.blueprint_creator.delete_blueprint.return_value = False
+
+        service.create_blueprints_from_custom_configuration(
+            version="v1", sync_direction="idp_to_bda", sync_mode="replace"
+        )
+        assert service.orphaned_blueprint_arns == [orphan["blueprintArn"]]
+
+        # Second sync: nothing left to delete.
+        _wire_project(service, [])
+        service.create_blueprints_from_custom_configuration(
+            version="v1", sync_direction="idp_to_bda", sync_mode="replace"
+        )
+
+        assert service.orphaned_blueprint_arns == []
+
+    def test_merge_mode_reports_no_orphans_because_it_deletes_nothing(self, service):
+        self._config(service, [_idp_class(class_id="Invoice")])
+        _wire_project(
+            service,
+            [_bda_blueprint("Receipt", name="idp-Receipt-oldbbbb", version="3")],
+        )
+        service.blueprint_creator.delete_blueprint.return_value = False
+
+        service.create_blueprints_from_custom_configuration(
+            version="v1", sync_direction="idp_to_bda", sync_mode="merge"
+        )
+
+        assert service.orphaned_blueprint_arns == []
+
     def test_a_sanitized_class_is_written_back_to_the_configuration(self, service):
         classes = [
             _idp_class(

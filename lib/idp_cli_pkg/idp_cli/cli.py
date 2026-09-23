@@ -12,7 +12,7 @@ import logging
 import os
 import sys
 import time
-from typing import TYPE_CHECKING, Any, Dict, Optional
+from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
 _SETUP_HELP = """\
 Error: Required packages not found.
@@ -386,6 +386,30 @@ def _parse_tags(tags: Optional[str]) -> Dict[str, str]:
             )
         result[key] = value
     return result
+
+
+def _print_orphaned_blueprints(arns: Optional[List[str]]) -> None:
+    """Report blueprints a BDA sync disassociated but could not delete.
+
+    A replace-mode sync rewrites the project's blueprint list before deleting, because
+    BDA refuses to delete a blueprint a project still associates. So a delete that
+    fails leaves one that no project-scoped read can see, that still counts against the
+    account's blueprint limit, and that a name-prefix match can still pick up. It is
+    not a class failure — the classes may all have synced — so it is printed as its own
+    warning beside the result rather than changing the counts.
+    """
+    if not arns:
+        return
+    console.print(
+        f"  [yellow]⚠ {len(arns)} blueprint(s) were removed from the BDA project but "
+        f"could not be deleted, so they remain in the account:[/yellow]"
+    )
+    for arn in arns:
+        console.print(f"    • {arn}")
+    console.print(
+        "  [yellow]They are removed by the orphaned-blueprint cleanup: the syncBdaIdp "
+        "API operation with direction 'cleanup_orphaned'.[/yellow]"
+    )
 
 
 @click.group()
@@ -4796,6 +4820,12 @@ def config_activate(
                 console.print(
                     f"Use 'idp-cli config-list --stack-name {stack_name}' to see available versions"
                 )
+            # Before the exit, and not inside the `bda_synced` branch below. A failed
+            # activation is the outcome most likely to have left a blueprint behind —
+            # the deletes run whatever happened to the classes — and it is the one
+            # where nothing else printed says so. `bda_synced` is False on every
+            # failing path, so gating on it would have hidden exactly those.
+            _print_orphaned_blueprints(result.bda_orphaned_blueprint_arns)
             sys.exit(1)
 
         # Show BDA sync results if performed
@@ -4809,6 +4839,7 @@ def config_activate(
                 console.print(
                     f"[green]✓ Successfully synced {result.bda_classes_synced} classes to BDA[/green]"
                 )
+        _print_orphaned_blueprints(result.bda_orphaned_blueprint_arns)
 
         console.print(
             f"[green]✓ Successfully activated configuration profile: {config_version}[/green]"
@@ -5220,12 +5251,14 @@ def config_sync_bda(
             if result.processed_classes:
                 for cls_name in result.processed_classes:
                     console.print(f"    • {cls_name}")
+            _print_orphaned_blueprints(result.orphaned_blueprint_arns)
         else:
             console.print("[yellow]⚠ BDA sync completed with issues[/yellow]")
             console.print(f"  Classes synced: {result.classes_synced}")
             console.print(f"  Classes failed: {result.classes_failed}")
             if result.error:
                 console.print(f"  [red]Error: {result.error}[/red]")
+            _print_orphaned_blueprints(result.orphaned_blueprint_arns)
             sys.exit(1)
 
     except Exception as e:

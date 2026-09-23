@@ -106,6 +106,18 @@ class BdaBlueprintService:
         # list to decide what a class's warnings are — a read filtered by class name
         # is what turned a mislabelled drop into a missing one. Issue #1193.
         self._skipped_properties = []
+        # Blueprints the most recent replace-mode sync removed from the BDA project
+        # but could not then delete, so they are orphaned in the account: invisible
+        # to every project-scoped read, still counting against blueprint limits and
+        # still matchable by name prefix. Set by
+        # `create_blueprints_from_custom_configuration`, which resets it at the start
+        # of every sync, and read by its callers afterwards.
+        #
+        # A separate channel rather than an entry in the per-class status list that
+        # sync returns, because callers *count* that list into "classes synced" and
+        # "classes failed" — an entry for something that is not a class would corrupt
+        # both, and every class really did sync. Issue #1194.
+        self.orphaned_blueprint_arns: list = []
 
         return
 
@@ -2201,12 +2213,21 @@ class BdaBlueprintService:
                   For bda_to_idp: BDA blueprints are added to IDP classes (existing classes kept).
                   For idp_to_bda: IDP classes are pushed to BDA (existing BDA-only blueprints kept).
 
+        Returns:
+            list: one status entry per document class processed. A replace-mode sync
+            may additionally leave orphaned blueprints, which are **not** in that list
+            — they belong to no class — and are reported on
+            ``self.orphaned_blueprint_arns`` for the caller to surface.
+
         Raises:
             Exception: If blueprint creation fails
         """
         logger.info(
             f"Starting blueprint synchronization with direction: {sync_direction}, mode: {sync_mode}"
         )
+        # Cleared per sync so a caller cannot read a previous sync's orphans as this
+        # one's, and so a sync that leaves none says so.
+        self.orphaned_blueprint_arns = []
 
         try:
             # Validate sync direction and mode
@@ -2416,12 +2437,13 @@ class BdaBlueprintService:
                 # Synchronize deletes only in replace mode (remove BDA blueprints not in IDP)
                 # In merge mode, keep existing BDA-only blueprints alive
                 if sync_mode == "replace":
-                    # ⚠️ The orphaned ARNs this returns are discarded here, so a
-                    # failed delete reaches CloudWatch and nothing the caller or the
-                    # UI sees, while the sync still reports success. That is the same
-                    # "only logged is invisible" standard applied to dropped schema
-                    # properties and not applied here. Issue #1194.
-                    self._synchronize_deletes(
+                    # A blueprint that could not be deleted is already out of the
+                    # project by the time the delete is attempted, so nothing
+                    # project-scoped will offer it again and only an account-wide
+                    # cleanup will remove it. Recorded for the caller to surface: a
+                    # failure that reaches only CloudWatch is a failure the user who
+                    # asked for the sync never learns about.
+                    self.orphaned_blueprint_arns = self._synchronize_deletes(
                         existing_blueprints=existing_blueprints,
                         blueprints_updated=blueprints_updated,
                     )

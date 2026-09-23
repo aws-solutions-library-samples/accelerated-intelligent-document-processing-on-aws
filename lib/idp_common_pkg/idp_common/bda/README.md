@@ -281,9 +281,42 @@ retrieval can no longer see; `cleanup_orphaned_blueprints` lists account-wide an
 still find them. Note that `BDABlueprintCreator.delete_blueprint` reports failure by
 returning `False` rather than raising, so its return value is the signal to read.
 
-⚠️ That returned list is **discarded by the only production caller**, so today a failed
-delete reaches CloudWatch and nothing the user sees, while the sync still reports success
-([#1194](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/1194)).
+`create_blueprints_from_custom_configuration` puts that list on
+`self.orphaned_blueprint_arns`, clearing it at the start of every sync so a caller cannot
+read a previous sync's orphans as this one's. Each of its three callers surfaces it: the
+`syncBdaIdp` resolver appends it to the response `message` (with the literal `WARNING`,
+which is what stops the UI auto-dismissing the message), and the SDK returns it as
+`ConfigSyncBdaResult.orphaned_blueprint_arns` and
+`ConfigActivateResult.bda_orphaned_blueprint_arns`, which `idp-cli config-sync-bda` and
+`config-activate` print.
+
+⚠️ **The failure paths are the ones to get right, and they are the ones that are easy to
+miss.** The deletes run *before* the last two steps of a sync — the AWS-standard-blueprint
+disassociation and the write-back of sanitized classes, both of which can raise — so a
+sync that failed, aborted an activation, or threw can all have left a blueprint behind,
+and each is more likely to have done so than a clean run. Three consequences, each
+pinned by a test:
+
+- every result-building branch reachable after a sync carries the list, including the
+  ones that report failure — in `ConfigOperation.activate` that means four returns, and
+  the one that legitimately omits it is the pre-sync "version does not exist" answer;
+- the three exception handlers read it **off the service** rather than from a local,
+  because the local is assigned after the sync call returns and on those paths it never
+  was. `activate`'s outermost handler is the one to watch: `manager.activate_version()`
+  runs outside the BDA block, so a throttle on that write arrives there, after a sync
+  that completed. The locals it names are therefore bound before the `try`, since a
+  `NameError` raised inside an exception handler replaces the error the caller needs;
+- the resolver's total-failure branch puts the text on `error.message` as well as on
+  `message`, because the web UI's failure path renders `error.message` and falls back to
+  `message` only when it is absent — text placed only on `message` there is in the
+  response and invisible.
+
+⚠️ **Not an entry in the per-class status list**, which is what the "surface it like a
+skipped property" instinct suggests. Every consumer of that list *counts* it —
+`classes_synced` / `classes_failed` in the SDK, `processedClasses` in the resolver — so an
+entry for something that is not a document class would report a class as unsynced when
+every class synced. An orphan is outstanding *cleanup*, not a failed class, and saying
+otherwise sends the user to re-run a sync that will not remove it.
 
 ## Blueprint Optimization
 
