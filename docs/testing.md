@@ -108,7 +108,9 @@ correctly installed tree, and the enumerated list of accepted failures in
 [`full-test-battery`](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/blob/develop/.claude/skills/full-test-battery.md)
 is empty. So treat any failure as a real regression until proven otherwise.
 `scripts/tests/test_standing_failure_baseline.py` holds that claim, this page and the
-two skills that repeat it to the same number, so they cannot drift apart again.
+two skills that repeat it to the same number, so they cannot drift apart again, and
+`make test` itself compares the failures it observed against that table — a failure
+it does not declare and a declared row whose test passed both fail the run.
 
 Most surprising failures are still a stale virtualenv missing the pinned `[test]`
 extras — but **do not expect a broken install to announce itself as an
@@ -224,11 +226,25 @@ failure mode it claims, because a ratchet nobody has watched fail is not a
 ratchet. All three exist because every gap they cover was originally found by
 hand, months late.
 
-`make typecheck` reads every tracked `.py` file, which
-`scripts/tests/test_pyright_config.py` asserts by deriving the set from
-`git ls-files` rather than from a list. Its `include` array named six paths and
-reached 432 of 1230 files, and two `NameError`-class defects reached `develop`
-through the gap.
+`make typecheck` reads every tracked `.py` file — `git ls-files '*.py' | wc -l` and
+`basedpyright`'s `filesAnalyzed` agree exactly, and that identity, rather than any
+particular count, is what `scripts/tests/test_pyright_config.py` asserts by deriving
+the set from `git ls-files` rather than from a list. Run those two commands for
+today's figure rather than looking for one on this page: it changes with almost every
+merge, and a written-down count has gone stale in three separate documents at once.
+The `include` array once named six paths and reached 432 of the 1,230 tracked at the
+time, and two `NameError`-class defects reached `develop` through the gap.
+
+Reading every file is a weaker property than it sounds, and the same suite now
+covers the difference. `basedpyright` honours `PYTHONPATH`, which neither the
+`make` target nor either CI sets, so with `reportMissingImports` configured `"none"`
+the shared `idp_common` library did not resolve and no call into it could produce a
+diagnostic — zero errors over a file count that matched `git ls-files` exactly,
+hiding eleven real ones ([#1109](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/1109)).
+`pyrightconfig.json`'s `extraPaths` fixes resolution in the configuration rather
+than the environment, using relative paths so it cannot resolve against another
+checkout, and the suite asserts that first-party imports really do resolve — by
+running basedpyright, not by inspecting the JSON.
 
 ### Whether any of this actually blocks a merge
 

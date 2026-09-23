@@ -56,7 +56,9 @@ from check_retired_services import (  # noqa: E402
     reads_as_historical,
     scanned_files,
     stale_allowlist_entries,
+    stale_alternatives,
     stale_exclusions,
+    top_level_alternatives,
     unexpected_resources,
 )
 
@@ -151,9 +153,171 @@ def test_no_documentation_presents_a_retired_service_as_current(
 @pytest.mark.unit
 def test_every_allowlist_entry_still_matches_something(registry: dict) -> None:
     """A dead exemption re-permits the claim it was written to excuse."""
-    _, used = find_violations(registry, _repo_root())
-    stale = stale_allowlist_entries(registry, used)
+    _, use = find_violations(registry, _repo_root())
+    stale = stale_allowlist_entries(registry, use)
     assert not stale, [(entry["path"], entry["linePattern"]) for entry in stale]
+
+
+@pytest.mark.unit
+def test_every_individual_alternative_still_shields_something(registry: dict) -> None:
+    """Per ALTERNATIVE, not per entry — the granularity a dead fragment hides at.
+
+    An entry counted as live as soon as any part of its compiled pattern matched,
+    so a fragment pinned to a sentence that was later rewrapped stopped matching in
+    silence. The entry stayed green on its siblings, the line it named quietly
+    stopped being excused, and the failure surfaced as unexcused findings in a
+    document nobody had edited deliberately — three sessions each had to establish
+    it was not theirs (#1097).
+
+    The remedy when this fails is to re-pin the fragment to the wording it was
+    written for, or to delete it. Never edit the prose to suit the pattern.
+    """
+    _, use = find_violations(registry, _repo_root())
+    stale = stale_alternatives(registry, use)
+    assert not stale, "\n".join(fragment.render() for fragment in stale)
+
+
+@pytest.mark.unit
+def test_a_dead_fragment_is_reported_even_when_a_sibling_is_live(
+    registry: dict, tmp_path: pathlib.Path
+) -> None:
+    """The #1097 reproduction, as a measurement rather than a description.
+
+    Two alternatives, one matching the document and one pinned to text that is not
+    in it. Per-entry staleness sees a live entry and says nothing; per-alternative
+    staleness names the fragment that stopped working.
+    """
+    scoped = copy.deepcopy(registry)
+    scoped["scannedPaths"] = ["docs/*.md"]
+    scoped["excludedPaths"] = []
+    scoped["allowlist"] = [
+        {
+            "path": "docs/note.md",
+            "linePattern": "the AppSync era ended|a sentence that was rewrapped away",
+            "bucket": "b",
+            "justification": "fixture",
+        }
+    ]
+
+    (tmp_path / "docs").mkdir()
+    (tmp_path / "docs" / "note.md").write_text(
+        "In this architecture the AppSync era ended at v0.6.\n", encoding="utf-8"
+    )
+
+    findings, use = find_violations(scoped, tmp_path)
+    assert not findings, [f.render() for f in findings]
+    # The entry as a whole still looks alive, which is exactly the problem.
+    assert not stale_allowlist_entries(scoped, use)
+
+    dead = [f for f in stale_alternatives(scoped, use) if f.surface == "allowlist"]
+    assert [f.alternative for f in dead] == ["a sentence that was rewrapped away"]
+    assert "docs/note.md" in dead[0].render()
+
+
+@pytest.mark.unit
+def test_a_marker_alternative_is_accounted_for_per_alternative(
+    registry: dict, tmp_path: pathlib.Path
+) -> None:
+    """Markers had no staleness check of any granularity before #1097.
+
+    They are the heavier alternation surface — five patterns, tree-wide reach — and
+    nothing recorded which of their fragments had done any work, so the registry
+    entry covering this file claimed a staleness ratchet that reached only the
+    allowlist.
+    """
+    scoped = copy.deepcopy(registry)
+    scoped["scannedPaths"] = ["docs/*.md"]
+    scoped["excludedPaths"] = []
+    scoped["allowlist"] = []
+    scoped["historicalMarkers"] = [
+        {"pattern": "has since been removed|never written anywhere", "justification": "f"}
+    ]
+
+    (tmp_path / "docs").mkdir()
+    (tmp_path / "docs" / "note.md").write_text(
+        "The AppSync GraphQL API has since been removed.\n", encoding="utf-8"
+    )
+
+    findings, use = find_violations(scoped, tmp_path)
+    assert not findings, [f.render() for f in findings]
+    assert use.markers == {(0, 0): 1}
+
+    dead = stale_alternatives(scoped, use)
+    assert [f.alternative for f in dead] == ["never written anywhere"]
+    assert dead[0].surface == "historicalMarkers"
+    assert "historicalMarkers[0]" in dead[0].render()
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("pattern", "expected"),
+    [
+        ("a|b|c", ["a", "b", "c"]),
+        # A pipe inside a group is one claim phrased three ways, not three claims.
+        ("(has|had|have) been removed|gone", ["(has|had|have) been removed", "gone"]),
+        ("((a|b)|c)|d", ["((a|b)|c)", "d"]),
+        # An escaped pipe is a literal: the Mermaid edge label in this registry's
+        # detector would otherwise split into three.
+        (r"\|\s*GraphQL Subscription\s*\||x", [r"\|\s*GraphQL Subscription\s*\|", "x"]),
+        # Inside a character class, | and ( are literal.
+        ("[a|b]c|d", ["[a|b]c", "d"]),
+        ("[]|]x|y", ["[]|]x", "y"]),
+        ("", [""]),
+    ],
+)
+def test_top_level_alternatives_splits_only_the_outermost_level(
+    pattern: str, expected: list[str]
+) -> None:
+    assert top_level_alternatives(pattern) == expected
+
+
+@pytest.mark.unit
+def test_the_split_is_a_faithful_decomposition_of_every_real_pattern(
+    registry: dict,
+) -> None:
+    """Rejoining reproduces the pattern, and the parts match what the whole matches.
+
+    Both halves matter. If the split were lossy the accounting would be counting
+    something other than the gate's own verdict, and a fragment could be reported
+    dead because the splitter mangled it — which would teach the next reader to
+    distrust the report and delete the pattern instead of re-pinning it.
+    """
+    corpus = [
+        "The AWS AppSync GraphQL API has since been removed.",
+        "3. **API Layer**: AppSync GraphQL API connects the UI to backend services",
+        "`APIRESOLVERSTACK` was historically named `nested/appsync/`.",
+        "| UI | GraphQL Subscription | AppSync |",
+        "no current template creates an AppSync resource",
+    ]
+    patterns = [entry["linePattern"] for entry in registry["allowlist"]]
+    patterns += [marker["pattern"] for marker in registry["historicalMarkers"]]
+    patterns += [service["pattern"] for service in registry["retiredServices"]]
+
+    for pattern in patterns:
+        parts = top_level_alternatives(pattern)
+        assert "|".join(parts) == pattern, pattern
+        whole = re.compile(pattern, re.IGNORECASE)
+        compiled = [re.compile(part, re.IGNORECASE) for part in parts]
+        for line in corpus:
+            assert bool(whole.search(line)) == any(
+                part.search(line) for part in compiled
+            ), (pattern, line)
+
+
+@pytest.mark.unit
+def test_the_detector_is_not_subject_to_alternative_staleness(registry: dict) -> None:
+    """A detector that finds nothing is a clean tree, not a dead exemption.
+
+    ``retiredServices[].pattern`` points the other way from the two exemption
+    surfaces: its arms exist to catch a reintroduction, so requiring each to match
+    something today would force the deletion of exactly the arms that would catch
+    one. Four of its five alternatives match nothing in the scanned corpus, and
+    that is the correct state.
+    """
+    _, use = find_violations(registry, _repo_root())
+    surfaces = {fragment.surface for fragment in stale_alternatives(registry, use)}
+    assert "retiredServices" not in surfaces
+    assert surfaces <= {"allowlist", "historicalMarkers"}
 
 
 @pytest.mark.unit
@@ -623,13 +787,17 @@ def test_a_stale_claim_in_an_allowlisted_file_is_still_caught(
             encoding="utf-8",
         )
 
-        findings, used = find_violations(scoped, tmp_path)
+        findings, use = find_violations(scoped, tmp_path)
         assert [f.lineno for f in findings] == [5], (
             rel,
             entry["linePattern"],
             [f.render() for f in findings],
         )
-        assert used == {0}, (rel, entry["linePattern"], used)
+        assert use.live_allowlist_entries() == {0}, (
+            rel,
+            entry["linePattern"],
+            use.allowlist,
+        )
         checked += 1
 
     assert checked >= 8, f"only {checked} narrow allowlist entries were exercised"
