@@ -1924,12 +1924,24 @@ class TestOcrImageBytesBdaBackend:
         file type before the backend is consulted, so this is reachable whenever
         `ocr.backend` is set to anything landing in the Textract branch.
 
-        ⚠️ **Asserting the placeholder is no longer enough to test this**, which is
-        why the assertions below name the call. With a mocked `boto3.client`, a client
-        that is created but returns a `MagicMock` yields a `Blocks` value that is not
-        iterable, so the broad `except` produces the *same* placeholder for a
-        completely different reason — a test asserting only the return value passes
-        either way.
+        ⚠️ **Asserting the placeholder is not enough to test this**, which is why the
+        assertions below name the call — and the reason is not the one it would be
+        natural to assume. A `MagicMock` response does *not* raise on
+        `response["Blocks"]`: `MagicMock` configures `__getitem__` and `__iter__`, so
+        the loop iterates empty and the fixed code returns `""`, not the placeholder.
+
+        What made the old pin undetectable is that it patched `boto3.client` during
+        **construction only**. At call time the fixed code therefore built a **real**
+        Textract client and issued a real `DetectDocumentText`, observed as
+        `UnrecognizedClientException`. So the old pin passed by making a live AWS call
+        and catching its failure.
+
+        ⚠️ **That is a hazard for any future test in this class.** Reaching the Textract
+        arm without either setting `service.textract_client` or patching `boto3.client`
+        **for the duration of the call** makes a live AWS request, on a client
+        configured `retries={"max_attempts": 100, "mode": "adaptive"}` — so a
+        credential or network fault is retried up to a hundred times inside a unit
+        test. Every current caller patches for the call.
         """
         service = make_service(
             config={"ocr": {"backend": "bda", "bda_project_arn": "arn:proj"}}
