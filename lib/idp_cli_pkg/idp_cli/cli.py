@@ -12,7 +12,7 @@ import logging
 import os
 import sys
 import time
-from typing import TYPE_CHECKING, Any, Dict, Optional
+from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
 _SETUP_HELP = """\
 Error: Required packages not found.
@@ -386,6 +386,30 @@ def _parse_tags(tags: Optional[str]) -> Dict[str, str]:
             )
         result[key] = value
     return result
+
+
+def _print_orphaned_blueprints(arns: Optional[List[str]]) -> None:
+    """Report blueprints a BDA sync disassociated but could not delete.
+
+    A replace-mode sync rewrites the project's blueprint list before deleting, because
+    BDA refuses to delete a blueprint a project still associates. So a delete that
+    fails leaves one that no project-scoped read can see, that still counts against the
+    account's blueprint limit, and that a name-prefix match can still pick up. It is
+    not a class failure — the classes may all have synced — so it is printed as its own
+    warning beside the result rather than changing the counts.
+    """
+    if not arns:
+        return
+    console.print(
+        f"  [yellow]⚠ {len(arns)} blueprint(s) were removed from the BDA project but "
+        f"could not be deleted, so they remain in the account:[/yellow]"
+    )
+    for arn in arns:
+        console.print(f"    • {arn}")
+    console.print(
+        "  [yellow]They are removed by the orphaned-blueprint cleanup: the syncBdaIdp "
+        "API operation with direction 'cleanup_orphaned'.[/yellow]"
+    )
 
 
 @click.group()
@@ -4423,36 +4447,34 @@ def config_validate(
                 f"[green]✓ Migrated config written to: {emit_migrated}[/green]"
             )
 
-        # Check for extra/deprecated fields before Pydantic validation
-        from idp_common.config.models import IDP_CONFIG_DEPRECATED_FIELDS, IDPConfig
+        # Validate config. The unread-key findings come from validate_config rather
+        # than from a set difference computed here: a raw
+        # `set(config) - set(IDPConfig.model_fields)` reports every key IDPConfig
+        # does not declare, which told an operator that two keys the loader honours
+        # would be ignored — `description`, which update_configuration pops and
+        # stores, and `rule_classes`, which is renamed to `policy_classes` on load.
+        # It also sees only the top level, where a typo is least likely.
+        result = validate_config(user_config, pattern="pattern-2")
 
-        defined_fields = set(IDPConfig.model_fields.keys())
-        user_fields = set(user_config.keys())
-        extra_fields = user_fields - defined_fields
-
-        deprecated_fields = extra_fields & IDP_CONFIG_DEPRECATED_FIELDS
-        unknown_fields = extra_fields - IDP_CONFIG_DEPRECATED_FIELDS
-
-        if deprecated_fields:
-            console.print(
-                f"[yellow]⚠ Deprecated fields found (will be ignored): {sorted(deprecated_fields)}[/yellow]"
-            )
-
-        if unknown_fields:
-            console.print(
-                f"[yellow]⚠ Unknown fields found (will be ignored): {sorted(unknown_fields)}[/yellow]"
-            )
-
-        if strict and extra_fields:
+        # --strict keeps its contract: top-level fields only. A nested finding is
+        # reported either way (in the warnings below, with the path and often the
+        # field it was meant to be), and failing on one would fail configurations
+        # that pass today, which is a decision for a release rather than a fix.
+        top_level_extras = sorted(
+            finding["path"]
+            for finding in result.get("ignored_keys", [])
+            if "." not in finding["path"] and "[" not in finding["path"]
+        )
+        if strict and top_level_extras:
             console.print()
             console.print("[red]✗ Strict mode: config contains extra fields[/red]")
+            console.print(
+                f"[yellow]Extra top-level fields: {top_level_extras}[/yellow]"
+            )
             console.print(
                 "[yellow]Remove these fields or run without --strict[/yellow]"
             )
             sys.exit(1)
-
-        # Validate config
-        result = validate_config(user_config, pattern="pattern-2")
 
         if result["valid"]:
             console.print("[green]✓ Config merges with system defaults[/green]")
@@ -4796,6 +4818,12 @@ def config_activate(
                 console.print(
                     f"Use 'idp-cli config-list --stack-name {stack_name}' to see available versions"
                 )
+            # Before the exit, and not inside the `bda_synced` branch below. A failed
+            # activation is the outcome most likely to have left a blueprint behind —
+            # the deletes run whatever happened to the classes — and it is the one
+            # where nothing else printed says so. `bda_synced` is False on every
+            # failing path, so gating on it would have hidden exactly those.
+            _print_orphaned_blueprints(result.bda_orphaned_blueprint_arns)
             sys.exit(1)
 
         # Show BDA sync results if performed
@@ -4809,6 +4837,7 @@ def config_activate(
                 console.print(
                     f"[green]✓ Successfully synced {result.bda_classes_synced} classes to BDA[/green]"
                 )
+        _print_orphaned_blueprints(result.bda_orphaned_blueprint_arns)
 
         console.print(
             f"[green]✓ Successfully activated configuration profile: {config_version}[/green]"
@@ -5220,12 +5249,14 @@ def config_sync_bda(
             if result.processed_classes:
                 for cls_name in result.processed_classes:
                     console.print(f"    • {cls_name}")
+            _print_orphaned_blueprints(result.orphaned_blueprint_arns)
         else:
             console.print("[yellow]⚠ BDA sync completed with issues[/yellow]")
             console.print(f"  Classes synced: {result.classes_synced}")
             console.print(f"  Classes failed: {result.classes_failed}")
             if result.error:
                 console.print(f"  [red]Error: {result.error}[/red]")
+            _print_orphaned_blueprints(result.orphaned_blueprint_arns)
             sys.exit(1)
 
     except Exception as e:
