@@ -94,6 +94,16 @@ class ConfigActivateResult(BaseModel):
         default=0,
         description="Number of BDA classes that failed to sync",
     )
+    bda_orphaned_blueprint_arns: List[str] = Field(
+        default_factory=list,
+        description=(
+            "Blueprints the sync removed from the BDA project but could not then "
+            "delete. They are invisible to every project-scoped read, still count "
+            "against the account's blueprint limit, and are removed only by the "
+            "orphaned-blueprint cleanup. Not a class failure: the classes may all "
+            "have synced."
+        ),
+    )
     error: Optional[str] = Field(default=None, description="Error message if failed")
 
 
@@ -230,5 +240,16 @@ class ConfigSyncBdaResult(BaseModel):
     )
     processed_classes: List[str] = Field(
         default_factory=list, description="Names of processed classes"
+    )
+    orphaned_blueprint_arns: List[str] = Field(
+        default_factory=list,
+        description=(
+            "Blueprints the sync removed from the BDA project but could not then "
+            "delete. They are invisible to every project-scoped read, still count "
+            "against the account's blueprint limit, and are removed only by the "
+            "orphaned-blueprint cleanup. Not a class failure: the classes may all "
+            "have synced, so this is reported alongside `success` rather than "
+            "instead of it."
+        ),
     )
     error: Optional[str] = Field(default=None, description="Error message if failed")
