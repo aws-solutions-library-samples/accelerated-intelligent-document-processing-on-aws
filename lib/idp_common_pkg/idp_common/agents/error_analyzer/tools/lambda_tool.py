@@ -156,6 +156,139 @@ def get_lookup_function_name() -> str:
     raise ValueError("LOOKUP_FUNCTION_NAME environment variable not set")
 
 
+#: Event types whose detail carries a ``resource`` naming what was invoked, and the
+#: detail key each uses. Measured against the Step Functions API model in the
+#: installed botocore, not assumed: ``LambdaFunctionFailedEventDetails`` and
+#: ``LambdaFunctionTimedOutEventDetails`` hold only ``cause`` and ``error``, and
+#: ``StateEnteredEventDetails`` only ``input``, ``inputDetails`` and ``name``. The
+#: failing function's identity simply is not in the failure event.
+_RESOURCE_BEARING_EVENTS = {
+    "LambdaFunctionScheduled": "lambdaFunctionScheduledEventDetails",
+    "TaskScheduled": "taskScheduledEventDetails",
+}
+
+#: The events this parser reads, and the detail key each one carries its payload in.
+#: One mapping rather than a membership list plus an `or` chain, so "absent key" and
+#: "present but empty" stay distinguishable — see the note at the lookup.
+_OUTCOME_DETAIL_KEYS = {
+    "LambdaFunctionSucceeded": "lambdaFunctionSucceededEventDetails",
+    "LambdaFunctionFailed": "lambdaFunctionFailedEventDetails",
+    "LambdaFunctionTimedOut": "lambdaFunctionTimedOutEventDetails",
+    "TaskSucceeded": "taskSucceededEventDetails",
+    "TaskFailed": "taskFailedEventDetails",
+    "TaskTimedOut": "taskTimedOutEventDetails",
+    "TaskStateEntered": "stateEnteredEventDetails",
+    "TaskStateExited": "stateExitedEventDetails",
+}
+
+#: Failure events that should contribute a failed function name. Both families are
+#: needed because this workflow uses **both** Lambda integration styles: 14 task
+#: states name a function ARN directly (giving ``LambdaFunction*`` events) and 9 go
+#: through ``arn:<partition>:states:::lambda:invoke`` (giving ``Task*`` events), so
+#: reading either family alone leaves a third of the pipeline unattributable.
+_FAILURE_EVENTS_WITH_A_FUNCTION = (
+    "LambdaFunctionFailed",
+    "LambdaFunctionTimedOut",
+    "TaskFailed",
+    "TaskTimedOut",
+)
+
+#: How far back along ``previousEventId`` to look for the scheduling event.
+#:
+#: The real chains are short: ``LambdaFunctionFailed -> LambdaFunctionStarted ->
+#: LambdaFunctionScheduled`` is two hops, and ``TaskFailed -> TaskStarted ->
+#: TaskScheduled`` is two. A retry re-schedules, so the walk lands on that attempt's
+#: own scheduling rather than the first one. The bound exists so a failure whose
+#: chain is broken stops at "unknown" instead of walking back through the whole
+#: history and attributing itself to some unrelated earlier invocation — a wrong
+#: function name is worse here than none, because it selects the log group the agent
+#: goes on to search.
+_MAX_CAUSAL_HOPS = 6
+
+
+def _function_name_from_arn(resource: Optional[str]) -> Optional[str]:
+    """The function name in a Lambda **function** ARN, or None.
+
+    Requires the ``:function:`` marker rather than splitting positionally. A Lambda
+    ARN that is not a function ARN — a layer version, an event-source mapping, a
+    code-signing config — has a layer name or a uuid in that position, and for an
+    optimized integration ``resource`` is the integration verb (``invoke``) rather
+    than any ARN at all.
+    """
+    if resource and ":function:" in resource:
+        return resource.split(":function:")[-1] or None
+    return None
+
+
+def _function_name_from_task_parameters(parameters: Any) -> Optional[str]:
+    """The function an optimized ``lambda:invoke`` task was pointed at.
+
+    For that integration the scheduling event's ``resource`` is ``invoke`` and the
+    target is in the task's ``parameters`` under ``FunctionName``, which the caller
+    may have given as a full ARN or as a bare name.
+    """
+    if isinstance(parameters, str):
+        try:
+            parameters = json.loads(parameters)
+        except (json.JSONDecodeError, TypeError):
+            return None
+    if not isinstance(parameters, dict):
+        return None
+    target = parameters.get("FunctionName")
+    if not isinstance(target, str) or not target:
+        return None
+    return _function_name_from_arn(target) or (target if ":" not in target else None)
+
+
+def _index_invoked_functions(
+    execution_events: List[Dict[str, Any]],
+) -> Dict[Any, str]:
+    """Map each scheduling event's ``id`` to the function name it names."""
+    invoked: Dict[Any, str] = {}
+    for event in execution_events:
+        detail_key = _RESOURCE_BEARING_EVENTS.get(event.get("type", ""))
+        if not detail_key:
+            continue
+        detail = event.get(detail_key) or {}
+        if not isinstance(detail, dict):
+            continue
+        name = _function_name_from_arn(detail.get("resource"))
+        if name is None:
+            name = _function_name_from_task_parameters(detail.get("parameters"))
+        if name is not None and event.get("id") is not None:
+            invoked[event["id"]] = name
+    return invoked
+
+
+def _resolve_invoked_function(
+    event: Dict[str, Any],
+    events_by_id: Dict[Any, Dict[str, Any]],
+    invoked_by_id: Dict[Any, str],
+) -> Optional[str]:
+    """Follow ``previousEventId`` back to this event's own scheduling event.
+
+    Causal, not positional. Taking "the nearest preceding scheduling event" instead
+    would misattribute inside a concurrent ``Map``: ``ProcessSections`` runs at
+    ``MaxConcurrency`` 10 and the shard ``Map`` at 5, iterations share one history,
+    so the event physically before a failure routinely belongs to a different
+    iteration and a different function.
+    """
+    current: Optional[Dict[str, Any]] = event
+    seen: set = set()
+    for _ in range(_MAX_CAUSAL_HOPS + 1):
+        if current is None:
+            return None
+        current_id = current.get("id")
+        if current_id in invoked_by_id:
+            return invoked_by_id[current_id]
+        previous_id = current.get("previousEventId")
+        if previous_id in (None, 0) or previous_id in seen:
+            return None
+        seen.add(previous_id)
+        current = events_by_id.get(previous_id)
+    return None
+
+
 def extract_lambda_request_ids(
     execution_events: List[Dict[str, Any]],
 ) -> Dict[str, Any]:
@@ -173,50 +306,42 @@ def extract_lambda_request_ids(
     failed_functions = []
     all_request_ids = []
 
-    for i, event in enumerate(execution_events):
+    # Built once. The function's identity lives in the SCHEDULING event, and a
+    # failure reaches it by following `previousEventId` -- see
+    # `_resolve_invoked_function`. Reading `resource` off the failure event itself,
+    # which is what this did, could never work: no Lambda failure detail carries
+    # that field, so `failed_functions` was always empty and
+    # `primary_failed_function` always None in production (#1171).
+    invoked_by_id = _index_invoked_functions(execution_events)
+    events_by_id = {
+        event["id"]: event for event in execution_events if event.get("id") is not None
+    }
+
+    for event in execution_events:
         event_type = event.get("type", "")
 
         # Extract function name from various event types
         function_name = None
         request_id = None
 
-        if event_type in [
-            "LambdaFunctionSucceeded",
-            "LambdaFunctionFailed",
-            "LambdaFunctionTimedOut",
-            "TaskStateEntered",
-            "TaskStateExited",
-        ]:
-            # Get function name from resource ARN or state name
-            if "LambdaFunction" in event_type:
-                event_detail = (
-                    event.get("lambdaFunctionSucceededEventDetails")
-                    or event.get("lambdaFunctionFailedEventDetails")
-                    or event.get("lambdaFunctionTimedOutEventDetails")
-                )
-            elif "TaskState" in event_type:
-                event_detail = event.get("stateEnteredEventDetails") or event.get(
-                    "stateExitedEventDetails"
-                )
-            else:
-                event_detail = None
+        if event_type in _OUTCOME_DETAIL_KEYS:
+            # Looked up by the event's own type rather than selected by an `or`
+            # chain over every possible key. The chain could not distinguish "this
+            # key is absent" from "this key is present and empty", because both are
+            # falsy: an event whose detail is `{}` fell through every branch to the
+            # final `.get` and arrived as None, so the event was discarded and its
+            # failure lost. A `LambdaFunctionFailed` detail holds only `cause` and
+            # `error`, either of which a service can omit.
+            event_detail = event.get(_OUTCOME_DETAIL_KEYS[event_type])
 
-            if event_detail:
-                # Extract function name
-                resource = event_detail.get("resource", "")
-                name = event_detail.get("name", "")
-
-                if resource and ":function:" in resource:
-                    function_name = resource.split(":function:")[-1]
-                elif name:
-                    function_name = name
-                # A `resource` that is a Lambda ARN but NOT a function ARN -- a layer
-                # version, an event-source mapping, a code-signing config -- carries no
-                # function name to read. Splitting one positionally yields the layer
-                # name or the mapping uuid, and that value would be reported to an
-                # operator as the function that failed and used to pick the log group
-                # to search. Such an event contributes nothing instead, which is what
-                # an unreadably short ARN already did.
+            if event_detail is not None:
+                # The real function name, resolved causally from this event's own
+                # scheduling event. Falls back to the STATE name, which is all a
+                # TaskStateEntered/Exited event carries and is still useful for
+                # keying a request id.
+                function_name = _resolve_invoked_function(
+                    event, events_by_id, invoked_by_id
+                ) or (event_detail.get("name") or None)
 
                 # Extract request ID from multiple fields
                 for field_name, field_value in event_detail.items():
@@ -230,9 +355,8 @@ def extract_lambda_request_ids(
                             break
 
                 # Track failed functions
-                if event_type in ["LambdaFunctionFailed", "LambdaFunctionTimedOut"]:
-                    if function_name:
-                        failed_functions.append(function_name)
+                if event_type in _FAILURE_EVENTS_WITH_A_FUNCTION and function_name:
+                    failed_functions.append(function_name)
 
                 # Map function to request ID
                 if function_name and request_id:
