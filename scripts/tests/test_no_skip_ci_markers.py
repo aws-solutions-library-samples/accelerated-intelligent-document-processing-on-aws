@@ -107,6 +107,22 @@ def has_commit(rev: str) -> bool:
     return _git("cat-file", "-e", f"{rev}^{{commit}}").returncode == 0
 
 
+def is_shallow() -> bool:
+    """Whether this checkout is a shallow clone, i.e. its history is truncated.
+
+    Distinct from :func:`has_commit`, and the distinction is what a counting assertion
+    needs. Presence of a commit does **not** imply presence of its ancestors: a clone
+    deep enough to contain :data:`ENFORCED_FROM` can still be missing most of what
+    precedes it, so a count taken there is an undercount rather than a refutation.
+
+    Measured: at `--depth 60` this repository contains ENFORCED_FROM and reports 1,057
+    of 9,679 commits reachable, yielding 14 marked commits instead of 17. GitLab's
+    `code_checks` runs at the project's own depth and saw 10. Both look exactly like
+    "history was rewritten" to an assertion that only checked the commit exists.
+    """
+    return _git("rev-parse", "--is-shallow-repository").stdout.strip() == "true"
+
+
 def marked_commits(*revisions: str) -> list[tuple[str, str, str]]:
     """``(sha, directive, subject)`` for every commit in ``revisions`` carrying one."""
     result = _git("log", _LOG_FORMAT, *revisions)
@@ -203,10 +219,25 @@ def test_the_history_outside_the_scanned_range_still_holds_exactly_the_known_mar
     Needs history before the start point, so it is skipped rather than weakened on a
     shallow clone — the count is measured where the history exists (GitHub's
     ``developer_tests`` clones in full).
+
+    The skip is keyed on :func:`is_shallow`, **not** on whether the start point is
+    present. Those come apart: a clone deep enough to contain ``ENFORCED_FROM`` can
+    still be missing most of its ancestors, and the resulting undercount is
+    indistinguishable from rewritten history. That is how this gate failed GitLab's
+    ``code_checks`` while passing GitHub's — 10 markers found against 17 recorded.
     """
     if not has_commit(ENFORCED_FROM):
         pytest.skip(
             f"{ENFORCED_FROM[:12]} is not in this clone; nothing behind it to count"
+        )
+    if is_shallow():
+        # Not a weakening: a shallow clone cannot count what it does not have, and the
+        # number it does produce is an undercount that reads as "history was rewritten".
+        # GitHub's developer_tests clones with fetch-depth: 0 and enforces this.
+        pytest.skip(
+            "this is a shallow clone, so the history behind "
+            f"{ENFORCED_FROM[:12]} is truncated and any count of it would be an "
+            "undercount; the pin is enforced on a full clone"
         )
     behind = marked_commits(ENFORCED_FROM)
     assert len(behind) == MARKERS_BEFORE_ENFORCED_FROM, (
