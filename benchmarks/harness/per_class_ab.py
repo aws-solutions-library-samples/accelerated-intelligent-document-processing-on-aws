@@ -142,7 +142,17 @@ def main():
                 g.worse += 1
             else:
                 g.same += 1
-        g.cost.append(rc._cost(ib) - rc._cost(ia))
+        # `_cost` returns (cost, unpriced_reason) for the same reason `_score` returns
+        # an unread reason: a document carrying metering `pricing.yaml` cannot price
+        # has no cost delta to contribute, and a partial one is below truth by a
+        # different amount in each arm — which moves this class's delta in an unknown
+        # direction, not merely by an unknown amount (#1146).
+        cb, pb = rc._cost(ib)
+        ca, pa = rc._cost(ia)
+        if pa or pb:
+            unread_notes.append(f"{doc} [{cls}] cost: {pa or pb}")
+        elif cb is not None and ca is not None:
+            g.cost.append(cb - ca)
         ra, rb = rows_a.get(doc), rows_b.get(doc)
         if ra and rb:
             g.cr.append(rb["cacheReadInputTokens"] - ra["cacheReadInputTokens"])
@@ -153,9 +163,9 @@ def main():
     print(f"paired non-failed documents: {sum(g.n for g in by_class.values())}\n")
     if unread_notes:
         print(
-            f"⚠ {len(unread_notes)} document(s) contribute no accuracy delta because a "
-            "read FAILED, not because they scored nothing — the per-class figures "
-            "below are over the remainder:"
+            f"⚠ {len(unread_notes)} document(s) contribute no delta because a read "
+            "FAILED or a cost could not be priced, not because they measured nothing "
+            "— the per-class figures below are over the remainder:"
         )
         for note in unread_notes[:5]:
             print(f"    {note}")
