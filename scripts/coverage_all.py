@@ -63,7 +63,7 @@ def main() -> int:
     parser.add_argument(
         "--serial",
         action="store_true",
-        help="do not pass -n auto; needed when measuring a single submodule (#1159)",
+        help="do not pass -n auto for ANY tree (trees that declare serial are always serial)",
     )
     args = parser.parse_args()
 
@@ -82,7 +82,12 @@ def main() -> int:
             f"\n=== coverage: {tree.name} ({tree.cwd}, --cov={tree.cov}) ===",
             flush=True,
         )
-        name, code, total = run(tree, python, parallel=not args.serial)
+        # A tree that declares `serial` is never run in parallel, whatever the flag
+        # says: for those, `-n auto` does not just cost time, it reports coverage that is
+        # wrong in a way nothing downstream can detect. `--serial` can force the rest
+        # serial too, but it cannot force a serial tree parallel.
+        parallel = not args.serial and not tree.serial
+        name, code, total = run(tree, python, parallel=parallel)
         results.append((name, total))
         if code:
             failures.append(name)
