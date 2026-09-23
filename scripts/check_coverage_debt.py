@@ -104,6 +104,19 @@ class Tree(NamedTuple):
     cov: str
     #: Extra pytest arguments this tree needs (a marker filter, an explicit test path).
     args: tuple[str, ...] = ()
+    #: Measure this tree WITHOUT `-n auto`.
+    #:
+    #: Not a performance note -- a correctness one. A suite that invokes the code under
+    #: test as a **subprocess** has its coverage under-collected by xdist workers, and
+    #: the symptom is a large, confident-looking fall in a file whose own suite is
+    #: entirely green. Measured on `scripts`: `scripts/hooks/check_commit_text.py` reads
+    #: 65.15% under `-n auto` and 98% run alone, and `check_shared_branch.py` 85.75%
+    #: against 95%. Recording the parallel numbers would have replaced two real 95%+
+    #: baselines with figures 10 and 33 points lower, which is worse than having no
+    #: ratchet on those files at all: it pre-approves a genuine regression down to the
+    #: recorded floor. The whole-tree total moves too (81.93% parallel, 82.22% serial),
+    #: so it is not confined to the files that spawn processes.
+    serial: bool = False
 
 
 #: Every tree with a coverage figure. Ordered largest-first so the slow ones start early
@@ -126,6 +139,11 @@ TREES: tuple[Tree, ...] = (
             "scripts/security/tests",
             "scripts/srt/tests",
         ),
+        # `scripts/tests/test_check_commit_text.py` and `test_check_shared_branch.py`
+        # run the hooks they cover as subprocesses, which xdist under-collects. See
+        # `Tree.serial`. Costs ~19 minutes instead of ~20; the parallel run was not
+        # meaningfully faster here anyway, because one root cannot use every worker.
+        serial=True,
     ),
     Tree("idp_sdk", "lib/idp_sdk", "idp_sdk", ("-m", "not integration")),
     Tree("main_stack_extensions", "feature-platform/main-stack-extensions", "."),
