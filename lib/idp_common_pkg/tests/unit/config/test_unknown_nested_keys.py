@@ -467,6 +467,39 @@ def test_the_same_misnested_key_is_answered_for_each_place_it_can_be_written(whe
     ]
 
 
+@pytest.mark.parametrize(
+    "written,expected",
+    [
+        ("ocr.image.backend", "ocr.backend"),
+        ("ocr.image.model_id", "ocr.model_id"),
+        ("extraction.agentic.model", "extraction.model"),
+        (
+            "extraction.confidence.image.escalation_enabled",
+            "extraction.confidence.escalation_enabled",
+        ),
+        (
+            "rule_validation.fact_extraction.token_size",
+            "rule_validation.token_size",
+        ),
+    ],
+)
+def test_a_key_written_one_level_too_deep_is_answered_too(written, expected):
+    """The mirror image of the mis-nesting case, and just as plausible.
+
+    ``docs/configuration.md`` tells the reader that ``ocr.backend`` and
+    ``ocr.model_id`` really do sit one level up, which is exactly the sentence an
+    author over-generalises into ``ocr.image.backend``. Restricting candidates to
+    *under* the written prefix — the fix for a cross-section guess — silently
+    withheld the answer for 272 such pairs, so the search now widens outwards from
+    where the key was written and stops at the first level that has any candidate.
+    """
+    data: dict = {written.split(".")[-1]: "probe"}
+    for segment in reversed(written.split(".")[:-1]):
+        data = {segment: data}
+    findings = collect_ignored_config_keys(data, IDPConfig)
+    assert [(f.path, f.suggestion) for f in findings] == [(written, expected)]
+
+
 def test_an_ambiguous_key_is_reported_with_no_suggestion_at_all():
     """No path beats a wrong path, and this is the case that produces a wrong one.
 
@@ -1019,6 +1052,16 @@ def test_the_default_configuration_of_a_stock_deployment_is_clean():
 # ---------------------------------------------------------------------------
 
 
+def test_the_bound_on_the_log_line_is_a_bound():
+    """A limit large enough never to apply is the way this stops working.
+
+    The truncation branch below is exercised by building twice the limit's worth of
+    keys, so it stays green for any value; the magnitude is the part a change could
+    quietly make meaningless.
+    """
+    assert 5 <= MAX_REPORTED_IGNORED_KEYS <= 50, MAX_REPORTED_IGNORED_KEYS
+
+
 def test_the_log_line_is_bounded():
     """A config written against a different product should not produce a page of log."""
     data = {
@@ -1084,36 +1127,95 @@ def test_validate_config_stays_quiet_about_a_correct_configuration():
 
 
 @pytest.mark.parametrize(
-    "submitted,must_not_name",
+    "submitted,named",
     [
-        ({"notes_typo": "x"}, "notes_typo"),
-        ({"description": "a profile description"}, "description"),
-        ({"rule_classes": [{"name": "policyA"}]}, "rule_classes"),
+        ({"notes_typo": "x"}, True),
+        ({"criteria_bucket": "b"}, True),
+        ({"description": "a profile description"}, False),
+        ({"rule_classes": [{"name": "policyA"}]}, False),
     ],
-    ids=["a-plain-typo", "read-by-another-consumer", "renamed-on-load"],
+    ids=["a-plain-typo", "deprecated", "read-by-another-consumer", "renamed-on-load"],
 )
-def test_validate_config_leaves_the_top_level_to_the_reporters_that_know_it(
-    submitted, must_not_name
+def test_validate_config_is_the_only_reporter_and_knows_which_keys_are_read(
+    submitted, named
 ):
-    """Depth 0 has three reporters already, and two of these keys are not ignored.
+    """One reporter for every depth, and it knows the two exceptions at depth 0.
 
-    ``idp_cli``'s ``config validate`` and ``idp_sdk``'s ``ConfigOperation.validate``
-    each compute top-level extras themselves and print their own message, so a fourth
-    put two differently-worded warnings about one key in front of the same reader.
-    Worse, the other two cases here are not dropped at all: ``update_configuration``
-    pops and stores ``description``, and ``rule_classes`` is renamed on load, so
-    "will be ignored, leaving the default in force" was false for both — the second
-    of them an instruction to delete working policy rules.
+    ``idp_cli``'s ``config-validate`` and ``idp_sdk``'s ``ConfigOperation.validate``
+    used to compute ``set(config) - set(IDPConfig.model_fields)`` each, which put two
+    differently-worded warnings about one key in front of the same reader — and, being
+    a raw set difference, named two keys the loader honours: ``update_configuration``
+    pops and stores ``description``, and ``rule_classes`` is renamed to
+    ``policy_classes``. Both now consume these findings, so a plain typo is reported
+    once and those two are reported nowhere.
     """
     from idp_common.config.merge_utils import validate_config
 
     result = validate_config(
         {"classes": [{"name": "invoice"}], **submitted}, "pattern-2"
     )
-    offending = [
-        w for w in result["warnings"] if "configuration key" in w and must_not_name in w
+    key = next(iter(submitted))
+    warned = [w for w in result["warnings"] if "configuration key" in w and key in w]
+    listed = [f for f in result["ignored_keys"] if f["path"] == key]
+    if named:
+        assert len(warned) == 1, warned
+        assert len(listed) == 1, result["ignored_keys"]
+    else:
+        assert warned == [], warned
+        assert listed == [], result["ignored_keys"]
+
+
+def test_validate_config_returns_the_findings_structurally():
+    """``result["ignored_keys"]`` is what a caller acts on rather than parsing prose.
+
+    ``--strict`` keys on the depth of a path, and the SDK builds its
+    ``deprecated_fields`` / ``unknown_fields`` from the kind, so the shape is part of
+    the contract rather than a convenience.
+    """
+    from idp_common.config.merge_utils import validate_config
+
+    result = validate_config(
+        {
+            "classes": [{"name": "invoice"}],
+            "notes_typo": "x",
+            "extraction": {"max_tokens": 1, "validation": {"enabld": False}},
+        },
+        "pattern-2",
+    )
+    assert result["ignored_keys"] == [
+        {
+            "path": "extraction.max_tokens",
+            "kind": "deprecated",
+            "suggestion": None,
+        },
+        {
+            "path": "extraction.validation.enabld",
+            "kind": "unknown",
+            "suggestion": "extraction.validation.enabled",
+        },
+        {"path": "notes_typo", "kind": "unknown", "suggestion": None},
     ]
-    assert offending == [], offending
+
+
+@pytest.mark.parametrize("dotted", sorted(models_module.PATHS_READ_ELSEWHERE))
+def test_a_path_read_elsewhere_still_has_a_reader_doing_the_reading(dotted):
+    """The premise, computed per entry, on the **read** rather than on the key name.
+
+    Same shape and same reason as ``TOP_LEVEL_KEY_EXEMPT`` in
+    ``scripts/tests/test_preset_keys_are_read.py``: ``description`` occurs ten times
+    in its reader, mostly as an unrelated parameter, so matching the bare word would
+    hold after the line that actually reads the config key was deleted.
+    """
+    reader, marker = models_module.PATHS_READ_ELSEWHERE[dotted]
+    source = REPO_ROOT / reader
+    assert source.is_file(), f"'{dotted}' names {reader}, which does not exist"
+    assert marker in source.read_text(encoding="utf-8"), (
+        f"'{dotted}' is excluded because {reader} reads it, and that file no longer "
+        f"contains {marker!r} — the exclusion has outlived its reason"
+    )
+    assert dotted not in IDPConfig.model_fields, (
+        f"'{dotted}' is a declared field, so this entry is inert"
+    )
 
 
 def test_validate_config_does_not_report_a_legacy_key_the_migration_relocates():

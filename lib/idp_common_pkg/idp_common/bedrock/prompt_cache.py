@@ -335,7 +335,7 @@ def describe_cache_state(summary: Mapping[str, Any]) -> str:
         )
         return (
             f"never cached — the cache point was inert ({counts}); the prompt "
-            f"prefix is probably below {floor}: run 'idp-cli config validate' for "
+            f"prefix is probably below {floor}: run 'idp-cli config-validate' for "
             f"the per-class estimate"
         )
     if state == "disabled":

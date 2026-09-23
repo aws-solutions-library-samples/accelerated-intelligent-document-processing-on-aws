@@ -587,12 +587,18 @@ def validate_config(
         - errors: List[str] - validation errors if any
         - warnings: List[str] - validation warnings
         - merged_config: Dict - the merged config (if valid)
+        - ignored_keys: List[Dict] - one {path, kind, suggestion} per key the
+          configuration models will not read, at any depth. The same findings the
+          warnings above describe in prose, in the form a caller can act on: this is
+          what `idp-cli config-validate --strict` keys on, and what the SDK's
+          `deprecated_fields` / `unknown_fields` are built from.
     """
     result = {
         "valid": True,
         "errors": [],
         "warnings": [],
         "merged_config": None,
+        "ignored_keys": [],
     }
 
     # Check pattern is valid
@@ -657,16 +663,21 @@ def _validate_ignored_keys(config: Dict[str, Any], result: Dict[str, Any]) -> No
     fixing a typo is cheap, and told *where* — the dotted path, plus the declared
     field the key most plausibly meant when there is one.
 
-    ⚠️ **Nested keys only, measured rather than assumed.** Depth 0 already has three
-    reporters: ``IDPConfig``'s own two messages, a block in ``idp_cli``'s
-    ``config validate`` and another in ``idp_sdk``'s ``ConfigOperation.validate``,
-    which appends its own ``Unknown field '<key>' found`` after this function
-    returns. Adding a fourth put two differently-worded warnings about one key in
-    front of the same reader. It also repeated two things those reporters get right
-    and a generic walk cannot: ``description`` is not an ``IDPConfig`` field but
-    ``update_configuration`` pops and stores it, and ``rule_classes`` is renamed on
-    load — so "it will be ignored, leaving the default in force" was false for both.
-    Below depth 0 this is the only reporter, so nothing is said twice.
+    **Every depth, and this is now the only reporter at any of them.** ``idp_cli``'s
+    ``config-validate`` and ``idp_sdk``'s ``ConfigOperation.validate`` each used to
+    compute their own top-level extras as
+    ``set(config) - set(IDPConfig.model_fields)``, which put two differently-worded
+    warnings about one key in front of the same reader and — because a raw set
+    difference knows nothing about the tree — told the operator that two keys the
+    loader honours would be ignored: ``description``, which
+    ``update_configuration`` pops and stores, and ``rule_classes``, which is renamed
+    to ``policy_classes`` on load. Both now consume these findings instead, so the
+    knowledge that fixes those two lives in one place that production code can read.
+
+    The findings are also returned structurally as ``result["ignored_keys"]``, which
+    is what ``--strict`` keys on: its contract is about top-level fields and is left
+    exactly as it was, deliberately, because widening it would fail configurations
+    that pass today.
 
     The migration chain runs first, on a copy — defensively: measured today,
     ``migrate_config`` returns new containers and mutates nothing, so dropping the
@@ -684,7 +695,12 @@ def _validate_ignored_keys(config: Dict[str, Any], result: Dict[str, Any]) -> No
     from idp_common.config.migrations import migrate_config
     from idp_common.config.models import IDPConfig, collect_ignored_config_keys
 
-    findings = collect_ignored_config_keys(migrate_config(deepcopy(config)), IDPConfig)
+    findings = collect_ignored_config_keys(
+        migrate_config(deepcopy(config)), IDPConfig, include_top_level=True
+    )
+    result["ignored_keys"] = [
+        {"path": f.path, "kind": f.kind, "suggestion": f.suggestion} for f in findings
+    ]
     for finding in findings:
         if finding.kind == "deprecated":
             result["warnings"].append(
@@ -1454,7 +1470,7 @@ def _validate_simple_integrated_lists(
     so at config time is free. A hard error would wedge a stored config that
     validated yesterday (the rollback trap), so this is a warning only.
 
-    Surfaces wherever `validate_config` runs: `idp-cli config validate` and the SDK
+    Surfaces wherever `validate_config` runs: `idp-cli config-validate` and the SDK
     validate operation. The web UI does NOT validate on save; its Prompt Preview
     pane shows the same decision per class.
     """

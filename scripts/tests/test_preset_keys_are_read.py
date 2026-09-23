@@ -34,6 +34,13 @@ Discovery is derived, not listed: every tracked `.yaml`/`.yml` under
 tables that live there and are not presets are excluded by name, and the exclusion
 is asserted non-vacuous — if either stops being present, this file fails rather than
 silently narrowing.
+
+**The nested question is also asked outside `config_library/`.** A reader does not
+start at the preset directory: the notebooks carry configuration files of their own,
+and a dead key in one of those is copied into a real deployment by whoever follows the
+walkthrough. Five of them carried `extraction.max_tokens` and one set `top_p`/`top_k`
+on two models that declare neither. Those documents are found by shape rather than by
+directory, and only the nested question is asked of them — see the test for why.
 """
 
 from __future__ import annotations
@@ -138,6 +145,50 @@ def presets() -> dict[str, dict]:
     return docs
 
 
+#: Top-level names that mark a YAML document as an IDPConfig-shaped configuration.
+#: Read from the model rather than listed, so a renamed block cannot make a document
+#: invisible to the walk below; a document carrying none of them is something else
+#: (a manifest, a test fixture, a CloudFormation template) and IDPConfig never sees it.
+_CONFIG_MARKER_BLOCKS = ("classes", "ocr", "classification", "extraction")
+
+
+@pytest.fixture(scope="module")
+def other_config_documents() -> dict[str, dict]:
+    """Tracked configuration documents OUTSIDE `config_library/`.
+
+    The notebooks and the SDLC config directory carry their own configuration files,
+    and a dead key in one of those is copied into a real deployment by whoever follows
+    the walkthrough. Discovery is derived from `git ls-files` and from the shape of the
+    document, not from a list of directories.
+    """
+    from idp_common.config.models import IDPConfig
+
+    markers = {name for name in _CONFIG_MARKER_BLOCKS if name in IDPConfig.model_fields}
+    assert len(markers) == len(_CONFIG_MARKER_BLOCKS), (
+        f"one of {_CONFIG_MARKER_BLOCKS} is no longer an IDPConfig field, so this "
+        "walk's idea of what a configuration document looks like is stale"
+    )
+
+    out = subprocess.run(
+        ["git", "ls-files", "-z", "*.yaml", "*.yml"],
+        cwd=REPO_ROOT,
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout
+    docs: dict[str, dict] = {}
+    for rel in out.split("\0"):
+        if not rel or rel.startswith(PRESET_DIR):
+            continue
+        try:
+            doc = yaml.safe_load((REPO_ROOT / rel).read_text(encoding="utf-8"))
+        except (yaml.YAMLError, UnicodeDecodeError):
+            continue
+        if isinstance(doc, dict) and markers & set(doc):
+            docs[rel] = doc
+    return docs
+
+
 @pytest.mark.unit
 def test_discovery_finds_the_presets(presets):
     """Not vacuous: the walk must reach real presets, or every assertion below passes
@@ -205,6 +256,57 @@ def test_no_preset_carries_a_nested_key_idpconfig_discards(presets):
         "values read as configuration and have no effect. Either the key belongs at "
         "the path named in the suggestion, or it is dead and should go:\n"
         + "\n".join(f"  {rel}: {keys}" for rel, keys in sorted(offenders.items()))
+    )
+
+
+@pytest.mark.unit
+def test_no_other_shipped_configuration_document_carries_a_nested_key_either(
+    other_config_documents,
+):
+    """The same nested question, asked of the documents people copy from.
+
+    `config_library/` is what `--custom-config` installs, but it is not where a reader
+    starts: the notebooks carry configuration files of their own, and a dead key in one
+    of those is copied into a real deployment by whoever follows the walkthrough. Five
+    of them carried `extraction.max_tokens`, and one set `top_p`/`top_k` on the two Z3
+    models, which declare neither — so a published example showed two decoding
+    parameters that had never taken effect.
+
+    **Nested keys only, deliberately.** A *top-level* key in one of these is a
+    judgement call the presets do not need — a notebook document may legitimately
+    carry scaffolding IDPConfig never sees — while a nested key under a block IDPConfig
+    does model has an unambiguous answer.
+    """
+    import copy
+
+    from idp_common.config.migrations import migrate_config
+    from idp_common.config.models import IDPConfig, collect_ignored_config_keys
+
+    offenders = {}
+    for rel, doc in other_config_documents.items():
+        findings = collect_ignored_config_keys(
+            migrate_config(copy.deepcopy(doc)), IDPConfig
+        )
+        if findings:
+            offenders[rel] = [f.describe() for f in findings]
+    assert not offenders, (
+        "these shipped configuration documents carry nested keys IDPConfig discards "
+        "on load, so a reader copying them gets settings with no effect:\n"
+        + "\n".join(f"  {rel}: {keys}" for rel, keys in sorted(offenders.items()))
+    )
+
+
+@pytest.mark.unit
+def test_discovery_finds_the_other_configuration_documents(other_config_documents):
+    """Non-vacuity for the test above, which is otherwise trivially green.
+
+    The count is not pinned — these files come and go — but the walk must reach a
+    realistic number of them and must include the notebook tree, which is the one
+    that matters because its files are meant to be copied.
+    """
+    assert len(other_config_documents) >= 5, sorted(other_config_documents)
+    assert any(rel.startswith("notebooks/") for rel in other_config_documents), sorted(
+        other_config_documents
     )
 
 

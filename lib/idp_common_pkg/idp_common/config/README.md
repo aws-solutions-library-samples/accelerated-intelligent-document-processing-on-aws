@@ -91,13 +91,18 @@ extraction.validation.enabled?), ocr.dpi (did you mean ocr.image.dpi?)
 ```
 
 `validate_config()` puts the same findings in `result["warnings"]`, which is where
-`idp-cli config validate` shows them — the moment a typo is cheap to fix. It reports
-**nested keys only**: depth 0 already has three reporters (`IDPConfig`'s own two
-messages, plus a block each in `idp_cli`'s `config validate` and `idp_sdk`'s
-`ConfigOperation.validate`), and two things they know that a generic walk does not
-are what make "it will be ignored" false at that level — `description` is popped and
-stored by `update_configuration`, and `rule_classes` is renamed to `policy_classes`
-on load. Below depth 0 this is the only reporter, so nothing is said twice.
+`idp-cli config-validate` shows them — the moment a typo is cheap to fix — and in
+`result["ignored_keys"]` as `{path, kind, suggestion}` for a caller that needs to act
+rather than print. `idp-cli` and `idp_sdk` both consume those, so **this is the only
+reporter at any depth**. Each used to compute its own top-level extras as
+`set(config) - set(IDPConfig.model_fields)`, which said two keys the loader honours
+would be ignored — `description`, which `update_configuration` pops and stores, and
+`rule_classes`, which is renamed to `policy_classes` — and, once the library began
+reporting too, said everything else twice.
+
+`config-validate --strict` keeps its contract of failing on a **top-level** extra
+only. Extending it downwards would fail configurations that pass today, in the one
+flag built for a pipeline; the nested finding is reported either way.
 
 **It reports; it does not reject.** `extra` is unchanged on every model, so a
 stored configuration that loads today still loads. Rejecting would refuse
@@ -141,15 +146,19 @@ Three things to know before using it:
   `ocr.image.dpi: "abc"` raises. When you probe this config tree, assert the
   value **arrived** (`cfg.ocr.image.dpi == expected`), never that construction
   succeeded.
-- **A suggestion is offered only when it is the only answer**, and the two
-  questions are asked in that order: is this key a real field at exactly one path
-  *under where it was written* (`ocr.dpi` → `ocr.image.dpi`), and failing that, is
-  there a close name among the **siblings** (`enabld` → `enabled`). `enabled` is
-  declared at nine paths under `extraction`, so `extraction.enabled` gets no hint
-  at all, and a candidate must sit under the written prefix so that `hitl.model` is
-  not answered with `classification.model`. A wrong path is worse than none: it
-  sends the author to edit something correct. A path through a list-typed field is
-  written as one — `ocr.postHook[].arn`.
+- **A suggestion is offered only when it is the only answer.** First the wrong-depth
+  question, read outwards from where the key was written — the written prefix, then
+  its parent, stopping at the first level with any candidate — which answers both
+  directions: `ocr.dpi` → `ocr.image.dpi` and `ocr.image.backend` → `ocr.backend`.
+  Within that level the shallowest candidate wins if it is alone there, and a tie
+  declines: `enabled` is declared at eight places one level under `extraction`, so
+  `extraction.enabled` gets no hint, and `hitl.model` reaches the root to find eleven
+  and declines rather than answering with `classification.model`. Failing that, a
+  close name among the **siblings** (`enabld` → `enabled`). A wrong path is worse
+  than none: it sends the author to edit something correct. A list step is spelled
+  `ocr.postHook[].arn` — notation, since the dotted form is not a path — and a
+  mapping subtree gets findings but no suggestions, because a suggestion there would
+  have to invent a key name.
 
 ## Files
 

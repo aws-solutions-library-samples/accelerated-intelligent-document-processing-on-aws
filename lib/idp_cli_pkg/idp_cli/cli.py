@@ -4423,36 +4423,34 @@ def config_validate(
                 f"[green]✓ Migrated config written to: {emit_migrated}[/green]"
             )
 
-        # Check for extra/deprecated fields before Pydantic validation
-        from idp_common.config.models import IDP_CONFIG_DEPRECATED_FIELDS, IDPConfig
+        # Validate config. The unread-key findings come from validate_config rather
+        # than from a set difference computed here: a raw
+        # `set(config) - set(IDPConfig.model_fields)` reports every key IDPConfig
+        # does not declare, which told an operator that two keys the loader honours
+        # would be ignored — `description`, which update_configuration pops and
+        # stores, and `rule_classes`, which is renamed to `policy_classes` on load.
+        # It also sees only the top level, where a typo is least likely.
+        result = validate_config(user_config, pattern="pattern-2")
 
-        defined_fields = set(IDPConfig.model_fields.keys())
-        user_fields = set(user_config.keys())
-        extra_fields = user_fields - defined_fields
-
-        deprecated_fields = extra_fields & IDP_CONFIG_DEPRECATED_FIELDS
-        unknown_fields = extra_fields - IDP_CONFIG_DEPRECATED_FIELDS
-
-        if deprecated_fields:
-            console.print(
-                f"[yellow]⚠ Deprecated fields found (will be ignored): {sorted(deprecated_fields)}[/yellow]"
-            )
-
-        if unknown_fields:
-            console.print(
-                f"[yellow]⚠ Unknown fields found (will be ignored): {sorted(unknown_fields)}[/yellow]"
-            )
-
-        if strict and extra_fields:
+        # --strict keeps its contract: top-level fields only. A nested finding is
+        # reported either way (in the warnings below, with the path and often the
+        # field it was meant to be), and failing on one would fail configurations
+        # that pass today, which is a decision for a release rather than a fix.
+        top_level_extras = sorted(
+            finding["path"]
+            for finding in result.get("ignored_keys", [])
+            if "." not in finding["path"] and "[" not in finding["path"]
+        )
+        if strict and top_level_extras:
             console.print()
             console.print("[red]✗ Strict mode: config contains extra fields[/red]")
+            console.print(
+                f"[yellow]Extra top-level fields: {top_level_extras}[/yellow]"
+            )
             console.print(
                 "[yellow]Remove these fields or run without --strict[/yellow]"
             )
             sys.exit(1)
-
-        # Validate config
-        result = validate_config(user_config, pattern="pattern-2")
 
         if result["valid"]:
             console.print("[green]✓ Config merges with system defaults[/green]")

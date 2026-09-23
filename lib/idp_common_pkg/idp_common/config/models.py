@@ -1166,7 +1166,7 @@ class ExtractionConfig(BaseModel):
         PyYAML (YAML 1.1) reads a bare ``prompt_cache: off`` as ``False`` and
         ``on`` as ``True``; the DynamoDB layer keeps booleans as booleans. Without
         this the documented value failed validation everywhere it is loaded —
-        ``idp-cli config validate``, the extraction Lambda and the deploy-time
+        ``idp-cli config-validate``, the extraction Lambda and the deploy-time
         UpdateDefaultConfig custom resource. Unknown strings still fail on the
         Literal.
         """
@@ -3189,8 +3189,8 @@ DEPRECATED_CONFIG_FIELDS_BY_MODEL: Dict[type, frozenset[str]] = {
 #: gates. ``exemption_discovery.PYTHON_PATHSPECS`` does not read the library, so an
 #: entry would fail ``test_no_registered_exemption_has_vanished``; adding the
 #: narrowest glob that would find this (``lib/idp_common_pkg/idp_common/config/*.py``)
-#: discovers six surfaces, five of them unrelated to this change and two of them
-#: function-locals, each then owing an authored judgement. A registry that asks for
+#: discovers six surfaces — four unrelated to this change, three of them
+#: function-locals — each then owing an authored judgement. A registry that asks for
 #: judgements on noise is how a reviewer learns to rubber-stamp it, which is the
 #: failure that registry exists to prevent. So the ratchets it would ask for live in
 #: ``tests/unit/config/test_unknown_nested_keys.py`` instead, one per entry:
@@ -3209,8 +3209,28 @@ SUPPRESSED_IGNORED_KEY_PATHS: Dict[str, str] = {
     ),
 }
 
+#: Paths ``IDPConfig`` does not model but that **another consumer reads**, so
+#: "ignored, leaving the default in force" is false for them. Same shape as
+#: ``TOP_LEVEL_KEY_EXEMPT`` in ``scripts/tests/test_preset_keys_are_read.py``, and
+#: for the same reason: the entry names the production reader and the source text
+#: that constitutes the read, so the premise is computed per entry rather than
+#: asserted in prose. A test that merely looked for the key name would stay green
+#: after the line doing the reading was deleted.
+#:
+#: This knowledge used to live only in that test module, which no production code
+#: can consult — and that is how three separate reporters came to tell an operator
+#: that ``description`` would be ignored.
+PATHS_READ_ELSEWHERE: Dict[str, Tuple[str, str]] = {
+    "description": (
+        "src/lambda/update_configuration/index.py",
+        'pop("description"',
+    ),
+}
+
 #: Upper bound on findings named in one log line. A configuration written against
-#: a different product entirely would otherwise produce an unreadable line.
+#: a different product entirely would otherwise produce an unreadable line. A value
+#: large enough not to bound anything is the way this stops working, so the test
+#: asserts the magnitude rather than only the truncation branch.
 MAX_REPORTED_IGNORED_KEYS = 20
 
 #: How close a sibling field name must be to earn a "did you mean" on a
@@ -3301,9 +3321,17 @@ def _field_path_index(root: type) -> Dict[str, Tuple[Tuple[str, ...], ...]]:
     repeated model are enumerated — ``ImageConfig`` is reachable four ways — because
     what makes a suggestion trustworthy is knowing whether the answer is unique.
 
-    A segment for a list-typed field carries ``[]`` and one for a map-typed field
-    ``.*``, so a suggested path is writable as it stands: ``ocr.postHook[].arn`` is
-    where that field lives, and ``ocr.postHook.arn`` is a path with no meaning.
+    A segment for a list-typed field carries ``[]``: ``ocr.postHook[].arn`` says
+    unambiguously where that field lives, where ``ocr.postHook.arn`` reads as a path
+    and is not one. It is notation rather than something to paste — the index is a
+    lookup table, not config syntax.
+
+    ⚠️ A **map-typed** field (``Dict[str, Model]``) is deliberately not indexed, and
+    nor is anything under it. The walk itself descends there and names findings with
+    the key the author used, but a *suggestion* would have to name a key that does
+    not exist yet, and every spelling of that (``field.*``, ``field.<name>``) either
+    breaks the segment round-trip or invents a name. No field in the tree is shaped
+    that way today; when one is, a suggestion inside it is absent rather than wrong.
     """
     index: Dict[str, List[Tuple[str, ...]]] = {}
 
@@ -3311,13 +3339,9 @@ def _field_path_index(root: type) -> Dict[str, Tuple[Tuple[str, ...], ...]]:
         for name, field in model.model_fields.items():
             index.setdefault(name, []).append(prefix + (name,))
             shape, nested = _nested_model_target(field.annotation)
-            if nested is None or nested in chain:
+            if nested is None or nested in chain or shape == "map":
                 continue
-            step = name
-            if shape == "list":
-                step = f"{name}[]"
-            elif shape == "map":
-                step = f"{name}.*"
+            step = f"{name}[]" if shape == "list" else name
             visit(nested, prefix + (step,), chain + (nested,))
 
     visit(root, (), (root,))
@@ -3342,33 +3366,49 @@ def _suggest_path(
     wrong path is worse than no path: it sends the author to edit something that was
     already correct, and it is the reading that makes them distrust the next warning.
 
-    1. *Mis-nesting.* The key is a real field **inside where it was written** —
-       ``dpi`` under ``ocr`` — and the **nearest** such place is unambiguous: one
-       candidate, alone at the shallowest depth below what was written. Then the
-       answer is exact. Depth breaks the ordinary case (``extraction.dpi`` has
-       ``extraction.image.dpi`` a level down and ``extraction.confidence.image.dpi``
-       two, and the near one is what was meant), and a tie at that depth declines:
+    1. *Wrong depth, either direction.* The key is a real field near where it was
+       written, and the nearest place is unambiguous. "Near" is read outwards: the
+       written prefix first, then its parent, and so on to the root, stopping at the
+       **first** prefix that has any candidate at all. Within that prefix the
+       shallowest candidate wins if it is alone at that depth, and a tie declines.
+
+       Both mistakes happen, and both are answered. Too shallow: ``ocr.dpi`` →
+       ``ocr.image.dpi``. Too deep: ``ocr.image.backend`` → ``ocr.backend``, which is
+       the mistake the documentation's own "``ocr.backend`` really is one level up"
+       invites an author to over-generalise. Depth settles the ordinary ambiguity —
+       ``extraction.dpi`` has ``extraction.image.dpi`` one level down and
+       ``extraction.confidence.image.dpi`` two — and a tie is what keeps a guess out:
        ``enabled`` is declared at eight distinct places one level under
        ``extraction``, so ``extraction.enabled`` gets no hint rather than one of the
-       eight. Requiring the candidate to sit under the written prefix at all is what
-       stops a ``hitl.model`` being answered with ``classification.model``, a section
-       the author said nothing about.
+       eight, and ``hitl.model`` reaches the root only to find eleven equally near
+       candidates and decline, rather than being answered with
+       ``classification.model``.
     2. *Misspelling.* Failing that, a close name among the **siblings** — the fields
        of the model the key was actually written in.
+
+    **Neither step guesses.** A wrong path is worse than no path: it sends the author
+    to edit something that was already correct, and it is the reading that makes them
+    distrust the next warning.
     """
     written = _generalise(prefix + (key,))
     here = _generalise(prefix)
+    declared = _field_path_index(root).get(key, ())
 
-    candidates = [
-        path
-        for path in _field_path_index(root).get(key, ())
-        if path != written and path[: len(here)] == here
-    ]
-    if candidates:
+    # Outwards from where it was written, stopping at the first level that has any
+    # candidate: a nearer prefix with a tie must decline rather than widen, or every
+    # ambiguous key would walk out to the root and be answered from another section.
+    for depth in range(len(here), -1, -1):
+        scope = here[:depth]
+        candidates = [
+            path for path in declared if path != written and path[: len(scope)] == scope
+        ]
+        if not candidates:
+            continue
         nearest = min(len(path) for path in candidates)
         closest = [path for path in candidates if len(path) == nearest]
         if len(closest) == 1:
             return ".".join(closest[0])
+        break
 
     close = difflib.get_close_matches(
         key, list(model.model_fields.keys()), n=1, cutoff=_SUGGESTION_CUTOFF
@@ -3433,6 +3473,9 @@ def collect_ignored_config_keys(
                     continue
                 dotted = ".".join(prefix + (key,))
                 if dotted in SUPPRESSED_IGNORED_KEY_PATHS:
+                    continue
+                if dotted in PATHS_READ_ELSEWHERE:
+                    # Something other than IDPConfig reads this one.
                     continue
                 findings.append(
                     IgnoredConfigKey(
