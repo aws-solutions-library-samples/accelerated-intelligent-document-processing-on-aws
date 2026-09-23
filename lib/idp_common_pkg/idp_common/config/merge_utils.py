@@ -668,7 +668,11 @@ def _validate_ignored_keys(config: Dict[str, Any], result: Dict[str, Any]) -> No
     load — so "it will be ignored, leaving the default in force" was false for both.
     Below depth 0 this is the only reporter, so nothing is said twice.
 
-    The migration chain runs first, on a copy. A legacy-shaped key is relocated on
+    The migration chain runs first, on a copy — defensively: measured today,
+    ``migrate_config`` returns new containers and mutates nothing, so dropping the
+    copy changes no behaviour and no input can tell the difference. The property
+    worth keeping is that a caller's configuration dict is an input rather than
+    scratch space, and that is what the test asserts. A legacy-shaped key is relocated on
     load rather than dropped — ``extraction.agentic.validation`` becomes
     ``extraction.validation`` — so reporting it against the pre-migration shape
     would name a key that works as one that does not. The cost is one duplicated
