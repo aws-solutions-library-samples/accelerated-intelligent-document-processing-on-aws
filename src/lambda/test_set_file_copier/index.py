@@ -25,11 +25,13 @@ def handler(event, context):
             message = json.loads(record["body"])
 
             test_set_id = message["testSetId"]
-            file_pattern = message["filePattern"]
+            file_pattern = message.get("filePattern")
+            object_keys = message.get("objectKeys")
             bucket_type = message["bucketType"]
             tracking_table = message["trackingTable"]
             mode = message.get("mode", "create")
             modified_after = message.get("modifiedAfter")
+            by_key = object_keys is not None
 
             # Get environment variables
             input_bucket = os.environ["INPUT_BUCKET"]
@@ -44,20 +46,37 @@ def handler(event, context):
             else:
                 raise ValueError(f"Invalid bucket type: {bucket_type}")
 
+            missing_keys = []
+            if by_key:
+                if bucket_type != "input":
+                    raise ValueError(
+                        "Selected documents can only be added from the input bucket"
+                    )
+                logger.info(
+                    f"Processing test set {test_set_id} (mode={mode}) with {len(object_keys)} selected key(s)"
+                )
+                matching_files, missing_keys = _resolve_object_keys(
+                    source_bucket, object_keys
+                )
+                if not matching_files:
+                    raise ValueError(
+                        f"None of the {len(object_keys)} selected documents exist in the input bucket"
+                    )
+            else:
+                logger.info(
+                    f"Processing test set {test_set_id} (mode={mode}) with pattern '{file_pattern}' from {bucket_type} bucket"
+                )
+
+                # Find matching files in source bucket
+                matching_files = find_matching_files(
+                    source_bucket, file_pattern, modified_after=modified_after
+                )
+
+                if not matching_files:
+                    raise ValueError(f"No files found matching pattern: {file_pattern}")
+
             logger.info(
-                f"Processing test set {test_set_id} (mode={mode}) with pattern '{file_pattern}' from {bucket_type} bucket"
-            )
-
-            # Find matching files in source bucket
-            matching_files = find_matching_files(
-                source_bucket, file_pattern, modified_after=modified_after
-            )
-
-            if not matching_files:
-                raise ValueError(f"No files found matching pattern: {file_pattern}")
-
-            logger.info(
-                f"Found {len(matching_files)} files matching pattern, matching files {matching_files}"
+                f"Found {len(matching_files)} files to copy, matching files {matching_files}"
             )
 
             # Validate baseline folders exist for all input files before copying anything
@@ -94,7 +113,12 @@ def handler(event, context):
 
             # Handle missing baselines based on bucket type
             total_matched = len(matching_files)
-            if missing_baselines:
+            if missing_baselines and by_key:
+                files_to_copy = matching_files
+                logger.info(
+                    f"{len(missing_baselines)} of {total_matched} selected documents have no baseline; adding them unlabeled"
+                )
+            elif missing_baselines:
                 if bucket_type == "input":
                     # Input bucket: skip files without baselines (partial ground truth is expected)
                     files_to_copy = [
@@ -126,13 +150,15 @@ def handler(event, context):
                 _copy_input_files_from_input_bucket(test_set_id, files_to_copy)
 
             # Copy baseline folders to test set bucket
+            missing_set = set(missing_baselines)
+            labeled_files = [f for f in files_to_copy if f not in missing_set]
             if bucket_type == "testset":
-                _copy_baseline_from_testset(test_set_id, files_to_copy)
+                _copy_baseline_from_testset(test_set_id, labeled_files)
             else:
-                _copy_baseline_from_baseline_bucket(test_set_id, files_to_copy)
+                _copy_baseline_from_baseline_bucket(test_set_id, labeled_files)
 
             logger.info(
-                f"Copied {len(files_to_copy)} input files and {len(files_to_copy)} baseline folders"
+                f"Copied {len(files_to_copy)} input files and {len(labeled_files)} baseline folders"
             )
 
             # Recount total files in test set for accurate fileCount
@@ -141,7 +167,11 @@ def handler(event, context):
             # Build result message
             skipped_count = len(missing_baselines)
             last_add_result = None
-            if skipped_count > 0:
+            if by_key:
+                last_add_result = _selected_documents_result(
+                    len(files_to_copy), skipped_count, len(missing_keys)
+                )
+            elif skipped_count > 0:
                 action = "Added" if mode == "append" else "Created with"
                 last_add_result = f"{action} {len(files_to_copy)} of {total_matched} files ({skipped_count} excluded - no baseline data)"
             elif mode == "append":
@@ -168,6 +198,30 @@ def handler(event, context):
                 )
 
     return {"statusCode": 200}
+
+
+def _resolve_object_keys(bucket, object_keys):
+    """Split the selected keys into those present in the bucket and those gone."""
+    existing = []
+    missing = []
+    for key in object_keys:
+        try:
+            s3.head_object(Bucket=bucket, Key=key)
+            existing.append(key)
+        except Exception as e:
+            logger.warning(f"Selected document {key} is not in {bucket}: {e}")
+            missing.append(key)
+    return existing, missing
+
+
+def _selected_documents_result(added, unlabeled, not_found):
+    parts = []
+    if unlabeled:
+        parts.append(f"{unlabeled} unlabeled")
+    if not_found:
+        parts.append(f"{not_found} not found")
+    detail = f" ({', '.join(parts)})" if parts else ""
+    return f"Added {added} files{detail}"
 
 
 def _copy_input_files_from_input_bucket(test_set_id, files):

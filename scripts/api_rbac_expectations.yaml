@@ -658,6 +658,14 @@ operations:
     kind: mutation
     enforced_in: nested/api-resolvers/src/lambda/test_set_resolver/index.py
     args: { testSetId: "__nope__", filePattern: "x", bucketType: "input", fileCount: 0 }
+  # Keys come from processed documents the caller picked from the document list it
+  # can already see, so this is not the whole-bucket search that keeps the pattern
+  # import Admin-only.
+  addDocumentsToTestSetByKey:
+    groups: [Admin, Author]
+    kind: mutation
+    enforced_in: nested/api-resolvers/src/lambda/test_set_resolver/index.py
+    args: { testSetId: "__nope__", objectKeys: ["__nope__.pdf"] }
   addDocumentsToTestSetFromUpload:
     groups: [Admin, Author]
     kind: mutation

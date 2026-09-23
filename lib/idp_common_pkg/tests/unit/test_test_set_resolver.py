@@ -8373,6 +8373,7 @@ class TestPatternImportIsAdminOnly:
         [
             "addTestSetFromUpload",
             "addDocumentsToTestSetFromUpload",
+            "addDocumentsToTestSetByKey",
             "createEmptyTestSet",
         ],
     )
@@ -8397,3 +8398,135 @@ def test_publish_snapshot_records_the_drafting_configuration(publish_table):
         "Item"
     ]
     assert written["configVersion"] == "prof-A"
+
+
+@pytest.mark.unit
+class TestAddDocumentsToTestSetByKey:
+    """Selected Document List rows are appended by exact key, unlabeled ones too."""
+
+    def _completed_set(self):
+        return {
+            "id": "my-set",
+            "name": "My Set",
+            "status": "COMPLETED",
+            "fileCount": 3,
+            "createdAt": "2026-09-01T00:00:00Z",
+        }
+
+    def _run(self, args, item=None):
+        table = Mock()
+        sqs = Mock()
+        with (
+            patch.object(
+                test_set_index.db_client,
+                "get_item",
+                return_value=item if item is not None else self._completed_set(),
+            ),
+            patch.object(test_set_index.boto3, "resource") as resource,
+            patch.object(test_set_index.boto3, "client", return_value=sqs),
+            patch.dict(
+                os.environ,
+                {
+                    "TRACKING_TABLE": "tracking",
+                    "TEST_SET_COPY_QUEUE_URL": "https://sqs/queue",
+                },
+            ),
+        ):
+            resource.return_value.Table.return_value = table
+            result = test_set_index.add_documents_to_test_set_by_key(args)
+        return result, table, sqs
+
+    def test_queues_the_keys_and_marks_the_set_updating(self):
+        result, table, sqs = self._run(
+            {"testSetId": "my-set", "objectKeys": ["a.pdf", "folder/b.pdf"]}
+        )
+
+        body = json.loads(sqs.send_message.call_args.kwargs["MessageBody"])
+        assert body == {
+            "testSetId": "my-set",
+            "objectKeys": ["a.pdf", "folder/b.pdf"],
+            "bucketType": "input",
+            "trackingTable": "tracking",
+            "mode": "append",
+        }
+        assert "filePattern" not in body
+
+        update = table.update_item.call_args.kwargs
+        assert update["ExpressionAttributeValues"][":status"] == "UPDATING"
+        assert "statusUpdatedAt" in update["UpdateExpression"]
+        assert result["status"] == "UPDATING"
+        assert result["id"] == "my-set"
+        assert result["fileCount"] == 3
+
+    def test_duplicate_and_padded_keys_collapse(self):
+        _, _, sqs = self._run(
+            {"testSetId": "my-set", "objectKeys": [" a.pdf", "a.pdf", "b.pdf "]}
+        )
+        body = json.loads(sqs.send_message.call_args.kwargs["MessageBody"])
+        assert body["objectKeys"] == ["a.pdf", "b.pdf"]
+
+    @pytest.mark.parametrize(
+        "keys",
+        [[], None, [""], ["   "], [42], ["/abs.pdf"], ["dir/"], ["a/../b.pdf"]],
+    )
+    def test_rejects_malformed_key_lists_before_touching_the_set(self, keys):
+        with (
+            patch.object(test_set_index.db_client, "get_item") as get,
+            patch.object(test_set_index.boto3, "client") as client,
+        ):
+            with pytest.raises(ValueError):
+                test_set_index.add_documents_to_test_set_by_key(
+                    {"testSetId": "my-set", "objectKeys": keys}
+                )
+        get.assert_not_called()
+        client.assert_not_called()
+
+    def test_caps_the_number_of_keys(self):
+        keys = [f"{i}.pdf" for i in range(test_set_index.MAX_KEYS_PER_ADD + 1)]
+        with pytest.raises(ValueError, match="At most"):
+            test_set_index.add_documents_to_test_set_by_key(
+                {"testSetId": "my-set", "objectKeys": keys}
+            )
+
+    def test_refuses_a_set_that_is_not_completed(self):
+        item = self._completed_set()
+        item["status"] = "UPDATING"
+        with pytest.raises(Exception, match="not in COMPLETED status"):
+            self._run({"testSetId": "my-set", "objectKeys": ["a.pdf"]}, item=item)
+
+    def test_refuses_a_missing_set(self):
+        with pytest.raises(Exception, match="not found"):
+            self._run({"testSetId": "nope", "objectKeys": ["a.pdf"]}, item={})
+
+    def test_pattern_append_still_sends_the_pattern_message(self):
+        table = Mock()
+        sqs = Mock()
+        with (
+            patch.object(
+                test_set_index.db_client, "get_item", return_value=self._completed_set()
+            ),
+            patch.object(test_set_index.boto3, "resource") as resource,
+            patch.object(test_set_index.boto3, "client", return_value=sqs),
+            patch.dict(
+                os.environ,
+                {
+                    "TRACKING_TABLE": "tracking",
+                    "TEST_SET_COPY_QUEUE_URL": "https://sqs/queue",
+                },
+            ),
+        ):
+            resource.return_value.Table.return_value = table
+            result = test_set_index.add_documents_to_test_set(
+                {
+                    "testSetId": "my-set",
+                    "filePattern": "*.pdf",
+                    "bucketType": "input",
+                    "fileCount": 2,
+                    "modifiedAfter": "2026-09-01T00:00:00Z",
+                }
+            )
+        body = json.loads(sqs.send_message.call_args.kwargs["MessageBody"])
+        assert body["filePattern"] == "*.pdf"
+        assert body["modifiedAfter"] == "2026-09-01T00:00:00Z"
+        assert "objectKeys" not in body
+        assert result["status"] == "UPDATING"

@@ -775,6 +775,7 @@ export type Mutation = {
   abortTestRuns: AbortWorkflowResponse;
   abortWorkflow: AbortWorkflowResponse;
   addDocumentsToTestSet?: Maybe<TestSet>;
+  addDocumentsToTestSetByKey?: Maybe<TestSet>;
   addDocumentsToTestSetFromUpload?: Maybe<TestSetUploadResponse>;
   addTestSet?: Maybe<TestSet>;
   addTestSetFromUpload?: Maybe<TestSetUploadResponse>;
@@ -919,6 +920,12 @@ export type MutationAddDocumentsToTestSetArgs = {
   fileCount: Scalars['Int']['input'];
   filePattern: Scalars['String']['input'];
   modifiedAfter?: InputMaybe<Scalars['String']['input']>;
+  testSetId: Scalars['String']['input'];
+};
+
+
+export type MutationAddDocumentsToTestSetByKeyArgs = {
+  objectKeys: Array<Scalars['String']['input']>;
   testSetId: Scalars['String']['input'];
 };
 
@@ -2376,6 +2383,14 @@ export type AddDocumentsToTestSetMutationVariables = Exact<{
 
 
 export type AddDocumentsToTestSetMutation = { addDocumentsToTestSet?: { id: string, name: string, description?: string | null, filePattern?: string | null, fileCount?: number | null, status?: string | null, createdAt: string, error?: string | null, lastAddResult?: string | null } | null };
+
+export type AddDocumentsToTestSetByKeyMutationVariables = Exact<{
+  testSetId: Scalars['String']['input'];
+  objectKeys: Array<Scalars['String']['input']> | Scalars['String']['input'];
+}>;
+
+
+export type AddDocumentsToTestSetByKeyMutation = { addDocumentsToTestSetByKey?: { id: string, name: string, description?: string | null, filePattern?: string | null, fileCount?: number | null, status?: string | null, createdAt: string } | null };
 
 export type AddDocumentsToTestSetFromUploadMutationVariables = Exact<{
   input: TestSetDocumentsUploadInput;

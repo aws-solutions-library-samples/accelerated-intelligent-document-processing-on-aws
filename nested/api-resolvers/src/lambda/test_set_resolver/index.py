@@ -290,6 +290,8 @@ def handler(event, context):
         return add_test_set_from_upload(event["arguments"])
     elif field_name == "addDocumentsToTestSet":
         return add_documents_to_test_set(event["arguments"])
+    elif field_name == "addDocumentsToTestSetByKey":
+        return add_documents_to_test_set_by_key(event["arguments"])
     elif field_name == "addDocumentsToTestSetFromUpload":
         return add_documents_to_test_set_from_upload(event["arguments"])
     elif field_name == "updateTestSet":
@@ -632,15 +634,16 @@ def create_empty_test_set(args):
     return result
 
 
-def add_documents_to_test_set(args):
-    logger.info(f"Adding documents to existing test set: {args}")
+MAX_KEYS_PER_ADD = 500
 
-    test_set_id = args["testSetId"]
-    file_pattern = args["filePattern"]
-    bucket_type = args["bucketType"]
-    file_count = args["fileCount"]
 
-    # Look up existing test set
+def _begin_test_set_append(test_set_id):
+    """Look up a COMPLETED test set and mark it UPDATING for an append job.
+
+    statusUpdatedAt is what makes the job reapable: without it a set whose copier
+    dies sits in UPDATING forever, because _reap_abandoned_test_sets has no way to
+    tell a slow copy from an abandoned one.
+    """
     item = db_client.get_item({"PK": f"testset#{test_set_id}", "SK": "metadata"})
 
     if not item:
@@ -651,9 +654,6 @@ def add_documents_to_test_set(args):
             f"Test set '{test_set_id}' is not in COMPLETED status (current: {item.get('status')})"
         )
 
-    # Update status to UPDATING. statusUpdatedAt is what makes this reapable: without
-    # it a set whose copier dies sits in UPDATING forever, because
-    # _reap_abandoned_test_sets has no way to tell a slow copy from an abandoned one.
     tracking_table = os.environ["TRACKING_TABLE"]
     table = boto3.resource("dynamodb").Table(tracking_table)
     table.update_item(
@@ -667,10 +667,37 @@ def add_documents_to_test_set(args):
             ":now": datetime.utcnow().isoformat() + "Z",
         },
     )
+    return item, tracking_table
 
-    # Send file copying job to SQS queue
+
+def _queue_test_set_copy(message_body):
     sqs = boto3.client("sqs")
-    queue_url = os.environ["TEST_SET_COPY_QUEUE_URL"]
+    sqs.send_message(
+        QueueUrl=os.environ["TEST_SET_COPY_QUEUE_URL"],
+        MessageBody=json.dumps(message_body),
+    )
+
+
+def _updating_test_set_summary(test_set_id, item):
+    return {
+        "id": test_set_id,
+        "name": item["name"],
+        "description": item.get("description", ""),
+        "filePattern": item.get("filePattern", ""),
+        "fileCount": item.get("fileCount"),
+        "status": "UPDATING",
+        "createdAt": item["createdAt"],
+    }
+
+
+def add_documents_to_test_set(args):
+    logger.info(f"Adding documents to existing test set: {args}")
+
+    test_set_id = args["testSetId"]
+    file_pattern = args["filePattern"]
+    bucket_type = args["bucketType"]
+
+    item, tracking_table = _begin_test_set_append(test_set_id)
 
     message_body = {
         "testSetId": test_set_id,
@@ -682,21 +709,61 @@ def add_documents_to_test_set(args):
     if args.get("modifiedAfter"):
         message_body["modifiedAfter"] = args["modifiedAfter"]
 
-    sqs.send_message(QueueUrl=queue_url, MessageBody=json.dumps(message_body))
+    _queue_test_set_copy(message_body)
 
     logger.info(
         f"Queued append job for test set {test_set_id} with pattern '{file_pattern}'"
     )
 
-    return {
-        "id": test_set_id,
-        "name": item["name"],
-        "description": item.get("description", ""),
-        "filePattern": item.get("filePattern", ""),
-        "fileCount": item.get("fileCount"),
-        "status": "UPDATING",
-        "createdAt": item["createdAt"],
-    }
+    return _updating_test_set_summary(test_set_id, item)
+
+
+def _normalize_object_keys(raw_keys):
+    if not isinstance(raw_keys, list) or not raw_keys:
+        raise ValueError("objectKeys must be a non-empty list of document keys")
+    seen = set()
+    keys = []
+    for key in raw_keys:
+        if not isinstance(key, str) or not key.strip():
+            raise ValueError("objectKeys must contain only non-empty strings")
+        key = key.strip()
+        if key.startswith("/") or key.endswith("/") or "/../" in f"/{key}/":
+            raise ValueError(f"Invalid document key: {key}")
+        if key not in seen:
+            seen.add(key)
+            keys.append(key)
+    if len(keys) > MAX_KEYS_PER_ADD:
+        raise ValueError(
+            f"At most {MAX_KEYS_PER_ADD} documents can be added in one request "
+            f"({len(keys)} selected)"
+        )
+    return keys
+
+
+def add_documents_to_test_set_by_key(args):
+    test_set_id = args["testSetId"]
+    object_keys = _normalize_object_keys(args.get("objectKeys"))
+    logger.info(
+        f"Adding {len(object_keys)} selected document(s) to test set {test_set_id}"
+    )
+
+    item, tracking_table = _begin_test_set_append(test_set_id)
+
+    _queue_test_set_copy(
+        {
+            "testSetId": test_set_id,
+            "objectKeys": object_keys,
+            "bucketType": "input",
+            "trackingTable": tracking_table,
+            "mode": "append",
+        }
+    )
+
+    logger.info(
+        f"Queued append job for test set {test_set_id} with {len(object_keys)} key(s)"
+    )
+
+    return _updating_test_set_summary(test_set_id, item)
 
 
 def add_documents_to_test_set_from_upload(args):

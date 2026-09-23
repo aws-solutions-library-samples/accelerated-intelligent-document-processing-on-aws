@@ -637,7 +637,7 @@ enforcement itself is Layer 2.
 | `uploadDocument`, `reprocessDocument`, `abortWorkflow` | Admin, Author |
 | `addTestSet`, `addDocumentsToTestSet`, `listBucketFiles` (import by file pattern searches a whole bucket, so it is not offered to Authors) | Admin |
 | `startTestRun`, `addTestSetFromUpload`, `createEmptyTestSet`, `deleteTests`, `deleteTestSets` | Admin, Author |
-| `addDocumentsToTestSetFromUpload`, `removeDocumentsFromTestSet`, `updateTestSet`, `publishTestSetVersion` | Admin, Author |
+| `addDocumentsToTestSetFromUpload`, `addDocumentsToTestSetByKey` (processed documents the caller picked from its own document list, not a bucket search), `removeDocumentsFromTestSet`, `updateTestSet`, `publishTestSetVersion` | Admin, Author |
 | `syncBdaIdp`, `uploadDiscoveryDocument`, `deleteDiscoveryJob`, `autoDetectSections` | Admin, Author |
 | `copyToBaseline` | Admin, Author |
 | `createFinetuningJob`, `deleteFinetuningJob` | Admin, Author |
