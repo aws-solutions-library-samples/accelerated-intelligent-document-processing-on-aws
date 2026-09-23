@@ -15,6 +15,22 @@ from ..config import get_ea_param
 
 logger = logging.getLogger(__name__)
 
+# Failure event types, split by whether the failure is attributable to a STATE or to
+# the execution as a whole. The split is what lets the analysis report the state that
+# failed rather than the Catch handler the workflow moved into afterwards; the union
+# is what `_extract_failure_details` matches on, so the two readings are one list and
+# cannot drift apart.
+#
+# Task-level: a state was doing work and that work failed.
+_TASK_LEVEL_FAILURE_EVENTS = frozenset(
+    {"TaskFailed", "LambdaFunctionFailed", "TaskTimedOut"}
+)
+# Execution-level: the execution ended. By this point a caught failure has already
+# transitioned into its handler, so these events say nothing about which state failed
+# — only why the execution stopped. Their error text is still the text to report.
+_EXECUTION_LEVEL_FAILURE_EVENTS = frozenset({"ExecutionFailed", "ExecutionTimedOut"})
+_FAILURE_EVENTS = _TASK_LEVEL_FAILURE_EVENTS | _EXECUTION_LEVEL_FAILURE_EVENTS
+
 
 @tool
 def analyze_workflow_execution(document_id: str = "") -> Dict[str, Any]:
@@ -264,15 +280,7 @@ def _extract_failure_details(event: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     """
     event_type = event.get("type", "")
 
-    failure_events = [
-        "ExecutionFailed",
-        "TaskFailed",
-        "LambdaFunctionFailed",
-        "TaskTimedOut",
-        "ExecutionTimedOut",
-    ]
-
-    if event_type not in failure_events:
+    if event_type not in _FAILURE_EVENTS:
         return None
 
     details = {}
@@ -411,6 +419,9 @@ def _analyze_execution_timeline(events: List[Dict[str, Any]]) -> Dict[str, Any]:
     timeline = []
     failure_point = None
     last_successful_state = None
+    # The state a TASK-level failure happened in, which is not the same thing as the
+    # last state entered. See the comment at the failure branch below.
+    last_task_failure_state = None
 
     for event in events:
         timestamp = event.get("timestamp")
@@ -454,10 +465,48 @@ def _analyze_execution_timeline(events: List[Dict[str, Any]]) -> Dict[str, Any]:
         # naturally.
         failure_details = _extract_failure_details(event)
         if failure_details:
+            # A TASK-level failure is attributable to the state that was doing the
+            # work, so remember which state that was. An execution-level one
+            # (ExecutionFailed, ExecutionTimedOut) is not: by the time it arrives the
+            # workflow has usually transitioned into a Catch handler, and the last
+            # state entered is that handler rather than the state that failed.
+            #
+            # This workflow makes that the normal case rather than an edge one, and
+            # the figures are derived rather than stated -- see
+            # `TestTheMisattributionPopulationIsDerivedFromTheWorkflow`, which reads
+            # them out of the ASL: 17 Catch blocks over 55 states, 13 distinct targets,
+            # and **9** states whose caught failure lands on a `Fail` state and so ends
+            # the execution. Only 2 of those 9 match on `States.ALL`; the population is
+            # keyed on the catch's TARGET rather than on the breadth of its
+            # `ErrorEquals`. So the history reads
+            #
+            #     TaskStateEntered: Extraction
+            #     TaskFailed
+            #     FailStateEntered: <handler>
+            #     ExecutionFailed
+            #
+            # and taking the last state entered names the handler. Keeping the two
+            # apart is what puts the terminal event's error text next to the state
+            # that actually failed, which is the pair an operator needs to pick a log
+            # group.
+            #
+            # ⚠️ This infers causality from ADJACENCY, which is wrong inside a
+            # concurrent Map. `ProcessSections` runs at MaxConcurrency 10 and the shard
+            # Map at 5, and their iterations share one execution history, so it
+            # interleaves: with iteration A entering ExtractionStep, B then entering
+            # AssessmentStep, and A's task failing, the last state entered at the
+            # failure is B's. Measured -- `AssessmentStep` is reported where
+            # `ExtractionStep` failed. The previous rule reported the same wrong state
+            # on that history, so this is not a regression, and it is right whenever
+            # the iterations do not overlap. The exact fix is to walk `previousEventId`,
+            # which gives the causal chain instead of the neighbouring event; that is a
+            # larger change and is not made here.
+            if event_type in _TASK_LEVEL_FAILURE_EVENTS:
+                last_task_failure_state = last_successful_state
             failure_point = {
                 "timestamp": timestamp,
                 "event_type": event_type,
-                "state": last_successful_state,
+                "state": last_task_failure_state or last_successful_state,
                 "details": failure_details,
             }
 
