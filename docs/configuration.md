@@ -196,6 +196,58 @@ classes:
   # ... your document classes
 ```
 
+### A key the solution does not recognise is reported, not applied
+
+A configuration key whose name no setting matches is **ignored on load**, at every
+level of the file. The configuration is still accepted and the run still completes —
+what changes is that the shipped default stays in force, which looks exactly like a
+working configuration. A misspelled `enabled` leaves a guard on; a mis-nested
+`fail_action` leaves the default `warn` in place, and the conclusion a reader draws
+is that escalation does not work.
+
+Every such key is therefore named, with the full path to where it was written:
+
+```
+IDPConfig: Ignoring unknown nested fields (not defined in model, so the shipped
+default stays in force): extraction.validation.enabld (did you mean
+extraction.validation.enabled?), ocr.dpi (did you mean ocr.image.dpi?)
+```
+
+Two places to look for it:
+
+- **When you upload with the CLI.** `idp-cli config validate` and a config upload
+  list these as warnings. This is the cheap moment — the file is in front of you.
+- **On load, in CloudWatch.** The same line appears at `WARNING` from the Lambda
+  that loaded the configuration. Search the log group for
+  `Ignoring unknown` after changing a configuration.
+
+⚠️ **A key at the wrong nesting level is the trap worth knowing about**, because the
+name itself is valid. `dpi` is a real setting, under `ocr.image`. Written as
+`ocr.dpi` it is ignored — and so is any bad *value* you gave it, because the check
+that would have rejected it lives with the real key:
+
+```yaml
+ocr:
+  dpi: 300          # ignored: no such setting at this level
+  image:
+    dpi: 300        # this is the one that takes effect
+```
+
+That is why the message offers the path the key belongs at. Since `ocr.backend` and
+`ocr.model_id` genuinely are one level up, this is an easy mistake to make and a hard
+one to see afterwards.
+
+**The warning is not an error.** An unrecognised key does not stop a configuration
+from being accepted or a deployment from loading it, so upgrading cannot break a
+stored configuration on this account. It also means the only signal is the warning:
+after changing a setting, confirm the value you set is the value in effect rather
+than inferring it from the absence of an error.
+
+Two kinds of key are deliberately *not* reported, because nothing is being dropped:
+free-form content whose names are yours to choose — your document `classes`, a
+pipeline hook's `args` — and the pipeline-hook blocks, which keep whatever they are
+given.
+
 ### Benefits
 
 - **Simpler configs** - Only specify what makes your use case unique

@@ -64,6 +64,59 @@ if not result["valid"]:
         print("ERROR:", err)
 ```
 
+### A key no field matches is reported, at every depth
+
+⚠️ **Every model here takes Pydantic's default `extra="ignore"`.** Three take
+`extra="allow"`; none takes `extra="forbid"`. So a key no field matches is
+**dropped during validation**, and the setting the author believes they changed
+simply is not set — which is indistinguishable from a working configuration,
+because the shipped default is in force and the run completes.
+
+`IDPConfig.log_deprecated_fields` reports those keys. It walks the whole model
+tree, so a key at any depth is named with its **dotted path**:
+
+```
+IDPConfig: Ignoring unknown nested fields (not defined in model, so the shipped
+default stays in force): extraction.validation.enabld (did you mean
+extraction.validation.enabled?), ocr.dpi (did you mean ocr.image.dpi?)
+```
+
+`validate_config()` puts the same findings in `result["warnings"]`, which is
+where the CLI shows them — the moment a typo is cheap to fix. Top-level keys are
+included there and left to `IDPConfig`'s two long-standing messages in the
+model, so one key never produces two warnings.
+
+**It reports; it does not reject.** `extra` is unchanged on every model, so a
+stored configuration that loads today still loads. Rejecting would refuse
+configurations that work, and would need a migration story for every key a later
+version removes.
+
+The walk is `models.collect_ignored_config_keys(data, model)`, and it is public
+because two gates ask the same question of shipped files —
+`scripts/tests/test_preset_keys_are_read.py` over `config_library/`, and
+`tests/unit/config/test_unknown_nested_keys.py` over the merged defaults. Both
+call it rather than reimplementing the resolution, so neither can drift from what
+a load actually drops.
+
+Three things to know before using it:
+
+- **Migrate first.** A legacy key is *relocated* on load, not dropped —
+  `extraction.agentic.validation` becomes `extraction.validation` — so against a
+  pre-migration dict the walk reports a key that works. The model validator runs
+  after `migrations.migrate_config` for that reason; `validate_config` migrates a
+  copy before asking.
+- **Two things are deliberately not unknown**, and both are read off the models
+  rather than listed. A field whose annotation names no model is a free-form
+  document whose keys are the author's (`classes`, `policy_classes`, a hook's
+  `args`), so the walk does not enter it. A model with `extra="allow"` *keeps* an
+  undeclared key, so nothing is dropped and there is nothing to report.
+- **The mis-nested case is the sharp one.** `dpi` is a real field of
+  `ImageConfig`; written as `ocr.dpi` it is dropped, and `ImageConfig`'s
+  validator never runs — so `ocr.dpi: "abc"` is accepted in silence while
+  `ocr.image.dpi: "abc"` raises. When you probe this config tree, assert the
+  value **arrived** (`cfg.ocr.image.dpi == expected`), never that construction
+  succeeded.
+
 ## Files
 
 | File | Purpose |

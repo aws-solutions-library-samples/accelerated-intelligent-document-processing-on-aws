@@ -622,6 +622,12 @@ def validate_config(
         result["errors"].append(f"Pydantic validation failed: {str(e)}")
         return result
 
+    # Keys the models will drop, at any depth. Reported against the config as
+    # SUBMITTED rather than against `merged`, so every path named is one the author
+    # actually wrote and can go and fix — which is the whole value of catching it
+    # here, while they are still present, rather than in a Lambda log later.
+    _validate_ignored_keys(config, result)
+
     # Check for common issues (warnings)
     if not config.get("classes"):
         result["warnings"].append(
@@ -640,6 +646,46 @@ def validate_config(
     _validate_pipeline_hook_reachability(merged, result)
 
     return result
+
+
+def _validate_ignored_keys(config: Dict[str, Any], result: Dict[str, Any]) -> None:
+    """Warn about every key in a submitted config that the models will not read.
+
+    A warning rather than an error, matching what ``IDPConfig`` does with the same
+    keys: they are dropped, not rejected, so a configuration that deploys today
+    still validates. What changes is that the author is told, at the one moment
+    fixing a typo is cheap, and told *where* — the dotted path, plus the declared
+    field the key most plausibly meant when there is one.
+
+    Top-level keys are included here even though ``IDPConfig`` logs about those
+    itself: that log line goes to a Lambda, and this result is what the CLI prints.
+
+    The migration chain runs first, on a copy. A legacy-shaped key is relocated on
+    load rather than dropped — ``extraction.agentic.validation`` becomes
+    ``extraction.validation`` — so reporting it against the pre-migration shape
+    would name a key that works as one that does not.
+    """
+    from idp_common.config.migrations import migrate_config
+    from idp_common.config.models import IDPConfig, collect_ignored_config_keys
+
+    findings = collect_ignored_config_keys(
+        migrate_config(deepcopy(config)), IDPConfig, include_top_level=True
+    )
+    for finding in findings:
+        if finding.kind == "deprecated":
+            result["warnings"].append(
+                f"Deprecated configuration key '{finding.path}' is no longer used "
+                "and will be ignored"
+            )
+        else:
+            hint = (
+                f" Did you mean '{finding.suggestion}'?" if finding.suggestion else ""
+            )
+            result["warnings"].append(
+                f"Unknown configuration key '{finding.path}' is not defined in the "
+                "configuration model and will be ignored, leaving the default in "
+                f"force.{hint}"
+            )
 
 
 def _validate_pipeline_hook_reachability(

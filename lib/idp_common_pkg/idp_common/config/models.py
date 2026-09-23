@@ -18,8 +18,22 @@ Usage:
         model = config.extraction.model
 """
 
+import difflib
 import re
-from typing import Annotated, Any, Dict, List, Literal, Optional, Union
+from functools import lru_cache
+from typing import (
+    Annotated,
+    Any,
+    Dict,
+    List,
+    Literal,
+    NamedTuple,
+    Optional,
+    Tuple,
+    Union,
+    get_args,
+    get_origin,
+)
 
 from pydantic import (
     BaseModel,
@@ -3077,6 +3091,307 @@ IDP_CONFIG_DEPRECATED_FIELDS = {
 }
 
 
+# --------------------------------------------------------------------------- #
+# Reporting a key the configuration models will drop, at any depth
+# --------------------------------------------------------------------------- #
+#
+# Every model here takes Pydantic's default ``extra="ignore"`` (three deliberately
+# take ``extra="allow"``, and none takes ``extra="forbid"``), so a key no field
+# matches is discarded during validation. At the top level ``IDPConfig`` logs a
+# warning about that; below the top level nothing did, so a misspelled or
+# mis-nested key left the shipped default in force with no diagnostic anywhere —
+# and a default is indistinguishable from a working setting.
+#
+# The walk below reports those keys with their dotted path. It reports; it never
+# rejects. ``extra`` is unchanged on every model, so a stored configuration that
+# loads today still loads.
+#
+# Two things bound what it calls unknown, and both are properties of the model
+# tree rather than a list kept in step with it:
+#
+#   * It descends only where a field's annotation names a model. A field typed
+#     ``Dict[str, Any]`` or ``List[Dict[str, Any]]`` is a free-form document whose
+#     keys are the user's to choose — ``classes``, ``policy_classes``, a hook's
+#     ``args``, ``summary`` — so there is nothing there to be unknown, and it is
+#     never entered.
+#   * It reports nothing on a model whose ``model_config`` says ``extra="allow"``.
+#     Such a model *keeps* an undeclared key, so the key is not dropped and there
+#     is nothing to warn about. It is still descended into, because its declared
+#     model-typed fields are ordinary.
+
+#: Keys a model deliberately stopped declaring, reported as *deprecated* rather
+#: than *unknown*. This changes the wording of a finding and never suppresses one,
+#: which is why it is not a gate exemption: both kinds are logged.
+#:
+#: Keyed by the model class itself, so renaming a class is an import-time failure
+#: rather than a silently inert entry. ``ExtractionConfig`` and
+#: ``ConfidenceConfig`` both declare no ``max_tokens`` on purpose (see the NOTE in
+#: each: output is always requested at the model's maximum), and a configuration
+#: stored before that decision still carries one — so "unknown" would be the wrong
+#: word for the commonest live case.
+DEPRECATED_CONFIG_FIELDS_BY_MODEL: Dict[type, frozenset[str]] = {
+    ExtractionConfig: frozenset({"max_tokens"}),
+    ConfidenceConfig: frozenset({"max_tokens"}),
+}
+
+#: Dotted paths the report stays quiet about, because this repository ships them
+#: in its own configuration. A warning the operator did not cause and cannot act
+#: on, on every load, is what teaches them to ignore the line on the day it is
+#: about their own typo. One entry per path — never per subtree — and each entry
+#: names the register that *does* report the key, so nothing here is unreported
+#: overall, only unreported from this particular place.
+#:
+#: Deliberately not in ``scripts/tests/gate_exemptions.json``: that registry
+#: governs a gate turned off for a file, a line or a rule, and its discovery does
+#: not read this tree (``exemption_discovery.PYTHON_PATHSPECS`` covers gates, not
+#: the library), so an entry there would fail
+#: ``test_no_registered_exemption_has_vanished``. The ratchets that registry asks
+#: for live in ``tests/unit/config/test_unknown_nested_keys.py`` instead, one per
+#: entry: non-vacuity (the path must still be one the models drop, or it is
+#: pre-suppressing whatever next occupies it), closure (it must still be shipped in
+#: this repository's own defaults or presets, which is the entire justification), and
+#: a pin on the size of this map so a second entry arrives as a failure.
+SUPPRESSED_IGNORED_KEY_PATHS: Dict[str, str] = {
+    "discovery.output_format": (
+        "Shipped in system_defaults/base-discovery.yaml, so it is on the default "
+        "path of every deployment and no operator wrote it. Already registered as "
+        "a dead knob by UI_ONLY_SUBTREES in "
+        "scripts/sdlc/tests/test_config_ui_schema_parity.py, which is where the "
+        "decision to wire it up or remove it belongs (GitHub #707 follow-up). "
+        "Delete this entry when that decision is taken either way."
+    ),
+}
+
+#: Upper bound on findings named in one log line. A configuration written against
+#: a different product entirely would otherwise produce an unreadable line.
+MAX_REPORTED_IGNORED_KEYS = 20
+
+#: How close a sibling field name must be to earn a "did you mean" on a
+#: misspelling. Only consulted when the key is not a real field somewhere else in
+#: the tree, since that case is answered exactly.
+_SUGGESTION_CUTOFF = 0.8
+
+
+class IgnoredConfigKey(NamedTuple):
+    """One key in a configuration that the models will not read.
+
+    ``path`` is the dotted path as written (list elements appear as ``[i]``),
+    ``kind`` is ``"unknown"`` or ``"deprecated"``, and ``suggestion`` is the dotted
+    path of a declared field the author plausibly meant, or ``None``.
+    """
+
+    path: str
+    kind: str
+    suggestion: Optional[str]
+
+    def describe(self) -> str:
+        """Render the finding for a log line or a CLI warning."""
+        if self.suggestion:
+            return f"{self.path} (did you mean {self.suggestion}?)"
+        return self.path
+
+
+def _strip_annotated(annotation: Any) -> Any:
+    """Return the underlying type of ``Annotated[T, ...]``, else ``annotation``."""
+    while hasattr(annotation, "__metadata__"):
+        args = get_args(annotation)
+        if not args:
+            break
+        annotation = args[0]
+    return annotation
+
+
+def _nested_model_target(annotation: Any) -> Tuple[Optional[str], Optional[type]]:
+    """Resolve where a field's value carries a nested config model.
+
+    Returns ``(shape, model)`` where shape is ``"model"`` (the value is that
+    model), ``"list"`` (each element is), ``"map"`` (each value is), or
+    ``(None, None)`` when the annotation names no single model — which is the case
+    for every free-form ``Dict[str, Any]`` block and is why those are never walked.
+    """
+    annotation = _strip_annotated(annotation)
+
+    if isinstance(annotation, type) and issubclass(annotation, BaseModel):
+        return "model", annotation
+
+    origin = get_origin(annotation)
+    if origin is None:
+        return None, None
+
+    args = [a for a in get_args(annotation) if a is not type(None)]
+
+    # Optional[X] / Union[X, Y]: usable only when exactly one member is a model,
+    # otherwise there is no way to tell which one this value is.
+    if origin is Union or str(origin) in (
+        "types.UnionType",
+        "<class 'types.UnionType'>",
+    ):
+        resolved = [_nested_model_target(a) for a in args]
+        models = [r for r in resolved if r[0] is not None]
+        return models[0] if len(models) == 1 else (None, None)
+
+    if origin in (list, set, frozenset, tuple):
+        if len(args) != 1:
+            return None, None
+        shape, model = _nested_model_target(args[0])
+        return ("list", model) if shape == "model" else (None, None)
+
+    if origin is dict:
+        if len(args) != 2:
+            return None, None
+        shape, model = _nested_model_target(args[1])
+        return ("map", model) if shape == "model" else (None, None)
+
+    return None, None
+
+
+@lru_cache(maxsize=None)
+def _field_path_index(root: type) -> Dict[str, Tuple[str, ...]]:
+    """Map every field name in a model tree to the dotted paths that declare it.
+
+    Derived from the annotations, so a model added to the tree later is indexed
+    without being listed. All paths to a repeated model are enumerated —
+    ``ImageConfig`` is reachable four ways — which is what lets a mis-nested key be
+    answered with the nearest correct path rather than an arbitrary one.
+    """
+    index: Dict[str, List[str]] = {}
+
+    def visit(model: type, prefix: str, chain: Tuple[type, ...]) -> None:
+        for name, field in model.model_fields.items():
+            dotted = f"{prefix}{name}"
+            index.setdefault(name, []).append(dotted)
+            _shape, nested = _nested_model_target(field.annotation)
+            if nested is not None and nested not in chain:
+                visit(nested, f"{dotted}.", chain + (nested,))
+
+    visit(root, "", (root,))
+    return {name: tuple(paths) for name, paths in index.items()}
+
+
+def _suggest_path(
+    key: str, prefix: Tuple[str, ...], model: type, root: type
+) -> Optional[str]:
+    """Name a declared field the author plausibly meant, or ``None``.
+
+    A key that *is* a real field elsewhere in the tree is answered exactly, with
+    the candidate sharing the longest prefix with what was written — the
+    mis-nesting case, where naming only the key would read as a false positive.
+    Failing that, a close sibling name is offered for the misspelling case.
+    """
+    written = ".".join(prefix + (key,))
+
+    candidates = [p for p in _field_path_index(root).get(key, ()) if p != written]
+    if candidates:
+        parts = prefix
+
+        def shared(path: str) -> int:
+            segments = path.split(".")
+            count = 0
+            for mine, theirs in zip(parts, segments):
+                if mine != theirs:
+                    break
+                count += 1
+            return count
+
+        return max(candidates, key=lambda p: (shared(p), -len(p.split("."))))
+
+    close = difflib.get_close_matches(
+        key, list(model.model_fields.keys()), n=1, cutoff=_SUGGESTION_CUTOFF
+    )
+    if close:
+        return ".".join(prefix + (close[0],))
+    return None
+
+
+def collect_ignored_config_keys(
+    data: Any,
+    model: type,
+    *,
+    include_top_level: bool = False,
+) -> List[IgnoredConfigKey]:
+    """Find every key in ``data`` that ``model`` and its nested models will drop.
+
+    ⚠️ ``data`` must already have been through ``migrations.migrate_config`` if it
+    could be legacy-shaped. A legacy key is *relocated* on load rather than dropped
+    — ``extraction.agentic.validation`` becomes ``extraction.validation`` — so
+    against the pre-migration shape this would report a key that works. The
+    ``IDPConfig`` validator that calls it runs after the migration chain for that
+    reason, and ``merge_utils`` migrates a copy before asking.
+
+    Args:
+        data: The configuration mapping as written, before validation.
+        model: The root model to interpret it against, normally ``IDPConfig``.
+        include_top_level: Report depth-0 keys too. ``IDPConfig`` already logs
+            those in two messages of its own, so its validator leaves this off and
+            a caller wanting the whole picture (``merge_utils.validate_config``)
+            turns it on.
+
+    Returns:
+        Findings sorted by dotted path. Empty when every key is read.
+    """
+    findings: List[IgnoredConfigKey] = []
+
+    def visit(value: Any, current: type, prefix: Tuple[str, ...]) -> None:
+        if not isinstance(value, dict):
+            return
+        fields = current.model_fields
+        keeps_extra = current.model_config.get("extra") == "allow"
+        deprecated = DEPRECATED_CONFIG_FIELDS_BY_MODEL.get(current, frozenset())
+
+        for key, item in value.items():
+            if not isinstance(key, str):
+                continue
+            field = fields.get(key)
+            if field is None:
+                if keeps_extra:
+                    # The model retains this key, so it is not being dropped.
+                    continue
+                if not prefix and not include_top_level:
+                    continue
+                dotted = ".".join(prefix + (key,))
+                if dotted in SUPPRESSED_IGNORED_KEY_PATHS:
+                    continue
+                findings.append(
+                    IgnoredConfigKey(
+                        path=dotted,
+                        kind="deprecated" if key in deprecated else "unknown",
+                        suggestion=(
+                            None
+                            if key in deprecated
+                            else _suggest_path(key, prefix, current, model)
+                        ),
+                    )
+                )
+                continue
+
+            shape, nested = _nested_model_target(field.annotation)
+            if nested is None:
+                continue
+            if shape == "model":
+                visit(item, nested, prefix + (key,))
+            elif shape == "list" and isinstance(item, (list, tuple)):
+                for position, element in enumerate(item):
+                    visit(element, nested, prefix + (f"{key}[{position}]",))
+            elif shape == "map" and isinstance(item, dict):
+                for name, element in item.items():
+                    if isinstance(name, str):
+                        visit(element, nested, prefix + (f"{key}.{name}",))
+
+    visit(data, model, ())
+    findings.sort(key=lambda finding: finding.path)
+    return findings
+
+
+def format_ignored_config_keys(findings: List[IgnoredConfigKey], kind: str) -> str:
+    """Render the findings of one kind as a bounded, sorted list for a message."""
+    described = [finding.describe() for finding in findings if finding.kind == kind]
+    if len(described) > MAX_REPORTED_IGNORED_KEYS:
+        remaining = len(described) - MAX_REPORTED_IGNORED_KEYS
+        described = described[:MAX_REPORTED_IGNORED_KEYS]
+        described.append(f"... and {remaining} more")
+    return ", ".join(described)
+
+
 class SchemaConfig(BaseModel):
     """
     Schema configuration model.
@@ -3531,6 +3846,29 @@ class IDPConfig(BaseModel):
                         f"{sorted(unknown)}"
                     )
 
+            # The same report for every level below this one. Without it a
+            # misspelled or mis-nested key was dropped in silence, leaving the
+            # shipped default in force — which looks exactly like a working
+            # setting, and in the mis-nested case routes the value around the
+            # validator that would have rejected it. Reports only; `extra` is
+            # unchanged, so nothing that loads today stops loading.
+            nested = collect_ignored_config_keys(data, cls)
+            if nested:
+                deprecated_line = format_ignored_config_keys(nested, "deprecated")
+                unknown_line = format_ignored_config_keys(nested, "unknown")
+                if deprecated_line:
+                    logger.warning(
+                        "IDPConfig: Ignoring deprecated nested fields (these are no "
+                        "longer used): %s",
+                        deprecated_line,
+                    )
+                if unknown_line:
+                    logger.warning(
+                        "IDPConfig: Ignoring unknown nested fields (not defined in "
+                        "model, so the shipped default stays in force): %s",
+                        unknown_line,
+                    )
+
         return data
 
     def to_dict(self, **extra_fields: Any) -> Dict[str, Any]:
@@ -3553,6 +3891,13 @@ class IDPConfig(BaseModel):
         result = self.model_dump(mode="python")
         result.update(extra_fields)
         return result
+
+
+# Registered here rather than in the literal above because `IDPConfig` does not
+# exist yet at that point. One authority for "deprecated, not unknown" at every
+# depth: a caller asking for top-level keys too (`include_top_level=True`) gets the
+# same wording `IDPConfig`'s own validator uses for them.
+DEPRECATED_CONFIG_FIELDS_BY_MODEL[IDPConfig] = frozenset(IDP_CONFIG_DEPRECATED_FIELDS)
 
 
 class ConfigMetadata(BaseModel):
