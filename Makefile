@@ -260,6 +260,12 @@ coverage: ## Measure idp_common coverage and print a table, worst-covered first
 coverage-table: ## Print the coverage table from the last run, without re-measuring
 	@python3 scripts/coverage_table.py $(COVERAGE_ARGS)
 
+coverage-all: ## Measure EVERY tree (9 of them) and print each one's figure
+	@python3 scripts/coverage_all.py $(COVERAGE_ARGS)
+
+coverage-summary: ## Print the recorded per-tree figures, without measuring anything
+	@python3 scripts/check_coverage_debt.py --summary
+
 # Deliberately NOT a prerequisite of `lint` or `fastlint`: it reads the coverage
 # report that `make test-cicd -C lib/idp_common_pkg` writes, and the lint targets
 # never build one. Wired there it would find no report, exit 0, and pass vacuously --
