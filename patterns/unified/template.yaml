@@ -2906,6 +2906,18 @@ Resources:
                     order: 0
                   analysis_model_id:
                     type: string
+                    # Claude Opus 5.5 is deliberately ABSENT from this enum, and it
+                    # is the only model picklist in this file it is absent from.
+                    # Cluster analysis is the one path that asks Strands for
+                    # structured output (discovery_agent.py, `structured_output_model=`).
+                    # When the first turn answers in prose instead of calling the tool
+                    # — a normal outcome — Strands retries with
+                    # `toolChoice: {"any": {}}`, which Opus 5.5 rejects with a 400. So
+                    # the model would work until a cluster happened to need the retry
+                    # and then lose that cluster's analysis, which is worse than not
+                    # offering it. `_validate_multi_doc_discovery_forced_tool` refuses
+                    # it at config time as well, since a config can name a model this
+                    # enum does not list.
                     description: Bedrock model ID for analyzing document clusters
                     default: "us.anthropic.claude-sonnet-4-6"
                     enum:
@@ -2923,8 +2935,6 @@ Resources:
                       - "us.anthropic.claude-opus-4-8:1m"
                       - "us.anthropic.claude-opus-5"
                       - "us.anthropic.claude-opus-5:1m"
-                      - "us.anthropic.claude-opus-5-5"
-                      - "us.anthropic.claude-opus-5-5:1m"
                       - "us.xai.grok-4.6"
                       - "us.openai.gpt-6-astra"
                     order: 1

@@ -119,10 +119,20 @@ def axis_models(matrix):
 
 class TestEveryNamedModelIsReal:
     def test_the_sweep_is_not_vacuous(self, axis_models):
-        """Pin the size of what is being swept. A traversal that quietly narrowed
-        (a renamed key, a restructured axis) would leave the two checks below
-        passing over fewer models, which is the shape that hides."""
-        assert len(axis_models) >= 12
+        """Pin the size of what is being swept, EXACTLY.
+
+        A floor (``>= 12`` against an actual 17) is not a pin: five models could
+        vanish from the axes with this still green, while the two checks below
+        quietly ran over fewer of them. That is the shape that hides, so the count is
+        asserted exactly and this test is meant to be updated deliberately when an
+        axis value is added or removed — the failure message says so."""
+        assert len(axis_models) == 17, (
+            f"the matrix now pins {len(axis_models)} model-valued axis values, not "
+            "17. If that is intended, update this number in the same change; it is "
+            "asserted exactly so that a model DISAPPEARING from an axis fails here "
+            "rather than silently shrinking what the checks below cover.\n  "
+            + "\n  ".join(f"{a}={v} -> {m}" for a, v, m in axis_models)
+        )
 
     def test_every_named_model_is_priced(self, axis_models, priced_models):
         """An unpriced model reports cost ZERO rather than failing, so a cost suite

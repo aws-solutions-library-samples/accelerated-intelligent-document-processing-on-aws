@@ -40,6 +40,7 @@ from idp_common.timeout_budget import (
 
 from .model_utils import (
     LONG_CONTEXT_SUFFIX,
+    REGION_PREFIXES,
     get_model_max_output_tokens,
     metering_model_id,
     parse_max_tokens_limit_from_error,
@@ -168,17 +169,13 @@ def is_claude_4_7_model(model_id: str) -> bool:
     Returns:
         True if the model is a Claude 4.7+ variant
     """
-    model_id = resolve_model_id_from_arn(model_id)
-    # Strip region prefix (us., eu., global.)
-    parts = model_id.split(".", 1)
-    if len(parts) == 2 and parts[0] in ("us", "eu", "global"):
-        base = parts[1]
-    else:
-        base = model_id
-    # Strip :1m suffix
-    if base.endswith(":1m"):
-        base = base[:-3]
-    return base in _CLAUDE_4_7_BASE_NAMES
+    # Hand-rolled normalization here would be a second copy of
+    # _strip_region_and_1m's rule, and the copy is what went wrong: this branch
+    # listed three of the five region prefixes, so a `us-gov.` id kept its prefix,
+    # missed the set, and had `temperature` sent to a model that rejects it.
+    return _strip_region_and_1m(resolve_model_id_from_arn(model_id)) in (
+        _CLAUDE_4_7_BASE_NAMES
+    )
 
 
 # Backwards-compatible alias for internal callers that still reference the
@@ -203,8 +200,15 @@ _CLAUDE_EFFORT_BASE_NAMES = {
     # Opus 5.5 accepts effort (verified live on Converse at both "low" and
     # "xhigh", us-west-2, 2026-09-23) and for it effort is the ONLY thinking
     # control: thinking cannot be disabled at any effort level — see
-    # THINKING_ALWAYS_ON_BASE_NAMES below. Its default effort is "medium", one
-    # level below the "high" every other model here defaults to.
+    # THINKING_ALWAYS_ON_BASE_NAMES below.
+    #
+    # Its default effort is "medium", one level below the "high" every other model
+    # here defaults to. That one is read off the Bedrock model card ("effort level
+    # configurable - low, medium, high, xhigh, max; default: medium"), NOT measured:
+    # a default cannot be observed from a response, since Converse reports no effort
+    # back. Treat it accordingly - it is the stated reason the opus55value benchmark
+    # pair measures the switch rather than the model, so if that matters to a
+    # decision, set effort explicitly rather than relying on this.
     #
     # This entry is also redundant-by-prefix and kept anyway: the lookup is
     # `base.startswith(name)`, so "anthropic.claude-opus-5-5" already matched via
@@ -252,13 +256,31 @@ def thinking_can_be_disabled(model_id: str) -> bool:
 CLAUDE_EFFORT_LEVELS = ("low", "medium", "high", "xhigh", "max")
 
 
+#: Region / geo prefixes Bedrock cross-region inference profiles use. All five,
+#: deliberately — ``us-gov`` and ``apac`` used to be missing here, and their absence
+#: was silent in the worst possible direction: a ``us-gov.`` id fell through to the
+#: else-branch unchanged, so every base-name gate below reported the PERMISSIVE
+#: answer for it. ``is_claude_4_7_model("us-gov.anthropic.claude-opus-5")``
+#: returned False, which sends ``temperature`` to a model that rejects it, and
+#: ``supports_forced_tool_choice`` returned True for Opus 5.5, which forces a tool
+#: call the model refuses. GovCloud is precisely where this matters, because an
+#: account-scoped inference-profile ARN is the only way to name a model there —
+#: ``resolve_model_id_from_arn`` reduces such an ARN to a ``us-gov.`` id, which is
+#: then the input to this function.
+#:
+#: Imported from ``model_utils`` rather than restated, because a restated copy is
+#: exactly what went wrong: four sites hand-rolled this rule and three of them
+#: listed only three of the five prefixes.
+_REGION_PREFIXES = REGION_PREFIXES
+
+
 def _strip_region_and_1m(model_id: str) -> str:
-    """Normalize a model ID to its base name: strip us./eu./global. prefix and
-    the :1m suffix. Also tolerates Opus 4.5/4.6 dated/`-v1` foundation IDs by
+    """Normalize a model ID to its base name: strip the region/geo prefix and the
+    ``:1m`` suffix. Also tolerates Opus 4.5/4.6 dated/`-v1` foundation IDs by
     matching on a prefix in is_claude_effort_model."""
     parts = model_id.split(".", 1)
     base = (
-        parts[1] if len(parts) == 2 and parts[0] in ("us", "eu", "global") else model_id
+        parts[1] if len(parts) == 2 and parts[0] in _REGION_PREFIXES else model_id
     )
     if base.endswith(":1m"):
         base = base[:-3]
@@ -1231,6 +1253,34 @@ class BedrockClient:
 
         BedrockClient._reject_invalid_tool_property_names(tool_config)
 
+        # A forced choice (``any``/``tool``) is a separate capability from carrying a
+        # toolConfig at all, and Claude Opus 5.5 has the first without the second.
+        # Refuse rather than let Bedrock answer with a ValidationException: the 400
+        # arrives only after the retry budget has been spent on a request that can
+        # never succeed, and its message does not say what to do instead.
+        # ``auto`` is always allowed.
+        #
+        # Checked against the EFFECTIVE choice, before the `tool_choice is None`
+        # return below, because a ``toolChoice`` may arrive either as the parameter
+        # or embedded in ``tool_config`` — the conflict warning further down exists
+        # precisely because both shapes are supported. Guarding only the parameter
+        # would leave the embedded form going to the wire unchecked, which is the
+        # shape a caller outside this repository is most likely to use, since
+        # ``toolChoice`` is a member of ``toolConfig`` in the Converse API itself.
+        effective_choice = (
+            tool_choice if tool_choice is not None else tool_config.get("toolChoice")
+        )
+        if effective_choice and not {"any", "tool"}.isdisjoint(effective_choice):
+            forced_reason = forced_tool_choice_unsupported_reason(model_id)
+            if forced_reason:
+                raise ValueError(
+                    f"A forced toolChoice ({sorted(effective_choice)}) is not "
+                    f"supported for model '{model_id}': {forced_reason}. Check "
+                    f"supports_forced_tool_choice(model_id) first — "
+                    f"toolChoice {{'auto': {{}}}} works on this model, and the "
+                    f"extraction forced-tool path falls back to the prose schema."
+                )
+
         if tool_choice is None:
             return tool_config
 
@@ -1246,22 +1296,6 @@ class BedrockClient:
                 existing_choice,
                 tool_choice,
             )
-        # A forced choice (``any``/``tool``) is a separate capability from carrying
-        # a toolConfig at all, and Claude Opus 5.5 has the first without the
-        # second. Refuse here rather than let Bedrock answer with a
-        # ValidationException: a 400 arrives after the retry budget has been spent
-        # on a request that can never succeed, and the message does not say what
-        # to do instead. ``auto`` is always allowed.
-        if not {"any", "tool"}.isdisjoint(tool_choice):
-            forced_reason = forced_tool_choice_unsupported_reason(model_id)
-            if forced_reason:
-                raise ValueError(
-                    f"A forced toolChoice ({sorted(tool_choice)}) is not supported "
-                    f"for model '{model_id}': {forced_reason}. Check "
-                    f"supports_forced_tool_choice(model_id) first — "
-                    f"toolChoice {{'auto': {{}}}} works on this model, and the "
-                    f"extraction forced-tool path falls back to the prose schema."
-                )
 
         merged["toolChoice"] = tool_choice
         return merged

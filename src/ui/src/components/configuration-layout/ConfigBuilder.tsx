@@ -85,7 +85,8 @@ const _CLAUDE_EFFORT_TOKENS = [
   // Redundant by substring ('claude-opus-5' already matches 'claude-opus-5-5')
   // and listed anyway, so that a future Opus 5.x which does NOT take effort has to
   // be decided here rather than inheriting a match. On Opus 5.5 effort is the only
-  // thinking control — thinking cannot be disabled — and its default is 'medium',
+  // thinking control — thinking cannot be disabled — and its default is 'medium'
+  // per the Bedrock model card (a default is not observable from a response),
   // not the 'high' every other model here defaults to.
   'claude-opus-5-5',
   'claude-fable-5',

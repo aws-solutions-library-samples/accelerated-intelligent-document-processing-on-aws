@@ -32,6 +32,8 @@ import math
 import re
 from typing import Any, Dict, Mapping, Optional
 
+from idp_common.bedrock.model_utils import REGION_PREFIXES
+
 CACHEPOINT_MARKER = "<<CACHEPOINT>>"
 
 # Published per-model minimum cacheable prefix, in tokens. Order matters: the first
@@ -211,7 +213,7 @@ def model_caches_implicitly(model_id: Optional[str]) -> bool:
         return False
     base = model_id.split("/")[-1]
     parts = base.split(".", 1)
-    if len(parts) == 2 and parts[0] in ("us", "eu", "global"):
+    if len(parts) == 2 and parts[0] in REGION_PREFIXES:
         base = parts[1]
     return base.startswith(_IMPLICIT_CACHE_BASE_NAMES)
 

@@ -927,7 +927,7 @@ request. The minimum is model-dependent and **newer is not safer**:
 
 | Model | Minimum cacheable prefix |
 |---|---:|
-| Claude Opus 5, Fable 5 | 512 tokens |
+| Claude Opus 5, Opus 5.5, Fable 5 | 512 tokens |
 | Claude Sonnet 5, Sonnet 4.6, Sonnet 4.5, Sonnet 4, Opus 4.8, Opus 4.1, Opus 4, 3.7 Sonnet | 1,024 tokens |
 | Claude Opus 4.7 | 2,048 tokens |
 | Claude Opus 4.6, Opus 4.5, **Haiku 4.5** | **4,096 tokens** |
@@ -953,7 +953,8 @@ path, whose prefix is the agent's own system prompt; the forced-tool `toolSpec` 
 the multi-instance detection probe (both off by default, both make the real prefix
 *longer*, so the estimate errs toward warning); application inference-profile ARNs
 (not resolved to a base model, so no warning); and the newer tokenizer introduced
-with Claude Opus 4.7 and shared by Opus 4.8, Opus 5 and Fable 5, which produces up to
+with Claude Opus 4.7 and shared by Opus 4.8, Opus 5, Opus 5.5 and Fable 5, which
+produces up to
 about 1.35× the tokens the estimate assumes — again in the direction of a spurious
 warning, never a missed one.
 

@@ -193,7 +193,9 @@ axes:
     #
     # Two behaviours differ from Opus 5 and both are visible in a benchmark run:
     #   * thinking cannot be disabled, so `reasoning_effort` is the only spend lever
-    #     and its DEFAULT is medium, not high — a cell that leaves effort unset is
+    #     and its DEFAULT is medium, not high (per the Bedrock model card; a default
+    #     is not observable from a response, so this is cited rather than measured)
+    #     — a cell that leaves effort unset is
     #     not the same cell it is on Opus 5. Pair with the `reasoning_effort` sweep
     #     before reading a cost delta as a model difference.
     #   * a forced `toolChoice` is rejected, so the `forcing` axis cannot be `on`

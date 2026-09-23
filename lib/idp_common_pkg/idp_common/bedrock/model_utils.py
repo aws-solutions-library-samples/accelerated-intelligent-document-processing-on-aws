@@ -88,6 +88,26 @@ def parse_model_id(model_id: str) -> Tuple[str, Optional[str]]:
 # no price difference at all.
 LONG_CONTEXT_SUFFIX = ":1m"
 
+#: Region / geo prefixes Bedrock cross-region inference profiles use. Lives here,
+#: the module with no first-party imports, so that every prefix-stripping site in
+#: the package can share ONE definition — the defect this replaces was four
+#: hand-rolled copies, of which three listed only ``us``/``eu``/``global``.
+#:
+#: Omitting a prefix fails **permissively**, which is why the copies were harmless
+#: to read and not to run: an id whose prefix is unrecognised falls through
+#: unchanged, so it matches no base-name set and every capability gate returns the
+#: answer for "model I know nothing about". For ``us-gov.`` that means
+#: ``strips_sampling_params`` says False (``temperature`` goes to a model that
+#: rejects it) and ``supports_forced_tool_choice`` says True (a forced tool call
+#: goes to a model that rejects it). GovCloud is where both land, because an
+#: account-scoped inference-profile ARN is the only way to name a model there and
+#: ``resolve_model_id_from_arn`` reduces one to a ``us-gov.`` id.
+#:
+#: ``config.retired_models._REGION_PREFIX`` holds the same five as a regex and
+#: cannot import this module (``config`` is imported BY ``bedrock``), so the two are
+#: asserted equal by ``tests/unit/bedrock/test_region_prefix_parity.py``.
+REGION_PREFIXES = ("us", "eu", "apac", "global", "us-gov")
+
 
 def metering_model_id(model_id: str) -> str:
     """
