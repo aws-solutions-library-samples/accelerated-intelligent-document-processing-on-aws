@@ -212,39 +212,21 @@ class ConfigOperation:
 
         result = validate_config(user_config, pattern=pattern)
 
-        # Enhancement 3: detect deprecated and unknown fields
-        deprecated_fields: list = []
-        unknown_fields: list = []
+        # Keys the configuration models will not read, at every depth, as found by
+        # validate_config. Computing `set(config) - set(IDPConfig.model_fields)` here
+        # instead — which this did — reports every key IDPConfig does not declare, so
+        # it named two the loader honours: `description`, which update_configuration
+        # pops and stores, and `rule_classes`, which is renamed to `policy_classes`.
+        # It also saw only the top level, where a typo is least likely. The warnings
+        # already carry these findings in prose, with the path and, where there is
+        # one, the field the key was meant to be.
         errors = list(result.get("errors", []))
         warnings = list(result.get("warnings", []))
-
-        try:
-            from idp_common.config.models import IDP_CONFIG_DEPRECATED_FIELDS, IDPConfig
-
-            defined_fields = set(IDPConfig.model_fields.keys())
-            user_fields = (
-                set(user_config.keys()) if isinstance(user_config, dict) else set()
-            )
-            extra_fields = user_fields - defined_fields
-
-            deprecated_fields = sorted(extra_fields & IDP_CONFIG_DEPRECATED_FIELDS)
-            unknown_fields = sorted(extra_fields - IDP_CONFIG_DEPRECATED_FIELDS)
-
-            # Add informational warnings for deprecated / unknown fields
-            for field in deprecated_fields:
-                warnings.append(
-                    f"Deprecated field '{field}' found — it will be ignored by the pipeline"
-                )
-            for field in unknown_fields:
-                warnings.append(
-                    f"Unknown field '{field}' found — it is not part of the IDPConfig schema"
-                )
-
-        except ImportError:
-            # If idp_common.config.models is not available, skip the check gracefully
-            logger.warning(
-                "Could not import IDP_CONFIG_DEPRECATED_FIELDS — skipping deprecated field check"
-            )
+        ignored = result.get("ignored_keys", [])
+        deprecated_fields = sorted(
+            f["path"] for f in ignored if f["kind"] == "deprecated"
+        )
+        unknown_fields = sorted(f["path"] for f in ignored if f["kind"] == "unknown")
 
         return ConfigValidationResult(
             valid=result["valid"],

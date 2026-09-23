@@ -29,7 +29,6 @@ extraction:
   temperature: "0"
   top_p: "0"
   top_k: "20"
-  max_tokens: "4096"
   system_prompt: |
     You are a document extraction specialist. Extract structured fields from documents.
   task_prompt: |
@@ -194,8 +193,6 @@ rule_validation:
         ]
       }}
     temperature: 0
-    top_p: 0
-    top_k: 20
     max_tokens: 4096
     few_shot_examples:
       - rule: "Municipal tax must match SAP tax within 5% margin"
@@ -280,8 +277,6 @@ rule_validation:
         }}
       }}
     temperature: 0
-    top_p: 0
-    top_k: 20
     max_tokens: 2048
 
   z3_timeout_ms: 5000

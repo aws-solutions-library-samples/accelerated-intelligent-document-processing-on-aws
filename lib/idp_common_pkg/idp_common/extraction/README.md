@@ -1240,7 +1240,7 @@ The extraction service is designed to be thread-safe, supporting concurrent proc
 > opt-outs keep 1S-TopK: `x-aws-idp-extraction-task-prompt` (a user-controlled prompt is
 > never half-applied) and `x-aws-idp-allow-integrated-lists: true` (the author has
 > verified list completeness). `config.merge_utils._validate_simple_integrated_lists`
-> warns at `idp-cli config validate` / SDK validate time — the web UI does not validate
+> warns at `idp-cli config-validate` / SDK validate time — the web UI does not validate
 > on save; its Prompt Preview shows the decision per class. Runtime per-section decision,
 > not a config rejection: a stored config must keep loading, and the new key is a
 > free-form class key that older releases ignore.
