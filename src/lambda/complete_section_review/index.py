@@ -635,15 +635,27 @@ def skip_all_sections_review(object_key, username="", user_email=""):
     # above: a reviewer finishing a section while an admin skips the rest would
     # otherwise have their entry overwritten by whichever of the two wrote last.
     #
-    # `HITLSectionsSkipped` in the same statement is deliberately left as a whole
-    # -list write. It is derived from the read (`existing_skipped`), but the value
-    # is convergent rather than accumulated: `all_skipped` is
-    # `all_section_ids - completed` unioned with what was already skipped, so two
-    # overlapping skip-alls compute the same target set from the document's own
-    # sections and neither loses anything the other recorded. It is also
-    # recomputable by clicking Skip All again. Adding a condition and a retry path
-    # here would introduce a new way for the request to fail in exchange for no
-    # data that is not already reproducible.
+    # `HITLSectionsSkipped` in the same statement is still a whole-list write, and
+    # it is **not** safe under the same overlap. Stating the residual precisely,
+    # because the shape invites a wrong reading: `all_skipped` unions
+    # `existing_skipped` in, so nothing another skip-all recorded is dropped, and
+    # two skip-alls that read the same `completed` do compute the same set. What
+    # diverges is `completed` itself. A reviewer finishing a section while this runs
+    # means one of the two callers computed `all_section_ids - completed` from a
+    # `completed` that did not yet name that section, so it lands in
+    # `HITLSectionsSkipped` as well as in `HITLSectionsCompleted` -- and because the
+    # union is monotonic, clicking Skip All again reproduces it rather than clearing
+    # it. Measured, not assumed. What an operator sees is a section recorded both
+    # reviewed and skipped, and a later `complete_section_review` reading
+    # `has_skipped` and reporting `Skipped` for a document whose sections were all
+    # actually reviewed.
+    #
+    # It is left here because the input that diverges is `completed`, which arrives
+    # from the document model rather than from the read above, and every writer of
+    # that attribute goes through `DocumentDynamoDBService.update_document` -- one
+    # unconditional whole-document write shared by the pipeline and several
+    # resolvers. Guarding one caller of it in isolation is the change that looks
+    # like a fix and is not. Reported in #1111 with the other sites on that path.
     table.update_item(
         Key={"PK": f"doc#{object_key}", "SK": "none"},
         UpdateExpression=(
