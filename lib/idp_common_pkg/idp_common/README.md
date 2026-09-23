@@ -492,6 +492,38 @@ different language, so nothing about adding a code here would make it appear the
 `scripts/tests/test_failure_code_ui_parity.py` fails when the two disagree in either
 direction. Add the code to the `ProcessingIssue` docstring's inventory too.
 
+## 🐢 Lazy submodule loading, and where `mock.patch` goes wrong
+
+`idp_common/__init__.py` loads every submodule through `__getattr__`, so `import
+idp_common` costs the standard library and nothing else. That is what lets a Lambda
+install `idp_common[core]` without dragging in the `[all]` dependency set — nothing
+imports Strands, pypdfium2 or the Textract parser until something asks for it.
+`tests/unit/test_lazy_submodule_loading.py` measures that in a fresh interpreter, which
+is the only place it can be measured: by the time a test suite is running, half the
+library is imported.
+
+The loader defers to `importlib`, which means to `sys.modules`. It deliberately keeps no
+cache of its own: a second cache beside `sys.modules` can hold a **different object for
+the same name**, and `unittest.mock.patch` resolves its target through `sys.modules`, so
+a patch applied to one copy is invisible to code holding the other (#1159).
+
+⚠️ **Removing that cache does not make patching safe, and the difference is worth
+understanding before writing a test.** The duplication that prompted #1159 is created
+outside this package: `coverage` imports each `--cov=<module>` target inside a
+`sys_modules_saved()` block and then deletes every `sys.modules` entry that import
+added, while the module objects survive as attributes of their parent packages. Any
+later import of such a name re-executes the file and yields a second object. Nothing in
+`__init__.py` can prevent that.
+
+**So patch at the point of use, and check how the consumer reached the name** — the two
+cases need different targets and the wrong one fails silently, as a mock that records
+zero calls:
+
+| How the consumer imports it | Patch target |
+|---|---|
+| Module-level `from idp_common import s3`, then `s3.write_content(...)` | `idp_common.<consumer module>.s3.write_content` — the consumer's own captured object |
+| Function-local `from idp_common.image import f` inside the method | `idp_common.image.f` — the name is resolved from `sys.modules` at call time |
+
 ## 🧭 Naming the state that failed
 
 `stepfunctions_history.py` answers one question about a Step Functions execution
