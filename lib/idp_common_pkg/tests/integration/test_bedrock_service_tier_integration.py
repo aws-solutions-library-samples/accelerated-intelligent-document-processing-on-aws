@@ -81,7 +81,13 @@ class TestBedrockClientServiceTierIntegration:
         assert "output" in response
 
     def test_global_model_with_flex_suffix(self, bedrock_client):
-        """Test global model ID with :flex suffix."""
+        """Test global model ID with :flex suffix.
+
+        The skip covers the *invocation* only. It used to wrap the assertions
+        as well, and `except Exception` catches `AssertionError`, so a response
+        that came back without an `output` key was reported as a skip -- which
+        reads as green (#1129).
+        """
         try:
             response = bedrock_client.invoke_model(
                 model_id="global.amazon.nova-2-lite-v1:0:flex",
@@ -89,7 +95,8 @@ class TestBedrockClientServiceTierIntegration:
                 content=[{"text": "Say hi."}],
                 max_tokens=5,
             )
-            assert response is not None
-            assert "output" in response
         except Exception as e:
             pytest.skip(f"Global model not available: {e}")
+
+        assert response is not None
+        assert "output" in response

@@ -207,86 +207,132 @@ class TestCompressionMatrix:
             f"{'✅ FITS' if sizes['fits_400kb'] else '❌ EXCEEDS 400KB'}"
         )
 
-        # 100-500 should definitely fit; 750+ may or may not depending on field count
-        if num_classes <= 500:
-            assert sizes["fits_400kb"], (
-                f"Config with {num_classes} classes compressed to {sizes['compressed_size']:,} bytes, "
-                f"exceeding DynamoDB 400KB limit."
-            )
-
-    def test_full_matrix_summary(self):
-        """
-        Print the complete test matrix as a formatted table.
-
-        This test always passes — its purpose is to produce a readable summary
-        when run with `pytest -s`.
-        """
-        print("\n")
-        print("=" * 100)
-        print("COMPRESSION TEST MATRIX — Issue #200")
-        print("=" * 100)
-        print(
-            f"{'Classes':>8} | {'Raw JSON Size':>15} | {'Compressed Size':>16} | "
-            f"{'Ratio':>7} | {'Fits 400KB?':>12} | {'Old Result (no compression)'}"
+        # Every extended count fits, 750 and 1000 included: measured compressed
+        # sizes are ~21KB and ~28KB against a 400KB limit, so the assertion is
+        # unconditional. It used to sit behind `if num_classes <= 500`, which
+        # left the two largest ids -- the only ones the smaller counts do not
+        # already imply -- asserting nothing at all (#1129).
+        assert sizes["fits_400kb"], (
+            f"Config with {num_classes} classes compressed to {sizes['compressed_size']:,} bytes, "
+            f"exceeding DynamoDB 400KB limit."
         )
-        print("-" * 100)
 
-        for num_classes in ALL_CLASS_COUNTS:
-            item = _generate_full_config_item(num_classes)
-            sizes = _compute_sizes(item)
+    def test_compression_is_what_brings_an_over_limit_item_under_it(self):
+        """Compression, not fixture size, is what makes the largest items fit.
 
-            # Determine what the old result was (before compression)
-            old_result = (
-                "FAILED" if sizes["raw_size"] > _DYNAMODB_ITEM_SIZE_LIMIT else "Success"
-            )
-            if num_classes in [48, 50]:
-                old_result = "FAILED (reported)"
+        Both parametrized tests above assert only one side — that the
+        *compressed* item fits — and every count they cover would pass that on
+        a fixture small enough to fit uncompressed too. The two-sided property
+        is the one the suite exists to demonstrate, and it needs a count whose
+        raw item genuinely exceeds the limit, so that count is derived from the
+        matrix rather than named: the smallest entry that does.
 
-            fits_str = "✅ YES" if sizes["fits_400kb"] else "❌ NO"
+        This replaces a print-only `test_full_matrix_summary`, which
+        regenerated all thirteen rows, printed a table and asserted nothing
+        (#1129). Every row that table printed is asserted by the two
+        parametrized tests above, so the table itself was duplicated work; what
+        it was *about* is asserted here.
+        """
+        over_limit = [
+            n
+            for n in ALL_CLASS_COUNTS
+            if _compute_sizes(_generate_full_config_item(n))["raw_size"]
+            > _DYNAMODB_ITEM_SIZE_LIMIT
+        ]
+        assert over_limit, (
+            "no class count in the matrix produces an item that exceeds "
+            f"{_DYNAMODB_ITEM_SIZE_LIMIT:,} bytes uncompressed, so nothing here "
+            "demonstrates that compression is what lifts the limit"
+        )
 
-            print(
-                f"{num_classes:>8} | "
-                f"{sizes['raw_size']:>12,} B | "
-                f"{sizes['compressed_size']:>13,} B | "
-                f"{sizes['ratio']:>6.1f}x | "
-                f"{fits_str:>12} | "
-                f"{old_result}"
-            )
+        num_classes = min(over_limit)
+        sizes = _compute_sizes(_generate_full_config_item(num_classes))
 
-        print("-" * 100)
-        print()
+        assert sizes["raw_size"] > _DYNAMODB_ITEM_SIZE_LIMIT
+        assert sizes["fits_400kb"], (
+            f"{num_classes} classes is {sizes['raw_size']:,} bytes uncompressed "
+            f"and {sizes['compressed_size']:,} compressed — still over the "
+            f"{_DYNAMODB_ITEM_SIZE_LIMIT:,}-byte limit"
+        )
+
+
+# Upper bound of the capacity sweep below. Every field count tested reaches it,
+# so the sweep reports a lower bound rather than an inflection point; the test
+# asserts that explicitly so the number is not read as a measured ceiling.
+SWEEP_CEILING = 3000
+
+# The documented minimum the compressed format must support at any field count.
+MIN_SUPPORTED_CLASSES = 500
 
 
 class TestCompressionCapacityEstimator:
     """
-    Estimates the maximum number of document classes that fit in the 400KB limit.
+    Establishes a lower bound on the document classes that fit in the 400KB limit.
 
-    Sweeps through class counts to find the inflection point where compressed
-    config exceeds 400KB. This gives users a concrete number for planning.
+    Sweeps class counts upward until the compressed config exceeds 400KB. No
+    field count tested reaches that point below `SWEEP_CEILING`, so what the
+    sweep yields is "at least this many", which is what the tests assert.
     """
 
-    def test_estimate_max_classes_20_fields(self):
-        """Estimate max classes with 20 fields per class (standard)."""
-        self._run_estimator(fields_per_class=20, label="20 fields/class (standard)")
+    @pytest.mark.parametrize(
+        "fields_per_class,label",
+        [
+            (10, "simple forms"),
+            (20, "standard"),
+            (30, "complex forms"),
+        ],
+        ids=["10-fields", "20-fields", "30-fields"],
+    )
+    def test_at_least_500_classes_fit_at_every_field_count(
+        self, fields_per_class, label
+    ):
+        """Every field count supports at least `MIN_SUPPORTED_CLASSES` classes.
 
-    def test_estimate_max_classes_30_fields(self):
-        """Estimate max classes with 30 fields per class (complex forms)."""
-        self._run_estimator(fields_per_class=30, label="30 fields/class (complex)")
+        The assertion used to sit behind `if fields_per_class <= 20`, so the
+        30-fields case — the widest schema, and the one most likely to be the
+        first to stop fitting — asserted nothing at all (#1129). It is
+        unconditional now: all three field counts run the sweep to
+        `SWEEP_CEILING` without exceeding the limit.
+        """
+        max_fitting, first_exceeding = self._sweep(fields_per_class)
 
-    def test_estimate_max_classes_10_fields(self):
-        """Estimate max classes with 10 fields per class (simple forms)."""
-        self._run_estimator(fields_per_class=10, label="10 fields/class (simple)")
+        print(f"\n  Capacity ({label}, {fields_per_class} fields/class):")
+        print(f"    Classes that fit in 400KB: at least {max_fitting}")
 
-    def _run_estimator(self, fields_per_class: int, label: str):
-        """Sweep class counts and find the max that fits in 400KB."""
+        assert max_fitting >= MIN_SUPPORTED_CLASSES, (
+            f"expected at least {MIN_SUPPORTED_CLASSES} classes with "
+            f"{fields_per_class} fields/class, but the largest that fit was "
+            f"{max_fitting}"
+        )
+
+        if first_exceeding is None:
+            # Saturating the sweep is today's outcome for all three field
+            # counts. Pinning it keeps `max_fitting` from being mistaken for a
+            # measured capacity, and turns a future genuine inflection point
+            # into a visible change rather than a silently smaller number.
+            assert max_fitting == SWEEP_CEILING, (
+                f"the sweep found no exceeding count yet stopped at "
+                f"{max_fitting}, below its {SWEEP_CEILING} ceiling"
+            )
+        else:
+            assert first_exceeding > max_fitting
+            over = _compute_sizes(
+                _generate_full_config_item(first_exceeding, fields_per_class)
+            )
+            assert not over["fits_400kb"]
+            print(f"    First count that does not fit: {first_exceeding}")
+
+    @staticmethod
+    def _sweep(fields_per_class: int) -> tuple:
+        """Return (largest class count that fits, first that does not)."""
         max_fitting = 0
         first_exceeding = None
 
         # Coarse sweep: 50-class increments
-        for num_classes in range(50, 3001, 50):
-            item = _generate_full_config_item(num_classes, fields_per_class)
-            sizes = _compute_sizes(item)
-
+        for num_classes in range(50, SWEEP_CEILING + 1, 50):
+            sizes = _compute_sizes(
+                _generate_full_config_item(num_classes, fields_per_class)
+            )
             if sizes["fits_400kb"]:
                 max_fitting = num_classes
             else:
@@ -296,41 +342,13 @@ class TestCompressionCapacityEstimator:
         # Fine sweep around the boundary
         if first_exceeding:
             for num_classes in range(max_fitting, first_exceeding + 1):
-                item = _generate_full_config_item(num_classes, fields_per_class)
-                sizes = _compute_sizes(item)
-
+                sizes = _compute_sizes(
+                    _generate_full_config_item(num_classes, fields_per_class)
+                )
                 if sizes["fits_400kb"]:
                     max_fitting = num_classes
                 else:
+                    first_exceeding = num_classes
                     break
 
-        # Report
-        if max_fitting > 0:
-            # Get sizes at the max fitting point
-            item = _generate_full_config_item(max_fitting, fields_per_class)
-            sizes = _compute_sizes(item)
-
-            print(f"\n  Capacity Estimate ({label}):")
-            print(f"    Max classes that fit in 400KB: {max_fitting}")
-            print(
-                f"    At {max_fitting} classes: {sizes['compressed_size']:,} bytes compressed ({sizes['ratio']:.1f}x ratio)"
-            )
-            print(f"    Raw size would have been: {sizes['raw_size']:,} bytes")
-
-            if first_exceeding:
-                item_over = _generate_full_config_item(
-                    max_fitting + 1, fields_per_class
-                )
-                sizes_over = _compute_sizes(item_over)
-                print(
-                    f"    At {max_fitting + 1} classes: {sizes_over['compressed_size']:,} bytes compressed (exceeds limit)"
-                )
-        else:
-            print(f"\n  Capacity Estimate ({label}): Even 50 classes exceeds 400KB!")
-
-        # The standard config (20 fields) should support at least 500 classes
-        if fields_per_class <= 20:
-            assert max_fitting >= 500, (
-                f"Expected at least 500 classes with {fields_per_class} fields/class, "
-                f"but max fitting was {max_fitting}"
-            )
+        return max_fitting, first_exceeding
