@@ -2198,6 +2198,51 @@
       "ratchetGap": "Three residuals. A NEW document inventing a phrasing none of the registered patterns match states an unchecked count; the per-document check closes this only for documents already registered. A registered pattern can still be narrower than the prose it is aimed at -- it is fired at a probe the same author wrote, so a shared misreading of the real sentence would satisfy both. And for an entry with no documents, nothing asserts the figure is actually absent from the tree: the patterns report a wrong one if it returns, but prose could state the count in an unregistered phrasing and go unseen.",
       "memberKind": "other"
     },
+    "scripts/tests/test_preset_keys_are_read.py::PRESET_SCAN_EXCLUDED_LOOKUP_TABLES": {
+      "kind": "prune",
+      "memberKind": "file name under config_library/",
+      "turnsOff": "the requirement that every top-level key in a config_library YAML be one IDPConfig reads, for three files that are lookup tables rather than deployable configurations",
+      "premise": [
+        "JUDGEMENT"
+      ],
+      "ratchet": "non-vacuity",
+      "ratchetEvidence": "scripts/tests/test_preset_keys_are_read.py",
+      "issues": [
+        1145
+      ],
+      "reason": "pricing.yaml maps a model id to a rate, model_config_limits.yaml maps one to a context window, and finetuning_models.yaml lists fine-tunable base models. None is installed by `idp-cli deploy --custom-config` and none is an IDPConfig document, so their top-level keys -- model ids and their own section names -- are not keys IDPConfig could read or discard. Whether a given YAML is a deployable configuration or a lookup table is a judgement about what the file is for, which no predicate here computes; what IS computed is that each named file still exists (test_the_excluded_lookup_tables_are_present), so the entry cannot outlive its members.",
+      "ratchetGap": "A NEW lookup table added under config_library/ is scanned as a preset and will fail this gate until it is named here, which is the safe direction. The count of keys each excluded file holds is not pinned, so a lookup table growing a key that IDPConfig would have read is not detected."
+    },
+    "scripts/tests/test_preset_keys_are_read.py::PRESET_SCAN_EXCLUDED_NON_CONFIGS": {
+      "kind": "prune",
+      "memberKind": "file name under config_library/",
+      "turnsOff": "the same top-level-key requirement, for the two feature-platform extension manifests, which are not IDPConfig documents at all",
+      "premise": [
+        "JUDGEMENT"
+      ],
+      "ratchet": "non-vacuity",
+      "ratchetEvidence": "scripts/tests/test_preset_keys_are_read.py",
+      "issues": [
+        1145
+      ],
+      "reason": "extensions-marketplace.yaml and extensions-oss.yaml carry their own schema (`schemaVersion`, `features`) and are read by the feature platform; IDPConfig never sees either, so 'IDPConfig discards this key' is not a statement about them. They sit under config_library/ for distribution rather than because they are configurations, which is the judgement here. test_the_excluded_extension_manifests_are_present computes that both files still exist, so neither name can pre-exempt a future file that takes it.",
+      "ratchetGap": "Their own schema is not validated by this gate; a malformed extension manifest is a different gate's finding."
+    },
+    "scripts/tests/test_preset_keys_are_read.py::TOP_LEVEL_KEY_EXEMPT": {
+      "kind": "exemption",
+      "memberKind": "top-level YAML key, paired with its production reader's path and the source text that constitutes the read",
+      "turnsOff": "the requirement that a preset's top-level key be one IDPConfig models, for one key that a DIFFERENT consumer reads",
+      "premise": [
+        "JUDGEMENT"
+      ],
+      "ratchet": "non-vacuity",
+      "ratchetEvidence": "scripts/tests/test_preset_keys_are_read.py",
+      "issues": [
+        1145
+      ],
+      "reason": "`description` is read by src/lambda/update_configuration/index.py, which POPS it off the configuration dict before IDPConfig is constructed and embeds it in the DynamoDB sort key the UI renders (Config#{version}#{description}). That pop is why IDPConfig models no such field, so the gate's own question -- does IDPConfig discard this key -- answers 'yes' and is the wrong question for this key. This is the one entry that exists because the gate's premise is false for a specific key, so it is recorded per key with its reader named rather than as a blanket allowance. Which consumers exist for a key is not computable from the tree; that the named reader still mentions it IS, and test_every_read_elsewhere_key_really_is_read asserts exactly that per member. The path names the PRODUCTION consumer deliberately: pointing it at a test that merely contains the string would leave the entry green after the real reader was deleted, which is the failure this premise check exists to prevent.",
+      "ratchetGap": "The read is matched as source text rather than by resolving it at runtime, so a reader that moved the pop into a helper with a different spelling would fail the premise even though the key is still read -- a false alarm, which is the safe direction. Bounding it to one key with one named path and one marker is what keeps that cheap to review."
+    },
     "scripts/tests/test_first_party_provenance_closure.py::EXEMPT": {
       "kind": "exemption",
       "memberKind": "directory",
