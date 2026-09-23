@@ -246,6 +246,112 @@ class SectionRead:
         )
 
 
+class Unpriced(Exception):
+    """A total was demanded from a metering map that did not all price.
+
+    Raised rather than returning the sum of the entries that happened to price,
+    because that sum is not a weaker reading of the document's cost — it is a
+    wrong one, and wrong in a known direction (always low).
+    """
+
+
+class Priced:
+    """What one metering map cost, and every entry in it that could NOT be priced.
+
+    ``price_metering`` used to return ``(total, by_key)`` and silently drop what it
+    could not price, so "this model has no entry in ``pricing.yaml``" and "this
+    model cost nothing" were the same answer at the call site
+    ([#1146](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/1146)).
+    That is the #1079 defect one layer along: there a failed *read* was recorded as
+    a value, here a successful read whose contents cannot be priced was.
+
+    It is harder to notice than #1079 was, and the reason is worth stating:
+    **the absence of a zero cost does not rule it out.** The other phases of a
+    document price normally, so the row's ``cost`` is non-zero, its
+    ``cost_by_phase`` looks populated, and nothing about it reads as partial.
+
+    So the total is not reachable without saying which case you are handling:
+
+    * ``total`` raises :class:`Unpriced` unless every entry priced;
+    * ``partial_total`` is the same number under a name that says what it is, for a
+      caller that has decided to report it and report the shortfall beside it;
+    * ``unpriced`` is one string per unpriceable entry, naming the metering key and
+      what about it could not be priced, and ``why`` folds them into one line for an
+      artifact field or a console note;
+    * ``__bool__`` raises — ``if priced:`` reads as "did it all price" and is in
+      fact always true, which is the quietest possible way to lose the distinction.
+
+    ``by_key`` is cost per *pricing* key (the model id), ``by_meter_key`` cost per
+    *metering* key (``Phase/service/api``); a metering key that resolved to a
+    pricing entry appears in the second even when it cost exactly 0.00, so a phase
+    breakdown derived from it keeps every phase the map mentions.
+    """
+
+    __slots__ = ("_total", "by_key", "by_meter_key", "unpriced")
+
+    def __init__(
+        self,
+        total: float,
+        by_key: dict[str, float],
+        by_meter_key: dict[str, float],
+        unpriced: tuple[str, ...] = (),
+    ) -> None:
+        self._total = total
+        self.by_key = by_key
+        self.by_meter_key = by_meter_key
+        self.unpriced = unpriced
+
+    @property
+    def complete(self) -> bool:
+        """True when every entry in the map priced — the only state in which
+        ``total`` is the document's cost."""
+        return not self.unpriced
+
+    @property
+    def total(self) -> float:
+        if self.unpriced:
+            raise Unpriced(
+                f"{self.why} — the total over the rest is BELOW truth. Either add "
+                "the missing pricing entry, or record `partial_total` together with "
+                "`why`; do not report it as the cost."
+            )
+        return self._total
+
+    @property
+    def partial_total(self) -> float:
+        """The cost of the entries that DID price.
+
+        Equal to ``total`` when :attr:`complete`. When it is not, this is strictly
+        below the document's real cost by however much the unpriced entries would
+        have added, and nothing in the number itself says so — which is why it is
+        spelled out rather than being what ``total`` returns.
+        """
+        return self._total
+
+    @property
+    def why(self) -> str:
+        """One line naming what could not be priced, for an artifact or a console."""
+        if not self.unpriced:
+            return ""
+        n = len(self.unpriced)
+        noun = "entry" if n == 1 else "entries"
+        return f"{n} unpriceable metering {noun}: " + "; ".join(self.unpriced)
+
+    def __bool__(self) -> NoReturn:
+        raise TypeError(
+            "a Priced result carries a total AND what could not be priced — "
+            f"truth-testing it is always True ({len(self.unpriced)} unpriceable "
+            "entries here). Test .complete, then use .total, or .partial_total "
+            "together with .why."
+        )
+
+    def __repr__(self) -> str:
+        return (
+            f"Priced(total={self._total!r}, keys={len(self.by_key)}, "
+            f"unpriced={self.unpriced!r})"
+        )
+
+
 # ----------------------------------------------------------------------------- pricing
 def load_pricing():
     raw = yaml.safe_load(open(PRICING_PATH))
@@ -264,9 +370,9 @@ def load_pricing():
 PRICING = load_pricing()
 
 
-def price_metering(metering):
+def price_metering(metering) -> Priced:
     """metering: {'Phase/service/api': {unit: count}}. Price by LONGEST pricing-key
-    suffix of the metering key. Returns (total, {matched_key: cost}).
+    suffix of the metering key. Returns a :class:`Priced`.
 
     Both the model key and the unit name are matched EXACTLY — never by substring.
     This is the reference form of the rule; production
@@ -279,27 +385,40 @@ def price_metering(metering):
     Takes a metering MAP, never a :class:`Reading`. A caller holding a reading has
     to establish that it is ``present`` first — pricing an unread metering row is
     how a failed measurement becomes $0.00 in a published artifact. Passing one
-    raises from ``Reading.__bool__`` below rather than pricing it, because
+    raises from ``Reading.__bool__`` above rather than pricing it, because
     ``reportArgumentType`` is disabled here and the type checker will not say so.
 
-    ⚠️ **This function still drops what it cannot price, and says nothing about it.**
-    An entry whose model has no ``pricing.yaml`` key, or whose unit that key does not
-    price, is skipped — so a model added to a run but not to the pricing table makes
-    every affected row price **below truth while still reporting a plausible non-zero
-    total**, because the other phases price normally. That is the same
-    absence-versus-failure defect as
-    [#1079](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/1079)
-    one layer along, on a successful read rather than a failed one, and it is tracked
-    as [#1146](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/1146).
-    Note what does **not** detect it: the absence of a zero cost. The row's cost is
-    non-zero and nothing about it reads as partial. All 14 pricing keys the committed
-    artifacts use are present with their full unit sets, so no published figure is
-    affected today — but check that before adding a model to a suite.
+    **Three things are reported rather than dropped** (GitHub #1146). Each was a
+    ``continue`` that contributed nothing to the total, which is the same arithmetic
+    as contributing zero:
+
+    * a metering key **no pricing entry matches**, at any suffix — the live hazard,
+      because adding a model to a suite without adding it to ``pricing.yaml`` is
+      exactly the run that introduces the thing being measured;
+    * an entry whose value is **not a map** of unit to count;
+    * a **count that is not a number** (a bool included: a count written as a
+      DynamoDB ``BOOL`` prices as 1 or 0, neither of which was metered).
+
+    Miss handling now matches production's, which had already decided it and
+    documented the reasoning: *no entry for the key at all* is unpriced and named,
+    while *a unit absent from an entry that exists* is $0.00. See
+    ``idp_common/reporting/README.md`` — the second is a real price rather than a
+    missing one, because ``pricing.yaml`` omits units that do not apply and **every
+    Bedrock call meters ``totalTokens`` and ``requests``, which Bedrock does not
+    charge for.** Flagging the unit axis would therefore report every Bedrock entry
+    in every row as unpriceable, which is why the exact-match rule is kept as it is
+    and the *key* axis is what this function reports on.
     """
     total = 0.0
-    by = {}
+    by: dict[str, float] = {}
+    by_meter: dict[str, float] = {}
+    unpriced: list[str] = []
     for meter_key, units in (metering or {}).items():
         if not isinstance(units, dict):
+            unpriced.append(
+                f"{meter_key!r}: entry is a {type(units).__name__}, not a map of "
+                "unit -> count"
+            )
             continue
         parts = meter_key.split("/")
         pu = matched = None
@@ -308,14 +427,31 @@ def price_metering(metering):
             if cand in PRICING:
                 pu, matched = PRICING[cand], cand
                 break
-        if not pu:
+        if pu is None or matched is None:
+            unpriced.append(
+                f"{meter_key!r}: no pricing.yaml entry matches it or any "
+                f"'/'-delimited suffix of it — add one, or this run's cost is "
+                f"below truth by whatever it spent here"
+            )
             continue
+        # Present even when it prices to exactly 0.00, so a phase breakdown derived
+        # from this keeps every phase the metering map mentions.
+        by_meter.setdefault(meter_key, 0.0)
         for unit, count in units.items():
-            if unit in pu and isinstance(count, (int, float)):
-                c = count * pu[unit]
-                total += c
-                by[matched] = by.get(matched, 0.0) + c
-    return total, by
+            if unit not in pu:
+                # Not chargeable for this service, not a missing price. See above.
+                continue
+            if isinstance(count, bool) or not isinstance(count, (int, float)):
+                unpriced.append(
+                    f"{meter_key!r} unit {unit!r}: count is a "
+                    f"{type(count).__name__}, not a number"
+                )
+                continue
+            c = count * pu[unit]
+            total += c
+            by[matched] = by.get(matched, 0.0) + c
+            by_meter[meter_key] = by_meter[meter_key] + c
+    return Priced(total, by, by_meter, tuple(unpriced))
 
 
 # ----------------------------------------------------------------------------- DDB

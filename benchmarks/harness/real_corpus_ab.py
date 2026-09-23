@@ -165,8 +165,17 @@ def _token_classes(item):
 
 
 def _cost(item):
-    cost, _ = lib.price_metering(_metering(item))
-    return cost
+    """``(cost, unpriced_reason)``.
+
+    A metering map carrying something ``pricing.yaml`` cannot price has no cost this
+    A/B can report: the partial total is below truth by an unknown amount, and both
+    arms of a paired comparison would be shifted by different amounts (GitHub #1146).
+    So the pair is dropped and named, exactly as ``_score`` drops an unread report.
+    """
+    priced = lib.price_metering(_metering(item))
+    if not priced.complete:
+        return None, priced.why
+    return priced.total, None
 
 
 def _score(bucket, run_id, doc):
@@ -284,7 +293,13 @@ def cmd_analyse(a):
                     worse += 1
                 else:
                     same += 1
-            cost.append((_cost(arms["B"][1]), _cost(arms["A"][1])))
+            cb, pb = _cost(arms["B"][1])
+            ca, pa = _cost(arms["A"][1])
+            for arm_name, why in (("A", pa), ("B", pb)):
+                if why:
+                    unread_notes.append(f"{doc} [{arm_name}] cost: {why}")
+            if cb is not None and ca is not None:
+                cost.append((cb, ca))
             ta, tb = _token_classes(arms["A"][1]), _token_classes(arms["B"][1])
             for u in UNITS:
                 toks[u].append((tb[u], ta[u]))
@@ -306,8 +321,8 @@ def cmd_analyse(a):
         if unread_notes:
             print(
                 f"\n  ⚠ {len(unread_notes)} observation(s) EXCLUDED because a read "
-                "failed, not because there was nothing there — the figures below are "
-                "over the remainder:"
+                "failed or a cost could not be priced, not because there was nothing "
+                "there — the figures below are over the remainder:"
             )
             for note in unread_notes[:5]:
                 print(f"      {note}")
