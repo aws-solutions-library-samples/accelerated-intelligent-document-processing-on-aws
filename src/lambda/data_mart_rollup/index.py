@@ -204,12 +204,35 @@ def handler(event: Dict[str, Any], _context: Any) -> Dict[str, Any]:
     global _document_sections_tables_cache
     global _MIGRATION_NONCE
     _lambda_memory_cache.clear()
-    # Reset the migration nonce at every entry. Only ``mode: backfill``
-    # dispatched from the state machine's BackfillChunk will re-populate
-    # it (see below); every other mode — routine hourly cron, reconciler,
-    # daily cron, manual invokes — leaves it None so their idempotency
-    # tokens stay deterministic on (table, date, hour) alone.
-    _MIGRATION_NONCE = None
+    # Migration nonce: every state-machine task mode passes an ``anchor``
+    # (set by the state machine's AdoptMarkerAnchor Pass state and
+    # threaded through Map ItemSelector), and that anchor becomes this
+    # invocation's nonce, folded into every ``_idempotency_key`` for the
+    # invocation's duration.
+    #
+    # Two migration state-machine executions produce DIFFERENT anchors,
+    # so their post-purge re-INSERTs generate different ClientRequestTokens
+    # and Athena treats them as fresh submissions instead of returning
+    # the prior execution's cached (now-stale, since the parquet was
+    # purged) success. Within a single execution's per-task retries the
+    # anchor is stable, so intra-execution retries still dedup correctly.
+    #
+    # Applies to EVERY state-machine task mode, not just ``backfill``:
+    # ``backfill_daily_range`` calls ``_run_daily`` which builds
+    # ``_idempotency_key("metering_daily", date)``, and without the
+    # nonce a second full-flow execution within Athena's 24 h token
+    # window would collide on that key — InitialPurge would delete the
+    # daily parquet, the re-INSERT would reuse the cached SUCCEEDED
+    # QueryExecutionId (which wrote no parquet at the moment the source
+    # rows were empty), ``_partition_produced_rows`` would return False,
+    # the empty-sentinel would suppress re-check for 12 h, and both
+    # daily rollup tables would end up empty with a completed marker.
+    #
+    # Every non-migration mode — routine hourly cron, reconciler, daily
+    # cron, manual invokes — passes no ``anchor``, so ``_MIGRATION_NONCE``
+    # stays None and their idempotency tokens remain deterministic on
+    # (table, date, hour) alone.
+    _MIGRATION_NONCE = event.get("anchor") or None
     _bedrock_pricing_map = None
     _bedrock_pricing_unavailable = False
     _stack_tree_cache = None
@@ -226,6 +249,21 @@ def handler(event: Dict[str, Any], _context: Any) -> Dict[str, Any]:
     anchor = _parse_anchor_time(event)
     logger.info(f"Rollup Lambda invoked with mode={mode!r} anchor={anchor.isoformat()}")
 
+    # F4 fix: scheduled cron modes defer to the migration state machine.
+    # ``hourly`` / ``daily`` / ``reconcile`` all touch rollup partitions
+    # that the migration's own tasks are actively repopulating; without
+    # this gate the two would race, each probe the empty post-purge
+    # partition, each INSERT, and duplicate every affected row's
+    # ``sum_cost`` / ``n_docs`` / ``sum_pages``. State-machine task modes
+    # (``backfill``, ``backfill_daily_range``, ``purge_rollup_prefixes``,
+    # etc.) bypass the gate — they ARE the migration.
+    if mode in ("hourly", "daily", "reconcile") and _migration_in_progress():
+        logger.info(
+            "mode=%s: migration marker=in_progress → skipping fire. "
+            "The next scheduled fire after WriteCompletedMarker picks it up.",
+            mode,
+        )
+        return {"mode": mode, "skipped": "migration_in_progress"}
     if mode == "hourly":
         return _run_hourly(anchor)
     if mode == "daily":
@@ -240,20 +278,10 @@ def handler(event: Dict[str, Any], _context: Any) -> Dict[str, Any]:
         # own — see the arms-restriction note in _run_backfill's docstring). See
         # docs/reporting-sql-layer.md §10 Track D.
         #
-        # F2 fix: when the caller passes ``anchor`` (state-machine's
-        # BackfillChunk does, reconciler does not), that anchor becomes
-        # this invocation's migration nonce and gets folded into every
-        # ``_idempotency_key`` for the duration of the invocation. Two
-        # migration state-machine executions produce DIFFERENT anchors,
-        # so their post-purge re-INSERTs generate different ClientRequestTokens
-        # and Athena treats them as fresh submissions instead of
-        # returning the prior execution's cached (now-stale, since the
-        # parquet was purged) success. Within a single execution's
-        # per-chunk retries, the anchor is stable, so intra-execution
-        # retries still dedup correctly. ``global _MIGRATION_NONCE``
-        # already declared at the top of ``handler`` — Python function
-        # scope covers the whole body.
-        _MIGRATION_NONCE = event.get("anchor") or None
+        # The migration nonce that folds this invocation's re-INSERTs
+        # into a fresh ClientRequestToken (post-purge) is set above the
+        # mode dispatch — see the block-comment there. Applies to
+        # ``backfill_daily_range`` as well.
         start_raw = event.get("start")
         end_raw = event.get("end")
         if not (start_raw and end_raw):
@@ -436,6 +464,9 @@ def _run_hourly(anchor: Optional[datetime] = None) -> Dict[str, Any]:
     by any metering-side raise. If ANY rollup raises, this function
     re-raises AFTER all three have been attempted, so async retry can
     replay whichever ones failed — the successful writes are idempotent.
+
+    Deferral while a migration is running is enforced by the mode
+    dispatch in ``handler`` — see ``_migration_in_progress``.
     """
     target_date, target_hour = _previous_hour(anchor)
     logger.info(f"Hourly rollup targeting date={target_date} hour={target_hour}")
@@ -2466,6 +2497,63 @@ def _run_backfill_daily_range(anchor: datetime, days: int) -> Dict[str, Any]:
     return results
 
 
+def _migration_in_progress() -> bool:
+    """Return True iff the SSM migration marker records ``state=in_progress``.
+
+    Reconciler + hourly cron consult this before touching any rollup
+    partition. Both scan the trailing 24 h window; the migration state
+    machine scans the retention window (default 30 d). Where those
+    overlap — and they always overlap the last 24 h — the reconciler's
+    nonce-free ``ClientRequestToken`` (``_MIGRATION_NONCE = None`` for
+    scheduled cron) differs from the migration chunks' nonce-bearing
+    tokens, so Athena's 24 h dedup cannot help. Both probe the empty
+    post-purge partition, both see missing parquet, both INSERT — the
+    result is duplicated ``sum_cost`` / ``n_docs`` / ``sum_pages`` for
+    every overlapping hour, propagated into the daily rollups, with no
+    detection surface.
+
+    The migration state machine's WriteInProgressMarker Task writes the
+    marker BEFORE MigrateChunks fires, and its WriteCompletedMarker
+    Task clears it, so gating on ``state=in_progress`` closes the race
+    at both ends without a distributed lock. The check is one
+    ``ssm:GetParameter`` (~10 ms, already in the rollup Lambda's IAM
+    policy) — cheap enough to run on every hourly / reconciler fire.
+
+    Fails OPEN on a read error: if SSM is unreachable, the scheduled
+    rollup runs. The alternative (fail closed) would silently disable
+    the reconciler for the duration of an SSM outage, which is worse
+    than the race the check exists to prevent — the migration itself
+    runs on the same SSM.
+    """
+    try:
+        marker_name = _migration_marker_name()
+    except (RuntimeError, ValueError):
+        # STACK_NAME env unset (bare unit-test invocation) or marker
+        # name derivation failed — no marker to consult, no gate.
+        return False
+    try:
+        ssm_client = boto3.client("ssm")
+        response = ssm_client.get_parameter(Name=marker_name)
+        value = response.get("Parameter", {}).get("Value", "") or ""
+    except Exception as exc:
+        logger.warning(
+            "Migration-marker probe failed (%s); proceeding without gate. "
+            "Underlying rollup remains idempotent, so a duplicated INSERT "
+            "requires BOTH this probe AND the migration state machine's "
+            "own marker writes to fail.",
+            exc,
+        )
+        return False
+    # Marker payload is ``;``-delimited ``key=value`` segments; match
+    # ``state=in_progress`` as a delimited token so ``state=in_progress_XYZ``
+    # is not treated as a match.
+    for segment in value.split(";"):
+        segment = segment.strip()
+        if segment == "state=in_progress":
+            return True
+    return False
+
+
 def _run_reconcile(anchor: datetime) -> Dict[str, Any]:
     """Re-run the four per-document hourly rollups across the trailing
     24 h to fill in gaps left by missed schedules.
@@ -2483,6 +2571,9 @@ def _run_reconcile(anchor: datetime) -> Dict[str, Any]:
     current-hour-top)`` — i.e. the previous fully-sealed hour. The
     reconciler never chases the CURRENT hour — which is by definition
     still in flight when this runs at :35 of the hour.
+
+    Deferral while a migration is running is enforced by the mode
+    dispatch in ``handler`` — see ``_migration_in_progress``.
     """
     # ``end`` is the exclusive upper bound of the half-open range passed
     # to ``_run_backfill``: the last hour written is the one immediately

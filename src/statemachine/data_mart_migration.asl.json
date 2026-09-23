@@ -4,7 +4,7 @@
   "States": {
     "CheckMarker": {
       "Type": "Task",
-      "Comment": "Read the SSM migration marker and return a routing decision (short_circuit | skip_purge | full_flow). Compares marker against BOTH days AND version — a future MigrationVersion bump for a new schema change must NOT short-circuit against a completed marker from the prior version. `_check_marker_state` treats a marker with NO `version=` segment (pre-versioning) OR a DIFFERENT version string as a MISMATCH and routes to full flow (destructive InitialPurge + re-migration). That is the intended behaviour — silent-accept of an unversioned marker would let a schema-widening deploy short-circuit against completed rollup partitions from the earlier schema and leave the customer's rollup tables at the old grain. An earlier version of this comment described the pre-versioning case as `treated as matching`; that was incorrect.",
+      "Comment": "Read the SSM migration marker and return a routing decision (short_circuit | skip_purge | full_flow). Compares marker against BOTH days AND version — a future MigrationVersion bump for a new schema change must NOT short-circuit against a completed marker from the prior version. `_check_marker_state` treats a marker with NO `version=` segment (pre-versioning) OR a DIFFERENT version string as a MISMATCH and routes to full flow (destructive InitialPurge + re-migration). That is the intended behaviour — silent-accept of an unversioned marker would let a schema-widening deploy short-circuit against completed rollup partitions from the earlier schema and leave the customer's rollup tables at the old grain.",
       "Resource": "arn:${Partition}:states:::lambda:invoke",
       "Parameters": {
         "FunctionName": "${DataMartRollupFunctionArn}",
@@ -416,7 +416,7 @@
     },
     "WriteCompletedMarker": {
       "Type": "Task",
-      "Comment": "Migration succeeded end-to-end: write the SSM marker as state=completed so future state-machine invocations short-circuit at CheckMarker. This is the ONLY completion signal customers should watch — CFN UPDATE_COMPLETE fires immediately after the CustomResource dispatcher returns and is decoupled from actual migration completion. Persists `anchor` in the marker so the resume-anchor path is symmetric across both terminal marker writes. Includes 'version' so a future MigrationVersion bump routes to full flow instead of short-circuiting against this one — that IS the intended destructive re-migration path (contrast with an earlier version of this comment that mis-described the version bump as a short-circuit).",
+      "Comment": "Migration succeeded end-to-end: write the SSM marker as state=completed so future state-machine invocations short-circuit at CheckMarker. This is the ONLY completion signal customers should watch — CFN UPDATE_COMPLETE fires immediately after the CustomResource dispatcher returns and is decoupled from actual migration completion. Persists `anchor` in the marker so the resume-anchor path is symmetric across both terminal marker writes. Includes 'version' so a future MigrationVersion bump routes to full flow (destructive InitialPurge + re-migration) instead of short-circuiting against this one — that IS the intended path for a schema-widening bump.",
       "Resource": "arn:${Partition}:states:::lambda:invoke",
       "Parameters": {
         "FunctionName": "${DataMartRollupFunctionArn}",

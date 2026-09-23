@@ -5929,6 +5929,7 @@ Resources:
     # resource missing it.
     DependsOn:
       - SaveReportingDataFunctionV2
+      - MeteringTable
       - MeteringHourlyTable
       - MeteringDailyTable
       - MeteringDocsHourlyTable
@@ -5989,9 +5990,7 @@ Resources:
       #     + re-migration). That is the INTENDED destructive re-migration
       #     path — bump MigrationVersion in this file only when the
       #     rollup Lambda now produces schema/aggregate output the
-      #     existing rows don't reflect. An earlier version of this
-      #     comment described a version bump as short-circuiting; that
-      #     was incorrect and would have been dangerous to rely on.
+      #     existing rows don't reflect.
       # Leaving this 'true' in a shipped template would destructively
       # re-migrate on every version bump — the exact landmine the
       # customer-normal-day short-circuit is designed to prevent.
@@ -6037,7 +6036,7 @@ Resources:
           - CloudWatchLogsLogGroup:
               LogGroupArn: !GetAtt DataMartMigrationStateMachineLogGroup.Arn
       Tracing:
-        Enabled: true
+        Enabled: !If [EnableXRayTracingCondition, true, false]
       DefinitionSubstitutions:
         DataMartRollupFunctionArn: !GetAtt DataMartRollupFunction.Arn
         # GovCloud compatibility: the state machine's ASL uses this
@@ -6192,7 +6191,7 @@ Resources:
       Handler: index.handler
       Timeout: 60
       MemorySize: 128
-      Tracing: Active
+      Tracing: !If [EnableXRayTracingCondition, Active, PassThrough]
       Description: One-shot CFN Custom Resource dispatcher for data-mart rollup schema migration state machine.
       Environment:
         Variables:
@@ -6552,14 +6551,12 @@ Resources:
       # evaluation even at ``EvaluationPeriods=4`` because all 4
       # historical hours are absent by construction. Once the first
       # scheduled invocation records a datapoint, the alarm returns to
-      # OK. Operators receive one alarm→OK pair on every fresh install;
-      # widen the window (which this bump 2→4 does) only mitigates the
-      # LATENCY of the follow-up OK notification, not the fact that
-      # the initial ALARM fires. An earlier version of this comment
-      # claimed the bump removed the pair — that claim was incorrect.
-      # The real fix would need a warmup-aware alarm (Custom::Alarm
-      # that only enables actions after the first data point), which
-      # is out of scope for this template.
+      # OK. Operators receive one ALARM→OK pair on every fresh install;
+      # the four-hour window only mitigates the LATENCY of the follow-up
+      # OK notification, not the fact that the initial ALARM fires. The
+      # real fix would need a warmup-aware alarm (Custom::Alarm that only
+      # enables actions after the first data point), which is out of
+      # scope for this template.
       # Real outages of ≥ 4 h are still caught — and any real outage
       # of that duration is separately visible via the DLQ alarm.
       Period: 3600

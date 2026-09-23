@@ -15,11 +15,12 @@ This runbook covers the `DataMartMigrationStateMachine` that repopulates the fou
 
 **A stack update with a bumped `MigrationVersion`** fires the dispatcher, which starts a state-machine execution. On the state-machine side:
 
-1. **CheckMarker** — Lambda reads the SSM marker `/idp/<stack>/data-mart-rollup/migration-complete` and routes:
-   - `state=completed;days=<current>` → **short-circuit**, migration is a no-op.
-   - `state=in_progress;days=<current>` → **skip purge**, resume backfill from where the prior attempt stopped (HeadObject-skip handles already-written chunks).
-   - Absent / unrecognised / different `days` → **full flow** (purge + backfill from scratch).
-2. **InitialPurge** — deletes every S3 object under the four rollup prefixes.
+1. **CheckMarker** — Lambda reads the SSM marker `/idp/<stack>/data-mart-rollup/migration-complete` and routes on the tuple `(state, days, version, anchor)`:
+   - `state=completed;days=<current>;version=<current>` → **short-circuit**, migration is a no-op.
+   - `state=in_progress;days=<current>;version=<current>` → **skip purge**, resume backfill from where the prior attempt stopped. The state machine's `AdoptMarkerAnchor` state overwrites the caller's anchor with the one persisted in the marker, so the resumed window matches the original run. HeadObject-skip handles already-written chunks.
+   - Absent / unrecognised / different `days` or `version` (including a pre-versioning marker with no `version=` segment) → **full flow** (purge + backfill from scratch).
+1a. **CheckLakeState** — on the full-flow branch only, a one-shot `s3:ListObjectsV2` with `MaxKeys=1` probes whether raw `metering/` is empty. On a fresh install with no documents yet processed, running 720 chunks + the daily backfill against zero rows would take ~20 min of workgroup time and produce no useful state. When `is_empty=true` the state machine skips straight to WriteCompletedMarker.
+2. **InitialPurge** — deletes S3 objects under the four rollup prefixes, **scoped to `date=` partitions inside `[anchor - days, anchor]`** — the same window the migration is about to repopulate. Objects outside that window are left in place, so a stack that has been running longer than the migration window (default 30 d; retention default 365 d) keeps its older rollup aggregates.
 3. **WriteInProgressMarker** — writes `state=in_progress` BEFORE any chunk runs. Load-bearing: a state-machine restart mid-execution reads this and skips the purge, preserving prior chunk writes.
 4. **PlanChunks** — computes `days ÷ chunk_hours` chunk ranges (30 ÷ 1 = 720 chunks by default).
 5. **MigrateChunks (Map, MaxConcurrency=8)** — each chunk invokes the rollup Lambda in `mode: backfill` over its slice of hours with `arms=["metering_hourly", "metering_docs_hourly"]` (the two schema-widened tables; `control_plane_hourly` and `data_plane_lambda_hourly` are populated by the routine `:05` cron and skipped here). 8 chunks fan out in parallel against the rollup Lambda's `ReservedConcurrentExecutions: 12` (8 migration chunks + 3 for scheduled crons + 1 headroom). Total concurrent Athena queries = 8 chunks × 2 arms = 16, deliberately under Athena's default 20-DML-per-workgroup ceiling. SFN retries each chunk up to 3 times on `Lambda.ServiceException` / `Lambda.AWSLambdaException` / `States.Timeout` with exponential backoff. On idle load a 720-hour migration finishes in ~20-30 min.
@@ -38,15 +39,18 @@ This runbook covers the `DataMartMigrationStateMachine` that repopulates the fou
 | SFN execution status | Step Functions console, state machine `<stack>-data-mart-migration` | Per-execution status: RUNNING, SUCCEEDED, FAILED, TIMED_OUT, ABORTED. |
 | Alarm `<stack>-data-mart-migration-failure` | CloudWatch Alarms | Fires on any FAILED/TIMED_OUT/ABORTED SFN execution. Points to this runbook. |
 | Alarm `<stack>-data-mart-rollup-dlq-depth` | CloudWatch Alarms | Fires on Lambda DLQ arrivals. Unrelated to the state machine — covers scheduled hourly / reconciler / daily rollup failures. |
-| Alarm `<stack>-data-mart-rollup-absence` | CloudWatch Alarms | Fires if the rollup Lambda records zero invocations for 2 hours. Unrelated to migration state. |
+| Alarm `<stack>-data-mart-rollup-absence` | CloudWatch Alarms | Fires if the rollup Lambda records zero invocations for four consecutive 1-hour windows. Unrelated to migration state. |
 
 ### Marker states
+
+Marker payload is `;`-delimited `key=value` segments. The **whole tuple** `(state, days, version, anchor)` decides routing; matching on `days` alone would short-circuit a schema-widening `MigrationVersion` bump that kept the same window. A marker that pre-dates version support (has no `version=` segment) is treated as a mismatch and routes to the full flow — deliberate, so a legacy marker cannot silently satisfy a future schema-widening bump.
 
 | SSM marker value | Meaning |
 |---|---|
 | ParameterNotFound | No migration has ever run, or `ForceFresh=true` just cleared it. Next stack update will run the full flow. |
-| `days=N;state=in_progress;started_at=<ts>` | Migration purged the rollup S3 data and is running (or was interrupted). A restart of the state machine will SKIP the purge and resume backfill — non-destructive. |
-| `days=N;state=completed;completed_at=<ts>` | Migration finished cleanly. Rollup tables are populated at the widened grain. |
+| `days=N;version=vX;state=in_progress;anchor=<iso>;started_at=<ts>` | Migration purged the scoped rollup partitions and is running (or was interrupted). A restart of the state machine will SKIP the purge and resume backfill against the same anchor — non-destructive. |
+| `days=N;version=vX;state=completed;anchor=<iso>;completed_at=<ts>` | Migration finished cleanly. Rollup tables are populated at the widened grain. |
+| Any of the above with a different `days`, `version`, or missing `version=` segment | Mismatch → routes to full flow on the next migration fire. |
 
 ## Runbook actions
 

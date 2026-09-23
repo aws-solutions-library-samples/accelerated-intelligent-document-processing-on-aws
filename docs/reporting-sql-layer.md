@@ -687,11 +687,17 @@ dependency-sensitive; tracks are independent.
   where the EventBridge schedule was dropped from the stack in a
   redeploy — a real regression class observed on a development stack;
   the DLQ alarm only fires when invocations *fail*, not when they
-  *never happen*. The 4-hour window (up from 2 earlier) is what
-  eliminates the fresh-deploy cold-start noise — see the alarm's own
-  block comment for the rationale.
-  `TreatMissingData: breaching` because a Lambda with zero invocations
-  emits no `Invocations` sample at all.
+  *never happen*. `TreatMissingData: breaching` because a Lambda with
+  zero invocations emits no `Invocations` sample at all.
+  ⚠️ **Fresh-install noise is unavoidable, not eliminated.** CloudWatch
+  treats an alarm whose entire evaluation range is missing as breaching
+  regardless of `EvaluationPeriods` / `DatapointsToAlarm`, so a new
+  alarm created at t=0 moves to ALARM on its first evaluation even at
+  `EvaluationPeriods=4`. Operators receive one ALARM→OK pair on every
+  fresh install; the four-hour window only mitigates the *latency* of
+  the follow-up OK notification. Real outages of ≥ 4 h are still caught
+  — and any real outage of that duration is separately visible via the
+  DLQ alarm. See the alarm's own block comment for the same rationale.
 - **Rollup-Lambda layer swap-in-place guard.** Both the rollup and the
   migration Lambdas now use `IDPCommonReportingLayer` for pyarrow +
   `idp_common`. External customers install this feature via

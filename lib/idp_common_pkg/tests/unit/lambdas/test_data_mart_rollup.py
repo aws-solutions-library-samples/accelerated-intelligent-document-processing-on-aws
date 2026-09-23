@@ -18,7 +18,7 @@ Coverage focus:
 
 import importlib.util
 import os
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -3642,3 +3642,454 @@ class TestReconcileMode:
         bf.assert_called_once()
         # Reconciler returns whatever backfill returned — no wrapping.
         assert result["hours_attempted"] == 24
+
+
+@pytest.mark.unit
+class TestDocumentClassInRollupSQL:
+    """Grain-widening pins: every rollup INSERT must include the
+    ``document_class`` column and GROUP BY it, with a
+    ``COALESCE(m.document_class, dc.document_class, 'unknown')`` that
+    falls back through the document_sections_* JOIN to a sentinel.
+
+    The four rollup SQLs sit in four separate functions and the same
+    column order is asserted positionally against the Glue table's
+    column list — the invariant is worth pinning per-table so a future
+    refactor that reorders one column in one INSERT fails here.
+    """
+
+    def _capture_sql(self, rollup, fn_name, *args, **kwargs):
+        captured = []
+        with (
+            patch.object(rollup, "_partition_already_written", return_value=False),
+            patch.object(
+                rollup,
+                "_run_athena",
+                side_effect=lambda sql, **_kw: captured.append(sql) or "qid-x",
+            ),
+            patch.object(rollup, "_partition_produced_rows", return_value=True),
+        ):
+            getattr(rollup, fn_name)(*args, **kwargs)
+        assert captured, f"{fn_name} did not submit an Athena query"
+        return captured[0]
+
+    def test_metering_hourly_insert_names_document_class_in_column_list(self, rollup):
+        sql = self._capture_sql(rollup, "_rollup_metering_hourly", "2026-09-22", "13")
+        assert "document_class" in sql, (
+            "metering_hourly INSERT must include the document_class "
+            "column — the four rollup tables were widened to (config_version, "
+            "document_class, service_api, unit) in this MR."
+        )
+        # The COALESCE fallback is what makes historical NULLs still
+        # produce a resolved class via the document_sections_* JOIN.
+        assert "COALESCE(m.document_class" in sql, (
+            "metering_hourly must use COALESCE(m.document_class, "
+            "dc.document_class, 'unknown') so a NULL from pre-widening "
+            "raw metering rows resolves via the doc_class CTE fallback."
+        )
+
+    def _assert_group_by_covers_document_class(self, sql, group_by_position: int):
+        """The SQL uses positional GROUP BY (``GROUP BY 1, 2, 3, ...``)
+        rather than column names, so the check is: is
+        ``document_class`` at the expected position in the SELECT list
+        AND is that position present in the GROUP BY?
+        """
+        import re
+
+        # Find the position of the ``document_class`` column in the
+        # OUTER SELECT list. The hourly / docs_hourly INSERT wraps its
+        # SELECT in ``WITH doc_class AS (SELECT ...)``, so a naive
+        # ``SELECT ... FROM`` regex matches the CTE's inner SELECT and
+        # the outer FROM together. Strip the WITH clause by walking
+        # paren depth up to the CTE's closing ``)`` at depth 0, then
+        # match the outer SELECT in what remains.
+        outer_sql = sql
+        with_match = re.search(r"\bWITH\b\s+\w+\s+AS\s+\(", sql, re.IGNORECASE)
+        if with_match:
+            depth = 1
+            i = with_match.end()
+            while i < len(sql) and depth > 0:
+                if sql[i] == "(":
+                    depth += 1
+                elif sql[i] == ")":
+                    depth -= 1
+                i += 1
+            outer_sql = sql[i:]
+        select_block = re.search(
+            r"SELECT\s+(.*?)\s+FROM\b",
+            outer_sql,
+            re.IGNORECASE | re.DOTALL,
+        )
+        assert select_block, (
+            f"outer SELECT ... FROM not found in SQL (after stripping WITH):\n{outer_sql}"
+        )
+        # Split on comma at outer paren depth — the aggregates are simple
+        # enough here that a naive split is safe.
+        depth = 0
+        items = [""]
+        for ch in select_block.group(1):
+            if ch == "(":
+                depth += 1
+                items[-1] += ch
+            elif ch == ")":
+                depth -= 1
+                items[-1] += ch
+            elif ch == "," and depth == 0:
+                items.append("")
+            else:
+                items[-1] += ch
+        # Match either ``... AS document_class`` (metering_hourly /
+        # metering_docs_hourly INSERT from raw metering) or bare
+        # ``document_class`` (metering_daily / metering_docs_daily
+        # INSERT from an already-widened hourly rollup — the column
+        # already carries the right name).
+        positions = [
+            i + 1
+            for i, item in enumerate(items)
+            if re.search(
+                r"(?:\bAS\s+document_class\b|(?<!\.)\bdocument_class\b\s*$)",
+                item.strip(),
+                re.IGNORECASE,
+            )
+        ]
+        assert positions, (
+            f"document_class column not found in SELECT list — SQL:\n{sql}"
+        )
+        assert positions[0] == group_by_position, (
+            f"document_class expected at SELECT position "
+            f"{group_by_position}, got {positions[0]}"
+        )
+        # Now confirm the GROUP BY covers that position.
+        group_match = re.search(
+            r"GROUP\s+BY\s+(.*?)(?:$|\bORDER\b|\bLIMIT\b|\bHAVING\b|;)",
+            sql,
+            re.IGNORECASE | re.DOTALL,
+        )
+        assert group_match, f"GROUP BY not found in SQL:\n{sql}"
+        group_by = group_match.group(1)
+        grouped_positions = {int(n) for n in re.findall(r"\b\d+\b", group_by)}
+        assert group_by_position in grouped_positions, (
+            f"GROUP BY {group_by} does not cover document_class position "
+            f"{group_by_position}. Without it, every class folds into "
+            f"one row per (config_version, service_api, unit) and hides "
+            f"the grain the widening is designed to expose."
+        )
+
+    def test_metering_hourly_group_by_widens_to_include_document_class(self, rollup):
+        sql = self._capture_sql(rollup, "_rollup_metering_hourly", "2026-09-22", "13")
+        # SELECT list: hour_ts(1), config_version(2), document_class(3),
+        # service_api(4), unit(5), SUM(...)(6), SUM(...)(7), ...
+        self._assert_group_by_covers_document_class(sql, group_by_position=3)
+
+    def test_metering_docs_hourly_insert_names_document_class(self, rollup):
+        sql = self._capture_sql(
+            rollup, "_rollup_metering_docs_hourly", "2026-09-22", "13"
+        )
+        assert "document_class" in sql
+        assert "COALESCE(m.document_class" in sql, (
+            "metering_docs_hourly must use the same fallback COALESCE — "
+            "otherwise per-class doc counts on historical rows would "
+            "route to the null bucket."
+        )
+        # SELECT list: hour_ts(1), config_version(2), document_class(3),
+        # then aggregate columns.
+        self._assert_group_by_covers_document_class(sql, group_by_position=3)
+
+    def test_metering_daily_insert_names_document_class(self, rollup):
+        with (
+            patch.object(rollup, "_partition_already_written", return_value=False),
+            patch.object(
+                rollup, "_require_hourly_matches_raw_metering", return_value=None
+            ),
+            patch.object(rollup, "_partition_produced_rows", return_value=True),
+        ):
+            captured = []
+            with patch.object(
+                rollup,
+                "_run_athena",
+                side_effect=lambda sql, **_kw: captured.append(sql) or "qid-x",
+            ):
+                rollup._run_daily(datetime(2026, 9, 22, 0, 15, 0, tzinfo=timezone.utc))
+            # _run_daily submits TWO INSERTs — metering_daily first,
+            # metering_docs_daily second. Both must carry document_class.
+            assert len(captured) >= 2, (
+                "_run_daily must submit both metering_daily and "
+                "metering_docs_daily INSERTs"
+            )
+            for sql in captured[:2]:
+                assert "document_class" in sql, (
+                    "daily rollup INSERT missing document_class column — "
+                    "the widened grain must propagate from hourly to daily."
+                )
+                # metering_daily / metering_docs_daily SELECT lists both
+                # have document_class at position 3 (after day + config_version).
+                self._assert_group_by_covers_document_class(sql, group_by_position=3)
+
+
+@pytest.mark.unit
+class TestEmptyPartitionSentinel:
+    """F11 pin: the sentinel + TTL machinery that stops the reconciler
+    from re-attempting 0-row partitions.
+
+    These behaviours had no direct coverage — the reviewer flagged them
+    as ``_partition_marked_empty`` / ``_mark_partition_empty`` /
+    ``_partition_produced_rows`` / ``_EMPTY_SENTINEL_TTL_SECONDS``. Each
+    is a small S3 call, but each is load-bearing for the "stop looping
+    on empty" invariant.
+    """
+
+    def test_ttl_is_less_than_reconciler_scan_window(self, rollup):
+        # The sentinel TTL must be < the reconciler's 24 h trailing
+        # scope, so every empty hour gets at least one re-check pass
+        # while it is still in scope. See the F3 note in the block
+        # comment above _EMPTY_SENTINEL_TTL_SECONDS.
+        assert rollup._EMPTY_SENTINEL_TTL_SECONDS < 24 * 3600, (
+            "empty-partition sentinel TTL must be strictly less than "
+            "the reconciler's 24 h window or expired hours fall out of "
+            "scope before they can be re-probed"
+        )
+
+    def test_partition_marked_empty_returns_false_when_head_object_404(self, rollup):
+        # ClientError with a 404-family code → sentinel absent → False.
+        from botocore.exceptions import ClientError
+
+        rollup.s3_client = MagicMock()
+        rollup.s3_client.head_object.side_effect = ClientError(
+            {"Error": {"Code": "404"}}, "HeadObject"
+        )
+        assert (
+            rollup._partition_marked_empty("metering_hourly", "2026-09-22", "13")
+            is False
+        )
+
+    def test_partition_marked_empty_returns_true_within_ttl(self, rollup):
+        # LastModified 1 h ago (well inside the 12 h TTL) → sentinel is
+        # fresh → True.
+        rollup.s3_client = MagicMock()
+        rollup.s3_client.head_object.return_value = {
+            "LastModified": datetime.now(timezone.utc) - timedelta(hours=1)
+        }
+        assert (
+            rollup._partition_marked_empty("metering_hourly", "2026-09-22", "13")
+            is True
+        )
+
+    def test_partition_marked_empty_returns_false_past_ttl(self, rollup):
+        # LastModified 13 h ago (past the 12 h TTL) → treat as expired
+        # → False, so the reconciler re-checks for late data.
+        rollup.s3_client = MagicMock()
+        rollup.s3_client.head_object.return_value = {
+            "LastModified": datetime.now(timezone.utc) - timedelta(hours=13)
+        }
+        assert (
+            rollup._partition_marked_empty("metering_hourly", "2026-09-22", "13")
+            is False
+        )
+
+    def test_mark_partition_empty_writes_zero_byte_sentinel(self, rollup):
+        rollup.s3_client = MagicMock()
+        rollup._mark_partition_empty("metering_hourly", "2026-09-22", "13")
+        rollup.s3_client.put_object.assert_called_once()
+        kwargs = rollup.s3_client.put_object.call_args.kwargs
+        assert kwargs["Key"].endswith("metering_hourly/date=2026-09-22/hour=13/_empty")
+        assert kwargs["Body"] == b""
+
+    def test_mark_partition_empty_daily_variant_omits_hour_segment(self, rollup):
+        rollup.s3_client = MagicMock()
+        rollup._mark_partition_empty("metering_daily", "2026-09-22")
+        kwargs = rollup.s3_client.put_object.call_args.kwargs
+        assert kwargs["Key"].endswith("metering_daily/date=2026-09-22/_empty")
+
+    def test_partition_produced_rows_returns_false_on_sentinel_only(self, rollup):
+        # Only the ``_empty`` sentinel present → no data parquet → False.
+        rollup.s3_client = MagicMock()
+        rollup.s3_client.list_objects_v2.return_value = {
+            "Contents": [{"Key": "metering_hourly/date=2026-09-22/hour=13/_empty"}]
+        }
+        assert (
+            rollup._partition_produced_rows("metering_hourly", "2026-09-22", "13")
+            is False
+        )
+
+    def test_partition_produced_rows_returns_true_when_parquet_present(self, rollup):
+        rollup.s3_client = MagicMock()
+        rollup.s3_client.list_objects_v2.return_value = {
+            "Contents": [
+                {"Key": "metering_hourly/date=2026-09-22/hour=13/abcd-1234.parquet"}
+            ]
+        }
+        assert (
+            rollup._partition_produced_rows("metering_hourly", "2026-09-22", "13")
+            is True
+        )
+
+
+@pytest.mark.unit
+class TestMigrationNonceFolding:
+    """F11 pin: ``_MIGRATION_NONCE`` folded into ``_idempotency_key`` so
+    a post-purge re-INSERT generates a fresh Athena ClientRequestToken.
+
+    Two full-flow migration executions inside Athena's 24 h dedup
+    window would otherwise both hash the same (table, date, hour) →
+    the second execution reuses the first's cached SUCCEEDED
+    QueryExecutionId → no parquet lands. The nonce is what breaks that
+    tie.
+    """
+
+    def test_idempotency_key_stable_when_no_nonce(self, rollup):
+        rollup._MIGRATION_NONCE = None
+        k1 = rollup._idempotency_key("metering_hourly", "2026-09-22", "13")
+        k2 = rollup._idempotency_key("metering_hourly", "2026-09-22", "13")
+        assert k1 == k2, (
+            "no-nonce keys must be stable — this is what makes routine "
+            "hourly / reconciler retries dedup against Athena's cache"
+        )
+
+    def test_idempotency_key_diverges_between_nonces(self, rollup):
+        rollup._MIGRATION_NONCE = "2026-09-22T14:00:00Z"
+        k1 = rollup._idempotency_key("metering_hourly", "2026-09-22", "13")
+        rollup._MIGRATION_NONCE = "2026-09-22T15:00:00Z"
+        k2 = rollup._idempotency_key("metering_hourly", "2026-09-22", "13")
+        assert k1 != k2, (
+            "two migration executions with different anchors must "
+            "generate different ClientRequestTokens for the same "
+            "partition — otherwise Athena's 24 h dedup cache returns "
+            "the first execution's cached SUCCEEDED for the second's "
+            "post-purge re-INSERT and the parquet never lands"
+        )
+
+    def test_nonce_present_diverges_from_nonce_absent(self, rollup):
+        rollup._MIGRATION_NONCE = None
+        k_none = rollup._idempotency_key("metering_hourly", "2026-09-22", "13")
+        rollup._MIGRATION_NONCE = "2026-09-22T14:00:00Z"
+        k_nonce = rollup._idempotency_key("metering_hourly", "2026-09-22", "13")
+        assert k_none != k_nonce, (
+            "a nonced migration key must differ from the routine "
+            "cron's no-nonce key — otherwise a reconciler running "
+            "against the same partition mid-migration would collide"
+        )
+
+
+@pytest.mark.unit
+class TestCheckLakeState:
+    """F11 pin: ``_check_lake_state`` short-circuits the full-flow
+    branch on a fresh install (empty raw metering). Runs 720 chunks +
+    daily backfill against zero rows otherwise — ~20 min of workgroup
+    time producing no useful state."""
+
+    def test_returns_is_empty_true_when_no_metering_objects(self, rollup):
+        rollup.s3_client = MagicMock()
+        rollup.s3_client.list_objects_v2.return_value = {"KeyCount": 0}
+        result = rollup._check_lake_state()
+        assert result.get("is_empty") is True
+
+    def test_returns_is_empty_false_when_metering_has_data(self, rollup):
+        rollup.s3_client = MagicMock()
+        rollup.s3_client.list_objects_v2.return_value = {
+            "KeyCount": 1,
+            "Contents": [{"Key": "metering/date=2026-09-22/hour=13/abcd.parquet"}],
+        }
+        result = rollup._check_lake_state()
+        assert result.get("is_empty") is False
+
+
+@pytest.mark.unit
+class TestMigrationInProgressGate:
+    """F4 pin: scheduled cron modes (``hourly`` / ``daily`` / ``reconcile``)
+    must defer while the SSM migration marker records
+    ``state=in_progress``. Without this gate the reconciler + migration
+    chunks would race on the same post-purge partition — different
+    ClientRequestTokens (nonce vs no-nonce) mean Athena's dedup cannot
+    help, and both would INSERT, duplicating every affected row's
+    ``sum_cost`` / ``n_docs`` / ``sum_pages``."""
+
+    def _stub_ssm(self, rollup, marker_value):
+        # Patch _migration_marker_name to a stable name and stub the
+        # ssm_client.get_parameter response.
+        rollup._migration_marker_name = lambda: "/idp/test-stack/marker"
+        # ``_migration_in_progress`` creates the client with
+        # ``boto3.client("ssm")`` at call time, so patch that.
+        ssm = MagicMock()
+        if marker_value is None:
+            from botocore.exceptions import ClientError
+
+            ssm.get_parameter.side_effect = ClientError(
+                {"Error": {"Code": "ParameterNotFound"}}, "GetParameter"
+            )
+        else:
+            ssm.get_parameter.return_value = {"Parameter": {"Value": marker_value}}
+        return patch("boto3.client", return_value=ssm)
+
+    def test_gate_blocks_hourly_when_marker_in_progress(self, rollup):
+        rollup._migration_marker_name = lambda: "/idp/test-stack/marker"
+        with patch.object(rollup, "_migration_in_progress", return_value=True):
+            with patch.object(rollup, "_run_hourly") as run_hourly:
+                result = rollup.handler({"mode": "hourly"}, MagicMock())
+        run_hourly.assert_not_called()
+        assert result.get("skipped") == "migration_in_progress"
+        assert result.get("mode") == "hourly"
+
+    def test_gate_blocks_daily_when_marker_in_progress(self, rollup):
+        with patch.object(rollup, "_migration_in_progress", return_value=True):
+            with patch.object(rollup, "_run_daily") as run_daily:
+                result = rollup.handler({"mode": "daily"}, MagicMock())
+        run_daily.assert_not_called()
+        assert result.get("skipped") == "migration_in_progress"
+
+    def test_gate_blocks_reconcile_when_marker_in_progress(self, rollup):
+        with patch.object(rollup, "_migration_in_progress", return_value=True):
+            with patch.object(rollup, "_run_reconcile") as run_reconcile:
+                result = rollup.handler({"mode": "reconcile"}, MagicMock())
+        run_reconcile.assert_not_called()
+        assert result.get("skipped") == "migration_in_progress"
+
+    def test_gate_allows_hourly_when_marker_completed(self, rollup):
+        # Completed marker → migration is done → cron runs normally.
+        with patch.object(rollup, "_migration_in_progress", return_value=False):
+            with patch.object(
+                rollup, "_run_hourly", return_value={"mode": "hourly", "ok": True}
+            ) as run_hourly:
+                result = rollup.handler({"mode": "hourly"}, MagicMock())
+        run_hourly.assert_called_once()
+        assert result.get("ok") is True
+
+    def test_gate_does_not_block_state_machine_task_modes(self, rollup):
+        # ``backfill``, ``backfill_daily_range``, ``purge_rollup_prefixes``,
+        # etc. ARE the migration — they must bypass the in-progress gate
+        # or the state machine would deadlock against its own marker.
+        with patch.object(rollup, "_migration_in_progress", return_value=True):
+            with patch.object(
+                rollup,
+                "_run_backfill_daily_range",
+                return_value={"mode": "backfill_daily_range"},
+            ) as bdr:
+                result = rollup.handler(
+                    {
+                        "mode": "backfill_daily_range",
+                        "days": 30,
+                        "anchor": "2026-09-22T14:00:00Z",
+                    },
+                    MagicMock(),
+                )
+        bdr.assert_called_once()
+        assert result.get("mode") == "backfill_daily_range"
+
+    def test_migration_in_progress_parses_semicolon_delimited_marker(self, rollup):
+        # A well-formed marker string with state=in_progress should
+        # return True from _migration_in_progress; state=completed False.
+        rollup._migration_marker_name = lambda: "/idp/test-stack/marker"
+        ssm = MagicMock()
+        ssm.get_parameter.return_value = {
+            "Parameter": {
+                "Value": "days=30;version=v1;state=in_progress;anchor=2026-09-22T14:00:00Z"
+            }
+        }
+        with patch("boto3.client", return_value=ssm):
+            assert rollup._migration_in_progress() is True
+
+        ssm.get_parameter.return_value = {
+            "Parameter": {
+                "Value": "days=30;version=v1;state=completed;anchor=2026-09-22T14:00:00Z"
+            }
+        }
+        with patch("boto3.client", return_value=ssm):
+            assert rollup._migration_in_progress() is False
