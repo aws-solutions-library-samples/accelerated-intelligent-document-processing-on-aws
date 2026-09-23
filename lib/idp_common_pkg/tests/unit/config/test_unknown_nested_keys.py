@@ -71,13 +71,39 @@ class Reached(typing.NamedTuple):
     steps: tuple[tuple[str, str], ...]
 
 
-def _reachable_models() -> list[Reached]:
-    """Walk ``IDPConfig``'s annotations and record every model with one route to it.
+def _target(annotation) -> tuple[str | None, type[BaseModel] | None]:
+    """Where a field's value carries a nested model — read here, independently.
 
-    Deliberately the same traversal the production walker uses, via the same
-    ``_nested_model_target`` — a second implementation here would be a second thing
-    to keep in step, and the property under test is about the tree the walker sees.
+    ⚠️ **A second implementation on purpose, and the reason is measured.** Deriving
+    the universe below from the production ``_nested_model_target`` made these tests
+    move *with* a mutation of it: changing that function to treat every
+    ``Dict[str, Any]`` as a model subtree emptied the free-form parametrisation
+    instead of failing it, and the run stayed green. A test whose expectations are
+    computed by the code under test cannot see a change in that code.
+
+    ``test_the_production_traversal_agrees_with_an_independent_walk`` compares the two
+    field by field, so the duplication is pinned rather than left to drift.
     """
+    while hasattr(annotation, "__metadata__"):  # Annotated[T, ...]
+        annotation = typing.get_args(annotation)[0]
+    if isinstance(annotation, type) and issubclass(annotation, BaseModel):
+        return "model", annotation
+    origin = typing.get_origin(annotation)
+    args = [a for a in typing.get_args(annotation) if a is not type(None)]
+    if origin is typing.Union:
+        models = [r for r in (_target(a) for a in args) if r[1] is not None]
+        return models[0] if len(models) == 1 else (None, None)
+    if origin in (list, set, frozenset, tuple) and len(args) == 1:
+        shape, model = _target(args[0])
+        return ("list", model) if shape == "model" else (None, None)
+    if origin is dict and len(args) == 2:
+        shape, model = _target(args[1])
+        return ("map", model) if shape == "model" else (None, None)
+    return None, None
+
+
+def _reachable_models() -> list[Reached]:
+    """Every model the config tree reaches, with one route to each."""
     found: list[Reached] = []
     seen: set[type[BaseModel]] = set()
 
@@ -87,7 +113,7 @@ def _reachable_models() -> list[Reached]:
         seen.add(model)
         found.append(Reached(model, path, steps))
         for name, field in model.model_fields.items():
-            shape, nested = models_module._nested_model_target(field.annotation)
+            shape, nested = _target(field.annotation)
             if nested is None:
                 continue
             visit(nested, f"{path}.{name}" if path else name, steps + ((name, shape),))
@@ -146,6 +172,27 @@ def test_the_walk_reaches_the_whole_config_tree():
     assert OPEN_MODELS, "no extra='allow' model was reached; that premise is untested"
 
 
+def test_the_production_traversal_agrees_with_an_independent_walk():
+    """The duplicated resolver above is pinned against the one the report uses.
+
+    Every field in the tree, both answers, compared — so the second implementation
+    cannot drift into describing a different tree than the walk descends, and a change
+    to either that moves where it descends fails here by name instead of quietly
+    resizing the parametrisations below.
+    """
+    disagreements = []
+    for reached in REACHED:
+        for name, field in reached.model.model_fields.items():
+            mine = _target(field.annotation)
+            theirs = models_module._nested_model_target(field.annotation)
+            if mine != theirs:
+                disagreements.append(
+                    f"{reached.model.__name__}.{name}: this file says {mine}, "
+                    f"models._nested_model_target says {theirs}"
+                )
+    assert not disagreements, "\n".join(disagreements)
+
+
 # ---------------------------------------------------------------------------
 # Every model, not the ones that happened to get a test
 # ---------------------------------------------------------------------------
@@ -202,7 +249,7 @@ def _misnesting_cases() -> list[tuple[str, tuple[tuple[str, str], ...], str, str
     cases = []
     for reached in CLOSED_MODELS:
         for name, field in reached.model.model_fields.items():
-            shape, child = models_module._nested_model_target(field.annotation)
+            shape, child = _target(field.annotation)
             if child is None or child.model_config.get("extra") == "allow":
                 continue
             owned = sorted(set(child.model_fields) - set(reached.model.model_fields))
@@ -332,9 +379,6 @@ def _free_form_fields() -> list[tuple[str, tuple[tuple[str, str], ...], str, obj
     out = []
     for reached in REACHED:
         for name, field in reached.model.model_fields.items():
-            _shape, nested = models_module._nested_model_target(field.annotation)
-            if nested is not None:
-                continue
             kind = _free_form_kind(field.annotation)
             if kind is None:
                 continue
@@ -356,7 +400,8 @@ def _free_form_kind(annotation) -> str | None:
     type three ways depending on how it was written and is why a substring match on
     it silently found nothing.
     """
-    annotation = models_module._strip_annotated(annotation)
+    while hasattr(annotation, "__metadata__"):
+        annotation = typing.get_args(annotation)[0]
     origin = typing.get_origin(annotation)
     args = [a for a in typing.get_args(annotation) if a is not type(None)]
     if origin is typing.Union:
@@ -377,9 +422,7 @@ def _owner_of(steps: tuple[tuple[str, str], ...]) -> dict:
     """Required-field placeholders for the model ``steps`` lands in."""
     model: type[BaseModel] = IDPConfig
     for name, _shape in steps:
-        _shape2, nested = models_module._nested_model_target(
-            model.model_fields[name].annotation
-        )
+        _shape2, nested = _target(model.model_fields[name].annotation)
         assert nested is not None
         model = nested
     return _required_placeholders(model)
@@ -441,7 +484,9 @@ def _required_placeholders(model: type[BaseModel]) -> dict:
     for name, field in model.model_fields.items():
         if not field.is_required():
             continue
-        annotation = models_module._strip_annotated(field.annotation)
+        annotation = field.annotation
+        while hasattr(annotation, "__metadata__"):
+            annotation = typing.get_args(annotation)[0]
         out[name] = samples.get(annotation, "placeholder")
     return out
 
