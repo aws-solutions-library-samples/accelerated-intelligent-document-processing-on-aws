@@ -259,10 +259,90 @@ def scanned_files(registry: dict, root: Path = REPO_ROOT) -> list[Path]:
     return sorted(found)
 
 
-def _allowlist_matchers(registry: dict) -> list[tuple[dict, re.Pattern[str]]]:
+def top_level_alternatives(pattern: str) -> list[str]:
+    """Split a regex into its top-level ``|`` alternatives.
+
+    Only the outermost level, because that is the level an exemption is authored
+    at: ``A|B|C`` is three separate claims about three separate lines, while the
+    ``|`` inside ``(has|had|have)`` is one claim about a line that could be phrased
+    three ways.
+
+    Three things have to be tracked to get that right, and each of them occurs in
+    this registry:
+
+    * **escapes** — ``\\|`` is a literal pipe, and a Mermaid edge label pinned as
+      ``\\|\\s*GraphQL Subscription\\s*\\|`` must not be split into three;
+    * **group depth**, as a counter rather than a flag, so nested groups close in
+      the right order;
+    * **character classes**, inside which ``|`` and ``(`` are literal. Nothing here
+      uses one containing a pipe, and it is implemented rather than assumed because
+      silently mis-splitting is the exact failure this accounting exists to catch.
+
+    ``"|".join(top_level_alternatives(p)) == p`` for every pattern, and
+    ``re.search`` of the whole equals ``any`` of the parts, which is what makes
+    per-alternative accounting a faithful decomposition of the gate's own verdict.
+    """
+    parts: list[str] = []
+    current: list[str] = []
+    depth = 0
+    in_class = False
+    index = 0
+    while index < len(pattern):
+        char = pattern[index]
+        if char == "\\" and index + 1 < len(pattern):
+            current.append(char)
+            current.append(pattern[index + 1])
+            index += 2
+            continue
+        if in_class:
+            # A ``]`` in first position is a literal, so it cannot close the class.
+            if char == "]" and current and current[-1] != "[":
+                in_class = False
+            current.append(char)
+        elif char == "[":
+            in_class = True
+            current.append(char)
+        elif char == "(":
+            depth += 1
+            current.append(char)
+        elif char == ")":
+            depth = max(0, depth - 1)
+            current.append(char)
+        elif char == "|" and depth == 0:
+            parts.append("".join(current))
+            current = []
+        else:
+            current.append(char)
+        index += 1
+    parts.append("".join(current))
+    return parts
+
+
+class Alternatives(NamedTuple):
+    """One registry pattern, decomposed for per-alternative accounting."""
+
+    entry: dict
+    matchers: tuple[re.Pattern[str], ...]
+    texts: tuple[str, ...]
+
+
+def _decompose(entry: dict, key: str) -> Alternatives:
+    texts = tuple(top_level_alternatives(entry[key]))
+    return Alternatives(
+        entry=entry,
+        matchers=tuple(re.compile(text, re.IGNORECASE) for text in texts),
+        texts=texts,
+    )
+
+
+def _allowlist_alternatives(registry: dict) -> list[Alternatives]:
+    return [_decompose(entry, "linePattern") for entry in registry.get("allowlist", [])]
+
+
+def marker_alternatives(registry: dict) -> list[Alternatives]:
     return [
-        (entry, re.compile(entry["linePattern"], re.IGNORECASE))
-        for entry in registry.get("allowlist", [])
+        _decompose(marker, "pattern")
+        for marker in registry.get("historicalMarkers", [])
     ]
 
 
@@ -271,6 +351,50 @@ def marker_matchers(registry: dict) -> list[tuple[dict, re.Pattern[str]]]:
         (marker, re.compile(marker["pattern"], re.IGNORECASE))
         for marker in registry.get("historicalMarkers", [])
     ]
+
+
+class StaleAlternative(NamedTuple):
+    """One alternative of one exemption pattern that shielded nothing."""
+
+    surface: str
+    index: int
+    entry: dict
+    alternative: str
+
+    def render(self) -> str:
+        # Allowlist entries name the file they excuse; markers apply tree-wide and
+        # have only their own position to identify them by.
+        where = self.entry.get("path") or f"{self.surface}[{self.index}]"
+        return f"  {self.surface} [{where}]: {self.alternative!r}"
+
+
+class AlternativeUse:
+    """How many mentions each individual alternative shielded during one scan.
+
+    Counted per alternative rather than per entry, because per entry is how a dead
+    fragment hides. An entry was considered live as soon as *any* part of its
+    compiled pattern matched, so an alternative pinned to a sentence that was later
+    rewrapped stopped matching in silence while its siblings kept the entry green —
+    and the line it was written for quietly stopped being excused. The failure then
+    surfaced somewhere else entirely, as unexcused findings in a document nobody had
+    touched deliberately (#1097).
+    """
+
+    def __init__(self) -> None:
+        self.allowlist: dict[tuple[int, int], int] = {}
+        self.markers: dict[tuple[int, int], int] = {}
+
+    def record_allowlist(self, entry_index: int, alt_index: int) -> None:
+        key = (entry_index, alt_index)
+        self.allowlist[key] = self.allowlist.get(key, 0) + 1
+
+    def record_marker(self, entry_index: int, alt_index: int) -> None:
+        key = (entry_index, alt_index)
+        self.markers[key] = self.markers.get(key, 0) + 1
+
+    def live_allowlist_entries(self) -> set[int]:
+        """Entry indices with at least one live alternative."""
+        return {entry for (entry, _), hits in self.allowlist.items() if hits}
 
 
 #: Where one sentence ends and the next begins, for the purpose of deciding which
@@ -428,6 +552,7 @@ def reads_as_historical(
     registry: dict,
     column: int = 0,
     scopes: list[_Scope] | None = None,
+    use: AlternativeUse | None = None,
 ) -> bool:
     """True when the *same sentence* as the mention marks it historical.
 
@@ -456,32 +581,45 @@ def reads_as_historical(
     scope = (scopes or sentence_scopes(lines))[index]
     position = scope.offset + max(0, column - scope.dropped)
     sentence = sentence_around(scope.text, position)
-    return any(matcher.search(sentence) for _, matcher in marker_matchers(registry))
+
+    # Every alternative is tried, not just enough of them to answer the question:
+    # the point of the accounting is which fragments are still doing work, and a
+    # short-circuit would leave the ones after the first match looking dead.
+    historical = False
+    for entry_index, alternatives in enumerate(marker_alternatives(registry)):
+        for alt_index, matcher in enumerate(alternatives.matchers):
+            if not matcher.search(sentence):
+                continue
+            historical = True
+            if use is not None:
+                use.record_marker(entry_index, alt_index)
+    return historical
 
 
 def find_violations(
     registry: dict, root: Path = REPO_ROOT
-) -> tuple[list[Finding], set[int]]:
+) -> tuple[list[Finding], AlternativeUse]:
     """Scan for un-allowlisted mentions of a retired service.
 
-    Returns the findings plus the indices of the allowlist entries that matched
-    something, so a caller can report allowlist entries that no longer apply.
+    Returns the findings plus the per-alternative usage of both exemption surfaces,
+    so a caller can report the individual fragments that no longer apply rather than
+    only the entries that have stopped applying altogether.
     """
     services = [
         (service, re.compile(service["pattern"], re.IGNORECASE))
         for service in registry["retiredServices"]
     ]
-    allowlist = _allowlist_matchers(registry)
+    allowlist = _allowlist_alternatives(registry)
 
     findings: list[Finding] = []
-    used: set[int] = set()
+    use = AlternativeUse()
 
     for path in scanned_files(registry, root):
         rel = path.relative_to(root).as_posix()
         applicable = [
-            (index, matcher)
-            for index, (entry, matcher) in enumerate(allowlist)
-            if entry["path"] == rel
+            (index, alternatives)
+            for index, alternatives in enumerate(allowlist)
+            if alternatives.entry["path"] == rel
         ]
         try:
             text = path.read_text(encoding="utf-8")
@@ -497,42 +635,94 @@ def find_violations(
                     continue
 
                 # An allowlist entry exempts the whole line, because its
-                # linePattern is written against the line's literal text.
+                # linePattern is written against the line's literal text. Every
+                # alternative is tried rather than the first that answers the
+                # question, so the accounting sees each fragment's own work.
                 exempted_by_allowlist = False
-                for index, matcher in applicable:
-                    if matcher.search(line):
-                        used.add(index)
-                        exempted_by_allowlist = True
+                for index, alternatives in applicable:
+                    for alt_index, matcher in enumerate(alternatives.matchers):
+                        if matcher.search(line):
+                            use.record_allowlist(index, alt_index)
+                            exempted_by_allowlist = True
                 if exempted_by_allowlist:
                     continue
 
                 # Every mention on the line must sit in a sentence that marks it
                 # historical. Checking only the first would let a stale claim ride
                 # along behind a correct historical clause earlier on the line.
-                if all(
+                # Evaluated into a list first, for the same reason as above: `all`
+                # stops at the first False and would undercount the markers.
+                verdicts = [
                     reads_as_historical(
-                        lines, offset, registry, mention.start(), scopes
+                        lines, offset, registry, mention.start(), scopes, use
                     )
                     for mention in mentions
-                ):
+                ]
+                if all(verdicts):
                     continue
 
                 findings.append(Finding(rel, offset + 1, line, service["name"]))
 
-    return findings, used
+    return findings, use
 
 
-def stale_allowlist_entries(registry: dict, used: set[int]) -> list[dict]:
-    """Allowlist entries that matched nothing, so the exemption is now dead.
+def stale_allowlist_entries(registry: dict, use: AlternativeUse) -> list[dict]:
+    """Allowlist entries where no alternative matched, so the entry is dead.
 
     An exemption nobody needs is worse than none: it is a standing licence to
     reintroduce the claim it was written to excuse.
     """
+    live = use.live_allowlist_entries()
     return [
         entry
         for index, entry in enumerate(registry.get("allowlist", []))
-        if index not in used
+        if index not in live
     ]
+
+
+def stale_alternatives(registry: dict, use: AlternativeUse) -> list[StaleAlternative]:
+    """Individual alternatives that shielded nothing, in entries that are not dead.
+
+    This is the half that per-entry staleness could not see. An entry whose every
+    alternative is dead is reported by :func:`stale_allowlist_entries` instead, so
+    the two do not report the same entry twice.
+
+    It applies to the two **exemption** surfaces and deliberately not to
+    ``retiredServices[].pattern``. The distinction is the direction the pattern
+    points: an exemption that shields nothing is a standing licence over whatever
+    next occupies the line it named, while a detector that finds nothing is a clean
+    tree. Requiring a detector's alternatives to match would force the deletion of
+    the arms that catch a reintroduction, which is the opposite of what the gate is
+    for. The same reading applies to the phrase vocabularies elsewhere in the gate
+    layer (``RATCHET_EVIDENCE_MARKERS``, ``PREDICATE_DOMAIN_WORDING``): those look
+    for something, so they may legitimately find nothing today.
+    """
+    stale: list[StaleAlternative] = []
+
+    dead_entries = {
+        index
+        for index in range(len(registry.get("allowlist", [])))
+        if index not in use.live_allowlist_entries()
+    }
+    for index, alternatives in enumerate(_allowlist_alternatives(registry)):
+        if index in dead_entries:
+            continue
+        for alt_index, text in enumerate(alternatives.texts):
+            if not use.allowlist.get((index, alt_index)):
+                stale.append(
+                    StaleAlternative("allowlist", index, alternatives.entry, text)
+                )
+
+    for index, alternatives in enumerate(marker_alternatives(registry)):
+        for alt_index, text in enumerate(alternatives.texts):
+            if not use.markers.get((index, alt_index)):
+                stale.append(
+                    StaleAlternative(
+                        "historicalMarkers", index, alternatives.entry, text
+                    )
+                )
+
+    return stale
 
 
 def stale_exclusions(registry: dict, root: Path = REPO_ROOT) -> list[dict]:
@@ -740,12 +930,28 @@ def main(argv: list[str] | None = None) -> int:
         )
 
     files = scanned_files(registry, root)
-    findings, used = find_violations(registry, root)
-    stale = stale_allowlist_entries(registry, used)
+    findings, use = find_violations(registry, root)
+    stale = stale_allowlist_entries(registry, use)
+    dead_fragments = stale_alternatives(registry, use)
     dead_exclusions = stale_exclusions(registry, root)
 
     if findings or stale:
         _report(registry, findings, stale)
+    if dead_fragments:
+        print(
+            "\nexemption pattern alternative(s) shielded nothing in this scan. Each "
+            "was pinned to text that has since moved, so the line it excused is no "
+            "longer excused -- and the entry's surviving alternatives kept that "
+            "invisible until now:\n",
+            file=sys.stderr,
+        )
+        for fragment in dead_fragments:
+            print(fragment.render(), file=sys.stderr)
+        print(
+            "\nRe-pin each fragment to the wording it was written for, or delete it. "
+            "Never edit the prose to suit the pattern.",
+            file=sys.stderr,
+        )
     if dead_exclusions:
         print(
             "\nexcludedPaths glob(s) match nothing in this tree, so they exempt "
@@ -758,7 +964,7 @@ def main(argv: list[str] | None = None) -> int:
             "\nDelete the entry, or fix the glob if the path was renamed.",
             file=sys.stderr,
         )
-    if findings or stale or reintroduced or dead_exclusions:
+    if findings or stale or dead_fragments or reintroduced or dead_exclusions:
         return 1
 
     services = ", ".join(service["name"] for service in registry["retiredServices"])

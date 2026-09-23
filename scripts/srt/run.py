@@ -13,6 +13,7 @@ from ci_paths import (  # noqa: E402
     is_gating_status,
     is_in_ci_checkout,
     partition_by_ci_visibility,
+    partition_by_name_heuristic_scope,
     tracked_files,
 )
 from register import (  # noqa: E402
@@ -358,8 +359,37 @@ def main():
         high_open_issues, project_root
     )
 
+    # Bandit's identifier-name heuristics (B105/B106) arrive promoted to HIGH by
+    # SRT regardless of what they matched, so a fixture key named `pass_count`
+    # gates like a credential. In test code that no deployment artifact is built
+    # from they are reported and do not gate; everywhere else — including a
+    # test-shaped file inside a Lambda's CodeUri, which sam build copies into the
+    # artifact — they still do. See NAME_HEURISTIC_EXEMPT in ci_paths.py for why
+    # no Bandit rule can express this scope.
+    gating_issues, name_scoped_issues = partition_by_name_heuristic_scope(
+        gating_issues, project_root
+    )
+
     if gating_issues:
         print_issue_table("🔴 OPEN HIGH PRIORITY SECURITY ISSUES", gating_issues)
+
+    if name_scoped_issues:
+        print_issue_table(
+            "ℹ️  IDENTIFIER-NAME FINDINGS IN TEST CODE (Bandit rates these LOW, "
+            "non-blocking)",
+            name_scoped_issues,
+        )
+        print(
+            "B105/B106 match an identifier's NAME against a password wordlist, not\n"
+            "its value. SRT promotes them to HIGH unconditionally; in test code that\n"
+            "no deployment artifact is built from, they are reported at Bandit's own\n"
+            "severity instead of blocking. The same name shape still gates anywhere\n"
+            "that ships — including a test file inside a Lambda's CodeUri, which sam\n"
+            "build copies into the artifact. Do NOT add a per-line suppression pragma\n"
+            "for one of these; that is the accretion this scope decision replaces.\n"
+            "If one of them is a REAL credential, it is not a false positive: remove\n"
+            "it from the fixture."
+        )
 
     if local_only_issues:
         print_issue_table(
