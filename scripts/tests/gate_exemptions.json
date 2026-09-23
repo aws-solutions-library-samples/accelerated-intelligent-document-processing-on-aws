@@ -411,7 +411,11 @@
         "scripts/tests/test_pyright_config.py::TYPECHECK_SCOPE_EXCLUSIONS",
         "ruff.toml::exclude",
         "scripts/tests/test_pyright_config.py::GENERATED_ARTIFACT_EXCLUSIONS"
-      ]
+      ],
+      "predicateConsidered": {
+        "vcs_ignored_build_output": "Settles it for the bare directory names, and is in fact what decides their membership -- but it cannot be named as this entry's premise, because the surface is a JSON config file: test_a_computable_premise_is_actually_computed looks for a CALL in the file the registry key names, and pyrightconfig.json holds no code. The call lives in the sibling entry's gate, scripts/tests/test_pyright_config.py, which parametrises it over every bare `**/<name>` pattern in this array -- that is the cross-reference below, and it is why the two entries point at each other.",
+        "vcs_ignored_generated_filename": "Same shape and same reason: it settles the one generated-filename member (**/*-converted.py) and is evaluated per member in scripts/tests/test_pyright_config.py::GENERATED_ARTIFACT_EXCLUSIONS, not here, because this surface is data rather than code."
+      }
     },
     "ruff.toml::exclude": {
       "kind": "exemption",

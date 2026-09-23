@@ -317,11 +317,14 @@ So:
   Bounding a reason to one file is what makes the mismatch show up while you are
   writing it rather than in an audit later.
 - **If the premise is computable, compute it.** The predicates live in
-  `scripts/tests/gate_premises.py` — `not_a_nested_stack_of_parent`,
-  `built_separately_from_main_stack`, `file_absent_or_untracked`,
-  `installer_manifest_pins_parameter` — each taking **one** member and returning a
-  verdict. Name the predicate in your registry entry and parametrise your gate over
-  the members; a named predicate the gate never calls is itself a test failure.
+  `scripts/tests/gate_premises.py` (`gate_premises.PREDICATES` is the list; do not
+  restate it here, it grows) — each taking **one** member and returning a verdict. Name
+  the predicate in your registry entry and parametrise your gate over the members; a
+  named predicate the gate never calls is itself a test failure. **A new predicate also
+  needs wording in `PREDICATE_DOMAIN_WORDING`**, the vocabulary that catches a reason
+  invoking a predicate's subject while recording `JUDGEMENT`; a predicate with no
+  wording is one that check can never demand, which is the state
+  `vcs_ignored_build_output` was in.
 - **If it genuinely is not computable, say `JUDGEMENT` and write the reason.** That is
   a legitimate answer (a foreign account's partition, another assistant's
   capabilities, an acknowledged backlog). It is not an exemption from scrutiny: the
@@ -331,7 +334,16 @@ So:
   store how many sites it shielded when written, so a new site inside an exempt tree
   still fails. *Universe closure* — derive the universe and fail if any member is in
   neither the enforced nor the exempt set; this is what makes an exemption list
-  trustworthy at all. *Staleness* — a dead entry fails.
+  trustworthy at all. *Staleness* — a dead entry fails. The `ratchet` label is checked
+  against `RATCHET_EVIDENCE_MARKERS`, wording a file implementing that kind of ratchet
+  necessarily contains, and **a marker matching nothing in any file any entry names is
+  deleted** — unlike a `PREDICATE_DOMAIN_WORDING` phrase, which may match nothing yet.
+  The direction decides the rule: a marker widens what *satisfies* a claim, so a dead
+  one is pre-approval of whatever next claims the label; a phrase widens what *demands*
+  engagement, so a dead one costs nothing and exists for entries not yet written. What
+  is pinned for the phrases instead is that each one demonstrably fires, run through the
+  real matcher on a synthetic entry, because the reason text is lowercased before the
+  comparison and a phrase carrying an uppercase letter is inert.
 - **If it can have none, say what is unprotected** in `ratchetGap`. Those are the
   honest residuals and they are counted: `MAX_UNRATCHETED` in the meta-test does not
   grow to absorb a **new** exemption, so declaring a gap cannot quietly become the
