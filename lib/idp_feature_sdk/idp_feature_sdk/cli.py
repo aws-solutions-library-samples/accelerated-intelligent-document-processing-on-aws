@@ -1242,6 +1242,16 @@ def seller_service_preflight_cmd(
     default=None,
     help="Activation token lifetime (template default: 3600).",
 )
+@click.option(
+    "--agreement-region",
+    default=DEFAULT_MARKETPLACE_REGION,
+    show_default=True,
+    help=(
+        "Region the DEPLOYED function calls the Marketplace Agreement API in. "
+        "Separate from --region (where the stack goes) because the Agreement API "
+        "exists only in us-east-1; change this only if that stops being true."
+    ),
+)
 @click.option("--guided", is_flag=True, help="Pass --guided to `sam deploy`.")
 @click.option(
     "--yes", is_flag=True, help="Skip the confirmation prompt after preflight."
@@ -1254,6 +1264,7 @@ def seller_service_deploy_cmd(
     stack_name: str,
     allowed_accounts: str,
     token_ttl_seconds: Optional[int],
+    agreement_region: str,
     guided: bool,
     yes: bool,
 ) -> None:
@@ -1283,6 +1294,19 @@ def seller_service_deploy_cmd(
         console.print(f"    account    {result.account_id}")
         console.print(f"    region     {region}")
         console.print(f"    stack      {stack_name}")
+        if agreement_region != DEFAULT_MARKETPLACE_REGION:
+            # Warned rather than refused: this is an explicit request, and pinning an
+            # allowed value in code would block a region AWS may add later. But the
+            # failure it invites is silent and remote — a host that does not resolve,
+            # discovered at activation in a buyer's account — so it is worth saying so
+            # before the deploy rather than after.
+            console.print(
+                f"    [yellow]agreement  {agreement_region} — the Marketplace "
+                f"Agreement API is only reachable in {DEFAULT_MARKETPLACE_REGION}. "
+                f"Unless that has changed, agreement-marketplace.{agreement_region}"
+                ".amazonaws.com will not resolve and EVERY activation will fail."
+                "[/yellow]"
+            )
         if version:
             console.print(f"    version    {version}")
         if allowed_accounts:
@@ -1305,6 +1329,7 @@ def seller_service_deploy_cmd(
                 product_registry_json=product_registry,
                 allowed_accounts=allowed_accounts,
                 token_ttl_seconds=token_ttl_seconds,
+                agreement_region=agreement_region,
                 guided=guided,
             ),
             cwd=service_dir,

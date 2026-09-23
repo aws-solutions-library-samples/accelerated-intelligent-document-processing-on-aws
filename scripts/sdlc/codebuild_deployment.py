@@ -356,10 +356,11 @@ def validate_headless_template(main_template_url):
 
     out_path = os.path.join(".aws-sam", "idp-headless.yaml")
     try:
-        from idp_sdk._core.template_transform import HeadlessTemplateTransformer
+        from idp_sdk import IDPClient
 
-        if not HeadlessTemplateTransformer().transform(packaged, out_path):
-            return False, "headless transform reported failure (see log above)"
+        result = IDPClient().publish.transform_template_headless(packaged, out_path)
+        if not result.success:
+            return False, f"headless transform reported failure: {result.error}"
     except Exception as e:  # noqa: BLE001
         return False, f"headless transform raised: {e}"
 
@@ -3061,8 +3062,16 @@ def run_inference_test(
     config_version=None,
     sample_dir="samples",
     additional_checks=None,
+    region=None,
 ):
     """Run inference test and verify results
+
+    ``region`` is forwarded to the shelled-out ``idp-cli`` calls. Without it the
+    CLI resolves its region from the environment or the profile, which need not
+    be the region the stack was deployed to: the stack then reads as absent, or
+    as "not in a valid state for operations", while being healthy in the region
+    the caller actually asked for. Optional, so existing callers -- which run
+    where the environment already names the right region -- are unaffected.
 
     Args:
         stack_name: Name of the CloudFormation stack
@@ -3079,7 +3088,8 @@ def run_inference_test(
     try:
         # Run inference
         print(f"Running inference with batch-id: {batch_id}...")
-        cmd = f"idp-cli run-inference --stack-name {stack_name} --dir {sample_dir} --file-pattern {sample_file} --batch-id {batch_id} --monitor"
+        region_flag = f" --region {region}" if region else ""
+        cmd = f"idp-cli run-inference --stack-name {stack_name} --dir {sample_dir} --file-pattern {sample_file} --batch-id {batch_id} --monitor{region_flag}"
         if config_version:
             cmd += f" --config-version {config_version}"
         run_command(cmd)
@@ -3088,7 +3098,7 @@ def run_inference_test(
         # Download results
         print("Downloading results...")
         result_dir = f"/tmp/result-{batch_id}"  # nosec B108 - isolated CodeBuild environment
-        cmd = f"idp-cli download-results --stack-name {stack_name} --batch-id {batch_id} --output-dir {result_dir}"
+        cmd = f"idp-cli download-results --stack-name {stack_name} --batch-id {batch_id} --output-dir {result_dir}{region_flag}"
         run_command(cmd)
 
         # Verify result content

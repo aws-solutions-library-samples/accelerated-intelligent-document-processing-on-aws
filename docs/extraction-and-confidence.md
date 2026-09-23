@@ -89,7 +89,7 @@ and is a good fit for the majority of documents.
 extraction:
   agentic:
     enabled: false            # Simple mode (default)
-  model: anthropic.claude-3-haiku-20240307-v1:0
+  model: anthropic.claude-haiku-4-5-20251001-v1:0
   temperature: 0.0
   reasoning_effort: low       # reasoning-capable models only (see note below)
 ```
@@ -151,15 +151,14 @@ extraction:
 Agentic extraction requires models with tool-use support:
 
 - **Anthropic Claude Sonnet** models (recommended for optimal performance)
-  - `anthropic.claude-3-5-sonnet-20241022-v2:0` — Best balance of speed and accuracy
-  - `anthropic.claude-3-7-sonnet-20250219-v1:0` — Latest with enhanced capabilities
+  - `anthropic.claude-sonnet-4-5-20250929-v1:0` — Best balance of speed and accuracy
+  - `anthropic.claude-sonnet-4-5-20250929-v1:0` — Latest with enhanced capabilities
 - **Anthropic Claude Opus** models (for highest accuracy requirements)
 - **Amazon Nova Pro** (AWS native alternative) — **no successful agentic run has
   been measured for Nova Pro**: its advanced cells in the v0.6.8 sweep hit the same
   mid-stream tool-use failure described below and the grid was abandoned, so it is
   unmeasured on this path rather than known to be incapable. Treat it as unproven
   until a benchmark run completes on it
-- **Amazon Nova Premier** (for complex multi-modal extraction)
 
 > **⚠️ Amazon Nova Lite does not complete Advanced (agentic) extraction as
 > shipped.** On the agentic path Nova Lite fails mid-stream with Bedrock's
@@ -172,21 +171,60 @@ Agentic extraction requires models with tool-use support:
 > classified as **deterministic**: the shard fails in seconds with a message naming
 > the model and the remedies instead of being retried by the state machine.
 >
-> **What causes it is not fully settled.** AWS's
+> **Greedy decoding does not help — that is measured.** AWS's
 > [Nova tool-use troubleshooting guide](https://docs.aws.amazon.com/nova/latest/userguide/tools-troubleshooting.html)
-> — the guide Bedrock's own error message points at — attributes this error
-> primarily to inference parameters and output budget rather than to raw model
-> capability: greedy decoding (`temperature: 0` **and** `topK: 1`, the latter sent
-> via `additionalModelRequestFields`), a `maxTokens` large enough for a long
-> tool-output turn, and not stripping the model's chain-of-thought. This repository
-> satisfies part of that — extraction sets `temperature: "0.0"` and the agentic path
-> always requests the model's maximum output — but it does **not** send `top_k` on
-> the agentic path (only on the Simple path), and Nova's output ceiling in
-> `config_library/model_config_limits.yaml` is 10,000 tokens, which is small for a
-> large sharded table. So the observed failure is consistent with a configuration
-> the vendor explicitly warns about, and calling it a hard capability limit would
-> overstate what has been measured. Failing fast is still the right behaviour: as
-> configured today it recurs on every attempt.
+> — the guide Bedrock's own error message points at — attributes this error primarily
+> to inference parameters rather than to raw model capability, and recommends greedy
+> decoding: `temperature: 0` **and** `topP: 1` **and** `topK: 1`. All three were sent
+> and the failure rate did not move
+> ([#956](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/956)).
+> In 160 direct Bedrock calls per arm, interleaved so capacity drift hit both arms
+> equally, Nova Lite emitted an invalid tool-use sequence in **0.787** of calls with
+> no `topK`, **0.812** with `topK: 1`, and **0.838** with the full greedy triple
+> (Fisher exact *p* = 0.68 for `topK: 1` against the pooled no-topK arm, and *p* = 1.00
+> for the greedy triple against the no-topK arm measured in the same batch). Every
+> point estimate moved in the unhelpful direction, none of them significantly.
+>
+> ⚠️ **Read that as "no large effect", not as "proven identical".** At the observed
+> base rate and n = 160 per arm, 80% power detects an improvement only down to a
+> failure rate of 0.65 — 18% relative. Ruling out a 10-point absolute improvement
+> would need ~303 calls per arm and a 5-point one ~1,140. A small benefit is not
+> excluded; a large one is.
+>
+> **`topK` is also not a setting you can simply turn on**, which is why the
+> accelerator exposes no option for it. `inferenceConfig.topK` is not a Converse
+> field at all — botocore rejects it client-side for every model — so it can only
+> travel in `additionalModelRequestFields`, in a shape that differs per provider:
+>
+> | Family | Carrier that works | Valid range |
+> |---|---|---|
+> | Nova Lite / Pro / 2 Lite | `additionalModelRequestFields.inferenceConfig.topK` | 1–128 |
+> | Claude ≤ 4.6 (Haiku 4.5, Sonnet 4.5, Sonnet 4.6, Opus 4.5) | `additionalModelRequestFields.top_k` | −1 – 100,000,000 |
+> | Claude 4.7+ (Opus 4.7, Opus 5, Sonnet 5) | none — `` `top_k` is deprecated for this model `` | — |
+> | OpenAI GPT-6 Astra | none — `Unknown parameter: 'top_k'` | — |
+> | xAI Grok 4.6 | unverifiable — returns 200 for any unknown key, including a deliberately bogus control | — |
+>
+> Each family rejects the other's spelling, so there is no single request shape that
+> would set it across the models offered here.
+>
+> **What does trigger it is the request *shape*, not its size.** Walking the request
+> from trivial to real on Nova Lite: a two-property scalar schema succeeds; a schema
+> holding **only** a transactions array succeeds and returns all 30 rows, at both 284
+> and 1,696 characters; the same array **plus three sibling scalar properties** — 401
+> characters, smaller than the one that succeeded — fails. Removing `format`,
+> `pattern` and `anyOf`, inlining `$defs`, and removing the system-prompt schema
+> restatement each changed nothing; removing the document text made it pass. So the
+> trigger is **a list-of-objects property that must be closed before further
+> top-level keys are emitted, with real content to fill it** — which is the shape of
+> almost every useful extraction class. Whether that is the *only* triggering shape is
+> open: one variant with no array in the schema at all also failed, under a prompt
+> that demanded rows the schema could not hold, so it is confounded. Full tables,
+> sample sizes and the power analysis:
+> [Greedy decoding and invalid tool-use sequences](benchmarking/studies/greedy-decoding-tool-use.md).
+>
+> Failing fast remains the right behaviour: the failure recurs on every attempt with
+> the same request, and no inference-parameter setting available on this model changes
+> that.
 >
 > **Remedies**, in the order worth trying: reduce
 > `extraction.agentic.shard_token_budget` / `extraction.agentic.max_pages_per_shard`
@@ -260,26 +298,45 @@ extraction:
     restate_schema_in_system_prompt: true   # default; false removes copy 2
 ```
 
-Left **on by default** deliberately. Restating a schema in prose often improves
-adherence, so this is a token/adherence trade rather than a free saving: on a
-list-heavy document, an agent that drifts from the schema returns fewer rows. If
-you turn it off, judge the result on **completeness**, not on the token count.
-The schema-reminder tool is unaffected either way, so the agent can always ask for
-the schema again mid-run.
+Left **on by default** deliberately. Restating a schema in prose often improves how
+closely a model follows it, so this is a token/adherence trade rather than a free
+saving — an agent that drifts from the schema on a list-heavy document returns fewer
+rows. No such loss appeared in the 50-run measurement below, but that measurement used
+one model and three synthetic documents, so on your own documents judge the result on
+**completeness**, not on the token count. The schema-reminder tool is unaffected either
+way, so the agent can always ask for the schema again mid-run.
 
-> **What to expect if you turn it off: nothing much, and that is measured.** On the
-> benchmark suite it cost no completeness and no accuracy — and it did not save
-> anything measurable either. Two reasons, both worth knowing before you tune:
-> the copies sit inside the **prompt cache**, so they are billed at roughly a tenth
-> of input price; and reclaiming them frees shard budget only since
-> [#775](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/775):
-> the pipeline now subtracts the measured prompt overhead (system prompt, rendered
-> schema, few-shot text, tool schema, this restatement) when it decides how to split
-> a document, where before the schema text was not counted at all. Whether the
-> freed headroom changes a given document's shard count depends on it sitting near
-> a boundary, and the page ceiling still closes shards regardless. Treat this as a
-> setting for measuring the question on your own documents, not as a recommended
-> optimisation.
+> **What to expect if you turn it off: fewer input tokens, no quality change, and a
+> slightly higher bill.** Measured over 50 runs, 25 per arm, on Sonnet 4.6 across
+> three synthetic documents
+> ([full study](benchmarking/studies/schema-restatement-tokens.md)):
+>
+> - **Quality: no cost.** `completeness_recall`, `cell_accuracy` and
+>   `scalar_accuracy` were 1.000 in every one of the 50 runs in both arms, with no
+>   failures and identical `cells_compared`. Both arms sit on the ceiling, so this
+>   excludes a degradation affecting more than roughly one run in ten; it cannot show
+>   an improvement.
+> - **Input tokens: a real saving, on the documents where the agent loop is stable.**
+>   −5.2% on a 400-row statement (175,912 → 166,731 input-side tokens, *p* = 1.3 ×
+>   10⁻⁸) and −6.7% on a 100-row one (*p* = 0.008), with the arms completely
+>   separated. On the third document the point estimate went the other way by +9.5%
+>   and was not significant, because that document's turn count varied run to run and
+>   each turn re-reads the prefix.
+> - **Dollars: not a saving.** Extraction cost's central estimate **rose 7.5%** and
+>   total cost 5.3% with the restatement off (neither significant, *p* ≥ 0.13),
+>   because extraction **output** tokens rose 17.4% (*p* = 1.2 × 10⁻⁵). The
+>   arithmetic is one-sided: the input saving is almost all **cache reads** at a tenth
+>   of input price, worth ~$0.007 per document, while the extra output is worth
+>   ~$0.039.
+>
+> So the reason to use this knob is **shard headroom**, not cost. Since
+> [#775](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/775)
+> the pipeline subtracts the measured prompt overhead (system prompt, rendered schema,
+> few-shot text, tool schema, this restatement) when it decides how to split a
+> document, where before the schema text was not counted at all — so the reclaimed
+> tokens are real budget. Whether the freed headroom changes a given document's shard
+> count depends on it sitting near a boundary, and the page ceiling still closes shards
+> regardless.
 
 **Visible in the Prompt Preview.** With Extraction mode **Advanced**, the
 **Configuration → Prompt Preview → System Prompt** tab ends with the
@@ -388,7 +445,7 @@ extraction:
       min_population_ratio: 0.5  # advisory: warn if <50% of fields populated (silent-loss guard)
 ```
 
-- **`fail_action: escalate`** re-extracts only the failing top-level fields with `escalation_model` and merges them back — far cheaper than human review. The re-extraction replaces the original only if it lost no populated data (a list that had rows must not come back null or shorter; a filled value must not come back null) *and* got better field by field; a result that merely has fewer errors in total is not enough, because nulling a whole 100-row list produces one error where 100 unreadable cells produce 100. The decision and its reason appear in the **Processing Report** as `escalation_kept` / `escalation_decision`. `warn` records the outcome and proceeds; `reject` marks the section failed for HITL.
+- **`fail_action: escalate`** re-extracts only the failing top-level fields with `escalation_model` and merges them back — far cheaper than human review. The re-extraction replaces the original only if it lost no populated data (a list that had rows must not come back null or shorter; a filled value must not come back null) *and* got better field by field; a result that merely has fewer errors in total is not enough, because nulling a whole 100-row list produces one error where 100 unreadable cells produce 100. The decision and its reason appear in the **Processing Report** as `escalation_kept` / `escalation_decision`. `warn` records the outcome and proceeds; `reject` records the result as not parsed, which makes the section's Processing Report read `FAILED` and raises the issue at error severity — it does not change the section's or the document's outcome, and it does not route the section to human review (HITL routing is driven by `hitl.confidence_threshold`, not by this).
 - A per-class override `x-aws-idp-extraction-escalation-model` takes precedence over the global `escalation_model`.
 - **`min_population_ratio`** is an advisory completeness heuristic: it flags suspiciously sparse results (e.g. a table that returned zero rows) without failing extraction.
 - Outcomes are recorded per section under `metadata.validation` and `metadata.population_check`, and surfaced in the Web UI **Processing Report** tab.
@@ -552,7 +609,7 @@ classes:
 extraction:
   agentic:
     enabled: true            # Advanced mode recommended for production
-  model: anthropic.claude-3-5-sonnet-20241022-v2:0
+  model: anthropic.claude-sonnet-4-5-20250929-v1:0
   temperature: 0.0           # Keep low for consistency
   top_p: 0.1
   top_k: 5
@@ -774,7 +831,7 @@ not enforce. Runs on both Simple and Advanced extraction.
 | `fail_action` | Behaviour | Extra inference? |
 |---|---|---|
 | `warn` (default) | Records the outcome and raises an `extraction_validation_failed` **warning** on the section; the data is kept | **No — free** |
-| `reject` | Same, but the issue is an **error** and the section is marked failed so downstream/HITL can act | **No — free** |
+| `reject` | Same, but the issue is an **error** and the result is recorded as not parsed, so the section's Processing Report reads `FAILED` | **No — free** |
 | `escalate` | Re-extracts **only the failing fields** with `escalation_model`, merged back over the fields that already validated | **Yes** |
 
 Validation is **on by default** precisely because the default action is free: it
@@ -786,6 +843,15 @@ violations, so you do not have to open the section result JSON.
 re-extracted and only those are merged back, so an over-eager escalation cannot
 overwrite fields that already validated; if escalation fails, the original
 extraction is kept unchanged.
+
+⚠️ **All three actions are visibility settings — none of them rejects a section.**
+`reject` records `parsing_succeeded: false`, which is read by the section's
+Processing Report and the UI's **Processing Report** tab and by nothing in the
+status path, so the extracted values are still stored and the document still
+reports `COMPLETED`. The one setting in extraction that turns a detection into an
+outcome is
+[`extraction.row_shortfall_action`](#making-a-materially-incomplete-list-fail-the-section--extractionrow_shortfall_action),
+which fails the Step Functions execution.
 
 > **Moved in v0.7.** This block was `extraction.agentic.validation`. Stored
 > configurations are migrated automatically on read — no action required.
@@ -1455,12 +1521,33 @@ extraction:
 > whose input limit every section exceeds, a revoked `bedrock:InvokeModel` grant, a
 > model id not enabled in the region — produces no failed executions and moves none
 > of the failure alarms. Each degrade therefore publishes
-> `AssessmentConfidenceUnavailable` to the stack's own metric namespace, and
-> `AssessmentConfidenceUnavailableAlarm` fires at ten or more in fifteen minutes —
-> on volume, not on the first occurrence, since one degraded section is an expected
-> outcome ([#996](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/996)).
+> `AssessmentConfidenceUnavailable` to the stack's own metric namespace. So does a
+> section that reached the Assessment step with **nothing to assess** — no
+> extraction result, no pages, an empty `inference_result`, or none of its pages
+> present in the document — which records
+> `assessment_skipped_confidence_unavailable` instead and is likewise invisible in
+> the document's own status. The metric covers both, because the alarm's question is
+> whether sections are coming back without confidence; the issue code says which
+> happened. Two exceptions, and you will meet them on ordinary documents: a section
+> whose class is in configuration with **no attributes to extract**, and a section
+> **classification could not classify at all**, publish nothing and record nothing
+> here, because extraction skipped the model deliberately for both. The second
+> covers every page labelled `unclassified` — a blank page, a page whose
+> classification failed — so do not expect a data point for those; the
+> [classification stage](./classification.md#pages-classification-could-not-classify)
+> reports them, where the remedy is. A section whose *named* class is missing from
+> the configuration is **not** an exception and does publish: the section was
+> expected to hold data and holds none. How often that arrives depends on your
+> classification configuration — on the default it needs a configuration edit, but
+> `textbasedHolisticClassification` and `enforceValidClasses: false` both store an
+> out-of-vocabulary prediction verbatim, so there the rate follows model output and
+> `ConfidenceUnavailableThreshold` is the lever.
+> `AssessmentConfidenceUnavailableAlarm` fires at ten or more in fifteen
+> minutes — on volume, not on the first occurrence, since one such section is an
+> expected outcome ([#996](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/996),
+> [#1006](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/1006)).
 > See [Monitoring](./monitoring.md#confidence-assessment-degraded) for the metric,
-> the alarm and the three causes worth checking first.
+> the alarm and the causes worth checking first.
 >
 > **This replaces granular assessment.** The former "granular assessment"
 > service (a separate thread-pool fan-out with DynamoDB caching) has been
@@ -2051,15 +2138,17 @@ particularly easy to miss:
 - **A truncated run is *cheaper*.** Cost fell from $1.78 to $1.04 when a run
   truncated, so cost monitoring will not flag it either.
 
-So it must be detected structurally. Four signals are raised as
-[processing issues](#surfaced-in-the-ui), on **both** Simple and Advanced modes:
+So it must be detected structurally. Four signals are raised as processing
+issues — reaching the document list's **Processing Issues** column, the
+**Processing Report** tab and the tracking table's sparse
+`HasProcessingIssues` attribute — on **both** Simple and Advanced modes:
 
 | Code | Severity | Fires when |
 |---|---|---|
 | `extraction_incomplete` | warning | A schema-declared list came back **empty, null, or absent from the response entirely**. |
 | `extraction_list_truncated` | warning | A list returned **fewer rows than its schema `minItems`** — the one unambiguous truncation signal available without ground truth. |
 | `extraction_sparse` | info | Fewer than `min_population_ratio` of the schema's leaf fields were populated. |
-| `extraction_rows_below_ocr_estimate` | warning | A list of objects returned **fewer than half** the rows found in the section's OCR tables **of the same shape** — tables whose column count equals the list item's property count — and those tables hold at least 30 rows. This is the ground-truth-free signal for the Simple-mode case above (43 rows extracted from an 800-row statement), which passes every other check because the list is non-empty and the scalars are right. Only Markdown tables count (rows starting with a pipe under a `|---|` separator row), segmented where the column count changes as well as at blank gaps and ended by the first prose line, so a second table of another shape (a two-column Daily Balances table printed directly under Transactions), a form's key/value blocks, a footer or prose line containing a pipe, and lists of scalars do not count against it; lists of the same shape (Deposits and Withdrawals) are judged together as one group, an array of instances is compared through its inner lists, and a multi-instance wrapper whose instances carry no lists is not compared at all. Item schemas defined through `$ref`/`$defs`, as every shipped preset does, are resolved. Reprinted heading rows inflate the estimate slightly, hence the half ratio. The check needs OCR that emits Markdown tables (Textract with the `TABLES` feature, or BDA); with the default `ocr.features: []` there are none and it never fires. In Advanced mode this is a secondary check; the shard runtime's own completeness checks and `minItems` remain the primary guards. |
+| `extraction_rows_below_ocr_estimate` | warning (**error** under `row_shortfall_action: fail`, which is then the only one of these that changes the document's status — see below) | A list of objects returned **fewer than half** the rows found in the section's OCR tables **of the same shape** — tables whose column count equals the list item's property count — and those tables hold at least 30 rows. This is the ground-truth-free signal for the Simple-mode case above (43 rows extracted from an 800-row statement), which passes every other check because the list is non-empty and the scalars are right. Only Markdown tables count (rows starting with a pipe under a `|---|` separator row), segmented where the column count changes as well as at blank gaps and ended by the first prose line, so a table of a *different* width, a form's key/value blocks, a footer or prose line containing a pipe, and lists of scalars do not count against it; lists of the same shape (Deposits and Withdrawals) are judged together as one group, an array of instances is compared through its inner lists, and a multi-instance wrapper whose instances carry no lists is not compared at all. Item schemas defined through `$ref`/`$defs`, as every shipped preset does, are resolved. Reprinted heading rows inflate the estimate slightly, hence the half ratio. ⚠️ Matching is on width **only**, and matched tables are summed over the whole section: a table of the *same* width that has nothing to do with the list — a two-column Daily Balance table beside a two-property account summary — is counted as evidence about it. The check needs OCR that emits Markdown tables: Textract with the `TABLES` feature, or BDA. **That is the shipped default** (`ocr.features: [TABLES, LAYOUT, SIGNATURES]`), so the check is live on every shipped preset except the two `ocr-benchmark` ones, which set LAYOUT only; a config that removes `TABLES` has no pipe tables and the check is inert. In Advanced mode this is a secondary check; the shard runtime's own completeness checks and `minItems` remain the primary guards. |
 
 A fifth issue is raised by [schema validation](#schema-validation-extractionvalidation)
 rather than the completeness checks:
@@ -2068,28 +2157,262 @@ rather than the completeness checks:
 |---|---|---|
 | `extraction_validation_failed` | warning (error under `fail_action: reject`) | The result still violates the class JSON Schema after extraction (and after escalation, if enabled). |
 
-**Add `minItems` to list fields you care about.** It costs nothing at extraction
-time and turns an invisible truncation into a visible warning:
+#### Making a materially incomplete list fail the section — `extraction.row_shortfall_action`
+
+A processing issue, at any severity, does not change a document's status: it is
+recorded on the section, counted, and rendered in the UI, and the document still
+reports `COMPLETED`. That is true of **every** incompleteness signal in the
+pipeline, `error` severity included, and it is why a 1,200-row statement carrying
+43 rows reported success — and, because a truncated run is *cheaper* than a
+complete one, why neither status nor cost flagged it.
+
+`extraction.row_shortfall_action` is how a deployment makes the
+`extraction_rows_below_ocr_estimate` detection decide the outcome:
+
+| Value | Outcome |
+|---|---|
+| `warn` (default) | Record the issue and report success. |
+| `fail` | The rows that *were* extracted, the issue and the processing report are written to the section's `result.json` first; the section then fails with `ExtractionOutputIncomplete`, which is deterministic and in no `Retry` list, so it fails once and in seconds. The document's status is `FAILED`, the Step Functions cause is the sentence naming the rows extracted, the OCR row estimate and the remedy, and the section's own record carries both that shortfall issue and `extraction_failed` — see below. |
+
+It does not change **when** the shortfall is detected — the floor of 30 matching
+OCR rows and the "fewer than half" ratio are identical under both values, so the
+sections that fail under `fail` are exactly the ones that warn under `warn`. And
+it is not Simple-mode-only: the check and the outcome are shared by both modes,
+because a truncated Advanced section tells the same lie. Advanced mode shards, so
+it reaches this far less often.
+
+##### Where a failed section shows up
+
+A section whose extraction **failed** is recorded on the section itself, so the
+document's Sections panel shows which section failed and why — as **Failed** in the
+Status column, distinct from the **Incomplete** a section that was flagged but
+accepted shows. That applies to every raising extraction failure, not only a row
+shortfall: `ExtractionInputTooLarge`, `ExtractionImageRejected`,
+`ModelInvalidToolUseSequence` and `ExtractionOutputIncomplete` all leave an
+error-severity `extraction_failed` issue whose `root_cause` is the exception's own
+explanation and remedy — the same sentence the Step Functions cause reports, which
+is unchanged.
+
+Two issues appear together under `row_shortfall_action: fail`, and they say
+different things. `extraction_rows_below_ocr_estimate` names what was lost and how
+to accept it; `extraction_failed` says the section did not succeed. The first
+cannot carry that on its own, because it is written at `warning` severity under
+`warn` — where the document completes — and at `error` under `fail`.
+
+The rows that were extracted are still in the section's `result.json` and the
+section still points at it, so a partial result stays readable in the Visual
+Editor rather than being discarded with the failure.
+
+**A transient failure is not marked.** A throttle or a read timeout is retried by
+the state machine, so flagging the section would show it failed for as long as that
+ladder runs and then clear itself. Only a failure that will not be retried is
+recorded. If a retry ladder exhausts every attempt, the document fails with the
+explanation in the Step Functions cause and the section is not flagged.
+
+**A very long explanation is abridged in the middle.** A processing issue's details
+are bounded (4 KB for the technical cause, 1 KB per value in its structured payload,
+both in bytes) because they all share one DynamoDB record with every other issue on
+the section, and some exceptions echo extracted document content — a schema-validation
+failure on a 900-row list renders the whole list into its message, about 57,000
+characters per failing field. What is removed is the middle, so the failure at the
+start and the remedy at the end both survive. The unabridged text is in the section's
+`result.json` and in the CloudWatch log for the step.
+
+One case is abridged from a place you might not expect. A classification issue puts
+the section's page list at the **end** of its technical cause, so on a section with
+more than about 530 pages the abridgement falls inside that list rather than after it.
+Nothing is lost: the same page ids are in the issue's structured payload and in its
+one-line message, both of which the Sections panel shows.
+
+##### Why `fail` is opt-in, and what to check before turning it on
+
+Not caution — a property of the evidence. Matching is on **width only** and
+matched tables are **summed over the whole section**, so any table whose column
+count happens to equal the list item's property count is counted as evidence
+about that list. For a 2- or 3-property array that models an **entity group**
+rather than table rows, that evidence has no legitimate contribution at all, and
+a group-shaped array is structurally indistinguishable from a row-shaped one.
+
+The default preset shows it. `Bank-Statement.account_summary` has two properties
+(`summary_desc`, `summary_amount`). A monthly statement carries a five-row
+two-column Account Summary, a sixty-row five-column transaction table, and a
+31-row two-column **Daily Balance** table. A fully correct extraction — all five
+summary rows, all sixty transactions — scores `5 / 38 = 0.13` on
+`account_summary`, because the Daily Balance table's rows are summed into its
+evidence. Under `warn` that is a spurious warning; under `fail` it is a lost
+document, and the long transaction list the check exists for passes cleanly.
+
+Nine fields of this shape ship in the config library — `account_summary`,
+`W2.codes`, `Payslip.FederalTaxes` / `StateTaxes` / `CityTaxes`,
+`Medical-Insurance-Invoice.Charges`, `PA-Procedure-Log.codes_without_documentation`
+(a declared *subset* by definition), `PA-Medical-History.chronic_conditions` — and
+of the narrow arrays in presets with `TABLES` on, only `Transactions` genuinely
+models table rows. Four further shapes produce the same spurious failure and are
+tracked for narrowing: sibling lists whose property counts *differ* (the
+same-width grouping that stops Deposits and Withdrawals accusing each other keys
+on equality, so one extra property on one sibling disables it); a nested optional
+sub-list, which replaces its parent as the compared target so the parent's own
+completeness supplies the evidence that fails it; a list with `maxItems`, which
+`expected` does not consult; and any list nested under a plain object property,
+which is never compared at all.
+
+**So before setting `fail`:** confirm every array-of-object field in your classes
+models table rows rather than an entity group, and that no unrelated table in the
+same section shares a width with one of them. It is the right setting for a
+corpus of long transaction lists, which is the case it was built for. Narrowing
+the attribution — which is what would let `fail` be the default — is tracked in
+[issue #1046](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/1046).
+
+##### `fail` does not cover a list that lost *every* row
+
+⚠️ **`row_shortfall_action: fail` is the only thing deciding the outcome here, and
+under it a document that lost 95% of its rows fails while one that lost 100%
+completes.** This is worth knowing before you rely on the setting, because the
+uncovered case is the worse one.
+
+A width group in which *every* list came back empty is not compared against the
+OCR evidence at all. It is reported by `extraction_incomplete`, which is a
+warning, and a warning cannot change a document's status — so a section whose OCR
+evidences 800 table rows and whose list came back `[]` completes, while the same
+section returning 43 of those rows fails.
+
+One other setting does reach the empty case, in **Advanced** mode only: a schema
+`minItems` floor, which the agent's tool boundary enforces, so `[]` is rejected
+there and a floor the section cannot reach fails it. That is a different mechanism
+with a different cost — read
+[`minItems` in Simple vs Advanced mode](#minitems-on-a-list-field--a-warning-in-simple-mode-a-hard-floor-in-advanced)
+before reaching for it, because it discards the rows rather than saving them. The
+rest of this section describes the behaviour with no such floor in force, which is
+every shipped preset.
+
+Both populations are real, and the empty one is larger. Of the 3,631 recorded
+`COMPLETED` benchmark runs that reach this check's population — the section's OCR
+text evidences at least 30 table rows of the list's shape — **99 returned zero
+rows** against 65 with partial loss, so `fail` catches the smaller of the two.
+
+**Why it is left that way.** A genuinely empty list is a common, legitimate
+outcome — an account with no fees, a statement period with no deposits — and the
+check cannot tell it apart from total loss, whereas "43 of 800" has no innocent
+reading. Extending the failure to the empty case would therefore fail correct
+documents, and the over-attribution described above applies *more* strongly there,
+because an empty list scores 0 against whatever evidence is attributed to it. The
+recorded corpus cannot bound the false-failure rate either: it contains no
+legitimately-empty-list documents that also carry a same-width table, so the case
+needs its own measurement. Both that measurement and the narrowing it depends on
+are tracked in
+[issue #1046](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/1046).
+
+**What to do in the meantime.** Treat `extraction_incomplete` on a class you
+expect rows from as equivalent in severity to a row shortfall. It reaches the
+document list's **Processing Issues** column, the **Processing Report** tab, and
+the tracking table's sparse `HasProcessingIssues` attribute, so it is filterable —
+which is what has to substitute for document status here.
+
+#### `minItems` on a list field — a warning in Simple mode, a hard floor in Advanced
+
+No shipped preset sets `minItems`; it is something you add.
 
 ```yaml
 Transactions:
   type: array
-  minItems: 1        # or a realistic floor for your corpus
+  # A floor declares that a document under it is a FAILURE, so pick one no
+  # legitimate document of the class falls below — for a statement corpus whose
+  # shortest month still carries dozens of rows, a floor well under that count.
+  # `minItems: 1` is the value to think twice about: it fails every document
+  # whose list is legitimately empty. Read the Advanced-mode note below before
+  # setting any floor there.
+  minItems: 20
   items: { … }
 ```
 
-Without it, only the empty/absent and sparse signals apply — a list that returns
-10 of 1,200 rows cannot be distinguished from a document that genuinely has 10.
+`minItems` is the one completeness signal with **no false positives by
+construction**, because the schema author declared the floor rather than a heuristic
+inferring it. What it *costs* is not the same in the two extraction modes, and the
+difference decides how you should pick the number:
+
+| | Simple (`extraction.mode: simple`) | Advanced (`extraction.mode: advanced`) |
+|---|---|---|
+| Where the floor is checked | after extraction, on the returned result | **inside** the extraction loop, at the agent's tool boundary — and **per shard** when the section shards |
+| A list under the floor | raises `extraction_list_truncated` (**warning**) and, when `extraction.validation.enabled` is on (the default since v0.7), a schema violation in `metadata.validation` / `extraction_validation_failed` | is **rejected**; the agent gets a bounded number of correction rounds, and if it still cannot reach the floor the extraction **fails** |
+| The rows that were extracted | kept, and visible in the section result | **discarded** — a failed extraction writes no `inference_result` |
+| Document status | unchanged: `COMPLETED` | the section fails, so the document fails |
+
+**In Simple mode `minItems` buys visibility and nothing else.** No processing
+issue changes a document's status *by virtue of its severity* — including the
+`error`-severity `extraction_rows_below_ocr_estimate` above, which fails its
+section by **raising** rather than by being an error — and the strongest thing
+`extraction.validation.fail_action: reject` does is record
+`parsing_succeeded: false`, which the Processing Report and the UI's Processing
+Report tab read and the status path does not. So the value is that the loss becomes
+something you can filter and alert on, and
+`extraction.row_shortfall_action: fail` above is what decides the outcome.
+
+⚠️ **In Advanced mode `minItems` is a hard floor, and an unreachable one costs the
+document.** The Pydantic model the agent fills carries the constraint (only scalar
+*leaves* are made nullable for transport, not the list bounds), so a short list is
+rejected where it is produced. The correction rounds are whole-section agent turns
+and each is billed; when they run out, the section fails with *Failed to generate
+valid structured output*, carrying no rows and no diagnosis of what was short. That
+is a **worse** outcome than `row_shortfall_action: fail`, which writes the partial
+rows, the error-severity issue and the Processing Report first and only then fails
+the section.
+
+So, in Advanced mode:
+
+- **Set a floor you are willing to fail the document on.** `minItems: 1` on a list
+  that is sometimes legitimately empty will fail those documents. A floor near the
+  true row count on a corpus where the agent occasionally falls a row short will
+  fail those too.
+- **If what you want is a signal rather than a failure, use
+  `extraction.row_shortfall_action`** — it keeps the data and the explanation.
+
+⚠️ **A whole-section floor cannot be satisfied by any shard, and Advanced mode
+shards on the shipped defaults.** This is the ordinary case rather than an edge
+case: `max_concurrent_batches` ships at **10** — in `base-extraction.yaml` and in
+the Advanced extraction settings the Configuration editor renders — so choosing
+Advanced mode is the whole of the opt-in. Sharding then engages whenever the
+section exceeds one shard's budget, which at the shipped `max_pages_per_shard: 5`
+means any section over **five** pages of ordinary text, and fewer pages when they
+are dense enough to fill the shard token budget. Each shard agent's extraction tool
+is built from a model that carries **the whole section's row-count bounds**, so the
+floor is enforced *per shard*, not at the merge. A shard sees only its page range, so
+a `minItems: 100` floor on a 17-page section — four shards at the shipped defaults —
+rejects every shard that holds fewer than 100 rows, and a shard over a cover page
+holds none at all. The document fails even though it genuinely contains 800 rows.
+
+There is no floor that is both useful and safe here: the only value every shard can
+satisfy is no floor. The relaxed per-shard *feedback* validator, which drops
+`required` and `minItems` precisely because a shard legitimately holds neither,
+governs the agent's self-correction round rather than the tool boundary that rejects
+the call, so it does not rescue this. So **if the section shards, do not put
+`minItems` on its lists**; use `extraction.row_shortfall_action`, which is evaluated
+once on the merged section and is the only completeness lever here that is
+shard-aware.
+
+**`required` behaves differently, and needs no such warning.** A shard's tool does
+accept `null` for a required list or nested object, so a shard covering pages that
+contain none of a required table answers `null` — the answer its instruction asks for
+— and is not sent back to correct it. Presence is judged once on the *merged* section,
+against the real class schema, where a null property reads as absent and is reported
+by `extraction.validation` like any other required-property violation. That split is
+why a `required` list is safe on a section that shards and a section-sized `minItems`
+is not: a shard holding none of the rows can satisfy `required` (with `null`, or with
+`[]`), and can satisfy no row-count floor at all.
+
+Without `minItems`, the OCR-row estimate
+(`extraction_rows_below_ocr_estimate`) is what catches a partial Simple-mode list — it
+compares the rows extracted with the rows in the section's OCR tables of the same shape,
+so 43 of 800 is reported with no `minItems` set at all. What neither signal can do is
+distinguish a list that returns 10 of 1,200 rows *from a document whose OCR shows only
+10 table rows* from a document that genuinely has 10: with no evidence of the missing
+rows, nothing is detectable.
+
 For corpora where large tables are expected — in practice anything beyond ~400 rows
 or ~10 pages per document — use **Advanced** mode, which holds recall 1.000 through
 3,200 rows by sharding. Simple mode deliberately does not shard: that is the capability
-that distinguishes the two modes. Without `minItems`, the OCR-row estimate
-(`extraction_rows_below_ocr_estimate`) is what catches a partial Simple-mode list — it
-compares the rows extracted with the rows in the section's OCR tables of the same shape,
-so 43 of 800 is reported even with no `minItems`; a list that returns 10 of 1,200 rows
-from a document whose OCR shows only 10 table rows cannot be distinguished from a document
-that genuinely has 10. When a Simple-mode section is too large to fit the model's input
-window at all, the run **fails** (Bedrock's *Input is too long for requested model*); the
+that distinguishes the two modes. When a Simple-mode section is too large to fit the
+model's input window at all, the run **fails** (Bedrock's *Input is too long for
+requested model*); the
 failure is raised as `ExtractionInputTooLarge` with an explanation and the remedy (the
 estimated request size, the window, and "use Advanced extraction or split the document")
 in the Step Functions cause and the extraction log, and it is deliberately not retried.
@@ -2110,8 +2433,10 @@ in particular it is *not* behind `extraction.validation.enabled` — a guard aga
 silent data loss that has to be switched on protects nobody who did not already
 know to look. (That argument is also why `extraction.validation.enabled` itself now
 defaults to **on** as of v0.7; this check stays ungated regardless, so explicitly
-turning validation off does not also disable a check that costs nothing.) Its only
-effect is one more agent turn; it can never fail a document.
+turning validation off does not also disable a guard whose whole effect is to ask
+the model to try again.) Its only effect is one more agent turn — which is billed,
+so the worst case is one wasted turn on a document that genuinely has no rows inside
+a detected table — and it can never fail a document.
 
 This closes a real failure mode: an agent declined the deterministic table parser
 because one column was OCR-corrupted, then returned the whole 100-row list as
@@ -2121,12 +2446,12 @@ COMPLETED. The prompt now states the rule explicitly: declining the tool obliges
 the agent to extract the table directly, and one unreadable column means that
 cell is `null`, not that the row or the list is dropped.
 
-The **Processing Report** also stops contradicting itself here. It previously
-printed `✓ Completeness Validation: All schema constraints satisfied` immediately
-above the warning that the list was empty, because with no `minItems` no
-constraint *was* broken. It now reads `⚠` and says which list returned no rows,
-how many rows the OCR found, whether the table tool ran, and that `minItems` would
-make it a hard constraint.
+The **Processing Report** does not contradict itself over this case. With no
+`minItems` no schema constraint *is* broken, so the completeness line would
+otherwise read `✓ All schema constraints satisfied` immediately above the warning
+that the list was empty. Instead it reads `⚠` and says which list returned no rows,
+how many rows the OCR found, whether the table tool ran, and that setting
+`minItems` would report the same shortfall as a schema violation as well.
 
 ---
 
@@ -2248,14 +2573,24 @@ the system automatically adds `confidence_threshold` from configuration.
   ([#895](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/895)).
   The failure message names the model and lists models measured on this path.
 - Remedies: reduce `extraction.agentic.shard_token_budget` /
-  `extraction.agentic.max_pages_per_shard` so each call emits less (AWS's
-  [Nova tool-use troubleshooting guide](https://docs.aws.amazon.com/nova/latest/userguide/tools-troubleshooting.html)
-  attributes this error largely to inference parameters and output budget); set
+  `extraction.agentic.max_pages_per_shard` so each call emits less; set
   `extraction.model` (or a class's `x-aws-idp-extraction-model` override) to a model
   measured on this path; or set `extraction.mode: simple`, which needs no tool use in
   its default configuration. Amazon Nova Lite in particular has not completed the
   Advanced path — see
   [Supported models for agentic extraction](#supported-models-for-agentic-extraction).
+- **Inference parameters are not the lever here, despite what AWS's
+  [Nova tool-use troubleshooting guide](https://docs.aws.amazon.com/nova/latest/userguide/tools-troubleshooting.html)
+  suggests.** Greedy decoding — `temperature: 0` plus `topP: 1` plus `topK: 1`, the
+  setting that guide recommends — leaves Nova Lite's failure rate statistically
+  unchanged — 0.787 with no `topK`, 0.812 with `topK: 1`, 0.838 with the full triple,
+  across 160 direct calls per arm (Fisher *p* = 0.68 and *p* = 1.00; a large improvement
+  is excluded, an improvement smaller than 18% relative is not). What
+  determines the outcome is the **shape** of the request: a schema holding only a list
+  fails far less often than the same list with sibling scalar properties beside it,
+  independently of schema size. Measurements, the per-model `topK` routing table and
+  the power limits:
+  [Greedy decoding and invalid tool-use sequences](benchmarking/studies/greedy-decoding-tool-use.md).
 
 **Template errors**
 

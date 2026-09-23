@@ -112,12 +112,8 @@ code_checks:
     - python --version
     - apt-get update -y
     - apt-get install make curl git -y
-    # Fetch target branch for comparison in typecheck-pr. On an MR, compare
-    # against its target; on a bare branch push (no MR), compare against develop
-    # (this repo's integration branch), not main.
-    - export TARGET_BRANCH="${CI_MERGE_REQUEST_TARGET_BRANCH_NAME:-develop}"
-    - echo "MR target branch (CI_MERGE_REQUEST_TARGET_BRANCH_NAME):$TARGET_BRANCH"
-    - git fetch origin $TARGET_BRANCH:$TARGET_BRANCH || echo "Could not fetch $TARGET_BRANCH branch"
+    # No gate in this job diffs against the MR target branch, so no target-branch
+    # fetch is needed. The type gate is `make typecheck`, over the whole tree.
     # Install uv
     - pip install uv
     # Create virtual environment
@@ -161,19 +157,27 @@ code_checks:
     # Makefile.
     - pip install 'cfn-lint==1.51.0'
     - make lint-cicd SKIP_NPM_CI=1
-    - echo "=== Type Checking Configuration ==="
-    - echo "MR target branch:$TARGET_BRANCH"
-    - echo "Comparing:$TARGET_BRANCH...HEAD"
-    - echo "===================================="
-    - echo ""
-    - make typecheck-pr TARGET_BRANCH=$TARGET_BRANCH
+    # The WHOLE tree, not just the files this MR touched. `make typecheck-pr` was
+    # what ran here, and it narrows basedpyright to the changed files — so it
+    # cannot see a break the change caused in a file the diff did not include,
+    # which is the ordinary shape of a type error. It also meant nothing ever ran
+    # the check that pyrightconfig.json's `include` closure is a closure OF.
+    # A full run is ~1 minute over the whole tracked tree.
+    - make typecheck
     # Static API RBAC/authorization scan (no AWS needed; catches op/schema/
     # expectations drift and missing server-side group checks).
     - make api-test-static
     # SKIP_INSTALL=1: idp_common[test] already installed via uv above (avoids a
-    # redundant plain-pip resolve that recompiled numpy from source). PYTEST_ARGS
-    # `-n auto` parallelizes the suite across the runner's cores (pytest-xdist).
-    - make test-cicd -C lib/idp_common_pkg SKIP_INSTALL=1 PYTEST_ARGS="-n auto"
+    # redundant plain-pip resolve that recompiled numpy from source).
+    #
+    # `-n auto` is no longer passed here: it is the Makefile's own default
+    # (PYTEST_PARALLEL), so GitHub gets it too. Passing it again would put `-n auto`
+    # on the command line twice, which pytest answers by collecting NOTHING and
+    # exiting 5 -- loud rather than silent, but a broken job either way.
+    - make test-cicd -C lib/idp_common_pkg SKIP_INSTALL=1
+    # Ratchet per-file coverage against scripts/coverage_debt.json. Must follow the
+    # line above: it reads the coverage report that step writes.
+    - make check-coverage-debt
     # Package/Lambda suites not covered by idp_common_pkg (idp_cli, idp_sdk,
     # idp_feature_sdk, feature-platform, capacity, circuit-breaker, chat,
     # config_library) — all green headless, previously CI-untested.
@@ -181,6 +185,12 @@ code_checks:
     # UI unit tests (Vitest + jsdom, no browser). Node 22 installed above.
     - cd src/ui && npm ci --prefer-offline --no-audit && npx vitest run && cd ../..
 
+  # COVERAGE IS REPORTED, NOT ENFORCED. There is deliberately no `coverage:`
+  # minimum here, for the same reason GitHub's report sets fail_below_min: false:
+  # the only coverage.xml produced is lib/idp_common_pkg's, one of the ~64 test
+  # roots scripts/run_all_tests.py discovers, so a repo-wide minimum from it would
+  # be a number about one package presented as a number about the repository. See
+  # the "Coverage is reported, not enforced" section in CONTRIBUTING.md.
   artifacts:
     paths:
       - lib/idp_common_pkg/test-reports/coverage.xml

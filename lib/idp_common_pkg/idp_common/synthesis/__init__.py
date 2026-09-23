@@ -18,6 +18,13 @@ Pieces:
 The ``engine`` submodule is intentionally NOT imported here so that schema
 authoring, catalog lookup and the bridge work without the generator installed.
 Import it explicitly: ``from idp_common.synthesis import engine``.
+
+Job status for a bootstrap/synthesis run is **not** reported from this package.
+It is owned by the ``idp-data-generator`` extension, which writes each job's
+status to its own ``BootstrapTrackingTable`` (``bootstrap-processor/index.py``
+and ``agent-source/runtime/handler.py``) and serves it back over the extension's
+FeatureApi as ``GET /jobs/{jobId}``, which the Web UI polls. The host has no
+status channel of its own to post to.
 """
 
 from idp_common.synthesis.schema_bridge import (

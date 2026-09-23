@@ -47,6 +47,9 @@ make ruff-lint
 # Python formatting only
 make format
 
+# Re-measure ruff's per-file exclusion baseline (part of lint, fastlint, lint-cicd)
+make check-lint-debt
+
 # Type checking with basedpyright
 make typecheck
 make typecheck-stats
@@ -65,20 +68,87 @@ make cfn-lint
 
 # Same, but list every advisory warning in full
 make cfn-lint-warnings
+
+# Resolve every relative Markdown link, anchor and published-page target (offline)
+make check-markdown-links
 ```
+
+**The Python lint gates read every tracked `.py` file, and what they skip is a
+named list of files rather than a directory.** `ruff.toml` used to exclude five
+**bare directory names** — `notebooks`, `options`, `patterns`, `src`, `scripts` —
+and a bare name in ruff's exclusion patterns matches at **any** path depth, so
+`src` also excluded `nested/*/src` and `patterns/*/src`. 442 of 1230 tracked `.py`
+files were read by neither `ruff check` nor `ruff format`, including all 138 files
+under `scripts/` (this repository's own gate layer) and 76 under `nested/*/src/`
+that nobody had counted. A clean `ruff check` on one of them meant the file was
+never opened. Issue #975.
+
+The exclusions are now per-file, generated from `scripts/lint_debt.json`, and
+ratcheted: `ruff.toml`'s `[lint] exclude` names the files that already carried
+findings, `[format] exclude` names the files `ruff format` has never run over —
+`python3 scripts/check_lint_debt.py --summary` prints both counts, which shrink as
+the debt is paid — and
+`make check-lint-debt` (in `lint`, `fastlint` **and** `lint-cicd`, so both CIs)
+re-measures every tracked file with the exclusions bypassed. It fails if a listed
+file *gained* a finding, if a listed file is now clean and should be delisted, if a
+listed path is gone, if one of the three **generated** arrays grows a bare
+directory name, or if ruff's walk misses a tracked file no `scope` entry accounts
+for. That last check is what covers the top-level `exclude` array, which is bare
+directory names **on purpose** (a `build/` at any depth is build output) and so is
+deliberately outside the bare-name check — #975 would otherwise be re-openable
+through it with every other check green.
+
+⚠️ **To find out whether a given file is linted, run `python3
+scripts/check_lint_debt.py --explain <path>`. Do not ask ruff.** Every ruff-native
+probe misreports at least one class of file: a plain `ruff check <path>` bypasses
+the exclusions, and `--force-exclude` restores only the *discovery* ones, so
+`ruff check --force-exclude <path>` prints `All checks passed!` and exits 0 for
+every lint-excluded file. `ruff check --show-files` does not honour `[lint] exclude`
+either. A misleading probe is the stated reason #975 survived inspection.
+
+Pay a file down by fixing its findings and running `python3
+scripts/check_lint_debt.py --write` — for a formatting entry spell the path out,
+`ruff format <that path>`, because bare `ruff format` honours the exclusion and
+skips the file you are fixing. Never hand-edit either array. `--write` **refuses to
+grow** either list, naming the paths, unless given `--allow-new-debt "<reason>"`,
+which records the reason in the baseline; without that refusal `--write` would
+launder a brand-new finding into a permanent exclusion. `--summary` prints the
+current split. Two `extend-exclude` entries are scope decisions rather than debt —
+the vendored `pii-anonymizer` tree and `**/*.ipynb` — and each carries a premise
+the gate evaluates against the tree.
+
+The **formatting** debt is deliberately unpaid: `ruff format` over that whole list
+is a mechanical, conflict-generating sweep that belongs in its own change.
+
+`basedpyright` covers every tracked `.py` file (`pyrightconfig.json`'s `include`
+previously named six paths and reached 432).
+`scripts/tests/test_pyright_config.py` derives that closure from `git ls-files`, so
+a new tree holding Python fails there rather than being silently uncovered.
+
+⚠️ **basedpyright has no ignore-file support**, so its walk reads gitignored build
+output — the one asymmetry with ruff, which honours the ignore file natively. `exclude`
+is the only mechanism available, so the same file asserts the other direction too: the
+walk must reach **nothing an ignore rule covers**, and a tree that appears inside it
+fails there naming the directory. Two staged copies of `lib/idp_common_pkg` under
+`feature-platform/idp-data-generator/` are excluded on that basis, one entry each in
+`STAGED_BUILD_OUTPUT_EXEMPT` with a premise `gate_premises.vcs_ignored_build_output`
+computes per path. Before that check existed those copies put 20 errors on
+`make typecheck` for anyone who had packaged that feature locally, and none in CI.
 
 **`make cfn-lint`** discovers templates by **content** (anything declaring
 `AWSTemplateFormatVersion`), not by filename, so a new template cannot be added
-without being covered. `make check-arn-partitions` now uses the **same** discovery
-(`scripts/discover_templates.sh cfn`, `Makefile:234`) and both targets fail outright
+without being covered. `make check-arn-partitions` uses the **same** discovery
+(`scripts/discover_templates.sh cfn`) and both targets fail outright
 if it returns nothing, so the two gates see the same set — 30 templates today. The
 hardcoded glob list that once missed `nested/`, `samples/`, `notebooks/`, `scripts/`
 and `iam-roles/` is gone; that directory list survives only as the historical note in
-the Makefile comments. One deliberate carve-out remains: `ARN_PARTITION_EXEMPT`
-(`Makefile:226`) skips any discovered template whose path starts with
-`scripts/sdlc/cfn/` — the four SDLC pipeline templates, which name a commercial-only
-cross-account principal by construction — so the ARN gate's real coverage is
-"every template found by content, less that prefix" — 26 of the 30. `cfn-lint`
+the Makefile comments. **Both gates now scan all 30 templates: no template is skipped
+at path scope by either.** The ARN gate's one carve-out, `ARN_PARTITION_EXEMPT`, is
+per **line**: entries are `<path>:<line-pattern>` (the shape
+`scripts/sdlc/retired_services.json` uses), and the single entry today hides the two
+statements in `scripts/sdlc/cfn/credential-vendor.yml` that trust a named role in the
+commercial CI account — cross-partition IAM trust does not exist, so those two cannot
+be parameterised. Everything else in those templates now is. `cfn-lint`
 exempts nothing at **path** scope: no template is skipped. It does exempt specific
 *rules*, which is a different axis — it runs with `--ignore-checks
 $(CFN_LINT_IGNORE)` (E3043 disabled repo-wide, see below) and E1161/E3031 are
@@ -110,6 +180,112 @@ both. `scripts/tests/test_nested_stack_parameters.py` asserts that wiring direct
 against the **source** templates instead, and also covers the reverse direction
 (a required nested parameter the parent never passes) that E3043 ignores.
 
+**`make check-markdown-links`** resolves every relative link in every tracked
+`.md` file, discovered from `git ls-files` at run time. Five finding kinds, of
+which three are the checks proper: the path exists (`missing-path`,
+`escapes-repository`); an `#anchor` names a heading the target actually has
+(`missing-anchor`), slugified the way `github-slugger` does it (which is what
+both GitHub and Astro/Starlight use, so one implementation serves both); and a
+page the docs site **publishes** does not
+link relatively to a `docs/` page `docs-site/setup.sh` leaves unpublished
+(`unpublished-target`). That third one is the case review cannot catch — the link
+resolves in the repository and 404s on the site, because
+`docs-site/plugins/remark-rewrite-docs-links.mjs` only sends a target that
+*escapes* `docs/` to a GitHub blob URL. Use the blob URL at the call site, as
+`docs/threat-model.md` and `docs/external-idp.md` do. The remaining two kinds are
+the gate's own reading coverage: `unreadable-region` for a code fence that
+swallows content and `unrewritable-on-site` for a `.md` link the rewrite plugin's
+pattern does not match (a query string is the live shape). The published set is
+derived by **running** `setup.sh` against a throwaway root and reading its
+symlinks back, never by parsing it: its `README.md` filter is inside the
+top-level loop only, so three nested `README.md` pages *are* published and a
+plausible reading of the script gets that backwards.
+
+Two things it deliberately does not answer, both stated in the script's own
+docstring so a green run is not over-read. **External `http(s)` URLs are never
+fetched** — a blocking gate that needs egress red-lines the branch on somebody
+else's outage; `scripts/tests/test_well_architected_doc.py` keeps that check
+opt-in behind `CHECK_DOC_LINKS=1` for one page. And a **non-`.md`** relative link
+from a published page (`../samples/lending_package.pdf`, `./releases/`) is left
+alone by the rewrite plugin and so 404s on the site while resolving in the
+repository; the fix for that class belongs in the plugin rather than at 34 call
+sites. It *does* report a **code fence that swallows content** — one that never
+closes, or a ```` ```bash ```` opener inside a ```` ``` ```` block, which
+CommonMark cannot read as a closer — because everything inside a fence is
+invisible to every other check here, so a stray fence turns the gate off for the
+rest of the file. No exemption list: the illustrative placeholders in
+`.claude/skills/*.md` sit inside fenced blocks and so are not links, and a
+`CHANGELOG` entry citing a page deleted since gets a **version-pinned** blob URL
+(`/blob/v0.5.15/docs/alb-hosting.md`), which keeps the history accurate instead of
+carving the file out.
+
+⚠️ **The slugifier is the part to be careful with, and `[\w\- ]` is the wrong
+rule.** `github-slugger` keeps combining marks and variation selectors and drops
+`No`; Python's `\w` does the opposite. `⚠️` is U+26A0 **plus U+FE0F**, so 26
+headings here slug to an invisible leading character and a naive rule produces a
+slug one codepoint shorter that looks identical in a diff, a terminal and a review
+— a link written against it is broken on GitHub *and* on the site, and the gate
+passes it. `scripts/tests/test_markdown_links.py` therefore slugs **every heading
+in the tree** through the real `github-slugger` from `docs-site/node_modules` and
+compares, rather than trusting a table of hand-written cases; a table is what
+pinned that divergence in the first place. Keep the comparison, and if you change
+`SLUG_KEEP_CATEGORIES`, run it.
+
+### Every gate exemption is registered — `scripts/tests/gate_exemptions.json`
+
+**If you turn a gate off for anything, you register it.** Adding an exemption list
+without a registry entry fails
+`scripts/tests/test_gate_exemption_registry.py::test_every_discovered_exemption_is_registered`,
+and the failure names your constant and tells you what to write.
+
+The reason is a defect class that has shipped repeatedly here: **one justification
+attached to a set, where the justification is a property of individual members.**
+Four exemption lists stated a premise that was false for at least one member, and in
+each case the false member was the one the gate most needed to see — a nested stack
+exempted as independently deployed, a Lambda tree exempted as built separately that
+the publisher builds in the same run, a `LogLevel` exclusion resting on an installer
+manifest one excluded directory does not have, four templates exempted for naming a
+commercial-only principal one of which contains no ARN at all. Read in aggregate
+("does this reason hold broadly?") all four pass. That is why reading them did not
+catch them.
+
+So:
+
+- **One entry, one member's worth of reason.** Never exempt a directory where a file
+  will do, or a file where a line will do. `ARN_PARTITION_EXEMPT` entries are
+  `<path>:<line-pattern>`; `scripts/sdlc/retired_services.json` uses the same shape.
+  Bounding a reason to one file is what makes the mismatch show up while you are
+  writing it rather than in an audit later.
+- **If the premise is computable, compute it.** The predicates live in
+  `scripts/tests/gate_premises.py` — `not_a_nested_stack_of_parent`,
+  `built_separately_from_main_stack`, `file_absent_or_untracked`,
+  `installer_manifest_pins_parameter` — each taking **one** member and returning a
+  verdict. Name the predicate in your registry entry and parametrise your gate over
+  the members; a named predicate the gate never calls is itself a test failure.
+- **If it genuinely is not computable, say `JUDGEMENT` and write the reason.** That is
+  a legitimate answer (a foreign account's partition, another assistant's
+  capabilities, an acknowledged backlog). It is not an exemption from scrutiny: the
+  ratchets still apply.
+- **Give it a ratchet.** *Non-vacuity* — it must currently shield at least one finding,
+  or it is dead and pre-exempting whatever next occupies the path. *Count pinning* —
+  store how many sites it shielded when written, so a new site inside an exempt tree
+  still fails. *Universe closure* — derive the universe and fail if any member is in
+  neither the enforced nor the exempt set; this is what makes an exemption list
+  trustworthy at all. *Staleness* — a dead entry fails.
+- **If it can have none, say what is unprotected** in `ratchetGap`. Those are the
+  honest residuals and they are counted: `MAX_UNRATCHETED` in the meta-test may shrink
+  and not grow, so declaring a gap cannot quietly become the default answer.
+
+Membership is **derived** and only the judgement is authored:
+`scripts/tests/exemption_discovery.py` finds exemption surfaces by constant name, by
+the prose of the attached comment (a constant whose comment argues for an exclusion is
+one, whatever it is called), in the `Makefile` and `make/*.mk`, in `scripts/*.sh`, in
+`ruff.toml` and `pyrightconfig.json`, and in the three JSON baselines. It reads
+**source**, not imported modules, because two of these constants change after import.
+It discovers through `git ls-files`, so it cannot report findings against build output
+or a sibling worktree. The meta-test fails in **both** directions — unregistered, and
+registered-but-vanished.
+
 ### CI parity between GitHub and GitLab
 
 GitLab and GitHub now run the **same** non-integration gates. Integration tests
@@ -119,10 +295,12 @@ Historically several gates ran on GitLab only, so a change merged via a GitHub P
 skipped them — the same class of gap as the SRT/dep-audit note below. Now on both:
 `make lint-cicd` (which itself covers `cfn-lint`, `validate-buildspec`,
 `check-arn-partitions`, filtered-scan and data-plane-tag checks),
-`make typecheck-pr`, `make api-test-static`, `make test-cicd -C lib/idp_common_pkg`,
+`make typecheck`, `make api-test-static`, `make test-cicd -C lib/idp_common_pkg`,
 `make test-packages-cicd`, the UI vitest suite,
-`scripts/check_first_party_deps.py` and
-`scripts/sdlc/validate_service_role_permissions.py`.
+`scripts/check_first_party_deps.py`,
+`scripts/sdlc/validate_service_role_permissions.py`, `make srt-scan` and
+`scripts/security/dep_audit.py`. The type gate is the whole-tree `make typecheck`;
+`make typecheck-pr` is a developer convenience and runs in neither CI.
 
 `make cfn-lint` and `make validate-buildspec` were in **neither** CI before — they
 sat in `lint`/`fastlint` but not `lint-cicd`, so a template or buildspec error
@@ -144,14 +322,19 @@ to `develop` runs nothing on GitHub.
 
 Parity between the two CIs only means both *run* the gates. Whether a red gate can
 actually stop a merge is a **repository setting**, not anything in this tree, and
-today it does not: `develop` has no branch protection at all, so every gate above
-is advisory. A pull request can be merged with all checks red.
-
-Do not take that on trust from this file — measure it:
+today it does not: **neither `develop` nor `main` has any branch protection**, so
+every gate above is advisory. A pull request can be merged with all checks red.
+`main` matters as much as `develop` here — it is the repository's default branch
+and the one releases are cut from — and one invocation reads one branch, so
+answering the question takes two:
 
 ```bash
-make check-branch-protection          # reads the live setting via the GitHub API
+make check-branch-protection                                       # develop
+make check-branch-protection BRANCH_PROTECTION_ARGS=--branch=main   # main
 ```
+
+Do not take the state on trust from this file. Those commands read the live
+setting via the GitHub API.
 
 The command derives the expected required-check list by **parsing**
 `.github/workflows/*.yml` for job names (a hardcoded inventory would drift the
@@ -163,9 +346,11 @@ advisory: `build-docs.yml` and `generate-dep-manifest.yml` are path-filtered, an
 `Test Results` is an action-created check run behind an `if:`, so requiring any of
 them would leave a check pending forever and block every merge.
 
-Three things about what it reads. All eight shared gates are *steps* in one job
-(`developer_tests`), so they are **one** requireable context sharing one red mark,
-not three and not eight. It reads classic branch protection **and** rulesets,
+Three things about what it reads. Eight of the ten shared gates are *steps* in one
+job (`developer_tests`), so those eight are **one** requireable context sharing one
+red mark rather than one per gate; the SRT scan and the dependency audit are jobs of
+their own in `security-checks.yml`, so the ten shared gates produce three
+requireable contexts in total. It reads classic branch protection **and** rulesets,
 because a branch can be governed entirely by a ruleset while the classic endpoint
 reports nothing. And it separates "not protected" from "cannot see": the classic
 endpoint needs repository admin and answers 404 without it, so `GET
@@ -178,14 +363,43 @@ It is **opt-in and non-blocking on purpose**: it needs network access and a toke
 comes from the nested `protection.required_status_checks` object on
 `GET .../branches/<branch>`; `administration:read` is what the other five
 assertions need, and without it those five are reported **unread** rather than
-satisfied), and it reports "not protected" until
-[issue #933](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/933)
-is closed — enabling protection needs repository **admin**, which no contributor
-and no CI token here has. In `lint-cicd` it would red-line every branch for a
-condition nobody in the tree can fix, so it is in neither `lint-cicd` nor
-`test_ci_gate_parity.py`'s `SHARED_GATES`. With no token or no network it exits 0
-with an explanation; `--fail-on-skip` turns that into an error, which is how it
-should be run once #933 closes and it becomes a required, blocking gate.
+satisfied), and on this repository it reports "not protected" on both branches, so
+in `lint-cicd` it would red-line every branch for a condition nobody in the tree
+can fix. It is therefore in neither `lint-cicd` nor `test_ci_gate_parity.py`'s
+`SHARED_GATES`, and `scripts/tests/test_check_branch_protection.py` fails if it is
+added to either or invoked from either CI configuration. With no token or no
+network it exits 0 with an explanation; `--fail-on-skip` turns that into an error,
+which is how to run it once it is a blocking gate. Its steady-state result today is
+**exit 1 with one `not_protected` finding** per branch — the expected answer, not a
+regression.
+
+**The absence of protection is a known, accepted residual, not an open task.**
+Enabling classic protection needs repository **admin**, which no contributor and no
+CI token here has, so it cannot be done from the tree or from tooling; the decision
+to stop pursuing it from inside the repository is recorded in closed
+[issue #933](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/933).
+Cite that issue as the decision record; do not treat it as pending. **Nothing in
+this repository can substitute**, and that is structural rather than a matter of
+effort: enforcement is server-side, so a merge taken through GitHub's own Merge
+button runs no code from this tree and no hook, script or gate here can turn a red
+check into a refused merge.
+
+The trigger for making this a required, blocking gate is therefore a repository
+setting changing, by one of two routes that are **not the same permission**: either
+somebody with repository **admin** enables classic branch protection, or an
+organization or enterprise owner publishes a **branch ruleset** targeting these
+branches. The second needs no repository admin, and the mechanism is demonstrably
+available here — the repository already inherits five enterprise rulesets, four
+`target=repository` and one `target=tag`, none of which targets a branch. Neither
+route is actionable from this tree, and neither announces itself: running the
+command is how either would be noticed.
+
+What the tree *can* do, and does, is make a direct write to a shared branch a
+deliberate act on the machine it is typed on — see
+[the shared-branch guard](#the-check-shared-branch-guard) below. Read it against
+the paragraph above rather than as a weaker form of it: it refuses an accidental
+`git commit`, `git push` or red `gh pr merge` from a checkout, and it changes
+nothing about what GitHub will accept.
 
 ### Testing
 
@@ -210,7 +424,9 @@ The per-tier procedures stay in
 `scripts/sdlc/docs/CI_TEST_COVERAGE.md`.
 
 ```bash
-# Run all tests (idp_common_pkg + idp_cli + srt security scan)
+# Run every non-integration suite (auto-discovered; see scripts/run_all_tests.py).
+# Note this does NOT run the SRT security scan - that is `make srt-scan`, and it is
+# in neither the lint nor the test gate set, so Bandit findings surface only in CI.
 make test
 
 # Run tests in idp_common_pkg only
@@ -223,7 +439,7 @@ cd lib/idp_common_pkg && make test-unit
 cd lib/idp_common_pkg && make test-integration
 
 # Run idp_cli tests
-cd idp_cli && python -m pytest -v
+cd lib/idp_cli_pkg && python -m pytest -v
 
 # Run specific test markers
 pytest -m "unit"
@@ -250,7 +466,8 @@ make srt-fix       # Interactive fix mode
   A change merged on GitHub used to skip it entirely — see the note in that
   workflow. ⚠️ Being visible is not being blocking: run
   `make check-branch-protection` to see whether this check is actually required
-  on `develop` (it is not, yet — issue #933).
+  on `develop` or `main`. It is required on neither, and enabling protection is
+  out of this repository's reach — see "Visible is not blocking" above.
 - Does not run on feature branch pushes to avoid blocking development
 - Pipeline fails if high-priority security findings are detected
 - Provides security gate before code is merged to `develop`
@@ -437,7 +654,7 @@ See `lib/idp_common_pkg/idp_common/extraction/README.md` for detailed documentat
   - Automatic merging of table fragments split by page breaks
   - Hybrid extraction: agent uses parsing for tables, LLM for complex layouts
 
-**`idp_cli`** (`idp_cli/`):
+**`idp_cli`** (`lib/idp_cli_pkg/idp_cli/`):
 - Command-line interface for deployment and batch processing
 - Stack deployment and updates
 - Batch document processing
@@ -483,7 +700,7 @@ Custom configurations override selected pattern presets when specified.
 
 ### Testing Standards
 
-- Tests located in `lib/idp_common_pkg/tests/` and `idp_cli/tests/`
+- Tests located in `lib/idp_common_pkg/tests/` and `lib/idp_cli_pkg/tests/`
 - Use pytest markers: `@pytest.mark.unit` and `@pytest.mark.integration`
 - Integration tests require AWS resources
 
@@ -536,6 +753,156 @@ restated here. If it blocks a string that is legitimately public, add that strin
 to the allowlist in the script with a comment saying why, rather than loosening the
 pattern. Run its tests with `make test-hooks`.
 
+#### The `check-shared-branch` guard
+
+Changes reach `develop` and `main` through a pull request. Nothing on GitHub
+enforces that (see [Visible is not blocking](#visible-is-not-blocking--make-check-branch-protection)),
+so two client-side halves do, and they are deliberately separate because they cover
+different routes:
+
+| Half | Covers | Install |
+|---|---|---|
+| `scripts/hooks/check_shared_branch.py` — a second `PreToolUse` hook on `Bash` | `git commit` and `git push` run **through the assistant's Bash tool**, plus `gh pr merge` | none; registered in `.claude/settings.json` |
+| `scripts/hooks/pre-push` — a real git `pre-push` hook | pushes the first half never sees: a plain shell, an IDE button, and the `git push` inside `make commit` | `make install-git-hooks`, once per clone |
+
+The `PreToolUse` half refuses a `git commit` whose commit would land on a shared
+branch, and a `git push` whose destination resolves to one. Both questions are
+answered about the *whole* command rather than the state it started in, so `git
+switch -c fix/x && git commit` is allowed and `git switch develop && git commit` is
+refused — which matters because the remedy the refusal prints is usually typed as
+one line. A `cd <path>` or `pushd <path>` earlier in the command is followed too, so
+`cd ../other && git commit` is judged against `other`.
+
+Destination resolution is the load-bearing part: it covers the forms that
+never name the branch (a bare `git push` with an upstream, `git push origin HEAD`,
+`git push origin @`), the delete form `git push origin :develop`, `--all`/`--mirror`,
+and a bare push under `push.default=matching`, which sends every same-named branch.
+A bare push is read **through `push.default`** rather than as the union of the
+branch name and the upstream: `current` targets the branch name and
+`upstream`/`tracking` the upstream, so taking both would be a false refusal under
+either. `--tags` with no refspec writes no branch and is allowed; `--follow-tags`
+sends the branch as well and is not. `git switch --track origin/develop` and `git
+checkout -t origin/develop` name no new branch — git takes the remote ref's leaf —
+so HEAD lands on local `develop` and a commit after one of them is refused.
+
+It also refuses `gh pr merge` when a check has **concluded** as failing. Two ways of
+misreading that command are silent, so both are guarded and tested: an option that
+takes a separate value must not have its value read as the pull request number
+(`gh pr merge --subject "x" 1055`), and `--repo` is accepted on **either** side of
+the subcommand, because gh registers it on the root command — `gh -R owner/name pr
+merge 1055` is valid, and reading `owner/name` as the subcommand leaves the command
+unrecognised so no check runs at all. In both cases `gh pr checks` then errors or
+answers about the wrong pull request, which reads as "cannot tell" and allows the
+merge with nothing printed.
+
+A commit on a branch that merely *tracks* `origin/develop` is allowed. `git
+checkout -b fix/x origin/develop` sets that upstream, so refusing it would refuse
+the ordinary way of starting work; the bare `git push` from such a branch is the
+thing that would reach `develop`, and that is refused.
+
+Overrides, one per decision: `ALLOW_SHARED_BRANCH=1` for a commit or push,
+`ALLOW_RED_MERGE=1` for a merge. Put the assignment in front of the command
+(`ALLOW_SHARED_BRANCH=1 git push origin develop`). The environment is read too, and
+that is the form to be careful with: a variable exported in one tool call is gone by
+the next, but one exported by a shell profile, an IDE or a CI runner persists and
+turns the check off for **every** command in that environment. Because that is
+invisible by construction, both halves print one line to stderr naming the check an
+honoured override disabled. Only an affirmative value (`1`, `true`, `yes`, `y`, `on`)
+counts: `ALLOW_SHARED_BRANCH=0` leaves the guard on.
+
+Neither variable is registered in `scripts/tests/gate_exemptions.json`, and that is
+a decision rather than an oversight — the reasoning is written out in the hook's
+header. That registry governs a **gate** turned off for a file, a line or a rule,
+because such a reason is written once and outlives what it described. These are
+per-invocation switches on a local convention, decided by whoever runs the command
+and recorded nowhere, so an entry would be one no ratchet can test and no audit can
+act on. What they can do quietly — be exported once and disable everything
+afterwards — is handled where it happens, by the stderr line above.
+
+**What neither half covers.** The claim is bounded, and these are the routes
+around it:
+
+- A merge performed through GitHub's own Merge button, which runs no code here.
+- A pull request whose checks never ran (a fork PR gets no GitHub CI here).
+- `git push --no-verify`, which skips the `pre-push` hook outright.
+- Anything that reaches `git` other than as the first word of a segment: a script
+  file (`sh deploy.sh`), `bash -c`, `eval`, `xargs`, a wrapper that takes options of
+  its own (`env`/`nice`/`sudo`), an absolute path, or a shell function shadowing
+  `git`. The `PreToolUse` half reads the command text it is given, and none of those
+  spell out what will run. The `pre-push` hook is what catches them. A leading run
+  of **shell keywords** is a different matter and *is* handled (`SHELL_KEYWORDS`,
+  plus `time` and `command`): `if make test; then git push origin develop; fi` is an
+  ordinary thing to type, and it puts `then` first in the segment.
+- A **git alias** that runs a shell command — `git -c alias.p='!git push origin
+  develop' p`. `git` is the first word, but the subcommand is `p`, and resolving
+  aliases would mean reading configuration the hook does not read.
+- `git checkout <branch> --` with nothing after the `--`. A trailing `--` normally
+  introduces a pathspec, which makes the command a file restore, and that is the
+  reading worth having; git treats this particular spelling as a branch switch, so a
+  commit after it is judged against the branch HEAD was on.
+- `cd -`, bare `pushd` and `popd`, which depend on a directory stack the hook does
+  not keep. A segment after one of them is judged against the directory in force
+  before it, and that misses in **either** direction depending on which way the
+  stack was moving: `cd -` back into a `develop` checkout is not seen, and `cd -`
+  back out of one refuses a commit that was fine.
+- History written onto a shared branch by anything other than `git commit` —
+  `merge`, `cherry-pick`, `revert`, `rebase`, `am`. Those are local until pushed,
+  and the push is what gets refused.
+
+Neither half looks at *which* remote, so pushing `develop` to a personal fork is
+refused too, and both key on the branch *name*, so a commit onto `main` in an
+unrelated repository visited in the same session is refused. Both are overridable.
+
+Four properties worth knowing before relying on it:
+
+- **It fails open.** An unparseable command, `git` or `gh` unavailable, a network
+  failure — all allow the command. A guard that wedges the session is worse than one
+  that misses a case, which is the same choice `check_commit_text.py` makes. Failing
+  open is about what cannot be *read*, though, not about where the command runs: an
+  explicit refspec names its destination on the command line, so `git push origin
+  develop` is refused even in a directory that is not a repository.
+- **Only *concluded* failures block a merge.** `pending` is the steady state for the
+  two path-filtered workflows and the one conditional check, so refusing on pending
+  would refuse every merge. A pull request whose checks **never ran** — a fork PR
+  gets no GitHub CI here — is not refused either, since refusing it would block the
+  only route a fork contribution has.
+- **`make install-git-hooks` writes to `$(git rev-parse --git-common-dir)/hooks`,
+  not `git rev-parse --git-path hooks`.** The latter honours `core.hooksPath`, and a
+  managed developer machine may set that system-wide (in `/etc/gitconfig`) to a
+  root-owned directory of hook runners belonging to a security tool, so it resolves
+  to a path the target must never write to. The common dir is also the right answer
+  inside a worktree, where hooks are shared with the main checkout.
+- ⚠️ **Under a system-wide `core.hooksPath`, the `pre-push` hook judges by `HEAD`
+  rather than by the refs.** git runs the *runner's* hooks, and the repository's own
+  hook is reached only because those runners chain to it. They forward the hook's
+  arguments but **not its stdin**, so the hook receives no ref list — and exiting 0
+  on an empty ref list is how a hook can be installed, reported successful, and
+  refuse nothing. It therefore falls back to `HEAD` and its upstream, and says which
+  basis it used. **That substitution is wrong in both directions, and the two
+  directions arise on different machines.** The over-refusal is not confined to a
+  redirected machine: git supplies an empty ref list for any **up-to-date** push as
+  well, measured on the direct path with no runner involved, so a no-op push while
+  `HEAD` sits on `develop` is refused on an ordinary machine — which is why the
+  message names both possible causes rather than blaming a runner the user may not
+  have. The under-refusal *is* specific to the redirect: there the destination stops
+  being checked for pushes that do have work to send, so one whose destination *is*
+  a shared branch while `HEAD` is not on one (`HEAD:refs/heads/develop`,
+  `HEAD:develop`, `origin develop`, `--all`) goes through although all four are
+  refused where the ref list arrives. The `PreToolUse` half resolves destinations
+  from the command line and refuses all four, so what stays uncovered on such a
+  machine is a push typed into a plain shell rather than one the assistant runs. The
+  destination really is unknowable in that state — with no ref list a `pre-push`
+  hook is given only the remote's name and URL — and refusing every push there would
+  make the hook unusable. `make install-git-hooks` prints the implication when it
+  detects the redirect;
+  `test_pre_push_still_refuses_through_a_runner_that_drops_stdin`,
+  `test_the_head_fallback_is_wrong_in_both_directions` and
+  `test_an_up_to_date_push_supplies_no_refs_on_an_ordinary_machine` measure all
+  three claims, because a suite that only points `core.hooksPath` at the
+  repository's own hooks cannot see any of them.
+
+Run the tests for both halves with `make test-hooks`.
+
 ## Important Implementation Details
 
 ### Pattern-2 Container Deployment
@@ -553,9 +920,9 @@ The codebase maintains GovCloud compatibility:
 - Use `arn:${AWS::Partition}:` instead of hardcoded `arn:aws:`
 - Use `${AWS::URLSuffix}` instead of hardcoded `amazonaws.com`
 - Validation enforced via `make check-arn-partitions`, which runs in `lint`,
-  `fastlint` and `lint-cicd` (so both CIs) over every template discovered by
-  content, except those under `scripts/sdlc/cfn/` — see the `ARN_PARTITION_EXEMPT`
-  note above
+  `fastlint` and `lint-cicd` (so both CIs) over **every** template discovered by
+  content. No template is skipped; two individual lines are, via the per-line
+  `ARN_PARTITION_EXEMPT` — see the note above
 
 ### Nested Stacks
 
@@ -589,10 +956,14 @@ Testing samples available in `samples/`:
 
 - `scripts/sdlc/validate_buildspec.py` - Validates CodeBuild buildspec files
 - `scripts/sdlc/validate_service_role_permissions.py` - Verifies IAM service role permissions
-- `scripts/sdlc/typecheck_pr_changes.py` - Type checks only changed files in PRs
-- `scripts/sdlc/check_branch_protection.py` - Checks that `develop`'s required
+- `scripts/sdlc/typecheck_pr_changes.py` - Type checks only the files a branch
+  changes (`make typecheck-pr`), for local latency. It is a developer command, not
+  a gate: the type gate both CIs run is the whole-tree `make typecheck`
+- `scripts/sdlc/check_branch_protection.py` - Checks that a branch's required
   status checks match the jobs the workflows actually run (`make
-  check-branch-protection`; opt-in, read-only GitHub API, see issue #933)
+  check-branch-protection`; opt-in, read-only GitHub API, one branch per run).
+  Neither `develop` nor `main` is protected and enabling it is out of this
+  repository's reach — see "Visible is not blocking" above
 
 ## AWS Access for Live Troubleshooting
 

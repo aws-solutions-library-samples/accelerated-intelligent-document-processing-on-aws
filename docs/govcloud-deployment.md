@@ -61,8 +61,8 @@ Install on the machine you build from:
 
 Also request access to the default Bedrock models in your GovCloud region
 before processing documents: `amazon.nova-lite-v1:0`, `amazon.nova-pro-v1:0`,
-`us.anthropic.claude-3-5-sonnet-20240620-v1:0`, and
-`anthropic.claude-3-7-sonnet-20250219-v1:0`.
+`us-gov.anthropic.claude-sonnet-4-5-20250929-v1:0`, and
+`anthropic.claude-sonnet-4-5-20250929-v1:0`.
 
 > **Note**: The CLI creates the artifacts S3 bucket automatically. Customize
 > with `--bucket-basename` and `--prefix`.
@@ -221,7 +221,7 @@ base), keeping the full document-processing backend. See the
 >   VPC parameters — the template rejects it otherwise at changeset creation.
 >
 > If you want the Jobs API you must pass `EnableJobsApi=true` and the VPC
-> parameters explicitly, as in [Option B](#option-b-headless--jobs-rest-api-all-lambdas-in-vpc) below.
+> parameters explicitly, as in [Option B](#option-b-no-ui---headless--jobs-rest-api-all-lambdas-in-vpc) below.
 
 ### Deployment Packages
 

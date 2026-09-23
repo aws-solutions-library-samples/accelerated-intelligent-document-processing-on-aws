@@ -20,7 +20,7 @@ https://github.com/user-attachments/assets/a1e9ce1a-1b2e-4e98-a387-d2e48d7e557d
 
 ## Roles
 
-Four roles are defined as Cognito User Pool groups:
+Five roles are defined as Cognito User Pool groups:
 
 | Role | Cognito Group | Description |
 |------|--------------|-------------|
@@ -67,6 +67,14 @@ For the HITL operations the scope is resolved from the document rather than an
 argument: a review document carries the `TestSetId` it came from, and an Annotator
 attempting a document with no `TestSetId` (i.e. ordinary production review work) is
 refused outright.
+
+**Where membership and scope come from.** The `Annotator` group itself can be
+assigned in User Management or from an external IdP group claim, by setting
+`ExternalIdPAnnotatorGroupName` — see
+[external-idp.md](external-idp.md#annotators-and-the-allowedtestsets-scope).
+`allowedTestSets` is only ever assigned in User Management, so a federated Annotator
+holds the role with an empty scope — denied everything — until an Admin assigns them
+a test set.
 
 **Scope caching.** Lookups are cached briefly per Lambda container. The TTL is
 asymmetric on purpose: a populated scope is held for 5 minutes (bounding how long a
@@ -161,6 +169,15 @@ Non-admin users can optionally be assigned **allowedConfigVersions** — a list 
   - View/edit configuration — and read, compare, restore, and label revisions — for those profiles only
 - **No scope set** (empty/null): User sees all profiles and documents (unrestricted)
 
+The guarantee covers the **bytes as well as the API surface**. A profile's configuration is
+also an S3 object (`config_revisions/<profile>/<nnnnnn>.json.gz` in the Configuration
+bucket), and the operations that serve arbitrary objects apply the same profile check to the
+key — so prompts and few-shot examples from an out-of-scope profile are not reachable by
+asking for the file instead of the profile. The Configuration bucket is deliberately not
+readable with the browser's own Cognito credentials, which is what keeps that true off the
+API as well. ⚠️ This is **not** yet the case for the document buckets — see
+[Known Limitations](#known-limitations).
+
 ### Scope Is Enforced at the Profile, Never at the Revision
 
 A revision is *content inside* a profile, not an access-control object of its own.
@@ -198,15 +215,174 @@ dependency-free), so they vendor that file verbatim; a unit test fails if the co
 drift, because a scope matcher that differs between call sites is a
 privilege-escalation bug.
 
+### Resolving *whose* Scope — Two Keys, and the Lookup Fails Closed
+
+Matching is only half the rule. The other half is finding the caller's row, and it
+obeys three rules of its own, in `resolve_allowed_config_versions` in the same module.
+
+A user's row is `PK`/`SK` = `USER#<userId>`, where `userId` is a `uuid4` minted by user
+management and named by nothing in a token. Two keys reach it, and they are **disjoint
+key spaces on the same table**:
+
+| Key | How it is read | Role |
+|---|---|---|
+| The immutable Cognito `sub` | `GetItem` on a `SUB#<sub>` *pointer item* holding the row's `userId`, then `GetItem` on the row | The durable join, tried **first** |
+| The `email` claim | `Query` on the `EmailIndex` GSI | The compatibility join, tried second |
+
+- **Each identifier goes only to the key space that indexes it.** Neither is a fallback
+  for the other, and no third identifier stands in for either. Putting a `sub` to the
+  email-keyed index does not find the row by another route: it matches **no** row, and
+  an empty page is indistinguishable from "this user has no restriction". A caller whose
+  verified claims carry **neither** key cannot be looked up at all, and is denied.
+- **The `sub` is preferred because an email address can stop matching its row.** An
+  external IdP re-maps it on every federated sign-in, a pool created with
+  `ExternalIdPEmailMutable=true` lets a user change their own, and matching is
+  case-sensitive while mail systems are not. Each of those reads as "no row", which
+  means unrestricted — so keying on the `sub` is what keeps the restriction applied.
+  See [External IdP integration](./external-idp.md).
+- **A lookup that cannot answer denies.** No UsersTable wired, neither key present, or
+  a DynamoDB read that fails on *either* key space (a missing IAM grant, a throttle)
+  all refuse the request. "Cannot evaluate" is not "unrestricted": reading it as such
+  would switch the control off precisely on the drift the control exists to survive.
+  A caller presenting only a `sub` that no pointer records is denied for the same
+  reason — their row may simply predate the pointer writer, and with no email there is
+  no second key to try, so the absence of a pointer is not an answer about them.
+
+An **empty page still means unrestricted**, which is the first matching rule above
+and must stay that way — most users have no scope row.
+
+**No table change is required, on any existing deployment.** The pointer reuses the
+table's existing `PK`/`SK` key schema rather than adding a GSI, so there is no
+`AWS::DynamoDB::Table` update and no index-backfill window during which a fail-closed
+lookup would deny every scoped caller. The read is a `GetItem`, which every scope
+consumer's IAM policy already grants alongside `dynamodb:Query`.
+
+⚠️ A pointer item deliberately carries **no** `email` attribute, and must not gain one.
+A DynamoDB GSI indexes only items that have its hash key, so a pointer is absent from
+`EmailIndex` entirely — which is what keeps it out of an email query's result page. A
+pointer that appeared there could be returned by a `Limit=1` email query *instead of*
+the row, and it holds no `allowedConfigVersions`, so the scope would silently lift.
+
+⚠️ A pointer exists **only for a row that carries `allowedConfigVersions`**, and that
+is a property readers depend on rather than a saving. A row with no restriction resolves
+to "unrestricted" through either key, so a pointer for it changes no answer — but the
+pointer is read *first*, so one at an unrestricted row would pin "unrestricted" ahead of
+whatever the email join would have found. Restricted to scoped rows, resolving through a
+pointer can only ever *tighten*. **Every** reader enforces the same invariant from its
+side — a pointer that resolves an unscoped row is treated as stale, logged, and the email
+join is tried instead — and *every* is load-bearing: the claim is about the deployment,
+not about one module, so a single reader that believed such a pointer would make it
+untrue. That is **seven** implementations across five spellings:
+`resolve_allowed_config_versions` and the two vendored `config_scope` copies that
+inherit it byte-for-byte; the Chat-with-Document processor and its vendored twin; the
+PII-anonymizer feature API; and `getMyProfile`. Rule **SCOPE6** in
+`scripts/tests/test_scope_lookup_fail_closed.py` holds it as a class — any module that
+reads the pointer key space and does not normalise the row it finds fails the gate —
+because per-reader tests alone are what allowed one of them to spell the check with raw
+truthiness, which a scope of `[""]` defeats.
+
+`src/lambda/user_management` is the writer:
+
+| Path | What it does |
+|---|---|
+| `createUser` | Records the `sub` Cognito assigns, and writes the pointer if the new user is scoped |
+| `updateUser` | Writes the pointer when a scope is **set**, deletes it when a scope is **removed** |
+| `deleteUser` | Deletes the pointer |
+| The Cognito sync, on every Admin `listUsers` | Records the `sub` on each row it can match, and maintains that row's pointer |
+
+The sync matches a Cognito account to its row on the recorded `sub` first, then the
+exact address, then the **case-folded** address — because matching on the exact address
+alone is what duplicates a row whose address has changed, and a duplicate carries no
+scope. Case-folding closes the commonest cause on its own, since mail systems are
+case-insensitive and DynamoDB is not.
+
+It does **not** reach a row whose address has changed beyond case before the sync ever
+ran, because no key then matches: the sync writes a fresh row for the Cognito account,
+as it always has. What the scoped-rows-only invariant guarantees is that the duplicate
+gets no pointer, so the original row is still reachable by its own address and
+correcting the address restores the scope.
+
+Until a row has a pointer, the email join resolves it exactly as it always did.
+
+**To find the rows that are still email-only**, scan for a missing `cognitoSub`:
+
+```bash
+AWS_PROFILE=default aws dynamodb scan --table-name <stack>-UsersTable-<id> \
+  --filter-expression 'begins_with(PK, :p) AND attribute_not_exists(cognitoSub)' \
+  --expression-attribute-values '{":p":{"S":"USER#"}}' \
+  --projection-expression 'userId, email'
+```
+
+`scripts/tests/test_scope_lookup_fail_closed.py` fails if a module that reads the
+UsersTable derives a key from something other than that key's claim, puts one key
+space's identifier to the other's, or handles a lookup failure with anything but a
+refusal. It recognises a scope read by the **table**, not by the index name, because
+naming the index wrongly is itself one of the ways this has failed — and it counts a
+`get_item` as well as a `query`, because the `sub` key space names no index at all.
+
+Two limits on what that gate asserts, because a green run is easy to over-read:
+
+- It checks **key provenance, key-space confusion and failure handling only**. There is
+  no rule about the *matcher* or about the empty-page rule, so a divergent
+  `scope_allows` would not be caught — only the two byte-identical vendored copies are
+  held to the letter, by a separate file-comparison test.
+- Its rules are **syntactic**. They establish that no code *spells* a fail-open shape;
+  they cannot establish that the value which reached a matcher came from the table. The
+  per-site unit suites are what assert the behaviour, and
+  `lib/idp_common_pkg/tests/unit/test_config_scope_lookup.py` carries the transition
+  matrix — a row with a pointer, a row without one, and a caller whose email and `sub`
+  disagree.
+
+Most consumers reach the shared function by import. Six files across four artifacts
+carry the rule in their own code instead:
+
+| Artifact | Files | Why it is not an import |
+|---|---|---|
+| Both document-list resolvers | 2 | No `idp_common` layer — they sit on the hottest UI query and are kept dependency-free, so they vendor `config_scope.py` byte-for-byte (a unit test fails if the copies differ) |
+| `src/lambda/user_management` | 1 | No `idp_common` layer; it vendors `log_sanitizer` for the same reason. States both key rules for its own-profile lookup, and is the **writer** for the `sub` pointer |
+| `feature-platform/pii-anonymizer/feature-api` | 1 | Ships as its own stack, so it cannot depend on the host's layer. States both key rules, the scope normaliser and the glob matcher |
+| The Chat-with-Document processor | 2 | Imports the matcher but implements its own lookup, and is vendored into the chat-streaming bundle |
+
+The two vendored `config_scope.py` copies are byte-identical by construction. The
+**restatements** are not, and are not claimed to be: the PII-anonymizer copy omits
+the canonical lookup's `Limit=1` and its per-container cache, both of which are
+performance rather than policy. Its matcher is behaviourally identical to
+`scope_allows` today — both delegate to `fnmatchcase` under the same
+normalise-and-deny-unnamed rules — and nothing mechanical holds it there.
+
+The web UI honours patterns too. `useConfigurationVersions` filters the Configuration
+Profile list with `scopeAllows` in `src/ui/src/utils/config-scope.ts`, the client-side
+mirror of `scope_allows` — so a user scoped to `tenant-a_*` sees the profiles that
+pattern covers, and the Reprocess control is usable. The server remains the enforcement
+point; the client copy only decides what the UI offers, and the two must change
+together.
+
+⚠️ **Known limitation — an Admin cannot *enter* a glob from the UI.** The scope pickers
+in User Management are multi-selects over the profile names that already exist, with no
+free-text entry, so a pattern scope has to be set through the API or the CLI
+(`updateUser`'s `allowedConfigVersions`). Once set, it is displayed and honoured
+everywhere.
+
+⚠️ **Known limitation — a scoped document count can be truncated silently.** A scoped
+caller's `getDocumentCount` is tallied from index rows rather than taken from
+DynamoDB's `Count`, and is bounded by pages and remaining invocation time so a very
+large date range cannot time out. When the bound is hit the response carries
+`approximate: true` and the resolver logs a WARNING — but the UI's generated client
+drops the extra field and nothing alarms on the log line, so the header shows a low
+number with no indication. Narrow the date range if a scoped count looks wrong.
+
 ### Scope Enforcement Points
 
 | Layer | Enforcement |
 |-------|-------------|
 | **Document List** (server-side) | Both `listDocuments` resolvers filter by the `ConfigVersion` field using `allowedConfigVersions` from UsersTable (fails closed on an unstamped document) |
-| **Document Chat** (server-side) | The chat processor resolves the target document's `ConfigVersion` and refuses out-of-scope (and unstamped) documents |
+| **Document Count** (server-side) | `getDocumentCount` — the header figure beside that list — applies the same two filters, from the same helpers, so it cannot report documents the list does not show |
+| **Document Chat** (server-side) | The chat processor resolves the target document's `ConfigVersion` and refuses out-of-scope (and unstamped) documents. ⚠️ Applies to turns that reach the processor through the REST API; chat streamed from the Lambda Function URL is **not** restricted by `allowedConfigVersions` — see [Known Limitations](#known-limitations) |
 | **Config Profile List** (server-side) | `getConfigVersions` Lambda resolver filters returned profiles |
 | **Config Profile Access** (server-side) | `getConfigVersion` Lambda resolver rejects requests for out-of-scope profiles |
 | **Revision Operations** (server-side) | All five `*ConfigProfileRevision*` operations reject out-of-scope profiles before doing any work |
+| **Revision Bodies in S3** (server-side) | A revision's configuration is stored as an object in the Configuration bucket, so the object-read path applies the same profile check to the **key**: `getFileContents` / `getFilePresignedUrl` match the profile in a `config_revisions/<profile>/` key against `allowedConfigVersions` before reading anything. Without it the revision operations above could be bypassed by asking for the body directly, and the Configuration bucket is no longer readable with the browser's own credentials either |
+| **Test-Set Objects in S3** (server-side) | The same path applies `allowedTestSets` to every Test Set bucket key (`<test_set_id>/…` — source documents, ground truth, published baseline snapshots), so a scoped Annotator cannot read another test set's documents or labels through it |
 | **Version Dropdowns** (UI) | `useConfigurationVersions` hook filters versions client-side for immediate UX |
 | **Default Version Selection** (UI) | All version pickers auto-select the first available scoped version |
 
@@ -279,13 +455,117 @@ operation whose required groups were never declared is closed rather than open �
 this is what makes a forgotten resolver check on a **group-scoped** operation a
 visible 403 instead of an unprotected endpoint.
 
-⚠️ **This does not cover every operation.** 26 of the 118 declared operations are
-declared `ANY`, which means the dispatcher enforces authentication but *not* group
-membership for them, so a forgotten resolver check on one of those is still
-reachable by any authenticated caller — `getFileContents`, for example, bounds
-itself with a bucket allowlist rather than a group check. Deciding which of the 26
-should be narrowed is tracked as issue
-[#979](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/979).
+**Four policies, and the difference between two of them is easy to miss.** An
+operation declares one of:
+
+| Policy | The dispatcher requires | Count |
+|---|---|---|
+| a group list, e.g. `[Admin, Author]` | one of those groups | 90 |
+| `ANY_GROUP` | **any** group the stack creates — so a caller in *no* group is refused | 18 |
+| `ANY` | authentication only; group membership is not consulted | 8 |
+| `IAM_ONLY` | rejects every Cognito caller (backend/IAM principals only) | 2 |
+
+`ANY` means authenticated, not vetted, and that is weaker than it reads. When you
+set `AllowedSignUpEmailDomain`, the user pool permits self-service sign-up
+(`AllowAdminCreateUserOnly: false`), so anyone with an address at that domain can
+register themselves and hold a valid token whose `cognito:groups` claim is
+**empty**. Such a caller satisfies every `ANY` operation and no group-scoped one.
+`ANY_GROUP` is the declaration for "an administrator has onboarded this person,
+whichever role they were given". Every document read carries it (`getDocument`,
+`listDocuments`, `listDocumentsByDateRange`, `getDocumentCount`,
+`listDocumentsDateHour`, `listDocumentsDateShard`, `listDocumentVersions`,
+`getDocumentVersion`, `compareDocumentVersions`, `getStepFunctionExecution`,
+`getFileContents`, `getFilePresignedUrl`, `queryKnowledgeBase`), as do the chat
+transcript read `getChatMessages`, the processing-breaker badge
+`getCircuitBreakerStatus`, and three mutations (`deleteAgentJob`,
+`deleteChatSession`, `sendChatDocumentMessage`).
+
+That list includes the reads that return no extracted value themselves, because an
+object key, a section's `s3://` URI, a state machine execution ARN and a
+model-written description of a page's contents are each a step of one chain rather
+than separate disclosures. Measured on a live stack, a self-registered caller in no
+group went from `listDocumentsDateShard` (an object key and its queued time) to
+`listDocumentVersions` (17,527 bytes: every section output URI, every page image and
+text URI, the confidence alerts naming each extracted attribute, and a `ClassReason`
+that read "employee personal information (name, address, Social Security Number),
+pay period dates") to `getStepFunctionExecution` (317,614 bytes of execution input
+and step history) with no prior knowledge of the deployment.
+
+`ANY_GROUP` is written as a sentinel rather than as the five group names because
+the policy is about the *vocabulary*, not about five particular names:
+`scripts/sdlc/generate_api_rbac_manifest.py` resolves it against the
+`AWS::Cognito::UserPoolGroup` resources in `template.yaml` on every build, so a
+sixth group added there is covered without editing any operation. The Lambda never
+sees the sentinel — it is expanded before the manifest is written, so the runtime
+keeps one comparison, and an unexpanded `ANY_GROUP` in the manifest means a broken
+build and is rejected as one (deny-all) rather than guessed at.
+
+⚠️ **The `ANY` operations are still only authenticated.** The dispatcher enforces
+authentication but *not* group membership for those 8, so a forgotten resolver
+check on one of them is reachable by any authenticated caller, including a caller
+in no group. They are, in full: `getMyProfile`, `listChatSessions`,
+`getLatestPublishedVersion`, `listFinetuningJobs`, `getFinetuningJob`,
+`listInstalledFeatures`, `listCatalogFeatures` and `checkFeatureEntitlement` — and
+each entry in `scripts/api_rbac_expectations.yaml` carries a note saying why `ANY` is
+the intended answer for that operation specifically, rather than for the group it sits
+in. Two of the 8 are narrowed further by record ownership: `getMyProfile` returns only
+the caller's own row, resolved from their token claims with no argument, and
+`listChatSessions`' DynamoDB read is a key condition on the caller's own `userId`, so a
+groupless caller can only ever address an empty partition.
+
+⚠️ **A group check is not a per-document check.** `ANY_GROUP` establishes that the
+caller was onboarded; it does not establish that this document is theirs. A Viewer
+may read any document a Viewer can see, and `getFileContents` bounds itself with a
+bucket allowlist rather than a per-document scope. If your documents must be
+private to their submitter or to a tenant, group membership is the wrong axis.
+
+⚠️ **The group floor gates the API, not the S3 buckets, and the UI reads S3
+directly.** `CognitoIdentityPoolSetRole` in `template.yaml` attaches a **single**
+`authenticated` role with **no `RoleMappings`**, so group membership plays no part
+in which role a signed-in user assumes. That role, `CognitoAuthorizedRole`, grants
+`s3:GetObject`, `s3:GetObjectVersion` and `s3:ListBucket` on the Input and Output
+buckets, plus five KMS actions on the customer-managed key
+(`Encrypt`, `Decrypt`, `ReEncrypt*`, `GenerateDataKey*`, `DescribeKey`) — to **every**
+authenticated user, including one in no group. This is the production read path, not
+a theoretical one: `FileViewer` defaults to `presignVia = 'client'`, and the page
+thumbnails, the page-image viewer and the document export all sign S3 GETs in the
+browser with those credentials. No `ANY` operation returns an object key any more,
+but that is not what bounds the role: `s3:ListBucket` on it enumerates the buckets
+directly, so key discovery is self-contained on the S3 side and needs no API call at
+all.
+
+⚠️ **The two buckets the scope axes partition are deliberately absent from that
+role**, and that is what makes `allowedConfigVersions` and `allowedTestSets` hold
+off the API as well as on it. The Configuration bucket holds every profile's
+revision history, so a browser-credential read of it — with `s3:ListBucket`, so
+without needing to know the profile names — would defeat the profile scope
+outright. The Test Set bucket has never been on the role. Both are reachable only
+through `getFileContents` / `getFilePresignedUrl`, which check the key against the
+caller's scope. `scripts/tests/test_browser_s3_grants.py` pins which buckets the
+role may name, so the set cannot grow back unnoticed.
+
+So the accurate statement of what `ANY_GROUP` buys is: **those eighteen API
+operations** now refuse a caller in no group. The document bytes are not yet behind
+a group check, and putting them there means either group-scoped Identity Pool
+`RoleMappings` or narrowing that role and routing every read through a resolver —
+a change to the document-viewing data path. The two shapes, and the obstacles each
+runs into (the Annotator's `allowedTestSets` scope cannot be expressed as an IAM
+role; the four UI call sites that sign in the browser; Lambda's 6 MB response cap,
+which is why `getFilePresignedUrl` exists alongside `getFileContents`), are set out in
+[Identity Pool group scoping](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/blob/develop/docs/planning/identity-pool-group-scoping-plan.md).
+`UI.T06` in the threat model covers the per-document key-scoping half of this; the
+part that needs no resolver at all, and that "any authenticated user" includes a user
+in **none**, is recorded here.
+
+⚠️ **This layer gates the REST route only.** Chat streaming is served by a Lambda
+Function URL that reaches the chat processors directly, without the dispatcher, and
+that transport forwards no `cognito:groups` claim at all. So
+`sendChatDocumentMessage` refuses a caller in no group on the REST route, and
+`POST /chat/document` on the Function URL does not — recorded as `GAP-07` in
+`scripts/api_rbac_expectations.yaml`. The Function URL exists in the commercial
+partition only; on GovCloud the UI falls back to the dispatcher plus polling, where
+the floor applies.
+
 **An `identity` carried on the event is no longer authoritative for this check.**
 `idp_common.api_adapter` used to pass an event carrying its own `arguments` +
 `identity` through untouched, so an invocation of that shape chose the groups this
@@ -383,10 +663,10 @@ enforcement itself is Layer 2.
 | `createFinetuningJob`, `deleteFinetuningJob` | Admin, Author |
 | `processChanges`, `completeSectionReview`, `claimReview`, `releaseReview`, `skipAllSectionsReview` | Admin, Reviewer |
 | `sendAgentChatMessage` | Admin, Author, Viewer (Reviewer excluded; also IAM for backend) |
-| `deleteChatSession`, `updateChatSessionTitle`, `deleteAgentJob` | All authenticated users (session-scoped; see note below) |
-| `updateAgentChatMessage` | All authenticated users (also IAM for backend) |
+| `deleteChatSession`, `deleteAgentJob` | Any assigned group (`ANY_GROUP`), further session-scoped; see note below |
+| `updateChatSessionTitle`, `updateAgentChatMessage` | **Not reachable.** Both are declared in `schema.graphql` and in neither routing surface (`FIELD_FUNCTION_MAP`/`FIELD_ALIASES` and `ddb_direct._HANDLED`), so default-deny refuses them to every caller including Admin. The backend writes DynamoDB directly and does not need them |
 
-> **Agent Chat authorization**: `sendAgentChatMessage` and `listAvailableAgents` restrict Agent Chat to **Admin, Author, Viewer** (Reviewer excluded). The restriction is declared in `schema.graphql` **and** enforced server-side in each resolver via a `_caller_in_groups` check — the single REST route's Cognito authorizer only authenticates, so the group gate lives in the resolver. The IAM backend publish path has no Cognito identity and bypasses the check. The session-scoped operations (`deleteChatSession`, `getChatMessages`, `listChatSessions`, etc.) remain open to any authenticated user, bounded by **session scoping** (each user only sees their own sessions).
+> **Agent Chat authorization**: `sendAgentChatMessage` and `listAvailableAgents` restrict Agent Chat to **Admin, Author, Viewer** (Reviewer excluded). The restriction is declared in `schema.graphql` **and** enforced server-side in each resolver via a `_caller_in_groups` check — the single REST route's Cognito authorizer only authenticates, so the group gate lives in the resolver. The IAM backend publish path has no Cognito identity and bypasses the check. `listChatSessions` remains open to any authenticated user, bounded by a DynamoDB key condition on the caller's own partition; `getChatMessages` and the session-scoped **mutations** (`deleteChatSession`, `deleteAgentJob`) additionally require an assigned group.
 >
 > *(Previously the Reviewer exclusion was UI-only — tracked as accepted-risk gap GAP-03 — because AppSync could not combine a `cognito_groups` restriction with `@aws_iam` on one field. AppSync has since been removed, so the real groups are now enforced.)*
 
@@ -394,23 +674,68 @@ enforcement itself is Layer 2.
 
 | Query | Allowed Roles |
 |-------|---------------|
-| `getDocument`, `listDocuments`, `listDocumentsByDateRange`, etc. | All authenticated (server-side filtering in resolvers) |
-| `getFileContents`, `getStepFunctionExecution` | All authenticated |
+| `getDocument`, `listDocuments`, `listDocumentsByDateRange` | Any assigned group (`ANY_GROUP`); server-side row filtering in resolvers on top |
+| `getDocumentVersion`, `compareDocumentVersions` | Any assigned group (`ANY_GROUP`) |
+| `getFileContents`, `getFilePresignedUrl` | Any assigned group (`ANY_GROUP`); bucket allow-list, **not** key-level scoping. A bucket outside the allow-list is **403** `Unauthorized`; the message names the reason and neither the bucket, the allow-list nor whether the bucket exists |
+| `getDocumentCount`, `listDocumentVersions`, `listDocumentsDateHour`, `listDocumentsDateShard`, `getStepFunctionExecution` | Any assigned group (`ANY_GROUP`). These return no extracted value themselves, but they return the keys, section and page URIs, extracted-attribute names, model-written page descriptions and execution detail that lead to one, and that chain was measured composing end to end for a caller in no group. `getDocumentCount` and `getStepFunctionExecution` keep their config-version scope on top; both of the narrowings available to them stand down for a self-registered caller, who is not a Reviewer and whose absent UsersTable row means "unrestricted" |
 | `getConfigVersions`, `getConfigVersion`, `getPricing`, `getModelConfigLimits`, `calculateCapacity` | Admin, Author, Viewer |
 | `listConfigProfileRevisions`, `getConfigProfileRevision` | Admin, Author, Viewer |
 | `listAvailableAgents` | Admin, Author, Viewer (Reviewer excluded; enforced server-side — see Agent Chat note above) |
-| `listChatSessions`, `getChatMessages`, `getAgentChatMessages` | All authenticated (session-scoped) |
+| `listChatSessions` | All authenticated, session-scoped by a DynamoDB key condition on the caller's own `userId` |
+| `getChatMessages` | Any assigned group (`ANY_GROUP`), plus the session-ownership check. The message read is keyed on `sessionId` alone, so ownership is a separate verification rather than a key condition, and it **fails open** — it returns true when `CHAT_SESSIONS_TABLE` is unset, and an operator can turn it off with `ENFORCE_CHAT_SESSION_OWNERSHIP=false`. Transcripts can quote document content, so the group floor sits under a check that can stand down |
+| `getAgentChatMessages` | **Not reachable.** It is declared in `schema.graphql` and in neither of the two surfaces the dispatcher routes from — `FIELD_FUNCTION_MAP`/`FIELD_ALIASES` and `ddb_direct._HANDLED` — and it has no entry in the manifest the dispatcher authorizes against, which denies by default. So it returns 403 to every caller including Admin. Schema-only surface; use `getChatMessages` |
 | `submitAgentQuery`, `getAgentJobStatus`, `listAgentJobs` | Admin, Author, Viewer |
 | `listConfigurationLibrary`, `getConfigurationLibraryFile` | Admin, Author, Viewer |
 | `listDiscoveryJobs` | Admin, Author |
 | `getTestRun`, `getTestRuns`, `getTestRunStatus`, `compareTestRuns`, `getTestSets`, `validateTestFileName` | Admin, Author |
-| `listFinetuningJobs`, `getFinetuningJob`, `validateTestSetForFinetuning`, `listAvailableModels` | All authenticated (UI limited to Admin, Author) |
-| `queryKnowledgeBase` | All authenticated |
-| `sendChatDocumentMessage` (mutation), `onChatDocumentMessageUpdate` (subscription) | All authenticated; resolver enforces per-session ownership and processor enforces `allowedConfigVersions` scope on the target document |
-| `listUsers` | All authenticated (non-admin sees only self in resolver) |
+| `listFinetuningJobs`, `getFinetuningJob` | All authenticated — whole-deployment job, model and deployment state, with no per-caller scope (the rows record no owner). The UI surfaces them to Admin and Author only. The projection deliberately carries no dataset location, and `finetuning_jobs_resolver/test_projected_keys.py` pins its key set so that cannot change silently |
+| `validateTestSetForFinetuning`, `listAvailableModels` | **Not reachable.** Declared in `schema.graphql` and routed from nowhere, so default-deny refuses them to every caller including Admin |
+| `queryKnowledgeBase` | Any assigned group (`ANY_GROUP`); the resolver itself has no group check (GAP-02), so the dispatcher's floor is the only one |
+| `sendChatDocumentMessage` (mutation), `onChatDocumentMessageUpdate` (subscription) | Any assigned group (`ANY_GROUP`) **on the REST route only** — the chat Function URL reaches the same processor with no group claim (GAP-07). The resolver enforces per-session ownership and forwards the caller's verified claims, from which the processor enforces `allowedConfigVersions` scope on the target document; a scope it cannot evaluate denies the turn. That scope check stands down on the streaming route, which forwards no verified caller — see [Known Limitations](#known-limitations) |
+| `listUsers` | **Admin** — it returns every user's email and role. A non-admin reads their own record through `getMyProfile` instead |
 | `getMyProfile` | All authenticated |
 
 **Note**: The `updateConfiguration` mutation is schema-level restricted to Admin+Author, but the resolver additionally enforces that `saveAsVersion` and `saveAsDefault` operations within that mutation are **Admin-only**.
+
+#### The status a refusal arrives with, and why it matters operationally
+
+The dispatcher runs each resolver in a separate Lambda, so only two things survive
+the invoke: the exception's **class name** and its message. It picks a status from
+those — `PermissionError`/`AuthorizationError`, or a message beginning
+`Unauthorized`/`Forbidden`, becomes **403 `Unauthorized`**; `ValueError`/`KeyError`
+becomes **400 `BadRequest`**; anything else becomes **500 `InternalError`**.
+
+That makes the status sensitive to how a resolver re-raises. A resolver that catches
+its own exceptions and re-raises them wrapped loses both signals at once — the class
+name becomes `Exception`, and prefixing the message moves the `Unauthorized` token
+off the front, where the anchored prefix match can no longer see it. The refusal then
+arrives as a 500.
+
+Two things go wrong when that happens, and the second is the one that matters. An
+operator debugging a legitimate 403 chases a server fault that is not there. And a
+monitored 5xx rate starts counting deliberate policy denials, so a genuine spike in
+server faults is masked by them, and a caller probing for reachable resources
+inflates the fault signal instead of the authorization-denial signal. Refusals and
+faults have to be separable to be alarmable.
+
+So, for any refusal you add: raise `PermissionError` for an authorization refusal
+and `ValueError` for a bad argument, and do not let a catch-all re-wrap either.
+Log a denial at **WARNING** with a "Denied"/"Forbidden"/"Rejecting" verb and no
+stack trace, and reserve `logger.error(..., exc_info=True)` for a real fault — a
+denial logged as `Unexpected error` with a traceback is indistinguishable from a
+crash in CloudWatch and in anything alarming on ERROR.
+
+**S3 errors need care in both directions.** S3 answers a missing key with **403
+AccessDenied** rather than 404 when the reader lacks `s3:ListBucket`, so "403 means
+forbidden" reports an absent object as a permissions problem. In these resolvers the
+caller's own credentials never reach S3 — the function's execution role does — so an
+`AccessDenied` from S3 is this deployment's IAM, bucket policy or KMS grant, and is
+correctly a 500, never the caller's 403. Where the two are genuinely
+indistinguishable, say so in the log rather than guessing in the response, and do
+not return S3's own message: its text separates `NoSuchBucket` from `AccessDenied`
+from `Forbidden`, which is an existence oracle, and its wording for a denial is
+literally "Access Denied", which client-side heuristics read as the caller's
+problem.
 
 ### Layer 2: Server-Side Resolver Group Checks & Filtering
 
@@ -437,7 +762,7 @@ filtering based on the caller's identity:
 - `listConfigProfileRevisions` / `getConfigProfileRevision` / `restoreConfigProfileRevision` / `labelConfigProfileRevision` / `deleteConfigProfileRevision`: Reject the request if the *profile* is not in user's scope
 
 **User Management Filtering:**
-- `listUsers`: Admin sees all users; non-admin sees only their own profile
+- `listUsers`: Admin only — a non-admin is refused it at the dispatcher, not filtered inside it
 - `getMyProfile`: Returns the calling user's own profile (including `allowedConfigVersions`)
 
 ### Layer 3: UI Adaptation (UX Convenience)
@@ -499,7 +824,7 @@ Admins can create users with any of the four roles via the User Management page.
 │  • getConfigVersions: scope     │  ← Filters profile list
 │  • getConfigVersion: scope      │  ← Rejects out-of-scope access
 │  • *ConfigProfileRevision*      │  ← Scope checked at the profile
-│  • listUsers: self-only         │  ← Non-admin sees only own profile
+│  • getMyProfile: own record     │  ← Keyed off token claims; listUsers is Admin-only
 └────────────┬────────────────────┘
              │
 ┌────────────▼────────────────────┐
@@ -515,14 +840,18 @@ Admins can create users with any of the four roles via the User Management page.
 To add a new role:
 1. Add a `AWS::Cognito::UserPoolGroup` in `template.yaml`
 2. Add the group name to relevant `@aws_cognito_user_pools(cognito_groups: [...])` directives in `schema.graphql` (do **not** use `@aws_auth` — see Layer 1 warning), and update the corresponding server-side group check in the resolver Lambda
-3. Add the group to the affected operations in `scripts/api_rbac_expectations.yaml` and regenerate the dispatcher manifest (`python3 scripts/sdlc/generate_api_rbac_manifest.py`) — otherwise Layer 0 denies the new role even where the resolver allows it
+3. Add the group to the affected operations in `scripts/api_rbac_expectations.yaml` and regenerate the dispatcher manifest (`python3 scripts/sdlc/generate_api_rbac_manifest.py`) — otherwise Layer 0 denies the new role even where the resolver allows it. The operations declared `ANY_GROUP` need **no** edit: the generator resolves that sentinel against the `AWS::Cognito::UserPoolGroup` resources, so the new group is granted them by step 1 alone
 4. Update the `VALID_PERSONAS` dict in `src/lambda/user_management/index.py`
-5. Add role detection in `src/ui/src/hooks/use-user-role.ts`
+5. **Add the group name to `APP_GROUPS`** in `src/ui/src/hooks/use-user-role.ts`, then add its role detection there. ⚠️ `APP_GROUPS` is not cosmetic: `hasNoRole` is computed from it and gates the **whole application**, so a group the server has just granted the `ANY_GROUP` operations (step 3) but that is missing here would be shown "your account has not been granted access yet" and reach nothing. `src/ui/src/hooks/__tests__/use-user-role.appGroups.test.ts` fails when the list and `template.yaml` disagree, so this cannot be missed silently
 6. Add navigation items in `src/ui/src/components/genaiidp-layout/navigation.tsx`
 7. Pass the new group as an environment variable to the UserManagement Lambda
 
 ## Known Limitations
 
+- **Document Chat streamed from the Lambda Function URL** is not restricted by `allowedConfigVersions`, and in commercial regions that is the path the UI takes — it streams whenever a stream URL is configured, which every commercial deployment has. The browser signs those requests with Cognito Identity Pool credentials, and that transport forwards no Cognito claims: its SigV4 principal is a session name shared by every user of the pool, so it proves *a* signed-in user is calling but not which one. The processor will not key an authorization decision to the caller-supplied identity in the request body, because the caller it would restrict is the one choosing the value. So the route reports an explicitly unverified caller, and the processor logs, once per turn, that it did not enforce the scope. The check **does** apply to turns arriving through the REST API, which is the path GovCloud deployments take, since Function URLs are unavailable there. Closing this needs the streaming endpoint to verify a Cognito ID token; tracked as `GAP-07` in `scripts/api_rbac_expectations.yaml` and [issue #920](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/920).
+- **A row that records no Cognito `sub` is still keyed on an email address, which can stop matching it.** Scope is resolved from the immutable `sub` first and the `email` claim second, so a divergence no longer lifts the restriction for any row that records a `sub` — see [Resolving *whose* Scope](#resolving-whose-scope--two-keys-and-the-lookup-fails-closed). A row that does not yet record one falls back to the email join and keeps the original exposure: matching is exact, so a difference in letter case is a miss, while Cognito re-applies the external-IdP attribute mapping on every federated sign-in; on a pool created with `ExternalIdPEmailMutable=true` a user can change their own address, where email verification stops them adopting someone else's but not orphaning their own row. The `sub` is recorded by `createUser` and back-filled by the Cognito sync that runs on every Admin `listUsers`, so in practice a row reaches an administrator with one — but a deployment whose administrator has never opened User Management since upgrading has none. The back-fill matches a Cognito account to its row on the recorded `sub`, the exact address, or the **case-folded** address, so it does **not** reach a row whose address changed beyond case before it ever ran; that row keeps the email-only exposure indefinitely. The scan above lists exactly which rows are in that state. See [External IdP integration](./external-idp.md) for the detail and the mitigations.
+- **User deletion removes the table row before the Cognito account**, warning rather than failing if the second step does not complete. The orphaned Cognito account then has no row, which means unrestricted.
+- **`allowedTestSets` has no `sub` join.** The Annotator test-set axis (`idp_common/testset_scope.py`) still resolves its row from `EmailIndex` alone, and from a fallback chain of claims rather than the `email` claim by itself. Its polarity is the opposite of `allowedConfigVersions` — `assert_can_access_test_set` requires an *explicit* scope, so an Annotator whose row cannot be found is **denied** rather than granted everything — which makes a diverged address an availability problem (a locked annotation queue) rather than a widening one. `scripts/tests/test_scope_lookup_fail_closed.py` discovers this module and carries it in `PENDING_FIX` with its two rules named, so the suppression is visible and removable; giving that axis the same two-key lookup is the follow-up.
 - **Knowledge Base queries** do not currently enforce config-version scope. KB results may include documents from out-of-scope config versions.
 - **Agent Companion Chat** analytics queries (Athena) do not filter by config-version scope.
 - **GetDocument API** (direct document access by URL) does not enforce config-version scope at the resolver level. UI navigation hides out-of-scope documents, but direct API access is not blocked.

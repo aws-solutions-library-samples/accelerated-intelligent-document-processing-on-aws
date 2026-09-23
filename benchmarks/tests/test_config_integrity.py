@@ -20,19 +20,14 @@ Filenames are namespaced per suite now, and this check is the backstop for any
 other way the two can drift (hand-edited file, partial rebuild, stale index).
 """
 
-import sys
-
 import pytest
 import yaml
-
-sys.path.insert(0, "benchmarks/harness")
+from harness_import import harness_module
 
 
 @pytest.fixture(scope="module")
 def rm():
-    import run_matrix
-
-    return run_matrix
+    return harness_module("run_matrix")
 
 
 def _cell(tmp_path, resolved, cfg):

@@ -23,6 +23,8 @@ import z3
 
 from .exceptions import ValidationError
 from .models import Parameter, RuleJSON, ValidationResult
+from .smt_grammar import OPERATORS, tokenize
+from .type_coercion import exact_numeric_reading
 
 # Configure logging
 logger = logging.getLogger(__name__)
@@ -414,69 +416,20 @@ class Z3Validator:
         Converts "(>= x 10)" into ["(", ">=", "x", "10", ")"]
         Handles quoted strings: '(= name "John Doe")' -> ["(", "=", "name", '"John Doe"', ")"]
 
+        The implementation lives in
+        :mod:`idp_common.rule_validation.z3.smt_grammar` because ``RuleJSON``
+        tokenises the same constraints at construction time, and a second
+        tokeniser there would mean a construction-time check that disagrees with
+        the solver about what a token is. That module imports no solver, which is
+        what lets ``RuleJSON`` use it where ``z3`` is not installed.
+
         Args:
             s: SMT-LIB expression string
 
         Returns:
             List of tokens
         """
-        tokens = []
-        i = 0
-
-        while i < len(s):
-            # Skip whitespace
-            if s[i].isspace():
-                i += 1
-                continue
-
-            # Handle opening parenthesis
-            if s[i] == "(":
-                tokens.append("(")
-                i += 1
-                continue
-
-            # Handle closing parenthesis
-            if s[i] == ")":
-                tokens.append(")")
-                i += 1
-                continue
-
-            # Handle quoted strings
-            if s[i] == '"':
-                # Find the closing quote
-                j = i + 1
-                while j < len(s) and s[j] != '"':
-                    # Handle escaped quotes if needed
-                    if s[j] == "\\" and j + 1 < len(s):
-                        j += 2
-                    else:
-                        j += 1
-
-                if j < len(s):
-                    # Include the quotes in the token
-                    tokens.append(s[i : j + 1])
-                    i = j + 1
-                else:
-                    # Unclosed quote - treat as regular token
-                    j = i + 1
-                    while j < len(s) and not s[j].isspace() and s[j] not in "()":
-                        j += 1
-                    tokens.append(s[i:j])
-                    i = j
-                continue
-
-            # Handle regular tokens (operators, variables, numbers)
-            j = i
-            while j < len(s) and not s[j].isspace() and s[j] not in '()"':
-                j += 1
-
-            if j > i:
-                tokens.append(s[i:j])
-                i = j
-            else:
-                i += 1
-
-        return tokens
+        return tokenize(s)
 
     def _parse_smt_expr(
         self, tokens: List[str], pos: int, z3_vars: Dict[str, Any]
@@ -552,14 +505,17 @@ class Z3Validator:
         if token == "false":  # nosec B105 - SMT-LIB boolean literal, not a password
             return z3.BoolVal(False)
 
-        # Check if it's a number
+        # Check if it's a number. A decimal literal is parsed EXACTLY, through the
+        # same numeral rules a reading gets: `float("0.1000000000000000000001")`
+        # is 0.1, so a collapsed literal compared against an exact reading is a
+        # wrong verdict at an equality constraint in the other direction from the
+        # one issue #1057 describes. Going through `exact_numeric_reading` rather
+        # than handing the token to `z3.RealVal` also keeps the grammar as it was:
+        # `RealVal` would accept "1/3", which is an expression, not a literal.
         try:
-            # Try integer first
             if "." not in token:
                 return z3.IntVal(int(token))
-            else:
-                # Parse as real (float)
-                return z3.RealVal(float(token))
+            return z3.RealVal(exact_numeric_reading(token, "Real"))
         except ValueError:
             pass
 
@@ -597,6 +553,14 @@ class Z3Validator:
         Raises:
             ValueError: If operator is unsupported or argument count is wrong
         """
+        # The vocabulary is shared with RuleJSON's construction-time check rather
+        # than restated there, and gating on it here is what keeps the two from
+        # drifting: a name this method handles but that smt_grammar.OPERATORS
+        # omits is refused, so the omission shows up as a failure instead of as a
+        # constraint accepted by the solver and rejected at construction.
+        if op not in OPERATORS:
+            raise ValueError(f"Unsupported operator: {op}")
+
         # Arithmetic operators
         if op == "+":
             if len(args) < 2:
@@ -733,6 +697,13 @@ class Z3Validator:
             return z3.If(args[0], args[1], args[2])
 
         else:
+            # Unreachable while `OPERATORS` and the branches above name the same
+            # operators, and deliberately kept rather than cleaned away: it is what
+            # an operator added to `OPERATORS` with no branch here lands in, which
+            # is how that omission becomes a failure rather than a constraint the
+            # construction-time check accepts and the solver cannot evaluate.
+            # `test_z3_smt_grammar.py` exercises every member of the set to keep the
+            # two in step.
             raise ValueError(f"Unsupported operator: {op}")
 
     def _bind_values(
@@ -787,7 +758,9 @@ class Z3Validator:
                                 "actual_value": value,
                             },
                         )
-                    z3_value = z3.IntVal(int(value))
+                    z3_value = z3.IntVal(
+                        self._as_exact_number(value, param, rule_id, extracted_values)
+                    )
 
                 elif param.type == "Real":
                     if isinstance(value, bool):
@@ -802,7 +775,9 @@ class Z3Validator:
                                 "actual_value": value,
                             },
                         )
-                    z3_value = z3.RealVal(float(value))
+                    z3_value = z3.RealVal(
+                        self._as_exact_number(value, param, rule_id, extracted_values)
+                    )
 
                 elif param.type == "Bool":
                     if isinstance(value, bool):
@@ -871,6 +846,63 @@ class Z3Validator:
                     },
                 )
 
+    def _as_exact_number(
+        self,
+        value: Any,
+        param: Parameter,
+        rule_id: str,
+        extracted_values: Dict[str, Any],
+    ) -> Any:
+        """
+        Convert a reading to its declared numeric type, or refuse to evaluate it.
+
+        This is the last point before the solver, so it is the one place every
+        route passes through — path-based extraction, LLM extraction, and a
+        hand-written `RuleWithValues` alike. A reading that cannot be represented
+        in its declared type without loss is refused here rather than truncated:
+        `int(30.9)` is 30, and a rule reading `days_late <= 30` would then report
+        a PASS for a document that is 30.9 days late. Rounding instead of
+        truncating is no better, because it is wrong for the opposite comparator
+        (`days_late >= 31` would report a PASS). See GitHub issue #1057.
+
+        The value returned is **exact** — a `Fraction` for a `Real` — because Z3's
+        Real sort is exact rationals and rounding the reading to a double first
+        loses a verdict of its own at an equality constraint.
+
+        A refusal surfaces as a `ValidationError`, which callers treat as "this
+        rule could not be evaluated": the orchestrator and `Z3RuleEngine` report
+        the rule as *Information Not Found* with the reason, and
+        `ValidationSystem.validate_batch` records an error result and carries on
+        with the remaining rules.
+
+        Args:
+            value: The reading, known to be non-None.
+            param: Declaration the reading is being bound to.
+            rule_id: Rule ID for error context.
+            extracted_values: All readings, for error context.
+
+        Returns:
+            An `int` for an `Int` parameter, an exact `Fraction` for a `Real` one.
+
+        Raises:
+            ValidationError: If the reading is not a value of that type, or
+                cannot be converted to it without losing information.
+        """
+        try:
+            return exact_numeric_reading(value, param.type)
+        except ValueError as e:
+            raise ValidationError(
+                message=f"Cannot bind parameter '{param.name}': {e}",
+                operation="bind_values",
+                rule_id=rule_id,
+                parameter_values=extracted_values,
+                context={
+                    "parameter_name": param.name,
+                    "expected_type": param.type,
+                    "actual_value": value,
+                },
+            ) from None
+
     def _extract_model(
         self, z3_model: z3.ModelRef, z3_vars: Dict[str, Any]
     ) -> Dict[str, Any]:
@@ -898,10 +930,13 @@ class Z3Validator:
                     if z3.is_int_value(value):
                         model[var_name] = value.as_long()
                     elif z3.is_rational_value(value):
-                        # Convert rational to float
-                        model[var_name] = float(value.numerator_as_long()) / float(
-                            value.denominator_as_long()
-                        )
+                        # Rendered as the nearest double to the exact rational, in
+                        # one rounding step. Dividing two separately-rounded
+                        # floats rounds twice — it reported an exactly-bound 1e-30
+                        # as 9.999999999999999e-31 — and overflows for a magnitude
+                        # either side of the double range, losing the value
+                        # entirely where `float(Fraction)` returns 0.0.
+                        model[var_name] = float(value.as_fraction())
                     elif z3.is_true(value):
                         model[var_name] = True
                     elif z3.is_false(value):

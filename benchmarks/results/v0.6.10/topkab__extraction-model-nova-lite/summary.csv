@@ -1,0 +1,17 @@
+cell,doc,sub_doc,repeat,status,success,page_count,completeness_recall,truncation_prefix,scalar_accuracy,typed_accuracy,cell_accuracy,sections_correct,weighted_accuracy,parse_failures,forced_tool_attempted,forced_tool_honored,forced_tool_honored_rate,validation_valid_rate,validation_errors,coercions,coercion_refusals,mean_confidence,pct_conf_below_0.9,calibration_separation,class_accuracy,class_mean_confidence,class_calibration_separation,wall_s,cost
+topk-off,longdesc_100.pdf,,0,COMPLETED,True,4.0,0.04,0,1.0,,1.0,1.0,,,,,,1.0,0,,,1.0,0.0,,,,,117.572822,0.0778
+topk-off,longdesc_100.pdf,,1,FAILED,False,4.0,0.0,0,0.0,,,0.0,,,,,,,,,,,,,,,,70.968223,0.0643
+topk-off,longdesc_100.pdf,,2,FAILED,False,4.0,0.0,0,0.0,,,0.0,,,,,,,,,,,,,,,,69.122535,0.0643
+topk-off,longdesc_100.pdf,,3,COMPLETED,True,4.0,1.0,100,1.0,,1.0,1.0,,,,,,1.0,0,,,0.9735,0.0,,,,,152.488393,0.0836
+topk-off,manylists_400.pdf,,0,FAILED,False,9.0,0.0,0,0.0,,,0.0,,,,,,,,,,,,,,,,135.063741,0.1444
+topk-off,manylists_400.pdf,,1,FAILED,False,9.0,0.0,0,0.0,,,0.0,,,,,,,,,,,,,,,,130.377481,0.1446
+topk-off,manylists_400.pdf,,2,FAILED,False,9.0,0.0,0,0.0,,,0.0,,,,,,,,,,,,,,,,143.059786,0.1447
+topk-off,manylists_400.pdf,,3,FAILED,False,9.0,0.0,0,0.0,,,0.0,,,,,,,,,,,,,,,,139.071836,0.1447
+topk-1,longdesc_100.pdf,,0,FAILED,False,4.0,0.0,0,0.0,,,0.0,,,,,,,,,,,,,,,,193.936436,0.0646
+topk-1,longdesc_100.pdf,,1,COMPLETED,True,4.0,1.0,100,1.0,,0.735,1.0,,,,,,1.0,0,,,0.9736,0.0,,,,,522.275611,0.1701
+topk-1,longdesc_100.pdf,,2,FAILED,False,4.0,0.0,0,0.0,,,0.0,,,,,,,,,,,,,,,,167.644533,0.0642
+topk-1,longdesc_100.pdf,,3,FAILED,False,4.0,0.0,0,0.0,,,0.0,,,,,,,,,,,,,,,,1815.681523,0.0643
+topk-1,manylists_400.pdf,,0,FAILED,False,9.0,0.0,0,0.0,,,0.0,,,,,,,,,,,,,,,,139.841153,0.1443
+topk-1,manylists_400.pdf,,1,FAILED,False,9.0,0.0,0,0.0,,,0.0,,,,,,,,,,,,,,,,135.119297,0.1444
+topk-1,manylists_400.pdf,,2,FAILED,False,9.0,0.0,0,0.0,,,0.0,,,,,,,,,,,,,,,,131.473014,0.1444
+topk-1,manylists_400.pdf,,3,FAILED,False,9.0,0.0,0,0.0,,,0.0,,,,,,,,,,,,,,,,138.684988,0.1447

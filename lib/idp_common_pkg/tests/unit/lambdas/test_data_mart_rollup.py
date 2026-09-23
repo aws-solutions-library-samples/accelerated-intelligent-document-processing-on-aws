@@ -2950,28 +2950,14 @@ class TestBackfillDailyRange:
         assert result["hours_succeeded"] == 2
         assert len(result["failures"]) == 1
 
-    def test_partial_day_counted_as_partial(self, rollup):
-        """If _run_daily returns with only one of the two sub-tables
-        succeeding, the day should count as partial."""
-
-        def _fake_run_daily(_anchor):
-            return {
-                "metering_daily": {"skipped": False},
-                "metering_docs_daily": {"error": "transient"},
-            }
-
-        with patch.object(rollup, "_run_daily", side_effect=_fake_run_daily):
-            result = rollup.handler(
-                {
-                    "mode": "backfill_daily_range",
-                    "days": 2,
-                    "time": "2026-09-22T00:00:00Z",
-                },
-                None,
-            )
-        assert result["hours_partial"] == 2
-        assert result["hours_succeeded"] == 0
-        assert result["hours_failed"] == 0
+    # ``test_partial_day_counted_as_partial`` was removed with the
+    # ``elif md_ok or mdd_ok`` branch in ``_run_backfill_daily_range``
+    # — the branch was unreachable in production (``_run_daily`` raises
+    # on any sub-INSERT failure, so it never returns a shape with an
+    # ``error`` key) and the test only passed by mocking a shape the
+    # code doesn't produce. Real per-table failures land in the
+    # ``except`` branch below via ``_run_daily``'s raise and are
+    # covered by ``test_daily_range_days_that_raise_count_as_failed``.
 
     def test_rejects_out_of_range_days(self, rollup):
         for bad in (0, -1, 91, 365):

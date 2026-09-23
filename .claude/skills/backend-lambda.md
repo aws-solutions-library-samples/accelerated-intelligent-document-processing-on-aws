@@ -106,7 +106,7 @@ select = ["E4", "E7", "E9", "F"]
 extend-select = ["I", "TID251"]   # isort + banned API
 quote-style = "double"
 ```
-Note: Ruff is gradually rolling out — many dirs are still in `extend-exclude`. Check `ruff.toml` before adding new dirs.
+Note: every tracked `.py` file is linted, including any file you add. What `ruff.toml` excludes is a named per-file list of pre-existing debt (`[lint] exclude`, `[format] exclude`), generated from `scripts/lint_debt.json` and ratcheted by `make check-lint-debt` — never add to it.
 
 ## Pyright Configuration Highlights
 - `typeCheckingMode`: `basic` (not strict)

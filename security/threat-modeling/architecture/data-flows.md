@@ -253,8 +253,8 @@ sequenceDiagram
 results — each run is retained as an immutable snapshot addressed by pinned S3
 object versions. This **increases data retention surface**: deleted-then-
 reprocessed content remains readable through version history until retention
-expires. `deleteDocumentVersion` is Admin-only; `listDocumentVersions` is
-readable by any authenticated user. Version bytes are fetched via
+expires. `deleteDocumentVersion` is Admin-only; `listDocumentVersions` requires an
+assigned group, and within that has no per-document scope. Version bytes are fetched via
 `getFilePresignedUrl` with an explicit `versionId` — see UI.T02/UI.T06 for the
 key-scoping gap that applies to those reads.
 
@@ -357,14 +357,14 @@ sequenceDiagram
     Disp->>Lambda: Dispatch
     Lambda->>Lambda: Enforce Admin/Author group
     Lambda->>Users: Query allowedConfigVersions for caller
-    Note over Lambda,Users: Resolver role MUST have UsersTable<br/>Query/GetItem or the lookup fails OPEN (AUTH.T07)
+    Note over Lambda,Users: Resolver role MUST have UsersTable<br/>Query/GetItem or the request is DENIED (AUTH.T07)
     Lambda->>Lambda: Validate config schema + migrate v0.5->v0.6
     Lambda->>S3: Write config YAML
     Lambda->>DDB: Update config version record
     Lambda-->>Browser: Confirmation
 ```
 
-**Security note**: Configuration includes model IDs, prompts, extraction schemas, and processing parameters. Malicious configuration could influence all subsequent document processing (PM.T06). The config-version scope lookup previously failed **open** on an IAM gap — fixed in v0.6.0 and now regression-gated (AUTH.T07).
+**Security note**: Configuration includes model IDs, prompts, extraction schemas, and processing parameters. Malicious configuration could influence all subsequent document processing (PM.T06). On this flow the config-version scope lookup **fails closed**: a missing IAM grant, an unwired UsersTable or a claims set carrying no `email` all refuse the request rather than reading as "this caller has no restriction". An *empty page* — no UsersTable row for the caller — still means unrestricted, which is the opt-in-scoping default. One shared implementation is used by every REST consumer, with `scripts/tests/test_scope_lookup_fail_closed.py` gating key provenance and failure handling across the class; AUTH.T07 records what that gate does not cover, including the one module it discovers and suppresses.
 
 ### 3.4 Document Upload Flow (UI)
 
@@ -724,5 +724,6 @@ sequenceDiagram
 | KB retrieval | TB3 | TB4→TB5 | Medium (reference doc chunks) | IAM, encryption |
 | SDK/CLI auth | TB1 | TB2 | High (credentials) | SRP protocol, short-lived tokens |
 | Configuration | TB1 | TB3 | Medium (prompts, schemas) | Auth, schema validation, config-version scope |
-| **Presigned object reads** | TB3 | TB1 | High (any object in stack buckets) | Bucket allow-list only — **no key-level scoping** (UI.T06) |
+| **Presigned object reads** | TB3 | TB1 | High (any document object) | Bucket allow-list, plus key scoping for the two per-user-partitioned buckets (`allowedConfigVersions` on `config_revisions/`, `allowedTestSets` on the Test Set bucket). **No per-document scoping** on the Input/Output buckets (UI.T06) |
+| **Configuration revision bodies** | TB3 | TB1 | High (prompts, few-shot examples, every profile's history) | `config_revisions/<profile>/<nnnnnn>.json.gz` in the Configuration bucket. Read only through `getConfigProfileRevision` or `getFileContents`/`getFilePresignedUrl`, both of which match the profile against the caller's `allowedConfigVersions` and fail closed; the bucket is not on the browser's Identity Pool role, so there is no direct-S3 path |
 | **Test-set ground truth writes** | TB1 | TB3 | Medium (evaluation baselines) | Admin/Author group; `_editHistory` provenance (RPT.T07) |

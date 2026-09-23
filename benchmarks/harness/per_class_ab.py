@@ -102,6 +102,7 @@ def main():
             self.better = self.worse = self.same = self.n = 0
 
     by_class: dict[str, Acc] = collections.defaultdict(Acc)
+    unread_notes: list[str] = []
     for doc in shared:
         ia, ib = items_a[doc], items_b[doc]
         if (
@@ -109,11 +110,30 @@ def main():
             or ib.get("ObjectStatus", {}).get("S") == "FAILED"
         ):
             continue
-        cls = (rows_a.get(doc, {}).get("classes") or ["(unknown)"])[0]
+        # The class label comes from the document's section objects, so a section that
+        # would not read can change WHICH class this document is grouped under — every
+        # figure below is per class, so a mislabelled document moves two rows at once.
+        # `cache_audit.doc_classes` reports that, and a reason nobody reads is the half
+        # of #1079 that stays open, so the document is excluded rather than grouped on
+        # a label derived from whatever decrypted.
+        row_a = rows_a.get(doc, {})
+        sections_unread = row_a.get("sections_unread") or (
+            rows_b.get(doc, {}).get("sections_unread")
+        )
+        if sections_unread:
+            unread_notes.append(f"{doc} classes: {sections_unread}")
+            continue
+        cls = (row_a.get("classes") or ["(unknown)"])[0]
         g = by_class[cls]
         g.n += 1
-        sa = rc._score(bucket, a.arm_a, doc)
-        sb = rc._score(bucket, a.arm_b, doc)
+        # `_score` returns (score, unread_reason): a report that is not there and one
+        # that would not read are different facts, and a document whose score could
+        # not be READ is excluded from this class's accuracy rather than counted as
+        # having no score (#1079).
+        sa, ua = rc._score(bucket, a.arm_a, doc)
+        sb, ub = rc._score(bucket, a.arm_b, doc)
+        if ua or ub:
+            unread_notes.append(f"{doc} [{cls}]: {ua or ub}")
         if sa is not None and sb is not None:
             g.acc.append(sb - sa)
             if sb > sa:
@@ -131,6 +151,15 @@ def main():
     treated = set(a.treated)
     print(f"\narm A (baseline) {a.arm_a}\narm B (treated)  {a.arm_b}")
     print(f"paired non-failed documents: {sum(g.n for g in by_class.values())}\n")
+    if unread_notes:
+        print(
+            f"⚠ {len(unread_notes)} document(s) contribute no accuracy delta because a "
+            "read FAILED, not because they scored nothing — the per-class figures "
+            "below are over the remainder:"
+        )
+        for note in unread_notes[:5]:
+            print(f"    {note}")
+        print()
     print(
         f"{'class':28} {'grp':>4} {'n':>4} {'acc Δ':>9} {'t':>6} {'sign p':>7} "
         f"{'cost Δ':>10} {'cost t':>7} {'cRead Δ':>9} {'input Δ':>9}"

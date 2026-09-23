@@ -37,6 +37,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional, Tuple
 
 import boto3
+from botocore.exceptions import ClientError
 
 logger = logging.getLogger()
 logger.setLevel(os.environ.get("LOG_LEVEL", "INFO"))
@@ -1546,6 +1547,22 @@ def _run_backfill(
 # (2026-09-22) and CHANGELOG entry for the retry-safe purge that this
 # design supersedes.
 
+if not STACK_NAME:
+    # Load-time guard. Every stack embeds its ``StackName`` into the
+    # SSM parameter path so the marker is per-stack. An empty
+    # ``STACK_NAME`` collapses that to ``/idp//data-mart-rollup/…``,
+    # which every stack in the account then shares — one stack's
+    # ``state=completed`` marker would short-circuit every other
+    # stack's migration and route it away from InitialPurge, leaving
+    # the fresh stack's rollup tables empty and untouched. Fail fast
+    # at import so a misconfigured deployment surfaces in the first
+    # invocation's cold-start rather than in a silent data hole.
+    raise RuntimeError(
+        "STACK_NAME environment variable is empty; refusing to compute the SSM "
+        "migration marker path because '/idp//data-mart-rollup/migration-complete' "
+        "would collide across every stack in the account. Ensure the Lambda's "
+        "Environment sets STACK_NAME to !Ref AWS::StackName."
+    )
 _MIGRATION_MARKER_NAME = f"/idp/{STACK_NAME}/data-mart-rollup/migration-complete"
 
 
@@ -1612,15 +1629,29 @@ def _check_marker_state(days: int, version: Optional[str] = None) -> Dict[str, A
     # persistent read failure fails the whole execution visibly instead
     # of masquerading as "no marker → clean slate".
 
-    days_match = f"days={days}" in value
-    # Version comparison: extract ``version=<x>;`` segment from the
-    # marker if present, and check equality. Pre-versioning markers
-    # (no version= segment at all) treat as match — see the docstring.
-    marker_version: Optional[str] = None
+    # Parse the marker as ``;``-delimited ``key=value`` segments rather
+    # than doing substring matches against the whole payload. Substring
+    # matches are delimiter-unsafe:
+    #   * ``f"days={days}" in value`` treats ``days=3`` as a match
+    #     against a marker written with ``days=30`` or ``300`` — a
+    #     shorter-window migration would then short-circuit against a
+    #     longer-window completed marker even though the operator asked
+    #     for a fresh smaller window.
+    #   * ``"state=completed" in value`` would match a future state
+    #     name that has ``completed`` as a prefix (e.g. a hypothetical
+    #     ``state=completed_pending`` intermediate state). Safe today,
+    #     unsafe as soon as any future state name shares a prefix.
+    # Structured segment parsing eliminates both.
+    marker_segments: Dict[str, str] = {}
     for segment in value.split(";"):
-        if segment.startswith("version="):
-            marker_version = segment[len("version=") :]
-            break
+        if "=" in segment:
+            key, _, val = segment.partition("=")
+            marker_segments[key.strip()] = val.strip()
+    marker_days = marker_segments.get("days")
+    marker_state = marker_segments.get("state")
+    marker_version: Optional[str] = marker_segments.get("version")
+
+    days_match = marker_days == str(days)
     if version is None:
         # Caller didn't supply a version — no comparison to do. Preserves
         # the pre-versioning invocation shape (any direct SFN start_execution
@@ -1633,7 +1664,7 @@ def _check_marker_state(days: int, version: Optional[str] = None) -> Dict[str, A
         # for why silent-accept was rejected.
         version_match = marker_version == version
 
-    if days_match and version_match and "state=completed" in value:
+    if days_match and version_match and marker_state == "completed":
         return {
             "state": "completed",
             "days": days,
@@ -1642,7 +1673,7 @@ def _check_marker_state(days: int, version: Optional[str] = None) -> Dict[str, A
             "should_short_circuit": True,
             "should_skip_purge": False,
         }
-    if days_match and version_match and "state=in_progress" in value:
+    if days_match and version_match and marker_state == "in_progress":
         return {
             "state": "in_progress",
             "days": days,
@@ -1821,42 +1852,85 @@ def _check_hours_failed(
     # Include the daily result in the aggregation if provided. Treated
     # as one additional "chunk" for accounting; per-day granularity is
     # inside the payload already.
-    all_items: List[Dict[str, Any]] = list(chunk_results)
-    if daily_result is not None:
-        all_items.append(daily_result)
-    for chunk in all_items:
-        # Map state hands the Lambda's return through as-is under the
-        # key we chose in ResultSelector — accept either the bare
-        # payload or a ``{backfill: {...}}`` wrapper.
+    # Track chunk-hour and daily-unit contributions separately so an
+    # operator can see whether a failure came from an hour chunk or
+    # from a day of the daily backfill. Historically these were summed
+    # into ``total_*`` fields whose name implied "hours" but actually
+    # counted (chunk_hours + backfill_days) — an operator reading
+    # ``total_attempted=750`` on a 30 d migration would see the answer
+    # 720 + 30 without knowing why. Fields ``total_*`` remain for
+    # backward compatibility with the state machine's Choice state; new
+    # per-unit-type ``chunk_hours_*`` and ``daily_units_*`` fields make
+    # the composition explicit.
+    chunk_hours_attempted = chunk_hours_succeeded = 0
+    chunk_hours_partial = chunk_hours_failed = 0
+    daily_units_attempted = daily_units_succeeded = 0
+    daily_units_partial = daily_units_failed = 0
+
+    def _extract(chunk: Dict[str, Any]) -> Dict[str, Any]:
         payload = chunk.get("backfill") if isinstance(chunk, dict) else None
         if payload is None:
             payload = chunk if isinstance(chunk, dict) else {}
-        attempted = int(payload.get("hours_attempted", 0) or 0)
-        succeeded = int(payload.get("hours_succeeded", 0) or 0)
-        partial = int(payload.get("hours_partial", 0) or 0)
-        failed = int(payload.get("hours_failed", 0) or 0)
-        total_attempted += attempted
-        total_succeeded += succeeded
-        total_partial += partial
-        total_failed += failed
-        # 2.1.2 fix: a "partial" hour means one or more (but not all)
-        # rollup arms failed. In routine hourly ops that's tolerated
-        # because the reconciler fills the gap, but in the migration
-        # context we MUST NOT declare success while any arm is missing
-        # data — the migration is the reconciler for these tables and
-        # a "partial" chunk maps to a customer table with rows silently
-        # missing (2026-09-22 incident: 38 chunks reported partial and
-        # zero rows landed in metering_hourly). Treat partial as needing
-        # replay so the state machine surfaces the failure instead of
-        # writing a WriteCompletedMarker over an empty table.
-        if failed > 0 or partial > 0:
+        return {
+            "attempted": int(payload.get("hours_attempted", 0) or 0),
+            "succeeded": int(payload.get("hours_succeeded", 0) or 0),
+            "partial": int(payload.get("hours_partial", 0) or 0),
+            "failed": int(payload.get("hours_failed", 0) or 0),
+            "start": payload.get("start"),
+            "end": payload.get("end"),
+            "failures": payload.get("failures", []),
+        }
+
+    for chunk in chunk_results:
+        c = _extract(chunk)
+        chunk_hours_attempted += c["attempted"]
+        chunk_hours_succeeded += c["succeeded"]
+        chunk_hours_partial += c["partial"]
+        chunk_hours_failed += c["failed"]
+        total_attempted += c["attempted"]
+        total_succeeded += c["succeeded"]
+        total_partial += c["partial"]
+        total_failed += c["failed"]
+        if c["failed"] > 0 or c["partial"] > 0:
             failing_chunks.append(
                 {
-                    "start": payload.get("start"),
-                    "end": payload.get("end"),
-                    "hours_failed": failed,
-                    "hours_partial": partial,
-                    "failures": payload.get("failures", []),
+                    "start": c["start"],
+                    "end": c["end"],
+                    "hours_failed": c["failed"],
+                    "hours_partial": c["partial"],
+                    "failures": c["failures"],
+                }
+            )
+
+    # 2.1.2 fix: a "partial" hour means one or more (but not all)
+    # rollup arms failed. In routine hourly ops that's tolerated
+    # because the reconciler fills the gap, but in the migration
+    # context we MUST NOT declare success while any arm is missing
+    # data — the migration is the reconciler for these tables and
+    # a "partial" chunk maps to a customer table with rows silently
+    # missing (2026-09-22 incident: 38 chunks reported partial and
+    # zero rows landed in metering_hourly). Treat partial as needing
+    # replay so the state machine surfaces the failure instead of
+    # writing a WriteCompletedMarker over an empty table — see the
+    # ``all_hours_clean`` guard in the return dict below.
+    if daily_result is not None:
+        d = _extract(daily_result)
+        daily_units_attempted += d["attempted"]
+        daily_units_succeeded += d["succeeded"]
+        daily_units_partial += d["partial"]
+        daily_units_failed += d["failed"]
+        total_attempted += d["attempted"]
+        total_succeeded += d["succeeded"]
+        total_partial += d["partial"]
+        total_failed += d["failed"]
+        if d["failed"] > 0 or d["partial"] > 0:
+            failing_chunks.append(
+                {
+                    "start": d["start"],
+                    "end": d["end"],
+                    "hours_failed": d["failed"],
+                    "hours_partial": d["partial"],
+                    "failures": d["failures"],
                 }
             )
     if failing_chunks:
@@ -1867,10 +1941,23 @@ def _check_hours_failed(
         )
     return {
         "all_hours_clean": total_failed == 0 and total_partial == 0,
+        # ``total_*`` are unit-agnostic sums (chunk hours + daily
+        # units) preserved for the state machine's Choice state and
+        # for backward compatibility with any operator consuming this
+        # shape. Prefer the per-unit-type fields below when reasoning
+        # about what actually failed.
         "total_attempted": total_attempted,
         "total_succeeded": total_succeeded,
         "total_partial": total_partial,
         "total_failed": total_failed,
+        "chunk_hours_attempted": chunk_hours_attempted,
+        "chunk_hours_succeeded": chunk_hours_succeeded,
+        "chunk_hours_partial": chunk_hours_partial,
+        "chunk_hours_failed": chunk_hours_failed,
+        "daily_units_attempted": daily_units_attempted,
+        "daily_units_succeeded": daily_units_succeeded,
+        "daily_units_partial": daily_units_partial,
+        "daily_units_failed": daily_units_failed,
         "failing_chunks": failing_chunks,
     }
 
@@ -1923,36 +2010,14 @@ def _run_backfill_daily_range(anchor: datetime, days: int) -> Dict[str, Any]:
         daily_anchor = cursor + one_day
         results["hours_attempted"] += 1
         try:
-            day_result = _run_daily(daily_anchor)
-            # ``_run_daily`` returns a dict with ``metering_daily`` and
-            # ``metering_docs_daily`` sub-results. Count the day as
-            # succeeded if both sub-writes succeeded (or were already
-            # written = skipped-idempotent), partial otherwise.
-            md = day_result.get("metering_daily", {}) or {}
-            mdd = day_result.get("metering_docs_daily", {}) or {}
-            md_ok = "error" not in md
-            mdd_ok = "error" not in mdd
-            # NOTE on the elif/else branches: today's ``_run_daily``
-            # raises on ANY sub-INSERT failure (see the ``if errors:
-            # raise`` guard at the end of _run_daily), so a return
-            # value from ``_run_daily(...)`` always has md_ok=mdd_ok=True
-            # in practice — the elif/else branches below never fire and
-            # partial-day failures surface via the outer ``except`` clause
-            # instead. Kept as defence-in-depth for a future _run_daily
-            # that returns rather than raises on per-table failure.
-            if md_ok and mdd_ok:
-                results["hours_succeeded"] += 1
-            elif md_ok or mdd_ok:
-                results["hours_partial"] += 1
-            else:
-                results["hours_failed"] += 1
-                results["failures"].append(
-                    {
-                        "date": cursor.strftime("%Y-%m-%d"),
-                        "metering_daily_error": md.get("error"),
-                        "metering_docs_daily_error": mdd.get("error"),
-                    }
-                )
+            _run_daily(daily_anchor)
+            # ``_run_daily`` raises on ANY sub-INSERT failure (see the
+            # ``if errors: raise`` guard at the end of _run_daily), so
+            # a successful return means BOTH sub-writes succeeded (or
+            # were already written = skipped-idempotent). No per-table
+            # inspection needed — any per-table failure surfaces via
+            # the outer ``except`` clause below.
+            results["hours_succeeded"] += 1
         except Exception as e:  # noqa: BLE001
             # Match ``_run_backfill``'s per-hour try/except so one bad
             # day doesn't abort the range. State machine's
@@ -3427,16 +3492,25 @@ def _run_athena(
     # resubmit with a salted token. Same salt semantics as round-20's
     # fresh-salt (UTC-second, wide enough for concurrent retries of THIS
     # invocation, distinct across sequential retries).
-    _AthenaClientError_pre: Any
-    from botocore.exceptions import (  # noqa: PLC0415
-        ClientError as _AthenaClientError_pre,
-    )
-
     try:
         response = athena_client.start_query_execution(**kwargs)
-    except _AthenaClientError_pre as e:
-        msg = str(e)
-        if idempotency_key and "Idempotent parameters do not match" in msg:
+    except ClientError as e:
+        # Match on the structured error code, not on the free-form
+        # message. botocore's message wording changes across versions
+        # and localisations; the code is stable. Athena raises
+        # ``InvalidRequestException`` with a message about "Idempotent
+        # parameters do not match" when a ClientRequestToken is reused
+        # against a different QueryString; keep the message check as a
+        # secondary guard so the branch fires on either signal.
+        error = e.response.get("Error", {}) or {}
+        error_code = error.get("Code", "")
+        error_msg = error.get("Message", "") or str(e)
+        is_idempotency_mismatch = (
+            error_code
+            in {"IdempotentParameterMismatchException", "InvalidRequestException"}
+            and "Idempotent" in error_msg
+        )
+        if idempotency_key and is_idempotency_mismatch:
             fresh_salt = str(int(time.time()))
             salted_key = f"{idempotency_key[:116]}-r{fresh_salt}"[:128]
             logger.warning(

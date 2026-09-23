@@ -206,10 +206,21 @@ class TestBdaBlueprintService:
             )
 
             # Verify boto3 client was called for BDABlueprintCreator
-            mock_boto_client.assert_called_with(service_name="bedrock-data-automation")
+            # `region_name=None` is BDABlueprintCreator deferring to boto3's own
+            # region resolution, which is what this in-Lambda caller wants; an
+            # out-of-region caller (idp-cli config-sync-bda --region) passes one.
+            # Asserted explicitly rather than dropped, so a hardcoded region
+            # appearing here would still fail.
+            mock_boto_client.assert_called_with(
+                service_name="bedrock-data-automation", region_name=None
+            )
 
-            # Verify DynamoDB table was set up
-            mock_dynamodb.assert_called_once_with("dynamodb")
+            # Verify DynamoDB table was set up. `region_name=None` is ConfigurationManager
+            # deferring to boto3's own region resolution, which is what this
+            # in-Lambda caller wants; an out-of-region caller passes a region
+            # instead. Asserted explicitly rather than dropped, so a hardcoded
+            # region appearing here would still fail.
+            mock_dynamodb.assert_called_once_with("dynamodb", region_name=None)
 
     def test_create_blueprints_from_custom_configuration_no_config(self, service):
         """Test handling when no custom configuration exists."""
@@ -1947,3 +1958,20 @@ class TestBlueprintNameSanitization:
         assert "a-zA-Z0-9-_" in result["error"]
         assert "Rename the class" in result["error"]
         service.blueprint_creator.create_blueprint.assert_not_called()
+
+    def test_project_for_version_raises_rather_than_returning_no_arn(self, service):
+        """An unresolvable project ARN must not reach a caller as a value.
+
+        ``get_or_create_project_for_version`` is declared to return ``str`` because
+        its callers pass the result straight into BDA APIs that require one. The one
+        path that could have produced ``None`` is a missing
+        ``CONFIGURATION_TABLE_NAME``; every other failure in the method already
+        raises. Returning ``None`` there surfaced as
+        ``TypeError: 'NoneType' object is not iterable`` two frames away, in
+        ``_blueprint_lookup``, because ``_retrieve_all_blueprints`` answers ``None``
+        for an absent ARN — so the caller reported a type error rather than a
+        configuration problem.
+        """
+        with patch.dict("os.environ", {}, clear=True):
+            with pytest.raises(RuntimeError, match="CONFIGURATION_TABLE_NAME"):
+                service.get_or_create_project_for_version("v1")

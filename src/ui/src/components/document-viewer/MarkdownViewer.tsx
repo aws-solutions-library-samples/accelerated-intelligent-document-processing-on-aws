@@ -7,6 +7,7 @@ import { generateClient } from '../../api/client-shim';
 import { ConsoleLogger } from 'aws-amplify/utils';
 import SafeMarkdown from '../common/SafeMarkdown';
 import { getFileContents } from '../../graphql/generated';
+import { FILE_ACCESS_DENIED_MESSAGE, isAuthorizationError } from '../../hooks/utils/graphql-error';
 import { useDocumentVersion } from '../../contexts/document-version';
 
 import './MarkdownViewer.css';
@@ -303,7 +304,9 @@ const MarkdownReport = ({ reportUri, documentId, title = 'Report', emptyMessage 
         setReportContent(content);
       } catch (err) {
         logger.error(`Error fetching ${title}:`, err);
-        setError(`Failed to load ${title.toLowerCase()}. Please try again.`);
+        // Retrying cannot clear a 403, and the file reads now require an assigned
+        // Cognito group, so an authorization failure gets its own message.
+        setError(isAuthorizationError(err) ? FILE_ACCESS_DENIED_MESSAGE : `Failed to load ${title.toLowerCase()}. Please try again.`);
       } finally {
         setIsLoading(false);
       }

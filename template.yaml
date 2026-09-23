@@ -188,6 +188,16 @@ Parameters:
       (Optional) The group name in your external IdP that should map to the Cognito Reviewer role.
       For example: IDP-Reviewers
 
+  ExternalIdPAnnotatorGroupName:
+    Type: String
+    Default: ""
+    Description: >-
+      (Optional) The group name in your external IdP that should map to the Cognito Annotator role.
+      For example: IDP-Annotators.
+      Leave empty to keep Annotator membership under manual control in User Management; setting it
+      makes the IdP authoritative, so a federated user whose claim maps to some other role but omits
+      this group is removed from Annotator at their next fresh sign-in (not at a token refresh).
+
   ExternalIdPViewerGroupName:
     Type: String
     Default: ""
@@ -344,16 +354,12 @@ Parameters:
     AllowedValues:
       - "us.amazon.nova-lite-v1:0"
       - "us.amazon.nova-pro-v1:0"
-      - "us.amazon.nova-premier-v1:0"
       - "us.amazon.nova-2-lite-v1:0"
       - "us.amazon.nova-2-lite-v1:0:priority"
       - "us.amazon.nova-2-lite-v1:0:flex"
       - "global.amazon.nova-2-lite-v1:0"
       - "global.amazon.nova-2-lite-v1:0:priority"
       - "global.amazon.nova-2-lite-v1:0:flex"
-      - "us.anthropic.claude-3-haiku-20240307-v1:0"
-      - "us.anthropic.claude-3-5-sonnet-20241022-v2:0"
-      - "us.anthropic.claude-3-7-sonnet-20250219-v1:0"
       - "us.anthropic.claude-sonnet-4-20250514-v1:0"
       - "us.anthropic.claude-sonnet-4-5-20250929-v1:0"
       - "us.anthropic.claude-sonnet-5"
@@ -362,9 +368,6 @@ Parameters:
       - "eu.amazon.nova-2-lite-v1:0"
       - "eu.amazon.nova-2-lite-v1:0:priority"
       - "eu.amazon.nova-2-lite-v1:0:flex"
-      - "eu.anthropic.claude-3-haiku-20240307-v1:0"
-      - "eu.anthropic.claude-3-5-sonnet-20241022-v2:0"
-      - "eu.anthropic.claude-3-7-sonnet-20250219-v1:0"
       - "eu.anthropic.claude-sonnet-4-20250514-v1:0"
       - "eu.anthropic.claude-sonnet-4-5-20250929-v1:0"
       - "qwen.qwen3-vl-235b-a22b"
@@ -382,7 +385,7 @@ Parameters:
       - "amazon.nova-lite-v1:0"
       - "us-gov.anthropic.claude-sonnet-4-5-20250929-v1:0"
 
-    Description: Model to use for optional Document Knowledge Base. Model access MUST be enabled in Amazon Bedrock. Note - Nova Premier may not be available in all EU regions. GovCloud deployments must use one of the GovCloud-verified entries above (amazon.nova-pro-v1:0, amazon.nova-lite-v1:0, or us-gov.anthropic.claude-sonnet-4-5-20250929-v1:0) — the commercial default is overridden automatically by the --govcloud template transform.
+    Description: Model to use for optional Document Knowledge Base. Model access MUST be enabled in Amazon Bedrock. Note - not every listed model is available in all EU regions. GovCloud deployments must use one of the GovCloud-verified entries above (amazon.nova-pro-v1:0, amazon.nova-lite-v1:0, or us-gov.anthropic.claude-sonnet-4-5-20250929-v1:0) — the commercial default is overridden automatically by the --govcloud template transform.
 
   # Optional - Post processing Lambda hook
   PostProcessingLambdaHookFunctionArn:
@@ -467,13 +470,16 @@ Parameters:
     Type: Number
     Default: 10
     Description: >-
-      Number of document sections degraded to "no confidence scores" within a
-      15-minute window before AssessmentConfidenceUnavailableAlarm fires. A single
-      degraded section is an expected, self-limiting outcome (one unusually large
-      section against a small-context confidence model), so the alarm watches
-      volume rather than the first occurrence. Raise this if one large
-      multi-section document can legitimately produce that many degrades in your
-      corpus; lower it to be told sooner.
+      Number of document sections left with "no confidence scores" within a
+      15-minute window before AssessmentConfidenceUnavailableAlarm fires. Counted
+      whether the confidence pass ran and failed deterministically, or never ran
+      because the section had nothing to assess. A single such section is an
+      expected, self-limiting outcome (one unusually large section against a
+      small-context confidence model, or one section whose extraction produced no
+      fields), so the alarm watches volume rather than the first occurrence. Raise
+      this if a single document in your corpus can legitimately produce that many
+      -- a large multi-section document against a small-context confidence model,
+      or many sections with nothing to assess; lower it to be told sooner.
     MinValue: 1
 
   QueueStalledAgeThresholdSeconds:
@@ -1370,6 +1376,18 @@ Conditions:
   # Without DeployInVPC, Lambdas run on the public Lambda network and cannot
   # reach the VPCE hostname — setting endpoint_url would cause timeouts.
   HasS3VpcEndpointAndVpc: !And [!Condition HasS3VpcEndpoint, !Condition DeployInVPC]
+  # Gates the state machines' Tracing.Enabled AND every Lambda's Tracing mode.
+  # Each traced function writes `Tracing: !If [EnableXRayTracingCondition,
+  # Active, PassThrough]` rather than a literal, so setting the parameter to
+  # "false" actually turns Lambda tracing off; a hardcoded `Active` cannot be
+  # turned off at all, which is what the parameter's description promises.
+  # PassThrough — not an absent property — is written on the false branch: the
+  # two resolve identically, and naming it says the choice was made. Neither
+  # branch changes a function's IAM: SAM attaches its X-Ray managed policy to a
+  # role it GENERATES whenever Tracing is declared in any form, because it
+  # cannot evaluate the Fn::If. A function with an explicit `Role:` gets
+  # nothing from SAM and must carry the X-Ray grant itself — checked by
+  # scripts/tests/test_xray_tracing.py, along with the rest of this.
   EnableXRayTracingCondition: !Equals [ !Ref EnableXRayTracing, "true" ]
   UsePrivateApi: !Equals [ !Ref ApiGatewayVisibility, "PRIVATE" ]
   HasArtifactsBucketKmsKey: !Not [ !Equals [ !Ref ArtifactsBucketKmsKeyArn, "" ] ]
@@ -1381,11 +1399,6 @@ Conditions:
 
   # Feature Platform
   IsFeaturePlatformEnabled: !Equals [ !Ref EnableFeaturePlatform, 'true' ]
-  # Inverse condition used to gate the main stack's
-  # `${AWS::StackName}-TrackingTableName` Output so that it isn't declared at
-  # the same time as the FeaturePlatformStack's identically-named export
-  # (which would fail with "Export already exported by stack ...").
-  IsFeaturePlatformDisabled: !Equals [ !Ref EnableFeaturePlatform, 'false' ]
   # NB: there is deliberately no "IsAutoSubscribeMode" condition inferring the
   # subscription mode from whether FeaturePlatformSimulatorEndpoint is set.
   # Inferring it coupled two independent choices — WHICH API to call and WHERE
@@ -1481,6 +1494,7 @@ Metadata:
           - ExternalIdPAdminGroupName
           - ExternalIdPAuthorGroupName
           - ExternalIdPReviewerGroupName
+          - ExternalIdPAnnotatorGroupName
           - ExternalIdPViewerGroupName
           - ExternalIdPAutoLogin
           - ExternalIdPEmailMutable
@@ -3195,6 +3209,13 @@ Resources:
         # groups, which carry NO retention policy, so their logs accumulated
         # and were billed indefinitely (issue #826).
         LogRetentionDays: !Ref LogRetentionDays
+        # Tracing for the nested stack's Lambdas. Without this they hardcoded
+        # `Tracing: Active`, so EnableXRayTracing=false left them tracing —
+        # the #983 defect surviving in the one extension template that IS part
+        # of the main deployment. The six catalog extensions are separate
+        # stacks with their own parameters and cannot be reached this way; see
+        # docs/monitoring.md.
+        EnableXRayTracing: !Ref EnableXRayTracing
         # Forward the permissions boundary so the nested stack's IAM role
         # (FeaturePlatformLambdaRole) is created with it. Without this,
         # accounts with an SCP that requires a boundary on every role fail
@@ -5501,7 +5522,7 @@ Resources:
       Description: Data-mart rollup Lambda — populates metering_hourly, metering_daily, control_plane_hourly, and data_plane_lambda_hourly tables.
       MemorySize: 512
       Timeout: 900
-      Tracing: Active
+      Tracing: !If [EnableXRayTracingCondition, Active, PassThrough]
       Layers:
         # pyarrow + boto3 + idp_common (metrics helper etc.). Same layer the
         # migration Lambda uses. Bundling pyarrow in this function too would
@@ -5714,14 +5735,6 @@ Resources:
                 # query. Without this, StartQueryExecution fails at the
                 # "verify/create output bucket" precheck.
                 - s3:GetBucketLocation
-                # DeleteObject(s) is used ONLY by the one-shot
-                # `mode: backfill_migrate` path, which purges the four
-                # per-document rollup S3 prefixes before repopulating them
-                # at the widened (document_class) grain. Rollup writes on
-                # the scheduled path never delete objects (append-only
-                # invariant preserved). See docs/reporting-sql-layer.md §10.
-                - s3:DeleteObject
-                - s3:DeleteObjects
               Resource:
                 - !If
                   - ShouldCreateReportingBucket
@@ -5731,6 +5744,42 @@ Resources:
                   - ShouldCreateReportingBucket
                   - !Sub "${ReportingBucket.Arn}/*"
                   - !Sub "arn:${AWS::Partition}:s3:::${ReportingBucketName}/*"
+            # DeleteObject is used ONLY by the state machine's
+            # ``InitialPurge`` task (``mode: purge_rollup_prefixes``),
+            # which wipes the four per-document rollup S3 prefixes
+            # before repopulating them at the widened
+            # (``document_class``) grain. Rollup writes on the
+            # scheduled path never delete objects (append-only invariant
+            # preserved). Scoped to those four prefixes so a bug that
+            # accidentally passed a non-rollup prefix (or the bucket
+            # root) into ``_purge_s3_prefix`` cannot destroy raw
+            # ``metering/``, ``document_sections_*/``, or Athena
+            # query-output data. ``s3:DeleteObjects`` (plural) is not a
+            # real IAM action — the S3 batch ``DeleteObjects`` API is
+            # authorised by ``s3:DeleteObject`` on each key — so the
+            # bucket-wide grant that used to include it was dead policy
+            # language on top of the wider scope.
+            # See docs/reporting-sql-layer.md §10.
+            - Effect: Allow
+              Action:
+                - s3:DeleteObject
+              Resource:
+                - !If
+                  - ShouldCreateReportingBucket
+                  - !Sub "${ReportingBucket.Arn}/metering_hourly/*"
+                  - !Sub "arn:${AWS::Partition}:s3:::${ReportingBucketName}/metering_hourly/*"
+                - !If
+                  - ShouldCreateReportingBucket
+                  - !Sub "${ReportingBucket.Arn}/metering_daily/*"
+                  - !Sub "arn:${AWS::Partition}:s3:::${ReportingBucketName}/metering_daily/*"
+                - !If
+                  - ShouldCreateReportingBucket
+                  - !Sub "${ReportingBucket.Arn}/metering_docs_hourly/*"
+                  - !Sub "arn:${AWS::Partition}:s3:::${ReportingBucketName}/metering_docs_hourly/*"
+                - !If
+                  - ShouldCreateReportingBucket
+                  - !Sub "${ReportingBucket.Arn}/metering_docs_daily/*"
+                  - !Sub "arn:${AWS::Partition}:s3:::${ReportingBucketName}/metering_docs_daily/*"
             # SSM Parameter for the backfill-migrate idempotency marker.
             # Path is `/idp/<stack>/data-mart-rollup/migration-complete`.
             # Presence blocks re-execution of `mode: backfill_migrate` for
@@ -5961,6 +6010,12 @@ Resources:
         Enabled: true
       DefinitionSubstitutions:
         DataMartRollupFunctionArn: !GetAtt DataMartRollupFunction.Arn
+        # GovCloud compatibility: the state machine's ASL uses this
+        # for the partition segment of the ``arn:${Partition}:states:::
+        # lambda:invoke`` service integrations, so the same definition
+        # renders correctly in commercial (aws) and GovCloud
+        # (aws-us-gov) partitions.
+        Partition: !Ref AWS::Partition
       DefinitionUri: ./src/statemachine/data_mart_migration.asl.json
 
   DataMartMigrationStateMachineRole:
@@ -6175,15 +6230,17 @@ Resources:
                     # Rollup TABLES are always recomputable from raw
                     # metering + document_sections_*; their Glue::Table
                     # resources own their own teardown. But the SSM
-                    # migration marker at ${MIGRATION_MARKER_NAME} does
-                    # NOT get torn down by the stack — SSM parameters
-                    # under /idp/${AWS::StackName}/... are not owned by
-                    # a CFN resource in this template. A stack recreate
-                    # under the same StackName would then inherit a
-                    # state=completed marker and short-circuit the
-                    # migration on the fresh empty rollup tables. Delete
-                    # the marker here so a same-name recreate starts
-                    # clean. Silent on ParameterNotFound (idempotent).
+                    # migration marker (the parameter named by
+                    # MIGRATION_MARKER_NAME) does NOT get torn down by
+                    # the stack — SSM parameters under the
+                    # /idp/<stack>/data-mart-rollup/ prefix are not
+                    # owned by a CFN resource in this template. A
+                    # stack recreate under the same StackName would
+                    # then inherit a state=completed marker and short-
+                    # circuit the migration on the fresh empty rollup
+                    # tables. Delete the marker here so a same-name
+                    # recreate starts clean. Silent on
+                    # ParameterNotFound (idempotent).
                     try:
                         ssm_client.delete_parameter(Name=MIGRATION_MARKER_NAME)
                         logger.info(
@@ -6209,7 +6266,11 @@ Resources:
 
                 props = event.get("ResourceProperties", {})
                 days = int(props.get("Days", 30))
-                chunk_hours = int(props.get("ChunkHours", 24))
+                # Default aligns with the runbook and the CustomResource's
+                # shipped ``ChunkHours: 1`` — a downstream template that
+                # omits this property should get the safe 1-hour slice,
+                # not a 24-hour slice the code was never sized against.
+                chunk_hours = int(props.get("ChunkHours", 1))
                 # MigrationVersion is what CFN diffs on to fire this handler.
                 # Passing it into the state machine is what lets CheckMarker
                 # distinguish a completed marker for a DIFFERENT MigrationVersion
@@ -7475,7 +7536,7 @@ Resources:
 
       Layers:
         - !Ref IDPCommonBaseLayer
-      Tracing: Active
+      Tracing: !If [EnableXRayTracingCondition, Active, PassThrough]
       VpcConfig: !If
         - DeployInVPC
         - SubnetIds: !Ref PrivateSubnetIds
@@ -7617,7 +7678,7 @@ Resources:
 
       Layers:
         - !Ref IDPCommonBaseLayer
-      Tracing: Active
+      Tracing: !If [EnableXRayTracingCondition, Active, PassThrough]
       VpcConfig: !If
         - DeployInVPC
         - SubnetIds: !Ref PrivateSubnetIds
@@ -7772,7 +7833,7 @@ Resources:
 
       Layers:
         - !Ref IDPCommonBaseLayer
-      Tracing: Active
+      Tracing: !If [EnableXRayTracingCondition, Active, PassThrough]
       VpcConfig: !If
         - DeployInVPC
         - SubnetIds: !Ref PrivateSubnetIds
@@ -7992,7 +8053,7 @@ Resources:
         idp:plane: data
       Layers:
         - !Ref IDPCommonBaseLayer
-      Tracing: Active
+      Tracing: !If [EnableXRayTracingCondition, Active, PassThrough]
       DeadLetterQueue:
         Type: SQS
         TargetArn: !GetAtt JobTrackerDLQ.Arn
@@ -8099,7 +8160,7 @@ Resources:
       Layers:
         - !Ref IDPCommonBaseLayer
       MemorySize: 512
-      Tracing: Active
+      Tracing: !If [EnableXRayTracingCondition, Active, PassThrough]
       DeadLetterQueue:
         Type: SQS
         TargetArn: !GetAtt PostProcessingDecompressorDLQ.Arn
@@ -8202,7 +8263,7 @@ Resources:
       Layers:
         - !Ref IDPCommonReportingLayer
       MemorySize: 1024
-      Tracing: Active
+      Tracing: !If [EnableXRayTracingCondition, Active, PassThrough]
       VpcConfig: !If
         - DeployInVPC
         - SubnetIds: !Ref PrivateSubnetIds
@@ -8562,6 +8623,14 @@ Resources:
   # the same topic is the cheaper answer, and only applies at all when the
   # circuit breaker is enabled (it defaults to off).
   #
+  # One more cause with the same signature, and the correlation above does NOT
+  # separate it: a sustained failure to READ the breaker's state also refuses
+  # admission without deleting messages (queue_processor/index.py
+  # check_circuit_breaker, ERROR_TRANSIENT), and it emits no Bedrock error
+  # metrics, so BedrockServiceOutageAlarm stays CLEAR and the runbook above reads
+  # it as a wedge. The CircuitBreakerCheckFailed metric is what distinguishes it,
+  # and the AlarmDescription names it.
+  #
   # FILL(m2, 0) is load-bearing, not defensive. SQS publishes
   # NumberOfMessagesDeleted only when deletions occur, so the totally stalled
   # case — the one this alarm exists for — produces NO datapoint. Without FILL
@@ -8572,7 +8641,7 @@ Resources:
   DocumentQueueStalledAlarm:
     Type: AWS::CloudWatch::Alarm
     Properties:
-      AlarmDescription: !Sub "Alert when the oldest document in the ${AWS::StackName} queue has waited more than ${QueueStalledAgeThresholdSeconds}s AND not one message left the queue for 30 minutes — i.e. the queue is not draining at all, rather than merely deep. Check the Workflow Concurrency Counter widget on the dashboard (a counter pinned at MaxConcurrentWorkflows with no running executions is a leaked slot; ConcurrencyCounterDriftAlarm covers that case), whether the QueueProcessor event-source mapping is enabled, and QueueProcessor errors and throttles. If BedrockServiceOutageAlarm is also active this is a circuit-breaker pause, not a wedge: the paused processor holds messages without deleting them, so this alarm fires too and clears on its own when the breaker closes. If executions ARE running and simply take longer than 30 minutes each, this is a capacity shortfall rather than a wedge: raise MaxConcurrentWorkflows, or raise QueueStalledAgeThresholdSeconds to accept it."
+      AlarmDescription: !Sub "The oldest document in the ${AWS::StackName} queue has waited more than ${QueueStalledAgeThresholdSeconds}s AND not one message left the queue for 30 minutes — the queue is not draining at all, rather than merely deep. Four causes, each with a different signal: a leaked concurrency slot (Workflow Concurrency Counter widget, also covered by ConcurrencyCounterDriftAlarm); a disabled QueueProcessor event-source mapping; a circuit-breaker pause (BedrockServiceOutageAlarm also active, clears itself) or a failure to READ the breaker state (CircuitBreakerCheckFailed, Classification=TRANSIENT — emits no Bedrock metrics, so it looks like a wedge); or simply executions slower than 30 minutes each, which is capacity, not a wedge. See docs/monitoring.md."
       Metrics:
         - Id: e1
           Label: QueueStalled
@@ -8725,7 +8794,7 @@ Resources:
   AssessmentConfidenceUnavailableAlarm:
     Type: AWS::CloudWatch::Alarm
     Properties:
-      AlarmDescription: !Sub "Many sections in ${AWS::StackName} were degraded to 'no confidence scores' in 15 minutes, which indicates a SYSTEMIC confidence-assessment failure rather than a few awkward documents. Those documents still COMPLETE with their extracted data intact; what is missing is the confidence surface, so those sections are not covered by confidence-based review (HITL thresholds). Diagnose from the AssessmentFunction logs - list on the /${AWS::StackName}-PATTERNSTACK log-group prefix, as the group carries the NESTED stack's generated name - where the recorded issue's root_cause names the exception. Usual causes: a confidence model whose input limit the sections exceed (lower extraction.confidence.list_batch_size or pick a larger-context model), a missing bedrock:InvokeModel grant, or a model id not enabled in this region. See docs/monitoring.md#confidence-assessment-degraded."
+      AlarmDescription: !Sub "Many sections in ${AWS::StackName} were left with 'no confidence scores' in 15 minutes, which indicates something SYSTEMIC rather than a few awkward documents. Those documents still COMPLETE with their extracted data intact; what is missing is the confidence surface, so those sections are not covered by confidence-based review (HITL thresholds). Diagnose from the AssessmentFunction logs - list on the /${AWS::StackName}-PATTERNSTACK log-group prefix, as the group carries the NESTED stack's generated name - and from the recorded issue's code and root_cause. Usual causes: a confidence model whose input limit the sections exceed (lower extraction.confidence.list_batch_size or pick a larger-context model), a missing bedrock:InvokeModel grant, a model id not enabled in this region, or sections arriving with nothing to assess. See docs/monitoring.md#confidence-assessment-degraded."
       MetricName: AssessmentConfidenceUnavailable
       Namespace: !Ref AWS::StackName
       Statistic: Sum
@@ -8746,6 +8815,58 @@ Resources:
       ComparisonOperator: GreaterThanOrEqualToThreshold
       # Published only when a section is degraded, so "no data" is the healthy
       # state and must not hold the alarm in INSUFFICIENT_DATA.
+      TreatMissingData: notBreaching
+      AlarmActions:
+        - !Ref AlertsTopic
+
+  # Published by DynamoDBMessageLogger in idp_common.agents.common, which runs in
+  # AgentProcessorFunction and AgentChatProcessorFunction -- both in THIS stack, so
+  # unlike the two alarms above there is no nested-namespace indirection to reason
+  # about. Both functions set METRIC_NAMESPACE to !Ref AWS::StackName and both
+  # PutMetricData Conditions permit it.
+  AgentTranscriptMessageDroppedAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmDescription: !Sub "Messages are being dropped from agent conversation transcripts in ${AWS::StackName}. The agent's own answer to the user is unaffected -- what is lost is an entry in the stored transcript the analytics UI replays, so a conversation will show gaps. A message counted here is gone: it is dropped only after failing to append for the whole retry budget, which means sustained contention on one job's record (many sub-agents in one turn) or a read that kept failing (throttling on the agent table, or a missing grant). A write merely abandoned when an agent closed is a different condition and is counted on AgentTranscriptDrainIncomplete instead. Diagnose from the AgentProcessorFunction logs, which is the only function that records transcripts: the line beside every emit names the job id and identifies the message by role and timestamp. See issue #1098 for why this is counted rather than only logged."
+      MetricName: AgentTranscriptMessageDropped
+      Namespace: !Ref AWS::StackName
+      Statistic: Sum
+      # Same reasoning as AssessmentConfidenceUnavailableAlarm rather than
+      # StaleOutputPurgeFailedAlarm: one drop is a tolerated outcome of a bounded
+      # retry under a burst, and it costs one transcript entry that nothing else
+      # depends on. A stream of them is a systemic cause and means transcripts are
+      # being recorded with gaps across the board, which is the condition worth
+      # waking someone for.
+      Period: 900
+      EvaluationPeriods: 1
+      Threshold: 10
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      # Published only on the drop path, so "no data" is the healthy state and must
+      # not hold the alarm in INSUFFICIENT_DATA.
+      TreatMissingData: notBreaching
+      AlarmActions:
+        - !Ref AlertsTopic
+
+  AgentTranscriptDrainIncompleteAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmDescription: !Sub "Agent transcript writes in ${AWS::StackName} are outliving the agents that queued them. Transcript messages are written on a thread pool, and an agent's close waits a bounded two seconds for whatever is still queued; this counts what that wait left behind. A write counted here is NOT necessarily lost -- the wait stops without cancelling, and Lambda resumes unfinished background work if that execution environment is thawed again -- so treat it as 'the transcript may be incomplete for the session reading it now', and as a real loss only when the environment is reclaimed instead of reused. That is the distinction from AgentTranscriptMessageDroppedAlarm, where the message is gone. A sustained signal means writes are slow or contended for long enough to outlast an agent: check the agent table's latency and throttling metrics, and how many sub-agents a request selects. Diagnose from the AgentProcessorFunction logs, which is the only function that records transcripts."
+      MetricName: AgentTranscriptDrainIncomplete
+      Namespace: !Ref AWS::StackName
+      Statistic: Sum
+      # Volume rather than first occurrence, and for a weaker reason than its sibling
+      # above: one incomplete drain usually costs nothing at all, because the write
+      # resumes on the next thaw. What is worth waking someone for is a rate high
+      # enough to mean writes routinely outlast the agents that queued them.
+      #
+      # Published as one datum carrying the number of messages left behind, so Sum
+      # counts messages and not drains. The threshold matches the sibling so the two
+      # read on the same scale.
+      Period: 900
+      EvaluationPeriods: 1
+      Threshold: 10
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      # Published only when a drain does not finish, so "no data" is the healthy state.
       TreatMissingData: notBreaching
       AlarmActions:
         - !Ref AlertsTopic
@@ -9868,9 +9989,15 @@ Resources:
                 Action: sts:AssumeRole
                 Resource: !Ref BedrockHubRoleArn
               - !Ref AWS::NoValue
-            # RBAC scope enforcement — processor queries UsersTable.SubIndex
-            # to fetch the caller's `allowedConfigVersions` and rejects
-            # chats against documents outside that scope.
+            # RBAC scope enforcement — the processor reads the caller's UsersTable
+            # row for `allowedConfigVersions` and rejects chats against documents
+            # outside that scope. Two key spaces, hence both actions: GetItem for the
+            # SUB#<sub> pointer item (the immutable join, preferred) and Query on
+            # EmailIndex (the compatibility join). The table's own PK/SK are
+            # USER#<userId>, a uuid4 that no token names, which is why a pointer
+            # exists at all. The caller is taken from the verified claims the
+            # dispatcher's resolver forwards; a read failing for any reason
+            # (including a missing grant here) DENIES the turn.
             - Effect: Allow
               Action:
                 - dynamodb:Query
@@ -9932,6 +10059,12 @@ Resources:
           TRACKING_TABLE_NAME: !Ref TrackingTable
           LOOKUP_FUNCTION_NAME: !Ref LookupFunction
           STRANDS_LOG_LEVEL: !Ref LogLevel
+          # The namespace the transcript logger's AgentTranscriptMessageDropped
+          # counter lands in. Unset, idp_common.metrics falls back to GENAIDP,
+          # which this function's PutMetricData Condition does not permit, so the
+          # emit would AccessDenied and be swallowed -- a counter that exists and
+          # never arrives.
+          METRIC_NAMESPACE: !Ref AWS::StackName
           BEDROCK_REGION: !Ref AWS::Region
           CHAT_MESSAGES_TABLE: !Ref ChatMessagesTable
           CHAT_SESSIONS_TABLE: !Ref ChatSessionsTable
@@ -10022,17 +10155,24 @@ Resources:
                 - !Sub "arn:${AWS::Partition}:athena:${AWS::Region}:${AWS::AccountId}:datacatalog/*"
             - Effect: Allow
               Action:
-                # PutMetricData for emit_control_plane_cost_metric on the
-                # analytics agent's Athena calls. Scoped to the
-                # IDPControlPlane namespace. Round-6 review fix — was
-                # missing on Agent*ProcessorFunction, so every Athena call
-                # AccessDenied on emit and control_plane_hourly showed 0
-                # for analytics-agent's Athena spend.
+                # PutMetricData for two emitters with different namespaces.
+                # emit_control_plane_cost_metric writes the analytics agent's
+                # Athena spend to IDPControlPlane (round-6 review fix — this
+                # grant was missing on Agent*ProcessorFunction, so every Athena
+                # call AccessDenied on emit and control_plane_hourly showed 0
+                # for analytics-agent). The agent transcript logger's
+                # AgentTranscriptMessageDropped counter goes to the stack's own
+                # namespace, where the alarms and dashboards read. A
+                # single-namespace Condition silently denies whichever of the two
+                # it does not name, and the denial is swallowed by design on both
+                # emit paths — so both are listed.
                 - cloudwatch:PutMetricData
               Resource: "*"
               Condition:
                 StringEquals:
-                  "cloudwatch:namespace": IDPControlPlane
+                  "cloudwatch:namespace":
+                    - !Ref AWS::StackName
+                    - IDPControlPlane
             - Effect: Allow
               Action:
                 - glue:GetTable
@@ -10437,7 +10577,15 @@ Resources:
               Condition:
                 StringLike:
                   "aws:ResourceTag/idp:feature-id": "*"
-            # RBAC scope enforcement — query UsersTable.SubIndex.
+            # RBAC scope enforcement — read the caller's UsersTable row for their
+            # `allowedConfigVersions`, on either key space (the SUB#<sub> pointer via
+            # GetItem, or EmailIndex via Query). Retained for this function because
+            # it runs the same Chat-with-Document processor code, but on THIS
+            # transport the check stands down and the grant goes unused: a Function
+            # URL forwards no Cognito claims, so there is no verified per-user
+            # caller to resolve a scope for (GAP-07 in
+            # scripts/api_rbac_expectations.yaml). It becomes live the moment that
+            # endpoint verifies an ID token, with no IAM change needed.
             - Effect: Allow
               Action:
                 - dynamodb:Query
@@ -10634,8 +10782,8 @@ Resources:
           # Token calculation
           MIN_TOKENS_PER_REQUEST: "500"
           # Bedrock model quota codes (TPM and RPM)
-          BEDROCK_MODEL_QUOTA_CODES: '{"us.anthropic.claude-sonnet-5":"L-D4FBCF4E","global.anthropic.claude-sonnet-5":"L-DD84E5CA","us.amazon.nova-lite-v1:0":"L-7C42E72A","us.amazon.nova-pro-v1:0":"L-C0326783","us.amazon.nova-premier-v1:0":"L-AA7FE948","us.amazon.nova-2-lite-v1:0":"L-C6F5908D","global.amazon.nova-2-lite-v1:0":"L-C6F5908D","us.anthropic.claude-3-haiku-20240307-v1:0":"L-DCADBC78","us.anthropic.claude-haiku-4-5-20251001-v1:0":"L-58BE175A","us.anthropic.claude-3-5-sonnet-20241022-v2:0":"L-FF8B4E28","us.anthropic.claude-3-7-sonnet-20250219-v1:0":"L-6E888CC2","us.anthropic.claude-sonnet-4-20250514-v1:0":"L-59759B4A","us.anthropic.claude-sonnet-4-5-20250929-v1:0":"L-F4DDD3EB","us.anthropic.claude-opus-4-20250514-v1:0":"L-29C2B0A3","us.anthropic.claude-opus-4-1-20250805-v1:0":"L-BD85BFCD","us.anthropic.claude-opus-4-5-20251101-v1:0":"L-7007E9C9","global.anthropic.claude-haiku-4-5-20251001-v1:0":"L-58BE175A","global.anthropic.claude-sonnet-4-5-20250929-v1:0":"L-F4DDD3EB","global.anthropic.claude-opus-4-5-20251101-v1:0":"L-7007E9C9"}'
-          BEDROCK_MODEL_RPM_QUOTA_CODES: '{"us.anthropic.claude-sonnet-5":"L-D4FBCF4E","global.anthropic.claude-sonnet-5":"L-DD84E5CA","us.amazon.nova-lite-v1:0":"L-89F8391A","us.amazon.nova-pro-v1:0":"L-ED46B8C5","us.amazon.nova-premier-v1:0":"L-9AD981E7","us.amazon.nova-2-lite-v1:0":"L-F06F1187","global.amazon.nova-2-lite-v1:0":"L-F06F1187","us.anthropic.claude-3-haiku-20240307-v1:0":"L-616A3F5B","us.anthropic.claude-haiku-4-5-20251001-v1:0":"L-CCA5DF70","us.anthropic.claude-3-5-sonnet-20241022-v2:0":"L-1D3E59A3","us.anthropic.claude-3-7-sonnet-20250219-v1:0":"L-3D8CC480","us.anthropic.claude-sonnet-4-20250514-v1:0":"L-559DCC33","us.anthropic.claude-sonnet-4-5-20250929-v1:0":"L-4A6BFAB1","us.anthropic.claude-opus-4-20250514-v1:0":"L-C99C7EF6","us.anthropic.claude-opus-4-1-20250805-v1:0":"L-7EC72A47","us.anthropic.claude-opus-4-5-20251101-v1:0":"L-27989F42","global.anthropic.claude-haiku-4-5-20251001-v1:0":"L-CCA5DF70","global.anthropic.claude-sonnet-4-5-20250929-v1:0":"L-4A6BFAB1","global.anthropic.claude-opus-4-5-20251101-v1:0":"L-27989F42"}'
+          BEDROCK_MODEL_QUOTA_CODES: '{"us.anthropic.claude-sonnet-5":"L-D4FBCF4E","global.anthropic.claude-sonnet-5":"L-DD84E5CA","us.amazon.nova-lite-v1:0":"L-7C42E72A","us.amazon.nova-pro-v1:0":"L-C0326783","us.amazon.nova-2-lite-v1:0":"L-C6F5908D","global.amazon.nova-2-lite-v1:0":"L-C6F5908D","us.anthropic.claude-haiku-4-5-20251001-v1:0":"L-58BE175A","us.anthropic.claude-sonnet-4-20250514-v1:0":"L-59759B4A","us.anthropic.claude-sonnet-4-5-20250929-v1:0":"L-F4DDD3EB","us.anthropic.claude-opus-4-1-20250805-v1:0":"L-BD85BFCD","us.anthropic.claude-opus-4-5-20251101-v1:0":"L-7007E9C9","global.anthropic.claude-haiku-4-5-20251001-v1:0":"L-58BE175A","global.anthropic.claude-sonnet-4-5-20250929-v1:0":"L-F4DDD3EB","global.anthropic.claude-opus-4-5-20251101-v1:0":"L-7007E9C9"}'
+          BEDROCK_MODEL_RPM_QUOTA_CODES: '{"us.anthropic.claude-sonnet-5":"L-D4FBCF4E","global.anthropic.claude-sonnet-5":"L-DD84E5CA","us.amazon.nova-lite-v1:0":"L-89F8391A","us.amazon.nova-pro-v1:0":"L-ED46B8C5","us.amazon.nova-2-lite-v1:0":"L-F06F1187","global.amazon.nova-2-lite-v1:0":"L-F06F1187","us.anthropic.claude-haiku-4-5-20251001-v1:0":"L-CCA5DF70","us.anthropic.claude-sonnet-4-20250514-v1:0":"L-559DCC33","us.anthropic.claude-sonnet-4-5-20250929-v1:0":"L-4A6BFAB1","us.anthropic.claude-opus-4-1-20250805-v1:0":"L-7EC72A47","us.anthropic.claude-opus-4-5-20251101-v1:0":"L-27989F42","global.anthropic.claude-haiku-4-5-20251001-v1:0":"L-CCA5DF70","global.anthropic.claude-sonnet-4-5-20250929-v1:0":"L-4A6BFAB1","global.anthropic.claude-opus-4-5-20251101-v1:0":"L-27989F42"}'
       Policies:
         - Statement:
             - Effect: Allow
@@ -10835,6 +10983,12 @@ Resources:
           TRACKING_TABLE_NAME: !Ref TrackingTable
           LOOKUP_FUNCTION_NAME: !Ref LookupFunction
           STRANDS_LOG_LEVEL: !Ref LogLevel
+          # The namespace the transcript logger's AgentTranscriptMessageDropped
+          # counter lands in. Unset, idp_common.metrics falls back to GENAIDP,
+          # which this function's PutMetricData Condition does not permit, so the
+          # emit would AccessDenied and be swallowed -- a counter that exists and
+          # never arrives.
+          METRIC_NAMESPACE: !Ref AWS::StackName
           AGENT_TABLE: !Ref AgentTable
           APPSYNC_API_URL: ""
           ATHENA_DATABASE: !Ref ReportingDatabase
@@ -10882,17 +11036,24 @@ Resources:
                 - !Sub "arn:${AWS::Partition}:athena:${AWS::Region}:${AWS::AccountId}:datacatalog/*"
             - Effect: Allow
               Action:
-                # PutMetricData for emit_control_plane_cost_metric on the
-                # analytics agent's Athena calls. Scoped to the
-                # IDPControlPlane namespace. Round-6 review fix — was
-                # missing on Agent*ProcessorFunction, so every Athena call
-                # AccessDenied on emit and control_plane_hourly showed 0
-                # for analytics-agent's Athena spend.
+                # PutMetricData for two emitters with different namespaces.
+                # emit_control_plane_cost_metric writes the analytics agent's
+                # Athena spend to IDPControlPlane (round-6 review fix — this
+                # grant was missing on Agent*ProcessorFunction, so every Athena
+                # call AccessDenied on emit and control_plane_hourly showed 0
+                # for analytics-agent). The agent transcript logger's
+                # AgentTranscriptMessageDropped counter goes to the stack's own
+                # namespace, where the alarms and dashboards read. A
+                # single-namespace Condition silently denies whichever of the two
+                # it does not name, and the denial is swallowed by design on both
+                # emit paths — so both are listed.
                 - cloudwatch:PutMetricData
               Resource: "*"
               Condition:
                 StringEquals:
-                  "cloudwatch:namespace": IDPControlPlane
+                  "cloudwatch:namespace":
+                    - !Ref AWS::StackName
+                    - IDPControlPlane
             - Effect: Allow
               Action:
                 - glue:GetTable
@@ -11630,6 +11791,7 @@ Resources:
           ADMIN_GROUP_NAME: !Ref ExternalIdPAdminGroupName
           AUTHOR_GROUP_NAME: !Ref ExternalIdPAuthorGroupName
           REVIEWER_GROUP_NAME: !Ref ExternalIdPReviewerGroupName
+          ANNOTATOR_GROUP_NAME: !Ref ExternalIdPAnnotatorGroupName
           VIEWER_GROUP_NAME: !Ref ExternalIdPViewerGroupName
           # The only provider whose assertions may grant groups. The trigger
           # requires the signing-in user to be linked to it before it reads
@@ -11683,6 +11845,7 @@ Resources:
             ("ADMIN_GROUP_NAME", "Admin"),
             ("AUTHOR_GROUP_NAME", "Author"),
             ("REVIEWER_GROUP_NAME", "Reviewer"),
+            ("ANNOTATOR_GROUP_NAME", "Annotator"),
             ("VIEWER_GROUP_NAME", "Viewer"),
         ]:
             idp_group = os.environ.get(env_key, "").strip()
@@ -11801,9 +11964,24 @@ Resources:
 
             # Determine target Cognito groups from mapping
             target_groups = set()
+            unmapped_groups = []
             for idp_group in idp_groups:
                 if idp_group in GROUP_MAPPING:
                     target_groups.add(GROUP_MAPPING[idp_group])
+                else:
+                    unmapped_groups.append(idp_group)
+
+            # Name every discarded claim value. Without this a claim carrying one
+            # mapped name plus an unmapped one produced no diagnostic at all: the
+            # warning below is skipped because target_groups is non-empty, so the
+            # role the operator expected went missing with nothing to point at.
+            # Group names only — never the token or the whole claim set.
+            if unmapped_groups:
+                logger.warning(
+                    f"Ignoring IdP group(s) with no Cognito mapping for user "
+                    f"{username}: {unmapped_groups}. Set the matching "
+                    f"ExternalIdP*GroupName stack parameter to map them."
+                )
 
             if not target_groups:
                 logger.warning(f"No matching Cognito groups for user {username} with IdP groups {idp_groups}")
@@ -12075,6 +12253,48 @@ Resources:
                   - lambda:InvokeFunction
                   - lambda:InvokeFunctionUrl
                 Resource: !GetAtt ChatStreamProcessorFunction.Arn
+        # What the BROWSER may read with the signed-in user's own credentials.
+        #
+        # Every authenticated user assumes this one role — `CognitoIdentityPoolSetRole`
+        # declares no `RoleMappings`, so Cognito group membership plays no part in
+        # which role is assumed. Whatever is listed here is therefore readable by
+        # every signed-in user irrespective of group, with no resolver in the path and
+        # so with no group check, no per-document check and no scope check available to
+        # apply. That makes this list, not the API surface, the boundary for anything
+        # it names.
+        #
+        # It names the Input and Output buckets because the UI genuinely signs those
+        # GETs in the browser: `use-page-thumbnails` and `PageImageViewer` fetch
+        # `page.ImageUri` (Output), `FileViewer` defaults to `presignVia: 'client'`
+        # against `settings.InputBucket`, and `presignForExport` signs client-side
+        # for exactly those two and routes every other bucket to the resolver.
+        # Narrowing those is the document-bucket half of this, which needs the read
+        # path redesigned rather than the grant trimmed
+        # ([#1033](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/1033)).
+        #
+        # It does NOT name the Configuration bucket, and must not. That bucket holds
+        # `config_revisions/<profile>/<nnnnnn>.json.gz` — every configuration
+        # profile's full revision history, prompts and few-shot examples included —
+        # and which profiles a user may see is their `allowedConfigVersions`, a
+        # per-user boundary no IAM grant on this shared role can express. Granted
+        # here it was also `s3:ListBucket`, so the profile names did not have to be
+        # known in advance.
+        #
+        # No UI code path reads it. What that rests on is the **call sites**, not on
+        # the bucket name being unavailable: the browser holds no S3 API client at all
+        # (only `S3RequestPresigner`, at four call sites, every one of which resolves
+        # to the Input or Output bucket — and `presignForExport` refuses outright to
+        # client-sign anything else). ⚠️ The name IS available to the browser: it is
+        # one key of the settings blob the UI fetches from Parameter Store with these
+        # same credentials. So this grant's absence is what bounds the reach, and
+        # `scripts/tests/test_browser_s3_grants.py` is what keeps it absent.
+        #
+        # The Configuration-bucket content the UI does display — bundled samples under
+        # `samples/`, the config library, profile bodies — is served by
+        # `getSampleDocumentUrl`, `getConfigurationLibraryFile` and
+        # `getConfigVersion`, each of which applies the caller's scope. The reads that
+        # remain go through `getFileContents` / `getFilePresignedUrl`, where
+        # `key_scope` enforces the same axis on the key.
         - PolicyName: S3
           PolicyDocument:
             Version: 2012-10-17
@@ -12094,8 +12314,6 @@ Resources:
                   - !Sub "arn:${AWS::Partition}:s3:::${OutputBucket}/*"
                   - !Sub "arn:${AWS::Partition}:s3:::${InputBucket}"
                   - !Sub "arn:${AWS::Partition}:s3:::${InputBucket}/*"
-                  - !Sub "arn:${AWS::Partition}:s3:::${ConfigurationBucket}"
-                  - !Sub "arn:${AWS::Partition}:s3:::${ConfigurationBucket}/*"
               - Effect: Allow
                 Action:
                   - kms:Encrypt
@@ -14697,7 +14915,14 @@ Resources:
       Handler: index.lambda_handler
       Runtime: python3.12
       CodeUri: nested/api-resolvers/src/lambda/finetuning_jobs_resolver/
-      Timeout: 60
+      # 30s, matching the list resolvers in nested/api-resolvers. The dispatcher
+      # stops waiting at 20s (_RESOLVER_READ_TIMEOUT_SECONDS in
+      # http_api_dispatcher/index.py) and does not cancel the invocation, so a
+      # Timeout far above that window only buys orphaned work: at 60s this
+      # function's bounded scan could keep examining the tracking table for 35s
+      # after the caller had already been answered with a labelled 504. See
+      # MAX_SCAN_PAGES / SCAN_TIME_RESERVE_MS in the handler.
+      Timeout: 30
       MemorySize: 512
       Layers:
         - !Ref IDPCommonBaseLayer
@@ -15012,8 +15237,17 @@ Outputs:
       See scripts/vpc-endpoints.yaml for the endpoint template.
     Value: !GetAtt LambdaVpcSecurityGroup.GroupId
   TrackingTableName:
-    Condition: IsFeaturePlatformDisabled
-    Description: Name of the DynamoDB document tracking table (feature-stack cross-stack ref)
+    Description: >-
+      Name of the DynamoDB document tracking table. A plain Output with no
+      `Export`, deliberately: the cross-stack export `<StackName>-TrackingTableName`
+      that feature stacks import is owned solely by the nested FeaturePlatformStack,
+      which declares it unconditionally. Do not add an `Export` here. An export
+      name has one producing stack, and that stack cannot change in a single
+      update: CloudFormation writes a stack's exports at the END of its update
+      while a nested stack claims its own during the resource phase, so a second
+      declaration here would collide with the nested one on the transition to
+      EnableFeaturePlatform=true ("Export with name ... is already exported by
+      stack ...") — see scripts/tests/test_cfn_export_ownership.py. An Output
+      without an Export cannot collide, and unlike the export it is readable from
+      `describe-stacks` in every configuration.
     Value: !Ref TrackingTable
-    Export:
-      Name: !Sub "${AWS::StackName}-TrackingTableName"

@@ -91,9 +91,13 @@ source .venv/bin/activate
 
 ### Install with test dependencies
 
+Run this from the repository root. The CLI requires `idp-sdk`, which requires
+`idp_common`; both names on public PyPI belong to unrelated parties, so all three
+packages go in a single command and all three come from a path. See
+[Installing First-Party Packages Safely](dependency-confusion.md).
+
 ```bash
-cd lib/idp_cli_pkg
-pip install -e ".[test]"
+pip install -e lib/idp_common_pkg -e lib/idp_sdk -e "lib/idp_cli_pkg[test]"
 ```
 
 ## Makefile Shortcuts
@@ -174,6 +178,50 @@ idp-cli deploy --profile production --stack-name my-stack ...
 # Profile at the end
 idp-cli deploy --stack-name my-stack --profile production ...
 ```
+
+#### Region and its precedence
+
+`--region` is a **per-command** option, not a global one, so it goes after the
+subcommand:
+
+```bash
+idp-cli config-upload --stack-name my-stack --config-file ./config.yaml \
+    --config-profile v2 --region eu-west-1
+```
+
+The resolution order is:
+
+1. `--region` on the subcommand, if given.
+2. Otherwise boto3's own chain: `AWS_REGION`, then `AWS_DEFAULT_REGION`, then the
+   `region` configured for the selected `--profile` (or `AWS_PROFILE`), then EC2
+   instance metadata.
+
+Nothing substitutes a hardcoded region for the configuration commands, so a
+command run with no `--region` and no region resolvable from the environment fails
+with boto3's `NoRegionError` rather than guessing.
+
+`--region` applies to every AWS call a command makes, not only to the
+CloudFormation lookup that resolves a resource's name. That distinction is the
+whole point: a stack's `ConfigurationTable` physical id is not region-qualified, so
+a command that looked the name up in one region and then read or wrote it in
+another would hit a *different stack's* table on a multi-region account — and
+report success. It therefore covers
+
+- the DynamoDB read and write of the Configuration Table,
+- the S3 write of configuration revision history,
+- the document classes `config-sync-bda` derives from a BDA project, and the BDA
+  project calls themselves,
+- the schema and rules that `discover` and `discover-multidoc` write back,
+- the model-limits read on `config-upload`'s validation path, which would
+  otherwise fall back silently to the on-disk defaults and could reject a
+  configuration that is legitimately above a default cap.
+
+A whole-tree check (`scripts/tests/test_config_region_threading.py`) asserts that
+no code outside a Lambda builds a configuration client without a region, so a new
+command cannot reintroduce the gap.
+
+Three commands take no `--region` because they make no AWS calls at all:
+`config-create`, `config-validate` and `validate-manifest`.
 
 ### Machine-readable output
 
@@ -275,7 +323,11 @@ idp-cli deploy [OPTIONS]
 - `--custom-config`: Path to local config file or S3 URI
 - `--max-concurrent`: Maximum concurrent workflows (default: 100)
 - `--log-level`: Logging level (`DEBUG`, `INFO`, `WARN`, `ERROR`). No CLI default: omit it to take the template default (`WARN`) on a new stack, or to keep an existing stack's current value on an update. `INFO` and `DEBUG` can write presigned URLs, document contents and PII to CloudWatch — see [Monitoring](./monitoring.md#loglevel--what-warn-turns-off)
-- `--enable-hitl`: Enable Human-in-the-Loop (`true` or `false`)
+- `--enable-hitl`: **Deprecated and refused if `true`.** HITL is a configuration
+  setting rather than a stack parameter (the `EnableHITL` parameter was removed in
+  v0.4.11) — enable it in the Web UI under **Configuration → Assessment & HITL
+  Configuration**, or in the config YAML passed to `--custom-config`. The flag is
+  still accepted as `false` so existing scripts keep working.
 - `--parameters`: Additional parameters as `key=value,key2=value2`
 - `--tags`: Stack tags as `key=value,key2=value2`. CloudFormation applies these to the stack and propagates them to all taggable resources and nested stacks — useful for governance/ownership (e.g. `Owner`, `Team`, `Environment`). See [Resource tagging](#resource-tagging) below.
 - `--wait`: Wait for stack operation to complete
@@ -1767,14 +1819,14 @@ ls -la ~/eval-results/eval-run-001/invoice.pdf/evaluation/
 ```bash
 # View detailed evaluation metrics
 cat ~/eval-results/eval-run-001/invoice.pdf/evaluation/report.json | jq .
-
+```
 
 **View human-readable report:**
 
 ```bash
 # Markdown report with visual formatting
 cat ~/eval-results/eval-run-001/invoice.pdf/evaluation/report.md
-
+```
 
 ---
 
@@ -2496,7 +2548,6 @@ idp-cli config-activate --stack-name my-stack --config-profile default
 4. All new document processing will use this configuration
 
 **Note:** If BDA sync fails (when `use_bda` is enabled), the activation will be aborted to prevent processing errors.
-```
 
 **Notes:**
 - Sets the specified profile as active for all new document processing

@@ -4,14 +4,7 @@ title: "External Identity Provider (Federation)"
 
 # External Identity Provider (Federation)
 
-This guide covers how to configure an external SAML or OIDC identity provider to federate authentication through Amazon Cognito for the GenAI IDP solution. Federated users sign in through their organization's identity provider and are automatically mapped to Cognito groups (Admin, Author, Reviewer, Viewer) based on group claims from the IdP.
-
-> **Note — the `Annotator` role is not mappable from an external IdP.** There is no
-> `ExternalIdPAnnotatorGroupName` parameter, so a federated user cannot be placed in
-> the `Annotator` group by a group claim. Annotators must be created through User
-> Management (or added to the Cognito group directly), which is also where their
-> `allowedTestSets` scope is assigned — see [rbac.md](rbac.md). A federated user can
-> still be added to `Annotator` manually after their first sign-in.
+This guide covers how to configure an external SAML or OIDC identity provider to federate authentication through Amazon Cognito for the GenAI IDP solution. Federated users sign in through their organization's identity provider and are automatically mapped to Cognito groups (Admin, Author, Reviewer, Annotator, Viewer) based on group claims from the IdP.
 
 ## Overview
 
@@ -56,6 +49,7 @@ Both work equally well with this solution. Choose based on what your IdP team pr
 | `ExternalIdPAdminGroupName` | Optional | IdP group name that maps to Cognito Admin role |
 | `ExternalIdPAuthorGroupName` | Optional | IdP group name that maps to Cognito Author role |
 | `ExternalIdPReviewerGroupName` | Optional | IdP group name that maps to Cognito Reviewer role |
+| `ExternalIdPAnnotatorGroupName` | Optional | IdP group name that maps to Cognito Annotator role. Leaving it empty keeps `Annotator` under manual control — see [Annotators and the `allowedTestSets` Scope](#annotators-and-the-allowedtestsets-scope) |
 | `ExternalIdPViewerGroupName` | Optional | IdP group name that maps to Cognito Viewer role |
 | `ExternalIdPAutoLogin` | Optional | `true` to auto-redirect to IdP, `false` (default) to show login page |
 | `ExternalIdPEmailMutable` | **Yes, for every new federated stack** | Set `true` when creating a stack that uses an external IdP. Makes the `email` attribute mutable so Cognito can rewrite it on each federated sign-in; with the default `false` a federated user can sign in **only once**. Fixed at User Pool creation — **never change it on an existing stack** (the update fails and can wedge the stack). `idp-cli deploy` sets it to `true` automatically when creating a stack with `ExternalIdPType` set. See [Federated `email` Attribute Mutability](#federated-email-attribute-mutability). |
@@ -68,6 +62,63 @@ Both work equally well with this solution. Choose based on what your IdP team pr
 > and can leave the stack in `UPDATE_ROLLBACK_FAILED`). Deploying through the
 > CloudFormation console instead? Set the parameter to `true` in the *External
 > Identity Provider (Federation)* section **when creating** the stack.
+
+## Annotators and the `allowedTestSets` Scope
+
+`Annotator` maps from an IdP claim exactly like the other four roles, but it is the
+only role where group membership alone grants nothing. An Annotator's access is
+scoped per-object by an `allowedTestSets` list, and that list is assigned in the Web
+UI's User Management screen — the IdP has no way to set it. So a claim-driven
+Annotator arrives with the role and an empty scope, which
+[`testset_scope.py`](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/blob/develop/lib/idp_common_pkg/idp_common/testset_scope.py)
+treats as *denied everything*, until an Admin assigns them a test set. See
+[rbac.md](rbac.md) for the full role.
+
+Whether to set `ExternalIdPAnnotatorGroupName` at all is therefore a real choice:
+
+- **Leave it empty** to keep `Annotator` under manual control. The trigger only
+  removes a user from groups it manages, and a group with no configured IdP name is
+  not managed — so an Annotator you assign by hand in User Management or the Cognito
+  console keeps the role across every subsequent federated sign-in. This is the
+  default, and it is what an existing stack keeps doing after an upgrade.
+- **Set it** to make the IdP authoritative for the role, the same as Admin, Author,
+  Reviewer and Viewer. Membership is then synced on each fresh federated sign-in in
+  both directions: a user whose claim gains the annotator group is added, and a user
+  whose claim still maps to some other role but no longer names the annotator group
+  is **removed** from `Annotator`. Do not set it and also assign Annotator by hand —
+  the hand-assigned membership is stripped the next time that user signs in afresh.
+
+### Removal by claim is not a way to revoke access
+
+Removal happens only on a sign-in that still maps to **at least one** group, for
+`Annotator` and for the other four roles alike. A fresh federated sign-in whose
+claim maps to nothing — because every group was stripped in the IdP, or the claim
+is absent altogether — leaves the user's existing Cognito groups exactly as they
+were. The trigger returns before the sync so that a missing or unreadable claim
+cannot silently strip a user's access, which means clearing someone's IdP groups
+is **not** a way to deprovision them here. Remove them from the application by
+deleting or disabling the Cognito user, or by moving them to a lower-privileged
+IdP group rather than none.
+
+Two further points of timing, once the IdP is authoritative:
+
+- A change in the IdP takes effect at the user's next **fresh** sign-in, not
+  immediately and not at a refresh. `TokenGeneration_RefreshTokens` is deliberately
+  not a trusted trigger source, so a token refresh neither maps nor re-maps groups.
+  Until that fresh sign-in the user keeps the role in Cognito and in their token.
+- At that fresh sign-in the token is correct straight away — the trigger overrides
+  the group claim as well as updating Cognito. What lags is a session that is
+  *already open* when membership changes by some other route (an Admin editing it in
+  User Management, or the same person signing in elsewhere): that session's token
+  keeps the old groups until its next refresh. Server-side checks read the token, so
+  for those few minutes the API and the page can disagree. Signing out and back in
+  resolves it.
+- The **Role** shown in User Management is written when a user's record is first
+  created and is not rewritten afterwards, so for any IdP-mapped role it can show
+  what the user had at their first sign-in rather than what they hold now.
+  Authorization is unaffected: every check reads the groups in the caller's token,
+  never that stored value. The Cognito console, or `admin-list-groups-for-user`, is
+  the authoritative view of current membership.
 
 ## Storing the OIDC Client Secret
 
@@ -189,6 +240,7 @@ ExternalIdPGroupAttributeName=http://schemas.xmlsoap.org/claims/Group,\
 ExternalIdPAdminGroupName=IDP-Admins,\
 ExternalIdPAuthorGroupName=IDP-Authors,\
 ExternalIdPReviewerGroupName=IDP-Reviewers,\
+ExternalIdPAnnotatorGroupName=IDP-Annotators,\
 ExternalIdPViewerGroupName=IDP-Viewers" \
     --wait
 ```
@@ -262,6 +314,7 @@ ExternalIdPGroupAttributeName=groups,\
 ExternalIdPAdminGroupName=IDP-Admins,\
 ExternalIdPAuthorGroupName=IDP-Authors,\
 ExternalIdPReviewerGroupName=IDP-Reviewers,\
+ExternalIdPAnnotatorGroupName=IDP-Annotators,\
 ExternalIdPViewerGroupName=IDP-Viewers" \
     --wait
 ```
@@ -340,6 +393,7 @@ ExternalIdPGroupAttributeName=http://schemas.xmlsoap.org/claims/Group,\
 ExternalIdPAdminGroupName=IDP-Admins,\
 ExternalIdPAuthorGroupName=IDP-Authors,\
 ExternalIdPReviewerGroupName=IDP-Reviewers,\
+ExternalIdPAnnotatorGroupName=IDP-Annotators,\
 ExternalIdPViewerGroupName=IDP-Viewers" \
     --wait
 ```
@@ -399,6 +453,7 @@ ExternalIdPGroupAttributeName=groups,\
 ExternalIdPAdminGroupName=IDP-Admins,\
 ExternalIdPAuthorGroupName=IDP-Authors,\
 ExternalIdPReviewerGroupName=IDP-Reviewers,\
+ExternalIdPAnnotatorGroupName=IDP-Annotators,\
 ExternalIdPViewerGroupName=IDP-Viewers" \
     --wait
 ```
@@ -474,6 +529,7 @@ ExternalIdPGroupAttributeName=http://schemas.xmlsoap.org/claims/Group,\
 ExternalIdPAdminGroupName=IDP-Admins,\
 ExternalIdPAuthorGroupName=IDP-Authors,\
 ExternalIdPReviewerGroupName=IDP-Reviewers,\
+ExternalIdPAnnotatorGroupName=IDP-Annotators,\
 ExternalIdPViewerGroupName=IDP-Viewers" \
     --wait
 ```
@@ -540,6 +596,7 @@ ExternalIdPGroupAttributeName=groups,\
 ExternalIdPAdminGroupName=<admin-group-object-id>,\
 ExternalIdPAuthorGroupName=<author-group-object-id>,\
 ExternalIdPReviewerGroupName=<reviewer-group-object-id>,\
+ExternalIdPAnnotatorGroupName=<annotator-group-object-id>,\
 ExternalIdPViewerGroupName=<viewer-group-object-id>" \
     --wait
 ```
@@ -594,7 +651,10 @@ This removes the external identity provider, the group mapping Lambda, and rever
 `ExternalIdPGroupAttributeName` tells Cognito to map your IdP's group claim onto
 the `custom:idp_groups` User Pool attribute. `ExternalIdPGroupMappingFunction` — the
 pre-token-generation trigger — reads that attribute and assigns the corresponding
-Cognito group (`Admin`, `Author`, `Reviewer`, `Viewer`).
+Cognito group (`Admin`, `Author`, `Reviewer`, `Annotator`, `Viewer`). A claim value
+that matches none of the configured `ExternalIdP*GroupName` parameters is discarded,
+and the trigger logs a warning naming it — see
+[Checking Lambda Logs](#checking-lambda-logs).
 
 The attribute itself is not a trustworthy signal on its own. It is `Mutable: true`,
 and because Cognito applies IdP attribute mapping *as the app client*, a mapped
@@ -664,17 +724,34 @@ the **`ExternalIdPEmailMutable`** parameter when the stack is created:
   `UserAttributeUpdateSettings.AttributesRequireVerificationBeforeUpdate: [email]`, so
   a user-initiated change takes effect only after a code sent to the *new* address is
   confirmed; a user cannot adopt an address they do not control.
-- **Known limitation on a mutable pool: a scoped native user can widen their own
-  config scope.** `allowedConfigVersions` is keyed on email (`UsersTable`
-  `EmailIndex`), and a caller with **no** user row is treated as unrestricted. A
-  non-admin *native* user whose scope was restricted could therefore call
+- **A changed address no longer moves a user out of their own scope.**
+  `allowedConfigVersions` is resolved from the **immutable Cognito `sub`** first — via a
+  `SUB#<sub>` pointer item on `UsersTable` — and from the `email` claim second, so an
+  address that diverges from the row it should match no longer reads as "no row", and
+  "no row" is what means *unrestricted*. On a mutable pool this closes the case that
+  mattered most: a non-admin *native* user whose scope was restricted could call
   `UpdateUserAttributes` directly (the Web UI offers no such control), verify a fresh
   address they control, and on their next token find no row — losing the restriction,
-  though not gaining a role. This needs a deliberate Cognito API call, applies only to
-  pools created with the flag, and is bounded to profile/document visibility.
-  Mitigations today: keep native accounts on a federated deployment to admins, and
-  manage scoped users through the IdP. The durable fix is to key user scope on the
-  immutable Cognito `sub` rather than email; tracked as a follow-up to
+  though never gaining a role. Their `sub` does not change, so the pointer still finds
+  their row. The same applies to Cognito re-applying the IdP `AttributeMapping` on every
+  federated sign-in, and to a case difference, which exact matching used to miss. See
+  [Resolving *whose* Scope](./rbac.md#resolving-whose-scope--two-keys-and-the-lookup-fails-closed).
+- ⚠️ **It closes for rows that record a `sub`, and not before.** The `sub` is written by
+  `createUser` and back-filled for pre-existing rows by the Cognito sync that runs on
+  every Admin `listUsers` — the workflow an administrator has to go through to set a
+  scope at all. A row the back-fill has not reached still resolves on email alone and
+  keeps the original exposure. After upgrading a federated deployment, open **User
+  Management** once as an Admin to run the back-fill, and keep managing scoped users
+  through the IdP.
+- ⚠️ **The back-fill cannot reach a row whose address already changed beyond case.** It
+  matches a Cognito account to its row on the recorded `sub`, the exact address, or the
+  case-folded address. A user who was re-mapped or renamed *before* this code ever ran
+  matches none of those, so the sync writes them a fresh, unscoped row — as it has
+  always done — and their original scoped row keeps the email-only exposure
+  indefinitely. Re-applying their scope to the row their current address resolves to is
+  the fix; `docs/rbac.md` has a one-line scan that lists every row still lacking a
+  `cognitoSub`.
+  Tracked as a follow-up to
   [#835](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/835).
   This is also why the flag stays opt-in for federated deployments rather than
   defaulting on for every new stack.
@@ -683,7 +760,10 @@ the **`ExternalIdPEmailMutable`** parameter when the stack is created:
 new User Pool, which in this solution means a new stack. Pre-existing
 `EXTERNAL_PROVIDER` user records cannot be migrated and users must re-federate; their
 new Cognito `sub` orphans per-user rows in `UsersTable` / `AllowedConfigVersions`,
-which an admin can re-key. As a one-shot bridge an admin can
+which an admin can re-key. (A new pool means new `sub` values. The old pool's pointers
+still name rows that exist, but no account in the new pool can present those `sub`
+values, so nothing reads them; re-running the sync from User Management writes the new
+ones.) As a one-shot bridge an admin can
 `aws cognito-idp admin-delete-user` the affected user, which buys exactly one
 additional login. Tracked in [#835](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/835).
 
@@ -706,3 +786,21 @@ The `ExternalIdPGroupMappingFunction` logs every federated sign-in with group ma
 ```bash
 aws logs tail /aws/lambda/<stack-name>-ExternalIdPGroupMappingFunction-<id> --follow
 ```
+
+If a federated user signs in with fewer permissions than expected, the line to look
+for names the claim values the trigger discarded:
+
+```
+Ignoring IdP group(s) with no Cognito mapping for user alice@example.com:
+['IDP-Annotators']. Set the matching ExternalIdP*GroupName stack parameter to map them.
+```
+
+That is almost always a mismatch between the group name your IdP asserts and the
+value in the corresponding `ExternalIdP*GroupName` parameter — the names must match
+exactly, and Entra ID sends group **object IDs** rather than display names. It also
+appears when the claim names a group that has no role in this solution at all, which
+is expected and harmless.
+
+The warning is emitted per sign-in whenever any claim value goes unmapped, including
+when other values in the same claim map successfully. Only group names are logged;
+the token and the rest of the claim set are not.

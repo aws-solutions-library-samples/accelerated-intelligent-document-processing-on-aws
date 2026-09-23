@@ -1,0 +1,168 @@
+#!/bin/sh
+# Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
+# SPDX-License-Identifier: MIT-0
+#
+# Refuse a push whose destination is develop or main.
+#
+# Install with `make install-git-hooks`, which copies this into the repository's
+# hooks directory. It is tracked here rather than only in .git/hooks because git
+# does not clone hooks, so an untracked one protects whoever happened to install
+# it and nobody else.
+#
+# Why this exists alongside the PreToolUse hook (scripts/hooks/check_shared_branch.py):
+# that one inspects commands the coding assistant runs, and a push has three other
+# routes — a shell the assistant never sees, an IDE's push button, and the
+# `git push` inside `make commit`. git supplies the resolved destination refs on
+# stdin here, so no command-line parsing can get it wrong.
+#
+# TWO WAYS THIS HOOK IS REACHED, and why the second needs a fallback.
+#
+# Normally git runs it with the refs on stdin, one line per ref, and the
+# destination is exact. But a managed developer machine may set core.hooksPath
+# system-wide (in /etc/gitconfig) to a directory of hook runners belonging to a
+# security tool. Those runners do chain to the repository's own
+# .git/hooks/<name> and forward the *arguments* — but at least one of them does
+# not forward *stdin*, so this hook is invoked with no ref lines at all.
+# Exiting 0 on that would make the hook silently inert on exactly the machines
+# it is meant to protect, which is worse than not having it: `make
+# install-git-hooks` reports success either way.
+#
+# So when there are no ref lines, this judges by HEAD and its upstream instead.
+#
+# ⚠️ Substituting that question is wrong in BOTH directions, and the two
+# directions arise on DIFFERENT machines — which is why the message names the
+# basis it used rather than asserting a cause:
+#
+#   * Over-refusal, on ANY machine. An empty ref list is not only what a
+#     stdin-dropping runner produces: git also supplies one for a push with
+#     nothing to send. Measured on the direct path, with no runner involved
+#     (`parent=git`), an up-to-date push delivers 0 bytes. So a no-op push while
+#     HEAD happens to sit on develop is refused, on an ordinary machine, even
+#     though nothing shared was being written. Overridable in one keystroke; the
+#     alternative is exiting 0 and being inert where it matters.
+#   * Under-refusal, on a redirected machine only. There the destination stops
+#     being checked for pushes that do have work to send, so one that DOES write
+#     to a shared branch goes through whenever HEAD is not on one. `git push
+#     origin HEAD:refs/heads/develop` from a feature branch is allowed, and so are
+#     the `HEAD:develop`, `develop` and `--all` forms. All four are refused on the
+#     normal path, where the ref list arrives.
+#
+# The destination is genuinely unknowable in this state: with no ref list, a
+# pre-push hook is given only the remote's name and URL, never the refspec. The
+# alternative — refusing every push on such a machine — would make the hook
+# unusable. So the fallback is the weaker question asked honestly.
+#
+# What covers the under-refusal, for commands the coding assistant runs, is the
+# PreToolUse half: it resolves destinations from the command line and refuses all
+# four forms above. What is left genuinely uncovered on such a machine is a direct
+# push from a plain shell whose destination names a shared branch while HEAD does
+# not.
+#
+# A genuinely empty push — nothing to send, HEAD not on a shared branch — still
+# passes.
+#
+# Two deliberate behaviours, matching the PreToolUse half:
+#   * It does not look at which remote, so pushing develop to a personal fork is
+#     refused too.
+#   * It keys on the branch name, so `develop` and `main` are shared wherever
+#     this hook is installed.
+#
+# Override: ALLOW_SHARED_BRANCH=1 git push ...
+#
+# This is a local convention, not an enforced control. Branch protection on this
+# repository is off and enabling it needs repository admin (issue #933); nothing
+# on a contributor's machine can stop a merge made through GitHub's Merge button,
+# and `git push --no-verify` skips this hook outright.
+
+set -u
+
+# Only an affirmative value overrides, so ALLOW_SHARED_BRANCH=0 leaves the guard
+# on rather than reading as permission.
+#
+# Saying so matters: exported by a shell profile, an IDE or a CI runner, this
+# disables the hook for every push in that environment, and a guard believed on
+# and actually off is the failure this file exists to avoid.
+case "${ALLOW_SHARED_BRANCH:-}" in
+	1 | true | TRUE | True | yes | YES | Yes | y | Y | on | ON | On)
+		printf 'shared-branch guard: ALLOW_SHARED_BRANCH is set, so this push is not checked.\n' >&2
+		exit 0
+		;;
+esac
+
+blocked=''
+saw_refs=0
+basis='the refs git supplied'
+
+# stdin: <local ref> <local sha> <remote ref> <remote sha>, one line per ref.
+# A delete (local sha all zeroes) still names its remote ref, so it is covered.
+#
+# `|| [ -n "$_local_ref" ]` keeps a final line that has no trailing newline: plain
+# `read` reports failure at EOF and a bare `while read` would drop that line. git
+# terminates every line, so this is belt and braces rather than an observed case.
+CR=$(printf '\r')
+_local_ref=''
+while read -r _local_ref _local_sha remote_ref _remote_sha || [ -n "$_local_ref" ]; do
+	saw_refs=1
+	# A CR only reaches the ref itself if the ref is the line's last field, which
+	# git never does; stripping it costs nothing and makes the answer general.
+	remote_ref=${remote_ref%"$CR"}
+	case "$remote_ref" in
+		refs/heads/develop | refs/heads/main)
+			name=${remote_ref#refs/heads/}
+			case " $blocked " in
+				*" $name "*) ;;
+				*) blocked="$blocked $name" ;;
+			esac
+			;;
+	esac
+	_local_ref=''
+done
+
+if [ "$saw_refs" -eq 0 ]; then
+	# No ref lines: either nothing to push, or a hook runner did not forward
+	# stdin. Fall back to HEAD and its upstream. Any git failure here leaves
+	# both empty, which allows the push.
+	#
+	# The basis says which two causes are possible rather than picking one.
+	# Blaming a runner for what is usually an up-to-date push sends the reader
+	# looking for a redirect they may not have.
+	basis='HEAD: the ref list was not supplied to this hook, so either this push had nothing to send or a hook runner did not forward it'
+	head_branch=$(git symbolic-ref --short HEAD 2>/dev/null) || head_branch=''
+	upstream=$(git rev-parse --abbrev-ref --symbolic-full-name '@{upstream}' \
+		2>/dev/null) || upstream=''
+	upstream=${upstream#*/}
+	for name in $head_branch $upstream; do
+		case "$name" in
+			develop | main)
+				case " $blocked " in
+					*" $name "*) ;;
+					*) blocked="$blocked $name" ;;
+				esac
+				;;
+		esac
+	done
+fi
+
+if [ -z "$blocked" ]; then
+	exit 0
+fi
+
+printf '\n' >&2
+printf 'Refusing to push directly to:%s\n' "$blocked" >&2
+printf 'Judged by %s.\n\n' "$basis" >&2
+cat >&2 <<'MSG'
+Changes reach develop and main through a pull request, so that the lint,
+type-check, test, security and dependency gates run and a reviewer sees the
+change.
+
+Work on a branch instead:
+
+  git switch -c feature/<name>        # or fix/<name>, docs/<name>
+  git push -u origin feature/<name>
+  gh pr create --base develop
+
+or re-run with the override in front of the command, to push here deliberately:
+
+  ALLOW_SHARED_BRANCH=1 git push ...
+MSG
+exit 1

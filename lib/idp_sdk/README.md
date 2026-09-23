@@ -4,13 +4,21 @@ Python SDK for programmatic access to IDP Accelerator capabilities.
 
 ## Installation
 
+Run from the repository root. The SDK requires `idp_common` by name, and that name
+on public PyPI belongs to an unrelated party, so both packages go in a single
+command and both come from a path:
+
 ```bash
 # From local development
-pip install -e ./lib/idp_sdk
+pip install -e ./lib/idp_common_pkg -e ./lib/idp_sdk
 
 # Or with uv
-uv pip install -e ./lib/idp_sdk
+uv pip install -e ./lib/idp_common_pkg -e ./lib/idp_sdk
 ```
+
+`make setup` (or `make setup-venv`) installs the SDK together with every other
+first-party package in one pass. See
+[Installing First-Party Packages Safely](../../docs/dependency-confusion.md).
 
 ## Quick Start
 
@@ -124,6 +132,67 @@ The SDK organizes functionality into 9 operation namespaces:
 - **assessment**: Analyze extraction quality and confidence scores
 - **search**: Query processed documents with natural language
 - **testing**: Performance and load testing
+
+## Result models
+
+Every operation returns a typed result object: a Pydantic model for the document,
+batch, stack and config surfaces, and a dataclass for the evaluation and search
+ones. They live in `idp_sdk/models/` and are re-exported from the top-level
+package. `docs/idp-sdk.md` documents the fields per operation; two properties of
+the set are worth knowing before you add or change one.
+
+**A result model's fields are exactly what its operation can supply.** A field the
+operation never populates reads as a measured `None` to a caller, which is worse
+than its absence — a `total_count` that was always `None` is indistinguishable
+from an empty table. So `DocumentListResult.count` is the size of the page it
+carries and there is no total (a DynamoDB scan reports none), and `BaselineInfo`
+leaves `created_date` unset from `list_baselines` because an S3 prefix listing
+does not return one. If a field cannot be filled from the processor's response,
+either extend the processor to supply it or leave the field out.
+
+**A mismatch between a model and its call site is a type error, not a test
+failure.** For the dataclasses it raises `TypeError` at construction; for the
+Pydantic models an unknown keyword is *silently ignored*, which is how
+`DocumentInfo(batch_id=...)` dropped every document's batch id without anything
+failing. Both shapes are caught statically: `reportCallIssue` is an **error** in
+`pyrightconfig.json`, so `make typecheck` fails on a constructor call that does
+not match its model. Run it after changing either side — a unit test that asserts
+on the mock's call arguments cannot see this class of defect, so the tests in
+`tests/unit/test_search_operations.py`,
+`tests/unit/test_document_list_operation.py` and
+`tests/unit/test_evaluation_operations.py` build the real result object from a
+stubbed processor response instead.
+
+**A score is `Optional[float]`, and `None` never means zero.** Every metric the
+evaluation surface returns can be absent, and the distinction carries information a
+`0.0` would destroy: a section the pipeline excluded from evaluation records no
+scores, a stack whose evaluations have not run reports no documents, and a query
+matching nothing is not a query that scored zero. So callers format these through a
+guard rather than directly — `f"{metrics.avg_accuracy:.1%}"` raises `TypeError` on
+`None`. The same rule is why `SearchResult.confidence` is `None` for an empty
+answer.
+
+Three things follow for the evaluation surface specifically.
+
+`get_report` reads `<document key>/evaluation/results.json` from the output bucket.
+The key comes from `idp_common.evaluation.contract.evaluation_results_key` — it is
+**imported, not restated**, because the evaluation service and the aggregation
+Lambda import the same helper, so a copy here could drift and leave this reader
+looking for an object nothing writes. Its field vocabulary (`accuracy`,
+`precision`, `recall`, `f1_score`, per-attribute comparisons) tracks that file.
+
+`get_metrics` averages **documents** for its four top-level scores and aggregates
+**sections** in `by_document_class`, because a document class is a property of a
+section rather than of a document. Each metric carries its own denominator, so a
+document or section that reported no score does not dilute the others.
+
+⚠️ **`get_metrics(document_class=…)` returns `None` for all four top-level
+averages.** They are whole-document figures and cannot answer a question about one
+class of section; returning one anyway would be a real number measuring something
+the caller did not ask for. The class-scoped answer is
+`by_document_class[<class>]`, which carries all four scores. The filter is echoed
+back on the result as `document_class`, which is what distinguishes this `None`
+from "nothing reported that metric".
 
 ## Buckets the CLI creates
 

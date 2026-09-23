@@ -21,9 +21,30 @@ export interface SectionWithIssues {
 }
 
 /**
+ * Codes that mean the stage RAISED, as opposed to flagging a result the pipeline
+ * still accepted. Both are error severity, so severity alone cannot tell them
+ * apart, and the difference is the one an operator acts on first: a failed
+ * section has no trustworthy result, while a flagged one does and was kept.
+ *
+ * This list is a literal in a different language from the backend that produces
+ * the codes, so nothing about adding a code there would make it appear here. The
+ * backend declares its own set (`FAILURE_CODES` in `idp_common.document_failure`
+ * and `EXTRACTION_FAILED_CODE` in `idp_common.extraction.failure`) and
+ * `scripts/tests/test_failure_code_ui_parity.py` fails when the two disagree in
+ * either direction — a missing code would otherwise render a raised stage as the
+ * milder "Incomplete" with every test green.
+ */
+const FAILURE_CODES = new Set([
+  'extraction_failed',
+  'rule_validation_failed',
+  'rule_validation_not_consolidated',
+  'section_processing_failed',
+]);
+
+/**
  * Reduce a section's issues to a single Cloudscape StatusIndicator type +
  * label, worst-severity-wins:
- *   error   -> "error"   ("Failed" / "Incomplete")
+ *   error   -> "error"   ("Failed" when the stage raised, else "Incomplete")
  *   warning -> "warning" ("Degraded")
  *   info    -> "info"    ("Auto-recovered")
  *   none    -> "success" ("OK")
@@ -37,7 +58,8 @@ export const getSectionIssueStatus = (
   }
   const severities = new Set(issues.map((i) => (i.severity || 'info').toLowerCase()));
   if (severities.has('error')) {
-    return { type: 'error', label: 'Incomplete', count: issues.length };
+    const failed = issues.some((i) => FAILURE_CODES.has((i.code || '').toLowerCase()));
+    return { type: 'error', label: failed ? 'Failed' : 'Incomplete', count: issues.length };
   }
   if (severities.has('warning')) {
     return { type: 'warning', label: 'Degraded', count: issues.length };

@@ -59,6 +59,20 @@ policy against two real state machines, named so the policy's `<stack>-*` prefix
 covers both. Check 0 asserts the sibling execution really is describable, so every
 refusal that follows is demonstrably the code's and not IAM's.
 
+⚠️ **It cannot pass today, and not because of the control.** It packages the Lambda by
+zipping `index.py` alone, and the resolver now imports
+`idp_common.utils.log_sanitizer` and `idp_common.config_scope` — neither bundled, no
+Layer attached — so every invoke returns `ImportModuleError`. `denied()` requires
+`errorType == "PermissionError"`, so **nine of its ten** checks fail on the import —
+only check 0 passes, because it probes Step Functions directly and never invokes the
+Lambda — and it exits 1 reporting `1/10`. The first of the two missing imports arrived
+on 2026-09-17 (`aa593cd95`, merged as #945). It fails loudly and there is no SKIP
+state, so it cannot pass
+vacuously; do not read the red as a finding about the resolver. Fixing it needs the
+packaging step to become a real `pip install -t` — `idp_common/utils/__init__.py`
+eagerly imports pydantic models, so copying the two modules is not enough. Until then,
+treat `getStepFunctionExecution`'s scope check as covered by its unit suite only.
+
 ## `make verify-idp-federation`
 
 The only layer that exercises a **real federated sign-in**: Cognito does OIDC

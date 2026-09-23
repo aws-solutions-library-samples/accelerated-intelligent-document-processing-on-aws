@@ -7,9 +7,10 @@ heavy lifting that cannot fit inside AppSync's 30-second synchronous resolver
 budget:
 
   1. Looks up the document in the TrackingTable (to get ``ConfigVersion``).
-  2. Enforces RBAC ``allowedConfigVersions`` scope for non-admin callers,
-     failing CLOSED when the scope cannot be looked up (see
-     ``_get_user_allowed_config_versions``).
+  2. Enforces RBAC ``allowedConfigVersions`` scope for callers whose identity a
+     transport verified, failing CLOSED when the scope cannot be looked up. A
+     transport that verified no caller identity stands the check down, and says
+     so per turn in the log (see ``_allowed_config_versions_for_event``).
   3. Loads the ``chat`` section from the document's config version via
      ``idp_common.config.get_config``.
   4. Fetches the full document text from S3 (cached per-document under
@@ -34,6 +35,7 @@ import time
 from datetime import datetime
 
 import boto3
+from boto3.dynamodb.conditions import Key
 from botocore.exceptions import ClientError
 
 from idp_common.bedrock.client import (
@@ -48,7 +50,7 @@ from idp_common.bedrock.client import (
 from idp_common.bedrock.model_utils import parse_model_id
 from idp_common.bedrock.openai_responses import is_openai_responses_model
 from idp_common.config import get_config
-from idp_common.config_scope import scope_allows
+from idp_common.config_scope import normalize_scope, scope_allows
 from idp_common.utils.log_sanitizer import sanitize_event_for_logging
 
 logger = logging.getLogger()
@@ -237,8 +239,83 @@ class ScopeLookupError(Exception):
     """UsersTable scope lookup failed — callers must fail CLOSED (deny)."""
 
 
-def _get_user_allowed_config_versions(caller_sub: str) -> list[str] | None:
+# The two key spaces a caller's scope row is found on, and the claims each is read
+# from. Restated from ``idp_common.config_scope`` — this processor ships without an
+# ``idp_common`` layer and is itself vendored into the chat-streaming bundle — and
+# held to that module by ``scripts/tests/test_scope_lookup_fail_closed.py``.
+#
+# Named once so the test that asserts this index is one `template.yaml` actually
+# declares has a single symbol to read. That test exists because the query named
+# a `SubIndex` that no template ever declared, and nothing detected it: an index
+# name is a string, a wrong one raises only at runtime, and the unit suite stubs
+# the DynamoDB layer.
+USERS_TABLE_SCOPE_INDEX = "EmailIndex"
+USERS_TABLE_SCOPE_KEY = "email"
+USERS_TABLE_SUB_POINTER_PREFIX = "SUB#"
+USERS_TABLE_USER_KEY_PREFIX = "USER#"
+SCOPE_KEY_CLAIM = "email"
+SCOPE_SUB_CLAIM = "sub"
+
+
+def _caller_email(identity: dict) -> str:
+    """The caller's email address, taken from claims a transport verified.
+
+    This value is the hash key of an ``EmailIndex`` query, so it has to be an email
+    address or it matches nothing.
+
+    ⚠️ **Only the ``email`` claim is read — there is deliberately no fallback to
+    another field.** Every alternative identifier a claims set might carry (a
+    ``cognito:username``, a username the adapter substituted for a missing email)
+    is not an email address for every caller, and querying ``EmailIndex`` with one
+    matches no row. An empty page is indistinguishable from "this user has no
+    restriction", so a fallback would convert an unresolvable caller into an
+    *unrestricted* one — silently, and precisely for the callers whose claims are
+    least like the ones this was tested against. Fail-closed is the whole contract
+    here; a substituted identifier is not a cheaper way to satisfy it.
+
+    The Cognito ``sub`` is **not** a fallback for this value. It is a key into a
+    different key space and is read separately by :func:`_caller_sub`.
+    """
+    claims = identity.get("claims") or {}
+    return str(claims.get(SCOPE_KEY_CLAIM) or "").strip()
+
+
+def _caller_sub(identity: dict) -> str:
+    """The caller's immutable Cognito ``sub``, from the ``sub`` claim and no other.
+
+    Used only to build a ``SUB#<sub>`` pointer key, never as the hash key of
+    ``EmailIndex``. A body-supplied ``callerSub`` is not a source for it: the caller
+    it would restrict is the caller choosing the value.
+    """
+    claims = identity.get("claims") or {}
+    return str(claims.get(SCOPE_SUB_CLAIM) or "").strip()
+
+
+def _sub_pointer_key(caller_sub: str) -> dict:
+    """The UsersTable key of the pointer item for one Cognito ``sub``."""
+    key = f"{USERS_TABLE_SUB_POINTER_PREFIX}{caller_sub}"
+    return {"PK": key, "SK": key}
+
+
+def _user_row_key(user_id: str) -> dict:
+    """The UsersTable key of the row holding one user's scope."""
+    key = f"{USERS_TABLE_USER_KEY_PREFIX}{user_id}"
+    return {"PK": key, "SK": key}
+
+
+def _get_user_allowed_config_versions(
+    caller_email: str, caller_sub: str = ""
+) -> list[str] | None:
     """Fetch caller's ``allowedConfigVersions`` for scope enforcement.
+
+    The row is looked for on the immutable Cognito ``sub`` first — via a
+    ``SUB#<sub>`` pointer item carrying the ``userId`` — and on the ``email`` claim
+    second, via ``EmailIndex``. The two are not a fallback chain over one key: each
+    identifier is put only to the key space that indexes it, and neither is ever
+    substituted for the other. Preferring the ``sub`` is what keeps the restriction
+    working for a caller whose address has diverged from their row (a self-service
+    email change, an external IdP re-applying its attribute mapping, a case
+    difference), for every row that records one.
 
     Returns:
       - ``None`` when the user is genuinely unrestricted — no scope row in the
@@ -247,49 +324,135 @@ def _get_user_allowed_config_versions(caller_sub: str) -> list[str] | None:
       - A list of version names the user is allowed to read.
 
     Raises:
-      ScopeLookupError: when the scope cannot be *evaluated* because a
-        precondition of the lookup is missing — no ``USERS_TABLE_NAME`` wired,
-        or no caller identity on the event. "Cannot evaluate" is NOT
-        "unrestricted": returning ``None`` there silently disables RBAC for
-        every caller whenever the stack wiring drifts (AUTH.T07, fail-open
-        scope lookup). Callers MUST deny the turn. Mirrors
-        ``_caller_allowed_versions`` in the pii-anonymizer feature API, which
-        is the reference implementation of this fail-closed contract.
+      ScopeLookupError: whenever the scope cannot be *evaluated* — no
+        ``USERS_TABLE_NAME`` wired, neither identifier on the verified claims, a
+        DynamoDB read that fails, or a caller presenting only a ``sub`` that no row
+        records (there is then no second key to try, so the absence of a row is not
+        an answer about this caller). "Cannot evaluate" is NOT "unrestricted":
+        returning ``None`` there silently disables RBAC for every caller whenever
+        the stack wiring, the IAM grant or the index name drifts (AUTH.T07,
+        fail-open scope lookup). Callers MUST deny the turn.
 
-    KNOWN GAP (not closed here): the DynamoDB failure path below still returns
-    ``None`` (fail-open) rather than raising, because ``SubIndex`` does not
-    exist on the UsersTable — the table defines only ``EmailIndex``, and no
-    writer ever stores a ``sub`` attribute. Every query therefore raises
-    ValidationException today, so raising here would deny *every* chat turn.
-    Closing it requires first giving this processor a resolvable caller
-    identity; the streaming Function URL transport carries only Identity Pool
-    SigV4 credentials, so it has none. Tracked with AUTH.T07 / companion-chat.
+    Every exit from this function is either a scope decision or a raise. There
+    is deliberately no path that converts a lookup failure into "unrestricted";
+    the only unrestricted-on-failure branch in this module is the explicit
+    transport stand-down in :func:`_allowed_config_versions_for_event`, which
+    never reaches this function.
     """
     users_table_name = os.environ.get("USERS_TABLE_NAME") or ""
     if not users_table_name:
         raise ScopeLookupError("USERS_TABLE_NAME not configured")
-    if not caller_sub:
-        raise ScopeLookupError("no callerSub on the chat event")
+    caller_sub = str(caller_sub or "").strip()
+    if not caller_email and not caller_sub:
+        raise ScopeLookupError("no caller email or sub in the verified claims")
     try:
         table = _dynamodb.Table(users_table_name)
-        resp = table.query(
-            IndexName="SubIndex",
-            KeyConditionExpression=boto3.dynamodb.conditions.Key("sub").eq(caller_sub),
-            Limit=1,
-        )
-        items = resp.get("Items") or []
-        if not items:
-            return None  # no scope row for this user → unrestricted
-        scope = items[0].get("allowedConfigVersions")
-        return list(scope) if scope else None
+        row = None
+        if caller_sub:
+            pointer = table.get_item(Key=_sub_pointer_key(caller_sub)).get("Item")
+            user_id = str((pointer or {}).get("userId") or "").strip()
+            if user_id:
+                row = table.get_item(Key=_user_row_key(user_id)).get("Item") or None
+            # ⚠️ This leg cannot return an unrestricted row. The writer only creates
+            # a pointer for a row that carries `allowedConfigVersions`, because the
+            # pointer is read FIRST and so decides the answer — one at an unscoped
+            # row would pin "unrestricted" ahead of whatever the email join would
+            # have found. A pointer resolving an unscoped row means that invariant
+            # is broken, so it is treated as stale and the email join is tried,
+            # which can only tighten. Mirrors `_row_by_sub` in
+            # `idp_common.config_scope` and `_caller_allowed_versions` in the
+            # pii-anonymizer feature API; all four readers must agree, or "resolving
+            # through a pointer can only tighten" is not true of the deployment.
+            if row is not None and not normalize_scope(
+                row.get("allowedConfigVersions")
+            ):
+                logger.warning(
+                    "A UsersTable %s pointer names a row carrying no "
+                    "allowedConfigVersions; treating it as stale",
+                    USERS_TABLE_SUB_POINTER_PREFIX,
+                )
+                row = None
+        if row is None and caller_email:
+            resp = table.query(
+                IndexName=USERS_TABLE_SCOPE_INDEX,
+                KeyConditionExpression=Key(USERS_TABLE_SCOPE_KEY).eq(caller_email),
+                Limit=1,
+            )
+            items = resp.get("Items") or []
+            row = items[0] if items else None
     except Exception as e:  # noqa: BLE001
-        # See KNOWN GAP above: this is a fail-OPEN and is logged at ERROR so it
-        # is never silent. Do not "fix" it to raise without also fixing the
-        # index/identity defect, or all chat breaks.
         logger.error(
-            "User scope lookup FAILED OPEN (unrestricted) for %s: %s", caller_sub, e
+            "User scope lookup failed, denying chat turn (%s / %s on %s): %s",
+            USERS_TABLE_SUB_POINTER_PREFIX,
+            USERS_TABLE_SCOPE_INDEX,
+            users_table_name,
+            e,
+        )
+        raise ScopeLookupError(
+            f"UsersTable scope read failed ({USERS_TABLE_SCOPE_INDEX}): {e}"
+        ) from e
+    if row is None and not caller_email:
+        raise ScopeLookupError(
+            "no caller email, and no UsersTable row records this caller's sub"
+        )
+    if row is None:
+        return None  # no scope row for this user → unrestricted
+    scope = row.get("allowedConfigVersions")
+    return list(scope) if scope else None
+
+
+def _allowed_config_versions_for_event(event: dict) -> list[str] | None:
+    """Resolve the caller's config-version scope for one chat turn.
+
+    Reads the caller from ``event["identity"]``, which is the shape every
+    resolver receives and which only a transport may set — nothing a client puts
+    in a request body reaches it. Three cases, and the difference between the
+    last two is the whole point of this function:
+
+    * ``identity`` **absent** — nobody told this processor anything about the
+      caller. That is a wiring regression, not a permission, so it raises and
+      the turn is denied.
+    * ``identity`` **is None** — the invoking transport verified no caller
+      identity *and says so*. This is the repository's marker for an invocation
+      gated by IAM on the function ARN rather than by a Cognito principal, and
+      ``_enforce_agent_chat_groups`` in ``agent_chat_processor`` stands its group
+      check down on the same signal. There is no principal to resolve a scope
+      for, so the scope check stands down too and the turn proceeds
+      **unrestricted**. It is logged every time, at WARNING: this is the one
+      fail-open path in this module and it must never be silent.
+
+      The streaming Lambda Function URL transport is what sets it today — see
+      ``_caller_identity`` in ``src/lambda/chat_stream_processor/app.py`` and
+      GAP-07 in ``scripts/api_rbac_expectations.yaml``. It carries only Identity
+      Pool SigV4 credentials, whose assumed-role session name is a pool-wide
+      constant, so it can prove *a* signed-in user of this deployment is calling
+      but not *which* one. Enforcing ``allowedConfigVersions`` against the
+      request body's self-asserted identity instead would be no control at all:
+      the caller it would restrict is the same caller that chooses the value.
+      Closing it means the browser presenting its Cognito ID token to that
+      endpoint and the endpoint verifying it — at which point returning real
+      claims from ``_caller_identity`` turns this check on with no change here,
+      provided those claims include an ``email`` or a ``sub``.
+    * ``identity`` **is a dict** — verified claims. The scope is resolved from
+      them and every failure denies.
+    """
+    if "identity" not in event:
+        raise ScopeLookupError("no identity on the chat event")
+    identity = event["identity"]
+    if identity is None:
+        logger.warning(
+            "Config-version scope NOT enforced for this chat turn (session=%s): "
+            "the invoking transport verified no caller identity, so there is no "
+            "principal to resolve allowedConfigVersions for. The turn proceeds "
+            "unrestricted. See GAP-07 / AUTH.T07.",
+            event.get("sessionId") or "unknown",
         )
         return None
+    if not isinstance(identity, dict):
+        raise ScopeLookupError(f"unusable identity of type {type(identity).__name__}")
+    return _get_user_allowed_config_versions(
+        _caller_email(identity), _caller_sub(identity)
+    )
 
 
 def _get_full_text(bucket: str, object_key: str, document: dict) -> str:
@@ -682,7 +845,8 @@ def _remove_text_between_brackets(text: str) -> str:
 def handler(event, _context):  # noqa: ANN001
     """Process one Chat-with-Document turn end-to-end.
 
-    Expected event payload (from ``send_chat_document_message_resolver``)::
+    Expected event payload (from ``send_chat_document_message_resolver``, or from
+    the streaming route in ``chat_stream_processor/app.py``)::
 
         {
           "sessionId": "...",
@@ -690,8 +854,13 @@ def handler(event, _context):  # noqa: ANN001
           "prompt":    "...",
           "s3Uri":     "uploads/doc.pdf",
           "modelId":   "us.anthropic.claude-opus-4-8:1m" | "",
-          "callerSub": "<cognito sub>"
+          "identity":  {"claims": {"email": "..."}} | None
         }
+
+    ``identity`` is required — it is what the config-version scope check is
+    resolved from, and its three cases (absent / ``None`` / claims) are described
+    on ``_allowed_config_versions_for_event``. Only a transport sets it; no
+    request-body field reaches it.
     """
     logger.info("chat-doc processor invoked: session=%s", event.get("sessionId"))
 
@@ -700,12 +869,11 @@ def handler(event, _context):  # noqa: ANN001
     prompt = event.get("prompt") or ""
     object_key = event.get("s3Uri") or ""
     ui_model_id = (event.get("modelId") or "").strip()
-    caller_sub = event.get("callerSub") or ""
 
     if not (session_id and prompt and object_key):
-        # Redacted: this event carries the user's prompt and `callerSub`. The
-        # sanitizer preserves which keys were present, which is the whole point of
-        # this message — it reports a missing field, not a value.
+        # Redacted: this event carries the user's prompt and the caller's
+        # claims. The sanitizer preserves which keys were present, which is the
+        # whole point of this message — it reports a missing field, not a value.
         logger.error(
             "Missing required fields in chat-doc event: %s",
             sanitize_event_for_logging(event),
@@ -739,19 +907,22 @@ def handler(event, _context):  # noqa: ANN001
 
         # --- 2. RBAC scope enforcement --------------------------------------
         # Fails CLOSED on both halves of the decision:
-        #   * the lookup — a missing precondition (no UsersTable wired, no
-        #     caller identity) denies rather than being read as "unrestricted"
-        #     (AUTH.T07). The DynamoDB-error path is the documented exception;
-        #     see the KNOWN GAP in _get_user_allowed_config_versions.
+        #   * the lookup — anything that stops the scope being *evaluated* (no
+        #     UsersTable wired, no caller email, a failed DynamoDB query, an
+        #     event carrying no identity at all) denies rather than being read as
+        #     "unrestricted" (AUTH.T07).
         #   * the match — a scoped caller cannot chat with a document that
         #     carries no ConfigVersion, because an unstamped document cannot be
         #     proven to be in their scope.
+        # The single exception is a transport that verified no caller identity
+        # and says so with an explicit null `identity`; that case proceeds
+        # unrestricted and logs a WARNING every turn. See
+        # _allowed_config_versions_for_event.
         try:
-            allowed_versions = _get_user_allowed_config_versions(caller_sub)
+            allowed_versions = _allowed_config_versions_for_event(event)
         except ScopeLookupError as e:
             logger.error(
-                "Scope lookup failed, denying chat turn: caller_sub=%s doc_version=%s: %s",
-                caller_sub,
+                "Scope lookup failed, denying chat turn: doc_version=%s: %s",
                 config_version,
                 e,
             )
@@ -768,8 +939,7 @@ def handler(event, _context):  # noqa: ANN001
             return {"ok": False, "reason": "scope_unavailable"}
         if not scope_allows(allowed_versions, config_version):
             logger.warning(
-                "Scope denied: caller_sub=%s allowed=%s doc_version=%s",
-                caller_sub,
+                "Scope denied: allowed=%s doc_version=%s",
                 allowed_versions,
                 config_version,
             )

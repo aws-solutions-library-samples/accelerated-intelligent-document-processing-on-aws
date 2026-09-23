@@ -367,20 +367,22 @@ job_config = FinetuningJobConfig(
 
 ## CLI Usage Examples
 
-The following Python scripts provide command-line interfaces for end-to-end Nova fine-tuning workflows:
+The following scripts provide command-line interfaces for end-to-end Nova
+fine-tuning workflows. They live in `scripts/model_finetuning/` and every
+command below is written to run from the repository root:
 
 ### Dataset Preparation
 
 **Basic dataset preparation:**
 ```bash
-python prepare_nova_finetuning_data.py \
+python scripts/model_finetuning/prepare_nova_finetuning_data.py \
     --bucket-name my-finetuning-bucket \
     --samples-per-label 100
 ```
 
 **With custom dataset and prompts:**
 ```bash
-python prepare_nova_finetuning_data.py \
+python scripts/model_finetuning/prepare_nova_finetuning_data.py \
     --bucket-name my-bucket \
     --directory rvl-cdip-sampled \
     --samples-per-label 100 \
@@ -393,7 +395,7 @@ python prepare_nova_finetuning_data.py \
 
 **Create job with automatic IAM role creation:**
 ```bash
-python create_finetuning_job.py \
+python scripts/model_finetuning/create_finetuning_job.py \
     --training-data-uri s3://my-bucket/data/train.jsonl \
     --output-uri s3://my-bucket/output/ \
     --job-name my-finetuning-job \
@@ -402,7 +404,7 @@ python create_finetuning_job.py \
 
 **Create job with custom hyperparameters:**
 ```bash
-python create_finetuning_job.py \
+python scripts/model_finetuning/create_finetuning_job.py \
     --training-data-uri s3://my-bucket/data/train.jsonl \
     --validation-data-uri s3://my-bucket/data/validation.jsonl \
     --output-uri s3://my-bucket/output/ \
@@ -415,7 +417,7 @@ python create_finetuning_job.py \
 
 **Monitor job status:**
 ```bash
-python create_finetuning_job.py \
+python scripts/model_finetuning/create_finetuning_job.py \
     --status-only \
     --job-arn arn:aws:bedrock:us-east-1:123456789012:model-customization-job/job-id
 ```
@@ -424,7 +426,7 @@ python create_finetuning_job.py \
 
 **Create provisioned throughput from job details:**
 ```bash
-python create_provisioned_throughput.py \
+python scripts/model_finetuning/create_provisioned_throughput.py \
     --job-details-file finetuning_job_20241201_120000.json \
     --provisioned-model-name my-provisioned-model \
     --model-units 1
@@ -432,7 +434,7 @@ python create_provisioned_throughput.py \
 
 **Create from model ID:**
 ```bash
-python create_provisioned_throughput.py \
+python scripts/model_finetuning/create_provisioned_throughput.py \
     --model-id arn:aws:bedrock:us-east-1:123456789012:custom-model/... \
     --provisioned-model-name my-provisioned-model \
     --model-units 2
@@ -440,12 +442,12 @@ python create_provisioned_throughput.py \
 
 **List all provisioned models:**
 ```bash
-python create_provisioned_throughput.py --list-models
+python scripts/model_finetuning/create_provisioned_throughput.py --list-models
 ```
 
 **Delete provisioned throughput:**
 ```bash
-python create_provisioned_throughput.py \
+python scripts/model_finetuning/create_provisioned_throughput.py \
     --delete \
     --provisioned-model-arn arn:aws:bedrock:us-east-1:123456789012:provisioned-model/...
 ```
@@ -454,14 +456,14 @@ python create_provisioned_throughput.py \
 
 **Single image inference with base model:**
 ```bash
-python inference_example.py \
+python scripts/model_finetuning/inference_example.py \
     --model-id us.amazon.nova-lite-v1:0 \
     --image-path document.png
 ```
 
 **Batch inference with fine-tuned model:**
 ```bash
-python inference_example.py \
+python scripts/model_finetuning/inference_example.py \
     --provisioned-model-arn arn:aws:bedrock:us-east-1:123456789012:provisioned-model/... \
     --image-directory /path/to/images/ \
     --output-file results.json
@@ -469,7 +471,7 @@ python inference_example.py \
 
 **Inference with custom parameters:**
 ```bash
-python inference_example.py \
+python scripts/model_finetuning/inference_example.py \
     --model-id us.amazon.nova-lite-v1:0 \
     --image-path document.png \
     --temperature 0.1 \
@@ -480,7 +482,7 @@ python inference_example.py \
 
 **Model comparison with ground truth evaluation:**
 ```bash
-python inference_example.py \
+python scripts/model_finetuning/inference_example.py \
     --provisioned-model-arn arn:aws:bedrock:us-east-1:123456789012:provisioned-model/... \
     --image-directory /path/to/images/ \
     --compare-with-base \
@@ -492,19 +494,19 @@ python inference_example.py \
 
 ```bash
 # 1. Prepare dataset
-python prepare_nova_finetuning_data.py --bucket-name my-bucket --samples-per-label 100
+python scripts/model_finetuning/prepare_nova_finetuning_data.py --bucket-name my-bucket --samples-per-label 100
 
 # 2. Create fine-tuning job  
-python create_finetuning_job.py --training-data-uri s3://my-bucket/train.jsonl --job-name my-job --create-role
+python scripts/model_finetuning/create_finetuning_job.py --training-data-uri s3://my-bucket/train.jsonl --job-name my-job --create-role
 
 # 3. Create provisioned throughput
-python create_provisioned_throughput.py --job-details-file job.json --provisioned-model-name my-model --model-units 1
+python scripts/model_finetuning/create_provisioned_throughput.py --job-details-file job.json --provisioned-model-name my-model --model-units 1
 
 # 4. Run inference
-python inference_example.py --provisioned-model-arn <arn> --image-directory /path/to/images --output-file results.json
+python scripts/model_finetuning/inference_example.py --provisioned-model-arn <arn> --image-directory /path/to/images --output-file results.json
 
 # 5. Clean up
-python create_provisioned_throughput.py --delete --provisioned-model-arn <arn>
+python scripts/model_finetuning/create_provisioned_throughput.py --delete --provisioned-model-arn <arn>
 ```
 
 ## Requirements
@@ -520,11 +522,11 @@ For end-to-end workflows, dataset preparation, and comprehensive examples, see:
 
 - **[Nova Fine-tuning Documentation](../../../../docs/nova-finetuning.md)**: Complete guide with CLI scripts and workflows
 - **Python Scripts**:
-  - `prepare_nova_finetuning_data.py`: Dataset preparation
-  - `create_finetuning_job.py`: Job creation and monitoring
-  - `create_provisioned_throughput.py`: Provisioned throughput management
-  - `inference_example.py`: Model inference and evaluation
+  - `scripts/model_finetuning/prepare_nova_finetuning_data.py`: Dataset preparation
+  - `scripts/model_finetuning/create_finetuning_job.py`: Job creation and monitoring
+  - `scripts/model_finetuning/create_provisioned_throughput.py`: Provisioned throughput management
+  - `scripts/model_finetuning/inference_example.py`: Model inference and evaluation
 - **Notebooks**:
-  - [Dataset Preparation Notebook](../../../../notebooks/finetuning_dataset_prep.ipynb)
-  - [Fine-tuning Service Demo Notebook](../../../../notebooks/finetuning_model_service_demo.ipynb)
-  - [Model Evaluation Notebook](../../../../notebooks/finetuning_model_document_classification_evaluation.ipynb)
+  - [Dataset Preparation Notebook](../../../../notebooks/misc/finetuning_dataset_prep.ipynb)
+  - [Fine-tuning Service Demo Notebook](../../../../notebooks/misc/finetuning_model_service_demo.ipynb)
+  - [Model Evaluation Notebook](../../../../notebooks/misc/finetuning_model_document_classification_evaluation.ipynb)

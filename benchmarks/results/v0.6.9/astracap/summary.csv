@@ -1,0 +1,13 @@
+cell,doc,sub_doc,repeat,status,success,page_count,completeness_recall,truncation_prefix,scalar_accuracy,typed_accuracy,cell_accuracy,sections_correct,weighted_accuracy,parse_failures,forced_tool_attempted,forced_tool_honored,forced_tool_honored_rate,validation_valid_rate,validation_errors,coercions,coercion_refusals,mean_confidence,pct_conf_below_0.9,calibration_separation,class_accuracy,class_mean_confidence,class_calibration_separation,wall_s,cost
+sonnet5-simple-sep,scale_3200.pdf,,0,FAILED,False,66.0,0.0,0,0.0,,,0.0,,,,,,,,,,,,,,,,51.058618,1.056
+sonnet5-simple-sep,scale_3200.pdf,,1,FAILED,False,66.0,0.0,0,0.0,,,0.0,,,,,,,,,,,,,,,,50.311879,1.0563
+astra-simple-sep,scale_3200.pdf,,0,FAILED,False,66.0,0.0,0,0.0,,,0.0,,,,,,,,,,,,,,,,48.45962,1.0556
+astra-simple-sep,scale_3200.pdf,,1,FAILED,False,66.0,0.0,0,0.0,,,0.0,,,,,,,,,,,,,,,,50.660173,1.0561
+sonnet5-adv-sep,scale_3200.pdf,,0,COMPLETED,True,66.0,1.0,3200,1.0,,1.0,1.0,,,,,,1.0,0,,,0.9923,0.0,,,,,408.91276,5.684
+sonnet5-adv-sep,scale_3200.pdf,,1,COMPLETED,True,66.0,1.0,3200,1.0,,1.0,1.0,,,,,,1.0,0,,,0.9936,0.0,,,,,394.497395,5.6172
+astra-adv-sep,scale_3200.pdf,,0,COMPLETED,True,66.0,1.0,3200,1.0,,1.0,1.0,,,,,,1.0,0,,,0.9911,0.0,,,,,846.260145,24.7535
+astra-adv-sep,scale_3200.pdf,,1,COMPLETED,True,66.0,1.0,3200,1.0,,1.0,1.0,,,,,,1.0,0,,,0.9915,0.0,,,,,733.423963,19.1094
+astra-adv-wide,scale_3200.pdf,,0,COMPLETED,True,66.0,1.0,3200,1.0,,1.0,1.0,,,,,,1.0,0,,,0.9708,0.0,,,,,678.149285,8.9994
+astra-adv-wide,scale_3200.pdf,,1,COMPLETED,True,66.0,0.7638,2444,1.0,,1.0,1.0,,,,,,1.0,0,,,0.9618,0.0,,,,,657.795546,9.909
+sonnet5-adv-wide,scale_3200.pdf,,0,COMPLETED,True,66.0,1.0,3200,1.0,,1.0,1.0,,,,,,1.0,0,,,0.9782,0.0,,,,,1723.38804,5.6248
+sonnet5-adv-wide,scale_3200.pdf,,1,COMPLETED,True,66.0,1.0,3200,1.0,,1.0,1.0,,,,,,1.0,0,,,0.9712,0.0,,,,,838.446228,7.6224

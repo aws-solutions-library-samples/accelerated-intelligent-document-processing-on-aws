@@ -11,6 +11,7 @@ import {
   ExpandableSection,
   Alert,
 } from '@cloudscape-design/components';
+import { refNode } from './utils/schemaHelpers';
 
 interface SchemaAttribute {
   if?: Record<string, unknown>;
@@ -95,11 +96,8 @@ const SchemaConditionalEditor = ({
     }
 
     if (field === 'type') {
-      if (value.startsWith('#/$defs/')) {
-        updates[key] = { $ref: value };
-      } else {
-        updates[key] = { type: value };
-      }
+      // `type` and `$ref` are alternatives, so switching between them replaces the branch.
+      updates[key] = value.startsWith('#/$defs/') ? refNode(value) : { type: value };
     } else if (field === 'const') {
       try {
         (updates[key] as Record<string, unknown>).const = JSON.parse(value);

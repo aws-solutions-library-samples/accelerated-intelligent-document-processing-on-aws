@@ -69,7 +69,7 @@ The SFN execution ended in FAILED (typically the state-machine's `MigrationHadFa
 - SSM marker is left at `state=in_progress` — this is intentional. A restart resumes without re-purging.
 - Restart in one of two ways:
   - Bump `MigrationVersion` on the CustomResource (any string change) and re-deploy the stack. CFN fires the dispatcher, which starts a new SFN execution. CheckMarker sees `state=in_progress` and routes to the skip-purge branch. Only failing chunks re-execute; already-written chunks are HeadObject-skipped.
-  - Or manually start a new SFN execution: Step Functions console → `<stack>-data-mart-migration` → **Start execution** → input `{"days": 30, "chunk_hours": 12}` (or whatever the CustomResource properties are set to).
+  - Or manually start a new SFN execution: Step Functions console → `<stack>-data-mart-migration` → **Start execution** → input `{"days": 30, "chunk_hours": 1, "version": "v1"}` (match the CustomResource properties currently in the deployed template). All three fields are **required** — the ASL reads `$.version` in `CheckMarker`, `WriteInProgressMarker`, and `WriteCompletedMarker` and raises `States.Runtime` if the field is absent, and omitting it or `chunk_hours` was a common cause of a manual restart failing before doing any work.
 - If the underlying failure is Athena-side (e.g. workgroup issue, missing table), fix the root cause first — the restart won't help until the query can succeed.
 
 ### `state=in_progress` stuck without alarm firing

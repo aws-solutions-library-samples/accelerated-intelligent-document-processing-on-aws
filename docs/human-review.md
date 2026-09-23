@@ -214,13 +214,10 @@ When all sections are reviewed or skipped:
 
 ### Enabling HITL
 
-HITL can be enabled through two methods:
+HITL is a **configuration setting**, not a stack parameter. Enable it either in the
+Web UI or in the configuration YAML — there is no deploy-time flag:
 
-#### Method 1: CloudFormation Parameter (Initial Setup)
-
-Set the `EnableHITL` parameter to `true` during stack deployment or update.
-
-#### Method 2: Configuration UI (Runtime Toggle)
+#### Method 1: Configuration UI (Runtime Toggle)
 
 1. Log in as an Admin user
 2. Navigate to **Configuration** in the Web UI
@@ -228,7 +225,16 @@ Set the `EnableHITL` parameter to `true` during stack deployment or update.
 4. Toggle **Enable Human-in-the-Loop (HITL) review** to enable/disable
 5. Click **Save** to apply changes
 
-**Note:** Configuration settings take precedence over CloudFormation parameters at runtime.
+#### Method 2: Configuration YAML (Initial Setup)
+
+Set the HITL fields under `assessment` in the configuration passed as
+`CustomConfigPath` (or `idp-cli deploy --custom-config`), so a new stack comes up
+with HITL already on.
+
+> The `EnableHITL` CloudFormation parameter was removed in v0.4.11. If you are
+> upgrading from before that release and had `EnableHITL=true`, re-enable HITL
+> through one of the two methods above; the parameter no longer exists and passing
+> it is rejected.
 
 ### Confidence Threshold Configuration
 

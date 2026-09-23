@@ -253,6 +253,26 @@ class TestExtractionService:
         # Process the document section
         result = service.process_document_section(sample_document, "1")
 
+        # The document is mutated IN PLACE and the same object is returned, and the
+        # section operated on is the live element of `document.sections` rather than
+        # a copy. Both extraction Lambda entry points depend on this: when
+        # extraction raises, persisting the failure reads the diagnosis off the
+        # document they still hold (#1049). A refactor that returned a rebuilt
+        # document, or that replaced `sections`, would make that persist write stale
+        # data with every other test still green — so it is asserted here, against
+        # the real service, rather than left to the handler tests, which can only
+        # simulate the mutation with a mock.
+        assert result is sample_document, (
+            "process_document_section no longer returns the document it was given. "
+            "The extraction Lambdas persist a failing section off that object, so "
+            "this has to keep holding — see idp_common.extraction.failure."
+        )
+        assert result.sections[0] is sample_document.sections[0], (
+            "the section the service operated on is no longer the live element of "
+            "document.sections, so a diagnosis written to it would not be visible "
+            "to the handler that persists the section"
+        )
+
         # Verify the document was updated
         assert (
             result.sections[0].extraction_result_uri

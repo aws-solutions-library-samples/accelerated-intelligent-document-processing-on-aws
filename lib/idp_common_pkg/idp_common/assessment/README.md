@@ -462,18 +462,20 @@ above 25% **and** at least **10 unscored rows** — carrying `expected_rows`,
 Three deliberate choices in those thresholds:
 
 - **5%, not 0%.** Reconciliation pads one assessment entry per extracted row, so a
-  run whose model scored every row lands at 0% — but note that no stored artifact
-  measures confidence coverage across a corpus, so "healthy runs sit at 0%" is a
-  property of the code path, not something measured here. `_row_confidence_missing`'s
-  own docstring records a healthy three-record pay statement that reported 100% of
-  rows unscored, because a single `None` leaf marks a whole row unscored; that class
-  of false positive is what the absolute floor below limits. Small residual
-  shortfalls are also already named precisely by `assessment_incomplete`.
+  run whose model scored every row lands at 0%. Small residual shortfalls are also
+  already named precisely by `assessment_incomplete`, so a 1-2 row gap on an 800-row
+  table is that issue's business rather than a second document-level alarm. What the
+  fraction means on a *short* list is arithmetic and worth stating outright: a single
+  unscored row is a shortfall of `1/N`, so **one unscored row fires the warning for
+  any section totalling 20 list rows or fewer**. Whether a healthy run ever produces
+  that single unscored row is the part that is measured rather than reasoned — see
+  *Coverage: measured and unobserved* below.
 - **An absolute floor of 10 unscored rows on the error rung.** A fraction alone makes
   short lists fire hardest: one unscored row in a four-row list is 25%, and an error
   renders the section red ("Incomplete") in the Sections panel. Short list attributes
   are ordinary (a two-entry `ENDORSEMENTS` array in `lending-package-sample`). Below
-  the floor the shortfall is still reported, as a warning.
+  the floor the shortfall is still reported, as a warning. The floor bounds this
+  class for the error rung only; the warning rung still fires on a short list.
 - **Suppressed when the ladder already reported an error.** `build_assessment_issues`
   and this gate run on the same section, and the ladder's error rungs describe the
   same unscored rows *with a cause attached*. Emitting both doubles
@@ -487,6 +489,81 @@ Three deliberate choices in those thresholds:
 Issues are attached to each `Section`
 (`section.processing_issues`), rolled up to `Document.processing_issue_count`,
 and rendered in the extraction processing report.
+
+#### Coverage: measured and unobserved
+
+`confidence_coverage(assessment, extraction_results)` returns the figure —
+`scored_rows` over `expected_rows`, plus the per-field breakdown — for one section.
+It calls `audit_explainability` rather than re-deriving "is this row scored?", so a
+measurement and the guard that ships are one computation; `audit_explainability`
+puts the very same dict in the issue's `details`. Use it whenever you want the
+number unconditionally, because the issue only carries it once the shortfall has
+already crossed 5%, which is the reason nothing recorded coverage on healthy runs.
+
+`expected_rows == 0` (a section with no list attribute) means coverage is
+**undefined**, not perfect: `scored_fraction` is `None` so an aggregate drops it. A
+corpus mean that scored those as 1.0 would be reporting the share of list-free
+documents.
+
+The benchmark harness records it per document
+(`benchmarks/harness/analyze.py::score_confidence_coverage` → `conf_rows_expected`,
+`conf_rows_scored`, `conf_rows_unscored`, `conf_coverage`,
+`conf_unscored_by_field`), and `aggregate.cell_stats` rolls up the **distribution**
+per cell — min, max, stdev and CV, not only the mean, because a mean of 0.99 is
+equally consistent with every document at 0.99 and with one document at 0.
+
+What the existing committed artifacts under `benchmarks/results/` already show, and
+what they cannot: they retain `rows_extracted` and `n_conf_leaves` per document-run
+but no raw `explainability_info`, so coverage there is a **leaf-count proxy** rather
+than this rule. Across 4,344 committed assessment-on synthetic document-runs
+spanning v0.5.16 → v0.6.10, roughly 95% show no shortfall at all and about 1% would
+cross the 5% rung (0.2% the error rung), by two independent reconstructions that
+agree — an upper-envelope method needing no corpus constants, and one using the
+generator's known 3-cells-per-row shape. That is consistent with healthy runs
+sitting at 0%.
+
+The leaf model is not an estimate: `n_conf_leaves − 3 × rows_extracted` has a
+dominant mode of exactly **7** for every synthetic document (14 for the two-section
+`twodocs_2x20`, 13 for the repeated-header `repeathdr_3pg`), and it holds for the
+8-column document too, so "3 cells per row plus a 7-leaf document scalar block" is
+read off the data rather than assumed.
+
+**Restricted to the regime the warning rung is actually about, the rate is several
+times higher.** Among runs extracting 20 rows or fewer — the range where a single
+unscored row crosses 5% — **2.6× the corpus-wide rate** would trip the warning. Two
+independent reconstructions on different populations give the same multiplier while
+differing on the absolute figure (3.4% of 703 such runs against a 1.3% corpus rate;
+6.2% of 649 against theirs), so treat the ratio as the finding and the absolute as
+population-dependent.
+
+That figure is not an artifact of truncated large documents: 681 of those 703 runs
+are `tiny_form.pdf`, a genuinely 5-row document, and it alone trips at 3.2%. So the
+answer to "do healthy runs produce the single unscored row that makes the rung fire"
+is **sometimes yes, on flat data, at a measurable rate** — which sharpens the open
+question rather than dissolving it, because 3% of short-list runs carrying a
+low-severity warning is a defensible design and 30% would not be.
+
+Three limits on that evidence, all of which keep the specific concern open:
+
+- It is a **lower bound** on the guard's shortfall. `_row_confidence_missing` marks a
+  whole row unscored if *any* leaf in it is `None`; a leaf count credits the leaves
+  that were scored. A row with two of three cells scored is 0 scored rows to the
+  guard and 2 leaves to the proxy.
+- Only the **synthetic** corpus retains a row denominator. `score_reference` records
+  `n_conf_leaves` with no row count, so `realkie` and `ocr_bench` contribute nothing.
+- The synthetic corpus rows are **flat** — three or eight scalar cells, generated by
+  `benchmarks/corpus/generators/bank_statement.py::_row`. It contains no row carrying
+  a nested group or an inner list, which is exactly the shape the any-leaf-`None`
+  rule is hardest on and exactly the shape a multi-instance section (#715) makes
+  universal.
+
+So the warning rung's false-positive rate on **short, nested, multi-record** lists
+remains unobserved. Settling it needs a run over a multi-record corpus — the
+`healthcare-multisection-package` or a pay-statement shape — on both a Claude and a
+Nova model, since output caps drive the truncation that produces unscored rows; the
+instrument above then reports it directly. The thresholds are left where #912 put
+them until that run exists, because moving them on a proxy that cannot see the shape
+in question would be the same kind of reasoning this note replaces.
 
 ### Lambda wall-clock budget & resume safety
 
@@ -533,28 +610,91 @@ reachable only when a later rung went on to score every row anyway. As defense i
 via the per-shard S3 persistence and the Assessment step's "skip if
 `explainability_info` already present" short-circuit.
 
-### What to alarm on when the pass fails outright
+### What to alarm on when a section ends up with no confidence at all
 
-The rungs above degrade *within* a successful pass. When the pass fails
-**deterministically** — the confidence model rejecting the input outright, most
-often `ValidationException: Input is too long for requested model.` — the
-Assessment Lambda does not fail the document either: it keeps the extraction and
-records an error-severity `assessment_failed_confidence_unavailable` issue on the
-section (`degrade_section_to_no_confidence` in
-`patterns/unified/src/assessment_function/index.py`, issue #901).
+The rungs above degrade *within* a successful pass. A section can also come out
+of this module with **no confidence scores whatsoever**, and there are two ways
+that happens. Both live in `assessment/degradation.py`, and both leave the same
+trace, by construction rather than by convention:
+
+| Cause | Entry point | Issue code |
+|---|---|---|
+| The pass ran and failed **deterministically** — the confidence model rejecting the input outright, most often `ValidationException: Input is too long for requested model.` (#901) | `degrade_section_to_no_confidence`, called from the Assessment Lambda's non-transient branch | `assessment_failed_confidence_unavailable` |
+| The pass **never ran**: the section had no `extraction_result_uri`, no `page_ids`, an extraction result whose `inference_result` was empty, or none of its pages present in the document (#1006) | `skip_section_no_confidence`, called from `process_document_section`'s early returns | `assessment_skipped_confidence_unavailable` |
+
+Neither fails the document. For the first that is #901's deliberate trade — the
+extraction already succeeded and was already paid for, so losing the advisory
+half must not discard it. For the second there is nothing to fail *over*: the
+confidence model was never called.
 
 That has an observability consequence worth knowing when reading this module's
 behaviour operationally. Because such a document **completes**, a systemic
-confidence failure moves none of the failure alarms — no failed executions, no
+confidence gap moves none of the failure alarms — no failed executions, no
 DLQ messages — and `ProcessingIssueCount` is a DynamoDB attribute rather than a
-metric, so nothing aggregates it. The Lambda therefore publishes
-`AssessmentConfidenceUnavailable` (value 1 per degraded section) into the parent
-stack's metric namespace on that path, and the parent template alarms on ten or
-more in fifteen minutes — deliberately on volume, because one degraded section is
-an expected outcome of the guard and a steady stream is not (issue #996). The
-metric put is wrapped in its own `try`: this path exists to avoid failing a
-document whose extraction succeeded, so a lost telemetry point is the cheaper
-failure. See [Monitoring](../../../../docs/monitoring.md#confidence-assessment-degraded).
+metric, so nothing aggregates it. Both paths therefore publish
+`AssessmentConfidenceUnavailable` (value 1 per section) into the parent stack's
+metric namespace, and the parent template alarms on ten or more in fifteen
+minutes — deliberately on volume, because one such section is an expected outcome
+and a steady stream is not (issue #996). **The metric does not distinguish the two
+causes**, because the alarm's question is whether sections are coming back without
+confidence; the issue `code` and `root_cause` on the section are what separate
+them for whoever opens the document.
+
+Two details that are load-bearing rather than tidy. The metric put is wrapped in
+its own `try`: these paths exist to avoid failing a document whose extraction
+succeeded, so a lost telemetry point is the cheaper failure. And appending to
+`document.errors` is **not** a substitute for the issue —
+`processresults_function` reads a section document's `errors` only inside its
+`Status.FAILED` branch, so on a completing document nothing reads it, which is
+exactly how the skip paths stayed silent before #1006.
+
+Three returns from `process_document_section` deliberately record nothing, and
+getting that set right is what keeps the alarm's volume threshold meaningful:
+
+- a section whose class is **excluded** — extraction never ran, so no confidence
+  is missing;
+- a section whose extraction result is flagged `skipped_due_to_empty_attributes`
+  *and* whose `metadata.empty_schema_reason` is one of the two deliberate causes
+  below. `ExtractionService` skips the model for an empty effective schema
+  (`_handle_empty_schema`) and still sets `extraction_result_uri`, so the stub
+  arrives here with an empty `inference_result` and is indistinguishable from a
+  real gap without the flag;
+- a configuration with `extraction.confidence.enabled: false`.
+
+That second bullet covers three situations, which extraction distinguishes at the
+producer (`idp_common.empty_schema`) because only one of them is a fault:
+
+| `empty_schema_reason` | What it is | Reported here? |
+|---|---|---|
+| `class_has_no_attributes` | The class is in configuration and declares no attributes — an authoring choice. Nothing was expected from the section | No |
+| `class_unclassified` | Classification determined no class, so the label is the `unclassified` sentinel: a blank page, a page whose classification failed, or a deployment with no document types configured. Routine — one cover sheet in an otherwise normal document lands here, and a dozen such documents in fifteen minutes would clear the default alarm threshold on their own | No. The **classification** stage records it, with the severity only it can judge, and a `root_cause` written from here would send the operator to an Extraction step where nothing is wrong |
+| `class_not_configured` | The section carries a **named** class the configuration in force does not contain: renamed or deleted while documents were in flight, or an old document reprocessed under a newer configuration | **Yes**, with a `root_cause` naming the configuration rather than the confidence model. Extraction records the extraction-stage half (`extraction_class_not_configured`) at the same time. Bounded by operator configuration changes rather than by document content, so it cannot reach the threshold on throughput |
+
+A stub written before `empty_schema_reason` existed carries no reason at all and
+is read as `class_has_no_attributes`, so stored results keep reading back exactly
+as they did — and reassessing a backlog of old documents cannot manufacture a
+fleet of new alarm points.
+
+An empty `inference_result` **without** the flag is still reported: the class had
+a schema, the model returned nothing, and those values now have no confidence.
+
+A `section_id` that is not in the document, or a document with no sections,
+**raises** instead: there is no section on which to record anything, so a quiet
+return would leave the caller with no signal at all.
+
+**Pages the document does not contain.** The page loop skips a `page_id` absent
+from `document.pages`. When *every* page of the section is absent there is no page
+text and no page image, and the confidence pass used to run anyway and return a
+score per field derived from nothing — a fabricated number, indistinguishable in
+the UI, in HITL routing and in the reporting lake from one the model read off the
+page. The pass is now skipped for that case, through
+`skip_section_no_confidence` like the others. When only *some* pages are absent it
+still runs — partial evidence is not no evidence — and records a warning-severity
+`assessment_pages_missing` issue naming the absent pages. That one publishes **no**
+metric: the section does have confidence scores, so the metric's question is
+answered no.
+
+See [Monitoring](../../../../docs/monitoring.md#confidence-assessment-degraded).
 
 ## Prompt Template Placeholders
 
@@ -1249,3 +1389,4 @@ class AttributeAssessment:
 class AssessmentResult:
     attributes: Dict[str, AttributeAssessment]
     metadata: Dict[str, Any]
+```

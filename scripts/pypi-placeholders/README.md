@@ -92,8 +92,8 @@ alone does not protect anything: an un-yanked `0.0.0` is still the only release,
 so pip resolves it happily for a bare requirement:
 
 ```
-$ pip install idp-feature-sdk        # while un-yanked
-Would install idp-feature-sdk-0.0.0  # ← resolves, defeating the purpose
+$ pip install <name>                 # while un-yanked
+Would install <name>-0.0.0           # ← resolves, defeating the purpose
 ```
 
 Yanking ([PEP 592][pep592]) keeps the name reserved — nobody else can claim it —

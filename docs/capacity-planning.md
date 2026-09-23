@@ -538,10 +538,8 @@ make test-capacity-coverage  # Run with coverage report
 
 ### Test Documentation
 
-For detailed testing information, see:
-- [Capacity Planning Tests README](../src/lambda/calculate_capacity/README_TESTS.md)
-- [Developer Guide](capacity-planning-developer-guide.md)
-- [Security Mitigations](capacity-planning-mitigations.md)
+For how to run the suites, what each one covers and the coverage goals, see the
+[Capacity Planning Tests README](../src/lambda/calculate_capacity/README_TESTS.md).
 
 ---
 

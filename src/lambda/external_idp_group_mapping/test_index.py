@@ -11,9 +11,13 @@ Covers:
   granted groups from custom:idp_groups (a self-set value on a native user
   grants nothing)
 - Freshness: only a fresh sign-in is honoured, never a token refresh
+- Coverage: every Cognito group template.yaml declares is reachable from an IdP
+  claim, in both copies of the handler (TestCognitoGroupCoverage)
 """
 import json
+import logging
 import os
+import re
 import pytest
 from unittest.mock import MagicMock, patch, call
 
@@ -26,10 +30,107 @@ ENV_VARS = {
     "ADMIN_GROUP_NAME": "IdP-Admins",
     "AUTHOR_GROUP_NAME": "IdP-Authors",
     "REVIEWER_GROUP_NAME": "IdP-Reviewers",
+    "ANNOTATOR_GROUP_NAME": "IdP-Annotators",
     "VIEWER_GROUP_NAME": "IdP-Viewers",
     "EXTERNAL_IDP_NAME": IDP_NAME,
     "LOG_LEVEL": "DEBUG",
 }
+
+TEMPLATE_PATH = os.path.join(
+    os.path.dirname(os.path.abspath(__file__)), "..", "..", "..", "template.yaml"
+)
+
+# Resource logical id of the pre-token trigger whose InlineCode is the copy that
+# actually deploys.
+TRIGGER_RESOURCE = "ExternalIdPGroupMappingFunction"
+
+
+def load_template():
+    """Parse template.yaml, or skip the calling test if it is not reachable.
+
+    CloudFormation short-form tags (!Ref, !Sub, ...) are not valid YAML tags, so
+    they are collapsed to their plain scalar payload: `!Ref ExternalIdPAdminGroupName`
+    becomes the string "ExternalIdPAdminGroupName". That is exactly what the
+    coverage tests below need — the parameter a group env var is wired to.
+    """
+    import yaml
+
+    if not os.path.exists(TEMPLATE_PATH):
+        pytest.skip("template.yaml not reachable from this test's location")
+
+    class _CfnLoader(yaml.SafeLoader):
+        pass
+
+    def _passthrough(loader, _tag_suffix, node):
+        if isinstance(node, yaml.ScalarNode):
+            return loader.construct_scalar(node)
+        if isinstance(node, yaml.SequenceNode):
+            return loader.construct_sequence(node)
+        return loader.construct_mapping(node)
+
+    _CfnLoader.add_multi_constructor("!", _passthrough)
+
+    with open(TEMPLATE_PATH) as f:
+        return yaml.load(f, Loader=_CfnLoader)
+
+
+def declared_cognito_groups(template):
+    """Every group name the stack creates, read from the template.
+
+    Deliberately derived from `AWS::Cognito::UserPoolGroup` resources rather than
+    written out here: a sixth group added to the deployment must then break the
+    coverage tests instead of quietly joining Annotator as unmappable from an IdP
+    claim (#968).
+    """
+    return {
+        res["Properties"]["GroupName"]
+        for res in template["Resources"].values()
+        if res.get("Type") == "AWS::Cognito::UserPoolGroup"
+    }
+
+
+def group_env_vars(template):
+    """`{env var: stack parameter}` for the trigger's group-mapping variables."""
+    variables = template["Resources"][TRIGGER_RESOURCE]["Properties"]["Environment"][
+        "Variables"
+    ]
+    return {k: v for k, v in variables.items() if k.endswith("_GROUP_NAME")}
+
+
+def load_inline_copy(env):
+    """Import the InlineCode from template.yaml as a module, under `env`.
+
+    The exec IS the assertion: `code` comes from this repo's own template.yaml,
+    and running the copy that actually deploys is what proves it has not drifted
+    from the copy index.py's tests cover. Comparing the two as text would pass
+    while the deployed handler behaved differently.
+    """
+    import types
+
+    template = load_template()
+    code = template["Resources"][TRIGGER_RESOURCE]["Properties"]["InlineCode"]
+
+    env = dict(env)
+    env.setdefault("AWS_DEFAULT_REGION", "us-east-1")
+    with patch.dict(os.environ, env, clear=False):
+        mod = types.ModuleType("inline_external_idp_group_mapping")
+        # The pragma has to sit on the line immediately above the finding —
+        # semgrep does not look further back than that.
+        # nosemgrep: python.lang.security.audit.exec-detected.exec-detected
+        exec(compile(code, "template.yaml:InlineCode", "exec"), mod.__dict__)  # nosec B102 - see above
+    return mod
+
+
+def load_standalone_copy(env):
+    """Import src/lambda/external_idp_group_mapping/index.py under `env`."""
+    import importlib
+    import index as mod
+
+    env = dict(env)
+    env.setdefault("AWS_DEFAULT_REGION", "us-east-1")
+    with patch.dict(os.environ, env, clear=False):
+        importlib.reload(mod)
+    return mod
 
 
 def _make_event(
@@ -540,51 +641,7 @@ class TestDeployedInlineCopy:
 
     @pytest.fixture(autouse=True)
     def _load_inline_module(self):
-        import types
-        import yaml
-
-        template_path = os.path.join(
-            os.path.dirname(os.path.abspath(__file__)), "..", "..", "..", "template.yaml"
-        )
-        if not os.path.exists(template_path):
-            pytest.skip("template.yaml not reachable from this test's location")
-
-        # CloudFormation short-form tags (!Ref, !Sub, ...) are not valid YAML tags,
-        # so collapse them to plain values — only InlineCode matters here.
-        class _CfnLoader(yaml.SafeLoader):
-            pass
-
-        def _passthrough(loader, _tag_suffix, node):
-            if isinstance(node, yaml.ScalarNode):
-                return loader.construct_scalar(node)
-            if isinstance(node, yaml.SequenceNode):
-                return loader.construct_sequence(node)
-            return loader.construct_mapping(node)
-
-        _CfnLoader.add_multi_constructor("!", _passthrough)
-
-        with open(template_path) as f:
-            template = yaml.load(f, Loader=_CfnLoader)
-
-        code = template["Resources"]["ExternalIdPGroupMappingFunction"]["Properties"][
-            "InlineCode"
-        ]
-
-        env = dict(ENV_VARS)
-        env.setdefault("AWS_DEFAULT_REGION", "us-east-1")
-        with patch.dict(os.environ, env, clear=False):
-            mod = types.ModuleType("inline_external_idp_group_mapping")
-            # The exec below IS the test. `code` is read from this repo's own
-            # template.yaml, not from any input: running the InlineCode copy that
-            # actually deploys is what proves it has not drifted from the copy
-            # these tests cover. Asserting on the text instead would pass while
-            # the deployed handler behaved differently.
-            #
-            # The pragma has to sit on the line immediately above the finding —
-            # semgrep does not look further back than that.
-            # nosemgrep: python.lang.security.audit.exec-detected.exec-detected
-            exec(compile(code, "template.yaml:InlineCode", "exec"), mod.__dict__)  # nosec B102 - see above
-
+        mod = load_inline_copy(ENV_VARS)
         self.mod = mod
         self.handler = mod.handler
         self.mock_cognito = MagicMock()
@@ -707,12 +764,16 @@ class TestGroupMapping:
     ``boto3.client("cognito-idp")``. Because ``clear=True`` wipes the whole
     environment, that client construction has no region unless one is put back,
     and botocore then raises ``NoRegionError`` — so these three tests passed only
-    on a machine whose region comes from ``~/.aws/config`` (which ``clear=True``
-    cannot remove) and failed on any CI runner, where the region is an
-    environment variable or absent. AWS_DEFAULT_REGION is therefore restored
-    below. It cannot affect what is asserted: the mapping is built from the
-    ``*_GROUP_NAME`` variables only. Making this suite import-safe so that no
-    caller has to know about the region at all is tracked in #988.
+    on a machine whose region comes from the shared AWS config file (which
+    ``clear=True`` cannot reach) and failed on any CI runner, where the region is
+    an environment variable or absent. ``AWS_DEFAULT_REGION`` is therefore
+    restored in each dictionary below.
+
+    This is the one case ``conftest.py`` cannot cover, which is why the region
+    appears in both places. ``conftest.py`` populates the process environment
+    before collection, and ``clear=True`` removes it again for the duration of
+    these three tests specifically. Neither setting can affect what is asserted:
+    ``GROUP_MAPPING`` is built from the ``*_GROUP_NAME`` variables only.
     """
 
     def test_partial_env_vars(self):
@@ -753,3 +814,334 @@ class TestGroupMapping:
             importlib.reload(mod)
             assert "  " not in mod.GROUP_MAPPING
             assert mod.GROUP_MAPPING == {"Authors": "Author"}
+
+
+# ============================================================
+# Every declared Cognito group is reachable from an IdP claim
+# ============================================================
+
+# Both copies of the handler, so a change applied to only one of them fails here.
+# "inline" is the InlineCode in template.yaml, which is what deploys; "standalone"
+# is index.py, which carries these tests.
+COPY_LOADERS = {"inline": load_inline_copy, "standalone": load_standalone_copy}
+
+
+def _role_from_parameter(parameter_name):
+    """`ExternalIdPAnnotatorGroupName` -> `Annotator`."""
+    match = re.fullmatch(r"ExternalIdP(?P<role>\w+)GroupName", parameter_name)
+    assert match, f"unexpected group parameter name: {parameter_name}"
+    return match.group("role")
+
+
+@pytest.mark.unit
+class TestCognitoGroupCoverage:
+    """Every Cognito group the stack creates must be assignable from an IdP claim.
+
+    Nothing here writes the group names out. They are read from the
+    `AWS::Cognito::UserPoolGroup` resources in template.yaml, so a sixth group
+    added to the deployment fails these tests rather than silently becoming
+    unmappable — which is the shape of the defect this class exists for (#968:
+    `Annotator` was declared as a group with no `ExternalIdPAnnotatorGroupName`
+    parameter and no `ANNOTATOR_GROUP_NAME` anywhere, so a federated user could
+    never hold it).
+    """
+
+    def test_every_group_has_a_stack_parameter_wired_to_the_trigger(self):
+        """Each declared group needs a parameter, an env var, and the wiring."""
+        template = load_template()
+        declared = declared_cognito_groups(template)
+        env_to_parameter = group_env_vars(template)
+
+        wired_roles = {
+            _role_from_parameter(param) for param in env_to_parameter.values()
+        }
+        assert wired_roles == declared, (
+            "every AWS::Cognito::UserPoolGroup must have an "
+            "ExternalIdP<Role>GroupName parameter wired into "
+            f"{TRIGGER_RESOURCE}'s environment. Declared but not wired: "
+            f"{sorted(declared - wired_roles)}; wired but not declared: "
+            f"{sorted(wired_roles - declared)}"
+        )
+
+        # The env var name and the parameter must agree, or the handler reads a
+        # variable the template never sets.
+        for env_key, parameter in env_to_parameter.items():
+            role = _role_from_parameter(parameter)
+            assert env_key == f"{role.upper()}_GROUP_NAME", (
+                f"{parameter} is wired to {env_key}; the handler builds its "
+                f"mapping from {role.upper()}_GROUP_NAME"
+            )
+            assert parameter in template["Parameters"], (
+                f"{parameter} is referenced by {TRIGGER_RESOURCE} but not declared"
+            )
+            assert template["Parameters"][parameter]["Type"] == "String"
+            assert template["Parameters"][parameter]["Default"] == ""
+
+    def test_every_group_parameter_is_in_the_console_parameter_group(self):
+        """A parameter missing from the Interface lands in "other parameters"."""
+        template = load_template()
+        interface = template["Metadata"]["AWS::CloudFormation::Interface"]
+        grouped = {
+            param
+            for group in interface["ParameterGroups"]
+            for param in group["Parameters"]
+        }
+        for parameter in group_env_vars(template).values():
+            assert parameter in grouped, (
+                f"{parameter} is not listed in any AWS::CloudFormation::Interface "
+                "ParameterGroup, so it renders in an ungrouped bucket on the "
+                "deploy screen"
+            )
+
+    def test_every_group_parameter_is_stripped_by_the_headless_transform(self):
+        """The headless template has no Cognito, so it must drop these.
+
+        A parameter left behind is a parameter with no consumer: the transform
+        removes `ExternalIdPGroupMappingFunction` itself, so the headless
+        template would carry an input that does nothing.
+        """
+        transform = os.path.join(
+            os.path.dirname(os.path.abspath(__file__)),
+            "..", "..", "..",
+            "lib", "idp_sdk", "idp_sdk", "_core", "template_transform.py",
+        )
+        if not os.path.exists(transform):
+            pytest.skip("template_transform.py not reachable from this location")
+
+        with open(transform) as f:
+            source = f.read()
+
+        for parameter in group_env_vars(load_template()).values():
+            assert re.search(rf'^\s+"{parameter}",$', source, re.M), (
+                f"{parameter} must be listed in parameters_to_remove in "
+                "lib/idp_sdk/idp_sdk/_core/template_transform.py"
+            )
+
+    @pytest.mark.parametrize("copy_name", sorted(COPY_LOADERS))
+    def test_mapping_covers_every_declared_group(self, copy_name):
+        """With every group env var set, the mapping must produce every group."""
+        template = load_template()
+        declared = declared_cognito_groups(template)
+        env = {
+            env_key: f"IdP-{_role_from_parameter(parameter)}s"
+            for env_key, parameter in group_env_vars(template).items()
+        }
+        env["EXTERNAL_IDP_NAME"] = IDP_NAME
+
+        mod = COPY_LOADERS[copy_name](env)
+
+        mapped = set(mod.GROUP_MAPPING.values())
+        assert mapped == declared, (
+            f"the {copy_name} copy of the handler maps {sorted(mapped)}, but the "
+            f"stack declares {sorted(declared)}. Missing: "
+            f"{sorted(declared - mapped)}"
+        )
+        assert mod.COGNITO_GROUPS == declared
+
+    def test_both_copies_build_the_same_mapping(self):
+        """The two copies must stay in step.
+
+        template.yaml's MAINTENANCE NOTE says to change both together; this is
+        what makes that more than a comment. A tuple added to one mapping list
+        and not the other fails here, in either direction.
+        """
+        inline = load_inline_copy(ENV_VARS)
+        standalone = load_standalone_copy(ENV_VARS)
+
+        assert inline.GROUP_MAPPING == standalone.GROUP_MAPPING, (
+            "template.yaml's InlineCode and index.py disagree about the IdP "
+            "group mapping; both must be changed together"
+        )
+        assert inline.COGNITO_GROUPS == standalone.COGNITO_GROUPS
+
+    def test_annotator_is_unmanaged_when_the_parameter_is_left_empty(self):
+        """An empty parameter keeps Annotator under manual control.
+
+        `COGNITO_GROUPS` is the set the trigger removes a user from, so an
+        operator who assigns Annotator by hand keeps it across federated
+        sign-ins as long as ExternalIdPAnnotatorGroupName is unset. That is what
+        makes the parameter safe to pick up on an existing stack with no
+        operator action.
+        """
+        # CloudFormation always sets the variable; an unsupplied parameter
+        # arrives as the empty string, which is the case the handler must ignore.
+        env = dict(ENV_VARS, ANNOTATOR_GROUP_NAME="")
+        for mod in (load_standalone_copy(env), load_inline_copy(env)):
+            assert "Annotator" not in mod.COGNITO_GROUPS
+            assert "Annotator" not in set(mod.GROUP_MAPPING.values())
+            # The other four are unaffected.
+            assert mod.COGNITO_GROUPS == {"Admin", "Author", "Reviewer", "Viewer"}
+
+
+@pytest.mark.unit
+class TestGroupSyncOnBothCopies:
+    """The add/remove side effects, run against both copies of the handler.
+
+    `TestHandler` covers these against `index.py` only, and
+    `TestDeployedInlineCopy` covers provenance and freshness against the
+    InlineCode without ever asserting a group was added or removed. The whole
+    nine-line removal loop could therefore be deleted from the copy that deploys
+    with every test still passing, which is what these four exist to stop.
+
+    Comparing `GROUP_MAPPING` between the copies, as `TestCognitoGroupCoverage`
+    does, catches a divergent mapping but says nothing about divergent *logic* —
+    and the copies are not textually identical (`index.py` factors claim parsing
+    into `parse_idp_groups`, the inline copy inlines it), so the possibility is
+    real rather than theoretical.
+    """
+
+    @pytest.fixture(params=sorted(COPY_LOADERS), autouse=True)
+    def _load(self, request):
+        mod = COPY_LOADERS[request.param](ENV_VARS)
+        self.handler = mod.handler
+        self.mock_cognito = MagicMock()
+        self.mock_cognito.admin_get_user.return_value = _admin_get_user_response()
+        mod.cognito = self.mock_cognito
+
+    def test_adds_the_mapped_group(self):
+        self.mock_cognito.admin_list_groups_for_user.return_value = {"Groups": []}
+
+        result = self.handler(_make_event(idp_groups="IdP-Admins"), None)
+
+        self.mock_cognito.admin_add_user_to_group.assert_called_once_with(
+            UserPoolId="us-east-1_abc123", Username="testuser", GroupName="Admin"
+        )
+        assert _override_groups(result) == ["Admin"]
+
+    def test_removes_a_managed_group_the_claim_no_longer_names(self):
+        """The removal loop. Deleting it passed every other test in this file."""
+        self.mock_cognito.admin_list_groups_for_user.return_value = {
+            "Groups": [{"GroupName": "Admin"}, {"GroupName": "Author"}]
+        }
+
+        self.handler(_make_event(idp_groups="IdP-Authors"), None)
+
+        self.mock_cognito.admin_remove_user_from_group.assert_called_once_with(
+            UserPoolId="us-east-1_abc123", Username="testuser", GroupName="Admin"
+        )
+        self.mock_cognito.admin_add_user_to_group.assert_not_called()
+
+    def test_does_not_remove_a_group_it_does_not_manage(self):
+        """Only groups in COGNITO_GROUPS are eligible for removal."""
+        self.mock_cognito.admin_list_groups_for_user.return_value = {
+            "Groups": [{"GroupName": "CustomGroup"}, {"GroupName": "Author"}]
+        }
+
+        self.handler(_make_event(idp_groups="IdP-Authors"), None)
+
+        self.mock_cognito.admin_remove_user_from_group.assert_not_called()
+
+    def test_does_not_re_add_a_group_the_user_already_holds(self):
+        self.mock_cognito.admin_list_groups_for_user.return_value = {
+            "Groups": [{"GroupName": "Admin"}]
+        }
+
+        self.handler(_make_event(idp_groups="IdP-Admins"), None)
+
+        self.mock_cognito.admin_add_user_to_group.assert_not_called()
+
+
+@pytest.mark.unit
+class TestAnnotatorClaimGrantsTheAnnotatorGroup:
+    """A federated claim naming the annotator IdP group yields `Annotator`."""
+
+    @pytest.fixture(params=sorted(COPY_LOADERS), autouse=True)
+    def _load(self, request):
+        mod = COPY_LOADERS[request.param](ENV_VARS)
+        self.handler = mod.handler
+        self.mock_cognito = MagicMock()
+        self.mock_cognito.admin_get_user.return_value = _admin_get_user_response()
+        self.mock_cognito.admin_list_groups_for_user.return_value = {"Groups": []}
+        mod.cognito = self.mock_cognito
+
+    def test_annotator_claim_is_added_to_the_annotator_group(self):
+        event = _make_event(idp_groups="IdP-Annotators")
+
+        result = self.handler(event, None)
+
+        self.mock_cognito.admin_add_user_to_group.assert_called_once_with(
+            UserPoolId="us-east-1_abc123", Username="testuser", GroupName="Annotator"
+        )
+        assert _override_groups(result) == ["Annotator"]
+
+    def test_annotator_alongside_another_role(self):
+        """A claim naming two groups grants both."""
+        event = _make_event(idp_groups='["IdP-Annotators", "IdP-Reviewers"]')
+
+        result = self.handler(event, None)
+
+        added = {
+            c.kwargs["GroupName"]
+            for c in self.mock_cognito.admin_add_user_to_group.call_args_list
+        }
+        assert added == {"Annotator", "Reviewer"}
+        assert set(_override_groups(result)) == {"Annotator", "Reviewer"}
+
+
+@pytest.mark.unit
+class TestUnmappedGroupLogging:
+    """Discarded claim values are named in the log.
+
+    An operator debugging "my federated user has no permissions" needs to know
+    which claim values the trigger threw away. The all-unmapped case already
+    warned, but a claim carrying one mapped name *plus* an unmapped one produced
+    no warning at all, because the no-target warning is skipped once
+    `target_groups` is non-empty.
+
+    Group names only: neither the event nor the whole claim set is logged.
+    """
+
+    @pytest.fixture(params=sorted(COPY_LOADERS), autouse=True)
+    def _load(self, request):
+        mod = COPY_LOADERS[request.param](ENV_VARS)
+        self.handler = mod.handler
+        self.mock_cognito = MagicMock()
+        self.mock_cognito.admin_get_user.return_value = _admin_get_user_response()
+        self.mock_cognito.admin_list_groups_for_user.return_value = {"Groups": []}
+        mod.cognito = self.mock_cognito
+
+    @staticmethod
+    def _warnings(caplog):
+        return [r.getMessage() for r in caplog.records if r.levelno >= logging.WARNING]
+
+    def test_unmapped_group_is_named_when_another_group_maps(self, caplog):
+        """The mixed case, which produced no diagnostic at all before."""
+        with caplog.at_level(logging.WARNING):
+            self.handler(_make_event(idp_groups="IdP-Admins, Finance-EMEA"), None)
+
+        matching = [m for m in self._warnings(caplog) if "Finance-EMEA" in m]
+        assert matching, (
+            "an IdP group with no Cognito mapping must be named in a warning "
+            "even when another group in the same claim maps. Warnings: "
+            f"{self._warnings(caplog)}"
+        )
+        assert "testuser" in matching[0]
+        # The mapped group still takes effect.
+        self.mock_cognito.admin_add_user_to_group.assert_called_once_with(
+            UserPoolId="us-east-1_abc123", Username="testuser", GroupName="Admin"
+        )
+
+    def test_every_unmapped_group_is_named(self, caplog):
+        with caplog.at_level(logging.WARNING):
+            self.handler(
+                _make_event(idp_groups='["IdP-Authors", "Contractors", "Finance-EMEA"]'),
+                None,
+            )
+
+        joined = " ".join(self._warnings(caplog))
+        assert "Contractors" in joined and "Finance-EMEA" in joined
+
+    def test_all_unmapped_groups_are_named(self, caplog):
+        with caplog.at_level(logging.WARNING):
+            self.handler(_make_event(idp_groups="Contractors"), None)
+
+        assert any("Contractors" in m for m in self._warnings(caplog))
+        self.mock_cognito.admin_add_user_to_group.assert_not_called()
+
+    def test_no_unmapped_warning_when_every_group_maps(self, caplog):
+        with caplog.at_level(logging.WARNING):
+            self.handler(_make_event(idp_groups="IdP-Admins, IdP-Annotators"), None)
+
+        assert not any(
+            "no Cognito mapping" in m for m in self._warnings(caplog)
+        ), self._warnings(caplog)

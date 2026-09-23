@@ -25,8 +25,79 @@ from boto3.dynamodb.conditions import Key
 logger = logging.getLogger(__name__)
 logger.setLevel(os.environ.get("LOG_LEVEL", "INFO"))
 
-s3_client = boto3.client("s3")
-dynamodb = boto3.resource("dynamodb")
+
+class _LazyClient:
+    """A boto3 client or resource built on first use rather than at import.
+
+    Building them at import is the right default for a Lambda handler — a warm
+    invocation reuses the object, and the runtime always sets ``AWS_REGION``. It
+    stops being harmless once something other than the runtime imports the
+    module: a suite under ``lib/idp_common_pkg/tests`` puts this directory on
+    ``sys.path`` and imports it, so a regional-only client was constructed at
+    import and the only thing standing between that and a hard error with no
+    region was an ``os.environ.setdefault("AWS_DEFAULT_REGION", ...)`` in a
+    ``conftest.py`` several directories above the suite. Checked by
+    ``patterns/unified/tests/test_handler_imports_are_region_free.py``.
+
+    Deliberately a proxy rather than an accessor function: every call site stays
+    as it was, and the module attribute stays a *patchable object*, which is how
+    the existing suites drive this code — both
+    ``patch.object(index, "<name>")``, which replaces the proxy, and
+    ``monkeypatch.setattr(mod.<name>, "Table", ...)``, which sets an attribute on
+    it. No ``__slots__``, for the second of those: the patch needs a ``__dict__``
+    to put the attribute in, and an instance attribute shadows ``__getattr__`` so
+    the patch takes effect.
+
+    The lock costs nothing here (this dispatcher is single-threaded; one Lambda
+    container serves one invocation at a time) and keeps this class identical to
+    the copy in ``test_execution_aggregation_function``, where a
+    ``ThreadPoolExecutor`` means first use really can be concurrent. Two identical
+    copies rather than one shared helper because this function's
+    ``requirements.txt`` is deliberately ``boto3`` only — it takes no dependency on
+    ``idp_common``.
+
+    ⚠️ Be precise about what the lock buys: it is **per instance**, so it
+    guarantees no two threads build *this* proxy — not that no two threads build a
+    boto3 client concurrently, which is the thing botocore's shared default session
+    and loader cache actually need. In the aggregator that stronger property holds
+    only because a ``dynamodb.Table(...)`` call on the **main thread** precedes the
+    ``ThreadPoolExecutor``, so the session already exists by the time workers first
+    touch ``s3_client``. Moving that call into a worker would silently lapse the
+    protection, and no test would notice.
+    """
+
+    def __init__(self, build: Any) -> None:
+        self._build = build
+        self._lock = threading.Lock()
+        self._obj: Any = None
+
+    def __getattr__(self, name: str) -> Any:
+        # Dunder lookups are refused WITHOUT building. Python probes these
+        # implicitly — `copy.deepcopy(x)` asks for `__deepcopy__`, pickle asks for
+        # `__reduce_ex__` — and a `__getattr__` that builds first turns a routine
+        # probe into a client construction, so a deepcopy of this proxy would raise
+        # NoRegionError from inside `copy`. Nothing here deep-copies one today; the
+        # failure would be baffling if anything ever did.
+        if name.startswith("__") and name.endswith("__"):
+            raise AttributeError(name)
+        # Everything below goes through __dict__ rather than attribute access. An
+        # instance that skipped __init__ (object.__new__, or a copy/pickle
+        # reconstruction) holds none of these, and `self._lock` would re-enter this
+        # method and give RecursionError where AttributeError is the honest answer.
+        state = self.__dict__
+        if "_obj" not in state:
+            raise AttributeError(name)
+        obj = state["_obj"]
+        if obj is None:
+            with state["_lock"]:
+                obj = state["_obj"]
+                if obj is None:
+                    obj = state["_obj"] = state["_build"]()
+        return getattr(obj, name)
+
+
+s3_client = _LazyClient(lambda: boto3.client("s3"))
+dynamodb = _LazyClient(lambda: boto3.resource("dynamodb"))
 
 # R14 graded packet metrics forwarded from each doc's ``doc_split_metrics``.
 # Order matches ``idp_common.evaluation.models.DocSplitMetrics`` so any

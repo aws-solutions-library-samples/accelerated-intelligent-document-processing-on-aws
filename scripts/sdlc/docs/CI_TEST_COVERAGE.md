@@ -118,7 +118,8 @@ ran on that change.
 ⚠️ **A workflow makes a check visible, not blocking.** Both check names have to be
 added to the branch-protection rule for `develop` as *required status checks*, or a
 PR can still be merged while they are red or pending. **Today they are not**, and
-`develop` has no branch protection at all — so every gate on this page is advisory.
+**neither `develop` nor `main` has any branch protection** — `main` being the default
+branch and the one releases are cut from — so every gate on this page is advisory.
 
 Run `make check-branch-protection` to measure it rather than trust this paragraph.
 It parses `.github/workflows/*.yml` for the job names GitHub turns into check
@@ -126,18 +127,20 @@ contexts and compares them with the live required-check list, reporting anything
 required-but-never-reported (a renamed job) or reported-but-not-required (a new
 gate).
 
-Three contexts cover every gate on this page. All eight of
-`test_ci_gate_parity.py`'s `SHARED_GATES` are *steps* inside a **single** job,
-`developer_tests`, and GitHub can only require job-level contexts, never
-individual steps — so those eight gates collapse to exactly **one** requireable
-context, not eight and not three. That has a practical consequence worth knowing
-before you read a red check: because the eight share one context, they also share
-one red mark, so a required-check failure does not say which of the eight failed.
-The other two contexts are the two security jobs, one each.
+Three contexts cover every gate on this page. `test_ci_gate_parity.py`'s
+`SHARED_GATES` names ten shared gates, and eight of the ten are *steps* inside a
+**single** job, `developer_tests`; GitHub can only require job-level contexts, never
+individual steps, so those eight collapse to exactly **one** requireable context
+rather than one per gate. That has a practical consequence worth knowing before you
+read a red check: because the eight share one context, they also share one red mark,
+so a required-check failure does not say which of them failed. The remaining two
+shared gates — the SRT scan and the dependency audit — are jobs of their own in
+`security-checks.yml`, one context each, which is how ten gates produce three
+requireable contexts.
 
 | Check context | Workflow / job | Covers |
 |---|---|---|
-| `Lint, Type Check, and Test` | `developer-tests.yml` / `developer_tests` | all eight shared gates: `lint-cicd`, `typecheck-pr`, `api-test-static`, `test-cicd`, `test-packages-cicd`, vitest, first-party dep check, service-role permissions |
+| `Lint, Type Check, and Test` | `developer-tests.yml` / `developer_tests` | eight of the ten shared gates: `lint-cicd`, `typecheck`, `api-test-static`, `test-cicd`, `test-packages-cicd`, vitest, first-party dep check, service-role permissions |
 | `SRT Security Review` | `security-checks.yml` / `srt_security_review` | `srt-setup`, `srt-scan` |
 | `Dependency Audit (SCA)` | `security-checks.yml` / `dep_audit` | `scripts/security/dep_audit.py` |
 
@@ -164,8 +167,11 @@ enterprise: four `target=repository`, one `target=tag`), so the tool reaches a
 `protected: null` when even that read fails, which is not the same as `false`.
 
 The command is opt-in and is in neither `lint-cicd` nor `SHARED_GATES`, because
-enabling protection needs repository **admin** — tracked by
-[issue #933](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/933).
+enabling protection needs repository **admin**, which no contributor and no CI token
+here has. That is a known, accepted residual rather than open work, and the decision
+is recorded in closed
+[issue #933](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/933);
+cite it as the decision record, not as a pending task.
 A `pull`-scoped token is enough to run it, and enough to check one of the six
 assertions after protection is enabled: `.../branches/develop` carries a nested
 `protection.required_status_checks` object at that scope, so the required-check
@@ -174,8 +180,13 @@ comparison is made from it rather than being abandoned as unverifiable.
 dismissal, the force-push and deletion blocks, and `enforce_admins` — and a run
 without it emits a `protection_detail_unreadable` finding saying those five are
 unverified rather than verified-good, so such a run still exits non-zero.
-Once that is closed it should become a required, blocking check, run with
-`--fail-on-skip`.
+
+It becomes a required, blocking check, run with `--fail-on-skip`, when a repository
+**setting** changes — either somebody with repository admin enables protection, or an
+organization or enterprise owner publishes a **branch ruleset** targeting these
+branches, which needs no repository admin at all. Nothing in the repository can
+substitute in the meantime: enforcement is server-side, so a merge taken through
+GitHub's own Merge button runs no code from this tree.
 
 **Trigger matrix** — what runs, when:
 
@@ -1288,9 +1299,9 @@ but revisit:
 
 ## Related Documentation
 
-- [CHANGELOG.md](../../CHANGELOG.md) - Feature changes and test additions
-- [CLAUDE.md](../../CLAUDE.md) - Project architecture and build commands
-- [docs/test-studio.md](../../docs/test-studio.md) - Test Studio user guide
-- [scripts/sdlc/README.md](../README.md) - SDLC infrastructure setup
+- [CHANGELOG.md](../../../CHANGELOG.md) - Feature changes and test additions
+- [CLAUDE.md](../../../CLAUDE.md) - Project architecture and build commands
+- [docs/test-studio.md](../../../docs/test-studio.md) - Test Studio user guide
+- [scripts/sdlc/cfn/README.md](../cfn/README.md) - SDLC infrastructure setup
 - [scripts/sdlc/cfn/codepipeline-s3.yml](../cfn/codepipeline-s3.yml) - CodeBuild IAM permissions
 

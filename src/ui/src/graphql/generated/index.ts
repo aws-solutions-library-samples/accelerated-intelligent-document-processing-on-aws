@@ -958,6 +958,7 @@ export const getTestSetDocuments = /* GraphQL */ `
       nextToken
       totalCount
       activeLabelJobId
+      status
     }
   }
 ` as GeneratedQuery<GetTestSetDocumentsQueryVariables, GetTestSetDocumentsQuery>;
@@ -994,6 +995,8 @@ export const getTestSetVersions = /* GraphQL */ `
       label
       notes
       fileCount
+      snapshotObjectCount
+      hasStoredLabels
       createdAt
       createdBy
     }

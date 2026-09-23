@@ -58,3 +58,38 @@ def test_anything_else_is_neither(body):
     assert not is_service_refusal(body)
     # Only the specific API Gateway markers count as an edge refusal.
     assert not is_edge_refusal(body)
+
+
+# --------------------------------------------------------------------------- #
+# A probe that did not complete is not a probe that passed
+#
+# `_post` answers `(0, "connection error: ...")` when the request never reached
+# the endpoint. Every check in dynamic_activation_test routes status 0 into
+# `bad()` — except `check_oversized_body`, which fell through to `warn()`, and
+# `warn()` does not append to `_failures`. So an unreachable stage reported the
+# oversized-body refusal as nothing to worry about.
+# --------------------------------------------------------------------------- #
+@pytest.mark.unit
+def test_an_unreachable_endpoint_fails_the_oversized_body_check(monkeypatch):
+    import dynamic_activation_test as dyn
+
+    monkeypatch.setattr(dyn, "_post", lambda *a, **k: (0, "connection error: reset"))
+    monkeypatch.setattr(dyn, "_failures", [])
+
+    dyn.check_oversized_body("https://x.invalid/activate", "p", None, "us-east-1")
+
+    assert dyn._failures, "an unreachable endpoint left the probe green"
+    assert "did not complete" in dyn._failures[0]
+
+
+@pytest.mark.unit
+def test_a_real_413_still_passes(monkeypatch):
+    """The control: without it, "always fails" would satisfy the test above."""
+    import dynamic_activation_test as dyn
+
+    monkeypatch.setattr(dyn, "_post", lambda *a, **k: (413, ""))
+    monkeypatch.setattr(dyn, "_failures", [])
+
+    dyn.check_oversized_body("https://x.invalid/activate", "p", None, "us-east-1")
+
+    assert dyn._failures == []

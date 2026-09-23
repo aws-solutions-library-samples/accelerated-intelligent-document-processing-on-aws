@@ -28,15 +28,14 @@ Run: ``python notebooks/misc/standalone_sharded_extraction_demo.py``
 import asyncio
 import os
 
+from pydantic import BaseModel
+
 from idp_common.config.models import IDPConfig
 from idp_common.extraction.runtime import (
     InProcessRuntime,
     S3ShardPersistence,
-    extract_one_shard,
-    merge_shard_results,
     select_runtime,
 )
-from pydantic import BaseModel
 
 
 class Holding(BaseModel):

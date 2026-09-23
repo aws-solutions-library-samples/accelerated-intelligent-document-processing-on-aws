@@ -45,9 +45,16 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 
 # First-party Python that runs against AWS. Deliberately excludes tests (they
 # assert on literal ARNs by design) and generated/vendored trees.
+#
+# Note `lib/idp_sdk`, not `lib/idp_sdk/idp_sdk`. Naming the inner package excluded the
+# sibling `examples/` tree, which is neither a test nor generated nor vendored -- it is
+# eight hand-written files that the package README points at as the deploy recipe, and
+# two of them attached a hardcoded commercial managed-policy ARN. The `/tests/`
+# fragment below already excludes `lib/idp_sdk/tests/`, so widening to the distribution
+# root adds the examples and nothing else.
 SCAN_ROOTS = (
     "lib/idp_common_pkg/idp_common",
-    "lib/idp_sdk/idp_sdk",
+    "lib/idp_sdk",
     "lib/idp_cli_pkg/idp_cli",
     "lib/idp_feature_sdk/idp_feature_sdk",
     "lib/idp_mcp_connector_pkg",
@@ -73,11 +80,21 @@ EXCLUDE_FRAGMENTS = (
     "/.venv/",
     "/site-packages/",
     "/conftest.py",
-    # The CI/SDLC deploy harness runs only in the commercial CI account, by
-    # construction (it provisions the pipeline's own IAM and test stacks there).
-    # Gating it would add suppressions to code that cannot run in another
-    # partition. If the harness ever grows a GovCloud probe, drop this exclusion.
-    "/scripts/sdlc/",
+    # Two SDLC harness modules that provision the pipeline's own commercial-account
+    # infrastructure (a runner role, permissions-boundary policies, the CodeBuild
+    # execution role). Gating them would add suppressions to code that cannot run in
+    # another partition.
+    #
+    # Named per FILE rather than as the `/scripts/sdlc/` directory this used to be. The
+    # directory form rested on "the harness runs only in the commercial CI account" and
+    # stated its own expiry -- "if the harness ever grows a GovCloud probe, drop this
+    # exclusion". It has: `scripts/sdlc/transform_deploy_test.py` is documented to run
+    # against `us-gov-west-1` and branches on the partition, and it sat inside this
+    # exclusion, so the one harness file built for GovCloud was the one place the gate
+    # could not look. It has no hardcoded ARN today, so the exposure was latent; the
+    # aperture was not.
+    "/scripts/sdlc/codebuild_deployment.py",
+    "/scripts/sdlc/integration_test_deployment.py",
     # This checker names the pattern it searches for.
     "/check_python_arn_partitions.py",
 )

@@ -9,14 +9,17 @@ import concurrent.futures
 import boto3
 from botocore.exceptions import ClientError
 
-# Type: ignore for boto3 resource type inference
-dynamodb = boto3.resource("dynamodb")  # type: ignore
-
 logger = logging.getLogger()
 logger.setLevel(os.environ.get("LOG_LEVEL", "INFO"))
 
+# Built once per execution environment so warm invocations reuse the connection
+# pool. The region comes from AWS_REGION, which the Lambda runtime always sets;
+# unit tests supply one from conftest.py (see #988) because importing this module
+# is enough to construct both clients.
+# The type: ignore is for boto3's resource-type inference, which has no stub for
+# the dynamodb service resource.
 s3 = boto3.client("s3")
-dynamodb = boto3.resource("dynamodb")
+dynamodb = boto3.resource("dynamodb")  # type: ignore
 
 
 def handler(event, context):
@@ -209,19 +212,20 @@ def handler(event, context):
 def _resolve_baseline_folder(test_set_bucket, test_set_id, test_set_version):
     """Which baseline folder this run should score against.
 
-    A run records the test-set version it was measured against, but a version used to be
-    a DynamoDB row that copied nothing: annotation wrote straight to
-    ``{id}/baseline/``, so the labels a run had scored could change afterwards and the
-    recorded version number meant nothing you could go back to.
+    A run records the test-set version it was measured against, and annotation writes
+    straight to ``{id}/baseline/``, so the number means something only if the labels it
+    names were copied aside before they could be edited.
 
-    Annotation sessions now snapshot the state they move away from to
-    ``{id}/versions/{n}/baseline/``. A run pinned to version *n* reads that snapshot, so
-    it scores against the labels the version actually names.
+    Publishing a version copies them, to ``{id}/versions/{n}/baseline/``. A run pinned to
+    version *n* reads that prefix, so it scores against the labels the version actually
+    names rather than against whatever the set holds when the run starts.
 
-    Falls back to the live folder whenever there is no snapshot — an unpinned run, a
-    version published before snapshots existed, or a set nobody has annotated. That
-    fallback is what keeps every existing set and every historical run behaving exactly
-    as before.
+    Falls back to the live folder whenever the prefix is empty — an unpinned run, a version
+    published before publishing copied anything and never annotated away from since, or a
+    version published from a set that had no labels yet. That fallback is what keeps every
+    existing set and every historical run behaving exactly as before, but it means a pinned
+    run can silently score current labels: ``getTestSetVersions`` reports
+    ``hasStoredLabels`` from this same probe so the run form can say so up front.
     """
     if not test_set_version:
         return "baseline"

@@ -97,6 +97,67 @@ def test_specific_function():
     assert result == expected
 ```
 
+## Proving a test is load-bearing: break the code and watch it go red
+
+A test that passes tells you nothing about whether it *can* fail. Where it matters —
+a test you have just corrected, or one whose assertion you are relying on — mutate
+the production code, confirm that test and only that test goes red, then restore.
+Restore from a **copy you made under `/tmp`**, never with `git checkout --` or
+`git restore`: those discard uncommitted work in the same file and have cost real
+edits here. Run the matrix in the **foreground**, one mutation at a time.
+
+⚠️ **Delete `__pycache__` between mutations, or a same-length mutation can run
+bytecode that no longer matches the file on disk.** CPython decides a cached `.pyc`
+is still valid by comparing the source's `(mtime, size)` — so a mutation that changes
+*neither* can be written, and the stale `.pyc` still used. Plenty of the most useful
+mutations are exactly that shape: swapping the two arms of a ternary, `>` for `<`,
+one status string for another of equal length.
+
+**Clearing the cache is what fixes this. `-B` does not.** `-B` suppresses *writing*
+`.pyc` files and does nothing about *reading* one that already exists. Measured, with
+a 59-character mutation replacing 59 characters and the mtime held back:
+
+| | cleared | `-B` | result |
+|---|---|---|---|
+| nothing done | no | no | **stale** |
+| `-B` alone | no | yes | **stale** |
+| clear alone | yes | no | correct |
+| clear and `-B` | yes | yes | correct |
+
+So use both, but know which does the work: the clear is the fix, and `-B`'s narrower
+job is to stop a *new* stale `.pyc` being written for the next mutation in the loop.
+Reading "run it with `-B`" as the remedy and skipping the clear reproduces the bug.
+
+⚠️ **The hazard is intermittent, which is worse than deterministic.** Whether it
+bites depends on whether the clock second ticked between the compile and the rewrite.
+In a tight loop it bites every time; insert a pause and the same mutation reports
+correctly. So a matrix can give a true result on one run and a false one on the next
+with nothing visible distinguishing them — which is why this is a thing to do
+unconditionally rather than when you suspect it.
+
+Two presentations, neither of which looks like a caching problem:
+
+- A mutation that appears to **change nothing**, which reads as "this test is
+  vacuous" — the opposite of the truth.
+- A **baseline** failure *after* you have restored the original, because the stale
+  `.pyc` from the mutated version is still considered valid. Nothing about the tree
+  looks wrong at that point, so it reads as a real defect in code you just put back.
+
+```python
+for cache in package_dir.rglob("__pycache__"):
+    shutil.rmtree(cache, ignore_errors=True)
+subprocess.run([sys.executable, "-B", "-m", "pytest", "-q", ...], cwd=package_dir)
+```
+
+`-p no:cacheprovider` is a different thing and does not help at all: it disables
+pytest's own `.pytest_cache`, not CPython's bytecode cache.
+
+Two shapes worth mutating for specifically, because both pass while asserting
+nothing: an expectation table that a loop only `print`s rather than compares, and a
+predicate that is a tautology against a mock (`hasattr(mock, anything)`,
+`assert mock.attr is not None`, `assert isinstance(mock, Mock)`). A `Mock` answers
+to every attribute name, so a claim about one is a claim about your own fixture.
+
 ## Moto Usage
 Always use `@mock_aws` decorator:
 ```python
@@ -148,6 +209,35 @@ pytest -v --tb=short         # Verbose with short tracebacks
 pytest --cov=idp_common --cov-report=html   # Coverage report
 ```
 
+## Writing a gate exemption
+
+Turning a gate off for anything means registering it in
+`scripts/tests/gate_exemptions.json`; `test_gate_exemption_registry.py` fails on an
+unregistered exemption list and names it. The full rules are in CLAUDE.md
+("Every gate exemption is registered"), but the four that decide most reviews:
+
+1. **One entry per file, ideally per line.** A reason bound to a directory answers for
+   every file under it, and an aggregate reading of it passes even when it is false of
+   most of them. That is the exact shape of four shipped defects.
+2. **Compute the premise if you can.** `scripts/tests/gate_premises.py` holds the
+   predicates (`not_a_nested_stack_of_parent`, `built_separately_from_main_stack`,
+   `file_absent_or_untracked`, `installer_manifest_pins_parameter`). Each takes **one**
+   member — parametrise over your members rather than asking whether the reason holds
+   generally.
+3. **`JUDGEMENT` is allowed, with a written reason.** It says there is nothing to
+   compute; it does not say nobody looked.
+4. **Give it a ratchet**, or declare the gap in `ratchetGap`. Non-vacuity (it must
+   shield something today), count pinning (it shields only as many sites as were
+   audited), universe closure (nothing may sit outside both sets), staleness.
+
+Two patterns worth copying rather than reinventing:
+`lib/idp_common_pkg/tests/unit/bedrock/test_long_context_metering_key.py` stores
+`(reason, site count)` so a new site in an exempt file still fails, and
+`scripts/tests/test_log_group_encryption.py::test_every_log_group_template_is_categorised`
+derives its universe and fails if any member is in no category — which is why its
+categories can be trusted, and how it found eleven log groups a hand-built inventory
+missed.
+
 ## How `make test` finds every suite (scripts/run_all_tests.py)
 The repo's Python tests live in ~30 separate roots (packages + per-Lambda dirs).
 A single `pytest` from the repo root FAILS: the many `tests/conftest.py` files
@@ -163,8 +253,28 @@ error** — so when you add tests in a NEW location, `make test`/CI fails until 
 add that dir to `RUN_ROOTS` (if green headless) or `QUARANTINE` (with a reason).
 This is deliberate: it's the guard that stops new tests from being silently
 skipped, which is exactly how ~200 Lambda tests went unrun under the old
-hand-maintained `make test`. Currently quarantined roots (need fixing before
-they join the gate): `ocr_benchmark_deployer` + `s3_vectors_manager`
-(uninstalled runtime deps — huggingface_hub / cfnresponse), `scripts` (the RBAC
-harness, not a suite), the `chandra-ocr-hook` manual script, and the
-`idp_sdk/_core` source tree. Run `make test-list` to see the current split.
+hand-maintained `make test`. **Run `make test-list` for the current quarantined set
+and read the reason beside each entry in `QUARANTINE`** — an enumeration here goes
+stale the moment one is added or paid off, and the reasons are the part that matters:
+they are per-directory, and `scripts/tests/test_run_all_tests_registry.py` computes
+the ones that are computable (whether a root claiming to collect nothing really does,
+and whether the single failing test a root is held back by still exists and still
+fails). `docs/testing.md` carries the same list as prose, and that page is checked
+against the registry in both directions.
+
+An exclusion covers **only the directory named** — nesting under one does not
+inherit it, in `run_all_tests` or in the CI-coverage gate. That matters most for the
+bare `scripts` entry, which is excluded for one mis-collected file: inherited, it
+would cover `scripts/tests`, `scripts/sdlc/tests`, `scripts/srt/tests` and
+`scripts/security/tests`, which is the whole gate layer.
+
+**Being registered in `RUN_ROOTS` does not mean a suite runs on a pull request.**
+`make test` runs in neither CI. CI runs `make test-cicd -C lib/idp_common_pkg` and
+`make test-packages-cicd`, and the second is a hand-enumerated recipe — so a new root
+has to be added there as well, on its own `cd <dir> && $(PYTEST_HERMETIC) …` line if it
+defines a module named `index`. `scripts/tests/test_src_lambda_tests_in_ci.py` derives
+both sides and fails until you do; 22 roots holding 506 tests were in `RUN_ROOTS` and
+in neither CI before it was generalised beyond `src/lambda/`. Everything gated goes
+through `$(PYTEST_HERMETIC)`, which strips the AWS environment, so a suite that needs a
+region or placeholder credentials supplies them from its own `conftest.py` with
+`os.environ.setdefault`.

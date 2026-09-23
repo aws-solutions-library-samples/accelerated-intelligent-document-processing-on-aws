@@ -5,7 +5,7 @@
     "CheckMarker": {
       "Type": "Task",
       "Comment": "Read the SSM migration marker and return a routing decision (short_circuit | skip_purge | full_flow). Compares marker against BOTH days AND version — a future MigrationVersion bump for a new schema change must NOT short-circuit against a completed marker from the prior version. See _check_marker_state in the rollup Lambda for the backward-compat rule that treats a marker with no version= segment as matching (one-time transition).",
-      "Resource": "arn:aws:states:::lambda:invoke",
+      "Resource": "arn:${Partition}:states:::lambda:invoke",
       "Parameters": {
         "FunctionName": "${DataMartRollupFunctionArn}",
         "Payload": {
@@ -59,7 +59,7 @@
     "InitialPurge": {
       "Type": "Task",
       "Comment": "Delete every S3 object under the four per-document rollup prefixes so we can repopulate at the widened (document_class) grain without colliding with pre-widening parquet. Idempotent — a re-run on an already-empty prefix is fast.",
-      "Resource": "arn:aws:states:::lambda:invoke",
+      "Resource": "arn:${Partition}:states:::lambda:invoke",
       "Parameters": {
         "FunctionName": "${DataMartRollupFunctionArn}",
         "Payload": {
@@ -86,7 +86,7 @@
     "WriteInProgressMarker": {
       "Type": "Task",
       "Comment": "Write the SSM marker as state=in_progress IMMEDIATELY after purge, BEFORE any backfill chunk runs. This is load-bearing: any state-machine restart (via CustomResource re-fire, operator intervention, etc.) will read this marker and SKIP the purge — chunks already written survive. Includes 'version' so CheckMarker on a future run can compare it against the request's MigrationVersion.",
-      "Resource": "arn:aws:states:::lambda:invoke",
+      "Resource": "arn:${Partition}:states:::lambda:invoke",
       "Parameters": {
         "FunctionName": "${DataMartRollupFunctionArn}",
         "Payload": {
@@ -115,7 +115,7 @@
     "PlanChunks": {
       "Type": "Task",
       "Comment": "Compute the list of (start, end) time ranges to iterate. The CFN CustomResource passes ChunkHours=1 (see template.yaml::DataMartMigrationCustomResource), which is the ACTUAL default in production — 720 one-hour chunks over the 30 d window. plan_migration_chunks's Lambda-side default of 24 h only applies to a caller that omits the ChunkHours field entirely (never happens through the dispatcher). 1 h chunks are used deliberately so per-chunk retries have the tightest possible blast radius.",
-      "Resource": "arn:aws:states:::lambda:invoke",
+      "Resource": "arn:${Partition}:states:::lambda:invoke",
       "Parameters": {
         "FunctionName": "${DataMartRollupFunctionArn}",
         "Payload": {
@@ -157,7 +157,7 @@
         "States": {
           "BackfillChunk": {
             "Type": "Task",
-            "Resource": "arn:aws:states:::lambda:invoke",
+            "Resource": "arn:${Partition}:states:::lambda:invoke",
             "Comment": "2.1.5: arms restricted to metering_hourly + metering_docs_hourly. Those are the ONLY two rollup tables the widening deploy changed the schema of; control_plane_hourly and data_plane_lambda_hourly (a) don't have document_class, (b) were never purged, (c) are already populated by the routine :05 hourly cron. Including them here was scope creep that (a) doubles per-chunk time and (b) surfaced empty-CW-hour 'no rows' partial failures that blocked WriteCompletedMarker on qs1 execution cc6b01b3.",
             "Parameters": {
               "FunctionName": "${DataMartRollupFunctionArn}",
@@ -195,7 +195,7 @@
     "BackfillDailyRange": {
       "Type": "Task",
       "Comment": "Iterate each day in the retention window and invoke the daily-rollup INSERTs. Runs AFTER MigrateChunks so metering_hourly / metering_docs_hourly are fully populated (the daily rollups aggregate from those). Single Lambda invocation because per-day daily rollup work is small (~5-10 s per day × 30 days ≈ 150-300 s, fits in Lambda's 900 s budget). Without this task, metering_daily and metering_docs_daily stay empty for 30 days waiting for the scheduled 00:15 UTC daily rollup to catch up one day at a time.",
-      "Resource": "arn:aws:states:::lambda:invoke",
+      "Resource": "arn:${Partition}:states:::lambda:invoke",
       "Parameters": {
         "FunctionName": "${DataMartRollupFunctionArn}",
         "Payload": {
@@ -226,7 +226,7 @@
     "CheckMigrationSuccess": {
       "Type": "Task",
       "Comment": "Aggregate the Map state's per-chunk results PLUS the daily-backfill result. Returns all_hours_clean=true only when EVERY chunk AND the daily backfill reported hours_failed=0 AND hours_partial=0 — both counters must be zero. In the migration context a partial-hour result (some rollup arms succeeded, others didn't for the same hour) IS a blocker because a customer table with rows silently missing is not an acceptable end state; the 2026-09-22 incident on qs1 where 38 chunks reported partial and zero rows landed in metering_hourly is why _check_hours_failed treats partial as unclean. Routine hourly-cron ops treat partial as tolerated (reconciler will fill later), but MIGRATION does not. Passes chunk_results and daily_result as separate fields because ASL has no ArrayConcat intrinsic; the aggregator in the Lambda handles the union.",
-      "Resource": "arn:aws:states:::lambda:invoke",
+      "Resource": "arn:${Partition}:states:::lambda:invoke",
       "Parameters": {
         "FunctionName": "${DataMartRollupFunctionArn}",
         "Payload": {
@@ -273,7 +273,7 @@
     "WriteCompletedMarker": {
       "Type": "Task",
       "Comment": "Migration succeeded end-to-end: write the SSM marker as state=completed so future state-machine invocations short-circuit at CheckMarker. This is the ONLY completion signal customers should watch — CFN UPDATE_COMPLETE fires immediately after the CustomResource dispatcher returns and is decoupled from actual migration completion. Includes 'version' so a future migration for a different schema change routes to full flow instead of short-circuiting against this one.",
-      "Resource": "arn:aws:states:::lambda:invoke",
+      "Resource": "arn:${Partition}:states:::lambda:invoke",
       "Parameters": {
         "FunctionName": "${DataMartRollupFunctionArn}",
         "Payload": {

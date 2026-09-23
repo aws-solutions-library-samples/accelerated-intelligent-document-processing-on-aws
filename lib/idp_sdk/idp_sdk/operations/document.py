@@ -398,7 +398,7 @@ class DocumentOperation:
                 DocumentInfo(
                     document_id=doc["document_id"],
                     status=doc["status"],
-                    timestamp=doc["timestamp"],
+                    timestamp=doc["timestamp"] or None,
                     batch_id=doc.get("batch_id"),
                 )
                 for doc in result["documents"]

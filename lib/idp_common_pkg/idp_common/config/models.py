@@ -1085,6 +1085,50 @@ class ExtractionConfig(BaseModel):
         default=None,
         description="Lambda function ARN for custom inference (used when model is 'LambdaHook'). Function name must start with GENAIIDP-.",
     )
+    row_shortfall_action: Literal["fail", "warn"] = Field(
+        default="warn",
+        description=(
+            "What a section's outcome MEANS when extraction returned fewer than "
+            "half the table rows the section's own OCR text evidences for a list "
+            "field — the ``extraction_rows_below_ocr_estimate`` check. 'warn' "
+            "(default): record the issue and report success. 'fail': the partial "
+            "result and the issue are still written, then the section fails, so "
+            "the document's status cannot report COMPLETED on a list that lost "
+            "most of its rows. This does NOT change WHEN the shortfall is "
+            "detected, only what it costs; the detection threshold is the same "
+            "one the warning has always used.\n\n"
+            "⚠️ 'fail' is OPT-IN, and the reason is a property of the evidence, "
+            "not caution. The check's evidence is OCR tables whose column count "
+            "equals the list item's property count, summed over the whole "
+            "section, and a 2- or 3-property array that models an entity GROUP "
+            "rather than table rows is structurally indistinguishable from one "
+            "that models rows. So a monthly statement's 31-row two-column Daily "
+            "Balance table is counted as evidence about a 5-row 2-property "
+            "``account_summary``, and a completely correct extraction scores "
+            "0.13. Nine such fields ship in the config library "
+            "(``account_summary``, ``W2.codes``, ``Payslip.{Federal,State,City}"
+            "Taxes``, ``Medical-Insurance-Invoice.Charges`` …), so 'fail' by "
+            "default would fail correct extractions of the default preset. "
+            "Turn it on for a corpus whose narrow arrays really are table rows — "
+            "long transaction lists are what it is for — and see "
+            "docs/extraction-and-confidence.md for the shapes to check first."
+        ),
+    )
+
+    @field_validator("row_shortfall_action", mode="before")
+    @classmethod
+    def _coerce_row_shortfall_action(cls, v: Any) -> Any:
+        """An absent/blank/None value resolves to the field default.
+
+        Same hazard as ``validation.fail_action``: the config editor has
+        persisted nulls for scalar fields before, and a null arriving here must
+        not become a ``ValidationError`` that wedges the whole config load.
+        Resolving to ``warn`` is also what keeps an upgrade behaviour-neutral —
+        every stored config predating this field has the key absent.
+        """
+        if v is None or (isinstance(v, str) and not v.strip()):
+            return "warn"
+        return str(v).lower()
 
     @field_validator("prompt_cache", mode="before")
     @classmethod
@@ -1580,8 +1624,14 @@ class SummarizationConfig(BaseModel):
         description="Pipeline hooks invoked after summarization (Feature Platform)",
     )
     enabled: bool = Field(default=True, description="Enable summarization")
+    # Nova Pro, not Nova Premier. Premier reached end of life on 2026-09-14 and
+    # every call to it now fails, so it was the one default in this file that
+    # made a stack fail out of the box: no config preset under config_library/
+    # sets summarization.model, so this default is what most deployments run.
+    # Pro is the highest-tier Nova still Active and is already the default for
+    # classification and discovery below.
     model: str = Field(
-        default="us.amazon.nova-premier-v1:0",
+        default="us.amazon.nova-pro-v1:0",
         description="Bedrock model ID for summarization. Use 'LambdaHook' to invoke a custom Lambda function instead of Bedrock.",
     )
     model_lambda_hook_arn: Optional[str] = Field(
@@ -2502,8 +2552,13 @@ class ModelConfigLimitsConfig(BaseModel):
 class FactExtractionConfig(BaseModel):
     """Fact extraction configuration for rule validation"""
 
+    # Claude Sonnet 4.5, not Claude 3.5 Sonnet (20240620). That model has reached
+    # end of life — Bedrock's GetFoundationModel answers ResourceNotFoundException
+    # for it — and it is in no model enum, so it could not be selected in the UI
+    # either. No config preset under config_library/ sets this field, so the
+    # default is what rule validation actually ran on.
     model: str = Field(
-        default="us.anthropic.claude-3-5-sonnet-20240620-v1:0",
+        default="us.anthropic.claude-sonnet-4-5-20250929-v1:0",
         description="Bedrock model ID for fact extraction",
     )
     system_prompt: str = Field(
@@ -2536,8 +2591,10 @@ class FactExtractionConfig(BaseModel):
 class RuleValidationOrchestratorConfig(BaseModel):
     """Rule validation summarization configuration"""
 
+    # See FactExtractionConfig.model above: Claude 3.5 Sonnet (20240620) is
+    # end-of-life and absent from every enum.
     model: str = Field(
-        default="us.anthropic.claude-3-5-sonnet-20240620-v1:0",
+        default="us.anthropic.claude-sonnet-4-5-20250929-v1:0",
         description="Bedrock model ID for rule validation summarization",
     )
     system_prompt: str = Field(
@@ -2724,8 +2781,11 @@ class EvaluationLLMMethodConfig(BaseModel):
     )
 
     temperature: float = Field(default=0.0, ge=0.0, le=1.0)
+    # Claude Haiku 4.5, not Claude 3 Haiku. The latter reached end of life, so
+    # LLM-based evaluation ran a dead model out of the box; this is the current
+    # Haiku-class model and keeps the same cost/latency intent.
     model: str = Field(
-        default="us.anthropic.claude-3-haiku-20240307-v1:0",
+        default="us.anthropic.claude-haiku-4-5-20251001-v1:0",
         description="Bedrock model ID for evaluation",
     )
     system_prompt: str = Field(
@@ -3091,9 +3151,7 @@ class IDPConfig(BaseModel):
         description="Human-in-the-Loop review configuration (v0.6, top-level)",
     )
     summarization: SummarizationConfig = Field(
-        default_factory=lambda: SummarizationConfig(
-            model="us.amazon.nova-premier-v1:0"
-        ),
+        default_factory=lambda: SummarizationConfig(model="us.amazon.nova-pro-v1:0"),
         description="Summarization configuration",
     )
     chat: ChatConfig = Field(
@@ -3101,10 +3159,12 @@ class IDPConfig(BaseModel):
         description="Chat-with-Document configuration (used by the interactive "
         "document Q&A feature in the Web UI)",
     )
+    # No `model=` kwarg: RuleValidationConfig declares no `model` field (its models
+    # live on the nested fact_extraction / rule_validation_orchestrator configs), so
+    # Pydantic silently dropped it. It was therefore an inert end-of-life model
+    # literal, which basedpyright already flagged as `No parameter named "model"`.
     rule_validation: RuleValidationConfig = Field(
-        default_factory=lambda: RuleValidationConfig(
-            model="us.anthropic.claude-3-5-sonnet-20240620-v1:0"
-        ),
+        default_factory=RuleValidationConfig,
         description="Rule validation configuration",
     )
     agents: AgentsConfig = Field(

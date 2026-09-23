@@ -14,31 +14,32 @@ Run with:
     pytest -m integration lib/idp_common_pkg/tests/integration/test_rules_discovery_smoke.py -s
 """
 
-# ruff: noqa: E402, I001
+# The sentinel credentials ``tests/conftest.py`` sets for the unit suite
+# (``AWS_ACCESS_KEY_ID=testing`` and friends) have to be out of the way before this
+# test signs a real Bedrock call. That is done by the session-scoped autouse
+# ``_require_real_aws_credentials`` fixture in ``tests/integration/conftest.py``,
+# which pops them and leaves them popped once real credentials resolve.
+#
+# It must NOT be done here, at module scope. Every unit run collects this file —
+# ``-m "not integration"`` deselects tests *after* collection has imported the
+# module — and ``tests/integration`` sorts first, so an import-time deletion took
+# the credentials away from the entire remaining session. A boto3 client freezes
+# the session's credentials object at construction, so on a runner with no shared
+# credentials file and no reachable instance metadata service, every client any
+# later test module built at import time was frozen with ``credentials=None`` and
+# could never sign. Five tests in ``tests/unit/test_test_set_resolver.py`` failed
+# that way, with ``AttributeError: 'NoneType' object has no attribute
+# 'access_key'`` out of botocore's presigner, while passing on any developer
+# machine — which still has one of those two sources. See #988.
 
 import os
 from pathlib import Path
 
-# conftest.py at lib/idp_common_pkg/tests/conftest.py sets AWS_ACCESS_KEY_ID
-# and friends to "testing" for the unit suite. Integration tests need real
-# IMDS-provided credentials, so strip the fakes before any boto3 client is
-# created. This must run at module import time (before the idp_common imports
-# below cache a client).
-for _fake_env in (
-    "AWS_ACCESS_KEY_ID",
-    "AWS_SECRET_ACCESS_KEY",
-    "AWS_SECURITY_TOKEN",
-    "AWS_SESSION_TOKEN",
-):
-    if os.environ.get(_fake_env) == "testing":
-        del os.environ[_fake_env]
+import pytest
+import yaml
 
-import pytest  # noqa: E402
-import yaml  # noqa: E402
-
-from idp_common.config.models import IDPConfig  # noqa: E402
-from idp_common.discovery.rules_discovery import RulesDiscovery  # noqa: E402
-
+from idp_common.config.models import IDPConfig
+from idp_common.discovery.rules_discovery import RulesDiscovery
 
 REPO_ROOT = Path(__file__).resolve().parents[3].parent
 DEFAULT_CFG_YAML = (

@@ -32,11 +32,18 @@ import json
 import logging
 import os
 import typing
-from typing import Any, Awaitable, Callable, Protocol, runtime_checkable
+from typing import Any, Awaitable, Callable, Iterable, Protocol, runtime_checkable
 
 from pydantic import BaseModel
 
 from idp_common.config.models import IDPConfig
+
+# A leaf module with no imports of its own, deliberately: the ``read_timeout``
+# defaults below are evaluated at import time, and importing them from
+# ``idp_common.utils`` would pull in an SSM client built at module scope there —
+# breaking this module's import-lightness and making it need an AWS region to
+# import at all. See ``idp_common/timeout_budget.py``.
+from idp_common.timeout_budget import AGENT_READ_TIMEOUT_SECONDS
 
 logger = logging.getLogger(__name__)
 
@@ -335,6 +342,40 @@ class ShardPersistence(Protocol):
     ) -> None: ...
 
 
+def shard_persistence_section_id(class_label: str, page_ids: Iterable[Any]) -> str:
+    """The ``section_id`` a section's per-shard results are keyed under.
+
+    **Not the section's own ``section_id``.** Classification numbers sections by
+    ordinal (``"0"``, ``"1"``, …), which is not stable across a reclassify, so
+    shard keys use a value derived from the section's content instead:
+    ``{class_label}_{first_page}_{last_page}``.
+
+    This is the ONE definition. ``ExtractionService._persist_section_id`` and both
+    cleanup callers go through it, because when the cleanup side built the prefix
+    from the raw ordinal instead it addressed a prefix nothing had ever been
+    written to, and so deleted nothing while reporting success.
+    """
+    numbered = sorted(int(page_id) for page_id in page_ids)
+    if not numbered:
+        raise ValueError(
+            f"Cannot derive a shard persistence id for class {class_label!r}: the "
+            "section carries no page ids."
+        )
+    return f"{class_label}_{numbered[0]}_{numbered[-1]}"
+
+
+def shard_results_prefix(execution_arn: str, persist_section_id: str) -> str:
+    """The S3 prefix every shard result for one section lives under.
+
+    ``persist_section_id`` must come from :func:`shard_persistence_section_id`.
+    :func:`shard_result_key` is built ON this, so the prefix a cleanup lists and
+    the prefix a shard is written to cannot diverge by construction rather than
+    by agreement between two format strings.
+    """
+    safe_arn = (execution_arn or "local").replace(":", "_").replace("/", "_")
+    return f"checkpoints/{safe_arn}/{persist_section_id}/shards/"
+
+
 def shard_result_key(
     execution_arn: str, section_id: str, page_start: int, page_end: int
 ) -> str:
@@ -343,11 +384,12 @@ def shard_result_key(
     Extends the existing whole-section checkpoint convention
     (``checkpoints/{safe_arn}/{section_id}/extraction_state.json``) with a
     ``shards/`` subkey so per-shard results live alongside it.
+
+    ``section_id`` here is the shard-persistence id from
+    :func:`shard_persistence_section_id`, not the section's ordinal id.
     """
-    safe_arn = (execution_arn or "local").replace(":", "_").replace("/", "_")
-    return (
-        f"checkpoints/{safe_arn}/{section_id}/shards/shard_{page_start}_{page_end}.json"
-    )
+    prefix = shard_results_prefix(execution_arn, section_id)
+    return f"{prefix}shard_{page_start}_{page_end}.json"
 
 
 class NoopShardPersistence:
@@ -435,7 +477,7 @@ async def extract_one_shard(
     context: str = "Extraction",
     max_retries: int = 7,
     connect_timeout: float = 10.0,
-    read_timeout: float = 600.0,
+    read_timeout: float = AGENT_READ_TIMEOUT_SECONDS,
     max_tokens: int | None = None,
     checkpoint_callback: Any | None = None,
     custom_instruction: str | None = None,
@@ -745,7 +787,7 @@ class ExtractionRuntime(abc.ABC):
         context: str = "Extraction",
         max_retries: int = 7,
         connect_timeout: float = 10.0,
-        read_timeout: float = 600.0,
+        read_timeout: float = AGENT_READ_TIMEOUT_SECONDS,
         max_tokens: int | None = None,
         checkpoint_callback: Any | None = None,
         custom_instruction: str | None = None,
@@ -782,7 +824,7 @@ class InProcessRuntime(ExtractionRuntime):
         context: str = "Extraction",
         max_retries: int = 7,
         connect_timeout: float = 10.0,
-        read_timeout: float = 600.0,
+        read_timeout: float = AGENT_READ_TIMEOUT_SECONDS,
         max_tokens: int | None = None,
         checkpoint_callback: Any | None = None,
         custom_instruction: str | None = None,

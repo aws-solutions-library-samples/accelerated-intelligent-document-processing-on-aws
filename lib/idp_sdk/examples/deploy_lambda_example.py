@@ -31,6 +31,7 @@ import sys
 import tempfile
 import zipfile
 from pathlib import Path
+from typing import Optional
 
 # Constants
 LAMBDA_FUNCTION_NAME = "idp-sdk-example"
@@ -55,7 +56,23 @@ def run_command(cmd: list, capture: bool = False, cwd: str = None) -> tuple:
         return False, None, str(e)
 
 
-def create_layer(sdk_dir: Path) -> str:
+def aws_partition() -> str:
+    """The partition this account is in, from the caller identity's own ARN.
+
+    Hardcoding ``aws`` makes the managed-policy ARNs below wrong in GovCloud, where
+    the same policy is ``arn:aws-us-gov:iam::aws:policy/...``, and the resulting
+    failure reads as a permissions problem rather than a partition one.
+    """
+    ok, stdout, _ = run_command(
+        ["aws", "sts", "get-caller-identity", "--query", "Arn", "--output", "text"],
+        capture=True,
+    )
+    if ok and stdout.strip().startswith("arn:"):
+        return stdout.strip().split(":")[1]
+    return "aws"
+
+
+def create_layer(sdk_dir: Path) -> Optional[str]:
     """Create Lambda layer with IDP SDK and return layer ARN."""
     print("\n📦 Creating Lambda layer with IDP SDK...")
 
@@ -192,7 +209,7 @@ def create_layer(sdk_dir: Path) -> str:
         return layer_arn
 
 
-def get_latest_layer_arn() -> str:
+def get_latest_layer_arn() -> Optional[str]:
     """Get the latest layer ARN."""
     success, stdout, stderr = run_command(
         [
@@ -213,7 +230,7 @@ def get_latest_layer_arn() -> str:
     return None
 
 
-def create_iam_role() -> str:
+def create_iam_role() -> Optional[str]:
     """Create or get IAM role for Lambda function."""
     role_name = f"{LAMBDA_FUNCTION_NAME}-role"
 
@@ -283,7 +300,7 @@ def create_iam_role() -> str:
             "--role-name",
             role_name,
             "--policy-arn",
-            "arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole",
+            f"arn:{aws_partition()}:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole",
         ],
         capture=True,
     )
@@ -679,7 +696,7 @@ def cleanup() -> bool:
             "--role-name",
             role_name,
             "--policy-arn",
-            "arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole",
+            f"arn:{aws_partition()}:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole",
         ],
         capture=True,
     )

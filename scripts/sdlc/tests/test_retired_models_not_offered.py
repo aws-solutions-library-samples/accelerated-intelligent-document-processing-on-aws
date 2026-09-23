@@ -31,24 +31,64 @@ import re
 
 import pytest
 
-#: Bedrock model IDs that must no longer be offered, with the reason.
+#: Bedrock model IDs that must no longer be offered, DERIVED from the single
+#: registry in shipped code rather than kept as a second copy here.
+#:
+#: There were two registries until this was folded: this list and the one in
+#: ``scripts/tests/test_model_surface_consistency.py``. Neither referenced the
+#: other, and they encoded CONTRADICTORY policies — see the note on
+#: ``config_library/pricing.yaml`` below. A newly retired model was added to one
+#: and not the other, which is exactly how two gates drift into disagreeing about
+#: the same fact.
+_registry = pytest.importorskip("idp_common.config.retired_models")
 RETIRED_MODEL_IDS: dict[str, str] = {
-    "us.anthropic.claude-3-5-haiku-20241022-v1:0": (
-        "End of life — Converse returns ResourceNotFoundException "
-        "'This model version has reached the end of its life' (GitHub #708)."
-    ),
+    model_id: (
+        f"End of life on {facts['eol']} — Converse returns "
+        f"ResourceNotFoundException 'This model version has reached the end of "
+        f"its life' (GitHub #708). Verify: {facts['verify']}"
+    )
+    for model_id, facts in _registry.RETIRED_MODELS.items()
 }
 
 #: Files that must not mention a retired ID: the two templates whose enums feed
-#: every model picklist, the pricing table, the Converse client's cachePoint
-#: allowlist, and the deploy-time US->EU model swap table.
+#: every model picklist, the Converse client's cachePoint allowlist, and the
+#: deploy-time US->EU model swap table.
+#:
+#: ``config_library/pricing.yaml`` and ``config_library/model_config_limits.yaml``
+#: are deliberately NOT here, and used to be. They are consulted
+#: **retrospectively**, for whatever model a deployed stack's stored configuration
+#: names — which is a superset of what is newly selectable:
+#:
+#: * a cost report over documents processed while the model was still selectable
+#:   resolves its rate from ``pricing.yaml`` by model id, so deleting the row
+#:   re-prices historical runs at zero;
+#: * dropping the limits pattern makes ``get_model_max_output_tokens`` raise
+#:   "Unsupported model ID … run discover_model_limits.py", replacing Bedrock's
+#:   accurate end-of-life error with a misleading one.
+#:
+#: Removing them costs nothing here, because the reason they were listed —
+#: ``validate_config`` deriving its valid-model set from ``pricing.yaml``, so the
+#: absence of a row is what made validation fail — no longer holds:
+#: ``validate_config`` now rejects a retired model **on its own merits**, via
+#: ``retired_models.retirement_of``. That is strictly better than the old coupling,
+#: which depended on a side effect of an unrelated file.
+#:
+#: ``scripts/tests/test_model_surface_consistency.py`` owns those two files in BOTH
+#: directions: it asserts an offered model is priced and limit-matched, and that a
+#: retired one that was once offered KEEPS its pricing row.
+#: ``src/lambda/update_configuration/index.py`` is likewise not in the text sweep,
+#: because its ``MODEL_MAPPINGS`` table is directional and only one direction is a
+#: defect. A retired model as a mapping **key** is legitimate and load-bearing: the
+#: table's purpose is to rewrite a stored configuration onto a model that works in
+#: an EU region, so the row for a dead US model is precisely what rescues a stack
+#: that still names it. A retired model as a mapping **value** would write a dead
+#: model into a working configuration. ``test_no_retired_model_is_a_mapping_target``
+#: below checks that direction specifically, by parsing the table rather than
+#: grepping the file.
 _OFFERING_SURFACES = (
     "template.yaml",
     "patterns/unified/template.yaml",
-    "config_library/pricing.yaml",
-    "config_library/model_config_limits.yaml",
     "lib/idp_common_pkg/idp_common/bedrock/client.py",
-    "src/lambda/update_configuration/index.py",
 )
 
 #: UI sources that hardcode model lists (in addition to the CFN-driven schema).
@@ -74,8 +114,17 @@ def _surfaces() -> list[pathlib.Path]:
 def test_the_surfaces_exist():
     """Guard the guard: a rename must not silently empty this sweep."""
     present = {p.name for p in _surfaces()}
-    for required in ("template.yaml", "pricing.yaml", "client.py", "index.py"):
+    for required in ("template.yaml", "client.py"):
         assert required in present, (required, sorted(present))
+    # pricing.yaml / model_config_limits.yaml are intentionally absent — see the
+    # note on _OFFERING_SURFACES. Asserted, so their removal was a decision and a
+    # future re-add is a decision too.
+    assert "pricing.yaml" not in present, (
+        "pricing.yaml is back in this sweep, which would demand deleting the "
+        "pricing row of a retired model and silently re-price historical cost "
+        "reports at zero"
+    )
+    assert "model_config_limits.yaml" not in present
     # The templates are where the enums live; without them this proves nothing.
     root = _repo_root()
     assert (root / "patterns/unified/template.yaml").is_file()
@@ -129,13 +178,24 @@ def test_a_retired_model_id_still_loads_in_a_stored_config(model_id: str):
 
 @pytest.mark.parametrize("model_id", sorted(RETIRED_MODEL_IDS))
 def test_config_validate_now_reports_it_as_an_invalid_model(model_id: str):
-    """Dropping the pricing entry turns the runtime failure into a pre-flight one.
+    """A retired model is a pre-flight error, not a runtime one.
 
     ``validate_config`` (``idp-cli config-validate`` / ``client.config.validate()``)
-    checks model IDs against ``config_library/pricing.yaml``, so removing the
-    retired model's pricing block makes a config that pins it fail validation
-    instead of failing at the first ``Converse`` call — which is what #708 asked
-    for. This path is the *only* consumer of ``validate_config``: neither the
+    rejects a configuration that pins a retired model, so it fails before a
+    document does instead of at the first ``Converse`` call — which is what #708
+    asked for.
+
+    It rejects on **retirement itself**, via
+    ``config.retired_models.retirement_of``. It used to reject as a side effect of
+    the model having been deleted from ``config_library/pricing.yaml``, because
+    ``validate_config`` derives its valid-model set from that file. That coupling
+    could not survive a retired model whose pricing row must be RETAINED so
+    historical cost reports still resolve its rate — see the note on
+    ``_OFFERING_SURFACES`` above and ``config/retired_models.py``. Two of the
+    models this test is parametrised over are in exactly that position, so the old
+    mechanism would no longer reject them.
+
+    This path is the *only* consumer of ``validate_config``: neither the
     stack-update custom resource nor the configuration save calls it, so the
     stricter answer cannot wedge a deployment.
     """
@@ -150,6 +210,12 @@ def test_config_validate_now_reports_it_as_an_invalid_model(model_id: str):
     result = merge_utils.validate_config({"extraction": {"model": model_id}})
     assert result["valid"] is False, result
     assert any("invalid model ID" in err for err in result["errors"]), result["errors"]
+    assert any("end of life" in err for err in result["errors"]), (
+        "the rejection no longer names retirement as the reason, so it is coming "
+        "from somewhere other than the retired-model registry — most likely the "
+        "pricing-absence side effect this test used to rely on",
+        result["errors"],
+    )
 
 
 def test_model_limits_still_cover_the_retired_family():
@@ -167,3 +233,77 @@ def test_model_limits_still_cover_the_retired_family():
     assert any(
         re.search(p, "us.anthropic.claude-3-7-sonnet-20250219-v1:0") for p in patterns
     ), "no model_config_limits pattern matches the still-offered Claude 3.x IDs"
+
+
+@pytest.mark.parametrize("model_id", sorted(RETIRED_MODEL_IDS))
+def test_no_retired_model_is_a_mapping_target(model_id: str):
+    """The US->EU swap table may name a retired model as a SOURCE, never a TARGET.
+
+    ``MODEL_MAPPINGS`` in ``src/lambda/update_configuration/index.py`` rewrites a
+    stored configuration's model when the stack is deployed in an EU region. Its
+    keys are "models a stored config might name", which legitimately includes dead
+    ones — the row for ``us.amazon.nova-premier-v1:0`` is what moves such a config
+    onto a working model instead of leaving it broken. Its values are "models we
+    will write", where a dead model would be a defect.
+
+    Parsed with ``ast`` rather than grepped, because a text sweep cannot tell the
+    two directions apart — which is why this file used to forbid both and, once the
+    two retired-model registries were folded, contradicted the deliberate retention
+    of that row.
+    """
+    import ast
+
+    path = _repo_root() / "src/lambda/update_configuration/index.py"
+    assert path.is_file(), f"{path} moved; update this test"
+    tree = ast.parse(path.read_text(encoding="utf-8"))
+
+    targets: list[str] = []
+    found_table = False
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Assign):
+            continue
+        if not any(
+            isinstance(t, ast.Name) and t.id == "MODEL_MAPPINGS" for t in node.targets
+        ):
+            continue
+        assert isinstance(node.value, ast.Dict), (
+            "MODEL_MAPPINGS is no longer a literal dict"
+        )
+        found_table = True
+        for value in node.value.values:
+            if isinstance(value, ast.Constant) and isinstance(value.value, str):
+                targets.append(value.value)
+
+    assert found_table, "MODEL_MAPPINGS not found; this test proves nothing"
+    assert targets, "MODEL_MAPPINGS has no string targets; this test proves nothing"
+
+    base = _registry.base_model_id(model_id)
+    offending = [t for t in targets if _registry.base_model_id(t) == base]
+    assert not offending, (
+        f"MODEL_MAPPINGS maps some model ONTO {model_id}, which is retired — the "
+        f"swap would write a dead model into a working configuration: {offending}"
+    )
+
+
+def test_a_retired_model_may_remain_a_mapping_source():
+    """The premise behind the direction split, asserted so it is not read as an
+    oversight: at least one retired model IS still a key, on purpose."""
+    import ast
+
+    path = _repo_root() / "src/lambda/update_configuration/index.py"
+    tree = ast.parse(path.read_text(encoding="utf-8"))
+    keys: list[str] = []
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Assign) and any(
+            isinstance(t, ast.Name) and t.id == "MODEL_MAPPINGS" for t in node.targets
+        ):
+            for key in node.value.keys:
+                if isinstance(key, ast.Constant) and isinstance(key.value, str):
+                    keys.append(key.value)
+    retired_keys = [k for k in keys if k in RETIRED_MODEL_IDS]
+    assert retired_keys, (
+        "no retired model is a MODEL_MAPPINGS source any more. That may be correct, "
+        "but it means a stored configuration naming a dead US model is no longer "
+        "rewritten onto a working one when deployed in an EU region — decide it "
+        "rather than letting it lapse, and update the reasoning above."
+    )

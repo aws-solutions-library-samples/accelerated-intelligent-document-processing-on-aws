@@ -841,6 +841,9 @@ def cmd_status(args: argparse.Namespace) -> int:
         )
         return 0
     alive = pid_alive(current.get("pid"))
+    # Annotated so the `{'ok': False}` literal does not narrow `reply` to
+    # dict[str, bool], which makes the str-valued update() below unmatchable.
+    reply: dict[str, Any]
     try:
         reply = (
             send_command(current["socket"], {"cmd": "status"}, timeout=5)

@@ -37,6 +37,7 @@ canonical="$repo_root/lib/idp_common_pkg/idp_common/utils/log_sanitizer.py"
 roots=(
   "nested/api-resolvers/src/lambda"
   "src/lambda"
+  "feature-platform/main-stack-extensions/lambdas"
 )
 
 if [[ ! -f "$canonical" ]]; then

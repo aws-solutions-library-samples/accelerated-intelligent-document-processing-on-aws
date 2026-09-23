@@ -236,8 +236,24 @@ def test_group_restricted_ops_enforce_groups(ddb_env):
     # agent read ops require Admin/Author/Viewer (Reviewer excluded).
     with pytest.raises(PermissionError):
         mod.dispatch("listAgentJobs", _ev({}, groups=("Reviewer",)))
-    # getDocument is open to any authenticated user (no groups needed).
-    mod.dispatch("getDocument", _ev({"ObjectKey": "nope"}, groups=()))
+    # getDocument and deleteAgentJob name no particular group but do require an
+    # assigned one (`ANY_GROUP`): document content is not readable by a caller an
+    # administrator has not onboarded, which self-service sign-up produces. Any one
+    # group is enough, so the lowest-privilege role stands in for all five.
+    mod.dispatch("getDocument", _ev({"ObjectKey": "nope"}, groups=("Viewer",)))
+    with pytest.raises(PermissionError, match="requires an assigned group"):
+        mod.dispatch("getDocument", _ev({"ObjectKey": "nope"}, groups=()))
+    # listDocumentsDateHour is ANY_GROUP too: the index rows it returns carry
+    # ObjectKey with no filtering, which is where a caller gets the keys the rest of
+    # the chain in issue #1033 needs.
+    mod.dispatch(
+        "listDocumentsDateHour",
+        _ev({"date": "2024-01-01", "hour": 0}, groups=("Viewer",)),
+    )
+    with pytest.raises(PermissionError, match="requires an assigned group"):
+        mod.dispatch(
+            "listDocumentsDateHour", _ev({"date": "2024-01-01", "hour": 0}, groups=())
+        )
 
 
 # ----------------------------- agent jobs ---------------------------------- #
@@ -308,3 +324,44 @@ def test_handles_known_and_unknown():
     assert mod.handles("listDiscoveryJobs")
     assert mod.handles("getAgentJobStatus")
     assert not mod.handles("listDocuments")
+
+
+def test_a_caller_supplied_limit_is_clamped_not_passed_through(ddb_env):
+    """`Limit` went straight to DynamoDB with no ceiling.
+
+    The dispatcher's central validation spec carries type shapes only — there is no
+    `maximum` vocabulary in it — so a numeric argument is bounded in the handler or
+    not at all.
+    """
+    mod, ddb = ddb_env
+    table = ddb.Table("AgentTable")
+    for i in range(5):
+        table.put_item(
+            Item={"PK": "agent#eve@x.com", "SK": f"j{i}", "status": "COMPLETED"}
+        )
+
+    assert mod._clamped_limit(10_000) == mod._MAX_PAGE_SIZE
+    assert mod._clamped_limit(3) == 3
+
+    # An oversized request still answers, bounded.
+    out = mod.dispatch("listAgentJobs", _ev({"limit": 10_000}, username="eve@x.com"))
+    assert len(out["items"]) == 5
+
+
+def test_a_non_positive_limit_is_a_client_error_not_a_server_fault(ddb_env):
+    """DynamoDB rejects `Limit <= 0` with a ValidationException, which the
+    dispatcher reports as 500. It is a caller input error."""
+    mod, ddb = ddb_env
+    ddb.Table("AgentTable").put_item(
+        Item={"PK": "agent#zed@x.com", "SK": "j0", "status": "COMPLETED"}
+    )
+
+    out = mod.dispatch("listAgentJobs", _ev({"limit": -1}, username="zed@x.com"))
+
+    assert len(out["items"]) == 1
+
+
+def test_a_non_numeric_limit_is_a_valueerror_so_the_dispatcher_reports_400():
+    mod = _load_ddb_direct()
+    with pytest.raises(ValueError, match="limit must be an integer"):
+        mod._clamped_limit("not-a-number")

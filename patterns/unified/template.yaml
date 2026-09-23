@@ -264,6 +264,23 @@ Parameters:
     Description: SageMaker MLflow tracking server ARN
 
 Conditions:
+  # Gates the state machine's Tracing.Enabled AND every Lambda's Tracing mode.
+  # Each traced function writes `Tracing: !If [EnableXRayTracingCondition,
+  # Active, PassThrough]` rather than a literal, so setting the parameter to
+  # "false" actually turns Lambda tracing off; a hardcoded `Active` cannot be
+  # turned off at all, which is what the parameter's description promises.
+  # PassThrough — not an absent property — is written on the false branch: the
+  # two resolve identically, and naming it says the choice was made. Neither
+  # branch changes a function's IAM: SAM attaches its X-Ray managed policy to a
+  # role it GENERATES whenever Tracing is declared in any form, because it
+  # cannot evaluate the Fn::If. Which policy that is depends on the partition —
+  # AWSXrayWriteOnlyAccess in `aws`, AWSXRayDaemonWriteAccess in aws-cn and
+  # aws-us-gov (SAM's get_xray_managed_policy_name) — and both grant
+  # xray:PutTraceSegments, so the behaviour is the same either way.
+  # A function with an explicit `Role:` gets nothing from SAM and must carry the
+  # X-Ray grant itself — checked by scripts/tests/test_xray_tracing.py, along
+  # with the rest of this.
+  EnableXRayTracingCondition: !Equals [!Ref EnableXRayTracing, "true"]
   DeployInVPC: !Not [!Equals [!Ref VpcId, ""]]
   HasGuardrailConfig:
     !And [
@@ -468,7 +485,6 @@ Resources:
                   - "LambdaHook"
                   - "us.amazon.nova-lite-v1:0"
                   - "us.amazon.nova-pro-v1:0"
-                  - "us.amazon.nova-premier-v1:0"
                   - "us.amazon.nova-2-lite-v1:0"
                   - "us.amazon.nova-2-lite-v1:0:priority"
                   - "us.amazon.nova-2-lite-v1:0:flex"
@@ -686,7 +702,6 @@ Resources:
                     - ""
                     - "us.amazon.nova-lite-v1:0"
                     - "us.amazon.nova-pro-v1:0"
-                    - "us.amazon.nova-premier-v1:0"
                     - "us.amazon.nova-2-lite-v1:0"
                     - "us.anthropic.claude-haiku-4-5-20251001-v1:0"
                     - "us.anthropic.claude-sonnet-4-5-20250929-v1:0"
@@ -999,7 +1014,6 @@ Resources:
                     - !Ref AWS::NoValue
                   - "us.amazon.nova-lite-v1:0"
                   - "us.amazon.nova-pro-v1:0"
-                  - "us.amazon.nova-premier-v1:0"
                   - "us.amazon.nova-2-lite-v1:0"
                   - "us.amazon.nova-2-lite-v1:0:priority"
                   - "us.amazon.nova-2-lite-v1:0:flex"
@@ -1310,6 +1324,13 @@ Resources:
                 default: "auto"
                 order: 1.05
                 description: "'auto' (default): every <<CACHEPOINT>> marker in the extraction prompts becomes a Bedrock cache point on models that support it. 'off': send no cache points. A cache write is billed at 1.25x input price and pays back only when a second request with the same prefix arrives inside the 5-minute TTL, so a low-volume deployment that processes one document of a class per TTL pays about +25% on the prefix for nothing — choose 'off' there. Each model also has a minimum cacheable prefix (512 to 4,096 tokens); below it a cache point silently does nothing, which 'idp-cli config validate' warns about per class. Applies to extraction only."
+              row_shortfall_action:
+                type: string
+                title: Truncated list outcome
+                enum: ["warn", "fail"]
+                default: "warn"
+                order: 1.06
+                description: "What the outcome MEANS when extraction returns fewer than half the table rows the section's own OCR text evidences for a list field. 'warn' (default): record the issue and report success. 'fail': the rows that were extracted and the diagnosis are saved, then the section is marked failed - so a document carrying a fraction of a long table cannot be reported as COMPLETED, which is the only signal most consumers read. This does not change WHEN the shortfall is detected, only what it costs, and it applies to both Simple and Advanced extraction. IMPORTANT before choosing 'fail': the check's evidence is OCR tables whose column count equals the list item's property count, summed over the whole section, and a 2- or 3-property array that models an entity GROUP rather than table rows looks identical to one that models rows. A statement's 31-row two-column Daily Balance table is therefore counted as evidence about a 5-row 2-property account summary, and a fully correct extraction scores 0.13. Choose 'fail' for a corpus whose narrow arrays really are table rows - long transaction lists are the case it was built for - after checking your classes for group-shaped arrays."
               agentic:
                 type: object
                 sectionLabel: Advanced extraction settings
@@ -1466,7 +1487,7 @@ Resources:
                     dependsOn: { field: "enabled", value: true }
                   fail_action:
                     type: string
-                    description: "What to do when validation fails (in Advanced extraction, after the agent's own retries). 'warn': record the outcome in metadata and proceed. 'escalate': re-extract only the failing fields with the Escalation Model (roughly doubles that section's cost, still far cheaper than human review), then warn if still invalid. 'reject': mark the section as failed so downstream/HITL can act. Default: warn — it is free, whereas 'escalate' spends real money on every failure, so opt into it deliberately."
+                    description: "What to do when validation fails (in Advanced extraction, after the agent's own retries). 'warn': record the outcome in metadata and proceed. 'escalate': re-extract only the failing fields with the Escalation Model (roughly doubles that section's cost, still far cheaper than human review), then warn if still invalid. 'reject': record the result as not parsed, which makes the section's Processing Report read FAILED and raises the issue at error severity; the extracted values are still stored and the document's status is unchanged, so this is a visibility setting rather than a way to reject a section. Default: warn — it is free, whereas 'escalate' spends real money on every failure, so opt into it deliberately."
                     enum: ["warn", "escalate", "reject"]
                     order: 2
                     default: "warn"
@@ -1481,7 +1502,6 @@ Resources:
                       - ""
                       - "us.amazon.nova-lite-v1:0"
                       - "us.amazon.nova-pro-v1:0"
-                      - "us.amazon.nova-premier-v1:0"
                       - "us.amazon.nova-2-lite-v1:0"
                       - "us.amazon.nova-2-lite-v1:0:priority"
                       - "us.amazon.nova-2-lite-v1:0:flex"
@@ -1617,7 +1637,6 @@ Resources:
                     - !Ref AWS::NoValue
                   - "us.amazon.nova-lite-v1:0"
                   - "us.amazon.nova-pro-v1:0"
-                  - "us.amazon.nova-premier-v1:0"
                   - "us.amazon.nova-2-lite-v1:0"
                   - "us.amazon.nova-2-lite-v1:0:priority"
                   - "us.amazon.nova-2-lite-v1:0:flex"
@@ -1821,7 +1840,6 @@ Resources:
                         "LambdaHook",
                         "us.amazon.nova-lite-v1:0",
                         "us.amazon.nova-pro-v1:0",
-                        "us.amazon.nova-premier-v1:0",
                         "us.amazon.nova-2-lite-v1:0", "us.amazon.nova-2-lite-v1:0:priority", "us.amazon.nova-2-lite-v1:0:flex", "global.amazon.nova-2-lite-v1:0", "global.amazon.nova-2-lite-v1:0:priority", "global.amazon.nova-2-lite-v1:0:flex",
                         "us.anthropic.claude-haiku-4-5-20251001-v1:0",
                         "us.anthropic.claude-sonnet-4-5-20250929-v1:0",
@@ -2079,7 +2097,6 @@ Resources:
                     "LambdaHook",
                     "us.amazon.nova-lite-v1:0",
                     "us.amazon.nova-pro-v1:0",
-                    "us.amazon.nova-premier-v1:0",
                     "us.amazon.nova-2-lite-v1:0", "us.amazon.nova-2-lite-v1:0:priority", "us.amazon.nova-2-lite-v1:0:flex", "global.amazon.nova-2-lite-v1:0", "global.amazon.nova-2-lite-v1:0:priority", "global.amazon.nova-2-lite-v1:0:flex",
                     "us.anthropic.claude-haiku-4-5-20251001-v1:0",
                     "us.anthropic.claude-sonnet-4-5-20250929-v1:0",
@@ -2295,7 +2312,6 @@ Resources:
                       [
                         "us.amazon.nova-lite-v1:0",
                         "us.amazon.nova-pro-v1:0",
-                        "us.amazon.nova-premier-v1:0",
                         "us.amazon.nova-2-lite-v1:0", "us.amazon.nova-2-lite-v1:0:priority", "us.amazon.nova-2-lite-v1:0:flex", "global.amazon.nova-2-lite-v1:0", "global.amazon.nova-2-lite-v1:0:priority", "global.amazon.nova-2-lite-v1:0:flex",
                         "us.anthropic.claude-haiku-4-5-20251001-v1:0",
                         "us.anthropic.claude-sonnet-4-5-20250929-v1:0",
@@ -2509,7 +2525,6 @@ Resources:
                       [
                         "us.amazon.nova-lite-v1:0",
                         "us.amazon.nova-pro-v1:0",
-                        "us.amazon.nova-premier-v1:0",
                         "us.amazon.nova-2-lite-v1:0", "us.amazon.nova-2-lite-v1:0:priority", "us.amazon.nova-2-lite-v1:0:flex", "global.amazon.nova-2-lite-v1:0", "global.amazon.nova-2-lite-v1:0:priority", "global.amazon.nova-2-lite-v1:0:flex",
                         "us.anthropic.claude-haiku-4-5-20251001-v1:0",
                         "us.anthropic.claude-sonnet-4-5-20250929-v1:0",
@@ -2611,7 +2626,6 @@ Resources:
                       [
                         "us.amazon.nova-lite-v1:0",
                         "us.amazon.nova-pro-v1:0",
-                        "us.amazon.nova-premier-v1:0",
                         "us.amazon.nova-2-lite-v1:0", "us.amazon.nova-2-lite-v1:0:priority", "us.amazon.nova-2-lite-v1:0:flex", "global.amazon.nova-2-lite-v1:0", "global.amazon.nova-2-lite-v1:0:priority", "global.amazon.nova-2-lite-v1:0:flex",
                         "us.anthropic.claude-haiku-4-5-20251001-v1:0",
                         "us.anthropic.claude-sonnet-4-5-20250929-v1:0",
@@ -2713,7 +2727,6 @@ Resources:
                       [
                         "us.amazon.nova-lite-v1:0",
                         "us.amazon.nova-pro-v1:0",
-                        "us.amazon.nova-premier-v1:0",
                         "us.amazon.nova-2-lite-v1:0", "us.amazon.nova-2-lite-v1:0:priority", "us.amazon.nova-2-lite-v1:0:flex", "global.amazon.nova-2-lite-v1:0", "global.amazon.nova-2-lite-v1:0:priority", "global.amazon.nova-2-lite-v1:0:flex",
                         "us.anthropic.claude-haiku-4-5-20251001-v1:0",
                         "us.anthropic.claude-sonnet-4-5-20250929-v1:0",
@@ -2832,13 +2845,11 @@ Resources:
                     enum:
                       - "us.amazon.nova-lite-v1:0"
                       - "us.amazon.nova-pro-v1:0"
-                      - "us.amazon.nova-premier-v1:0"
                       - "us.amazon.nova-2-lite-v1:0"
                       - "us.anthropic.claude-sonnet-4-20250514-v1:0"
                       - "us.anthropic.claude-sonnet-4-6"
                       - "us.anthropic.claude-sonnet-5"
                       - "us.anthropic.claude-sonnet-5:1m"
-                      - "us.anthropic.claude-opus-4-20250514-v1:0"
                       - "us.anthropic.claude-opus-4-6-v1:1m"
                       - "us.anthropic.claude-opus-4-7"
                       - "us.anthropic.claude-opus-4-7:1m"
@@ -3000,7 +3011,6 @@ Resources:
                     enum:
                       - "us.amazon.nova-lite-v1:0"
                       - "us.amazon.nova-pro-v1:0"
-                      - "us.amazon.nova-premier-v1:0"
                       - "us.amazon.nova-2-lite-v1:0"
                       - "us.amazon.nova-2-lite-v1:0:priority"
                       - "us.amazon.nova-2-lite-v1:0:flex"
@@ -3078,7 +3088,6 @@ Resources:
                     description: Bedrock model ID for the error analysis agent (requires tool use support)
                     enum:
                       - "us.amazon.nova-pro-v1:0"
-                      - "us.amazon.nova-premier-v1:0"
                       - "us.anthropic.claude-sonnet-4-5-20250929-v1:0"
                       - "us.anthropic.claude-sonnet-4-6"
                       - "us.anthropic.claude-sonnet-4-6:1m"
@@ -3165,7 +3174,6 @@ Resources:
                     "LambdaHook",
                     "us.amazon.nova-lite-v1:0",
                     "us.amazon.nova-pro-v1:0",
-                    "us.amazon.nova-premier-v1:0",
                     "us.amazon.nova-2-lite-v1:0", "us.amazon.nova-2-lite-v1:0:priority", "us.amazon.nova-2-lite-v1:0:flex", "global.amazon.nova-2-lite-v1:0", "global.amazon.nova-2-lite-v1:0:priority", "global.amazon.nova-2-lite-v1:0:flex",
                     "us.anthropic.claude-haiku-4-5-20251001-v1:0",
                     "us.anthropic.claude-sonnet-4-5-20250929-v1:0",
@@ -3338,7 +3346,6 @@ Resources:
                       [
                         "us.amazon.nova-lite-v1:0",
                         "us.amazon.nova-pro-v1:0",
-                        "us.amazon.nova-premier-v1:0",
                         "us.amazon.nova-2-lite-v1:0", "us.amazon.nova-2-lite-v1:0:priority", "us.amazon.nova-2-lite-v1:0:flex", "global.amazon.nova-2-lite-v1:0", "global.amazon.nova-2-lite-v1:0:priority", "global.amazon.nova-2-lite-v1:0:flex",
                         "us.anthropic.claude-haiku-4-5-20251001-v1:0",
                         "us.anthropic.claude-sonnet-4-5-20250929-v1:0",
@@ -3447,7 +3454,6 @@ Resources:
                       [
                         "us.amazon.nova-lite-v1:0",
                         "us.amazon.nova-pro-v1:0",
-                        "us.amazon.nova-premier-v1:0",
                         "us.amazon.nova-2-lite-v1:0", "us.amazon.nova-2-lite-v1:0:priority", "us.amazon.nova-2-lite-v1:0:flex", "global.amazon.nova-2-lite-v1:0", "global.amazon.nova-2-lite-v1:0:priority", "global.amazon.nova-2-lite-v1:0:flex",
                         "us.anthropic.claude-haiku-4-5-20251001-v1:0",
                         "us.anthropic.claude-sonnet-4-5-20250929-v1:0",
@@ -3992,7 +3998,7 @@ Resources:
         - !Ref LambdaArchitecture
       Timeout: 900
       MemorySize: 4096
-      Tracing: Active
+      Tracing: !If [EnableXRayTracingCondition, Active, PassThrough]
       Tags:
         # Data plane — per-doc BDA invocation. See docs/reporting-sql-layer.md §10.3.
         idp:plane: data
@@ -4072,7 +4078,7 @@ Resources:
         - !Ref LambdaArchitecture
       Timeout: 900
       MemorySize: 4096
-      Tracing: Active
+      Tracing: !If [EnableXRayTracingCondition, Active, PassThrough]
       Tags:
         # Data plane — per-doc BDA result parsing. See docs/reporting-sql-layer.md §10.3.
         idp:plane: data
@@ -4221,7 +4227,7 @@ Resources:
         - !Ref LambdaArchitecture
       Timeout: 900
       MemorySize: 4096
-      Tracing: Active
+      Tracing: !If [EnableXRayTracingCondition, Active, PassThrough]
       Tags:
         # Data plane — per-doc BDA completion signal. See docs/reporting-sql-layer.md §10.3.
         idp:plane: data
@@ -4474,7 +4480,7 @@ Resources:
           - "index.handler"
       Timeout: 900
       MemorySize: 4096
-      Tracing: Active
+      Tracing: !If [EnableXRayTracingCondition, Active, PassThrough]
       Tags:
         # Data plane — runs per document. See docs/reporting-sql-layer.md §10.3.
         # The rollup Lambda discovers stack membership via the native
@@ -4667,7 +4673,7 @@ Resources:
           - "index.handler"
       Timeout: 900
       MemorySize: 4096
-      Tracing: Active
+      Tracing: !If [EnableXRayTracingCondition, Active, PassThrough]
       Tags:
         # Data plane — runs per document.
         idp:plane: data
@@ -4837,7 +4843,7 @@ Resources:
           - "index.handler"
       Timeout: 900
       MemorySize: 4096
-      Tracing: Active
+      Tracing: !If [EnableXRayTracingCondition, Active, PassThrough]
       Tags:
         # Data plane — runs per document.
         idp:plane: data
@@ -5014,7 +5020,7 @@ Resources:
           - "sfn_runtime_handler.handler"
       Timeout: 900
       MemorySize: 4096
-      Tracing: Active
+      Tracing: !If [EnableXRayTracingCondition, Active, PassThrough]
       Tags:
         # Data plane — per-doc (or per-shard) Bedrock batch runtime. See docs/reporting-sql-layer.md §10.3.
         idp:plane: data
@@ -5171,7 +5177,7 @@ Resources:
           - "index.handler"
       Timeout: 900
       MemorySize: 4096
-      Tracing: Active
+      Tracing: !If [EnableXRayTracingCondition, Active, PassThrough]
       Tags:
         # Data plane — runs per document.
         idp:plane: data
@@ -5607,6 +5613,15 @@ Resources:
             Action: sts:AssumeRole
       ManagedPolicyArns:
         - !Sub "arn:${AWS::Partition}:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
+        # X-Ray write. This is the one traced function in this template with an
+        # explicit Role, and SAM only attaches this policy to roles it
+        # GENERATES — so the function declared a tracing mode and could not
+        # write a segment. Attached unconditionally, exactly as SAM attaches it
+        # to the generated roles: the grant is write-only and useless without a
+        # segment to write, and making it conditional would give this role a
+        # different shape from the other fourteen for no benefit. Enforced by
+        # scripts/tests/test_xray_tracing.py.
+        - !Sub "arn:${AWS::Partition}:iam::aws:policy/AWSXrayWriteOnlyAccess"
       Policies:
         - PolicyName: ReadActiveConfigForHooks
           PolicyDocument:
@@ -5691,7 +5706,7 @@ Resources:
       # value.)
       Timeout: 900
       MemorySize: 256
-      Tracing: Active
+      Tracing: !If [EnableXRayTracingCondition, Active, PassThrough]
       Tags:
         # Data plane — sync-invoked from pipeline per doc for pre/post-process hooks.
         # See docs/reporting-sql-layer.md §10.3.
@@ -5751,7 +5766,7 @@ Resources:
           - "index.handler"
       Timeout: 900
       MemorySize: 4096
-      Tracing: Active
+      Tracing: !If [EnableXRayTracingCondition, Active, PassThrough]
       Tags:
         # Data plane — runs per document.
         idp:plane: data
@@ -5906,7 +5921,7 @@ Resources:
         - !Ref LambdaArchitecture
       Timeout: 900
       MemorySize: 4096
-      Tracing: Active
+      Tracing: !If [EnableXRayTracingCondition, Active, PassThrough]
       Environment:
         Variables:
           LOG_LEVEL: !Ref LogLevel
@@ -6009,6 +6024,12 @@ Resources:
           OUTPUT_BUCKET: !Ref OutputBucket
           REPORTING_BUCKET: !Ref ReportingBucket
           SAVE_REPORTING_FUNCTION_NAME: !Ref SaveReportingFunctionName
+      # Declared because index.py calls xray_recorder.put_annotation: an
+      # annotation is only queryable if a segment exists to hold it, and with no
+      # Tracing property the function defaults to PassThrough, which creates one
+      # only when an upstream caller already sampled. Same reasoning as the other
+      # annotating pipeline stages (OCR, classification, extraction, assessment).
+      Tracing: !If [EnableXRayTracingCondition, Active, PassThrough]
       LoggingConfig:
         LogGroup: !Ref RuleValidationPolicyClassificationFunctionLogGroup
       Policies:
@@ -6147,6 +6168,9 @@ Resources:
             !If [HasBedrockHubRoleExternalId, !Ref BedrockHubRoleExternalId, !Ref AWS::NoValue]
           BEDROCK_ASSUME_ROLE_SESSION_NAME:
             !If [HasBedrockHubRoleSessionName, !Ref BedrockHubRoleSessionName, !Ref AWS::NoValue]
+      # Declared because index.py calls xray_recorder.put_annotation — see the
+      # note on RuleValidationPolicyClassificationFunction above.
+      Tracing: !If [EnableXRayTracingCondition, Active, PassThrough]
       LoggingConfig:
         LogGroup: !Ref RuleValidationFunctionLogGroup
       Policies:
@@ -6313,6 +6337,10 @@ Resources:
             !If [HasBedrockHubRoleExternalId, !Ref BedrockHubRoleExternalId, !Ref AWS::NoValue]
           BEDROCK_ASSUME_ROLE_SESSION_NAME:
             !If [HasBedrockHubRoleSessionName, !Ref BedrockHubRoleSessionName, !Ref AWS::NoValue]
+      # index.py wraps its handler in @xray_recorder.capture, which records a
+      # subsegment. Under PassThrough there is no segment to attach it to unless
+      # an upstream caller sampled, so the decorator's work is usually discarded.
+      Tracing: !If [EnableXRayTracingCondition, Active, PassThrough]
       LoggingConfig:
         LogGroup: !Ref RuleValidationOrchestrationFunctionLogGroup
       Policies:
@@ -6457,7 +6485,7 @@ Resources:
           - "index.handler"
       Timeout: 900
       MemorySize: 1024
-      Tracing: Active
+      Tracing: !If [EnableXRayTracingCondition, Active, PassThrough]
       Environment:
         Variables:
           MLFLOW_TRACKING_URI: !Ref MlflowTrackingURI

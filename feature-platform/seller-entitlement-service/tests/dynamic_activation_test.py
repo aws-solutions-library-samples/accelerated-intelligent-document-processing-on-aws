@@ -219,6 +219,13 @@ def check_oversized_body(url: str, product_id: str, session, region: str) -> Non
     status, text = _post(url, body, session, region)
     if status == 413:
         ok("oversized body rejected (413) before parsing")
+    elif status == 0:
+        # `_post` answers (0, "connection error: ...") when the request never
+        # completed. That is not "the endpoint answered something other than 413" —
+        # it is no observation at all, and `warn()` does not append to _failures, so
+        # it left the run green. Every other check in this file routes status 0 into
+        # bad(); this was the one that did not.
+        bad(f"oversized-body probe did not complete, so nothing was tested: {text}")
     elif status in (500, 502):
         bad(f"oversized body caused a {status} — it should be refused, not crash")
     else:

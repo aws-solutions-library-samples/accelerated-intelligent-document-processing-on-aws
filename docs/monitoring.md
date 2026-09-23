@@ -234,6 +234,68 @@ The document completes, its extracted data is intact, and the gap is recorded as
 an error-severity `assessment_failed_confidence_unavailable` processing issue on
 the section.
 
+A section can also reach the Assessment step with **nothing to assess** — no
+extraction result written for it, no pages listed on it, an extraction result
+whose `inference_result` is empty, or none of the pages it lists present in the
+document. The confidence model is never called, so this
+is not a confidence failure and the document completes for the same reason, but
+the outcome for that section is identical: no confidence scores, and therefore no
+coverage by confidence-based review. It is recorded as an error-severity
+`assessment_skipped_confidence_unavailable` issue on the section
+([#1006](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/1006)).
+
+**A section none of whose pages the document contains is skipped rather than
+scored.** With no page text and no page image the confidence model has nothing to
+judge the extracted values against, and a score produced in that state is a
+number with no evidence behind it — indistinguishable in the UI, in HITL routing
+and in the reporting lake from one read off the page. So the pass does not run for
+it, and the section is reported as unscored like the other nothing-to-assess
+cases. A section missing only *some* of its pages still gets confidence scores,
+because partial evidence is not no evidence, and carries a warning-severity
+`assessment_pages_missing` issue naming the absent pages; that case publishes no
+metric, since the section is not coming back without confidence. Either way the
+cause is upstream — check the Classification step's section boundaries and the OCR
+step's page list.
+
+Not every empty result is a gap, though. Extraction records **why** its effective
+schema was empty (`metadata.empty_schema_reason` in the section's `result.json`),
+and two of the three causes report nothing here:
+
+- **the class has no attributes to extract** — it is in configuration and declares
+  none. An authoring choice; nothing was expected from the section;
+- **classification determined no class**, so the section is labelled
+  `unclassified` — a blank page, a page whose classification failed, or any page in
+  a deployment with no document types configured. The [classification
+  stage](./classification.md#pages-classification-could-not-classify) reports this
+  one, at the severity it can judge and with a remedy that points at the right
+  place. An error indicator and an alarm data point per blank page would make both
+  this page's alarm and that indicator useless;
+- **the section's named class is absent from the configuration in force** — renamed
+  or deleted while documents were in flight, an old document reprocessed under a
+  newer configuration, or a classifier prediction outside the configured vocabulary
+  on a path that does not enforce one. That is a fault: the section's fields were
+  never extracted. It **is** reported here, alongside an error-severity
+  `extraction_class_not_configured` issue from the Extraction step.
+
+⚠️ **That last case is not always rare, and which configuration you run decides
+it.** On the default `multimodalPageLevelClassification` with
+`enforceValidClasses` on, an out-of-vocabulary prediction is retried and then
+coerced to `invalidClassFallback`, so it becomes the silent `unclassified` case
+above and the count really is bounded by configuration edits. Two other supported
+configurations store the model's invented class name verbatim —
+`textbasedHolisticClassification`, which has no enforcement loop at all, and
+`multimodalPageLevelClassification` with `enforceValidClasses: false` — and there
+the rate follows model output rather than operator action. Small, cheap
+classification models are the most prone to those predictions. On either of those
+paths expect data points proportional to throughput, and use
+`ConfidenceUnavailableThreshold` to set the volume at which it is worth paging;
+better still, define the classes the model keeps reaching for, or turn enforcement
+on. The report itself is correct either way — the section holds no data — so the
+parameter, not a carve-out, is the right lever.
+
+The first two report nothing at all, exactly as an
+[excluded class](./classification.md) does.
+
 That is the right trade for one section, and it creates a monitoring gap for the
 fleet ([#996](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/996)):
 a **systemic** confidence failure no longer fails documents, so it no longer
@@ -244,12 +306,31 @@ CloudWatch metric.
 
 One metric in the stack's own namespace (`<StackName>`):
 
-- **`AssessmentConfidenceUnavailable`** — published (value `1`) each time a
-  section is degraded, by the unified pattern's `AssessmentFunction`, with no
-  dimensions. It reaches the **root** stack's namespace because that function's
-  `METRIC_NAMESPACE` is the `StackName` the parent passes down. Published only on
-  a degrade, so no data means every confidence pass either succeeded or failed
-  transiently and was retried.
+- **`AssessmentConfidenceUnavailable`** — published (value `1`) by the unified
+  pattern's `AssessmentFunction`, with no dimensions, each time a section ends up
+  with **no confidence scores**, whichever of the two causes above put it there.
+  It reaches the **root** stack's namespace because that function's
+  `METRIC_NAMESPACE` is the `StackName` the parent passes down. The metric
+  deliberately does not separate a failed confidence pass from a skipped one: the
+  question it exists to answer is "are sections coming back without confidence?",
+  and the answer is yes either way. The section's issue code is what tells the two
+  apart once you open the document, and they point at different remedies — the
+  confidence model for a failure, whatever produced the section for a skip.
+  Nothing is published for a section the confidence pass was never going to score:
+  one whose class is **excluded**, one whose class is in configuration with **no
+  attributes to extract**, one that classification **could not classify at all**
+  (which is what a blank page produces — the classification stage reports that
+  instead), or any section at all when confidence assessment is switched off in
+  configuration. All four are expected on healthy
+  documents — a single blank page or cover sheet produces one — so counting
+  them would breach the alarm's threshold on ordinary throughput. A section whose
+  **named class is missing from the configuration** is not in that set and does
+  publish, because the section was expected to hold data and holds none — on the
+  default classification configuration that needs a configuration edit to happen at
+  all, but on the two non-enforcing ones described above it follows model output, so
+  tune `ConfidenceUnavailableThreshold` to your corpus there. **No data
+  therefore means every section that should have been scored was scored** — give
+  or take a confidence pass that failed transiently and succeeded on retry.
 
 One alarm publishes to `AlertsTopic`:
 
@@ -266,20 +347,25 @@ One alarm publishes to `AlertsTopic`:
   unified-pattern dashboard draws the configured value as its annotation, so the
   graph and the trigger stay in step when you tune it.
 
-**Diagnosing.** The recorded issue's `root_cause` names the underlying exception,
-and the same failure is logged at ERROR in the AssessmentFunction log group. Note
+**Diagnosing.** Start from the recorded issue's `code`, which says whether the
+confidence pass failed or never ran, and its `root_cause`, which names the
+underlying exception for a failure and what the section was missing for a skip.
+The same line is logged at ERROR in the AssessmentFunction log group. Note
 that group is `/<StackName>-PATTERNSTACK-<id>/lambda/AssessmentFunction`: the name
 comes from `AWS::StackName` **inside the nested pattern template**, which is the
 nested stack's CloudFormation-generated name, not the root stack's — so list on the
-`/<StackName>-PATTERNSTACK` prefix rather than typing the path
-("Deterministic (non-retryable) assessment failure"). The three causes worth
-checking first:
+`/<StackName>-PATTERNSTACK` prefix rather than typing the path. A failure logs
+"Deterministic (non-retryable) assessment failure"; a skip logs what the section
+was missing. The six causes worth checking first:
 
-| Symptom in `root_cause` | Likely cause | Fix |
+| Symptom in the recorded issue | Likely cause | Fix |
 |---|---|---|
 | `ValidationException: Input is too long for requested model.` | The confidence model's input limit is smaller than the sections being assessed | Lower `extraction.confidence.list_batch_size`, or configure a confidence model with a larger context window |
 | `AccessDeniedException` on `bedrock:InvokeModel` | The configured confidence model is not granted, or model access was revoked | Grant the model in Bedrock console → Model access, and check the Lambda role |
 | `ValidationException` naming the model id | The model id is not available in this region | Choose a model enabled in the deployment region |
+| No exception at all, and the code is `assessment_skipped_confidence_unavailable` | The section reached assessment with nothing to assess: no extraction result, no pages, or an empty `inference_result` | Look at the stage that produced the section — Extraction for a missing or empty result, Classification for a section with no pages — not at the confidence model |
+| The same code, with a `root_cause` naming a class that is "not in the configuration" | The section's class was renamed or deleted while documents were in flight, the document was reprocessed under a configuration that no longer defines its class, or the classifier predicted a class outside the vocabulary on a path that does not enforce one. No fields were extracted either — the section carries `extraction_class_not_configured` too | Add the class to the configuration, reclassify the document under the current one, or turn `enforceValidClasses` on. Not a confidence problem. If these arrive steadily, check which classification method and enforcement setting you are running before raising `ConfidenceUnavailableThreshold` |
+| The same code, with a `root_cause` saying none of the section's pages are present in the document | The section lists page IDs the document does not contain, so there was no page text or image to assess against. Before this was detected the pass ran anyway and returned scores derived from nothing | Check the Classification step's section boundaries and the OCR step's page list. A warning-severity `assessment_pages_missing` (no metric) marks the partial case, where only some pages were absent |
 
 **What is lost while it is firing:** the affected sections have no confidence
 values, so they are not covered by confidence-based review — HITL confidence
@@ -289,6 +375,98 @@ are absent in the UI. The extracted data itself is unaffected.
 One dashboard widget on the **unified pattern** dashboard (not the main one):
 **Confidence Assessment Degraded**, a 15-minute-period count with the alarm
 threshold drawn as an annotation so the trend and the trigger are read together.
+
+### Agent Transcript Write Failures
+
+The analytics UI replays an agent conversation from `agent_messages` on the job
+record, which is the **whole transcript held in one DynamoDB attribute**. Appending
+a message therefore means reading the array, growing it by one and writing it back,
+and every sub-agent in a turn does that against the *same* record — nothing caps how
+many sub-agents a turn may use. Each append is conditional on a version attribute so
+an overlapping writer is rejected rather than overwritten, and a rejected append is
+rebuilt on a fresh read with jittered backoff. A message that still cannot be stored
+after the retry budget is **dropped**.
+
+Dropping it is the deliberate choice: the alternative is writing the transcript
+unconditionally, which forces one message through at the cost of every message
+written since the read. What matters operationally is that the drop is **visible**,
+because the unguarded version of this append lost most of a transcript with every
+individual write reporting success
+([#1098](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/1098)).
+
+**Only the analytics agent records a transcript.** `AGENT_TABLE` is set on exactly two
+functions — `AgentProcessorFunction`, which is this path, and
+`AgentCoreMCPHandlerFunction`, which builds no agent — and a transcript logger also
+needs the `job_id` and `user_id` that only the analytics entry point passes. Agent chat
+stores no transcript, so neither metric below can come from it.
+
+Two metrics in the stack's own namespace (`<StackName>`), both published with no
+dimensions by `DynamoDBMessageLogger` in `idp_common.agents.common`, both from
+`AgentProcessorFunction`, which sets `METRIC_NAMESPACE` to the root stack name and
+whose `cloudwatch:PutMetricData` grant permits that namespace alongside
+`IDPControlPlane`. They are separate because only one of them means the message is
+gone:
+
+- **`AgentTranscriptMessageDropped`** — value `1` per message the append gave up on:
+  the conflict retries ran out, or the read kept failing. **The message is lost.** No
+  data means nothing was dropped.
+- **`AgentTranscriptDrainIncomplete`** — one datum per drain that did not finish,
+  carrying the **number of messages** it left behind, so `Sum` counts messages. An
+  agent's close waits two seconds for whatever is still queued; this is what the wait
+  left. **The message is not necessarily lost** — the wait stops without cancelling,
+  and Lambda resumes unfinished background work if that execution environment is
+  thawed again. No data means every drain finished.
+
+Two alarms publish to `AlertsTopic`:
+
+- **`AgentTranscriptMessageDroppedAlarm`** — ten or more dropped messages within 15
+  minutes. Like `AssessmentConfidenceUnavailableAlarm`, and unlike
+  `StaleOutputPurgeFailedAlarm`, it deliberately does **not** fire on the first
+  occurrence: one drop is a tolerated outcome of a bounded retry under a burst and
+  costs a single transcript entry that nothing else depends on. A stream of them
+  means transcripts are being recorded with gaps across the board.
+- **`AgentTranscriptDrainIncompleteAlarm`** — ten or more messages left behind within
+  15 minutes. Volume rather than first occurrence for a weaker reason than its sibling:
+  a single incomplete drain usually costs nothing, because the write resumes on the
+  next thaw. What is worth waking someone for is writes routinely outlasting the agents
+  that queued them.
+
+**Diagnosing.** The log line beside every emit names the job id and the message's
+role and timestamp, at ERROR in `AgentProcessorFunction`'s log group. It does not name a
+`sequence_number`, because that value is the message's position in the *stored*
+transcript and a message that was never stored has none. That log group is not under a
+`/aws/lambda/<StackName>-` prefix you can guess: the function declares no
+`LogGroupName`, so it takes CloudFormation's generated name and lists on the
+`<StackName>-` prefix with **no leading slash**. The three causes read differently:
+
+| Log line | Cause | Fix |
+|---|---|---|
+| `Gave up appending message ... after N attempts` | Sustained contention: many sub-agents writing one job record | Expected under a wide fan-out; if it is steady, look at how many agents the requests select. Selecting every available agent is one click in the UI |
+| `Could not read existing messages ... after N attempts` | The read itself kept failing — throughput on the agent table, or a transient service error | Check the agent table's throttling metrics. A read error that cannot succeed on retry (`AccessDeniedException`, `ValidationException`) is not retried and is logged once, so a single warning of that shape points at the grant or the request rather than at load |
+| `Agent transcript write for job ... did not finish within Ns` | The agent closed and the bounded drain at its exit could not complete this write in time — a write deep in a retry ladder, or a burst queued behind one. This is the one that feeds `AgentTranscriptDrainIncomplete` | Check the agent table's latency and throttling metrics. Unlike the two above, the message may well have been persisted: see below |
+
+**What is lost while either alarm is firing:** entries in the stored conversation
+transcript, so a replayed conversation shows gaps. The agent's own answer to the user,
+the job's outcome and every extracted result are unaffected — these metrics watch a
+path whose failure the workflow reports as success.
+
+**The two metrics do not license the same conclusion, which is why they are separate.**
+`AgentTranscriptMessageDropped` means the message is gone: the append gave up.
+`AgentTranscriptDrainIncomplete` means only that a write outlived the agent that queued
+it. Stopping the wait does not cancel the write, and Lambda resumes unfinished
+background work if that execution environment is thawed for another invocation, so the
+message frequently is stored — just after the session that was reading the transcript
+has moved on. It is lost only if the environment is reclaimed instead of reused, which
+is the certain outcome for the last invocation before a scale-down. Folding the two
+together would page whoever alarmed on a destroyed transcript every time an environment
+froze and thawed.
+
+The drain is what makes the third case bounded and visible at all. Transcript writes
+are queued on a thread pool, and a Lambda invocation ends with the execution
+environment being *frozen* rather than shut down, so nothing flushes that queue on its
+own — an agent's context-manager exit waits for it, for two seconds, and reports what
+it could not finish
+([#1110](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/1110)).
 
 ## Log Groups
 
@@ -348,6 +526,76 @@ only by setting `LogLevel=INFO` (or `DEBUG`) and accepting the exposure above:
 - **`idp-cli deploy --log-level` has no CLI default.** Omit it to get the template
   default on a new stack or to preserve the current value on an update. Passing
   `--log-level INFO` is honoured; it used to be silently treated as "unset".
+
+## X-Ray Tracing
+
+`EnableXRayTracing` (default `true`) controls AWS X-Ray tracing. On `true` each
+covered Lambda runs in `Active` mode and both state machines set
+`TracingConfiguration.Enabled`; on `false` the Lambdas run in `PassThrough`, which
+records nothing of their own and continues a trace only if a caller already sampled
+the request, and the state machines stop tracing. X-Ray is billed per trace
+recorded, so `false` is how you take that line of the bill to zero.
+
+It covers both state machines and every traced Lambda in the three templates the
+main stack deploys: `template.yaml`, `patterns/unified/template.yaml`, and the
+nested `feature-platform/main-stack-extensions/template.yaml`, which receives the
+parameter from the main stack the same way it receives `LogLevel` and
+`LogRetentionDays`. `scripts/tests/test_xray_tracing.py` is what keeps that true —
+it fails if any function in those templates hardcodes a mode, and if any function in
+the nested one omits it.
+
+⚠️ **The feature-platform resolvers are new to the traced set, and on the default
+`true` they add X-Ray charges an existing deployment did not have.** Those are the
+UI-facing resolvers and install hooks in the nested stack. They declared
+`Tracing: Active` before, but they share one execution role that carried no
+`xray:PutTraceSegments`, so no segment was ever written and nothing was billed —
+tracing was on and inert. The role now carries the grant, so with
+`EnableXRayTracing=true` they emit segments like every other traced function in the
+deployment, and with `false` they emit nothing. If you upgrade and want the previous
+X-Ray spend, set the parameter to `false`.
+
+### Installed extensions trace unconditionally
+
+An extension you install from the Extensions catalog — `pii-anonymizer`,
+`idp-data-generator`, `confbench-testset`, `sample-feature`,
+`sample-health-insurance-review`, or a stack scaffolded from `feature-template` — is
+its own CloudFormation stack with its own parameters, launched by you rather than
+created by the main stack. The install URL pre-fills only two host-derived values,
+`MainStackName` and `FeatureBucket`, so **the main stack's `EnableXRayTracing` does
+not reach it**, the same way its `LogLevel` does not (see above). Each of those
+templates sets `Tracing: Active` for every function in its `Globals` block, so
+setting `EnableXRayTracing=false` on the main stack leaves them tracing.
+
+What that costs depends on the function's execution role, because SAM attaches the
+X-Ray write policy only to a role it *generates*:
+
+| Functions in the six extension templates | Traces recorded |
+|---|---|
+| Those with a SAM-generated execution role — the majority, and every one that serves requests | Yes — SAM attaches its X-Ray managed policy because `Tracing` is declared, so these emit segments and are billed |
+| Those with an explicit `Role:` — each `UiDeployerFunction`, plus `idp-data-generator`'s `DockerBuildRunFunction` and `AgentCoreRuntimeManagerFunction` | No — their roles carry no `xray:PutTraceSegments`, so tracing is declared and produces nothing |
+
+To see the split for the version you are running, rather than trusting a number
+written down here, `scripts/tests/test_xray_tracing.py`'s `_traced_without_a_grant`
+is the predicate: a function it reports has an explicit role that cannot write a
+segment, and every other function in those templates emits.
+
+The policy SAM picks depends on the partition: `AWSXrayWriteOnlyAccess` in `aws`,
+and `AWSXRayDaemonWriteAccess` in China and GovCloud. Both grant
+`xray:PutTraceSegments`, so the table above reads the same in every partition.
+
+To stop the 13 from tracing today, delete the extension stack, or change
+`Globals.Function.Tracing` in the extension's template to `PassThrough` and
+republish it. There is no per-extension parameter yet, and adding one is the
+obvious third option rather than an unavailable one: all six already declare a
+`LogLevel` parameter with its own default that you set on that stack when you
+install it, so an `EnableXRayTracing` beside it would follow a pattern these
+templates already use. What it would not do is make the main stack's setting reach
+them — the catalog install flow pre-fills only `MainStackName` and `FeatureBucket`
+from the host — so it is a knob per stack, not one setting for the deployment.
+
+`scripts/tests/test_xray_tracing.py` records these six templates exactly, in both
+directions, so a seventh cannot join them silently and converting one forces its
+entry to be removed.
 
 ## Pattern-Specific Monitoring
 
@@ -413,7 +661,9 @@ documents processed" genuinely means "no failures", and leaving alarms parked in
 | `QueueProcessorErrorsAlarm` | Any `QueueProcessor` invocation error in 5 min — for this function, a timeout or out-of-memory before its SQS batch finished | `AlertsTopic` | — |
 | `WorkflowTrackerDLQAlarm` | Any message in the Workflow Tracker DLQ | `AlertsTopic` | — |
 | `StaleOutputPurgeFailedAlarm` | Any output-purge failure within 5 min | `AlertsTopic` | — |
-| `AssessmentConfidenceUnavailableAlarm` | `ConfidenceUnavailableThreshold` or more sections degraded to "no confidence scores" within 15 min — a systemic confidence-assessment failure, not a few awkward documents | `AlertsTopic` | `ConfidenceUnavailableThreshold` (default `10`) |
+| `AssessmentConfidenceUnavailableAlarm` | `ConfidenceUnavailableThreshold` or more sections left with "no confidence scores" within 15 min, whether the confidence pass failed or never ran — something systemic, not a few awkward documents | `AlertsTopic` | `ConfidenceUnavailableThreshold` (default `10`) |
+| `AgentTranscriptMessageDroppedAlarm` | Ten or more agent conversation messages dropped from the stored transcript within 15 min — sustained write contention on one job record, or reads that keep failing. These messages are gone | `AlertsTopic` | — |
+| `AgentTranscriptDrainIncompleteAlarm` | Ten or more transcript writes left unfinished within 15 min when the agents that queued them closed. Distinct from the row above: these writes were not cancelled and often complete on the next thaw, so the transcript may be late rather than incomplete | `AlertsTopic` | — |
 | `DataMartRollupDLQAlarm` | Any message in the reporting-rollup DLQ | `AlertsTopic` | — |
 | `BedrockServiceOutageAlarm` | Combined Bedrock error count exceeds the circuit-breaker threshold | `CircuitBreakerTopic` | `CircuitBreakerFailureThreshold` and the `CircuitBreakerTrigger*` toggles |
 
@@ -729,6 +979,16 @@ exactly when documents pile up. If `BedrockServiceOutageAlarm` is active on the
 same topic, this alarm is reporting the same incident and clears on its own when
 the breaker closes. Only relevant when the circuit breaker is enabled, which is
 not the default.
+
+**A failure to *read* the breaker's state trips it too, and looks nothing like the
+pause above.** With `CircuitBreakerEnabled=true`, a transient fault on the state read
+refuses admission, which holds messages without deleting them — so both conditions hold
+again. The distinguishing signal is that this case emits **no Bedrock error metrics at
+all**, so `BedrockServiceOutageAlarm` stays **clear** and the runbook's "if that alarm is
+also active, it is the same incident" test does not apply. Check the
+`CircuitBreakerCheckFailed` metric with dimension `Classification=TRANSIENT`; the cause is
+the ConcurrencyTable, not the processor and not Bedrock. See
+[Circuit breaker](circuit-breaker.md#when-the-state-cannot-be-read).
 
 **One reporting caveat.** SQS stops publishing queue metrics for a queue that has
 been inactive for about six hours. In the specific case where the consumer is
