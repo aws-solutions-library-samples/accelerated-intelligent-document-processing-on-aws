@@ -1911,20 +1911,78 @@ class TestParseTextractResponseFallbacks:
 class TestOcrImageBytesBdaBackend:
     """Embedded-image OCR has no BDA branch, and that matters to report."""
 
-    def test_the_bda_backend_silently_uses_textract_for_embedded_images(self):
-        """Documented here because the `else` covers BDA as well as Textract.
+    def test_the_bda_backend_ocrs_an_embedded_image_through_textract(self):
+        """An embedded image contributes its text under any backend (#1158).
 
-        With `backend="bda"` there is no `textract_client` attribute at all, so
-        the call raises and the helper returns its failure placeholder instead of
-        the image's text. Embedded images in a .docx therefore contribute nothing
-        under the BDA backend.
+        `__init__` assigns `self.textract_client` only in its `textract` arm, while
+        this path is reached for any backend with no image handling of its own. Under
+        `backend="bda"` the attribute did not exist, the access raised
+        `AttributeError`, the caller's broad `except` caught it, and the helper
+        returned `"[Image - OCR failed]"` — so a scanned page or screenshot pasted into
+        a Word document contributed nothing to the page text and the document
+        completed successfully with that content missing. A `.docx` is dispatched on
+        file type before the backend is consulted, so this is reachable whenever
+        `ocr.backend` is set to anything landing in the Textract branch.
+
+        ⚠️ **Asserting the placeholder is no longer enough to test this**, which is
+        why the assertions below name the call. With a mocked `boto3.client`, a client
+        that is created but returns a `MagicMock` yields a `Blocks` value that is not
+        iterable, so the broad `except` produces the *same* placeholder for a
+        completely different reason — a test asserting only the return value passes
+        either way.
         """
         service = make_service(
             config={"ocr": {"backend": "bda", "bda_project_arn": "arn:proj"}}
         )
-        assert not hasattr(service, "textract_client")
+        assert not hasattr(service, "textract_client"), (
+            "construction should still not create one; it is resolved on demand"
+        )
 
-        assert service._ocr_image_bytes(JPEG_BYTES) == "[Image - OCR failed]"
+        textract = MagicMock(name="textract_client")
+        textract.detect_document_text.return_value = {
+            "Blocks": [
+                {"BlockType": "LINE", "Text": "SCANNED LINE ONE"},
+                {"BlockType": "WORD", "Text": "ignored"},
+                {"BlockType": "LINE", "Text": "SCANNED LINE TWO"},
+            ]
+        }
+        with patch("boto3.client", return_value=textract) as client_factory:
+            result = service._ocr_image_bytes(JPEG_BYTES)
+
+        assert result == "SCANNED LINE ONE\nSCANNED LINE TWO"
+        textract.detect_document_text.assert_called_once_with(
+            Document={"Bytes": JPEG_BYTES}
+        )
+        assert client_factory.call_args[0][0] == "textract"
+
+    def test_the_embedded_image_client_is_created_once_and_reused(self):
+        """A document can hold many embedded images, and a client per image would
+        add a boto3 client construction to each one."""
+        service = make_service(
+            config={"ocr": {"backend": "bda", "bda_project_arn": "arn:proj"}}
+        )
+        textract = MagicMock(name="textract_client")
+        textract.detect_document_text.return_value = {"Blocks": []}
+
+        with patch("boto3.client", return_value=textract) as client_factory:
+            service._ocr_image_bytes(JPEG_BYTES)
+            service._ocr_image_bytes(JPEG_BYTES)
+
+        assert client_factory.call_count == 1
+        assert textract.detect_document_text.call_count == 2
+
+    def test_a_textract_failure_still_degrades_to_the_placeholder(self):
+        """The failure path is kept: the image's content is genuinely unavailable, and
+        one page's image must not fail the whole document. The warning now names the
+        consequence rather than only the error."""
+        service = make_service(
+            config={"ocr": {"backend": "bda", "bda_project_arn": "arn:proj"}}
+        )
+        textract = MagicMock(name="textract_client")
+        textract.detect_document_text.side_effect = RuntimeError("denied")
+
+        with patch("boto3.client", return_value=textract):
+            assert service._ocr_image_bytes(JPEG_BYTES) == "[Image - OCR failed]"
 
     def test_the_none_backend_marks_the_image_without_calling_anything(self):
         service = make_service(backend="none")

@@ -364,20 +364,38 @@ class TestCsvConversion:
         assert "KEEPME" in text
         assert "| a | b |" in text
 
-    def test_a_ragged_row_loses_its_extra_fields(self):
-        """Pins current behaviour, and it is a content-loss defect.
+    def test_a_ragged_row_keeps_its_extra_fields(self):
+        """A row wider than the header keeps every field (#1158).
 
-        A row with more fields than the header takes the `csv.reader` fallback,
-        and `_format_csv_as_table` then drops every cell past `len(rows[0])`
-        because `col_widths` is sized from the header alone. Nothing is logged at
-        row scope, so a CSV whose last column is only present on some rows arrives
-        at extraction with that column silently missing."""
+        A row with more fields than the header is exactly what pushes `pd.read_csv`
+        into `ParserError` and therefore into this `csv.reader` fallback — so the path
+        reached *because* the file is ragged was the one discarding the ragged data.
+        `col_widths` was sized from the header alone and the cell loop was guarded by
+        `col_idx < len(col_widths)`, so every field past the header's width was
+        dropped, with nothing logged at row scope. The rendered markdown was
+        well-formed, so a CSV whose last column appears on only some rows reached
+        extraction with that column silently missing."""
         converter = _converter()
         pages = converter.convert_csv_to_pages("a,b\n1,2\n3,4,DROPPED\n")
 
         text = "\n".join(t for _, t in pages)
-        assert "| 3 | 4 |" in text
-        assert "DROPPED" not in text
+        assert "DROPPED" in text
+
+    def test_every_row_is_rendered_at_the_tables_full_width(self):
+        """The pipe count must be the same on every line.
+
+        A markdown table with a ragged pipe count is parsed inconsistently by
+        downstream readers, so a short row is padded rather than left narrow — which
+        also means the header and the widened data rows line up.
+        """
+        converter = _converter()
+        table = converter._format_csv_as_table([["a", "b"], ["1"], ["3", "4", "EXTRA"]])
+
+        pipe_counts = {line.count("|") for line in table.split("\n")}
+        assert len(pipe_counts) == 1, (
+            f"rows rendered at differing widths: {sorted(pipe_counts)}"
+        )
+        assert "EXTRA" in table
 
     def test_a_header_only_csv_returns_a_page_with_no_text_at_all(self):
         """Pins current behaviour, and it is a content-loss defect.
@@ -2249,45 +2267,50 @@ class TestMarkdownPager:
         assert pages[0][1] == "# Title\nbody line"
         assert _ink_bbox(_open(pages[0][0])) is not None
 
-    def test_a_repeated_table_header_pushes_the_last_rows_off_the_image(self):
-        """Pins current behaviour, and it is a defect.
+    def test_a_continuation_page_fits_its_repeated_header_within_the_budget(self):
+        """A continuation page must not be handed more lines than it can render.
 
-        `_ensure_table_headers` prepends two lines to a continuation page without
-        reducing that page's line budget, so a full continuation page carries 42
-        lines onto a canvas that holds 40. The two lines that do not fit are
-        dropped by the `break  # Page is full` guard.
+        `_ensure_table_headers` prepended two lines to a continuation page without
+        reducing that page's line budget, so a **full** interior page carried
+        `lines_per_page + 2` lines onto a canvas that renders `lines_per_page`, and the
+        `break  # Page is full` guard dropped the overflow from the IMAGE while it
+        stayed in the page text. `ocr/service.py` builds its OCR blocks from the page
+        text, so text-based extraction was unaffected and nothing reported the
+        discrepancy; a vision-capable classification or extraction call shown that page
+        did not see its last rows (#1158).
 
-        They stay in the page text, and `ocr/service.py` builds its OCR blocks
-        from the page text, so text-based extraction is unaffected. What is
-        affected is the page image uploaded alongside it: a vision model shown
-        page 2 of a three-page table does not see its last two rows, and nothing
-        reports the discrepancy."""
+        ⚠️ **This needs a table long enough to FILL an interior page.** A 100-row CSV
+        does not reproduce it — measured, its page 2 holds 21 of 83 lines, so the two
+        extra fit and before and after are identical. 300 rows makes the interior pages
+        full, where the old code handed them 85 lines against a canvas rendering 83.
+        """
         converter = _converter()
-        content = "id,label\n" + "\n".join(f"{i},L{i:03d}" for i in range(100))
+        content = "id,label\n" + "\n".join(f"{i},L{i:03d}" for i in range(300))
 
         pages = converter.convert_csv_to_pages(content)
-        assert len(pages) == 3
+        assert len(pages) >= 3, "need an interior page for this to say anything"
 
-        # Conservation across three pages, not two: the pager advances by the
-        # number of *original* lines it consumed, and advancing by the number it
-        # rendered instead would skip two rows at every interior seam — which only
-        # a document with an interior page can show.
+        # Conservation first: no row may be lost or duplicated at a seam.
         all_text = "\n".join(t for _, t in pages)
-        for i in range(100):
+        for i in range(300):
             assert all_text.count(f"L{i:03d}") == 1, f"row L{i:03d} duplicated or lost"
 
-        middle_text, middle_image = pages[1][1], pages[1][0]
         lines_per_page = (converter.page_height - 2 * converter.margin) // 18
-        assert len(middle_text.split("\n")) == lines_per_page + 2
+        for page_number, (_, page_text) in enumerate(pages, start=1):
+            handed = len(page_text.split("\n"))
+            assert handed <= lines_per_page, (
+                f"page {page_number} was handed {handed} lines onto a canvas that "
+                f"renders {lines_per_page}; the excess is dropped from the image while "
+                "remaining in the page text, which no text assertion can detect"
+            )
 
-        # Both pages' ink stops at the same place even though the middle page was
-        # handed two more lines than the first.
-        first_bottom = _ink_bbox(_open(pages[0][0]))
-        middle_bottom = _ink_bbox(_open(middle_image))
-        assert first_bottom is not None and middle_bottom is not None
-        assert middle_bottom[3] == first_bottom[3]
-        # The rows that were dropped from the image are still in the text.
-        assert "L077" in middle_text
+        # And the interior page really does repeat the header, which is the feature
+        # whose budget this is: a fix that simply stopped prepending would satisfy the
+        # assertion above and lose the header instead. Matched on the column names
+        # rather than a literal prefix, because the pandas path pads cells to width.
+        first_line = pages[1][1].split("\n")[0]
+        assert first_line.startswith("|") and "id" in first_line, first_line
+        assert "label" in first_line, first_line
 
     def test_a_wrapped_line_at_the_foot_of_a_page_stops_at_the_margin(self):
         """The inner break: a line that wraps into more rows than are left must
@@ -2544,20 +2567,17 @@ class TestEmptyPage:
     def test_it_scales_with_the_converters_dpi(self):
         assert _open(_converter(300)._create_empty_page()).size == (2550, 3300)
 
-    def test_the_last_resort_bytes_do_not_decode(self):
-        """Pins current behaviour, and it is a defect.
+    def test_the_last_resort_bytes_decode(self):
+        """The literal that ships when image creation is impossible must DECODE.
 
-        When image creation itself is impossible the hardcoded literal at the foot
-        of `_create_empty_page` is what ships downstream. Pillow parses its header
-        — it reports a 1x1 JPEG — but decoding raises `OSError: broken data
-        stream`, because the `SOF0` marker declares one component while the
-        following component specs and the `SOS` marker describe three, and the
-        scan itself is a single byte.
-
-        A header-only check therefore passes and the file is uploaded to S3 as an
-        apparently valid page image. It fails later, in whatever first decodes it
-        — Textract, a Bedrock image block, or the UI's page preview — with an
-        error that points at the consumer rather than at this literal."""
+        `load()` is the assertion, not `open()` (#1158). The previous literal parsed
+        as a 1x1 JPEG and then raised `OSError: broken data stream` on decode, because
+        its `SOF0` marker declared one component while the component specifications
+        that followed and the `SOS` marker described three, and its scan was a single
+        byte. A header-only validity check therefore passed and the file was uploaded
+        to S3 as an apparently valid page image, failing later in whatever first
+        decoded it — Textract, a Bedrock image block, or the UI's page preview — with
+        an error pointing at the consumer rather than at the producer."""
         converter = _converter()
         with patch.object(dc_module.Image, "new", side_effect=OSError("no canvas")):
             img_bytes = converter._create_empty_page()
@@ -2565,8 +2585,16 @@ class TestEmptyPage:
         assert img_bytes.startswith(b"\xff\xd8") and img_bytes.endswith(b"\xff\xd9")
         img = Image.open(io.BytesIO(img_bytes))
         assert (img.format, img.size) == ("JPEG", (1, 1))
-        with pytest.raises(OSError, match="broken data stream"):
-            img.load()
+        img.load()  # the whole point: this used to raise
+
+    def test_the_last_resort_constant_itself_decodes(self):
+        """Asserted on the constant as well as through the fallback path, so a future
+        edit to the literal is caught even if nothing exercises `_create_empty_page`'s
+        deepest rung. It is produced by Pillow rather than hand-assembled for the same
+        reason."""
+        img = Image.open(io.BytesIO(dc_module._MINIMAL_WHITE_JPEG))
+        img.load()
+        assert (img.format, img.size) == ("JPEG", (1, 1))
 
     def test_a_zero_byte_save_falls_through_to_a_minimal_jpeg(self):
         """The middle rung of the ladder: the full-size save produced nothing, so

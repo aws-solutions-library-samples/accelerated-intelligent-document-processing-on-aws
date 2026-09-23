@@ -52,6 +52,25 @@ def is_legacy_ole2_office_file(content: bytes) -> bool:
     return content[: len(_OLE2_MAGIC)] == _OLE2_MAGIC
 
 
+#: A 1x1 white JPEG, used as the last resort when image creation itself fails — so it
+#: is what every failure handler in this module can end up shipping as a page image.
+#:
+#: ⚠️ **It has to DECODE, not merely parse.** The literal here previously declared one
+#: component in its ``SOF0`` marker while the component specifications that followed
+#: and the ``SOS`` marker described three, and its scan was a single byte. Pillow read
+#: the header and reported ``JPEG (1, 1) L`` — so a header-only validity check passed
+#: and the file was written to S3 as an apparently valid page image — while
+#: ``Image.open(...).load()`` raised ``OSError: broken data stream when reading image
+#: file``. The failure then surfaced in whatever first decoded it, a Textract call, a
+#: Bedrock image block or the UI page preview, pointing at the consumer rather than at
+#: the producer (#1158).
+#:
+#: Produced by Pillow rather than hand-assembled, and
+#: ``test_the_last_resort_bytes_decode`` loads it, so a literal that only looks like a
+#: JPEG cannot return here.
+_MINIMAL_WHITE_JPEG = b"\xff\xd8\xff\xe0\x00\x10JFIF\x00\x01\x01\x00\x00\x01\x00\x01\x00\x00\xff\xdb\x00C\x00\x02\x01\x01\x01\x01\x01\x02\x01\x01\x01\x02\x02\x02\x02\x02\x04\x03\x02\x02\x02\x02\x05\x04\x04\x03\x04\x06\x05\x06\x06\x06\x05\x06\x06\x06\x07\t\x08\x06\x07\t\x07\x06\x06\x08\x0b\x08\t\n\n\n\n\n\x06\x08\x0b\x0c\x0b\n\x0c\t\n\n\n\xff\xc0\x00\x0b\x08\x00\x01\x00\x01\x01\x01\x11\x00\xff\xc4\x00\x1f\x00\x00\x01\x05\x01\x01\x01\x01\x01\x01\x00\x00\x00\x00\x00\x00\x00\x00\x01\x02\x03\x04\x05\x06\x07\x08\t\n\x0b\xff\xc4\x00\xb5\x10\x00\x02\x01\x03\x03\x02\x04\x03\x05\x05\x04\x04\x00\x00\x01}\x01\x02\x03\x00\x04\x11\x05\x12!1A\x06\x13Qa\x07\"q\x142\x81\x91\xa1\x08#B\xb1\xc1\x15R\xd1\xf0$3br\x82\t\n\x16\x17\x18\x19\x1a%&'()*456789:CDEFGHIJSTUVWXYZcdefghijstuvwxyz\x83\x84\x85\x86\x87\x88\x89\x8a\x92\x93\x94\x95\x96\x97\x98\x99\x9a\xa2\xa3\xa4\xa5\xa6\xa7\xa8\xa9\xaa\xb2\xb3\xb4\xb5\xb6\xb7\xb8\xb9\xba\xc2\xc3\xc4\xc5\xc6\xc7\xc8\xc9\xca\xd2\xd3\xd4\xd5\xd6\xd7\xd8\xd9\xda\xe1\xe2\xe3\xe4\xe5\xe6\xe7\xe8\xe9\xea\xf1\xf2\xf3\xf4\xf5\xf6\xf7\xf8\xf9\xfa\xff\xda\x00\x08\x01\x01\x00\x00?\x00\xfd\xfc\xaf\xff\xd9"
+
+
 class DocumentConverter:
     """Converter for various document formats to images and text."""
 
@@ -1552,13 +1571,38 @@ class DocumentConverter:
             return "\n".join(fallback_parts)
 
     def _format_csv_as_table(self, rows: List[List[str]]) -> str:
-        """Format CSV rows as a readable table in proper markdown format."""
+        """Format CSV rows as a readable table in proper markdown format.
+
+        ⚠️ **Column count comes from the WIDEST row, not from the header.** This is
+        the fallback ``convert_csv_to_pages`` reaches when ``pandas`` raises, and the
+        commonest reason it raises is a row with more fields than the header — so the
+        path reached *because* the file is ragged was the one discarding the ragged
+        data. Sizing from ``rows[0]`` and guarding the cell loop with ``col_idx <
+        len(col_widths)`` dropped every field past the header's width, silently and at
+        row scope: ``a,b`` then ``1,2`` then ``3,4,DROPPED`` rendered as ``| 3 | 4 |``
+        with nothing logged. The text was well-formed markdown, so nothing downstream
+        could tell (#1158).
+
+        Short rows are padded for the same reason: a markdown table with a ragged
+        pipe count is parsed inconsistently by downstream readers, where a padded one
+        is unambiguous.
+        """
         if not rows:
             return ""
 
+        column_count = max(len(row) for row in rows)
+        if column_count > len(rows[0]):
+            logger.warning(
+                "CSV has %d field(s) in its widest row but %d in its header; "
+                "widening the table to keep the extra fields rather than dropping "
+                "them",
+                column_count,
+                len(rows[0]),
+            )
+
         # Calculate column widths without truncation
         col_widths = []
-        for col_idx in range(len(rows[0])):
+        for col_idx in range(column_count):
             max_width = 0
             for row in rows:
                 if col_idx < len(row):
@@ -1568,11 +1612,13 @@ class DocumentConverter:
         # Format rows as markdown table
         formatted_rows = []
         for row_idx, row in enumerate(rows):
-            formatted_cells = []
-            for col_idx, cell in enumerate(row):
-                if col_idx < len(col_widths):
-                    cell_str = str(cell)  # Include all text without truncation
-                    formatted_cells.append(cell_str)
+            # Every row is rendered at the table's full width: extra fields are kept
+            # and missing ones are blank, so no cell is dropped and the pipe count is
+            # the same on every line.
+            formatted_cells = [
+                str(row[col_idx]) if col_idx < len(row) else ""
+                for col_idx in range(column_count)
+            ]
 
             # Proper markdown table format with leading and trailing pipes
             formatted_row = "| " + " | ".join(formatted_cells) + " |"
@@ -1633,15 +1679,23 @@ class DocumentConverter:
             original_line_idx = 0
 
             while original_line_idx < len(original_lines):
-                # Get a chunk of original lines for this page
-                page_original_lines = original_lines[
-                    original_line_idx : original_line_idx + lines_per_page
-                ]
+                # A continuation page repeats the table header, and those lines have
+                # to come OUT of the page's budget before the chunk is taken. They
+                # used to be prepended afterwards, so a full interior page carried
+                # `lines_per_page + 2` lines onto a canvas that renders
+                # `lines_per_page`, and the "Page is full" guard below dropped the
+                # overflow from the IMAGE while it stayed in the page text — measured
+                # on a 100-row CSV as page 2 holding 42 lines with its ink stopping at
+                # exactly the same y as page 1's 40 (#1158).
+                header_lines = self._table_header_lines(table_info, original_line_idx)
+                # At least one content line, or a table whose header fills the page
+                # would advance by nothing and loop forever.
+                content_budget = max(1, lines_per_page - len(header_lines))
 
-                # Check if this page starts in the middle of a table
-                page_text_lines = self._ensure_table_headers(
-                    page_original_lines, table_info, original_line_idx
-                )
+                page_original_lines = original_lines[
+                    original_line_idx : original_line_idx + content_budget
+                ]
+                page_text_lines = header_lines + page_original_lines
 
                 # Create the page text from processed markdown
                 page_text = "\n".join(page_text_lines)
@@ -1811,35 +1865,41 @@ class DocumentConverter:
 
         return table_info
 
+    @staticmethod
+    def _table_header_lines(table_info: dict, start_line_idx: int) -> List[str]:
+        """The header lines a page starting mid-table must repeat, or an empty list.
+
+        Separate from the prepending so the caller can subtract their count from the
+        page's line budget *before* choosing the chunk. Prepending without that is
+        what pushed the last rows of a continuation page off the rendered image while
+        leaving them in the page text (#1158).
+        """
+        if not table_info["table_ranges"]:
+            return []
+
+        for table_start, table_end in table_info["table_ranges"]:
+            if table_start < start_line_idx <= table_end:
+                for header_idx, header_line, separator_line in table_info["headers"]:
+                    if table_start <= header_idx <= table_end:
+                        return [header_line, separator_line]
+
+        return []
+
     def _ensure_table_headers(
         self, page_lines: List[str], table_info: dict, start_line_idx: int
     ) -> List[str]:
-        """
-        Ensure that if a page starts in the middle of a table, it includes the table header.
+        """Prepend the repeated table header to a page that starts mid-table.
 
-        Args:
-            page_lines: Lines for this page
-            table_info: Table structure information
-            start_line_idx: Starting line index in the original document
-
-        Returns:
-            Modified page lines with table headers if needed
+        ⚠️ **Adds lines without reducing the page's budget**, so a caller that has
+        already filled a page to `lines_per_page` will overflow the canvas and lose
+        the tail from the *image*. Pair it with :meth:`_table_header_lines` and
+        subtract their count first, as `_convert_markdown_to_pages` does. Retained
+        because it is the readable form for a caller that is building a page from a
+        chunk it has already shortened.
         """
-        if not page_lines or not table_info["table_ranges"]:
+        if not page_lines:
             return page_lines
-
-        # Check if this page starts in the middle of a table
-        for table_start, table_end in table_info["table_ranges"]:
-            if table_start < start_line_idx <= table_end:
-                # This page starts in the middle of a table
-                # Find the corresponding header
-                for header_idx, header_line, separator_line in table_info["headers"]:
-                    if table_start <= header_idx <= table_end:
-                        # Add the header and separator to the beginning of the page
-                        result_lines = [header_line, separator_line] + page_lines
-                        return result_lines
-
-        return page_lines
+        return self._table_header_lines(table_info, start_line_idx) + page_lines
 
     def _create_empty_page(self) -> bytes:
         """Create an empty white page image."""
@@ -1875,6 +1935,6 @@ class DocumentConverter:
             logger.error(f"Error creating empty page: {str(e)}")
             # Fall through to hardcoded minimal JPEG
 
-        # Return a hardcoded minimal valid 1x1 white JPEG
+        # Return a hardcoded minimal 1x1 white JPEG
         logger.warning("Using hardcoded minimal JPEG")
-        return b"\xff\xd8\xff\xe0\x00\x10JFIF\x00\x01\x01\x01\x00H\x00H\x00\x00\xff\xdb\x00C\x00\x08\x06\x06\x07\x06\x05\x08\x07\x07\x07\t\t\x08\n\x0c\x14\r\x0c\x0b\x0b\x0c\x19\x12\x13\x0f\x14\x1d\x1a\x1f\x1e\x1d\x1a\x1c\x1c $.' \",#\x1c\x1c(7),01444\x1f'9=82<.342\xff\xc0\x00\x11\x08\x00\x01\x00\x01\x01\x01\x11\x00\x02\x11\x01\x03\x11\x01\xff\xc4\x00\x14\x00\x01\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x08\xff\xc4\x00\x14\x10\x01\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\xff\xda\x00\x0c\x03\x01\x00\x02\x11\x03\x11\x00\x3f\x00\x80\xff\xd9"
+        return _MINIMAL_WHITE_JPEG
