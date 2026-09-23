@@ -144,6 +144,8 @@ reporter = SaveReportingData(
    - *Unit absent from an entry that exists* → `$0.00`. The unit is not chargeable for that service. `pricing.yaml` omits units that do not apply, and every Bedrock call meters `totalTokens` and `requests`, which Bedrock does not charge for.
    - *No entry for `service_api` at all* → **unpriced**: `_get_unit_cost` returns `None` and both `unit_cost` and `estimated_cost` are written as SQL `NULL`, with a `WARNING` naming the service. `SUM()` ignores NULLs exactly as it would zeros, so totals are unchanged, but the gap is queryable (`WHERE unit_cost IS NULL`) instead of masquerading as something free.
 
+   **The benchmark harness follows the same split**, which is what keeps the two cost figures comparable rather than only the matching rule (GitHub #1146). `price_metering` returns a `Priced` whose `.total` is unavailable unless every entry priced; a metering key with no entry is named in the row's `cost_unpriced` and the row reports no cost, rather than a total below truth. The harness cannot write a queryable `NULL` per metering record the way a database column can, so it withholds the row's scalar `cost` instead — same rule, different granularity.
+
 > **There is no fuzzy/substring matching.** It was removed in GitHub issue #926.
 > It had accepted a pricing key that was merely a substring of the requested
 > model id (or the reverse) and a unit name that was merely a substring of the
