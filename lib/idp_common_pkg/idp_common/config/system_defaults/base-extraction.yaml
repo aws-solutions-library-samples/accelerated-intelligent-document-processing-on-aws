@@ -47,9 +47,10 @@ extraction:
   forced_tool:
     # OFF by default and gated on a measured win: forcing constrains the response
     # SHAPE, not the values in it, so a model that would have returned a stray key
-    # may instead return a worse value that fits. Routes that cannot carry a
-    # toolConfig (a custom Lambda hook, GPT-5.x) fall back automatically, and the
-    # reason is recorded in the section's metadata.forced_tool.
+    # may instead return a worse value that fits. Models that cannot carry a
+    # toolConfig (a custom Lambda hook, GPT-5.x) or that reject a forced toolChoice
+    # (Claude Opus 5.5) fall back to the prompt automatically, and the reason is
+    # recorded in the section's metadata.forced_tool.
     enabled: false
     # A model can accept the tool and still answer in prose — a normal outcome, not
     # an error. Keep true in production; set false only to measure how often

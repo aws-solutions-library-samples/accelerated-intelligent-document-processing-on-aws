@@ -637,6 +637,7 @@ def validate_config(
     _validate_simple_integrated_lists(merged, result)
     _validate_prompt_cache_prefix(merged, result)
     _validate_discovery_openai(merged, result)
+    _validate_multi_doc_discovery_forced_tool(merged, result)
     _validate_pipeline_hook_reachability(merged, result)
 
     return result
@@ -981,6 +982,55 @@ def _validate_discovery_openai(
                 f"discovery — {reason}, but discovery sends whole-PDF document "
                 "blocks. Choose an Anthropic or Nova model."
             )
+
+
+def _validate_multi_doc_discovery_forced_tool(
+    merged_config: Dict[str, Any], result: Dict[str, Any]
+) -> None:
+    """Error when a model that rejects a forced ``toolChoice`` is set for cluster analysis.
+
+    ``discovery.multi_document.analysis_model_id`` drives the one path in this
+    repository that asks Strands for structured output
+    (``discovery_agent.py``: ``agent(message, structured_output_model=...)``). Strands
+    tries ``toolChoice: auto`` first and, when the model answers in prose instead of
+    calling the tool, **retries with** ``toolChoice: {"any": {}}``
+    (``event_loop.py`` -> ``set_forced_mode()``). A model that rejects forcing gets a
+    400 on that retry.
+
+    That failure mode is why this is a config-time error rather than a runtime
+    fallback: it is **intermittent by construction**. Whether a given cluster needs the
+    forced retry depends on how the model chose to answer, so the model would appear to
+    work, then lose one cluster's analysis with a message that does not say why. There
+    is also nothing to fall back to here — unlike extraction's forced tool, which has a
+    prose schema behind it, structured output *is* the interface.
+
+    Kept separate from :func:`_validate_discovery_openai` rather than folded into it
+    because the two ask different questions about different config keys. That function
+    is about ``document`` blocks on the whole-PDF discovery sections; this one is about
+    tool forcing on the clustering section, which takes neither documents nor the same
+    key. One function answering both would have to state a reason true of neither.
+    """
+    from idp_common.bedrock.client import forced_tool_choice_unsupported_reason
+
+    discovery = merged_config.get("discovery", {})
+    if not isinstance(discovery, dict):
+        return
+    multi_doc = discovery.get("multi_document", {})
+    if not isinstance(multi_doc, dict):
+        return
+
+    model_id = multi_doc.get("analysis_model_id")
+    reason = forced_tool_choice_unsupported_reason(model_id) if model_id else None
+    if reason:
+        result["valid"] = False
+        result["errors"].append(
+            f"discovery.multi_document.analysis_model_id is set to '{model_id}', "
+            f"which is NOT supported for multi-document discovery — {reason}. Cluster "
+            "analysis requests structured output, and the agent framework forces the "
+            "tool call when the model answers in prose, so this would fail "
+            "intermittently rather than consistently. Choose another Anthropic or Nova "
+            "model."
+        )
 
 
 def _validate_task_prompt_placeholders(

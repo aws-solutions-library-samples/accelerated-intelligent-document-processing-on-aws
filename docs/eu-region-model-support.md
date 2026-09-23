@@ -37,6 +37,8 @@ The following table shows all US to EU model mappings currently configured in th
 | `us.anthropic.claude-opus-4-8:1m` | `eu.anthropic.claude-opus-4-8:1m` | Direct mapping |
 | `us.anthropic.claude-opus-5` | `eu.anthropic.claude-opus-5` | Direct mapping |
 | `us.anthropic.claude-opus-5:1m` | `eu.anthropic.claude-opus-5:1m` | Direct mapping |
+| `us.anthropic.claude-opus-5-5` | `eu.anthropic.claude-opus-5-5` | Direct mapping |
+| `us.anthropic.claude-opus-5-5:1m` | `eu.anthropic.claude-opus-5-5:1m` | Direct mapping |
 | `us.meta.llama4-maverick-17b-instruct-v1:0` | `eu.anthropic.claude-sonnet-4-5-20250929-v1:0` | **Fallback mapping** |
 | `us.meta.llama4-scout-17b-instruct-v1:0` | `eu.anthropic.claude-sonnet-4-5-20250929-v1:0` | **Fallback mapping** |
 

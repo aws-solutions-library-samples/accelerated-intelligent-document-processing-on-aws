@@ -145,6 +145,7 @@ reference test sets to reference, with each doc's ground-truth pointer and confi
 | `advverify` | advanced × integrated + separate × 1 list doc, repeats=4 | Re-verifies the **tool-decline** list-loss hazard (an agent that declines the table tool returning the whole list as `null`). Run with `--set extraction_model=sonnet5` |
 | `astravalue` | Sonnet 5 vs OpenAI GPT-6 Astra, simple + advanced, 4 docs (3–26 pages) × **5 repeats** (100 runs) | **Does a ~4× more expensive frontier model earn its price for IDP?** See below |
 | `astracap` | The same pair plus the 25-page-shard arms on `scale_3200` (66 pages, ~790K tokens), repeats=2 | The **ceiling** arm: a document too large for *both* models in simple mode, so the finding is where the 1.05M window stops helping and sharding takes over. Expensive — opt in deliberately |
+| `opus55value` | Claude Opus 5.5 vs Claude Opus 5, simple + advanced, 2 docs (3–9 pages) × **5 repeats** (40 runs) | **Is the newer Opus actually cheaper for the same result?** The comparator is Opus 5 rather than the default, because the claim is a ratio and a ratio needs its denominator on the same documents. See below |
 | `full` | core + all one-axis sweeps — including the **extraction-model sweep**, which is what puts a model in the published guide | The deep study for the paper (expensive) |
 
 **Feature A/B suites.** Each pairs two cells that differ on exactly **one** config knob,
@@ -182,7 +183,8 @@ model only appears there if it has been swept, and the table records when:
 | **Claude Sonnet 5** (default) | ✅ | **2026-09-19, v0.6.9** (133 runs, plus `scaling`, `scalingsimple`, `cost`, `advverify`, `astravalue`, `astracap`) | the shipped default; 0 failures of 133 at $0.676/doc, no confidence leaf below 0.9 anywhere in the grid |
 | Sonnet 5 `:1m` | ✅ | 2026-09-12, **v0.6.8** (133 runs) — not re-measured on v0.6.9 | matched Sonnet 5's accuracy at every size that fits and rescued no request on this corpus (its reported +10% / +51% cost predates the #899 pricing fix and overstates the variant — the two are billed at identical rates, the 1M window carrying no premium) |
 | **Claude Opus 5** | ✅ | 2026-09-12, **v0.6.8** (133 runs) — not re-measured on v0.6.9 | most complete model in the grid (0.993) at +23% / +41% over Sonnet 5; accuracy identical |
-| **OpenAI GPT-6 Astra** | ✅ | **2026-09-19, v0.6.9** (133 runs + `astravalue` 100 + `astracap` 12) | the only model at recall 1.000 **and** scalar accuracy 1.000 on all 19 v0.6.9 grid cells (documents ≤400 rows), at 2.6× Sonnet 5's cost and marginally behind on per-row cell accuracy (0.977 vs 0.999); in simple mode returns an empty response on the 17-page document (13 of 13 draws) and rewrites descriptions on the 26-page one — [guide §5.2](./config-guidance.md#52-is-a-premium-model-worth-it-astravalue-astracap) |
+| **Claude Opus 5.5** | ✅ (`extraction_model` sweep + the `opus55value` pair) | ❌ **not yet measured** — added to the matrix on 2026-09-23, no run behind it | Its rate card is cheaper than Opus 5 in every category ($4/$20 per 1M vs $5/$25, and a cache read at 0.05x input rather than 0.1x), and its launch claim adds "fewer tokens for the same task" on top — three multipliers that compound, so **no cost figure for it should be quoted until `opus55value` has run**. Two behaviours also differ from Opus 5 in ways a run will show: thinking cannot be disabled (effort is the only spend lever, and its default is `medium` where Opus 5's is `high` — per the model card; a default is not observable from a response, so it is cited rather than measured), and a forced `toolChoice` is rejected, so the `forcing` axis cannot be `on` for it |
+| **OpenAI GPT-6 Astra** | ✅ | **2026-09-19, v0.6.9** (133 runs + `astravalue` 100 + `astracap` 12) | the only model at recall 1.000 **and** scalar accuracy 1.000 on all 19 v0.6.9 grid cells (documents ≤400 rows), at 2.6× Sonnet 5's cost and marginally behind on per-row cell accuracy (0.977 vs 0.999); in simple mode returns an empty response on the 17-page document (13 of 13 draws) and rewrites descriptions on the 26-page one — [guide §5.2](./config-guidance.md#52-is-a-premium-model-worth-it-astravalue-astracap-opus55value) |
 | `global.openai.gpt-6-astra` | ❌ deliberately; measured in `astravalue` only | 2026-09-12 (20 runs) | same weights ~10% cheaper (measured $0.94 vs $1.10 on the 9-page document); same simple-mode failure shape |
 | Claude Haiku 4.5 (classification only) | ✅ `classification_model` axis | 2026-09-12, **v0.6.8** (133 runs) — not re-measured on v0.6.9 | see the guide §5.3 |
 | xAI Grok 4.6 | ❌ | — | not yet measured — see `docs/grok-models.md` for its documented capabilities |
@@ -249,6 +251,54 @@ Two things to know before reading the output:
 cost. A premium model earns its price only where the accuracy gap is large enough that
 the cheaper model would need human review to close it. If accuracy ties, the answer is
 the cheaper model.
+
+### Is the newer Opus cheaper for the same result? (`opus55value`)
+
+The same method, one generation apart: Claude Opus 5.5 against Claude Opus 5, with only
+`extraction.model` differing. The comparator is Opus 5 rather than the shipped default
+because the claim under test names it — Opus 5.5 is cheaper per token, has cheaper cache
+reads, and is said to use fewer tokens for the same task — and a ratio needs its
+denominator run on the same documents, on the same stack, in the same window.
+
+**Three multipliers compound, so the rate card cannot predict the answer.** Input and
+output are 0.8× Opus 5's ($4/$20 per 1M against $5/$25). A cache read is 0.05× input
+rather than the 0.1× every other model in `config_library/pricing.yaml` uses, so cached
+reads are 0.4× Opus 5's per-token cost, not 0.8×. And "fewer tokens" is a third factor
+the price list says nothing about. The rate card alone predicts about −20%; anything
+beyond that is the token claim, and anything short of it is worth explaining before it
+is published.
+
+| Doc | Size | What it isolates |
+|---|---|---|
+| `small_narrow` | 3 pages, ~35K | **Control.** Both models are already at ceiling, so a cost delta here is the rate card and nothing else |
+| `med_narrow` | 9 pages, ~108K | 3× the size, still one request in simple mode: where a per-token difference is large enough to read |
+
+Three things to know before reading the output:
+
+- **The documents are a deliberate subset of `astra_docs`.** `large_narrow` (17 pages)
+  and `dense_250` (26 pages) are in that set because Astra's window reaches them and
+  Sonnet 5's does not — that asymmetry *is* the Astra finding. Opus 5 and Opus 5.5
+  share one window and one sizing budget, so both simple-mode arms would be refused on
+  both documents: an A/B whose two arms fail identically measures nothing and is still
+  billed. The ceiling question belongs to `astracap`, which already owns it.
+- ⚠️ **This suite measures the switch, not the model.** Opus 5.5 defaults to `medium`
+  reasoning effort where Opus 5 defaults to `high`, and neither cell sets
+  `reasoning_effort` — so the two arms differ by model *and* by default effort. That is
+  what a user who changes the model and nothing else actually gets, which is the
+  decision the guide has to inform, but it is not a model-for-model comparison. To
+  separate the two, re-run with `--set reasoning_effort=high` on both arms and read the
+  difference between the two runs.
+- **`repeats: 5` is what makes a cost claim sayable at all**, for the same reason
+  `astravalue` uses it: agentic cost is non-deterministic (turn-count spreads around 4×
+  have been observed), so a single draw per cell cannot resolve a cost *difference*.
+  It also exercises the cache-read rate that is half of the price story — runs 2–5
+  re-send an identical prefix, so read the per-run series rather than the mean.
+
+**Forcing cannot be part of this comparison.** Opus 5.5 rejects a forced `toolChoice`,
+so with `extraction.forced_tool.enabled` on it falls back to the prose schema and
+records the reason in the section metadata, while Opus 5 forces normally. A `forcing`
+A/B built on Opus 5.5 would show a delta of zero for a reason that has nothing to do
+with forcing.
 
 > **Picking the extraction model.** The committed `default_cell` holds `extraction_model` at
 > a **cross-version control** so the release A/B runs on a model every compared release can

@@ -119,8 +119,8 @@ Prompt caching is a powerful feature in Amazon Bedrock that significantly reduce
 
 CachePoint functionality is only available for specific Bedrock model IDs.
 `CACHEPOINT_SUPPORTED_MODELS` in `client.py` is the authoritative list; it
-currently covers the Claude Haiku 4.5 / Sonnet 4.x-5 / Opus 4.x-5 families
-(including the `:1m` variants) and the Nova models — for example:
+currently covers the Claude Haiku 4.5 / Sonnet 4.x-5 / Opus 4.x-5 / Opus 5.5
+families (including the `:1m` variants) and the Nova models — for example:
 
 - `us.anthropic.claude-haiku-4-5-20251001-v1:0`
 - `us.anthropic.claude-sonnet-5`
@@ -511,8 +511,23 @@ a separate parameter here purely as a convenience:
 - `tool_choice` **without** `tool_config` raises `ValueError` — Converse rejects
   a `toolChoice` with no tools.
 
-Valid modes: `{"auto": {}}`, `{"any": {}}`, `{"tool": {"name": "..."}}`. All
-three are accepted by every currently selectable Claude and Nova family.
+Valid modes: `{"auto": {}}`, `{"any": {}}`, `{"tool": {"name": "..."}}`.
+
+⚠️ **Carrying a `toolConfig` and being able to FORCE the call are two different
+capabilities, and one model has the first without the second.** `{"auto": {}}` is
+accepted wherever `supports_tool_config()` is True. The two forcing modes are not:
+**Claude Opus 5.5 rejects both** with `tool_choice: type "tool" and "any" are not
+supported for this model.`, while answering `auto` normally and emitting a
+`toolUse` block. Ask `supports_forced_tool_choice(model_id)` (or
+`forced_tool_choice_unsupported_reason` for the message) before forcing;
+`_resolve_tool_config` raises `ValueError` rather than letting the request spend
+its retry budget on a 400 that cannot succeed.
+
+Because a forced `toolChoice` is the strongest shape enforcement `bedrock-runtime`
+offers, there is no equivalent to fall back to on such a model — so
+`extraction.forced_tool` degrades to the prose schema and records the reason in the
+section's audit metadata. Every other currently selectable Claude and Nova family
+accepts all three modes.
 
 ### Property names: sanitize before you send (#709)
 
@@ -567,14 +582,31 @@ merging two fields into one, and truncates to 64 characters.
 
 ### Capability gate
 
-Every model that reaches the Converse API supports tool use, so there is no
-per-family allow-list (unlike `CACHEPOINT_SUPPORTED_MODELS`). Two routes in
-`invoke_model` bypass Converse and therefore **cannot** carry a `toolConfig`:
+There are **two** gates here, on two different questions, and a model can pass the
+first and fail the second.
+
+**Can it carry a `toolConfig` at all?** (`supports_tool_config()` /
+`tool_config_unsupported_reason()`.) Every model that reaches the Converse API can,
+so there is no per-family allow-list (unlike `CACHEPOINT_SUPPORTED_MODELS`). Two
+routes in `invoke_model` bypass Converse and therefore **cannot**:
 
 | Route | Why |
 |---|---|
 | `model_id="LambdaHook"` | posts a Converse-shaped payload to a customer-owned Lambda, which need not implement tool use |
 | OpenAI GPT-5.x (`openai.gpt-5.*`) | served by the bedrock-mantle Responses API, which has its own tools schema |
+
+**Can the call be FORCED?** (`supports_forced_tool_choice()` /
+`forced_tool_choice_unsupported_reason()`, keyed on `FORCED_TOOL_CHOICE_UNSUPPORTED`
+by base name so every region prefix, the `:1m` variant and an inference-profile ARN
+resolve to one entry.) This one **does** need an allow-list, because of one model:
+
+| Model | Why |
+|---|---|
+| Claude Opus 5.5 (`anthropic.claude-opus-5-5`) | carries a `toolConfig` and answers `toolChoice: auto` with a `toolUse` block, but rejects `{"any": {}}` and `{"tool": {...}}`: `tool_choice: type "tool" and "any" are not supported for this model.` |
+
+Consult the forcing gate whenever you pass `tool_choice`; `auto` never needs it.
+`extraction.forced_tool` already does, and falls back to the prose schema with the
+reason in its audit metadata.
 
 xAI Grok and OpenAI GPT-6 Astra reach Converse, so they **do** support
 `toolConfig` — verified live with all three `toolChoice` modes
@@ -591,8 +623,9 @@ API), xAI Grok (*"This model doesn't support documents"*) and GPT-6 Astra
 what excludes them from Discovery. Use it the same way as the tool-config gate.
 
 **Inference-profile ARNs.** `is_grok_model()`, `is_astra_model()`,
-`strips_sampling_params()`,
-`is_claude_4_7_model()` and `document_blocks_unsupported_reason()` resolve
+`strips_sampling_params()`, `is_claude_4_7_model()`, `is_claude_effort_model()`,
+`thinking_can_be_disabled()`, `forced_tool_choice_unsupported_reason()` and
+`document_blocks_unsupported_reason()` resolve
 inference-profile ARNs (via `resolve_model_id_from_arn`) before matching, so a
 config that names
 `arn:aws:bedrock:...:inference-profile/us.anthropic.claude-sonnet-5` — the form
@@ -717,11 +750,19 @@ Different Bedrock models implement these parameters with varying defaults, namin
   - Default values: temperature=1.0, top_p=0.999, top_k=250 (wide open)
   - Parameters use snake_case: `temperature`, `top_p`, `top_k`
   - Implementation: `top_k` is placed in `additionalModelRequestFields`
-  - **Reasoning effort** (Sonnet 5, Sonnet 4.6, Opus 4.5–4.8, Opus 5, Fable 5 — see
-    `is_claude_effort_model()`): `reasoning_effort` (`low`/`medium`/`high`/
-    `xhigh`/`max`) maps to `additionalModelRequestFields.output_config.effort`.
+  - **Reasoning effort** (Sonnet 5, Sonnet 4.6, Opus 4.5–4.8, Opus 5, Opus 5.5,
+    Fable 5 — see `is_claude_effort_model()`): `reasoning_effort`
+    (`low`/`medium`/`high`/`xhigh`/`max`) maps to
+    `additionalModelRequestFields.output_config.effort`.
     Ignored for Sonnet 4.5 / Haiku 4.5 (they 400 on it). `budget_tokens` is
     rejected — use effort. Verified live: effort changes output-token spend.
+    On **Opus 5.5** effort is the *only* thinking control: `thinking: {"type":
+    "disabled"}` is rejected at every effort level (`"thinking.type.disabled" is
+    not supported for this model`), so lowering effort is how you reduce thinking
+    spend there — ask `thinking_can_be_disabled(model_id)`. Its own default is
+    `medium`, one level below the `high` the rest of the family defaults to, so
+    leaving `reasoning_effort` unset is not the same choice on Opus 5.5 as it is on
+    Opus 5.
   - **max_tokens**: an OPTIONAL cap. It is `Optional[int]` in every service
     config (default `None`; an empty string in stored config also parses to
     `None`), and each service passes the value straight through. When `None`

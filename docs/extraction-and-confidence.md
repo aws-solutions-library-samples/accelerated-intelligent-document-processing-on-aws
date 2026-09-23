@@ -200,7 +200,7 @@ Agentic extraction requires models with tool-use support:
 > |---|---|---|
 > | Nova Lite / Pro / 2 Lite | `additionalModelRequestFields.inferenceConfig.topK` | 1–128 |
 > | Claude ≤ 4.6 (Haiku 4.5, Sonnet 4.5, Sonnet 4.6, Opus 4.5) | `additionalModelRequestFields.top_k` | −1 – 100,000,000 |
-> | Claude 4.7+ (Opus 4.7, Opus 5, Sonnet 5) | none — `` `top_k` is deprecated for this model `` | — |
+> | Claude 4.7+ (Opus 4.7, Opus 4.8, Opus 5, Opus 5.5, Sonnet 5) | none — `` `top_k` is deprecated for this model `` | — |
 > | OpenAI GPT-6 Astra | none — `Unknown parameter: 'top_k'` | — |
 > | xAI Grok 4.6 | unverifiable — returns 200 for any unknown key, including a deliberately bogus control | — |
 >
@@ -806,8 +806,9 @@ number of shards as well as the parallelism, *raising* it makes each request sma
 and the threshold higher. Holistic classification, which sends a whole packet in one
 request, is affected on the same >20-image rule.
 
-Whether the clamp costs accuracy depends on the model — on Claude 4.7+, Opus 5 and
-Sonnet 5 it is about 20% below the resolution they would otherwise use, on older
+Whether the clamp costs accuracy depends on the model — on Claude 4.7+, Opus 5,
+Opus 5.5 and Sonnet 5 it is about 20% below the resolution they would otherwise use,
+on older
 Claude models it costs nothing, and it has not been measured against extraction
 accuracy either way. See
 [A request with more than 20 page images](./configuration.md#a-request-with-more-than-20-page-images-caps-every-image-at-2000-px)
