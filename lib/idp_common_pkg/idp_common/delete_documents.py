@@ -19,6 +19,55 @@ from boto3.dynamodb.conditions import Key
 logger = logging.getLogger(__name__)
 
 
+# Both selectors below feed a delete, so each is written as a named predicate rather
+# than inline. A selector in front of an irreversible operation is worth reading on its
+# own, and the two answer different questions: a batch is a CONTAINER of documents,
+# while a document's outputs include the document's own key.
+
+
+def _is_in_batch(object_key: str, batch_id: str) -> bool:
+    """Is ``object_key`` a document belonging to batch ``batch_id``?
+
+    A batch id is a leading **path segment**, not a substring. Every site that puts a
+    batch id into an S3 key writes ``f"{batch_id}/..."`` — the batch processor's copy,
+    upload and metadata paths all do — so the delimiter is what the key layout means by
+    "in this batch".
+
+    ⚠️ **A substring test, and even a bare ``startswith``, over-match here, and this
+    feeds a delete.** ``batch_id in object_key`` also selected ``batch-10/b.pdf`` and
+    ``archive/batch-1x/c.pdf`` for ``batch-1``; ``object_key.startswith(batch_id)``
+    still selects ``batch-10/b.pdf``, so matching the old docstring's word "prefix"
+    literally would not have fixed the reported case. Single-digit batch ids are the
+    common case in manual use, which is where the collision is most likely.
+
+    A caller who genuinely wants substring behaviour has ``get_documents_by_pattern``,
+    which takes an explicit ``*batch-1*``; narrowing here removes no capability.
+    """
+    return object_key.startswith(f"{batch_id.rstrip('/')}/")
+
+
+def _is_document_output(key: str, object_key: str) -> bool:
+    """Is ``key`` an output object belonging to the document at ``object_key``?
+
+    Outputs are written **beneath** ``{input_key}/`` — ``sections/``, ``summary/``,
+    ``rule_validation/``, ``runs/`` and so on — which is the layout
+    ``idp_common.document_versions`` documents and builds its own prefixes from. The
+    document's own key is included as well, so nothing is missed if anything is ever
+    written at it directly.
+
+    ⚠️ **An S3 ``Prefix`` is a byte prefix, not a path segment**, which is why this is a
+    client-side predicate rather than a narrower ``Prefix=``. Purging ``invoice.pdf``
+    with a bare prefix also enumerated ``invoice.pdf.bak/...`` and ``invoice.pdf-v2/...``
+    — and this path deletes **all object versions and delete markers** it finds, so a
+    prefix collision destroyed a sibling document's entire output history rather than
+    just its current objects. The listing still passes ``Prefix=object_key`` so the
+    server does the coarse narrowing; this decides what is actually deleted.
+    """
+    if key == object_key:
+        return True
+    return key.startswith(f"{object_key.rstrip('/')}/")
+
+
 def calculate_shard(timestamp: str) -> Tuple[str, str]:
     """
     Calculate shard information from timestamp.
@@ -399,7 +448,7 @@ def delete_single_document(
             objects = [
                 {"Key": e["Key"], "VersionId": e["VersionId"]}
                 for e in entries
-                if e.get("VersionId")
+                if e.get("VersionId") and _is_document_output(e["Key"], object_key)
             ]
             # delete_objects accepts up to 1000 keys per call
             for i in range(0, len(objects), 1000):
@@ -564,7 +613,10 @@ def get_documents_by_batch(
 
     Args:
         tracking_table: DynamoDB table resource
-        batch_id: Batch ID prefix
+        batch_id: Batch ID. Matched as a leading path segment, so ``batch-1``
+            selects ``batch-1/a.pdf`` and does **not** select ``batch-10/b.pdf``.
+            For substring or wildcard selection use
+            :func:`get_documents_by_pattern`.
         status_filter: Optional status filter ('COMPLETED', 'FAILED', 'PROCESSING', etc.)
 
     Returns:
@@ -576,7 +628,7 @@ def get_documents_by_batch(
         items = _scan_all_document_keys(tracking_table, status_filter)
         for item in items:
             object_key = item.get("ObjectKey", "")
-            if batch_id in object_key:
+            if _is_in_batch(object_key, batch_id):
                 object_keys.append(object_key)
     except Exception as e:
         logger.error(f"Error getting documents for batch {batch_id}: {str(e)}")
