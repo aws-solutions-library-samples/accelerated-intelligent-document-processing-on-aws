@@ -63,6 +63,20 @@ KEY = "batch-1/invoice.pdf"
 QUEUED = "2025-09-10T12:03:27.256164+00:00"
 
 
+#: Output keys belonging to ``KEY``. The purge is scoped to the document, so a fixture
+#: key has to be one of the document's own outputs for the mechanics tests to exercise
+#: the mechanics rather than the breadth — the unanchored prefix used to delete any key
+#: at all, which is what #1133 was about. Shapes taken from what the pipeline writes:
+#: ``{input_key}/sections/...``, ``{input_key}/summary/...``, ``{input_key}/runs/...``.
+OUT1 = f"{KEY}/sections/1/result.json"
+OUT2 = f"{KEY}/summary/summary.json"
+
+
+def _own_outputs(count: int) -> list:
+    """``count`` distinct output keys under ``KEY``."""
+    return [f"{KEY}/runs/r{i}/manifest.json" for i in range(count)]
+
+
 def _condition_parts(condition) -> list:
     """Flatten a boto3 `ConditionBase` into its operators and literal values.
 
@@ -439,28 +453,31 @@ class TestDeleteSingleDocument:
         s3 = _s3(
             [
                 {
-                    "Versions": [{"Key": "k1", "VersionId": "v1"}],
-                    "DeleteMarkers": [{"Key": "k1", "VersionId": "dm1"}],
+                    "Versions": [{"Key": OUT1, "VersionId": "v1"}],
+                    "DeleteMarkers": [{"Key": OUT1, "VersionId": "dm1"}],
                 }
             ]
         )
         result = delete_single_document(KEY, _table(), s3, "in", "out")
         sent = s3.delete_objects.call_args.kwargs["Delete"]["Objects"]
         assert sent == [
-            {"Key": "k1", "VersionId": "v1"},
-            {"Key": "k1", "VersionId": "dm1"},
+            {"Key": OUT1, "VersionId": "v1"},
+            {"Key": OUT1, "VersionId": "dm1"},
         ]
         assert result["deleted"]["output_files"] == 2
 
     def test_an_entry_without_a_version_id_is_skipped(self):
-        s3 = _s3([{"Versions": [{"Key": "k1"}, {"Key": "k2", "VersionId": "v2"}]}])
+        s3 = _s3([{"Versions": [{"Key": OUT1}, {"Key": OUT2, "VersionId": "v2"}]}])
         result = delete_single_document(KEY, _table(), s3, "in", "out")
         assert result["deleted"]["output_files"] == 1
 
     def test_deletions_are_batched_at_the_api_limit(self):
         # delete_objects rejects more than 1000 keys, and a document with many runs can
         # exceed that. Exercised just over the boundary so an off-by-one shows up.
-        versions = [{"Key": f"k{i}", "VersionId": f"v{i}"} for i in range(1001)]
+        versions = [
+            {"Key": key, "VersionId": f"v{i}"}
+            for i, key in enumerate(_own_outputs(1001))
+        ]
         s3 = _s3([{"Versions": versions}])
         result = delete_single_document(KEY, _table(), s3, "in", "out")
         batches = [
@@ -472,22 +489,85 @@ class TestDeleteSingleDocument:
     def test_the_output_purge_is_paginated(self):
         s3 = _s3(
             [
-                {"Versions": [{"Key": "a", "VersionId": "v1"}]},
-                {"Versions": [{"Key": "b", "VersionId": "v2"}]},
+                {"Versions": [{"Key": OUT1, "VersionId": "v1"}]},
+                {"Versions": [{"Key": OUT2, "VersionId": "v2"}]},
             ]
         )
         result = delete_single_document(KEY, _table(), s3, "in", "out")
         assert result["deleted"]["output_files"] == 2
 
-    def test_the_output_prefix_is_the_object_key_unanchored(self):
-        """The purge prefix is the bare object key, with no trailing delimiter.
+    def test_a_sibling_sharing_the_key_as_a_byte_prefix_is_not_purged(self):
+        """The assertion that matters: what the purge leaves alone (#1133).
 
-        See #1133. S3 prefixes are not path-aware, so purging `invoice.pdf` also
-        matches every key beginning with that string — `invoice.pdf.bak/…`,
-        `invoice.pdf-v2/…` — and those versions are deleted with it. Asserted as the
-        literal prefix sent, because this is the one call in the module that can destroy
-        another document's data and nothing else in the suite looks at it.
+        This block deletes **all object versions and delete markers** it finds, which is
+        deliberate for the target document — the output bucket is versioned and prior
+        runs' bytes are pinned as noncurrent versions. It means a prefix collision
+        destroyed a sibling document's entire output history, not just its current
+        objects.
+
+        ⚠️ **An S3 `Prefix` is a byte prefix, not a path segment.** `Prefix=` is still the
+        bare key, so the server does the coarse narrowing and the listing is unchanged;
+        what decides deletion is a client-side predicate. Asserted by naming the sibling
+        keys, because a count would pass while deleting the wrong two objects.
         """
+        s3 = _s3(
+            [
+                {
+                    "Versions": [
+                        {
+                            "Key": "invoice.pdf/sections/1/result.json",
+                            "VersionId": "v1",
+                        },
+                        {"Key": "invoice.pdf", "VersionId": "v2"},
+                        {
+                            "Key": "invoice.pdf.bak/sections/1/result.json",
+                            "VersionId": "v3",
+                        },
+                        {
+                            "Key": "invoice.pdf-v2/summary/summary.json",
+                            "VersionId": "v4",
+                        },
+                    ],
+                    "DeleteMarkers": [
+                        {
+                            "Key": "invoice.pdf/runs/r0/manifest.json",
+                            "VersionId": "dm1",
+                        },
+                        {
+                            "Key": "invoice.pdf.bak/runs/r0/manifest.json",
+                            "VersionId": "dm2",
+                        },
+                    ],
+                }
+            ]
+        )
+
+        result = delete_single_document("invoice.pdf", _table(), s3, "in", "out")
+
+        sent = {
+            o["Key"] for o in s3.delete_objects.call_args.kwargs["Delete"]["Objects"]
+        }
+        assert sent == {
+            "invoice.pdf/sections/1/result.json",
+            "invoice.pdf",
+            "invoice.pdf/runs/r0/manifest.json",
+        }
+        for sibling in (
+            "invoice.pdf.bak/sections/1/result.json",
+            "invoice.pdf-v2/summary/summary.json",
+            "invoice.pdf.bak/runs/r0/manifest.json",
+        ):
+            assert sibling not in sent, (
+                f"{sibling} belongs to another document and would be DESTROYED, "
+                "including its noncurrent versions"
+            )
+        assert result["deleted"]["output_files"] == 3
+
+    def test_the_listing_prefix_is_still_the_bare_key(self):
+        """The narrowing is client-side on purpose. A `Prefix` with a delimiter would
+        miss anything written AT the document's own key, and the document's own key is
+        included in what belongs to it — so the server-side prefix stays coarse and the
+        predicate decides."""
         s3 = _s3()
         delete_single_document("invoice.pdf", _table(), s3, "in", "out")
         paginate = s3.get_paginator.return_value.paginate
@@ -653,31 +733,68 @@ class TestGetDocumentsByBatch:
         }
         assert get_documents_by_batch(table, "batch-1") == ["batch-1/a.pdf"]
 
-    def test_the_batch_id_is_matched_as_a_SUBSTRING_not_a_prefix(self):
-        """`batch_id in object_key` — anywhere in the key, despite the docstring.
+    def test_a_batch_id_selects_only_documents_under_that_batch(self):
+        """The assertion that matters here is what is **not** selected (#1133).
 
-        See #1133. The parameter is documented as "Batch ID prefix" and the match is an
-        unanchored substring, so `batch-1` also selects `batch-10/…`, `batch-11/…` and
-        `archive/batch-1x/…`. The result feeds `delete_documents`, so the consequence of
-        the mismatch is deleting documents the caller did not ask for.
+        This result feeds `delete_documents`, so an over-match destroys documents the
+        caller did not name and the failure direction is unrecoverable. The selector was
+        an unanchored substring — `batch-1` also took `batch-10/…` and
+        `archive/batch-1x/…` — while the parameter was documented as a prefix.
 
-        Asserted in the direction that is true, with the surprising members spelled out
-        individually, so that narrowing the match to a prefix is a visible behaviour
-        change rather than a silent one.
+        ⚠️ **Matching the old docstring literally would not have fixed it.**
+        `"batch-10/b.pdf".startswith("batch-1")` is true, so a bare prefix test still
+        takes the neighbouring batch. The delimiter is what makes it correct, and that is
+        the layout's own meaning: every site that writes a batch id into a key writes
+        `f"{batch_id}/..."`.
+
+        The negative members are spelled out individually rather than asserted as a
+        count, so a future change that re-broadens the match names which key it took.
         """
         table = _table()
         table.scan.return_value = {
             "Items": [
                 {"ObjectKey": "batch-1/a.pdf"},
+                {"ObjectKey": "batch-1/nested/deep.pdf"},
                 {"ObjectKey": "batch-10/b.pdf"},
                 {"ObjectKey": "archive/batch-1x/c.pdf"},
                 {"ObjectKey": "batch-2/d.pdf"},
+                {"ObjectKey": "prefixed-batch-1/e.pdf"},
             ]
         }
-        assert get_documents_by_batch(table, "batch-1") == [
-            "batch-1/a.pdf",
+
+        selected = get_documents_by_batch(table, "batch-1")
+
+        assert selected == ["batch-1/a.pdf", "batch-1/nested/deep.pdf"]
+        for not_selected in (
             "batch-10/b.pdf",
             "archive/batch-1x/c.pdf",
+            "batch-2/d.pdf",
+            "prefixed-batch-1/e.pdf",
+        ):
+            assert not_selected not in selected, (
+                f"{not_selected} would be DELETED by a request for batch-1"
+            )
+
+    def test_a_batch_id_given_with_a_trailing_slash_behaves_the_same(self):
+        """`--batch-id batch-1/` is an easy thing to type and must not select nothing."""
+        table = _table()
+        table.scan.return_value = {"Items": [{"ObjectKey": "batch-1/a.pdf"}]}
+        assert get_documents_by_batch(table, "batch-1/") == ["batch-1/a.pdf"]
+
+    def test_the_substring_behaviour_is_still_available_explicitly(self):
+        """Narrowing the batch selector removes no capability: a caller who wants the
+        broad match asks for it by pattern, where the breadth is visible in what they
+        typed rather than implied by a parameter documented as a prefix."""
+        table = _table()
+        table.scan.return_value = {
+            "Items": [
+                {"ObjectKey": "batch-1/a.pdf"},
+                {"ObjectKey": "batch-10/b.pdf"},
+            ]
+        }
+        assert get_documents_by_pattern(table, "*batch-1*") == [
+            "batch-1/a.pdf",
+            "batch-10/b.pdf",
         ]
 
     def test_an_item_with_no_object_key_is_skipped(self):
