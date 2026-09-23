@@ -580,6 +580,90 @@ class TestExtractLambdaRequestIds:
         result = extract_lambda_request_ids(events)
         assert result["failed_functions"] == []
 
+    # ------------------------------------- the branches that must not raise
+    #
+    # Every one of these is inside `retrieve_document_context`'s try, so a raise
+    # here is returned to the agent as {"document_found": False, "error": ...} and
+    # discards every request id and failed-function name already gathered. "Returns
+    # nothing" and "raises" are therefore very different outcomes for the same bad
+    # input, which is why each malformed shape gets its own case.
+
+    def test_unparseable_task_parameters_name_no_function(self):
+        events = _optimized_chain("TaskFailed")
+        events[1]["taskScheduledEventDetails"]["parameters"] = "{not json"
+        result = extract_lambda_request_ids(events)
+        assert result["failed_functions"] == []
+
+    def test_task_parameters_without_a_function_name_name_no_function(self):
+        events = _optimized_chain("TaskFailed")
+        events[1]["taskScheduledEventDetails"]["parameters"] = json.dumps(
+            {"Payload": {"x": 1}}
+        )
+        result = extract_lambda_request_ids(events)
+        assert result["failed_functions"] == []
+
+    def test_task_parameters_that_are_not_an_object_name_no_function(self):
+        """`parameters` is documented as a JSON object; a JSON *array* parses fine
+        and then has no `.get`, so the guard is a type check rather than a parse."""
+        events = _optimized_chain("TaskFailed")
+        events[1]["taskScheduledEventDetails"]["parameters"] = json.dumps(["OCR"])
+        result = extract_lambda_request_ids(events)
+        assert result["failed_functions"] == []
+
+    def test_a_scheduling_detail_that_is_not_an_object_is_skipped(self):
+        events = _direct_chain("LambdaFunctionFailed")
+        events[1]["lambdaFunctionScheduledEventDetails"] = "unexpected string"
+        result = extract_lambda_request_ids(events)
+        assert result["failed_functions"] == []
+
+    def test_a_chain_longer_than_the_hop_bound_gives_up(self):
+        """The bound is what stops a broken chain walking back through the whole
+        history and attributing a failure to an unrelated earlier invocation. A
+        chain padded past it must report nothing rather than eventually finding
+        some scheduling event."""
+        events = [
+            {
+                "type": "LambdaFunctionScheduled",
+                "id": 1,
+                "previousEventId": 0,
+                "lambdaFunctionScheduledEventDetails": {"resource": OCR_ARN},
+            }
+        ]
+        # Eight filler links, more than _MAX_CAUSAL_HOPS, each pointing at the last.
+        for event_id in range(2, 10):
+            events.append(
+                {
+                    "type": "LambdaFunctionStarted",
+                    "id": event_id,
+                    "previousEventId": event_id - 1,
+                    "lambdaFunctionStartedEventDetails": {},
+                }
+            )
+        events.append(
+            {
+                "type": "LambdaFunctionFailed",
+                "id": 10,
+                "previousEventId": 9,
+                "lambdaFunctionFailedEventDetails": {"error": "x"},
+            }
+        )
+        result = extract_lambda_request_ids(events)
+        assert result["failed_functions"] == []
+
+    def test_a_request_id_on_a_top_level_event_field_is_still_mapped(self):
+        """The fallback that reads the event's own fields rather than its detail.
+
+        It only fires when the detail yielded no id AND a function name is already
+        resolved, so it was unreachable in practice while no function name could be
+        resolved at all -- reaching it is a consequence of the fix rather than an
+        addition to it.
+        """
+        events = _direct_chain("LambdaFunctionFailed", detail={"error": "no ids here"})
+        events[-1]["traceHeader"] = f"Root=1-abc;RequestId={UUID_A}"
+        result = extract_lambda_request_ids(events)
+        assert result["function_request_map"] == {"OCRFunction": UUID_A}
+        assert result["all_request_ids"] == [UUID_A]
+
     # ------------------------------------------------------------- robustness
 
     def test_an_event_type_outside_the_handled_set_is_skipped(self):
