@@ -39,6 +39,9 @@ CACHEPOINT_MARKER = "<<CACHEPOINT>>"
 # Nova is deliberately absent: its minimum was measured at <=355 tokens, below any
 # shipped class, so it never needs a warning.
 _MIN_PREFIX_TIERS = (
+    # ``opus-5`` also matches ``opus-5-5``, and that is the correct answer rather
+    # than a lucky one: the Opus 5.5 model card publishes the same 512-token
+    # minimum and the same 4-checkpoint maximum as Opus 5.
     (re.compile(r"claude-(opus-5|fable-5)"), 512),
     (re.compile(r"claude-opus-4-7"), 2048),
     (re.compile(r"claude-(opus-4-6|opus-4-5|haiku-4-5)"), 4096),

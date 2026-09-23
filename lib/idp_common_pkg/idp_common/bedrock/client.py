@@ -136,6 +136,12 @@ _CLAUDE_4_7_BASE_NAMES = {
     # 4.7/4.8); the Converse path does not send a `thinking` field, so requests
     # run adaptive thinking within max_tokens.
     "anthropic.claude-opus-5",
+    # Claude Opus 5.5 keeps the same surface. Verified live on Bedrock Converse
+    # (us.anthropic.claude-opus-5-5, us-west-2, 2026-09-23): `temperature` is
+    # deprecated for this model, `top_p` is deprecated for this model. Note this
+    # set is matched EXACTLY on the base name, so "claude-opus-5" does not cover
+    # "claude-opus-5-5" — the entry is required, not decorative.
+    "anthropic.claude-opus-5-5",
     # Claude Sonnet 5 shares the Opus-4.7+ request surface: it REJECTS non-default
     # temperature/top_p/top_k (400). IDP's default decoding config sets top_k=5 /
     # top_p=0.0, so Sonnet 5 must be treated like the sampling-param-stripped models
@@ -194,8 +200,48 @@ _CLAUDE_EFFORT_BASE_NAMES = {
     "anthropic.claude-opus-4-7",
     "anthropic.claude-opus-4-8",
     "anthropic.claude-opus-5",
+    # Opus 5.5 accepts effort (verified live on Converse at both "low" and
+    # "xhigh", us-west-2, 2026-09-23) and for it effort is the ONLY thinking
+    # control: thinking cannot be disabled at any effort level — see
+    # THINKING_ALWAYS_ON_BASE_NAMES below. Its default effort is "medium", one
+    # level below the "high" every other model here defaults to.
+    #
+    # This entry is also redundant-by-prefix and kept anyway: the lookup is
+    # `base.startswith(name)`, so "anthropic.claude-opus-5-5" already matched via
+    # "anthropic.claude-opus-5". Relying on that would make the set silently
+    # wrong for any future Opus 5.x that does NOT take effort.
+    "anthropic.claude-opus-5-5",
     "anthropic.claude-fable-5",
 }
+
+# Claude models on which extended thinking cannot be turned off. Verified live on
+# Bedrock Converse (us.anthropic.claude-opus-5-5, us-west-2, 2026-09-23):
+# ``additionalModelRequestFields.thinking = {"type": "disabled"}`` is rejected with
+# '"thinking.type.disabled" is not supported for this model. Use
+# "thinking.type.adaptive" and "output_config.effort" to control thinking
+# behavior.' Opus 5 accepts a disabled thinking block; Opus 5.5 does not, at any
+# effort level.
+#
+# This file's Converse path never sends a ``thinking`` field, so nothing here
+# currently constructs the rejected request — the set exists so that a future
+# caller that wants to disable thinking has one place to ask, instead of
+# discovering the 400 in production.
+_THINKING_ALWAYS_ON_BASE_NAMES = {
+    "anthropic.claude-opus-5-5",
+}
+
+
+def thinking_can_be_disabled(model_id: str) -> bool:
+    """False if ``model_id`` rejects ``thinking: {"type": "disabled"}``.
+
+    Lower ``output_config.effort`` is the only way to reduce thinking spend on
+    such a model.
+    """
+    if not model_id:
+        return True
+    return _strip_region_and_1m(resolve_model_id_from_arn(model_id)) not in (
+        _THINKING_ALWAYS_ON_BASE_NAMES
+    )
 
 # Effort levels accepted by Claude models. There are now THREE vocabularies on
 # this file's paths and no two are the same — see GROK_EFFORT_LEVELS and
@@ -262,10 +308,19 @@ def is_claude_effort_model(model_id: str) -> bool:
 
     Handles region prefixes, :1m, and dated/versioned foundation IDs
     (e.g. anthropic.claude-opus-4-6-v1, ...-4-5-20250514-v1:0) by prefix match.
+
+    Inference-profile ARNs are resolved first, for the same reason
+    :func:`is_claude_4_7_model` does it: an account-scoped inference-profile ARN is
+    the form ``docs/configuration.md`` recommends for cost allocation and the
+    **only** form available in GovCloud, so without this an ARN-named model would
+    silently lose its effort setting. That matters most on Claude Opus 5.5, where
+    effort is the only thinking control there is — thinking cannot be disabled — so
+    dropping it is not a small degradation. Opaque
+    ``application-inference-profile`` ARNs still cannot be resolved offline.
     """
     if not model_id:
         return False
-    base = _strip_region_and_1m(model_id)
+    base = _strip_region_and_1m(resolve_model_id_from_arn(model_id))
     return any(base.startswith(name) for name in _CLAUDE_EFFORT_BASE_NAMES)
 
 
@@ -499,6 +554,8 @@ CACHEPOINT_SUPPORTED_MODELS = [
     "us.anthropic.claude-opus-4-8:1m",
     "us.anthropic.claude-opus-5",
     "us.anthropic.claude-opus-5:1m",
+    "us.anthropic.claude-opus-5-5",
+    "us.anthropic.claude-opus-5-5:1m",
     "us.anthropic.claude-opus-4-1-20250805-v1:0",
     "us.anthropic.claude-sonnet-4-20250514-v1:0",
     "us.anthropic.claude-sonnet-4-5-20250929-v1:0",
@@ -527,6 +584,8 @@ CACHEPOINT_SUPPORTED_MODELS = [
     "eu.anthropic.claude-opus-4-8:1m",
     "eu.anthropic.claude-opus-5",
     "eu.anthropic.claude-opus-5:1m",
+    "eu.anthropic.claude-opus-5-5",
+    "eu.anthropic.claude-opus-5-5:1m",
     "eu.amazon.nova-lite-v1:0",
     "eu.amazon.nova-pro-v1:0",
     "eu.amazon.nova-2-lite-v1:0",
@@ -550,18 +609,27 @@ CACHEPOINT_SUPPORTED_MODELS = [
     "global.anthropic.claude-opus-4-8:1m",
     "global.anthropic.claude-opus-5",
     "global.anthropic.claude-opus-5:1m",
+    "global.anthropic.claude-opus-5-5",
+    "global.anthropic.claude-opus-5-5:1m",
 ]
 
 # Converse tool-use (``toolConfig`` / ``toolChoice``) capability gate.
 #
-# Verified live across every currently selectable family (Claude 3.5/3.7/4.x/5
-# and Nova Lite / Pro / 2-Lite): all of them accept a ``toolConfig`` AND all
-# three ``toolChoice`` modes (``auto`` / ``any`` / ``tool``) on the Converse API,
-# and actually emit the ``toolUse`` block. So — unlike CACHEPOINT_SUPPORTED_MODELS
-# above — there is no per-family allow-list to maintain here. The only real
-# question is "does this model reach Converse at all", and exactly two routes in
-# invoke_model do not. They are named here so the exclusions are discoverable
-# and testable rather than buried in an `if`.
+# ⚠️ These are now TWO questions, not one, and a model can answer them
+# differently: "can this model carry a ``toolConfig`` at all" (this gate) and "can
+# the ``toolChoice`` be FORCED to ``any``/``tool``" (FORCED_TOOL_CHOICE_UNSUPPORTED
+# below). Claude Opus 5.5 is the model that split them — it takes a toolConfig and
+# emits ``toolUse`` under ``toolChoice: auto``, and rejects both forcing modes with
+# a 400. Before it, every Converse-reachable family accepted all three modes, so
+# one gate covered both and this comment said so.
+#
+# Verified live across the other currently selectable families (Claude
+# 3.5/3.7/4.x/5 and Nova Lite / Pro / 2-Lite): all of them accept a ``toolConfig``
+# AND all three ``toolChoice`` modes (``auto`` / ``any`` / ``tool``) on the
+# Converse API, and actually emit the ``toolUse`` block. So for THIS gate the only
+# real question remains "does this model reach Converse at all", and exactly two
+# routes in invoke_model do not. They are named here so the exclusions are
+# discoverable and testable rather than buried in an `if`.
 #
 # NOTE: OpenAI GPT-6 Astra is deliberately NOT one of them. It reaches Converse
 # and emits ``toolUse`` under a forced ``toolChoice`` (verified live), so it is
@@ -608,8 +676,64 @@ def supports_tool_config(model_id: str) -> bool:
     the prompt) should check this first; passing a ``tool_config`` for a model
     that returns False raises a ValueError rather than silently dropping the
     schema.
+
+    A True answer here does NOT mean the tool call can be FORCED — see
+    :func:`forced_tool_choice_unsupported_reason`.
     """
     return tool_config_unsupported_reason(model_id) is None
+
+
+# Models that accept a Converse ``toolConfig`` but REJECT a forced ``toolChoice``.
+#
+# Keyed on the base name (region prefix and ``:1m`` stripped) so the us./eu./global.
+# profiles and the extended-context variant all resolve to one entry.
+#
+# Claude Opus 5.5, verified live on Bedrock Converse (us.anthropic.claude-opus-5-5,
+# us-west-2, 2026-09-23):
+#
+#   * ``toolChoice: {"auto": {}}``           -> stopReason ``tool_use``, toolUse emitted.
+#   * ``toolChoice: {"any": {}}``            -> ValidationException: 'tool_choice: type
+#     "tool" and "any" are not supported for this model.'
+#   * ``toolChoice: {"tool": {"name": ...}}`` -> the same ValidationException.
+#
+# This matters beyond the error message because a forced ``toolChoice`` is the
+# strongest schema enforcement bedrock-runtime offers (``toolSpec.strict``,
+# ``output_config.format`` and ``response_format`` are all rejected on Converse and
+# InvokeModel alike). So on this model the extraction forced-tool path has no
+# equivalent and must fall back to the prose schema — which
+# ``forced_tool.should_force_tool`` already knows how to do, recording the reason in
+# the section's audit metadata rather than skipping silently.
+FORCED_TOOL_CHOICE_UNSUPPORTED: Dict[str, str] = {
+    "anthropic.claude-opus-5-5": (
+        "Claude Opus 5.5 accepts a Converse toolConfig but rejects a forced "
+        'toolChoice: \'tool_choice: type "tool" and "any" are not supported for '
+        "this model.' Use toolChoice auto and steer from the prompt"
+    ),
+}
+
+
+def forced_tool_choice_unsupported_reason(model_id: str) -> Optional[str]:
+    """Explain why ``model_id`` cannot take a forced ``toolChoice``.
+
+    Returns None when ``any``/``tool`` forcing is available — including for every
+    model this function knows nothing about, because a model that does not reach
+    Converse at all is already refused by
+    :func:`tool_config_unsupported_reason` and would otherwise be reported twice
+    with two different reasons.
+    """
+    if not model_id:
+        return None
+    base = _strip_region_and_1m(resolve_model_id_from_arn(model_id))
+    return FORCED_TOOL_CHOICE_UNSUPPORTED.get(base)
+
+
+def supports_forced_tool_choice(model_id: str) -> bool:
+    """True if ``model_id`` accepts ``toolChoice`` ``any`` or ``tool``.
+
+    ``toolChoice: auto`` is unaffected and available wherever
+    :func:`supports_tool_config` is True.
+    """
+    return forced_tool_choice_unsupported_reason(model_id) is None
 
 
 # Build set of base model names (without region/tier prefixes) for inference profile resolution.
@@ -1082,8 +1206,9 @@ class BedrockClient:
             The effective ``toolConfig`` to put on the wire, or None.
 
         Raises:
-            ValueError: If the model does not reach the Converse API, or if
-                ``tool_choice`` was given without ``tool_config``.
+            ValueError: If the model does not reach the Converse API, if the
+                model rejects a forced ``toolChoice``, or if ``tool_choice`` was
+                given without ``tool_config``.
         """
         if tool_config is None and tool_choice is None:
             return None
@@ -1121,6 +1246,23 @@ class BedrockClient:
                 existing_choice,
                 tool_choice,
             )
+        # A forced choice (``any``/``tool``) is a separate capability from carrying
+        # a toolConfig at all, and Claude Opus 5.5 has the first without the
+        # second. Refuse here rather than let Bedrock answer with a
+        # ValidationException: a 400 arrives after the retry budget has been spent
+        # on a request that can never succeed, and the message does not say what
+        # to do instead. ``auto`` is always allowed.
+        if not {"any", "tool"}.isdisjoint(tool_choice):
+            forced_reason = forced_tool_choice_unsupported_reason(model_id)
+            if forced_reason:
+                raise ValueError(
+                    f"A forced toolChoice ({sorted(tool_choice)}) is not supported "
+                    f"for model '{model_id}': {forced_reason}. Check "
+                    f"supports_forced_tool_choice(model_id) first — "
+                    f"toolChoice {{'auto': {{}}}} works on this model, and the "
+                    f"extraction forced-tool path falls back to the prose schema."
+                )
+
         merged["toolChoice"] = tool_choice
         return merged
 

@@ -490,7 +490,11 @@ def get_model_max_input_tokens(model_id: str) -> int:
 _VISUAL_TOKEN_PATCH_PX = 28
 _HIGH_RES_VISUAL_TOKEN_CAP = 4784
 _STANDARD_VISUAL_TOKEN_CAP = 1568
-# High resolution is "Claude 4.7 and later": Opus 4.7/4.8, Opus 5, Sonnet 5.
+# High resolution is "Claude 4.7 and later": Opus 4.7/4.8, Opus 5, Opus 5.5,
+# Sonnet 5. Opus 5.5 is covered by the ``opus-5`` alternative below rather than an
+# alternative of its own, because the pattern is a substring search and
+# "claude-opus-5-5" contains "claude-opus-5" — that is the intended answer, not an
+# accident: Opus 5.5 shares the Opus 4.7+ tokenizer and vision tier.
 # Sonnet 4.6, Haiku 4.5 and the 3.x family are standard tier.
 # Deliberately a separate statement of the model set from
 # client._CLAUDE_4_7_BASE_NAMES, not a derivation of it: "rejects sampling

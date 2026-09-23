@@ -36,10 +36,12 @@ model_limits:
   # IDs carry a version segment between the family and the suffix, e.g.
   # 'claude-opus-4-7-20250514-v1:0:1m'. First match wins, so the 128K-output
   # families are listed before the 64K catch-all.
+  # 'opus-5' also matches 'opus-5-5' (substring), which is the intended answer:
+  # Opus 5.5 has the same 128K output and 1M extended-context window as Opus 5.
   - pattern: "claude-(opus-4-(6|7|8)|opus-5|sonnet-5|sonnet-4-6).*:1m"
     max_output_tokens: 128000
     max_input_tokens: 1000000
-    description: "Claude Opus 4.6/4.7/4.8, Opus 5, Sonnet 5, Sonnet 4.6 extended-context (:1m) — 1M input"
+    description: "Claude Opus 4.6/4.7/4.8, Opus 5, Opus 5.5, Sonnet 5, Sonnet 4.6 extended-context (:1m) — 1M input"
   - pattern: "claude-(opus|sonnet|haiku)-4.*:1m"
     max_output_tokens: 64000
     max_input_tokens: 1000000
@@ -74,6 +76,21 @@ model_limits:
   # pricing.yaml). Sizing still matters on its own terms — wide shards defeat
   # prompt caching, measured at 5x the cost of the 5-page default in
   # docs/benchmarking/studies/advanced-extraction-refinements.md.
+  # ---------------------------------------------------------------------------
+  # Anthropic Claude Opus 5.5 (extended output) — MUST precede the Opus 5 entry
+  # ---------------------------------------------------------------------------
+  # Same windows as Opus 5 (128K output, 1M context kept at a 200K sizing budget
+  # on the base ID), so this entry changes no number. It exists because patterns
+  # are matched as substrings with first-match-wins: without it 'claude-opus-5-5'
+  # falls through to the 'claude-opus-5' entry below and reports a `description`
+  # naming the wrong model, which is what a reader and an auto-sizing log line
+  # both see. Listed first for the same reason.
+  - pattern: "claude-opus-5-5"
+    max_output_tokens: 128000
+    max_input_tokens: 200000
+    description: "Claude Opus 5.5 with 128K max output tokens (200K budget; use :1m for 1M window)"
+    reference: "https://docs.aws.amazon.com/bedrock/latest/userguide/model-card-anthropic-claude-opus-5-5.html"
+
   - pattern: "claude-opus-5"
     max_output_tokens: 128000
     max_input_tokens: 200000

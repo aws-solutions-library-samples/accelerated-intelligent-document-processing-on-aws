@@ -242,6 +242,8 @@ export const EXTRACTION_MODEL_OVERRIDE_OPTIONS = [
   { label: 'us.anthropic.claude-opus-4-8:1m', value: 'us.anthropic.claude-opus-4-8:1m' },
   { label: 'us.anthropic.claude-opus-5', value: 'us.anthropic.claude-opus-5' },
   { label: 'us.anthropic.claude-opus-5:1m', value: 'us.anthropic.claude-opus-5:1m' },
+  { label: 'us.anthropic.claude-opus-5-5', value: 'us.anthropic.claude-opus-5-5' },
+  { label: 'us.anthropic.claude-opus-5-5:1m', value: 'us.anthropic.claude-opus-5-5:1m' },
   // xAI Grok (Converse). Cross-region inference profiles only — there is no
   // in-region or eu. form, so EU deployments use the global. entry below.
   { label: 'us.xai.grok-4.6', value: 'us.xai.grok-4.6' },
@@ -273,6 +275,8 @@ export const EXTRACTION_MODEL_OVERRIDE_OPTIONS = [
   { label: 'eu.anthropic.claude-opus-4-8:1m', value: 'eu.anthropic.claude-opus-4-8:1m' },
   { label: 'eu.anthropic.claude-opus-5', value: 'eu.anthropic.claude-opus-5' },
   { label: 'eu.anthropic.claude-opus-5:1m', value: 'eu.anthropic.claude-opus-5:1m' },
+  { label: 'eu.anthropic.claude-opus-5-5', value: 'eu.anthropic.claude-opus-5-5' },
+  { label: 'eu.anthropic.claude-opus-5-5:1m', value: 'eu.anthropic.claude-opus-5-5:1m' },
   { label: 'global.amazon.nova-2-lite-v1:0', value: 'global.amazon.nova-2-lite-v1:0' },
   {
     label: 'global.anthropic.claude-haiku-4-5-20251001-v1:0',
@@ -298,6 +302,8 @@ export const EXTRACTION_MODEL_OVERRIDE_OPTIONS = [
   { label: 'global.anthropic.claude-opus-4-8:1m', value: 'global.anthropic.claude-opus-4-8:1m' },
   { label: 'global.anthropic.claude-opus-5', value: 'global.anthropic.claude-opus-5' },
   { label: 'global.anthropic.claude-opus-5:1m', value: 'global.anthropic.claude-opus-5:1m' },
+  { label: 'global.anthropic.claude-opus-5-5', value: 'global.anthropic.claude-opus-5-5' },
+  { label: 'global.anthropic.claude-opus-5-5:1m', value: 'global.anthropic.claude-opus-5-5:1m' },
   { label: 'global.xai.grok-4.6', value: 'global.xai.grok-4.6' },
   { label: 'global.openai.gpt-6-astra', value: 'global.openai.gpt-6-astra' },
 ];
