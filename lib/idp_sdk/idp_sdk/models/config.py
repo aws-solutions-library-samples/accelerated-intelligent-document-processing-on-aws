@@ -25,11 +25,19 @@ class ConfigValidationResult(BaseModel):
     warnings: List[str] = Field(default_factory=list, description="Validation warnings")
     deprecated_fields: List[str] = Field(
         default_factory=list,
-        description="Deprecated fields found in the configuration file",
+        description=(
+            "Dotted paths of deprecated fields found in the configuration file, at "
+            "any depth (e.g. 'extraction.max_tokens'). Keys the loader relocates "
+            "rather than drops are not listed here, since they are honoured."
+        ),
     )
     unknown_fields: List[str] = Field(
         default_factory=list,
-        description="Unknown fields found in the configuration file (not in IDPConfig schema)",
+        description=(
+            "Dotted paths of fields the configuration models will not read, at any "
+            "depth (e.g. 'extraction.validation.enabld'). A path a consumer other "
+            "than IDPConfig reads is not listed here."
+        ),
     )
     merged_config: Optional[Dict[str, Any]] = Field(
         default=None, description="Merged configuration (if show_merged=True)"
@@ -93,6 +101,16 @@ class ConfigActivateResult(BaseModel):
     bda_classes_failed: int = Field(
         default=0,
         description="Number of BDA classes that failed to sync",
+    )
+    bda_orphaned_blueprint_arns: List[str] = Field(
+        default_factory=list,
+        description=(
+            "Blueprints the sync removed from the BDA project but could not then "
+            "delete. They are invisible to every project-scoped read, still count "
+            "against the account's blueprint limit, and are removed only by the "
+            "orphaned-blueprint cleanup. Not a class failure: the classes may all "
+            "have synced."
+        ),
     )
     error: Optional[str] = Field(default=None, description="Error message if failed")
 
@@ -230,5 +248,16 @@ class ConfigSyncBdaResult(BaseModel):
     )
     processed_classes: List[str] = Field(
         default_factory=list, description="Names of processed classes"
+    )
+    orphaned_blueprint_arns: List[str] = Field(
+        default_factory=list,
+        description=(
+            "Blueprints the sync removed from the BDA project but could not then "
+            "delete. They are invisible to every project-scoped read, still count "
+            "against the account's blueprint limit, and are removed only by the "
+            "orphaned-blueprint cleanup. Not a class failure: the classes may all "
+            "have synced, so this is reported alongside `success` rather than "
+            "instead of it."
+        ),
     )
     error: Optional[str] = Field(default=None, description="Error message if failed")

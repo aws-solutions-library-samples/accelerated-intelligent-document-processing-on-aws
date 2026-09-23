@@ -2554,6 +2554,16 @@ idp-cli config-activate --stack-name my-stack --config-profile default
 
 **Note:** If BDA sync fails (when `use_bda` is enabled), the activation will be aborted to prevent processing errors.
 
+**An aborted activation can still have left a blueprint behind.** The BDA sync this
+command runs is the same replace-mode sync as
+[`config-sync-bda`](#config-sync-bda), so the same thing can happen: a blueprint removed
+from the BDA project that could not then be deleted. The deletes happen whatever became
+of the document classes, which makes an aborted activation the outcome most likely to
+have left one. Those ARNs are printed whether the activation succeeded or failed, and
+they are not counted as failed classes — the remedy is the orphaned-blueprint cleanup
+(the `syncBdaIdp` API operation with direction `cleanup_orphaned`), not a re-run of this
+command. See the `config-sync-bda` section for the full explanation.
+
 **Notes:**
 - Sets the specified profile as active for all new document processing
 - Profile must exist (use `config-list` to see available profiles)
@@ -2956,6 +2966,18 @@ string where an object was meant — is reported the same way. Read the warnings
 sync: a class can succeed with a whole line-items section missing from what it extracts.
 To keep such a section, flatten the schema so the nested structure sits in a top-level
 `$defs` definition referenced by `$ref`.
+
+**A blueprint that could not be deleted is reported separately from the classes.** In
+`replace` mode the sync removes blueprints the profile no longer describes. The order is
+forced — BDA refuses to delete a blueprint a project still associates, so the project's
+blueprint list is rewritten first and the deletes follow — which means a delete that
+fails leaves a blueprint that is already out of the project. It is invisible to
+everything that reads the project, it still counts against the account's blueprint
+limit, and a name-prefix match can still pick it up. Those ARNs are printed beside the
+result, and they do **not** count as failed classes: the classes may all have synced,
+and the outstanding work is a cleanup rather than a re-sync. Remove them with the
+orphaned-blueprint cleanup — the `syncBdaIdp` API operation with direction
+`cleanup_orphaned`.
 
 ---
 
