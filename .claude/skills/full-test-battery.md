@@ -66,16 +66,34 @@ make typecheck     # basedpyright
 
 `make typecheck` fails with `make: basedpyright: No such file or directory` if the
 tool is absent — it is not in the `[test]` extra. `pip install basedpyright` (CI
-installs it via `npm install -g basedpyright`). Compare its output against the
-baseline on `develop` rather than reading it absolutely: it reports **0 errors / 42
-warnings** on a clean tree (2026-09-22), over every tracked `.py` file — the number of
-those is not worth quoting, and `git ls-files '*.py' | wc -l` must equal the
-`filesAnalyzed` it prints. Errors are the gate, so a
-single one is a regression; the warnings are a standing set (`reportUnsupportedDunderAll`
-on several `__init__.py` re-export lists, one duplicate import). Note **which files a
-diagnostic lands in shifts with the installed dependency set** — `z3-solver` moves two
-of the warnings between `rule_validation/z3/__init__.py` and the validator itself — so
-compare the **totals**, and check that no diagnostic names a file your change touched.
+installs it via `npm install -g basedpyright`).
+
+**Errors are the gate, and `develop` is at zero, so any error is yours.** That is the
+durable half and it needs no comparison: a single error is a regression. The eleven
+errors this page once told you to expect were resolvable-import failures, fixed when
+`pyrightconfig.json` gained `extraPaths`
+([#1109](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/1109)).
+Check also that `git ls-files '*.py' | wc -l` equals the `filesAnalyzed` the run
+prints — the gate reads every tracked `.py` file and that identity is the property to
+rely on, rather than any figure for how many there are.
+
+⚠️ **The warning total is a standing set, and it is not stable enough to quote here.**
+It has been measured at both 42 and 43 on different machines in the same week, and
+nothing in the tree pins it — the set is `reportUnsupportedDunderAll` on several
+`__init__.py` re-export lists plus a duplicate import, and which file a diagnostic
+lands in shifts with the installed dependency set (`z3-solver` moves two of them
+between `rule_validation/z3/__init__.py` and the validator itself). So a number
+written here tells you less than a measurement, and it goes stale the way the error
+count did. Measure `develop` on the machine you are judging from:
+
+```bash
+git worktree add -q /tmp/dev-typecheck github/develop && cd /tmp/dev-typecheck
+make typecheck 2>&1 | tail -1     # the "N errors, M warnings, K notes" line
+cd - && git worktree remove /tmp/dev-typecheck --force
+```
+
+Then compare **totals** against that, not against a literal, and check that no
+diagnostic names a file your change touched.
 
 Per-suite (isolated) — `PP=<checkout>/lib/idp_common_pkg`:
 
@@ -98,6 +116,105 @@ and the two chat rows at 2026-09-19.
 | capacity Lambda | `cd src/lambda/calculate_capacity && pytest -q` | 33 pass |
 | chat-with-document | `cd src/lambda/chat_with_document_processor && pytest tests -q` | 42 pass |
 | chat-stream | `cd src/lambda/chat_stream_processor && pytest tests -q` | 32 pass |
+
+## Reading a gate result, and not running the same suite twice
+
+Two ways to mistake one measurement for another. They are together because they are
+the same error in opposite directions: the first reads a non-result as a pass, the
+second reads one result as two.
+
+⚠️ **A gate result is a count of passed tests plus zero failures. It is not an exit
+status.** The **long** suites — `idp_common` unit, `idp_sdk`, `scripts/tests`,
+`test-packages-cicd` — outrun the assistant's 120-second Bash timeout and have to be
+wrapped: `timeout N ... > log 2>&1` in the background, then the log is read. Several
+rows in the table above finish in under four seconds and need none of that.
+
+**Which wrapper you use decides whether the status means anything.** Measured:
+
+| form | exit code when the command is killed |
+|---|---|
+| `timeout 1 sleep 5` | **124** |
+| `timeout 1 sleep 5 > log 2>&1` | **124** |
+| `timeout 1 sleep 5 2>&1 \| tail -1` | **0** |
+| `set -o pipefail; timeout 1 sleep 5 2>&1 \| tail -1` | **124** |
+
+So `timeout` reports a kill reliably, and **in the redirect-only form 124 is a usable
+signal — check it.** The misleading 0 comes from the **pipeline**, which returns the
+last command's status, so a trailing `| tail` throws the kill away — unless
+`pipefail` is set, which restores it. Prefer redirecting to a log and reading the
+file; if you must pipe, set `pipefail` in the same command, and remember that without
+it the status tells you nothing and only the summary line does.
+
+Either way the log of a killed run *looks* exactly like a completed one — a column of
+dots, no failure section, nothing obviously wrong. Measured: `pytest scripts/tests/`
+killed by a 280-second `timeout` at **24%** of the way through, read through a pipe,
+reported as exit 0.
+
+The check that actually distinguishes them is the **summary line**:
+
+```
+3165 passed, 47 skipped in 505.86s      # a result
+........................ [ 24%]        # not a result, whatever the shell said
+```
+
+So: read the totals, and treat a run that printed no summary line as not having run.
+Budget for the **range** rather than one sample: `scripts/tests/` has been measured
+between **5.8 and 11.6 minutes** on this machine (347 s on a quiet one, 696 s loaded),
+and `test-packages-cicd` at about 12. A 600-second timeout is therefore too small for
+either whenever anything else is running, which on a shared machine is most of the
+time.
+
+**`make test-packages-cicd` already runs `pytest scripts/tests/`** as one of its
+closing steps. Running both repeats the whole of that suite, and — more misleading than
+the cost — two passes of one suite read as independent evidence when they are a single
+measurement. If you want a readable failure list, run `scripts/tests/` on its own with
+`-q --tb=no -rf`; if you want the gate signal, it is already inside
+`test-packages-cicd`. Do not run the two concurrently over one worktree either: two
+pytest processes sharing a rootdir contend on its cache, which produces failures
+belonging to neither run. (`-p no:cacheprovider` removes that particular contention;
+the duplication argument stands regardless.)
+
+Two invocation corrections for the CI-equivalent gates:
+
+- **`make lint-cicd` needs `FORCE=1`** to exercise the UI lint and `npm run
+  typecheck`. Without it, an unchanged `src/ui` checksum skips both while the target
+  still runs the vite build and still reports success — so a green `lint-cicd` on a
+  warm tree does not mean the UI was linted. CI is unaffected: `.checksum` is
+  gitignored, so a fresh checkout has none and the lint always runs. See
+  [#1152](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/1152).
+- **Do not reach for `PYTHONPATH` to make `make typecheck` resolve first-party
+  imports, and do not conclude from that that the tool ignores the environment.**
+  `pyrightconfig.json`'s `extraPaths` names the five first-party roots, so resolution
+  is a property of the configuration rather than of the invocation. Measured on the
+  current tree the two agree exactly — same error count, same warning count, same exit
+  status — both with `PYTHONPATH` exported and under `env -u PYTHONPATH`. The point is
+  the **equality**, so no figure is quoted here: per the warning-total note above, the
+  absolute number is not stable across machines and would go stale, while the
+  equivalence is what this bullet is about.
+
+  ⚠️ That equivalence is a **consequence of `extraPaths` being populated**, not a
+  property of `basedpyright`, which does honour `PYTHONPATH`. Before those entries
+  existed the gate resolved nothing first-party and so could not produce a diagnostic
+  for any call into the shared library, while reporting zero errors over every file
+  (#1109). So what matters is that `extraPaths` **stays** populated, which
+  `scripts/tests/test_pyright_config.py` asserts — not which way you invoke the gate.
+
+⚠️ **`PYTHONPATH` for pytest has to name EVERY first-party root, not just
+`idp_common_pkg`.** The provenance guard (`scripts/tests/first_party_provenance.py`,
+wired into several conftests) checks each first-party package independently, and on a
+machine whose editable installs point at another checkout it refuses the run for
+whichever one it finds there. Setting only `lib/idp_common_pkg` gets as far as
+`idp_sdk resolves OUTSIDE the checkout under test` — which is the guard doing its job,
+not a defect, but it is a *refusal* rather than a failure and has to be read as
+"did not run":
+
+```bash
+W=$(pwd)   # from the worktree root
+export PYTHONPATH=$W/lib/idp_common_pkg:$W/lib/idp_sdk:$W/lib/idp_cli_pkg:$W/lib/idp_mcp_connector_pkg:$W/lib/idp_feature_sdk
+```
+
+That list is the same set as `FIRST_PARTY_EDITABLES` in the `Makefile`; keep them
+together.
 
 ## There is no standing failure set — green means green
 
