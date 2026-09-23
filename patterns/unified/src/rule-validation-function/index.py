@@ -30,8 +30,19 @@ from aws_xray_sdk.core import xray_recorder
 
 
 
-# Configuration will be loaded in handler function
-region = os.environ['AWS_REGION']
+# Configuration will be loaded in handler function.
+#
+# The region is read at invocation rather than at import. Reading it here is the
+# right default for a handler the Lambda runtime owns -- the runtime always sets
+# AWS_REGION -- and stops being harmless the moment a test suite imports the
+# module, because `os.environ['AWS_REGION']` then raises KeyError during
+# collection, before any fixture can intervene. Two suites load this module by
+# path, and the only thing standing between that and a hard failure was an
+# `os.environ.setdefault` in their own harnesses. Checked by
+# patterns/unified/tests/test_handler_imports_are_region_free.py; the same
+# reasoning as pipeline_hooks_function's `_LazyClient`, without needing a proxy,
+# since this is a string and not a client. Still a KeyError if the variable is
+# genuinely absent at invocation, which is the loud failure it should be.
 
 logger = logging.getLogger()
 logger.setLevel(os.environ.get("LOG_LEVEL", "INFO"))
@@ -169,7 +180,7 @@ def _handle(event, context):
     
     # Initialize the rule validation service
     rule_validation_service = rule_validation.RuleValidationService(
-        region=region,
+        region=os.environ['AWS_REGION'],
         config=config
     )
     
