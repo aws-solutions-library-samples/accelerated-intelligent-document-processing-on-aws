@@ -181,6 +181,44 @@ def test_the_walk_reaches_the_whole_config_tree():
     )
 
 
+class _ProbeA(BaseModel):
+    knob: str = ""
+
+
+class _ProbeB(BaseModel):
+    other: str = ""
+
+
+#: The resolver's contract, on annotations built here rather than on the ones the
+#: tree happens to contain. Three of the shapes below — a mapping of models, a
+#: ``tuple``/``set`` of models, and a union of two models — match no field today, so
+#: the tree cannot exercise them and a change to any of those branches is otherwise
+#: invisible. The union entry is the one that matters: answering it would mean
+#: picking a member arbitrarily, and the walk's ``(None, None)`` there is the gap
+#: `test_no_field_in_the_tree_holds_a_model_the_walk_declines_to_enter` guards.
+RESOLVER_CONTRACT = [
+    (_ProbeA, ("model", _ProbeA)),
+    (typing.Optional[_ProbeA], ("model", _ProbeA)),
+    (typing.List[_ProbeA], ("list", _ProbeA)),
+    (typing.Optional[typing.List[_ProbeA]], ("list", _ProbeA)),
+    (typing.Tuple[_ProbeA], ("list", _ProbeA)),
+    (typing.Set[_ProbeA], ("list", _ProbeA)),
+    (typing.Dict[str, _ProbeA], ("map", _ProbeA)),
+    (typing.Annotated[_ProbeA, "meta"], ("model", _ProbeA)),
+    (typing.Union[_ProbeA, _ProbeB], (None, None)),
+    (typing.Dict[str, typing.Any], (None, None)),
+    (typing.List[typing.Dict[str, typing.Any]], (None, None)),
+    (str, (None, None)),
+    (typing.Optional[int], (None, None)),
+]
+
+
+@pytest.mark.parametrize("annotation,expected", RESOLVER_CONTRACT, ids=lambda v: str(v))
+def test_the_resolver_answers_each_annotation_shape_as_documented(annotation, expected):
+    assert models_module._nested_model_target(annotation) == expected
+    assert _target(annotation) == expected
+
+
 def test_the_production_traversal_agrees_with_an_independent_walk():
     """The duplicated resolver above is pinned against the one the report uses.
 
@@ -1015,6 +1053,39 @@ def test_validate_config_stays_quiet_about_a_correct_configuration():
         "pattern-2",
     )
     assert [w for w in result["warnings"] if "configuration key" in w] == []
+
+
+@pytest.mark.parametrize(
+    "submitted,must_not_name",
+    [
+        ({"notes_typo": "x"}, "notes_typo"),
+        ({"description": "a profile description"}, "description"),
+        ({"rule_classes": [{"name": "policyA"}]}, "rule_classes"),
+    ],
+    ids=["a-plain-typo", "read-by-another-consumer", "renamed-on-load"],
+)
+def test_validate_config_leaves_the_top_level_to_the_reporters_that_know_it(
+    submitted, must_not_name
+):
+    """Depth 0 has three reporters already, and two of these keys are not ignored.
+
+    ``idp_cli``'s ``config validate`` and ``idp_sdk``'s ``ConfigOperation.validate``
+    each compute top-level extras themselves and print their own message, so a fourth
+    put two differently-worded warnings about one key in front of the same reader.
+    Worse, the other two cases here are not dropped at all: ``update_configuration``
+    pops and stores ``description``, and ``rule_classes`` is renamed on load, so
+    "will be ignored, leaving the default in force" was false for both — the second
+    of them an instruction to delete working policy rules.
+    """
+    from idp_common.config.merge_utils import validate_config
+
+    result = validate_config(
+        {"classes": [{"name": "invoice"}], **submitted}, "pattern-2"
+    )
+    offending = [
+        w for w in result["warnings"] if "configuration key" in w and must_not_name in w
+    ]
+    assert offending == [], offending
 
 
 def test_validate_config_does_not_report_a_legacy_key_the_migration_relocates():
