@@ -539,7 +539,7 @@ def test_publish_forwards_the_simulator_options(
     monkeypatch.setattr(
         cli_mod.FeaturePublisher,
         "publish",
-        lambda self, **kw: (captured.append(kw) or _FakePublishResult()),
+        lambda self, **kw: captured.append(kw) or _FakePublishResult(),
     )
     result = CliRunner().invoke(
         main,
