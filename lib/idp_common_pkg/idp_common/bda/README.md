@@ -208,6 +208,21 @@ recognised. `_process_classes_parallel` and `_convert_aws_standard_blueprints_pa
 therefore downgrade the affected classes to `status: failed` with the reason, rather
 than reporting a clean sync.
 
+### The project ARN is read through one accessor
+
+`dataAutomationProjectArn` is `Optional[str]`, because the service is also constructed
+to create the project (`get_or_create_project_for_version`) and to run the schema
+transforms, neither of which needs one. Every method that *does* need it reads
+`self._project_arn`, which raises a `RuntimeError` naming the class and the missing ARN
+rather than letting a `None` become a botocore `ParamValidationError` several frames
+away. Assigning the attribute after construction is supported and is what the callers
+that create the project do.
+
+`bda_blueprint_service.py` and `schema_converter.py` carry
+`# pyright: reportArgumentType=error`, which is off repo-wide. Both files are at zero
+findings under it, so a new site that reads the attribute directly fails `make
+typecheck`.
+
 ### Deletes are per-blueprint and their failures are returned
 
 `_synchronize_deletes` removes the blueprints to be deleted from the project first —

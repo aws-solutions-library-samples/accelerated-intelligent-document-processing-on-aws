@@ -2650,3 +2650,95 @@ class TestDeleteProject:
 
         with patch.dict("os.environ", {}, clear=True):
             assert service.delete_project(PROJECT_ARN) is False
+
+
+# ---------------------------------------------------------------------------
+# The project ARN is Optional on the attribute and required at every use
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.unit
+class TestProjectArnIsRequiredWhereItIsUsed:
+    """`dataAutomationProjectArn` is legitimately `None` — the caller may be about to
+    create the project, or may want only the schema transforms — and it is legitimately
+    assigned after construction, which three production call sites do. What is not
+    legitimate is a `None` reaching a BDA API: nine call sites used to pass the
+    attribute straight into a parameter declared `str`, where it becomes a botocore
+    `ParamValidationError` or a `TypeError` several frames away naming neither this
+    class nor the missing ARN.
+
+    Every one of those reads now goes through `_project_arn`, so the narrowing is done
+    once and holds at runtime. `bda_blueprint_service.py` additionally carries
+    `# pyright: reportArgumentType=error`, which fails the type gate if a tenth site
+    reads the attribute directly; these two tests are the runtime half, which is what
+    catches a read the type checker cannot see (a `getattr`, or a subclass).
+    """
+
+    def test_the_accessor_answers_the_arn_when_there_is_one(self):
+        assert _service()._project_arn == PROJECT_ARN
+
+    def test_the_accessor_refuses_rather_than_handing_back_none(self):
+        service = _service()
+        service.dataAutomationProjectArn = None
+
+        with pytest.raises(RuntimeError, match="no BDA project ARN"):
+            service._project_arn
+
+    def test_an_arn_assigned_after_construction_is_used(self):
+        """Three production call sites construct the service, create the project, then
+        assign the ARN. Reading it through the accessor must not have frozen the
+        constructor's value."""
+        service = _service()
+        service.dataAutomationProjectArn = None
+        service.dataAutomationProjectArn = RECORDED_ARN
+
+        assert service._project_arn == RECORDED_ARN
+
+    @pytest.mark.parametrize(
+        "call",
+        [
+            pytest.param(
+                lambda s: s._synchronize_deletes(
+                    [
+                        {
+                            "blueprintName": "idp-Old-aaaa",
+                            "blueprintArn": "arn:aws:x:::b/o1",
+                            "blueprintVersion": "1",
+                        }
+                    ],
+                    [],
+                ),
+                id="synchronize-deletes",
+            ),
+            pytest.param(
+                lambda s: s._remove_aws_standard_blueprints_from_project(),
+                id="remove-aws-standard",
+            ),
+            pytest.param(
+                lambda s: s._process_classes_parallel([_idp_class()], []),
+                id="process-classes-parallel",
+            ),
+            pytest.param(
+                lambda s: s.create_blueprints_from_custom_configuration(
+                    version="v1", sync_direction="idp_to_bda", sync_mode="replace"
+                ),
+                id="create-blueprints-from-configuration",
+            ),
+        ],
+    )
+    def test_no_bda_call_is_made_with_a_missing_project_arn(self, call):
+        """The assertion is on what must *not* happen: a call reaching BDA with no
+        project to name. Two of these swallow the RuntimeError by design, so asserting
+        on the exception alone would not cover them."""
+        service = _service()
+        service.dataAutomationProjectArn = None
+        service.config_manager.get_configuration.return_value = None
+
+        try:
+            call(service)
+        except Exception:
+            pass
+
+        service.blueprint_creator.update_project_with_custom_configurations.assert_not_called()
+        service.blueprint_creator.bulk_update_data_automation_project.assert_not_called()
+        service.blueprint_creator.list_blueprints.assert_not_called()

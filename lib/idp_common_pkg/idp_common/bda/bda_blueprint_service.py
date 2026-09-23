@@ -1,5 +1,14 @@
 # Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
 # SPDX-License-Identifier: MIT-0
+#
+# `reportArgumentType` is off repo-wide (about 416 findings across the tree, its own
+# change with its own ratchet). It is on for this file, which has none: the
+# `Optional[str]` project ARN that used to reach nine `str` parameters from here is
+# read through `_project_arn`, so a tenth site cannot be added without this failing.
+# This is the inverse of an exemption — a rule enabled locally, not disabled — so it
+# is not registered in scripts/tests/gate_exemptions.json; what it needs instead is
+# to stay at zero, which `make typecheck` enforces.
+# pyright: reportArgumentType=error
 import json
 import logging
 import os
@@ -52,6 +61,38 @@ class BdaBlueprintService:
         self._current_class = None  # Track which class is being processed
 
         return
+
+    @property
+    def _project_arn(self) -> str:
+        """The project ARN this service operates on, guaranteed to be a string.
+
+        The attribute is ``Optional[str]`` because the service is legitimately
+        constructed without one — the caller may be about to create the project,
+        or may only want the schema transforms, which touch no project at all.
+        Every method that *does* need the ARN reads it from here rather than from
+        the attribute, so the narrowing is done once and is real at runtime.
+
+        Nine call sites used to pass the attribute straight into a parameter
+        declared ``str``: ``bulk_update_data_automation_project``,
+        ``update_project_with_custom_configurations`` and
+        ``_retrieve_all_blueprints``. A ``None`` reaching any of them produces
+        either a botocore ``ParamValidationError`` or a ``TypeError`` several
+        frames away, naming neither this class nor the missing ARN. One of the
+        nine already carried a guard for the consequence, which is what marked the
+        rest as oversights rather than a convention.
+
+        Raises:
+            RuntimeError: if no project ARN was given at construction and none has
+                been assigned since.
+        """
+        if not self.dataAutomationProjectArn:
+            raise RuntimeError(
+                "This BdaBlueprintService has no BDA project ARN, so it cannot "
+                "read or write a project's blueprints. Construct it with "
+                "dataAutomationProjectArn=…, or call "
+                "get_or_create_project_for_version() and assign the result."
+            )
+        return self.dataAutomationProjectArn
 
     def _sanitize_project_name(self, name: str) -> str:
         """Sanitize a string for use in BDA project names.
@@ -1018,7 +1059,7 @@ class BdaBlueprintService:
         return ref_path.replace("/$defs/", "/definitions/")
 
     def _add_bda_fields_to_leaf_property(
-        self, prop_schema: dict, original_description: str = None
+        self, prop_schema: dict, original_description: Optional[str] = None
     ) -> dict:
         """Add BDA fields (inferenceType, instruction) to a leaf property."""
         result = {
@@ -1508,6 +1549,19 @@ class BdaBlueprintService:
             blueprint_version = None
 
             if blueprint_arn:
+                if blueprint_exists is None:
+                    # `blueprint_arn` came from the class's own `blueprint_arn`
+                    # key rather than from the lookup, so there is no blueprint to
+                    # compare the schema against. Nothing in this repository writes
+                    # that key, so this is unreached today; without the check the
+                    # comparison below subscripts None and the class is reported
+                    # failed with a bare TypeError.
+                    raise ValueError(
+                        f"Class '{docu_class}' names blueprint {blueprint_arn} in "
+                        f"its own schema, but no blueprint for it is associated "
+                        f"with the BDA project, so there is nothing to compare "
+                        f"its schema against."
+                    )
                 # Check for updates on existing blueprint
                 if self._check_for_updates(
                     custom_class=custom_class, blueprint=blueprint_exists
@@ -1679,7 +1733,7 @@ class BdaBlueprintService:
             )
             try:
                 self.blueprint_creator.bulk_update_data_automation_project(
-                    self.dataAutomationProjectArn, blueprints_to_associate
+                    self._project_arn, blueprints_to_associate
                 )
             except Exception as e:
                 logger.error(
@@ -1725,6 +1779,14 @@ class BdaBlueprintService:
 
             if isinstance(blueprint_schema, str):
                 blueprint_schema = json.loads(blueprint_schema)
+            if not isinstance(blueprint_schema, dict):
+                # Named here rather than crashing on `.get` two lines down, which
+                # reported the class failed with a bare AttributeError.
+                raise ValueError(
+                    f"Blueprint '{blueprint_name}' has no usable schema "
+                    f"({type(blueprint_schema).__name__}), so it cannot be "
+                    f"converted to an IDP document class."
+                )
 
             docu_class = blueprint_schema.get("class", None)
             class_exists = False
@@ -1864,7 +1926,7 @@ class BdaBlueprintService:
             )
             try:
                 self.blueprint_creator.bulk_update_data_automation_project(
-                    self.dataAutomationProjectArn, blueprints_to_associate
+                    self._project_arn, blueprints_to_associate
                 )
             except Exception as e:
                 logger.error(
@@ -1891,7 +1953,9 @@ class BdaBlueprintService:
             "aws_blueprint_arns_to_remove": aws_blueprint_arns_to_remove,
         }
 
-    def _blueprint_lookup(self, existing_blueprints, doc_class):
+    def _blueprint_lookup(
+        self, existing_blueprints: list, doc_class: str
+    ) -> Optional[dict]:
         # Create a lookup dictionary for existing blueprints by name prefix.
         # The class id is sanitized the same way it is when a blueprint is
         # created, so lookup keeps matching the name that was actually used.
@@ -1933,7 +1997,7 @@ class BdaBlueprintService:
         try:
             # Retrieve ALL blueprints including AWS standard ones
             project_bda_blueprints = self._retrieve_all_blueprints(
-                self.dataAutomationProjectArn, include_aws_standard=True
+                self._project_arn, include_aws_standard=True
             )
 
             if not project_bda_blueprints:
@@ -1966,7 +2030,7 @@ class BdaBlueprintService:
 
                 try:
                     response = self.blueprint_creator.list_blueprints(
-                        self.dataAutomationProjectArn, "LIVE"
+                        self._project_arn, "LIVE"
                     )
                     current_blueprints = (response or {}).get("blueprints", [])
 
@@ -1978,7 +2042,7 @@ class BdaBlueprintService:
 
                     updated_config = {"blueprints": updated_blueprints}
                     self.blueprint_creator.update_project_with_custom_configurations(
-                        self.dataAutomationProjectArn,
+                        self._project_arn,
                         customConfiguration=updated_config,
                     )
 
@@ -2077,7 +2141,7 @@ class BdaBlueprintService:
                     try:
                         # Retrieve ALL blueprints from the BDA project (including AWS standard)
                         all_project_blueprints = self._retrieve_all_blueprints(
-                            self.dataAutomationProjectArn, include_aws_standard=True
+                            self._project_arn, include_aws_standard=True
                         )
 
                         if all_project_blueprints:
@@ -2226,9 +2290,7 @@ class BdaBlueprintService:
                 # rather than answering `[]`: an empty view here makes every
                 # existing blueprint invisible to `_blueprint_lookup`, so the sync
                 # would create a second blueprint for every class.
-                existing_blueprints = self._retrieve_all_blueprints(
-                    self.dataAutomationProjectArn
-                )
+                existing_blueprints = self._retrieve_all_blueprints(self._project_arn)
 
                 if not config_item:
                     return []  # Return empty list for consistency
@@ -2423,7 +2485,7 @@ class BdaBlueprintService:
             # First, remove orphaned blueprints from the BDA project (if associated)
             try:
                 response = self.blueprint_creator.list_blueprints(
-                    self.dataAutomationProjectArn, "LIVE"
+                    self._project_arn, "LIVE"
                 )
                 project_blueprints = (response or {}).get("blueprints", [])
                 orphaned_arns = {bp.get("blueprintArn") for bp in orphaned_blueprints}
@@ -2440,7 +2502,7 @@ class BdaBlueprintService:
                         f"Removing {len(project_blueprints) - len(updated_blueprints)} orphaned blueprints from project"
                     )
                     self.blueprint_creator.update_project_with_custom_configurations(
-                        self.dataAutomationProjectArn,
+                        self._project_arn,
                         customConfiguration={"blueprints": updated_blueprints},
                     )
             except Exception as e:
@@ -2526,9 +2588,7 @@ class BdaBlueprintService:
         that were added during initial project creation should be disassociated.
         """
         try:
-            response = self.blueprint_creator.list_blueprints(
-                self.dataAutomationProjectArn, "LIVE"
-            )
+            response = self.blueprint_creator.list_blueprints(self._project_arn, "LIVE")
             all_project_blueprints = (response or {}).get("blueprints", [])
 
             # Filter out AWS standard blueprints
@@ -2544,7 +2604,7 @@ class BdaBlueprintService:
                     f"Removing {removed_count} AWS standard blueprints from project"
                 )
                 self.blueprint_creator.update_project_with_custom_configurations(
-                    self.dataAutomationProjectArn,
+                    self._project_arn,
                     customConfiguration={"blueprints": custom_only},
                 )
             else:
@@ -2583,9 +2643,7 @@ class BdaBlueprintService:
         failed_arns = []
         if len(blueprints_to_delete) > 0:
             # remove the blueprints marked for deletion for the project first before deleting them.
-            response = self.blueprint_creator.list_blueprints(
-                self.dataAutomationProjectArn, "LIVE"
-            )
+            response = self.blueprint_creator.list_blueprints(self._project_arn, "LIVE")
             custom_configurations = (response or {}).get("blueprints", [])
             new_custom_configurations = []
             for custom_blueprint in custom_configurations:
@@ -2593,7 +2651,7 @@ class BdaBlueprintService:
                     new_custom_configurations.append(custom_blueprint)
             new_custom_configurations = {"blueprints": new_custom_configurations}
             self.blueprint_creator.update_project_with_custom_configurations(
-                self.dataAutomationProjectArn,
+                self._project_arn,
                 customConfiguration=new_custom_configurations,
             )
 
