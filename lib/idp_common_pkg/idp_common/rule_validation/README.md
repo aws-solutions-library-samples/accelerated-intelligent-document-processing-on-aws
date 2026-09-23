@@ -386,11 +386,17 @@ from idp_common.rule_validation import RuleValidationOrchestratorService
 # Initialize orchestrator
 orchestrator = RuleValidationOrchestratorService(config=config)
 
-# Consolidate all section results
+# Consolidate THIS RUN's section results. `section_uris` is the list of per-section
+# output URIs this run produced; in the pipeline they come from the section Map's
+# results, as `rule_validation_result.output_uri` on each section document.
 updated_document = orchestrator.consolidate_and_save(
     document=document,
     config=config,
-    multiple_sections=True
+    multiple_sections=True,
+    section_uris=[
+        f"s3://{document.output_bucket}/{document.input_key}"
+        "/rule_validation/sections/section_1_responses.json",
+    ],
 )
 
 # Access consolidated results
@@ -402,6 +408,34 @@ print(f"Sections processed: {updated_document.rule_validation_result.metadata['s
 # - consolidated_summary.md (Markdown report)
 # - Aggregated supporting page IDs
 ```
+
+#### `section_uris`: pass this run's list, or accept the prefix
+
+`section_uris` decides **which** section outputs are consolidated, and `None` and `[]`
+are different instructions:
+
+| value | behaviour | when it is right |
+|---|---|---|
+| a list of URIs | reads exactly those objects | **always, from a pipeline run** |
+| `None` (omitted) | lists `<input_key>/rule_validation/sections/` and reads everything matching | re-consolidating an existing prefix by hand, where there is no run to ask |
+| `[]` | consolidates nothing | this run produced no section output, so there is nothing of its own to merge |
+
+⚠️ **Omitting it in a pipeline context reads objects a previous run left behind.**
+The step that clears that prefix is best-effort, so on a reprocessed document the
+prefix can hold the previous run's verdicts for the *same* document — plausible enough
+to be consolidated and acted on, where a rule whose verdict changed between runs is
+reported at the stale value ([#1143](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/1143)).
+The list is also what the section count is taken from, so a stale object otherwise
+routes a single-section document through LLM summarization.
+
+**A URI the loader will not read does not count towards the section total either.**
+Two are dropped: one naming a bucket other than the document's `output_bucket`, which
+is logged as a warning, and one whose key is not a per-section result — the key must
+end `_responses.json` **and** contain `section_`, which is the shape
+`RuleValidationService` writes (`section_<id>_responses.json`). Both the load and the
+count apply that one predicate, so the count is always of the objects actually read;
+they used to differ, and a key the loader skipped still pushed the count past one and
+bought an unnecessary LLM summarization.
 
 ### Customizing Recommendation Options
 
@@ -961,11 +995,14 @@ from idp_common.rule_validation import RuleValidationOrchestratorService
 # Initialize orchestrator
 orchestrator = RuleValidationOrchestratorService(config=config)
 
-# Consolidate all section results
+# Consolidate section results. Omitting `section_uris` reads every object under
+# `<input_key>/rule_validation/sections/`, which is what you want when
+# re-consolidating a prefix by hand and NOT what a pipeline run wants -- see
+# "`section_uris`: pass this run's list, or accept the prefix" above.
 updated_document = orchestrator.consolidate_and_save(
     document=document,
     config=config,
-    multiple_sections=True
+    multiple_sections=True,
 )
 
 print("Consolidation complete")
