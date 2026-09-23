@@ -33,8 +33,8 @@
           "BackoffRate": 2
         },
         {
-          "Comment": "Lambda.Unknown catches Python-side exceptions the rollup Lambda didn't classify — a boto3 transient network flake that escaped the client's own retry, an intermittent DynamoDB / Athena / S3 error, etc. Narrow MaxAttempts=2 (vs 6 for Lambda-service errors) so transient issues recover without wasting cycles retrying a genuine code bug six times before failing.",
-          "ErrorEquals": ["Lambda.Unknown"],
+          "Comment": "Catch-all retrier for domain raises the rollup Lambda emits by exception class name (RuntimeError from _purge_s3_prefix partial-delete surfacing, ClientError from boto3, SSM throttles, etc). Under the arn:aws:states:::lambda:invoke integration a Python `raise Foo(...)` surfaces as errorType='Foo', NOT Lambda.Unknown — Lambda.Unknown only covers Sandbox.Timedout / OOM / other Lambda-runtime-level failures the primary retrier already handles by class. Using States.ALL here catches the domain raise paths without enumerating every possible error class name. Narrow MaxAttempts=2 (vs 6 for Lambda-service errors) so transient issues recover without wasting cycles retrying a genuine code bug six times before failing.",
+          "ErrorEquals": ["States.ALL"],
           "MaxAttempts": 2,
           "IntervalSeconds": 30,
           "BackoffRate": 2
@@ -57,11 +57,59 @@
           "Next": "PlanChunks"
         }
       ],
-      "Default": "InitialPurge"
+      "Default": "CheckLakeState"
     },
     "MigrationAlreadyDone": {
       "Type": "Succeed",
       "Comment": "Marker says state=completed for the current days value. Migration was already run cleanly on a previous invocation; nothing to do."
+    },
+    "CheckLakeState": {
+      "Type": "Task",
+      "Comment": "Cheap emptiness probe against raw metering/. On a fresh install (no documents yet processed) the lake is empty; running the full migration then does ~720 chunk Athena queries plus the daily backfill against zero rows — ~20 min of workgroup time and no useful state produced. Short-circuits to WriteCompletedMarker (with the same anchor / days / version) so subsequent invocations skip via the completed-marker branch.",
+      "Resource": "arn:${Partition}:states:::lambda:invoke",
+      "Parameters": {
+        "FunctionName": "${DataMartRollupFunctionArn}",
+        "Payload": {
+          "mode": "check_lake_state"
+        }
+      },
+      "ResultSelector": {
+        "is_empty.$": "$.Payload.is_empty"
+      },
+      "ResultPath": "$.lake_state",
+      "Retry": [
+        {
+          "ErrorEquals": [
+            "Lambda.ServiceException",
+            "Lambda.AWSLambdaException",
+            "Lambda.SdkClientException",
+            "Lambda.TooManyRequestsException"
+          ],
+          "MaxAttempts": 6,
+          "IntervalSeconds": 30,
+          "BackoffRate": 2
+        },
+        {
+          "Comment": "Catch-all for domain raises. The helper is defensive — it returns is_empty=False on any list error rather than raising — so the only way here is a Lambda-runtime failure not caught by the primary retrier.",
+          "ErrorEquals": ["States.ALL"],
+          "MaxAttempts": 2,
+          "IntervalSeconds": 30,
+          "BackoffRate": 2
+        }
+      ],
+      "Next": "RouteOnLakeState"
+    },
+    "RouteOnLakeState": {
+      "Type": "Choice",
+      "Comment": "If the raw metering lake is empty, skip straight to WriteCompletedMarker — no work to do, and writing the marker lets subsequent invocations short-circuit via the completed-marker branch. Otherwise proceed with the full flow starting at InitialPurge.",
+      "Choices": [
+        {
+          "Variable": "$.lake_state.is_empty",
+          "BooleanEquals": true,
+          "Next": "WriteCompletedMarker"
+        }
+      ],
+      "Default": "InitialPurge"
     },
     "InitialPurge": {
       "Type": "Task",
@@ -71,7 +119,8 @@
         "FunctionName": "${DataMartRollupFunctionArn}",
         "Payload": {
           "mode": "purge_rollup_prefixes",
-          "days.$": "$.days"
+          "days.$": "$.days",
+          "anchor.$": "$.anchor"
         }
       },
       "Retry": [
@@ -88,8 +137,8 @@
           "BackoffRate": 2
         },
         {
-          "Comment": "Lambda.Unknown — Python-side exception from _purge_rollup_prefixes_task (e.g., a transient S3 5xx that escaped boto3's client retry). Narrow MaxAttempts=2 covers the transient, does not extend retry to a persistent bug.",
-          "ErrorEquals": ["Lambda.Unknown"],
+          "Comment": "Catch-all for domain raises from _purge_rollup_prefixes_task (RuntimeError on partial-delete surfacing, ClientError on S3 5xx that escaped boto3's client retry). Under the lambda:invoke integration a Python raise surfaces as its class name, not Lambda.Unknown. Narrow MaxAttempts=2 covers the transient without extending retry indefinitely for a persistent bug.",
+          "ErrorEquals": ["States.ALL"],
           "MaxAttempts": 2,
           "IntervalSeconds": 30,
           "BackoffRate": 2
@@ -124,8 +173,8 @@
           "BackoffRate": 2
         },
         {
-          "Comment": "Lambda.Unknown catches Python-side exceptions the rollup Lambda didn't classify — a boto3 transient network flake that escaped the client's own retry, an intermittent DynamoDB / Athena / S3 error, etc. Narrow MaxAttempts=2 (vs 6 for Lambda-service errors) so transient issues recover without wasting cycles retrying a genuine code bug six times before failing.",
-          "ErrorEquals": ["Lambda.Unknown"],
+          "Comment": "Catch-all retrier for domain raises the rollup Lambda emits by exception class name (RuntimeError from _purge_s3_prefix partial-delete surfacing, ClientError from boto3, SSM throttles, etc). Under the arn:aws:states:::lambda:invoke integration a Python `raise Foo(...)` surfaces as errorType='Foo', NOT Lambda.Unknown — Lambda.Unknown only covers Sandbox.Timedout / OOM / other Lambda-runtime-level failures the primary retrier already handles by class. Using States.ALL here catches the domain raise paths without enumerating every possible error class name. Narrow MaxAttempts=2 (vs 6 for Lambda-service errors) so transient issues recover without wasting cycles retrying a genuine code bug six times before failing.",
+          "ErrorEquals": ["States.ALL"],
           "MaxAttempts": 2,
           "IntervalSeconds": 30,
           "BackoffRate": 2
@@ -143,7 +192,8 @@
         "Payload": {
           "mode": "plan_migration_chunks",
           "days.$": "$.days",
-          "chunk_hours.$": "$.chunk_hours"
+          "chunk_hours.$": "$.chunk_hours",
+          "anchor.$": "$.anchor"
         }
       },
       "ResultSelector": {
@@ -164,8 +214,8 @@
           "BackoffRate": 2
         },
         {
-          "Comment": "Lambda.Unknown catches Python-side exceptions the rollup Lambda didn't classify — a boto3 transient network flake that escaped the client's own retry, an intermittent DynamoDB / Athena / S3 error, etc. Narrow MaxAttempts=2 (vs 6 for Lambda-service errors) so transient issues recover without wasting cycles retrying a genuine code bug six times before failing.",
-          "ErrorEquals": ["Lambda.Unknown"],
+          "Comment": "Catch-all retrier for domain raises the rollup Lambda emits by exception class name (RuntimeError from _purge_s3_prefix partial-delete surfacing, ClientError from boto3, SSM throttles, etc). Under the arn:aws:states:::lambda:invoke integration a Python `raise Foo(...)` surfaces as errorType='Foo', NOT Lambda.Unknown — Lambda.Unknown only covers Sandbox.Timedout / OOM / other Lambda-runtime-level failures the primary retrier already handles by class. Using States.ALL here catches the domain raise paths without enumerating every possible error class name. Narrow MaxAttempts=2 (vs 6 for Lambda-service errors) so transient issues recover without wasting cycles retrying a genuine code bug six times before failing.",
+          "ErrorEquals": ["States.ALL"],
           "MaxAttempts": 2,
           "IntervalSeconds": 30,
           "BackoffRate": 2
@@ -211,8 +261,8 @@
                 "BackoffRate": 2
               },
               {
-                "Comment": "Lambda.Unknown — Python-side exception from _run_backfill on a single chunk (transient Athena/S3 error that escaped _run_athena's own retry, or a boto3 network flake). Narrow MaxAttempts=2 — the inner Retry already gives 3 attempts on Lambda.* errors, so extending indefinitely on generic Python exceptions would mask real bugs. Idempotent per-partition HeadObject-skip makes the second attempt cheap when the first succeeded partially.",
-                "ErrorEquals": ["Lambda.Unknown"],
+                "Comment": "Catch-all for domain raises from _run_backfill on a single chunk (RuntimeError from _run_athena on wait timeout / probe exhaustion, ClientError from boto3 on transient Athena/S3 5xx that escaped the SDK's own retry). Under the lambda:invoke integration a Python raise surfaces as its class name, not Lambda.Unknown. Narrow MaxAttempts=2 — the inner Retry already gives 3 attempts on Lambda.* errors, so extending indefinitely on generic Python exceptions would mask real bugs. Idempotent per-partition data-presence probe makes the second attempt cheap when the first succeeded partially.",
+                "ErrorEquals": ["States.ALL"],
                 "MaxAttempts": 2,
                 "IntervalSeconds": 60,
                 "BackoffRate": 2
@@ -251,7 +301,8 @@
         "FunctionName": "${DataMartRollupFunctionArn}",
         "Payload": {
           "mode": "backfill_daily_range",
-          "days.$": "$.days"
+          "days.$": "$.days",
+          "anchor.$": "$.anchor"
         }
       },
       "ResultSelector": {
@@ -272,8 +323,8 @@
           "BackoffRate": 2
         },
         {
-          "Comment": "Lambda.Unknown — covers BOTH Python-side exceptions AND Lambda function timeouts (Sandbox.Timedout surfaces here under the lambda:invoke integration, not as States.Timeout). MaxAttempts=5 here (vs 2 elsewhere) because the 90-day Days path can legitimately hit the 900 s Lambda timeout and each retry HeadObject-skips completed days — 5 × 900 s ≈ 75 min covers that budget. The tradeoff is that a real Python bug in _run_backfill_daily_range takes 5 × 900 s to surface instead of 2 × 900 s; the state's own function is idempotent so retrying a bug is at worst wasteful, not destructive.",
-          "ErrorEquals": ["Lambda.Unknown"],
+          "Comment": "Catch-all — covers BOTH Python-side raises (RuntimeError from _run_daily etc — surfaces by class name, NOT as Lambda.Unknown) AND Lambda function timeouts (Sandbox.Timedout, which DOES surface as Lambda.Unknown under the lambda:invoke integration). Using States.ALL is the shape that catches both without enumerating error classes. MaxAttempts=5 here (vs 2 elsewhere) because the 90-day Days path can legitimately hit the 900 s Lambda timeout and each retry HeadObject-skips completed days — 5 × 900 s ≈ 75 min covers that budget. The tradeoff is that a real Python bug in _run_backfill_daily_range takes 5 × 900 s to surface instead of 2 × 900 s; the state's own function is idempotent so retrying a bug is at worst wasteful, not destructive.",
+          "ErrorEquals": ["States.ALL"],
           "MaxAttempts": 5,
           "IntervalSeconds": 60,
           "BackoffRate": 2
@@ -322,8 +373,8 @@
           "BackoffRate": 2
         },
         {
-          "Comment": "Lambda.Unknown catches Python-side exceptions the rollup Lambda didn't classify — a boto3 transient network flake that escaped the client's own retry, an intermittent DynamoDB / Athena / S3 error, etc. Narrow MaxAttempts=2 (vs 6 for Lambda-service errors) so transient issues recover without wasting cycles retrying a genuine code bug six times before failing.",
-          "ErrorEquals": ["Lambda.Unknown"],
+          "Comment": "Catch-all retrier for domain raises the rollup Lambda emits by exception class name (RuntimeError from _purge_s3_prefix partial-delete surfacing, ClientError from boto3, SSM throttles, etc). Under the arn:aws:states:::lambda:invoke integration a Python `raise Foo(...)` surfaces as errorType='Foo', NOT Lambda.Unknown — Lambda.Unknown only covers Sandbox.Timedout / OOM / other Lambda-runtime-level failures the primary retrier already handles by class. Using States.ALL here catches the domain raise paths without enumerating every possible error class name. Narrow MaxAttempts=2 (vs 6 for Lambda-service errors) so transient issues recover without wasting cycles retrying a genuine code bug six times before failing.",
+          "ErrorEquals": ["States.ALL"],
           "MaxAttempts": 2,
           "IntervalSeconds": 30,
           "BackoffRate": 2
@@ -369,8 +420,8 @@
           "BackoffRate": 2
         },
         {
-          "Comment": "Lambda.Unknown catches Python-side exceptions the rollup Lambda didn't classify — a boto3 transient network flake that escaped the client's own retry, an intermittent DynamoDB / Athena / S3 error, etc. Narrow MaxAttempts=2 (vs 6 for Lambda-service errors) so transient issues recover without wasting cycles retrying a genuine code bug six times before failing.",
-          "ErrorEquals": ["Lambda.Unknown"],
+          "Comment": "Catch-all retrier for domain raises the rollup Lambda emits by exception class name (RuntimeError from _purge_s3_prefix partial-delete surfacing, ClientError from boto3, SSM throttles, etc). Under the arn:aws:states:::lambda:invoke integration a Python `raise Foo(...)` surfaces as errorType='Foo', NOT Lambda.Unknown — Lambda.Unknown only covers Sandbox.Timedout / OOM / other Lambda-runtime-level failures the primary retrier already handles by class. Using States.ALL here catches the domain raise paths without enumerating every possible error class name. Narrow MaxAttempts=2 (vs 6 for Lambda-service errors) so transient issues recover without wasting cycles retrying a genuine code bug six times before failing.",
+          "ErrorEquals": ["States.ALL"],
           "MaxAttempts": 2,
           "IntervalSeconds": 30,
           "BackoffRate": 2

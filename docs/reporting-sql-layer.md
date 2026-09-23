@@ -682,11 +682,14 @@ dependency-sensitive; tracks are independent.
   missing; self-heals gaps left by missed schedules or exhausted
   async-retry budgets.
 - ✅ **Alarm on rollup absence.** **SHIPPED**. `DataMartRollupAbsenceAlarm`
-  fires on `AWS/Lambda/Invocations == 0` for two consecutive 1-hour
+  fires on `AWS/Lambda/Invocations == 0` for four consecutive 1-hour
   windows on the `DataMartRollupFunction`. Catches the class of failure
   where the EventBridge schedule was dropped from the stack in a
-  redeploy (which was invisible on `idp-dev-qs` — the DLQ alarm only
-  fires when invocations *fail*, not when they *never happen*).
+  redeploy — a real regression class observed on a development stack;
+  the DLQ alarm only fires when invocations *fail*, not when they
+  *never happen*. The 4-hour window (up from 2 earlier) is what
+  eliminates the fresh-deploy cold-start noise — see the alarm's own
+  block comment for the rationale.
   `TreatMissingData: breaching` because a Lambda with zero invocations
   emits no `Invocations` sample at all.
 - **Rollup-Lambda layer swap-in-place guard.** Both the rollup and the

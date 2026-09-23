@@ -213,6 +213,23 @@ class TestTimeWindows:
             anchor = rollup._parse_anchor_time({"time": "definitely-not-a-timestamp"})
         assert anchor.hour == 15
 
+    def test_anchor_prefers_state_machine_anchor_over_event_time(self, rollup):
+        """Migration state-machine tasks receive ``event["anchor"]``
+        stamped once by the dispatcher; every task in the state machine
+        must pin to that shared anchor rather than re-resolving its own
+        ``now()``. Regression pin for the cross-midnight anchor-drift
+        defect: if InitialPurge, PlanChunks and BackfillDailyRange
+        each fall back to their own ``now()``, an execution crossing
+        UTC midnight sees the purge and rebuild windows disagree by
+        one day and the oldest daily partition never gets rebuilt."""
+        event = {
+            "anchor": "2026-09-22T23:55:00Z",
+            "time": "2026-09-22T23:59:00Z",  # would resolve differently
+        }
+        anchor = rollup._parse_anchor_time(event)
+        # ``anchor`` wins over ``time``.
+        assert anchor == datetime(2026, 9, 22, 23, 55, tzinfo=timezone.utc)
+
 
 @pytest.mark.unit
 class TestMeteringHourlyRollup:
@@ -2703,7 +2720,13 @@ class TestPurgeRollupPrefixes:
         never rebuilt (``_plan_migration_chunks`` and
         ``_run_backfill_daily_range`` both hard-reject days > 90)."""
         # Mix of in-window and out-of-window dates. Anchor is
-        # 2026-09-22, days=30 → [2026-08-23, 2026-09-22).
+        # 2026-09-22T14:00Z, days=30 → window date range [2026-08-23,
+        # 2026-09-22] (both bounds inclusive; anchor date IS included
+        # per the F4 correctness fix — deleting only up to the day
+        # before the anchor left the anchor date's pre-widening
+        # partitions in place and the chunks that follow short-circuited
+        # on HeadObject-skip, leaving up to 23 hours of the anchor day
+        # silently NULL for document_class).
         dates = {
             "metering_hourly/": [
                 "2025-11-01",  # ← 10+ months old, MUST NOT be purged
@@ -2711,8 +2734,8 @@ class TestPurgeRollupPrefixes:
                 "2026-08-22",  # ← 1 day before window start, MUST NOT
                 "2026-08-23",  # ← window start (inclusive) — purge
                 "2026-09-10",  # ← inside window — purge
-                "2026-09-22",  # ← window end (exclusive) — MUST NOT
-                "2026-09-25",  # ← after window end (future) — MUST NOT
+                "2026-09-22",  # ← ANCHOR DATE, MUST be purged (F4)
+                "2026-09-25",  # ← after anchor (future) — MUST NOT
             ],
             "metering_daily/": [],
             "metering_docs_hourly/": [],
@@ -2735,18 +2758,18 @@ class TestPurgeRollupPrefixes:
                 {
                     "mode": "purge_rollup_prefixes",
                     "days": 30,
-                    "time": "2026-09-22T00:00:00Z",
+                    "anchor": "2026-09-22T14:00:00Z",
                 },
                 None,
             )
-        # Only the two in-window partitions should be touched.
+        # In-window partitions purged (start, mid, anchor).
         assert "metering_hourly/date=2026-08-23/" in purged
         assert "metering_hourly/date=2026-09-10/" in purged
-        # Everything else must be preserved.
+        assert "metering_hourly/date=2026-09-22/" in purged
+        # Older-than-window and future-of-anchor partitions preserved.
         assert "metering_hourly/date=2025-11-01/" not in purged
         assert "metering_hourly/date=2026-06-15/" not in purged
         assert "metering_hourly/date=2026-08-22/" not in purged
-        assert "metering_hourly/date=2026-09-22/" not in purged
         assert "metering_hourly/date=2026-09-25/" not in purged
 
     def test_purge_ignores_non_date_common_prefixes(self, rollup):
@@ -2905,6 +2928,49 @@ class TestPlanMigrationChunks:
                     },
                     None,
                 )
+
+    def test_plan_caps_total_chunks_at_720_by_scaling_chunk_hours(self, rollup):
+        """Regression pin for the Step Functions 256 KB state-quota
+        defect: at Days=90 with chunk_hours=1 the Map's accumulated
+        ``$.chunk_results`` would exceed the SFN quota and the Catch
+        would fire on ``States.DataLimitExceeded`` before
+        ``CheckMigrationSuccess`` could aggregate. The plan now
+        auto-scales ``chunk_hours`` upward so the total chunk count
+        never exceeds 720 (the Days=30 default). For Days=90 that
+        means chunk_hours effectively becomes 3."""
+        result = rollup.handler(
+            {
+                "mode": "plan_migration_chunks",
+                "days": 90,
+                "chunk_hours": 1,  # would produce 2160 chunks without the cap
+                "time": "2026-09-22T00:00:00Z",
+            },
+            None,
+        )
+        # Cap enforced.
+        assert result["count"] <= 720
+        # Retry blast radius grew from 1 h to at most 3 h per chunk.
+        # No chunk should span more than the effective chunk_hours.
+        for chunk in result["chunks"]:
+            start = datetime.fromisoformat(chunk["start"])
+            end = datetime.fromisoformat(chunk["end"])
+            span_hours = (end - start).total_seconds() / 3600
+            assert span_hours <= 3.0
+
+    def test_plan_days_30_default_unchanged_by_cap(self, rollup):
+        """Days=30 at chunk_hours=1 already produces exactly 720
+        chunks — the cap fires at ``requested_chunk_count > 720``
+        (strict), so this default path is unchanged."""
+        result = rollup.handler(
+            {
+                "mode": "plan_migration_chunks",
+                "days": 30,
+                "chunk_hours": 1,
+                "time": "2026-09-22T00:00:00Z",
+            },
+            None,
+        )
+        assert result["count"] == 720
 
     def test_plan_off_midnight_fire_covers_earliest_day_end_to_end(self, rollup):
         """Regression: off-midnight CustomResource fires must produce a

@@ -69,8 +69,8 @@ No action needed on the host stack once the migration marker reads `state=comple
 The SFN execution ended in FAILED (typically the state-machine's `MigrationHadFailures` Fail state). At least one chunk exhausted its 3 retries — usually a persistent Athena error on a specific hour range.
 
 **To diagnose:**
-1. Open the state machine's execution history: Step Functions console → `<stack>-data-mart-migration` → most recent FAILED execution → **Execution Input and Output** shows `failing_chunks` from `CheckMigrationSuccess`.
-2. Each failing chunk's `failures` array names the exact hour(s) that failed and the underlying error (from `_run_backfill`'s per-hour try/except).
+1. Open the state machine's execution history: Step Functions console → `<stack>-data-mart-migration` → most recent FAILED execution → **Execution Input and Output** shows `failing_chunks` from `CheckMigrationSuccess`. Each entry carries the chunk's `start`, `end`, `hours_failed`, `hours_partial` — the identity of the range that failed.
+2. The per-hour, per-arm failure detail (which arm, which Athena error string) is written to CloudWatch Logs by `_check_hours_failed`, not surfaced on the state machine's output. Open the rollup Lambda's log group and search for `failing_chunk N/M:` — one INFO event per failing chunk, containing the full per-hour `failures` array with the Athena error text. The state's own output is kept compact to stay well under Step Functions' 256 KB state quota; the detail is in Logs by design.
 
 **To recover:**
 - SSM marker is left at `state=in_progress` — this is intentional. A restart resumes without re-purging.

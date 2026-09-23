@@ -273,6 +273,20 @@ def handler(event: Dict[str, Any], _context: Any) -> Dict[str, Any]:
                 f"write_marker state must be 'in_progress' or 'completed'; got {state!r}"
             )
         return _write_marker(state, days, version=version)
+    if mode == "check_lake_state":
+        # Cheap emptiness probe used by the state machine on the
+        # full-flow branch (marker absent / mismatched version). On a
+        # fresh install with no documents yet processed, raw
+        # ``metering/`` is empty; running the full migration then does
+        # roughly 720+ chunk Athena queries plus the daily backfill,
+        # all against zero rows, taking ~20 min of workgroup time and
+        # producing no useful state. The state machine reads
+        # ``is_empty`` and, when true, routes directly to
+        # WriteCompletedMarker so subsequent invocations short-circuit.
+        # The check itself is one S3 ListObjectsV2 with MaxKeys=1 —
+        # sub-second, ~0 IAM added (rollup Lambda already has
+        # s3:ListBucket on the reporting bucket).
+        return _check_lake_state()
     if mode == "purge_rollup_prefixes":
         # Delete parquet under the four per-document rollup prefixes so
         # the state machine can repopulate at the widened
@@ -323,17 +337,27 @@ def handler(event: Dict[str, Any], _context: Any) -> Dict[str, Any]:
 def _parse_anchor_time(event: Dict[str, Any]) -> datetime:
     """Return the UTC anchor time for ``previous_hour``/``previous_day``.
 
-    Prefers ``event["time"]`` (EventBridge sets this to ISO 8601 UTC on
-    scheduled events) so async retries pin to the ORIGINAL trigger time,
-    not wall-clock — a retry that crossed a boundary would otherwise
-    silently target the wrong partition. Falls back to
-    ``datetime.now(UTC)`` for manual invokes that don't include a time.
+    Preference order:
+      1. ``event["anchor"]`` — stamped ONCE by the migration state
+         machine's dispatcher at execution-start time and threaded
+         through every Task's Payload (``anchor.$: $.anchor``) so
+         ``InitialPurge``, ``PlanChunks`` and ``BackfillDailyRange``
+         all share the same reference time. This closes the
+         cross-midnight anchor-drift race where each task otherwise
+         resolved its own ``now()`` and the resulting purge and rebuild
+         windows disagreed by one day.
+      2. ``event["time"]`` — EventBridge sets this to ISO 8601 UTC on
+         scheduled events, so async retries of the hourly / reconciler
+         / daily crons pin to the ORIGINAL trigger time (not wall-clock).
+      3. ``datetime.now(UTC)`` — fallback for manual invokes that don't
+         include either field.
     """
-    raw = event.get("time")
+    raw = event.get("anchor") or event.get("time")
     if raw:
         try:
-            # EventBridge uses ISO 8601 with a trailing "Z"; normalize
-            # to "+00:00" so fromisoformat handles it on all Python 3.11+.
+            # EventBridge / dispatcher use ISO 8601 with a trailing "Z";
+            # normalize to "+00:00" so fromisoformat handles it on
+            # Python 3.11+.
             normalized = raw.replace("Z", "+00:00") if isinstance(raw, str) else raw
             parsed = datetime.fromisoformat(normalized)
             if parsed.tzinfo is None:
@@ -341,7 +365,9 @@ def _parse_anchor_time(event: Dict[str, Any]) -> datetime:
             return parsed.astimezone(timezone.utc)
         except (ValueError, TypeError) as e:
             logger.warning(
-                f"Failed to parse event['time']={raw!r} ({e}); falling back to now()"
+                "Failed to parse anchor/time=%r (%s); falling back to now()",
+                raw,
+                e,
             )
     return datetime.now(timezone.utc)
 
@@ -563,69 +589,83 @@ def _idempotency_key(table: str, date: str, hour: Optional[str] = None) -> str:
 def _discover_document_sections_tables() -> List[str]:
     """Discover ``document_sections_*`` tables in the reporting database.
 
-    Mirror of the read-side helper in
-    ``lib/idp_common_pkg/idp_common/agents/... analytics_document_service.py::discover_document_sections_tables``.
-    Only tables that actually have a ``date`` partition column — the Glue
-    crawler sometimes creates malformed variants (e.g.
-    ``document_sections_date_2026_03_19``, ``..._parquet``) that lack it;
-    a subsequent query filtering on ``"date"`` against those fails with
-    COLUMN_NOT_FOUND and blanks the whole rollup for the hour.
+    Uses the Glue ``GetTables`` API rather than an Athena
+    ``information_schema.columns`` query. Two reasons the previous
+    Athena-based discovery was worse: (a) it took ~5-10 s cold and
+    added an Athena query per invocation, (b) a missing
+    ``glue:GetTables`` grant made information_schema silently return
+    zero rows, so a permissions regression looked identical to "no
+    document_sections_* tables exist" — the failure mode the template
+    comment on the grant explicitly documents. Direct Glue GetTables
+    is sub-second, needs no additional IAM (the grant is already
+    present on this Lambda's role — required by the previous Athena
+    path anyway) and raises loudly on a missing permission.
 
-    Cached per-invocation via ``_document_sections_tables_cache`` — cleared
-    in ``handler`` so a new class the Glue crawler added since the previous
-    fire is picked up on the next hourly.
+    Only tables that actually have a ``date`` partition column are
+    returned — the Glue crawler sometimes creates malformed variants
+    (e.g. ``document_sections_date_2026_03_19``, ``..._parquet``) that
+    lack it; a subsequent query filtering on ``"date"`` against those
+    fails with COLUMN_NOT_FOUND and blanks the whole rollup for the
+    hour.
+
+    Cached per-invocation via ``_document_sections_tables_cache`` —
+    cleared in ``handler`` so a new class the Glue crawler added since
+    the previous fire is picked up on the next hourly.
     """
     global _document_sections_tables_cache
     if _document_sections_tables_cache is not None:
         return _document_sections_tables_cache
 
-    # nosec B608 — DATABASE is set from an env var written by CFN, not user input.
-    discover_sql = f"""
-    SELECT DISTINCT c.table_name
-    FROM information_schema.columns c
-    WHERE c.table_schema = '{DATABASE}'
-      AND c.table_name LIKE 'document_sections_%'
-      AND c.column_name = 'date'
-    ORDER BY c.table_name
-    """.strip()  # nosec B608
-
+    glue_client = boto3.client("glue")
+    names: List[str] = []
     try:
-        # Small result set (one row per class); ``_run_athena_query_with_results``
-        # returns rows as List[List[str]] with each row being column values in
-        # order — the query selects only ``table_name`` so row[0] is the name.
-        # ``emit_self_cost=False`` so this discovery probe doesn't inflate
-        # the rollup Lambda's own AthenaBytesScanned metric.
-        rows = _run_athena_query_with_results(discover_sql, emit_self_cost=False)
+        paginator = glue_client.get_paginator("get_tables")
+        for page in paginator.paginate(
+            DatabaseName=DATABASE, Expression="document_sections_*"
+        ):
+            for table in page.get("TableList", []) or []:
+                name = table.get("Name") or ""
+                if not name.startswith("document_sections_"):
+                    continue
+                if not all(c in _SAFE_TABLE_CHARS for c in name):
+                    logger.warning(
+                        "Skipping document_sections table with unsafe characters: %r",
+                        name,
+                    )
+                    continue
+                # Confirm the ``date`` column exists as either a
+                # partition key OR a regular column. The crawler's
+                # canonical shape lists ``date`` (and ``hour``) as
+                # partition keys, but a defensive check on both catches
+                # any variant the crawler emits.
+                partition_keys = {
+                    (p.get("Name") or "") for p in table.get("PartitionKeys") or []
+                }
+                storage_columns = {
+                    (c.get("Name") or "")
+                    for c in (table.get("StorageDescriptor") or {}).get("Columns") or []
+                }
+                if "date" not in partition_keys and "date" not in storage_columns:
+                    continue
+                names.append(name)
     except Exception as exc:  # noqa: BLE001
-        # Discovery must not fail the rollup — falling back to an empty
-        # list means the CTE has no rows, LEFT JOIN produces NULL for
-        # dc.document_class, and COALESCE picks metering.document_class
-        # (which is populated for post-widening writers) or 'unknown'.
-        # The alternative (raising) would take the whole hourly rollup
-        # down over one operator-visible information_schema hiccup.
+        # Discovery must not fail the rollup — falling back to an
+        # empty list means the CTE has no rows, LEFT JOIN produces
+        # NULL for dc.document_class, and COALESCE picks
+        # metering.document_class (populated for post-widening
+        # writers) or 'unknown'. Raising here would take the whole
+        # hourly rollup down over one operator-visible Glue hiccup.
         logger.warning(
-            "Failed to discover document_sections_* tables (%s); "
-            "falling back to empty list. Historical rows without "
-            "raw metering.document_class will bucket as 'unknown' "
-            "for this rollup fire.",
+            "Failed to discover document_sections_* tables via "
+            "glue:GetTables (%s); falling back to empty list. Historical "
+            "rows without raw metering.document_class will bucket as "
+            "'unknown' for this rollup fire.",
             exc,
         )
         _document_sections_tables_cache = []
         return _document_sections_tables_cache
 
-    names: List[str] = []
-    for row in rows:
-        name = row[0] if row else None
-        if not name:
-            continue
-        if not all(c in _SAFE_TABLE_CHARS for c in name):
-            logger.warning(
-                "Skipping document_sections table with unsafe characters: %r",
-                name,
-            )
-            continue
-        names.append(name)
-
+    names.sort()
     logger.info("Discovered %d document_sections_* tables for rollup", len(names))
     _document_sections_tables_cache = names
     return _document_sections_tables_cache
@@ -777,6 +817,12 @@ def _rollup_metering_hourly(target_date: str, target_hour: str) -> Dict[str, Any
         sql,
         idempotency_key=_idempotency_key("metering_hourly", target_date, target_hour),
     )
+    # Empty-hour sentinel — if the INSERT produced no parquet, mark
+    # this partition as "known empty" so a subsequent reconciler pass
+    # over the same hour doesn't re-run the same empty INSERT for the
+    # next 24 h. See _partition_marked_empty for the TTL rationale.
+    if not _partition_produced_rows("metering_hourly", target_date, target_hour):
+        _mark_partition_empty("metering_hourly", target_date, target_hour)
     return {"query_execution_id": query_id, "skipped": False}
 
 
@@ -850,6 +896,9 @@ def _rollup_metering_docs_hourly(target_date: str, target_hour: str) -> Dict[str
             "metering_docs_hourly", target_date, target_hour
         ),
     )
+    # Empty-hour sentinel — see _rollup_metering_hourly's comment above.
+    if not _partition_produced_rows("metering_docs_hourly", target_date, target_hour):
+        _mark_partition_empty("metering_docs_hourly", target_date, target_hour)
     return {"query_execution_id": query_id, "skipped": False}
 
 
@@ -1267,6 +1316,11 @@ def _run_daily(anchor: Optional[datetime] = None) -> Dict[str, Any]:
                 ),
                 "skipped": False,
             }
+            # Empty-day sentinel — see _rollup_metering_hourly for the
+            # rationale. Prevents the reconciler / manual re-run from
+            # firing an empty daily INSERT every day on idle stacks.
+            if not _partition_produced_rows("metering_daily", target_date):
+                _mark_partition_empty("metering_daily", target_date)
         except ValueError as e:
             logger.exception("metering_daily PERMANENT INSERT failure")
             errors.append(f"metering_daily(permanent): {type(e).__name__}: {e}")
@@ -1316,6 +1370,10 @@ def _run_daily(anchor: Optional[datetime] = None) -> Dict[str, Any]:
                 ),
                 "skipped": False,
             }
+            # Empty-day sentinel — see _rollup_metering_hourly for the
+            # rationale.
+            if not _partition_produced_rows("metering_docs_daily", target_date):
+                _mark_partition_empty("metering_docs_daily", target_date)
         except ValueError as e:
             logger.exception("metering_docs_daily PERMANENT INSERT failure")
             errors.append(f"metering_docs_daily(permanent): {type(e).__name__}: {e}")
@@ -1776,6 +1834,41 @@ def _write_marker(
     return {"marker": value, "state": state, "days": days}
 
 
+def _check_lake_state() -> Dict[str, Any]:
+    """Return ``{"is_empty": bool}`` describing whether the raw
+    ``metering/`` prefix has any objects at all.
+
+    Used by the state machine to short-circuit a full migration on a
+    fresh install (no metering data yet) — the full-flow branch
+    otherwise runs ~720+ empty Athena queries in ~20 min against a
+    zero-row lake, and every one produces no useful state.
+    ``ListObjectsV2 MaxKeys=1`` is the cheapest possible check; it
+    returns as soon as the first key is found (empty stacks respond
+    with an empty ``Contents``).
+    """
+    if not REPORTING_BUCKET:
+        # No bucket configured — treat as non-empty so the caller
+        # takes the full-flow path and fails visibly at the first
+        # Athena query rather than silently short-circuiting.
+        return {"is_empty": False, "reason": "REPORTING_BUCKET not configured"}
+    try:
+        resp = s3_client.list_objects_v2(
+            Bucket=REPORTING_BUCKET, Prefix="metering/", MaxKeys=1
+        )
+        contents = resp.get("Contents") or []
+        return {"is_empty": not contents}
+    except Exception as exc:  # noqa: BLE001
+        # Fail closed: on any list error, proceed with the full flow
+        # rather than accidentally short-circuit past data the operator
+        # was expecting to see rolled up.
+        logger.warning(
+            "check_lake_state: ListObjectsV2 failed (%s); reporting as "
+            "not-empty so the migration proceeds",
+            exc,
+        )
+        return {"is_empty": False, "reason": f"list_objects_v2 failed: {exc}"}
+
+
 def _purge_rollup_prefixes_task(anchor: datetime, days: int) -> Dict[str, Any]:
     """Delete parquet under the four rollup prefixes, scoped to the
     date= partitions inside ``[anchor - days, anchor)``.
@@ -1857,7 +1950,20 @@ def _purge_rollup_window(
     table prefix (Glue symlinks, etc.) that we must not delete.
     """
     start_date = start_dt.strftime("%Y-%m-%d")
-    end_date = end_dt.strftime("%Y-%m-%d")
+    # ``end_dt`` is the top-of-hour of the anchor time. The purge date
+    # bound must be INCLUSIVE of the anchor date — deleting only
+    # ``[start_date, end_date_inclusive)`` (exclusive upper bound) as
+    # a prior version did left ``date=<anchor-day>/`` partitions in
+    # place at the pre-widening grain, and the migration chunks that
+    # follow write hours 00..anchor-hour of the anchor date. The
+    # ``_partition_already_written`` probe sees pre-existing old-grain
+    # rows on those hours and short-circuits the chunk, so up to 23
+    # hours of the anchor day silently stay NULL for ``document_class``
+    # inside a window the SSM marker reports as ``completed``. Deleting
+    # the whole anchor-date prefix is safe: the migration rewrites
+    # hours 00..anchor-hour at the widened grain, and the :35 reconciler
+    # rebuilds any anchor-date hours after anchor-hour on its next fire.
+    end_date_inclusive = end_dt.strftime("%Y-%m-%d")
     total = 0
     paginator = s3_client.get_paginator("list_objects_v2")
     date_pattern = re.compile(rf"^{re.escape(prefix)}date=(\d{{4}}-\d{{2}}-\d{{2}})/$")
@@ -1868,10 +1974,11 @@ def _purge_rollup_window(
             if not m:
                 continue
             partition_date = m.group(1)
-            # Half-open [start_date, end_date). end_date is the day AFTER
-            # the last day we want to keep, matching _plan_migration_chunks's
-            # exclusive upper bound.
-            if start_date <= partition_date < end_date:
+            # Closed [start_date, end_date_inclusive] — includes the
+            # anchor date. Older partitions outside this window stay
+            # preserved (the customer-history-preserving guard the
+            # earlier bounded-purge fix introduced).
+            if start_date <= partition_date <= end_date_inclusive:
                 total += _purge_s3_prefix(bucket, date_prefix)
     return total
 
@@ -1908,6 +2015,42 @@ def _plan_migration_chunks(
     if chunk_hours < 1 or chunk_hours > 168:  # 1 hour to 1 week
         raise ValueError(
             f"plan_migration_chunks: chunk_hours={chunk_hours} out of range (1..168)"
+        )
+
+    # Cap the total chunk count. Step Functions has a hard 256 KB
+    # limit on the accumulated state document (``$.chunk_results`` +
+    # ``$.plan.chunks`` + everything else), and even with the narrow
+    # ResultSelector that projects only counters + range from each
+    # BackfillChunk (~155 B per chunk_result) and the ~66 B per
+    # plan.chunks entry, Days=60 (1440 chunks) exceeds ~300 KB and
+    # Days=90 (2160 chunks) reaches ~470 KB — the Map's Catch then
+    # fires on States.DataLimitExceeded and operators lose the
+    # aggregated failing_chunks output. Cap chunk count at 720 (the
+    # shipped Days=30 default at chunk_hours=1) by auto-scaling
+    # chunk_hours upward when the caller's request would blow that
+    # ceiling. For Days=60 the effective chunk_hours becomes 2 (720
+    # chunks); for Days=90 it becomes 3 (720 chunks). Retry blast
+    # radius grows linearly with chunk_hours; still small enough that
+    # a single-chunk retry fits comfortably in the 900 s Lambda
+    # budget on real-volume workloads.
+    _MAX_CHUNKS = 720
+    total_hours = days * 24
+    requested_chunk_count = math.ceil(total_hours / chunk_hours)
+    if requested_chunk_count > _MAX_CHUNKS:
+        original_chunk_hours = chunk_hours
+        chunk_hours = math.ceil(total_hours / _MAX_CHUNKS)
+        logger.warning(
+            "plan_migration_chunks: requested chunk_hours=%d would produce "
+            "%d chunks over %d days, exceeding the %d-chunk state-quota "
+            "cap. Auto-scaling chunk_hours to %d (%d chunks). Retry blast "
+            "radius grows linearly; state stays under Step Functions' "
+            "256 KB limit.",
+            original_chunk_hours,
+            requested_chunk_count,
+            days,
+            _MAX_CHUNKS,
+            chunk_hours,
+            math.ceil(total_hours / chunk_hours),
         )
 
     end = anchor.replace(minute=0, second=0, microsecond=0)
@@ -3535,11 +3678,174 @@ def _hour_window(date_str: str, hour_str: str) -> Tuple[datetime, datetime]:
     return start, start + timedelta(hours=1)
 
 
+def _empty_partition_sentinel_key(
+    table: str, date: str, hour: Optional[str] = None
+) -> str:
+    """S3 key used to record "this partition has been rolled up and
+    was empty" so a subsequent reconciler pass over the same hour
+    doesn't re-run an already-known-empty INSERT.
+
+    Placed under the partition prefix itself so the marker is
+    partition-scoped: ``metering_hourly/date=YYYY-MM-DD/hour=HH/_empty``
+    or, for daily rollups, ``metering_daily/date=YYYY-MM-DD/_empty``.
+    Lifecycle rule on the reporting bucket (``DeleteAfterNDays`` at the
+    customer-configured ``DataRetentionInDays``) applies to the sentinel
+    just like the parquet, so retention semantics are preserved.
+    """
+    if hour is not None:
+        return f"{table}/date={date}/hour={hour}/_empty"
+    return f"{table}/date={date}/_empty"
+
+
+# Empty-sentinel TTL — how long a partition stays "known empty" before
+# the reconciler is allowed to re-check it. Set to 24 h so a late-arriving
+# batch of raw metering rows for a previously-empty hour gets caught on
+# the next day's :35 fire; without a TTL the sentinel would be permanent
+# and any late writes would silently miss the rollup. Balances two
+# failure modes: (a) an unnecessarily-frequent re-check on a truly-empty
+# hour wastes an Athena query per day per hour, (b) an infrequent
+# re-check on a hour that later got data misses those rows on the
+# rollup. 24 h matches the reconciler's own trailing-24-hour scan
+# window: an hour that receives late data more than 24 h after original
+# emptiness was recorded was already out of reconciler range under the
+# previous design.
+_EMPTY_SENTINEL_TTL_SECONDS = 24 * 60 * 60
+
+
+def _partition_marked_empty(table: str, date: str, hour: Optional[str] = None) -> bool:
+    """Returns True if a previous rollup wrote an ``_empty`` sentinel
+    for this partition AND the sentinel is still fresh (< 24 h old).
+    Reconciler use case: an hour that produced 0 rows on its scheduled
+    write would otherwise be re-attempted on every :35 fire — the
+    SELECT-based ``_partition_already_written`` probe returns False on
+    any partition that never had data written, so nothing tells the
+    reconciler "we already tried and there was nothing here". The
+    sentinel closes that loop, and the 24 h TTL prevents a stale
+    sentinel from hiding late-arriving data.
+    """
+    if not REPORTING_BUCKET:
+        return False
+    key = _empty_partition_sentinel_key(table, date, hour)
+    try:
+        resp = s3_client.head_object(Bucket=REPORTING_BUCKET, Key=key)
+    except ClientError as e:
+        code = e.response.get("Error", {}).get("Code", "")
+        if code in ("404", "NoSuchKey", "NotFound"):
+            return False
+        # Any other error — throttle, permission blip — treat as
+        # not-marked so the caller proceeds normally. A false-negative
+        # here just means we run an extra empty INSERT once; a
+        # false-positive (marking as done when it wasn't) could hide
+        # real data, so err toward re-checking.
+        logger.warning(
+            "HeadObject for empty-sentinel s3://%s/%s failed with %s; "
+            "treating as not-marked",
+            REPORTING_BUCKET,
+            key,
+            code,
+        )
+        return False
+    last_modified = resp.get("LastModified")
+    if not isinstance(last_modified, datetime):
+        # Should not happen — HeadObject always returns a datetime for
+        # LastModified — but treat non-datetime (missing key, mocked
+        # test double, etc.) as expired so the reconciler re-checks
+        # rather than blocking on an unusable timestamp.
+        return False
+    age = (datetime.now(timezone.utc) - last_modified).total_seconds()
+    if age > _EMPTY_SENTINEL_TTL_SECONDS:
+        logger.info(
+            "Empty-sentinel for %s/date=%s%s is %.0f s old (> %.0f s TTL); "
+            "treating as expired so the rollup re-checks for late writes",
+            table,
+            date,
+            f"/hour={hour}" if hour is not None else "",
+            age,
+            _EMPTY_SENTINEL_TTL_SECONDS,
+        )
+        return False
+    return True
+
+
+def _mark_partition_empty(table: str, date: str, hour: Optional[str] = None) -> None:
+    """Write the ``_empty`` sentinel after an INSERT produced 0 rows.
+    Best-effort — a failure to write the marker means the next
+    reconciler run repeats the empty INSERT (annoying, not incorrect).
+    """
+    if not REPORTING_BUCKET:
+        return
+    key = _empty_partition_sentinel_key(table, date, hour)
+    try:
+        s3_client.put_object(Bucket=REPORTING_BUCKET, Key=key, Body=b"")
+        logger.info(
+            "Marked empty partition %s/date=%s%s — future reconciler passes "
+            "will short-circuit instead of re-running the 0-row INSERT",
+            table,
+            date,
+            f"/hour={hour}" if hour is not None else "",
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(
+            "Failed to write empty-sentinel for %s date=%s hour=%s: %s",
+            table,
+            date,
+            hour,
+            exc,
+        )
+
+
+def _partition_produced_rows(table: str, date: str, hour: Optional[str] = None) -> bool:
+    """Post-INSERT check: did the query land any parquet at the target
+    partition prefix? Uses ListObjectsV2 rather than a fresh Athena
+    SELECT — sub-millisecond vs a full query submit. Excludes the
+    ``_empty`` sentinel itself so a re-run against an already-marked
+    empty partition doesn't mistake the sentinel for data.
+    """
+    if not REPORTING_BUCKET:
+        return True  # can't check; assume data landed to be safe
+    prefix = (
+        f"{table}/date={date}/hour={hour}/"
+        if hour is not None
+        else f"{table}/date={date}/"
+    )
+    try:
+        resp = s3_client.list_objects_v2(
+            Bucket=REPORTING_BUCKET, Prefix=prefix, MaxKeys=10
+        )
+        for obj in resp.get("Contents") or []:
+            key = obj.get("Key") or ""
+            if key.endswith("/_empty"):
+                continue
+            # Any non-sentinel key under the partition prefix counts as
+            # data — Athena writes parquet with UUID names, no path to
+            # match exactly.
+            return True
+        return False
+    except Exception as exc:  # noqa: BLE001
+        # On list failure, assume rows landed so we don't false-mark
+        # a real partition as empty. A false negative here (assuming
+        # rows when there were none) just means the next reconciler
+        # re-runs the empty INSERT once.
+        logger.warning(
+            "ListObjectsV2 on %s failed (%s); assuming rows landed",
+            prefix,
+            exc,
+        )
+        return True
+
+
 def _partition_already_written(
     table: str, date: str, hour: Optional[str] = None
 ) -> bool:
     """Cheap idempotency check — does the target partition already have
-    at least one row?
+    at least one row, OR has a previous rollup pass marked it as empty?
+
+    Checks the empty-sentinel first (S3 HeadObject, sub-millisecond)
+    before falling through to the Athena LIMIT-1 SELECT. The sentinel
+    branch is what stops the reconciler from re-running an
+    already-known-empty INSERT on every :35 fire — the SELECT alone
+    returns False for any partition that never had data, and the arm
+    would then re-attempt indefinitely.
 
     Narrow fail-open policy: ONLY treats "table does not exist" as
     not-yet-written (the first-invocation-after-deploy case). Any other
@@ -3548,6 +3854,8 @@ def _partition_already_written(
     already-populated partition and permanently double-counts cost;
     re-raising lets the caller's DLQ + async retry recover.
     """
+    if _partition_marked_empty(table, date, hour):
+        return True
     where = f"date = '{date}'"
     if hour is not None:
         where += f" AND hour = '{hour}'"

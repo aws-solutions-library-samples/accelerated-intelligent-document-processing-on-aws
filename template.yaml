@@ -5915,16 +5915,25 @@ Resources:
   # data volumes and would blow CFN's 60-min ServiceTimeout on wider windows.
   DataMartRollupMigrationCustomResource:
     Type: Custom::DataMartRollupMigration
-    # Runs AFTER the four widened rollup Glue tables exist (schema must be
-    # in place before we purge + repopulate) AND after the writer emits
-    # `document_class` on new rows (so post-migration rollup runs have the
-    # column populated for current-hour tails).
+    # Runs AFTER (a) the four widened rollup Glue tables exist (schema
+    # must be in place before we purge + repopulate), (b) the writer
+    # emits ``document_class`` on new rows (so post-migration rollup
+    # runs have the column populated for current-hour tails), AND (c)
+    # the raw-metering hour-partitioning custom resource has finished
+    # relocating pre-hour-partition parquet — otherwise MigrateChunks
+    # can roll up a partially-copied metering lake and the resulting
+    # rollup partitions get HeadObject-skip-locked at the wrong grain.
+    # The three scheduled crons and the reconciler already carry this
+    # same DependsOn on ``MeteringHourMigrationCustomResource`` — the
+    # migration state machine had been the only rollup-touching
+    # resource missing it.
     DependsOn:
       - SaveReportingDataFunctionV2
       - MeteringHourlyTable
       - MeteringDailyTable
       - MeteringDocsHourlyTable
       - MeteringDocsDailyTable
+      - MeteringHourMigrationCustomResource
     Properties:
       ServiceToken: !GetAtt DataMartMigrationDispatcherFunction.Arn
       # CFN sends an Update event when any property here changes. Bump
@@ -6319,12 +6328,27 @@ Resources:
                 # Start the state machine. It runs asynchronously — the
                 # migration continues after the dispatcher exits and the
                 # CustomResource returns SUCCESS to CFN.
+                #
+                # ``anchor`` is stamped ONCE here so every task in the
+                # state machine (InitialPurge, PlanChunks,
+                # BackfillDailyRange) shares the same reference time.
+                # Without a shared anchor each Lambda task falls back
+                # to its own ``datetime.now(UTC)``, which drifts across
+                # the 10-30 s gaps between tasks and — in the pathological
+                # case where execution crosses UTC midnight — produces a
+                # purge window and a plan/daily window that disagree by
+                # one day, leaving the oldest purged daily partition
+                # never rebuilt. Stamping the anchor at dispatch time
+                # eliminates the drift.
+                import datetime as _dt
+                anchor = _dt.datetime.now(_dt.timezone.utc).isoformat()
                 response = sfn_client.start_execution(
                     stateMachineArn=STATE_MACHINE_ARN,
                     input=json.dumps({
                         "days": days,
                         "chunk_hours": chunk_hours,
                         "version": migration_version,
+                        "anchor": anchor,
                     }),
                 )
                 execution_arn = response["executionArn"]
@@ -6498,7 +6522,7 @@ Resources:
       AlarmName: !Sub "${AWS::StackName}-data-mart-rollup-absence"
       AlarmDescription: >-
         The DataMartRollupFunction has recorded zero invocations for at
-        least 2 consecutive hours. Expected schedule: one invocation at
+        least 4 consecutive hours. Expected schedule: one invocation at
         :05 (hourly) + one at :35 (reconciler) each hour. Zero invocations
         typically means the EventBridge schedule was dropped from the
         stack by a redeploy or the Lambda is otherwise unreachable.
