@@ -71,6 +71,32 @@ def is_legacy_ole2_office_file(content: bytes) -> bool:
 _MINIMAL_WHITE_JPEG = b"\xff\xd8\xff\xe0\x00\x10JFIF\x00\x01\x01\x00\x00\x01\x00\x01\x00\x00\xff\xdb\x00C\x00\x02\x01\x01\x01\x01\x01\x02\x01\x01\x01\x02\x02\x02\x02\x02\x04\x03\x02\x02\x02\x02\x05\x04\x04\x03\x04\x06\x05\x06\x06\x06\x05\x06\x06\x06\x07\t\x08\x06\x07\t\x07\x06\x06\x08\x0b\x08\t\n\n\n\n\n\x06\x08\x0b\x0c\x0b\n\x0c\t\n\n\n\xff\xc0\x00\x0b\x08\x00\x01\x00\x01\x01\x01\x11\x00\xff\xc4\x00\x1f\x00\x00\x01\x05\x01\x01\x01\x01\x01\x01\x00\x00\x00\x00\x00\x00\x00\x00\x01\x02\x03\x04\x05\x06\x07\x08\t\n\x0b\xff\xc4\x00\xb5\x10\x00\x02\x01\x03\x03\x02\x04\x03\x05\x05\x04\x04\x00\x00\x01}\x01\x02\x03\x00\x04\x11\x05\x12!1A\x06\x13Qa\x07\"q\x142\x81\x91\xa1\x08#B\xb1\xc1\x15R\xd1\xf0$3br\x82\t\n\x16\x17\x18\x19\x1a%&'()*456789:CDEFGHIJSTUVWXYZcdefghijstuvwxyz\x83\x84\x85\x86\x87\x88\x89\x8a\x92\x93\x94\x95\x96\x97\x98\x99\x9a\xa2\xa3\xa4\xa5\xa6\xa7\xa8\xa9\xaa\xb2\xb3\xb4\xb5\xb6\xb7\xb8\xb9\xba\xc2\xc3\xc4\xc5\xc6\xc7\xc8\xc9\xca\xd2\xd3\xd4\xd5\xd6\xd7\xd8\xd9\xda\xe1\xe2\xe3\xe4\xe5\xe6\xe7\xe8\xe9\xea\xf1\xf2\xf3\xf4\xf5\xf6\xf7\xf8\xf9\xfa\xff\xda\x00\x08\x01\x01\x00\x00?\x00\xfd\xfc\xaf\xff\xd9"
 
 
+#: ``w:val`` spellings that turn a ``CT_OnOff`` element OFF. Absent means ON, which is
+#: why this is a denylist rather than an allowlist.
+_ON_OFF_FALSE = frozenset({"0", "false", "off"})
+
+
+def _on_off_is_true(element, val_attr) -> bool:
+    """Is a ``CT_OnOff`` element's value true?
+
+    ⚠️ **Presence is not truth for this element type.** ``<w:tblHeader/>`` with no
+    ``w:val`` means on, but ``<w:tblHeader w:val="0"/>`` means the author explicitly
+    marked that row as **not** a repeating header. Testing only ``find(...) is not
+    None`` read all of ``0``, ``false`` and ``off`` as a header — measured — and the
+    consequence is worse than ignoring the flag: a row marked off was emphasised, and
+    because a non-empty result suppresses the first-row fallback, the genuine header
+    row lost its emphasis at the same time.
+
+    python-docx does not model this element, so the attribute is read directly.
+    """
+    if val_attr is None:  # pragma: no cover - only when python-docx is absent
+        return True
+    value = element.get(val_attr)
+    if value is None:
+        return True
+    return str(value).strip().lower() not in _ON_OFF_FALSE
+
+
 class DocumentConverter:
     """Converter for various document formats to images and text."""
 
@@ -560,13 +586,17 @@ class DocumentConverter:
         canvas and the remainder was drawn off the bottom edge. Page *text* was
         correct in both directions, which is why neither surfaced (#1156).
 
-        The budget stays slightly smaller than the canvas after this, and that is
-        deliberate rather than a leftover: the budget uses the **document's own**
-        margins from ``<w:pgMar>`` (1 inch by default), while the canvas uses the
-        converter's 0.5 inch margin, so the ratio is about 0.90 at every DPI.
-        Keeping the document's margins is what makes the page count match how the
-        document paginates in Word; the spare canvas is whitespace, not lost content.
-        Equalising them would change page counts again for a cosmetic gain.
+        The budget keeps the **document's own** margins from ``<w:pgMar>`` rather than
+        the converter's, because that is what makes the page count match how the
+        document paginates in Word. For a 1-inch document that leaves the budget at
+        about 0.90 of the canvas, and the spare canvas is whitespace rather than lost
+        content.
+
+        ⚠️ **That ratio is a property of the margin, not a constant**, which is why the
+        return value is clamped to the canvas — see the note at the ``return``. A
+        document with margins under a quarter inch has a budget *larger* than the
+        canvas at every DPI, and without the clamp its overflow is drawn off the
+        bottom edge with the page text intact, which is the same silent-loss shape.
         """
         _TWIPS_PER_INCH = 1440
         _DPI = self.dpi
@@ -613,8 +643,30 @@ class DocumentConverter:
             page_w_twips - margin_left_twips - margin_right_twips
         ) / _TWIPS_PER_INCH
 
+        # ⚠️ Clamped to the canvas, and HEIGHT ONLY.
+        #
+        # Scaling the budget with the DPI is not sufficient on its own: the budget is
+        # the DOCUMENT's usable area (`w:pgMar`) while the canvas is always
+        # `page_height - 2 * 0.5in`, so the ratio is `(11 - 2*doc_margin) / 10` and
+        # exceeds 1.0 for any document whose margins are under a quarter inch — at
+        # every DPI, including the production default. Measured at 300 DPI on a
+        # 600-paragraph document, paragraphs drawn beyond the canvas: 0 at a 1in,
+        # 0.5in and 0.25in margin, 12 at 0.1in and 24 at 0in. Word's "Narrow" preset
+        # is 0.5in and clears it with 15 px to spare; a deliberately tight margin does
+        # not. `text_missing` was 0 in every case — the same silent-loss signature as
+        # the DPI mismatch itself, so nothing downstream would report it.
+        #
+        # Width is deliberately NOT clamped: `usable_width_px` is computed here and
+        # never consumed by the layout, which wraps on `self.page_width - 2 *
+        # self.margin`. Clamping it would also make a landscape document's width
+        # budget smaller than the value the geometry is asked for, which is what
+        # `test_sectpr_twips_are_converted_to_pixels` reads (a landscape-A4 budget of
+        # 1604 px against a 1125 px portrait canvas) — a clamp there would report a
+        # page narrower than the document is, for no reader.
         return {
-            "usable_height_px": int(usable_h_inches * _DPI),
+            "usable_height_px": min(
+                int(usable_h_inches * _DPI), self.page_height - 2 * self.margin
+            ),
             "usable_width_px": int(usable_w_inches * _DPI),
         }
 
@@ -710,14 +762,19 @@ class DocumentConverter:
             from docx.oxml.ns import qn
 
             tbl_header = qn("w:tblHeader")
+            val_attr = qn("w:val")
         except Exception:  # pragma: no cover - python-docx is an ocr extra
             tbl_header = None
+            val_attr = None
 
         marked = set()
         if tbl_header is not None:
             for idx, row in enumerate(table.rows):
                 tr_pr = getattr(row._tr, "trPr", None)
-                if tr_pr is not None and tr_pr.find(tbl_header) is not None:
+                if tr_pr is None:
+                    continue
+                element = tr_pr.find(tbl_header)
+                if element is not None and _on_off_is_true(element, val_attr):
                     marked.add(idx)
         if marked:
             return marked
@@ -1884,22 +1941,6 @@ class DocumentConverter:
                         return [header_line, separator_line]
 
         return []
-
-    def _ensure_table_headers(
-        self, page_lines: List[str], table_info: dict, start_line_idx: int
-    ) -> List[str]:
-        """Prepend the repeated table header to a page that starts mid-table.
-
-        ⚠️ **Adds lines without reducing the page's budget**, so a caller that has
-        already filled a page to `lines_per_page` will overflow the canvas and lose
-        the tail from the *image*. Pair it with :meth:`_table_header_lines` and
-        subtract their count first, as `_convert_markdown_to_pages` does. Retained
-        because it is the readable form for a caller that is building a page from a
-        chunk it has already shortened.
-        """
-        if not page_lines:
-            return page_lines
-        return self._table_header_lines(table_info, start_line_idx) + page_lines
 
     def _create_empty_page(self) -> bytes:
         """Create an empty white page image."""
