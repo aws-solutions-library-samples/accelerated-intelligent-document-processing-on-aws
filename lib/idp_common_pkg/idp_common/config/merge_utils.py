@@ -663,7 +663,11 @@ def _validate_ignored_keys(config: Dict[str, Any], result: Dict[str, Any]) -> No
     The migration chain runs first, on a copy. A legacy-shaped key is relocated on
     load rather than dropped — ``extraction.agentic.validation`` becomes
     ``extraction.validation`` — so reporting it against the pre-migration shape
-    would name a key that works as one that does not.
+    would name a key that works as one that does not. The cost is one duplicated
+    ``Migrated config ...`` line at INFO on this path for a legacy config, since the
+    validation above migrates the merged copy for its own purposes; the alternative
+    is asking this question of the merged configuration, which would attribute a
+    system default's key to the author.
     """
     from idp_common.config.migrations import migrate_config
     from idp_common.config.models import IDPConfig, collect_ignored_config_keys
