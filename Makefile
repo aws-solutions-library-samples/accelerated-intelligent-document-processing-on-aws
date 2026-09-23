@@ -253,11 +253,11 @@ lint-cicd: ## CI/CD lint — checks only, no modifications
 
 	@echo -e "$(GREEN)All code quality checks passed!$(NC)"
 
-coverage: ## Measure idp_common coverage and print a table, worst-covered first
+coverage: ## Re-measure idp_common and print its table, worst-covered first (other trees: coverage-all)
 	@$(MAKE) --no-print-directory -C lib/idp_common_pkg test-cicd SKIP_INSTALL=1 COV_FLOOR= >/dev/null 2>&1 || true
 	@python3 scripts/coverage_table.py $(COVERAGE_ARGS)
 
-coverage-table: ## Print the coverage table from the last run, without re-measuring
+coverage-table: ## Print a tree's table from the last run, without re-measuring (COVERAGE_ARGS=--tree=NAME)
 	@python3 scripts/coverage_table.py $(COVERAGE_ARGS)
 
 coverage-all: ## Measure EVERY tree (9 of them) and print each one's figure
@@ -271,7 +271,7 @@ coverage-summary: ## Print the recorded per-tree figures, without measuring anyt
 # never build one. Wired there it would find no report, exit 0, and pass vacuously --
 # a gate that cannot fail is worse than an absent one, because it reads as coverage.
 # Both CI configurations invoke it immediately after the test step instead.
-check-coverage-debt: ## Ratchet idp_common per-file coverage: fail if a file loses coverage, or a new module arrives unratcheted
+check-coverage-debt: ## Ratchet per-file coverage across all 9 trees: fail if a file loses coverage, or a new module arrives unratcheted
 	@python3 scripts/check_coverage_debt.py
 
 check-lint-debt: ## Ratchet ruff's per-file exclusions: fail if an excluded file gains a finding, or is now clean (issue #975)
