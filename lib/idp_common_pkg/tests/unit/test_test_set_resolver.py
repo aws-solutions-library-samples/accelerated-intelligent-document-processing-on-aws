@@ -161,6 +161,7 @@ def _db_client_on(table):
         expression_attribute_names=None,
         expression_attribute_values=None,
         return_values="ALL_NEW",
+        condition_expression=None,
     ):
         kwargs = {
             "Key": key,
@@ -171,7 +172,22 @@ def _db_client_on(table):
             kwargs["ExpressionAttributeNames"] = expression_attribute_names
         if expression_attribute_values:
             kwargs["ExpressionAttributeValues"] = expression_attribute_values
-        return table.update_item(**kwargs)
+        # Passed straight through to moto, which evaluates it, rather than
+        # recorded and ignored. A double that accepted the keyword and dropped it
+        # would let every test here pass against an unguarded write, which is the
+        # failure mode `_put_item` below already carries a comment about.
+        if condition_expression:
+            kwargs["ConditionExpression"] = condition_expression
+        try:
+            return table.update_item(**kwargs)
+        except ClientError as exc:
+            # Same translation as `_put_item`: the real client raises
+            # DynamoDBError carrying `.error_code`, and a caller that retries on a
+            # conditional rejection reads exactly that attribute.
+            raise DynamoDBError(
+                f"Update item failed: {exc.response['Error']['Message']}",
+                exc.response["Error"]["Code"],
+            ) from exc
 
     def _delete_item(key):
         return table.delete_item(Key=key)
@@ -1928,6 +1944,207 @@ class TestTestSetResolver:
             "Item"
         ]
         assert sorted(job["harvestedFiles"]) == ["a.pdf", "b.pdf"]
+
+    def _two_document_labeling_job(self, table, s3, seed_job=None):
+        """Seed a two-document job and return the stored job row.
+
+        The row is returned as it is stored, so a test can hold it as a snapshot,
+        let another writer move the row, and then hand the snapshot to the harvest
+        -- which is how the caller reaches it in production: `get_draft_label_job`
+        and `_harvest_active_label_job` both read the row and pass it in.
+        """
+        _seed_test_set(table, "ts1", fileCount=2)
+        uris = {
+            name: _seed_pipeline_result(
+                s3, f"ts1-run/{name}/sections/1/result.json", {"vendor": name}
+            )
+            for name in ("a.pdf", "b.pdf")
+        }
+        _seed_completed_run(
+            table,
+            "ts1-run",
+            "ts1",
+            ["a.pdf", "b.pdf"],
+            {name: [{"Id": "1", "OutputJSONUri": uri}] for name, uri in uris.items()},
+        )
+        item = {
+            "PK": "testset#ts1",
+            "SK": "labeljob#ts1-run",
+            "testSetId": "ts1",
+            "jobId": "ts1-run",
+            "status": "RUNNING",
+            "total": 2,
+            "labeled": 0,
+        }
+        item.update(seed_job or {})
+        table.put_item(Item=item)
+        return table.get_item(Key={"PK": "testset#ts1", "SK": "labeljob#ts1-run"})[
+            "Item"
+        ]
+
+    def _stored_job(self, table):
+        return table.get_item(Key={"PK": "testset#ts1", "SK": "labeljob#ts1-run"})[
+            "Item"
+        ]
+
+    def test_an_overlapping_harvest_does_not_lose_the_files_it_recorded(
+        self, labeling_env
+    ):
+        """Two harvests of one job must not discard each other's progress.
+
+        `harvestedFiles` accumulates and used to be written back whole with no
+        condition, so the second writer erased the first's entries. This is the
+        ordinary case rather than an edge: three UI components poll a running job
+        on a five-second timer, so a job shown in two places is harvested twice.
+
+        The interleaving is exact rather than raced, and needs no interception to
+        be so. The snapshot the harvest is given is read *before* the competing
+        write lands, which is precisely the window the defect lives in -- the
+        caller reads the row and passes it in, so a stale snapshot is the thing the
+        production code actually holds.
+
+        The losing pass is out of time, which is what makes the loss observable at
+        all and is a measured rather than a decorative detail. A pass that still
+        has budget simply re-copies the document the winner already did -- the copy
+        is idempotent -- so the merged set comes out right either way and the
+        assertion passes against the defect. Exhausting the budget is the realistic
+        version of the same overlap: the harvest is bounded at
+        HARVEST_TIME_BUDGET_SECONDS precisely because a large set cannot finish in
+        one pass, so one poller timing out while another completes is the case the
+        budget exists for.
+        """
+        table, s3 = labeling_env
+        stale_job = self._two_document_labeling_job(table, s3)
+
+        # Another harvest of the same job finishes b.pdf and records it.
+        table.update_item(
+            Key={"PK": "testset#ts1", "SK": "labeljob#ts1-run"},
+            UpdateExpression="SET harvestedFiles = :h, labeled = :n",
+            ExpressionAttributeValues={":h": ["b.pdf"], ":n": 1},
+        )
+
+        test_set_index._harvest_label_job(stale_job, deadline=time.monotonic() - 1)
+
+        job = self._stored_job(table)
+        assert sorted(job["harvestedFiles"]) == ["b.pdf"], (
+            "the overlapping harvest's progress was discarded"
+        )
+        # `labeled` is derived from the merged set, so it has to follow it.
+        assert job["labeled"] == 1
+        # a.pdf is still outstanding, so the job is correctly still running.
+        assert job["status"] == "RUNNING"
+
+    def test_a_merged_harvest_still_completes_the_job(self, labeling_env):
+        """The merge must also settle the derived status, not just the lists.
+
+        Pending documents are tracked by name so that the winner's lists can be
+        subtracted from them exactly. If they were still counted, a pass that
+        waited on a document the winner had already resolved would keep reporting
+        RUNNING and the job would never close.
+        """
+        table, s3 = labeling_env
+        stale_job = self._two_document_labeling_job(table, s3)
+        table.update_item(
+            Key={"PK": "testset#ts1", "SK": "labeljob#ts1-run"},
+            UpdateExpression="SET harvestedFiles = :h",
+            ExpressionAttributeValues={":h": ["b.pdf"]},
+        )
+
+        test_set_index._harvest_label_job(stale_job)
+
+        job = self._stored_job(table)
+        assert sorted(job["harvestedFiles"]) == ["a.pdf", "b.pdf"]
+        assert job["labeled"] == 2
+        assert job["status"] == "COMPLETED"
+
+    def test_an_overlapping_harvest_does_not_lose_a_recorded_failure(
+        self, labeling_env
+    ):
+        """The sharper edge of the same loss.
+
+        A dropped `failedFiles` entry does not merely cost a redundant S3 read:
+        the next pass counts an already-failed document as pending, which is the
+        state that leaves a job RUNNING forever with every poll re-reading the set.
+        """
+        table, s3 = labeling_env
+        stale_job = self._two_document_labeling_job(table, s3)
+
+        # Another harvest gave up on b.pdf.
+        table.update_item(
+            Key={"PK": "testset#ts1", "SK": "labeljob#ts1-run"},
+            UpdateExpression="SET failedFiles = :f",
+            ExpressionAttributeValues={":f": ["b.pdf"]},
+        )
+
+        test_set_index._harvest_label_job(stale_job)
+
+        job = self._stored_job(table)
+        assert sorted(job["failedFiles"]) == ["b.pdf"]
+        assert sorted(job["harvestedFiles"]) == ["a.pdf", "b.pdf"]
+        assert job["status"] == "COMPLETED"
+
+    def test_an_uncontended_harvest_writes_once(self, labeling_env):
+        """The guard must not cost a retry when nothing is competing.
+
+        Asserted by counting writes, because a condition that never holds would
+        otherwise be invisible here -- every content assertion in this class would
+        still pass after a merge-and-retry.
+        """
+        table, s3 = labeling_env
+        job = self._two_document_labeling_job(table, s3)
+        real_update = test_set_index.db_client.update_item
+        calls = []
+
+        def spy(**kwargs):
+            calls.append(kwargs.get("key"))
+            return real_update(**kwargs)
+
+        test_set_index.db_client.update_item = spy
+        try:
+            test_set_index._harvest_label_job(job)
+        finally:
+            test_set_index.db_client.update_item = real_update
+
+        job_writes = [k for k in calls if k and k.get("SK") == "labeljob#ts1-run"]
+        assert len(job_writes) == 1, calls
+        assert sorted(self._stored_job(table)["harvestedFiles"]) == ["a.pdf", "b.pdf"]
+
+    def test_a_row_that_keeps_moving_raises_rather_than_writing_blind(
+        self, labeling_env
+    ):
+        """Exhausting the merge budget must not fall back to an unguarded write.
+
+        A blind fallback would be the defect the guard exists to prevent, and the
+        next poll five seconds later retries the whole pass harmlessly.
+        """
+        table, s3 = labeling_env
+        stale_job = self._two_document_labeling_job(table, s3)
+        real_get = test_set_index.db_client.get_item
+        moves = iter(range(1, 100))
+
+        def moving_get(key):
+            item = real_get(key)
+            if key.get("SK") == "labeljob#ts1-run":
+                # Move the row again after every re-read, so no attempt can settle.
+                table.update_item(
+                    Key=key,
+                    UpdateExpression="SET failedFiles = :f",
+                    ExpressionAttributeValues={":f": [f"moved-{next(moves)}.pdf"]},
+                )
+            return item
+
+        table.update_item(
+            Key={"PK": "testset#ts1", "SK": "labeljob#ts1-run"},
+            UpdateExpression="SET failedFiles = :f",
+            ExpressionAttributeValues={":f": ["moved-0.pdf"]},
+        )
+        test_set_index.db_client.get_item = moving_get
+        try:
+            with pytest.raises(DynamoDBError) as excinfo:
+                test_set_index._harvest_label_job(stale_job)
+        finally:
+            test_set_index.db_client.get_item = real_get
+        assert excinfo.value.error_code == "ConditionalCheckFailedException"
 
     def test_harvest_stops_at_its_deadline_and_stays_resumable(self, labeling_env):
         """A set too large for one pass must make partial progress, not time out.

@@ -2948,6 +2948,19 @@ TERMINAL_DOCUMENT_STATUSES = frozenset(
 # is deliberately far beyond any plausible processing time.
 STALE_LABEL_JOB_HOURS = 6
 
+# How many times a harvest may merge and re-attempt its progress write after
+# another harvest of the same job wrote first.
+#
+# Small, because a rebuilt attempt here costs one GetItem and no S3 work at all:
+# the conflict is resolved by taking the union of the two views, never by redoing
+# the copying. Contention is bounded in practice by the number of open UI views of
+# one job, and each loser's second attempt starts from the winner's state, so it
+# collides only with a third writer. Exhausting the budget raises rather than
+# writing unconditionally, because falling back to a blind write would be the
+# defect this guard exists to prevent, and the next poll -- five seconds away -- is
+# a harmless retry of the whole pass.
+_MAX_HARVEST_WRITE_ATTEMPTS = 4
+
 
 def _collect_doc_confidences(test_set_id):
     """Per-document minimum confidence, plus observed doc shape for the effort model.
@@ -3129,7 +3142,14 @@ def _harvest_label_job(job, deadline=None):
     done = set(job.get("harvestedFiles") or [])
     failed = list(job.get("failedFiles") or [])
     resolved = done | set(failed)
-    pending = 0
+    # The documents this pass is waiting on, by name rather than as a count. The
+    # names are what a merge after a lost write needs: another harvest of the same
+    # job may have resolved one of them, and subtracting the set it wrote is exact,
+    # where a count could only be guessed at. Recomputing the count from `files`
+    # instead would be wrong in the other direction -- a document whose copy raised
+    # below is deliberately in neither `done` nor `failed` and deliberately not
+    # pending, so counting it would hold the job RUNNING forever.
+    pending_files = set()
     out_of_time = False
     for file_name in files:
         if file_name in resolved:
@@ -3138,7 +3158,7 @@ def _harvest_label_job(job, deadline=None):
             # Remaining documents are pending, not lost: the job stays RUNNING and
             # the next poll picks them up.
             out_of_time = True
-            pending += 1
+            pending_files.add(file_name)
             continue
 
         doc = tracking_table.get_item(
@@ -3168,7 +3188,7 @@ def _harvest_label_job(job, deadline=None):
                 )
                 failed.append(file_name)
             else:
-                pending += 1
+                pending_files.add(file_name)
             continue
 
         try:
@@ -3202,41 +3222,87 @@ def _harvest_label_job(job, deadline=None):
                 f"Draft labeling: failed to harvest '{file_name}' for job {job_id}: {e}"
             )
 
-    labeled = len(done)
-    if pending:
-        status = "RUNNING"
-    elif failed and not labeled:
-        # Nothing to harvest and nothing left to wait for.
-        status = "FAILED"
-    else:
-        status = "COMPLETED"
     now = datetime.utcnow().isoformat() + "Z"
-    update_expr = "SET #st = :s, labeled = :n, harvestedFiles = :h, failedFiles = :f"
-    expr_values = {
-        ":s": status,
-        ":n": labeled,
-        ":h": sorted(done),
-        ":f": sorted(set(failed)),
-    }
-    if status == "FAILED":
-        update_expr += ", #er = :e"
-        expr_values[":e"] = (
-            f"All {len(set(failed))} document(s) failed processing; no labels were "
-            "produced"
+    job_key = {"PK": f"testset#{test_set_id}", "SK": _label_job_sk(job_id)}
+    # What this pass read, and therefore what the write is allowed to assume is
+    # still stored. Both are read-derived accumulating lists, so writing them back
+    # blind discarded an overlapping harvest's progress: every caller that displays
+    # a job drives this harvest on a five-second timer, and three separate UI
+    # components do, so two passes over one job is the ordinary case rather than an
+    # edge. What the loser dropped was not cosmetic -- a `failedFiles` entry lost
+    # this way makes the next pass count an already-failed document as pending,
+    # which is exactly the state that used to leave a job RUNNING forever.
+    expected_done = sorted(job.get("harvestedFiles") or [])
+    expected_failed = sorted(set(job.get("failedFiles") or []))
+    for attempt in range(1, _MAX_HARVEST_WRITE_ATTEMPTS + 1):
+        labeled = len(done)
+        if pending_files:
+            status = "RUNNING"
+        elif failed and not labeled:
+            # Nothing to harvest and nothing left to wait for.
+            status = "FAILED"
+        else:
+            status = "COMPLETED"
+        update_expr = (
+            "SET #st = :s, labeled = :n, harvestedFiles = :h, failedFiles = :f"
         )
-    if status in ("COMPLETED", "FAILED"):
-        update_expr += ", completedAt = :c"
-        expr_values[":c"] = now
+        expr_values = {
+            ":s": status,
+            ":n": labeled,
+            ":h": sorted(done),
+            ":f": sorted(set(failed)),
+        }
+        if status == "FAILED":
+            update_expr += ", #er = :e"
+            expr_values[":e"] = (
+                f"All {len(set(failed))} document(s) failed processing; no labels were "
+                "produced"
+            )
+        if status in ("COMPLETED", "FAILED"):
+            update_expr += ", completedAt = :c"
+            expr_values[":c"] = now
 
-    expr_names = {"#st": "status"}
-    if status == "FAILED":
-        expr_names["#er"] = "error"
-    db_client.update_item(
-        key={"PK": f"testset#{test_set_id}", "SK": _label_job_sk(job_id)},
-        update_expression=update_expr,
-        expression_attribute_names=expr_names,
-        expression_attribute_values=expr_values,
-    )
+        expr_names = {"#st": "status", "#h": "harvestedFiles", "#f": "failedFiles"}
+        if status == "FAILED":
+            expr_names["#er"] = "error"
+        expr_values[":exp_h"] = expected_done
+        expr_values[":exp_f"] = expected_failed
+        condition = (
+            "(attribute_not_exists(#h) OR #h = :exp_h) "
+            "AND (attribute_not_exists(#f) OR #f = :exp_f)"
+        )
+        try:
+            db_client.update_item(
+                key=job_key,
+                update_expression=update_expr,
+                expression_attribute_names=expr_names,
+                expression_attribute_values=expr_values,
+                condition_expression=condition,
+            )
+            break
+        except DynamoDBError as e:
+            if e.error_code != "ConditionalCheckFailedException":
+                raise
+            if attempt == _MAX_HARVEST_WRITE_ATTEMPTS:
+                raise
+            # Merge rather than redo. The expensive part of this pass -- reading
+            # each document and writing its draft labels to S3 -- has already
+            # happened and is idempotent, so a lost conflict must not discard it
+            # and must not repeat it. Both attributes accumulate, so the union of
+            # the two views is the correct settled state, and subtracting it from
+            # the names still outstanding is what keeps the derived status honest
+            # without recomputing it from the file list.
+            fresh = db_client.get_item(job_key) or {}
+            expected_done = sorted(fresh.get("harvestedFiles") or [])
+            expected_failed = sorted(set(fresh.get("failedFiles") or []))
+            done |= set(expected_done)
+            failed = sorted(set(failed) | set(expected_failed))
+            pending_files -= done | set(failed)
+            logger.info(
+                f"Draft labeling job {job_id}: another harvest wrote first; "
+                f"merging and retrying (attempt {attempt} of "
+                f"{_MAX_HARVEST_WRITE_ATTEMPTS})"
+            )
 
     meta_expr = "SET labelJobStatus = :s"
     meta_values = {":s": status}
@@ -3251,7 +3317,7 @@ def _harvest_label_job(job, deadline=None):
     )
 
     logger.info(
-        f"Draft labeling job {job_id}: labeled={labeled} pending={pending} "
+        f"Draft labeling job {job_id}: labeled={labeled} pending={len(pending_files)} "
         f"failed={len(set(failed))} status={status}"
         + (
             f" (stopped after {HARVEST_TIME_BUDGET_SECONDS}s; resuming on the "
