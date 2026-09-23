@@ -3246,26 +3246,44 @@ def _nested_model_target(annotation: Any) -> Tuple[Optional[str], Optional[type]
 
 
 @lru_cache(maxsize=None)
-def _field_path_index(root: type) -> Dict[str, Tuple[str, ...]]:
-    """Map every field name in a model tree to the dotted paths that declare it.
+def _field_path_index(root: type) -> Dict[str, Tuple[Tuple[str, ...], ...]]:
+    """Map every field name in a model tree to the paths that declare it.
 
     Derived from the annotations, so a model added to the tree later is indexed
-    without being listed. All paths to a repeated model are enumerated —
-    ``ImageConfig`` is reachable four ways — which is what lets a mis-nested key be
-    answered with the nearest correct path rather than an arbitrary one.
+    without being listed, and each path is a tuple of segments. All paths to a
+    repeated model are enumerated — ``ImageConfig`` is reachable four ways — because
+    what makes a suggestion trustworthy is knowing whether the answer is unique.
+
+    A segment for a list-typed field carries ``[]`` and one for a map-typed field
+    ``.*``, so a suggested path is writable as it stands: ``ocr.postHook[].arn`` is
+    where that field lives, and ``ocr.postHook.arn`` is a path with no meaning.
     """
-    index: Dict[str, List[str]] = {}
+    index: Dict[str, List[Tuple[str, ...]]] = {}
 
-    def visit(model: type, prefix: str, chain: Tuple[type, ...]) -> None:
+    def visit(model: type, prefix: Tuple[str, ...], chain: Tuple[type, ...]) -> None:
         for name, field in model.model_fields.items():
-            dotted = f"{prefix}{name}"
-            index.setdefault(name, []).append(dotted)
-            _shape, nested = _nested_model_target(field.annotation)
-            if nested is not None and nested not in chain:
-                visit(nested, f"{dotted}.", chain + (nested,))
+            index.setdefault(name, []).append(prefix + (name,))
+            shape, nested = _nested_model_target(field.annotation)
+            if nested is None or nested in chain:
+                continue
+            step = name
+            if shape == "list":
+                step = f"{name}[]"
+            elif shape == "map":
+                step = f"{name}.*"
+            visit(nested, prefix + (step,), chain + (nested,))
 
-    visit(root, "", (root,))
+    visit(root, (), (root,))
     return {name: tuple(paths) for name, paths in index.items()}
+
+
+def _generalise(segments: Tuple[str, ...]) -> Tuple[str, ...]:
+    """Rewrite the indices of a written path to the index's own spelling.
+
+    ``ocr.features[0]`` and ``ocr.features[]`` are the same place; comparing them
+    as written would make every suggestion inside a list unreachable.
+    """
+    return tuple(re.sub(r"\[\d+\]$", "[]", part) for part in segments)
 
 
 def _suggest_path(
@@ -3273,27 +3291,31 @@ def _suggest_path(
 ) -> Optional[str]:
     """Name a declared field the author plausibly meant, or ``None``.
 
-    A key that *is* a real field elsewhere in the tree is answered exactly, with
-    the candidate sharing the longest prefix with what was written — the
-    mis-nesting case, where naming only the key would read as a false positive.
-    Failing that, a close sibling name is offered for the misspelling case.
+    Two different questions, in order, and **neither is answered by guessing**. A
+    wrong path is worse than no path: it sends the author to edit something that was
+    already correct, and it is the reading that makes them distrust the next warning.
+
+    1. *Mis-nesting.* The key is a real field somewhere **inside where it was
+       written** — ``dpi`` under ``ocr`` — and that place is **unique**. Then the
+       answer is exact. Uniqueness is the whole condition: ``enabled`` is declared at
+       21 paths, nine of them under ``extraction``, so an ``extraction.enabled``
+       cannot be resolved to one of them and gets no hint rather than an arbitrary
+       one. Requiring the candidate to sit under the written prefix is what stops a
+       ``hitl.model`` being answered with ``classification.model``, a different
+       section the author said nothing about.
+    2. *Misspelling.* Failing that, a close name among the **siblings** — the fields
+       of the model the key was actually written in.
     """
-    written = ".".join(prefix + (key,))
+    written = _generalise(prefix + (key,))
+    here = _generalise(prefix)
 
-    candidates = [p for p in _field_path_index(root).get(key, ()) if p != written]
-    if candidates:
-        parts = prefix
-
-        def shared(path: str) -> int:
-            segments = path.split(".")
-            count = 0
-            for mine, theirs in zip(parts, segments):
-                if mine != theirs:
-                    break
-                count += 1
-            return count
-
-        return max(candidates, key=lambda p: (shared(p), -len(p.split("."))))
+    candidates = [
+        path
+        for path in _field_path_index(root).get(key, ())
+        if path != written and path[: len(here)] == here
+    ]
+    if len(candidates) == 1:
+        return ".".join(candidates[0])
 
     close = difflib.get_close_matches(
         key, list(model.model_fields.keys()), n=1, cutoff=_SUGGESTION_CUTOFF

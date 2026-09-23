@@ -299,6 +299,46 @@ def _misnesting_cases() -> list[tuple[str, tuple[tuple[str, str], ...], str, str
 MISNESTINGS = _misnesting_cases()
 
 
+def _generalise_written(steps: tuple[tuple[str, str], ...]) -> list[str]:
+    """The written prefix in the index's spelling: a list step is ``[]``, a map ``.*``."""
+    out = []
+    for name, shape in steps:
+        out.append(
+            f"{name}[]" if shape == "list" else f"{name}.*" if shape == "map" else name
+        )
+    return out
+
+
+def _every_path_declaring(key: str) -> list[tuple[str, ...]]:
+    """All paths in the tree that declare a field of this name — every route to it.
+
+    Read here rather than from ``models._field_path_index`` for the same reason
+    ``_target`` is: a count taken from the code under test cannot contradict it. A
+    model reached several ways contributes one path per route, which is exactly the
+    fact ``REACHED`` (one route per model) throws away.
+    """
+    found: list[tuple[str, ...]] = []
+
+    def visit(model: type[BaseModel], prefix: tuple[str, ...], chain: tuple):
+        for name, field in model.model_fields.items():
+            if name == key:
+                found.append(prefix + (name,))
+            shape, nested = _target(field.annotation)
+            if nested is None or nested in chain:
+                continue
+            step = (
+                f"{name}[]"
+                if shape == "list"
+                else f"{name}.*"
+                if shape == "map"
+                else name
+            )
+            visit(nested, prefix + (step,), chain + (nested,))
+
+    visit(IDPConfig, (), (IDPConfig,))
+    return found
+
+
 def test_there_are_misnesting_cases_to_check():
     assert len(MISNESTINGS) > 20, MISNESTINGS
 
@@ -321,20 +361,38 @@ def test_a_real_field_written_one_level_up_is_reported_with_the_path_it_belongs_
         f"the walk reported {[f.path for f in findings]}"
     )
     finding = matching[0]
-    assert finding.suggestion, (
-        f"'{written}' names a real field elsewhere in the tree, so a message naming "
-        "only the key would read as a false positive; no suggestion was offered"
-    )
-    assert finding.suggestion.split(".")[-1] == key
-    assert finding.suggestion != written
+
+    # The suggestion is owed exactly when the answer is unambiguous, and that
+    # condition is computed here rather than taken from the report: a key declared at
+    # several places under what was written cannot be resolved to one of them, and a
+    # guess there is worse than silence because it sends the author to edit something
+    # correct. Counted independently of the production index.
+    here = tuple(_generalise_written(steps))
+    places = [
+        path
+        for path in _every_path_declaring(key)
+        if path[: len(here)] == here and path != here + (key,)
+    ]
+    if len(places) == 1:
+        assert finding.suggestion, (
+            f"'{key}' is declared at exactly one place under '{parent_path}' "
+            f"({places[0]}), so naming only the key reads as a false positive"
+        )
+        assert finding.suggestion.split(".")[-1] == key
+        assert finding.suggestion != written
+    else:
+        assert finding.suggestion is None, (
+            f"'{key}' is declared at {len(places)} places under '{parent_path}' "
+            f"({places}), so any single suggestion is a guess: {finding.suggestion}"
+        )
 
 
 def test_the_issues_own_witness_names_the_exact_path_it_belongs_at():
     """``ocr.dpi`` is the measurement that #1134's second witness was taken from.
 
-    ``dpi`` is a real field of ``ImageConfig``, reached as ``ocr.image.dpi``, and
-    ``ImageConfig`` is reachable four ways — so the suggestion has to pick the one
-    nearest what was written rather than an arbitrary one.
+    ``dpi`` is a real field of ``ImageConfig``, reached as ``ocr.image.dpi``.
+    ``ImageConfig`` is reachable four ways, so the answer has to come from the one
+    route under what was written rather than from the four in the tree.
     """
     findings = collect_ignored_config_keys({"ocr": {"dpi": "abc"}}, IDPConfig)
     assert [(f.path, f.kind, f.suggestion) for f in findings] == [
@@ -344,6 +402,95 @@ def test_the_issues_own_witness_names_the_exact_path_it_belongs_at():
     assert IDPConfig(**{"ocr": {"dpi": "abc"}}).ocr.image.dpi is None
     with pytest.raises(ValidationError):
         ImageConfig(dpi="abc")
+
+
+def test_an_ambiguous_key_is_reported_with_no_suggestion_at_all():
+    """No path beats a wrong path, and this is the case that produces a wrong one.
+
+    ``enabled`` is declared at nine places under ``extraction``. Any one of them is a
+    guess, and a guess sends the author to edit something that was already correct —
+    which is how a warning teaches people to stop reading it.
+    """
+    findings = collect_ignored_config_keys({"extraction": {"enabled": True}}, IDPConfig)
+    assert [(f.path, f.suggestion) for f in findings] == [("extraction.enabled", None)]
+    assert (
+        len([p for p in _every_path_declaring("enabled") if p[0] == "extraction"]) > 1
+    )
+
+
+def test_a_key_that_belongs_to_another_section_is_not_suggested_across_sections():
+    """``hitl`` has no ``model``; the answer is not ``classification.model``.
+
+    A candidate must sit under what was written. Ranking the whole tree by nearness
+    instead produced exactly this cross-section answer — a suggestion about a section
+    the author said nothing about.
+    """
+    findings = collect_ignored_config_keys({"hitl": {"model": "x"}}, IDPConfig)
+    assert [(f.path, f.suggestion) for f in findings] == [("hitl.model", None)]
+    assert len(_every_path_declaring("model")) > 1
+
+
+def test_a_suggested_path_inside_a_list_is_written_as_one():
+    """``ocr.postHook[].arn`` is writable; ``ocr.postHook.arn`` is not a path."""
+    findings = collect_ignored_config_keys({"ocr": {"arn": "x"}}, IDPConfig)
+    assert [(f.path, f.suggestion) for f in findings] == [
+        ("ocr.arn", "ocr.postHook[].arn")
+    ]
+
+
+def test_every_suggestion_the_tree_can_produce_names_a_real_field():
+    """No suggestion anywhere in the tree can name a path that does not exist.
+
+    Driven over every field name declared anywhere, written at every model's own
+    level: the whole space of suggestions this report can emit, checked against the
+    paths the tree actually declares. A suggestion is the part a reader acts on
+    without checking, so a wrong one is worse than none.
+    """
+    every_path = {
+        path for r in REACHED for path in _every_path_declaring_under(r.model)
+    }
+    names = sorted({name for path in every_path for name in [path[-1]]})
+    offered = 0
+    for reached in REACHED:
+        if _keeps_extras(reached.model):
+            continue
+        for name in names:
+            if name in reached.model.model_fields:
+                continue
+            data = _nest(reached.steps, {name: "probe"})
+            for finding in collect_ignored_config_keys(
+                data, IDPConfig, include_top_level=True
+            ):
+                if finding.suggestion is None:
+                    continue
+                offered += 1
+                assert tuple(finding.suggestion.split(".")) in every_path, (
+                    f"{finding.path} was answered with '{finding.suggestion}', not a path"
+                )
+    assert offered > 50, f"only {offered} suggestions were produced; the sweep is thin"
+
+
+def _every_path_declaring_under(model: type[BaseModel]) -> list[tuple[str, ...]]:
+    """Every path the tree declares, as segment tuples, from ``IDPConfig``."""
+    out: list[tuple[str, ...]] = []
+
+    def visit(m: type[BaseModel], prefix: tuple[str, ...], chain: tuple):
+        for name, field in m.model_fields.items():
+            out.append(prefix + (name,))
+            shape, nested = _target(field.annotation)
+            if nested is None or nested in chain:
+                continue
+            step = (
+                f"{name}[]"
+                if shape == "list"
+                else f"{name}.*"
+                if shape == "map"
+                else name
+            )
+            visit(nested, prefix + (step,), chain + (nested,))
+
+    visit(IDPConfig, (), (IDPConfig,))
+    return out
 
 
 def test_a_misspelled_leaf_is_reported_with_the_field_it_resembles():

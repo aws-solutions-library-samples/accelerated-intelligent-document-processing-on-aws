@@ -237,6 +237,12 @@ That is why the message offers the path the key belongs at. Since `ocr.backend` 
 `ocr.model_id` genuinely are one level up, this is an easy mistake to make and a hard
 one to see afterwards.
 
+**A "did you mean" appears only when there is one answer.** Some setting names are
+used in several places — `enabled` exists under nine different blocks of
+`extraction` alone — and in that case the key is still reported but no path is
+suggested, because a guess would send you to edit something that was already
+correct.
+
 **The warning is not an error.** An unrecognised key does not stop a configuration
 from being accepted or a deployment from loading it, so upgrading cannot break a
 stored configuration on this account. It also means the only signal is the warning:

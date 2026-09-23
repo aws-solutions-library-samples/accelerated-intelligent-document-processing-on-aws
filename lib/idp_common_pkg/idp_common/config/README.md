@@ -116,6 +116,15 @@ Three things to know before using it:
   `ocr.image.dpi: "abc"` raises. When you probe this config tree, assert the
   value **arrived** (`cfg.ocr.image.dpi == expected`), never that construction
   succeeded.
+- **A suggestion is offered only when it is the only answer**, and the two
+  questions are asked in that order: is this key a real field at exactly one path
+  *under where it was written* (`ocr.dpi` → `ocr.image.dpi`), and failing that, is
+  there a close name among the **siblings** (`enabld` → `enabled`). `enabled` is
+  declared at nine paths under `extraction`, so `extraction.enabled` gets no hint
+  at all, and a candidate must sit under the written prefix so that `hitl.model` is
+  not answered with `classification.model`. A wrong path is worse than none: it
+  sends the author to edit something correct. A path through a list-typed field is
+  written as one — `ocr.postHook[].arn`.
 
 ## Files
 
