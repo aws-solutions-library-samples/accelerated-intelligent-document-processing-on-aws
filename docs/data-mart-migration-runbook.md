@@ -1,3 +1,10 @@
+---
+title: "Data-mart rollup migration — operations runbook"
+---
+
+Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
+SPDX-License-Identifier: MIT-0
+
 # Data-mart rollup migration — operations runbook
 
 This runbook covers the `DataMartMigrationStateMachine` that repopulates the four per-document rollup tables (`metering_hourly`, `metering_daily`, `metering_docs_hourly`, `metering_docs_daily`) at the widened `document_class` grain. See [reporting-sql-layer.md](reporting-sql-layer.md) for the reporting-lake design context.
@@ -55,7 +62,7 @@ ORDER BY row_count DESC
 LIMIT 10;
 ```
 
-No action needed. The idp-monitor `cost_by_document_type` widget will now render from the rollup instead of the 77-table UNION+JOIN — expect sub-second cold latency on wide ranges vs. the pre-widening ~30 s.
+No action needed on the host stack once the migration marker reads `state=completed`. The rollup tables now carry `document_class` at the grain, unblocking a switch on the consumer side (the IDP Monitor marketplace feature) so its `cost_by_document_type` widget and related per-class views can read from the rollup instead of the previous per-document-sections UNION+JOIN. That consumer switch ships in the IDP Monitor feature repo, not here — see the marketplace feature's release notes for the actual latency delta.
 
 ### Alarm: `<stack>-data-mart-migration-failure` fired
 
@@ -126,4 +133,4 @@ If steps 1-5 fail on install, the failure signal will be either the failure alar
 
 - Source: `src/lambda/data_mart_rollup/index.py` (task-mode handlers), `src/statemachine/data_mart_migration.asl.json` (state-machine definition), `template.yaml::DataMartMigrationStateMachine` (CFN wiring).
 - Tests: `lib/idp_common_pkg/tests/unit/lambdas/test_data_mart_rollup.py::Test{CheckMarkerState,WriteMarker,PurgeRollupPrefixes,PlanMigrationChunks,CheckHoursFailed,BackfillMigrateDeprecatedNoOp}`.
-- History: 2.0 replaces a Lambda-only design (`mode: backfill_migrate`) that couldn't fit real-volume windows in the 45 min budget of Lambda async retries. See the CHANGELOG entry for 2.0 for the incident summary.
+- History: this state-machine design replaces an earlier Lambda-only backfill (`mode: backfill_migrate`, now a documented no-op) that couldn't fit real-volume windows in the 45 min budget of Lambda async retries. The state machine chunks the range so each chunk gets its own Lambda budget. See the repository CHANGELOG for the release entry that introduced it.

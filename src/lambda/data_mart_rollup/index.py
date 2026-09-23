@@ -211,7 +211,7 @@ def handler(event: Dict[str, Any], _context: Any) -> Dict[str, Any]:
         # in payload), and by DataMartMigrationStateMachine's BackfillChunk
         # task (which passes ``arms=["metering_hourly",
         # "metering_docs_hourly"]`` to skip the arms the migration doesn't
-        # own — see the 2.1.5 note in _run_backfill's docstring). See
+        # own — see the arms-restriction note in _run_backfill's docstring). See
         # docs/reporting-sql-layer.md §10 Track D.
         start_raw = event.get("start")
         end_raw = event.get("end")
@@ -274,10 +274,18 @@ def handler(event: Dict[str, Any], _context: Any) -> Dict[str, Any]:
             )
         return _write_marker(state, days, version=version)
     if mode == "purge_rollup_prefixes":
-        # Delete every S3 object under the four per-document rollup
-        # prefixes so the state machine can repopulate at the widened
-        # (document_class) grain.
-        return _purge_rollup_prefixes_task()
+        # Delete parquet under the four per-document rollup prefixes so
+        # the state machine can repopulate at the widened
+        # (document_class) grain. Scoped to date= partitions inside
+        # ``[anchor - days, anchor)`` — the same window the migration
+        # is about to repopulate — so a stack that has been running
+        # longer than the migration window (default 30 d, retention
+        # default 365 d) keeps its older rollup data intact. Before
+        # this scope, the purge deleted every object under the four
+        # prefixes and only the last ``days`` were rebuilt, silently
+        # destroying up to 335 days of aggregates on a year-old stack.
+        days = int(event.get("days", 30))
+        return _purge_rollup_prefixes_task(anchor, days)
     if mode == "plan_migration_chunks":
         # Compute the list of (start, end) time ranges the state
         # machine's Map state iterates. Each chunk covers ``chunk_hours``
@@ -637,7 +645,7 @@ def _build_doc_class_cte(target_date: Optional[str] = None) -> str:
     the ``COALESCE(m.document_class, dc.document_class, 'unknown')`` in
     each rollup query prefers that over this CTE's output.
 
-    ``target_date`` — 2.1.4 fix. When provided, each UNION arm gets
+    ``target_date`` — partition-pruning knob. When provided, each UNION arm gets
     ``WHERE date BETWEEN <target-1d> AND <target+1d>`` so Athena
     partition-prunes ``document_sections_*`` scans down to the ~3 date
     partitions per table that could actually contain rows for the
@@ -739,7 +747,7 @@ def _rollup_metering_hourly(target_date: str, target_hour: str) -> Dict[str, Any
     # UNION with the 0/1/N rule (fallback for historical rows). Post-widening
     # writers populate ``metering.document_class`` directly and the COALESCE
     # prefers that; the CTE only fills in for rows where m.document_class IS NULL.
-    # 2.1.4: pass target_date so the CTE partition-prunes doc_sections scans
+    # Pass target_date so the CTE partition-prunes doc_sections scans
     # to ±1 day — prevents HIVE_S3_THROTTLING on the migration.
     doc_class_cte = _build_doc_class_cte(target_date=target_date)
     sql = f"""
@@ -807,7 +815,7 @@ def _rollup_metering_docs_hourly(target_date: str, target_hour: str) -> Dict[str
     # MIN/AVG/ANY_VALUE have equally-defensible semantics; MAX chosen so the
     # count is not silently rounded down. Outer aggregate: COUNT(*) of docs,
     # SUM of the MAX-per-doc pages.
-    # 2.1.4: pass target_date so the CTE partition-prunes doc_sections scans
+    # Pass target_date so the CTE partition-prunes doc_sections scans
     # to ±1 day — prevents HIVE_S3_THROTTLING on the migration.
     doc_class_cte = _build_doc_class_cte(target_date=target_date)
     sql = f"""
@@ -1390,7 +1398,7 @@ def _run_backfill(
     - Repopulate freshly-emptied tables after a schema widening
       (backfill_migrate use case).
 
-    ``arms`` — 2.1.5 fix. Optional list of arm labels to run this pass
+    ``arms`` — optional list of arm labels to run this pass
     (out of ``metering_hourly``, ``metering_docs_hourly``,
     ``control_plane_hourly``, ``data_plane_lambda_hourly``). When
     None (default), runs all 4 — matches the reconciler's contract of
@@ -1405,7 +1413,7 @@ def _run_backfill(
     failures from control_plane_hourly's defensive refuse-to-write-
     empty-parquet path, which then get counted as ``hours_partial`` and
     block WriteCompletedMarker. Root cause of the 2026-09-22 execution
-    cc6b01b3 partial-hour blockers, discovered live on qs1.
+    partial-hour blockers observed on a development stack.
 
     Runs the arms PER-HOUR (not all hours of one arm, then all hours of
     the next) so a transient partition failure doesn't leave one table
@@ -1564,9 +1572,8 @@ def _run_backfill(
 # retry replacing async retries. ``plan_migration_chunks`` accepts
 # ``chunk_hours`` up to 168 as its own default fallback of 24 h, but
 # that fallback only applies when the caller omits the field — which
-# the dispatcher does not do. See live-fire incident on idp-dev-qs1
-# (2026-09-22) and CHANGELOG entry for the retry-safe purge that this
-# design supersedes.
+# the dispatcher does not do. See the CHANGELOG entry for the retry-safe
+# purge that this design supersedes.
 
 _MIGRATION_MARKER_NAME = f"/idp/{STACK_NAME}/data-mart-rollup/migration-complete"
 
@@ -1769,19 +1776,41 @@ def _write_marker(
     return {"marker": value, "state": state, "days": days}
 
 
-def _purge_rollup_prefixes_task() -> Dict[str, Any]:
-    """Delete every S3 object under the four per-document rollup prefixes.
+def _purge_rollup_prefixes_task(anchor: datetime, days: int) -> Dict[str, Any]:
+    """Delete parquet under the four rollup prefixes, scoped to the
+    date= partitions inside ``[anchor - days, anchor)``.
 
-    Task-mode wrapper around ``_purge_s3_prefix`` so the state machine
-    can invoke a single Lambda action for the whole purge (rather than
-    four separate SDK integrations). Returns per-prefix delete counts
-    for the state machine's logs.
+    Task-mode wrapper around ``_purge_rollup_window`` so the state
+    machine can invoke a single Lambda action for the whole purge
+    (rather than four separate SDK integrations). Returns per-prefix
+    delete counts for the state machine's logs.
 
-    The four rollup tables' data is derived from raw ``metering`` +
-    ``document_sections_*`` and can be regenerated end-to-end from those
-    sources — see ``_build_doc_class_cte`` and the widened INSERTs in
-    ``_rollup_metering_hourly`` etc.
+    Window semantics match ``_plan_migration_chunks``: ``anchor`` is
+    truncated to top-of-hour for the upper bound, and the lower bound
+    is that minus ``days`` truncated further to top-of-day so every
+    day in the migration range gets 24 hours of coverage before the
+    daily backfill aggregates.
+
+    Why not delete every object under the four prefixes: the four
+    rollup tables' data is derived from raw ``metering`` +
+    ``document_sections_*`` and can be regenerated in principle, BUT
+    the migration only repopulates ``days`` at a time (bounded to 90
+    by ``_plan_migration_chunks``). A stack running on the default
+    365-day retention has up to 365 days of rollup parquet; an
+    unbounded purge followed by a 30-day repopulate silently destroys
+    up to 335 days of aggregates that nothing in the state machine
+    then rebuilds. Bounding the purge to the migrated window keeps the
+    older aggregates intact — they remain queryable from the widened
+    tables even though they were written at the old grain (the older
+    partitions simply predate the ``document_class`` column and behave
+    as NULL when the column is projected).
     """
+    if days < 1 or days > 90:
+        raise ValueError(f"purge_rollup_prefixes: days={days} out of range (1..90)")
+    end_dt = anchor.replace(minute=0, second=0, microsecond=0)
+    start_dt = (end_dt - timedelta(days=days)).replace(
+        hour=0, minute=0, second=0, microsecond=0
+    )
     prefixes = [
         "metering_hourly/",
         "metering_daily/",
@@ -1790,15 +1819,61 @@ def _purge_rollup_prefixes_task() -> Dict[str, Any]:
     ]
     summary: Dict[str, int] = {}
     for prefix in prefixes:
-        deleted = _purge_s3_prefix(REPORTING_BUCKET, prefix)
+        deleted = _purge_rollup_window(REPORTING_BUCKET, prefix, start_dt, end_dt)
         summary[prefix] = deleted
         logger.info(
-            "purge_rollup_prefixes: deleted %d object(s) under s3://%s/%s",
+            "purge_rollup_prefixes: deleted %d object(s) under s3://%s/%s "
+            "[date=%s .. %s)",
             deleted,
             REPORTING_BUCKET,
             prefix,
+            start_dt.strftime("%Y-%m-%d"),
+            end_dt.strftime("%Y-%m-%d"),
         )
-    return {"purged": summary, "total": sum(summary.values())}
+    return {
+        "purged": summary,
+        "total": sum(summary.values()),
+        "window_start": start_dt.isoformat(),
+        "window_end": end_dt.isoformat(),
+    }
+
+
+def _purge_rollup_window(
+    bucket: str, prefix: str, start_dt: datetime, end_dt: datetime
+) -> int:
+    """Delete every object under ``s3://<bucket>/<prefix>date=YYYY-MM-DD/``
+    for each date in ``[start_dt, end_dt)``, where the daily bound is
+    the ``date=`` value on the parquet-partition key.
+
+    Rollup tables are date-partitioned under prefixes like
+    ``metering_hourly/date=2026-09-22/hour=13/data.parquet``. Listing
+    with ``Delimiter="/"`` under the table prefix returns the set of
+    ``date=`` partition sub-prefixes; each partition matching the
+    window is deleted with the existing ``_purge_s3_prefix`` helper
+    (which itself surfaces DeleteObjects Errors — see its comment).
+
+    Partitions that don't parse as ``date=YYYY-MM-DD/`` are ignored —
+    the crawler occasionally creates auxiliary metadata under the
+    table prefix (Glue symlinks, etc.) that we must not delete.
+    """
+    start_date = start_dt.strftime("%Y-%m-%d")
+    end_date = end_dt.strftime("%Y-%m-%d")
+    total = 0
+    paginator = s3_client.get_paginator("list_objects_v2")
+    date_pattern = re.compile(rf"^{re.escape(prefix)}date=(\d{{4}}-\d{{2}}-\d{{2}})/$")
+    for page in paginator.paginate(Bucket=bucket, Prefix=prefix, Delimiter="/"):
+        for cp in page.get("CommonPrefixes", []) or []:
+            date_prefix = cp.get("Prefix", "")
+            m = date_pattern.match(date_prefix)
+            if not m:
+                continue
+            partition_date = m.group(1)
+            # Half-open [start_date, end_date). end_date is the day AFTER
+            # the last day we want to keep, matching _plan_migration_chunks's
+            # exclusive upper bound.
+            if start_date <= partition_date < end_date:
+                total += _purge_s3_prefix(bucket, date_prefix)
+    return total
 
 
 def _plan_migration_chunks(
@@ -1933,7 +2008,7 @@ def _check_hours_failed(
                 }
             )
 
-    # 2.1.2 fix: a "partial" hour means one or more (but not all)
+    # Semantic note: a "partial" hour means one or more (but not all)
     # rollup arms failed. In routine hourly ops that's tolerated
     # because the reconciler fills the gap, but in the migration
     # context we MUST NOT declare success while any arm is missing
@@ -3583,7 +3658,7 @@ def _run_athena(
         # the salt being chopped off by the 128-char cap. Effective
         # user-controlled budget = 128 - 12 = 116 chars.
         kwargs["ClientRequestToken"] = idempotency_key[:116]
-    # 2.1.2 fix: Athena rejects StartQueryExecution with
+    # Guard: Athena rejects StartQueryExecution with
     # ``InvalidRequestException: Idempotent parameters do not match`` when
     # a ClientRequestToken from a prior (<24h) submission is reused with a
     # different QueryString. That happens on migration re-runs where the
@@ -3737,7 +3812,7 @@ def _run_athena(
             # This is the ONE window ``ClientRequestToken`` can't close.
             # Historically ``DataMartRollupFunction`` set
             # ``ReservedConcurrentExecutions: 1`` in template.yaml to make
-            # this window unreachable; 2.1.6 raised it to 12 so the migration
+            # this window unreachable; that value was later raised to 12 so the migration
             # state machine's Map (MaxConcurrency=8) can run in parallel.
             # The residual race is closed by the ``_partition_already_written``
             # HeadObject-skip firing BEFORE the Athena INSERT in each rollup

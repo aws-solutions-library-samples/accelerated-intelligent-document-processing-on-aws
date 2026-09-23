@@ -2621,48 +2621,214 @@ class TestWriteMarker:
 @pytest.mark.unit
 class TestPurgeRollupPrefixes:
     """``mode: 'purge_rollup_prefixes'`` — Task-mode wrapper around
-    ``_purge_s3_prefix`` that the state machine invokes for the initial
-    purge. Deletes every S3 object under the four per-document rollup
-    prefixes."""
+    ``_purge_rollup_window`` that the state machine invokes for the
+    initial purge. Deletes date-partitioned parquet under the four
+    per-document rollup prefixes, scoped to ``[anchor - days, anchor)``.
+    """
 
-    def test_purge_covers_all_four_prefixes(self, rollup):
+    def _mock_paginator_with_dates(self, dates_by_prefix):
+        """Build a paginator mock that, for each ``Prefix=`` param,
+        returns a single page whose ``CommonPrefixes`` are the
+        ``date=YYYY-MM-DD/`` sub-prefixes named in ``dates_by_prefix``.
+        Mirrors the shape S3 ``ListObjectsV2 Delimiter="/"`` returns.
+        """
+
+        def paginate(**kwargs):
+            table_prefix = kwargs["Prefix"]
+            common = [
+                {"Prefix": f"{table_prefix}date={d}/"}
+                for d in dates_by_prefix.get(table_prefix, [])
+            ]
+            return iter([{"CommonPrefixes": common}])
+
+        pag = MagicMock()
+        pag.paginate.side_effect = paginate
+        return pag
+
+    def test_purge_covers_all_four_prefixes_within_window(self, rollup):
+        """Every table gets its in-window date= partitions purged."""
+        # Windowed anchor: 2026-09-22 00:00 UTC → start = 2026-08-23 00:00 UTC.
+        # In-window dates chosen so every table has at least one hit.
+        in_window_dates = ["2026-08-23", "2026-09-01", "2026-09-21"]
+        dates = {
+            "metering_hourly/": in_window_dates,
+            "metering_daily/": in_window_dates,
+            "metering_docs_hourly/": in_window_dates,
+            "metering_docs_daily/": in_window_dates,
+        }
         purged: list = []
 
         def _fake_purge(bucket, prefix):
             purged.append((bucket, prefix))
             return 7  # arbitrary — assertion is on which prefixes, not counts
 
-        with patch.object(rollup, "_purge_s3_prefix", side_effect=_fake_purge):
-            result = rollup.handler({"mode": "purge_rollup_prefixes"}, None)
-        prefixes = sorted(p for _b, p in purged)
-        assert prefixes == [
-            "metering_daily/",
-            "metering_docs_daily/",
-            "metering_docs_hourly/",
+        with (
+            patch.object(rollup, "_purge_s3_prefix", side_effect=_fake_purge),
+            patch.object(
+                rollup.s3_client,
+                "get_paginator",
+                return_value=self._mock_paginator_with_dates(dates),
+            ),
+        ):
+            result = rollup.handler(
+                {
+                    "mode": "purge_rollup_prefixes",
+                    "days": 30,
+                    "time": "2026-09-22T00:00:00Z",
+                },
+                None,
+            )
+        # Every table × every in-window date should be deleted.
+        assert len(purged) == 4 * len(in_window_dates)
+        purged_prefixes = sorted(p for _b, p in purged)
+        for table in (
             "metering_hourly/",
-        ]
-        assert result["total"] == 4 * 7
-        assert set(result["purged"].keys()) == {
-            "metering_hourly/",
             "metering_daily/",
             "metering_docs_hourly/",
             "metering_docs_daily/",
+        ):
+            for d in in_window_dates:
+                assert f"{table}date={d}/" in purged_prefixes
+        assert result["total"] == 4 * len(in_window_dates) * 7
+        assert result["window_start"].startswith("2026-08-23")
+        assert result["window_end"].startswith("2026-09-22")
+
+    def test_purge_bounded_window_preserves_out_of_window_partitions(self, rollup):
+        """Regression pin for the data-loss defect: a stack that has been
+        running longer than the migration window (default 30 d, retention
+        default 365 d) must keep its older rollup partitions intact. The
+        purge is scoped to date= partitions inside [anchor - days,
+        anchor); partitions outside that half-open range must NOT be
+        deleted, or the older aggregates would be silently destroyed and
+        never rebuilt (``_plan_migration_chunks`` and
+        ``_run_backfill_daily_range`` both hard-reject days > 90)."""
+        # Mix of in-window and out-of-window dates. Anchor is
+        # 2026-09-22, days=30 → [2026-08-23, 2026-09-22).
+        dates = {
+            "metering_hourly/": [
+                "2025-11-01",  # ← 10+ months old, MUST NOT be purged
+                "2026-06-15",  # ← 3 months old, MUST NOT be purged
+                "2026-08-22",  # ← 1 day before window start, MUST NOT
+                "2026-08-23",  # ← window start (inclusive) — purge
+                "2026-09-10",  # ← inside window — purge
+                "2026-09-22",  # ← window end (exclusive) — MUST NOT
+                "2026-09-25",  # ← after window end (future) — MUST NOT
+            ],
+            "metering_daily/": [],
+            "metering_docs_hourly/": [],
+            "metering_docs_daily/": [],
         }
+        purged: list = []
+        with (
+            patch.object(
+                rollup,
+                "_purge_s3_prefix",
+                side_effect=lambda b, p: (purged.append(p), 5)[1],
+            ),
+            patch.object(
+                rollup.s3_client,
+                "get_paginator",
+                return_value=self._mock_paginator_with_dates(dates),
+            ),
+        ):
+            rollup.handler(
+                {
+                    "mode": "purge_rollup_prefixes",
+                    "days": 30,
+                    "time": "2026-09-22T00:00:00Z",
+                },
+                None,
+            )
+        # Only the two in-window partitions should be touched.
+        assert "metering_hourly/date=2026-08-23/" in purged
+        assert "metering_hourly/date=2026-09-10/" in purged
+        # Everything else must be preserved.
+        assert "metering_hourly/date=2025-11-01/" not in purged
+        assert "metering_hourly/date=2026-06-15/" not in purged
+        assert "metering_hourly/date=2026-08-22/" not in purged
+        assert "metering_hourly/date=2026-09-22/" not in purged
+        assert "metering_hourly/date=2026-09-25/" not in purged
+
+    def test_purge_ignores_non_date_common_prefixes(self, rollup):
+        """The Glue crawler occasionally creates auxiliary metadata
+        under a table prefix (symlinks, non-date sub-prefixes). Those
+        MUST NOT be routed through the purge — only ``date=YYYY-MM-DD/``
+        entries qualify. Regression pin."""
+
+        # Inject a mix of date and non-date CommonPrefixes.
+        def paginate(**kwargs):
+            tp = kwargs["Prefix"]
+            common = []
+            if tp == "metering_hourly/":
+                common = [
+                    {"Prefix": "metering_hourly/date=2026-09-10/"},
+                    {"Prefix": "metering_hourly/_symlink_format_manifest/"},
+                    {"Prefix": "metering_hourly/some_other_junk/"},
+                ]
+            return iter([{"CommonPrefixes": common}])
+
+        pag = MagicMock()
+        pag.paginate.side_effect = paginate
+        purged: list = []
+        with (
+            patch.object(
+                rollup,
+                "_purge_s3_prefix",
+                side_effect=lambda b, p: (purged.append(p), 1)[1],
+            ),
+            patch.object(rollup.s3_client, "get_paginator", return_value=pag),
+        ):
+            rollup.handler(
+                {
+                    "mode": "purge_rollup_prefixes",
+                    "days": 30,
+                    "time": "2026-09-22T00:00:00Z",
+                },
+                None,
+            )
+        assert purged == ["metering_hourly/date=2026-09-10/"]
 
     def test_purge_task_does_not_touch_control_plane_prefixes(self, rollup):
-        """`control_plane/` and `data_plane_lambda/` prefixes are OUT
-        of scope — they're written by different rollup arms with
+        """`control_plane_hourly/` and `data_plane_lambda_hourly/` prefixes
+        are OUT of scope — they're written by different rollup arms with
         different schemas and are not affected by the document_class
         widening. Regression pin."""
-        purged: list = []
-        with patch.object(
-            rollup,
-            "_purge_s3_prefix",
-            side_effect=lambda b, p: (purged.append(p), 0)[1],
+        # Track the Prefix argument passed to get_paginator's paginate
+        # calls — that is what determines which tables are scanned.
+        seen_prefixes: list = []
+
+        def paginate(**kwargs):
+            seen_prefixes.append(kwargs["Prefix"])
+            return iter([{"CommonPrefixes": []}])
+
+        pag = MagicMock()
+        pag.paginate.side_effect = paginate
+        with (
+            patch.object(rollup, "_purge_s3_prefix", return_value=0),
+            patch.object(rollup.s3_client, "get_paginator", return_value=pag),
         ):
-            rollup.handler({"mode": "purge_rollup_prefixes"}, None)
-        assert "control_plane/" not in purged
-        assert "data_plane_lambda/" not in purged
+            rollup.handler(
+                {
+                    "mode": "purge_rollup_prefixes",
+                    "days": 30,
+                    "time": "2026-09-22T00:00:00Z",
+                },
+                None,
+            )
+        assert "control_plane_hourly/" not in seen_prefixes
+        assert "data_plane_lambda_hourly/" not in seen_prefixes
+
+    def test_purge_rejects_out_of_range_days(self, rollup):
+        for bad in (0, -1, 91, 365):
+            with pytest.raises(ValueError, match="out of range"):
+                rollup.handler(
+                    {
+                        "mode": "purge_rollup_prefixes",
+                        "days": bad,
+                        "time": "2026-09-22T00:00:00Z",
+                    },
+                    None,
+                )
 
 
 @pytest.mark.unit

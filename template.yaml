@@ -5565,22 +5565,20 @@ Resources:
       # value of [100]". Raise the account concurrency limit rather than
       # removing this property.
       #
-      # Bumped 1 → 3 for 2.1.1 → 12 for 2.1.6. Rationale:
-      # 2.1.1 (1→3): the migration state machine's 720 chunks contend for
-      #   the same Lambda slot as the scheduled hourly (:05), reconciler
-      #   (:35), and daily (:15). With reservation=1, any scheduled
-      #   invocation firing mid-migration caused SFN chunk tasks to hit
-      #   Lambda.TooManyRequestsException, which even the state machine's
-      #   generous Retry couldn't outwait if the competing invocation
-      #   took 5-15 min. Reservation=3 gave SFN + one scheduled + reconciler
-      #   headroom.
-      # 2.1.6 (3→12): the DataMartMigrationStateMachine now runs
-      #   MigrateChunks with MaxConcurrency=8 so a real-volume 720-hour
-      #   migration completes in ~20 min instead of ~2 h. 8 parallel
-      #   chunks × 1 Lambda slot each + the 3 scheduled crons + 1
-      #   headroom slot = 12. Chosen to stay well under Athena's default
-      #   20 DML-concurrency per workgroup (8 chunks × 2 arms = 16
-      #   concurrent Athena queries, leaves 4 for the routine crons).
+      # Sized against two competing loads. First, the migration state
+      #   machine's 720 chunks contend for the same Lambda slot as the
+      #   three scheduled crons (:05 hourly, :15 daily, :35 reconciler);
+      #   a reservation of 1 caused SFN chunk tasks to hit
+      #   Lambda.TooManyRequestsException whenever a scheduled invocation
+      #   fired mid-migration, and even the state machine's generous
+      #   Retry couldn't outwait a 5-15 min competing invocation.
+      # Second, the state machine now runs MigrateChunks with
+      #   MaxConcurrency=8 to complete a real-volume 720-hour migration
+      #   in ~20 min instead of ~2 h. 8 parallel chunks × 1 Lambda slot
+      #   each + 3 scheduled crons + 1 headroom slot = 12. Chosen to
+      #   stay well under Athena's default 20 DML-concurrency per
+      #   workgroup (8 chunks × 2 arms = 16 concurrent Athena queries,
+      #   leaves 4 for the routine crons).
       #
       # How the residual fresh-salt race from (1) is closed at =12:
       # the HeadObject-skip in each rollup arm (``_partition_already_written``)
@@ -5658,7 +5656,7 @@ Resources:
                 # ^ Without GetTables, Athena's information_schema queries
                 # silently return 0 rows — no permission-denied error, just
                 # empty results. This broke the rollup Lambda's discovery of
-                # document_sections_* tables (found on idp-dev-qs1 2026-09-22):
+                # document_sections_* tables when the grant was missing:
                 # discovery returned 0 → doc_class CTE was empty → rollup
                 # INSERTs LEFT JOIN'd against an empty CTE → every historical
                 # row's document_class fell through COALESCE fallback to
@@ -5982,14 +5980,12 @@ Resources:
       # re-migrate on every version bump — the exact landmine the
       # customer-normal-day short-circuit is designed to prevent.
       #
-      # It was 'true' during idp-dev-qs1's 2.1.x recovery cycle. Flipped
-      # to 'false' on 2026-09-22 after execution a76331c7 completed
-      # cleanly (marker written state=completed, 745 parquet files
-      # across the 4 rollup tables, document_class populated for every
-      # row with no NULL and no 'unknown' bucket). Kept 'false' onward
-      # for customer prod safety — if a future schema change needs a
-      # fresh migration, set this to 'true' explicitly (with a bump to
-      # MigrationVersion) and flip back after the run.
+      # 'false' is the customer-safe default here and should stay that
+      # way. Set this to 'true' only when you deliberately want a fresh
+      # migration (bump MigrationVersion alongside) — the dispatcher
+      # deletes the SSM marker and the state machine re-runs InitialPurge
+      # over the migration window. Flip back to 'false' immediately after
+      # the run so a routine subsequent deploy doesn't re-migrate.
       ForceFresh: "false"
       # Match the dispatcher's own Timeout — CFN default is 3600s, but the
       # dispatcher's role is just "delete SSM marker (optional) + start SFN
@@ -6491,10 +6487,11 @@ Resources:
       SourceArn: !GetAtt DataMartRollupReconcileSchedule.Arn
 
   # Absence alarm: page the operator when the DataMartRollupFunction has
-  # NOT been invoked for 2 hours. Catches the class of failure where the
-  # EventBridge schedule got dropped from the stack in a redeploy (Bob
-  # observed exactly this on idp-dev-qs) — the DLQ alarm above only fires
-  # when INVOCATIONS FAIL, not when they never happen. See §10 Track D.
+  # NOT been invoked for several consecutive hours. Catches the class of
+  # failure where a redeploy drops an EventBridge schedule from the
+  # stack (a real regression class observed on a development stack) —
+  # the DLQ alarm above only fires when INVOCATIONS FAIL, not when they
+  # never happen. See reporting-sql-layer.md §10 Track D.
   DataMartRollupAbsenceAlarm:
     Type: AWS::CloudWatch::Alarm
     Properties:
@@ -6514,11 +6511,25 @@ Resources:
         - Name: FunctionName
           Value: !Ref DataMartRollupFunction
       Statistic: Sum
-      # Two consecutive 1-hour windows with zero invocations trip the
-      # alarm — 2 h detection latency, ~zero false positives (a live
-      # stack fires at least :05 + :35 per hour).
+      # Four consecutive 1-hour windows with zero invocations trip the
+      # alarm — 4 h detection latency, ~zero false positives (a live
+      # stack fires at least :05 + :35 per hour). Was Period=3600 +
+      # EvaluationPeriods=2 (2 h latency), which fires a spurious
+      # alarm-then-OK pair on every fresh deploy: a new alarm evaluates
+      # the last N hours immediately, and on a stack created mid-hour
+      # those N hours have no Invocations datapoint at all, so all N
+      # fill as breaching (because ``TreatMissingData: breaching``
+      # below) before the first :05 cron runs — and with OKActions
+      # wired to AlertsTopic the operator gets a paged alarm on
+      # install. Widening to 4 datapoints of 4 requires 4 consecutive
+      # dead hours, which no cold-start reaches (the hourly cron fires
+      # within the first hour of any successful install), so the
+      # spurious pair disappears. Real outages of ≥ 4 h are still
+      # caught — and any real outage of that duration is already a
+      # data-hole event separately visible via the DLQ alarm.
       Period: 3600
-      EvaluationPeriods: 2
+      EvaluationPeriods: 4
+      DatapointsToAlarm: 4
       Threshold: 0
       ComparisonOperator: LessThanOrEqualToThreshold
       # ``breaching`` for a Sum metric: an hour that reported no data
