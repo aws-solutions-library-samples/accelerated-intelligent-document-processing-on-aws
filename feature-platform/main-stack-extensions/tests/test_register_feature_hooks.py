@@ -600,3 +600,253 @@ def test_registration_is_unchanged_when_the_mode_is_not_recorded(
     result = mod.handler(_register_event("pii-redactor", [_OCR_POINT_HOOK]), None)
     assert result["hookCount"] == 1
     assert "warnings" not in result
+
+
+# ---------------------------------------------------------------------------
+# Head-item attributes this resolver does not own (#1111)
+#
+# The profile head row carries attributes maintained by targeted update_item
+# calls elsewhere: the revision counters LatestRevision / PublishedRevision
+# (ConfigRevisionStore) and BdaProjectArn / BdaSyncStatus / BdaLastSyncedAt
+# (ConfigurationManager). idp_common names them _PRESERVED_HEAD_FIELDS and its own
+# writer re-reads them before every put_item, because put_item replaces the WHOLE
+# item. This resolver wrote the row with put_item and re-attached a set of seven
+# fields that had no member in common with those five, so a single successful call
+# deleted all of them.
+#
+# Losing LatestRevision is the unrecoverable part: ConfigRevisionStore.next_number
+# does `ADD LatestRevision :one`, DynamoDB reads an absent attribute as zero, and
+# the allocation comes back as 1 — so the next save writes over the revision-1
+# body already in S3 under a key that is write-once by construction.
+# ---------------------------------------------------------------------------
+
+_HEAD_FIELDS = {
+    "BdaProjectArn": "arn:aws:bedrock:us-east-1:123456789012:data-automation-project/p1",
+    "BdaSyncStatus": "SYNCED",
+    "BdaLastSyncedAt": "2026-01-02T00:00:00Z",
+    "LatestRevision": 3,
+    "PublishedRevision": 2,
+}
+
+
+def _seed_head_with_counters(version: str, **extra) -> None:
+    """One active row carrying every head attribute, stored compressed.
+
+    Compressed is the format every current writer produces
+    (ConfigurationManager._write_record), and it is the format in which the loss is
+    total: `_decompress` returns only the gzip body, so nothing in `payload`
+    carries a head attribute forward either.
+    """
+    import gzip
+
+    body = {"classes": [{"name": "PA-Administrative"}], "ocr": {"enabled": True}}
+    _table().put_item(
+        Item={
+            "Configuration": f"Config#{version}",
+            "IsActive": True,
+            "CreatedAt": "2026-01-01T00:00:00Z",
+            "Description": "seeded",
+            "Managed": False,
+            "_config_storage": "compressed",
+            "_compressed_config": gzip.compress(json.dumps(body).encode("utf-8")),
+            **_HEAD_FIELDS,
+            **extra,
+        }
+    )
+
+
+def test_registration_preserves_the_revision_counters_and_bda_link(
+    monkeypatch, configuration_table, load_lambda
+):
+    """Registering a hook must not disturb a head attribute it does not own."""
+    mod = _preload(monkeypatch, load_lambda)
+    _seed_head_with_counters("zz-active-v1")
+
+    assert mod.handler(_register_event(), None)["hookCount"] == 1
+
+    row = _table().get_item(Key={"Configuration": "Config#zz-active-v1"})["Item"]
+    for field, expected in _HEAD_FIELDS.items():
+        assert field in row, f"{field} was dropped by the write"
+        assert row[field] == expected
+    # The hook still landed, and the pre-existing body survived.
+    assert row["rule_validation"]["postHook"][0]["featureId"] == "claims-pack"
+    assert row["classes"] == [{"name": "PA-Administrative"}]
+
+
+def test_unregistration_preserves_the_revision_counters_and_bda_link(
+    monkeypatch, configuration_table, load_lambda
+):
+    """`_unregister` repeats the write, and is the path a feature UNINSTALL takes.
+
+    Uninstall is the lifecycle event that reaches this module in a deployed stack
+    today — the two in-tree feature stacks call `unregisterFeatureHooks` on
+    CloudFormation Delete and ship their hook inside a config preset rather than
+    calling `registerFeatureHooks` — so this direction carries the live blast
+    radius and is not a mirror of the test above.
+    """
+    mod = _preload(monkeypatch, load_lambda)
+    _seed_head_with_counters("zz-active-v1")
+    mod.handler(_register_event(), None)
+
+    event = make_appsync_event("unregisterFeatureHooks", {"featureId": "claims-pack"})
+    assert mod.handler(event, None) is True
+
+    row = _table().get_item(Key={"Configuration": "Config#zz-active-v1"})["Item"]
+    for field, expected in _HEAD_FIELDS.items():
+        assert row.get(field) == expected, f"{field} dropped by the unregister write"
+
+
+def test_registration_does_not_restart_the_revision_sequence(
+    monkeypatch, configuration_table, load_lambda
+):
+    """The consequence, asserted rather than inferred from attribute presence.
+
+    This is the exact allocation ConfigRevisionStore.next_number performs. With
+    LatestRevision intact it hands out 4; with the attribute deleted, `ADD` reads
+    absent as zero and hands out 1, which collides with the revision-1 body already
+    in S3.
+    """
+    mod = _preload(monkeypatch, load_lambda)
+    _seed_head_with_counters("zz-active-v1")
+    mod.handler(_register_event(), None)
+
+    allocated = _table().update_item(
+        Key={"Configuration": "Config#zz-active-v1"},
+        UpdateExpression="ADD LatestRevision :one",
+        ConditionExpression="attribute_exists(Configuration)",
+        ExpressionAttributeValues={":one": 1},
+        ReturnValues="UPDATED_NEW",
+    )["Attributes"]["LatestRevision"]
+    assert int(allocated) == 4
+
+
+def test_an_unrelated_head_attribute_survives_the_write(
+    monkeypatch, configuration_table, load_lambda
+):
+    """The property that makes the fix structural rather than a longer field list.
+
+    A targeted update leaves an attribute it does not name alone, so a head field
+    added after this module was written needs no edit here. `_feature_id` is a real
+    instance — applyFeatureConfigPreset stamps it on the row and this module has
+    never heard of it.
+    """
+    mod = _preload(monkeypatch, load_lambda)
+    _seed_head_with_counters(
+        "zz-active-v1", _feature_id="pii-anonymizer", SomeFutureCounter=7
+    )
+
+    mod.handler(_register_event(), None)
+
+    row = _table().get_item(Key={"Configuration": "Config#zz-active-v1"})["Item"]
+    assert row["_feature_id"] == "pii-anonymizer"
+    assert int(row["SomeFutureCounter"]) == 7
+
+
+def test_a_compressed_row_is_converted_to_inline_storage(
+    monkeypatch, configuration_table, load_lambda
+):
+    """The resolver writes the body inline, so the storage markers must go.
+
+    Leaving `_config_storage: compressed` beside a freshly written inline body would
+    make every reader prefer the stale gzip blob and ignore the hook.
+    """
+    mod = _preload(monkeypatch, load_lambda)
+    _seed_head_with_counters("zz-active-v1")
+
+    mod.handler(_register_event(), None)
+
+    row = _table().get_item(Key={"Configuration": "Config#zz-active-v1"})["Item"]
+    assert "_config_storage" not in row
+    assert "_compressed_config" not in row
+    assert row["_config_format"] == "full"
+
+
+def test_a_row_whose_blob_carries_the_format_marker_still_registers(
+    monkeypatch, configuration_table, load_lambda
+):
+    """The shape every row the configuration manager writes actually has.
+
+    ``ConfigurationManager._compress_item`` keeps only its own metadata fields as
+    top-level attributes and sweeps everything else into the gzip body — including
+    the ``_config_format`` marker ``_write_record`` stamps just before compressing.
+    So a real compressed row decompresses to a body that already contains that
+    marker, and an UpdateExpression that assigned it from the body *and* explicitly
+    would touch one attribute path twice, which DynamoDB rejects outright with
+    "Two document paths overlap with each other".
+
+    The other compressed-row tests here seed a body of config sections only, so none
+    of them reaches this. Seeding the marker is the whole point of this one.
+    """
+    import gzip
+
+    mod = _preload(monkeypatch, load_lambda)
+    body = {
+        "_config_format": "full",
+        "classes": [{"name": "PA-Administrative"}],
+        "ocr": {"enabled": True},
+    }
+    _table().put_item(
+        Item={
+            "Configuration": "Config#zz-active-v1",
+            "IsActive": True,
+            "LatestRevision": 3,
+            "_config_storage": "compressed",
+            "_compressed_config": gzip.compress(json.dumps(body).encode("utf-8")),
+        }
+    )
+
+    assert mod.handler(_register_event(), None)["hookCount"] == 1
+
+    row = _table().get_item(Key={"Configuration": "Config#zz-active-v1"})["Item"]
+    assert row["_config_format"] == "full"
+    assert int(row["LatestRevision"]) == 3
+    assert row["classes"] == [{"name": "PA-Administrative"}]
+    assert row["rule_validation"]["postHook"][0]["featureId"] == "claims-pack"
+
+
+def test_the_write_is_refused_when_the_row_disappears_mid_call(
+    monkeypatch, configuration_table, load_lambda
+):
+    """`attribute_exists(Configuration)` stops a deleted profile being re-created.
+
+    Without the condition the write is a blind put: a profile deleted between the
+    read and the write comes back, populated from a body read before it went away
+    and missing every head attribute it used to have.
+    """
+    from botocore.exceptions import ClientError
+
+    mod = _preload(monkeypatch, load_lambda)
+    _seed_head_with_counters("zz-active-v1")
+
+    real_replace = mod._replace_pack_entries
+
+    def delete_then_replace(*args, **kwargs):
+        _table().delete_item(Key={"Configuration": "Config#zz-active-v1"})
+        return real_replace(*args, **kwargs)
+
+    monkeypatch.setattr(mod, "_replace_pack_entries", delete_then_replace)
+
+    with pytest.raises(ClientError) as excinfo:
+        mod.handler(_register_event(), None)
+    assert excinfo.value.response["Error"]["Code"] == "ConditionalCheckFailedException"
+    assert "Item" not in _table().get_item(Key={"Configuration": "Config#zz-active-v1"})
+
+
+def test_the_metadata_field_list_covers_every_preserved_head_field(
+    monkeypatch, configuration_table, load_lambda
+):
+    """`_CONFIG_METADATA_FIELDS` is what separates head bookkeeping from the body.
+
+    The two revision counters were missing from it, so on a legacy inline row they
+    were read back as though they were configuration sections. The repo-wide
+    version of this assertion, over every module holding a copy of that list, is
+    scripts/tests/test_config_head_writers.py.
+    """
+    mod = _preload(monkeypatch, load_lambda)
+    assert {
+        "BdaProjectArn",
+        "BdaSyncStatus",
+        "BdaLastSyncedAt",
+        "LatestRevision",
+        "PublishedRevision",
+    } <= mod._CONFIG_METADATA_FIELDS
