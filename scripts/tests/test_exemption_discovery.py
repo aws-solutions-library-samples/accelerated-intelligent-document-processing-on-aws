@@ -38,7 +38,14 @@ way one of these has been or could be inert:
   surfaces down with it -- silently, because a broken alternation still compiles and
   still matches *something*;
 * a fragment eaten by the polarity guard in ``_matches_name``;
-* a prose phrase that fires on nothing because the matcher lowercases the comment.
+* a prose phrase that fires on nothing because the matcher lowercases the comment;
+* a pattern **shadowed** by a shorter one that already matches everything it would,
+  which is the form the first of these takes in practice and which is caught on both
+  surfaces by the attribution assertions below.
+
+What is NOT claimed, on either surface, is that a phrase the vocabulary does not hold
+will be caught. Both lists have a boundary; the prose one is written out where it is
+declared, and no test can read a sentence.
 
 Driving the collector rather than re-implementing the match is the load-bearing choice.
 A test that applied ``fragment in name`` itself would pass while the collector's own
@@ -112,6 +119,13 @@ def _assert_attributable(fragment: str, name: str) -> None:
     )
 
 
+#: Text appended after the phrase to make the probe comment read like a sentence. Kept
+#: as a constant so :func:`_assert_prose_attributable` can assert it carries no shipped
+#: phrase of its own — otherwise the boilerplate could satisfy a probe for a phrase that
+#: does nothing.
+_PROSE_PROBE_TAIL = ", which is why they are here."
+
+
 def _sentence(phrase: str) -> str:
     """``phrase`` as the opening of a comment, cased the way a person would write it.
 
@@ -120,7 +134,53 @@ def _sentence(phrase: str) -> str:
     the collector has lowercased, and capitalising the whole phrase or lower-casing it
     would hide exactly that.
     """
-    return f"{phrase[0].upper()}{phrase[1:]}, which is why they are here."
+    return f"{phrase[0].upper()}{phrase[1:]}{_PROSE_PROBE_TAIL}"
+
+
+def _assert_prose_attributable(phrase: str) -> None:
+    """A prose hit must be attributable to ``phrase`` and to nothing else.
+
+    The exact counterpart of :func:`_assert_attributable`, on the surface that did not
+    have one. The name probes needed it because ``"Exempt"`` beside ``"EXEMPT"`` built a
+    probe the *other* fragment matched; prose has the same hole and it is not
+    hypothetical — measured on this vocabulary, adding ``"Exclusion"`` (a mis-cased
+    duplicate of the shipped ``"exclusion"``) or ``"ZZZ out of scope"`` (a longer form of
+    the shipped ``"out of scope"``) leaves every prose probe green while the new phrase
+    can never fire, because the comment is lowercased before the comparison and the
+    shipped phrase is a substring of the probe.
+
+    Shadowing is tested against the phrase alone rather than the finished sentence, so
+    the boilerplate cannot manufacture a false shadow; that the boilerplate itself
+    carries no shipped phrase is asserted here too, since otherwise it could satisfy a
+    probe for a phrase that does nothing.
+
+    A phrase shadowed by a shorter one is a real finding rather than a technicality: the
+    shorter phrase already matches everything the longer one would, so the longer one
+    adds no reach.
+    """
+    lowered = phrase.lower()
+    shadowing = [
+        other
+        for other in exemption_discovery.EXEMPTION_PROSE
+        if other != phrase and other in lowered
+    ]
+    assert not shadowing, (
+        f"the prose probe for {phrase!r} is also matched by {shadowing}, so a hit on it "
+        f"says nothing about {phrase!r}. Either it is a mis-cased duplicate — dead on "
+        f"arrival, since the comment is lowercased before the comparison — or it is a "
+        f"longer form of a phrase that already matches everything it would, and adds no "
+        f"reach."
+    )
+    inert_tail = [
+        other
+        for other in exemption_discovery.EXEMPTION_PROSE
+        if other in _PROSE_PROBE_TAIL
+    ]
+    assert not inert_tail, (
+        f"the probe boilerplate {_PROSE_PROBE_TAIL!r} contains the shipped phrase(s) "
+        f"{inert_tail}, so every prose probe would pass on the boilerplate alone. Change "
+        "the boilerplate."
+    )
 
 
 @pytest.mark.parametrize("fragment", exemption_discovery.NAME_VOCABULARY)
@@ -181,6 +241,7 @@ def test_a_prose_phrase_finds_a_constant_whose_name_says_nothing(phrase: str) ->
     is deliberately named after what it holds rather than after what the gate does with
     it -- the shape the three constants in issue #1163 had.
     """
+    _assert_prose_attributable(phrase)
     assert not exemption_discovery._matches_name(_PROSE_PROBE_NAME), (
         f"the prose probe's constant name {_PROSE_PROBE_NAME!r} is now matched by "
         "NAME_VOCABULARY, so these probes would pass by name and prove nothing about "
@@ -198,6 +259,46 @@ def test_a_prose_phrase_finds_a_constant_whose_name_says_nothing(phrase: str) ->
     assert found[key].via == "prose", (
         f"the probe constant was discovered via {found[key].via!r} rather than by "
         f"prose, so {phrase!r} is not what found it."
+    )
+
+
+@pytest.mark.parametrize(
+    "fragment", [f for f in exemption_discovery.NAME_VOCABULARY if "_" in f]
+)
+def test_an_underscore_bearing_fragment_does_not_match_loosely(fragment: str) -> None:
+    """The three surfaces must match the same names.
+
+    ``TEXT_SOURCES`` builds its Make and shell patterns from this vocabulary, and it used
+    to strip the fragments' underscores first — so those two surfaces matched strictly
+    more than ``_matches_name`` does on the Python one. ``KNOWN_`` also matched
+    ``WELL_KNOWN``, and ``NON_`` became a bare ``non``, which reported a shell variable
+    named ``canonical`` as an exemption.
+
+    A false positive is not the harmless direction. The registry's remedy for a
+    discovered surface is a written judgement, and one that asks for judgements on noise
+    is how a reviewer learns to rubber-stamp it — the failure mode the local-scan scoping
+    in ``discover_python`` is also written to avoid.
+
+    Only fragments containing an underscore can exhibit this, so the others are not
+    parametrised: for them the loose and strict spellings are the same string.
+    """
+    loose = f"PROBE{fragment.replace('_', '')}LOOSE"
+    assert not exemption_discovery._matches_name(loose), (
+        f"{loose} is matched by the Python route, so it is not a loose-match probe for "
+        f"{fragment!r} — pick a spelling the vocabulary genuinely misses."
+    )
+    found = _discover(
+        {
+            "Makefile": f"{loose} = a b\n",
+            "scripts/probe.sh": f"#!/bin/sh\n{loose.lower()}=1\n",
+            "scripts/probe.py": f"{loose} = {{'a'}}\n",
+        }
+    )
+    assert not found, (
+        f"{fragment!r} matches {loose} on at least one surface while the Python route "
+        f"rejects it, so the Make and shell patterns are broader than _matches_name: "
+        f"{sorted(found)}. Check that exemption_discovery._text_pattern still puts the "
+        "fragments in verbatim."
     )
 
 

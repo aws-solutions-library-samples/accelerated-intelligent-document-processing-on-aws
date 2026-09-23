@@ -95,7 +95,26 @@ RATCHETS = {
 #: which a scan produces no finding for fails the gate. That check lives in the scan
 #: because only the scanner can answer it, and its own residual is written out in that
 #: entry's `ratchetGap` rather than being absorbed here.
-MAX_UNRATCHETED = 58
+#:
+#: ⚠️ **The third direction, and the only one that moves this budget in bulk: widening
+#: DISCOVERY.** Adding a fragment to ``exemption_discovery.NAME_VOCABULARY`` does not add
+#: an exemption; it makes one that was already in the tree visible for the first time, and
+#: each newly visible surface arrives needing a judgement it has never had. So the budget
+#: rises, and nothing became less protected — the opposite. Reading such an increment as
+#: the thing this rule refuses would make the correct response "do not widen discovery",
+#: which is the defect the whole vocabulary exists for.
+#:
+#: The measurement for the increment that put this number here, because the argument alone
+#: is not enough: the ``NON_``/``OPEN_``/``PERMIT`` fragments discovered **14** surfaces,
+#: **12** of which have no ratchet in their owning gate today. Two already had one
+#: (``NON_SELECTABLE_DEFAULTS`` a staleness check, ``PERMITTED_DIFFERENCES`` an exact-value
+#: pin), and the most consequential of the twelve is
+#: ``scan_api_rbac.py::FUNCTION_URL_OPEN_ROUTES`` — an authorization carve-out whose
+#: registered sibling in the same file was discovered only because its name contains
+#: ``ALLOW``. Each of the twelve names what is unprotected in its own ``ratchetGap``; that
+#: is the state the tree was already in, now written down. What this budget still refuses
+#: is a NEW exemption arriving with `ratchet: none` and no such reason beside it.
+MAX_UNRATCHETED = 70
 
 #: Entries whose premise is computable but whose gate does not yet call the predicate.
 #: Same ratchet direction, same reason: this state must not become a comfortable place

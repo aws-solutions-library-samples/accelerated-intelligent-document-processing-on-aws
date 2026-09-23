@@ -373,12 +373,20 @@ what carries discovery; the prose route is a safety net over it, not an equivale
 Both are wording lists, so both have a reach, and it is written out in
 `exemption_discovery.py` rather than left to be inferred: the name vocabulary covers
 the words for what a gate *does* (`EXEMPT`, `EXCLU`, `ALLOW`, `SKIP`, `SUPPRESS`,
-`WAIV`, …) and the words for what the members *are* (`NOT_A`, `_ELSEWHERE`,
-`TOLERAT`, `BENIGN`, `FALSE_POSITIV`, `OPT_OUT`, …), and the prose list covers four
-families of phrasing, each named in the comment above it. A comment can still argue
-for an exclusion in words neither list holds — "read by a different consumer, so the
-gate does not flag it" is matched by nothing — which is why the name is the reliable
-route.
+`WAIV`, `OPEN_`, `PERMIT`, …) and the words for what the members *are* (`NOT_A`,
+`NON_`, `_ELSEWHERE`, `TOLERAT`, `BENIGN`, `FALSE_POSITIV`, `OPT_OUT`, …), and the
+prose list covers four families of phrasing, each named in the comment above it. A
+comment can still argue for an exclusion in words neither list holds — "read by a
+different consumer, so the gate does not flag it" is matched by nothing — which is why
+the name is the reliable route.
+
+The **three surfaces match the same names**: fragments go into the `Makefile` and shell
+patterns verbatim apart from case, so `KNOWN_` does not match `WELL_KNOWN` there while
+being rejected on the Python side. They used to be underscore-stripped first, which made
+those two surfaces quietly broader and turned `NON_` into a bare `non`. A false positive
+is not the harmless direction here: the remedy for a discovered surface is an authored
+judgement, and a registry that asks for judgements on noise is how a reviewer learns to
+rubber-stamp it.
 
 **A dead pattern in either vocabulary is a failure.** A fragment that matches nothing
 in the tree today is doing its job (it is there to recognise a constant not yet
@@ -387,12 +395,20 @@ fragment and every phrase demonstrably **works**.
 `scripts/tests/test_exemption_discovery.py` drives the real collector over a synthetic
 checkout per pattern — Python constant, `Makefile` variable and shell variable for each
 name fragment, an attached comment for each prose phrase — so a pattern that can never
-fire fails there. The ways one has been or could be inert are all covered: a
-mis-cased duplicate (names are compared uppercased, comments lowercased), a regex
-metacharacter that corrupts the alternation `TEXT_SOURCES` builds from the vocabulary,
-and a fragment eaten by the polarity guard that keeps `DISALLOWED` from reading as an
-allowlist. A hit is also asserted to be **attributable** to the fragment under test, a
-guard added after `"Exempt"` beside `"EXEMPT"` left every probe green.
+fire fails there. Three ways of being inert are covered on **both** surfaces: a
+mis-cased duplicate (names are compared uppercased, comments lowercased), a pattern
+shadowed by a shorter one that already matches everything it would, and a fragment
+eaten by the polarity guard that keeps `DISALLOWED` from reading as an allowlist; the
+regex metacharacter that would corrupt the alternation `TEXT_SOURCES` builds is a
+name-surface concern only, since prose matching is plain substring. All of those reach
+the probe through one assertion: a hit must be **attributable** to the pattern under
+test and to no other, which is what makes the first two visible at all — `"Exempt"`
+beside `"EXEMPT"`, and `"Exclusion"` beside `"exclusion"`, each left every probe green
+until the respective surface had that guard.
+
+What is **not** claimed is that a phrase the vocabulary does not hold will be caught.
+Both lists have a reach and a boundary, the prose one is written out where it is
+declared, and no test can read a sentence — the name is the reliable route.
 
 ### CI parity between GitHub and GitLab
 
