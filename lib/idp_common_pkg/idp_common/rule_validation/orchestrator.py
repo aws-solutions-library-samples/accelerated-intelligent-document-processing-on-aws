@@ -93,6 +93,25 @@ def _normalize_page_reference(page: Any) -> Optional[Tuple[str, Tuple[int, int, 
     return text, (_NON_NUMERIC_PAGE_RANK, 0, text)
 
 
+def is_section_results_key(key: str) -> bool:
+    """Is ``key`` one of the per-section rule-validation result objects?
+
+    One predicate rather than one per call site. The loader required both halves —
+    ``_responses.json`` **and** ``section_`` — while the section count checked only the
+    suffix, so a key the loader skipped was still counted: measured with two keys under
+    the right prefix where one lacked ``section_``, one object was read and the count
+    came back 2, taking the LLM summarization branch for a single-section document.
+    That is the same wrong-branch cost #1143 was about, arriving through a different
+    dropped key.
+
+    Not reachable from the pipeline, which always writes
+    ``section_<id>_responses.json``. It is reachable through ``section_uris``, which is
+    a documented parameter, and a count that disagrees with what was read is worth
+    removing rather than documenting.
+    """
+    return key.endswith("_responses.json") and "section_" in key
+
+
 class RuleValidationOrchestratorService:
     """Service containing existing summarization methods from service.py."""
 
@@ -580,24 +599,85 @@ class RuleValidationOrchestratorService:
 
         return response
 
+    @staticmethod
+    def _section_keys_from_uris(
+        section_uris: List[str], output_bucket: str
+    ) -> List[str]:
+        """Convert this run's section URIs to keys in ``output_bucket``.
+
+        A URI naming a DIFFERENT bucket is dropped with a warning rather than
+        stripped down to something that happens to parse. Blind prefix-stripping
+        would leave ``s3://other/key`` unchanged, and the loader would then read
+        ``s3://<output_bucket>/s3://other/key`` -- a miss that looks exactly like a
+        section this run never wrote, which is the failure mode this whole change is
+        about not having.
+        """
+        keys: List[str] = []
+        for uri in section_uris:
+            if not uri.startswith("s3://"):
+                # Already a key.
+                keys.append(uri)
+                continue
+            bucket, _, key = uri[len("s3://") :].partition("/")
+            if bucket != output_bucket or not key:
+                logger.warning(
+                    "Skipping section result %s: it does not name a key in the "
+                    "document's output bucket %s",
+                    uri,
+                    output_bucket,
+                )
+                continue
+            keys.append(key)
+        return keys
+
     def load_section_results(
-        self, document_input_key: str, output_bucket: str
+        self,
+        document_input_key: str,
+        output_bucket: str,
+        section_uris: Optional[List[str]] = None,
     ) -> tuple[Dict[str, Any], bool]:
         """
-        Load all section results from S3.
+        Load this run's section results from S3.
         Returns: (all_responses, chunking_occurred)
+
+        ``section_uris`` are the objects THIS run wrote, as reported by the
+        per-section Map. Pass them. Globbing the prefix instead reads whatever is
+        there, and on a reprocessed document that includes the previous run's
+        verdicts for the same document — plausible enough to be consolidated and
+        acted on, so a rule whose verdict changed from ``Fail`` to ``Pass`` between
+        runs can be reported as ``Fail`` (#1143).
+
+        The glob survives for callers that genuinely have no list — a notebook, a
+        manual re-consolidation of an existing prefix — so the distinction is
+        ``None`` (no list available, read the prefix) versus ``[]`` (this run wrote
+        nothing, so there is nothing to consolidate). Those two must not collapse:
+        treating an empty list as "fall back to the prefix" would read the previous
+        run's objects in a case where this run produced none of its own, which is the
+        defect at its worst rather than an edge of it.
+
+        The reachable shape of that case is a **Map over zero sections**. It is not a
+        run whose sections all failed: ``ProcessRuleValidationSections`` carries no
+        ``Catch`` and no tolerated-failure setting, and neither does
+        ``RuleValidationStep`` inside it, so one failed iteration fails the Map and
+        ``RuleValidationOrchestration`` never runs at all.
         """
         try:
-            # List all section result files in sections subfolder
-            prefix = f"{document_input_key}/rule_validation/sections/"
-            pattern = f"{prefix}section_*_responses.json"
-            section_files = s3.find_matching_files(output_bucket, pattern)
+            if section_uris is None:
+                # No caller-supplied list: read the prefix. See the note above for
+                # what this cannot distinguish.
+                prefix = f"{document_input_key}/rule_validation/sections/"
+                pattern = f"{prefix}section_*_responses.json"
+                section_files = s3.find_matching_files(output_bucket, pattern)
+            else:
+                section_files = self._section_keys_from_uris(
+                    section_uris, output_bucket
+                )
 
             all_responses = {}
             chunking_occurred = False
 
             for file_key in section_files:
-                if file_key.endswith("_responses.json") and "section_" in file_key:
+                if is_section_results_key(file_key):
                     logger.debug(f"Loading section results from: {file_key}")
 
                     # Load section responses
@@ -1542,14 +1622,29 @@ tr:hover {
         document: Document,
         config: Dict[str, Any],
         multiple_sections: bool = None,
+        section_uris: Optional[List[str]] = None,
     ) -> Document:
         """
         Complete consolidation workflow: load, merge, summarize, and save all results.
+
+        ``section_uris`` is this run's section output list; see
+        :meth:`load_section_results` for why passing it matters.
         """
         try:
+            # Resolved ONCE, here, and used for both the load and the section count.
+            # `_section_keys_from_uris` logs a warning per URI it drops, so calling it
+            # twice reported the same bad URI twice and read as two bad objects.
+            # `load_section_results` passes a bare key through unchanged, so handing
+            # it keys rather than URIs is idempotent.
+            section_keys = (
+                None
+                if section_uris is None
+                else self._section_keys_from_uris(section_uris, document.output_bucket)
+            )
+
             # Load all section results and check if chunking occurred
             all_responses, chunking_occurred = self.load_section_results(
-                document.input_key, document.output_bucket
+                document.input_key, document.output_bucket, section_keys
             )
 
             if not all_responses:
@@ -1564,13 +1659,30 @@ tr:hover {
                 all_responses, config
             )
 
-            # Determine if summarization is needed: multiple sections OR chunking occurred
-            prefix = f"{document.input_key}/rule_validation/sections/"
-            pattern = f"{prefix}section_*_responses.json"
-            section_files = s3.find_matching_files(document.output_bucket, pattern)
-            num_sections = len(
-                [f for f in section_files if f.endswith("_responses.json")]
-            )
+            # Determine if summarization is needed: multiple sections OR chunking
+            # occurred. This counts THIS run's sections; the prefix is only listed
+            # when the caller supplied no list, for the same reason as in
+            # `load_section_results` -- a stale object left by a previous run would
+            # otherwise push the count past 1 and route a single-section document
+            # through LLM summarization, which is a cost and latency difference on
+            # top of the wrong verdicts (#1143).
+            if section_keys is None:
+                prefix = f"{document.input_key}/rule_validation/sections/"
+                pattern = f"{prefix}section_*_responses.json"
+                section_files = s3.find_matching_files(document.output_bucket, pattern)
+                num_sections = len(
+                    [f for f in section_files if is_section_results_key(f)]
+                )
+            else:
+                # Counted from the keys the loader actually READ, not from the raw
+                # list. A URI naming another bucket is dropped, so counting the raw
+                # list reads one object and reports two — which takes the LLM
+                # summarization branch for a single-section document. That is the same
+                # defect this change exists to remove, reintroduced on the defensive
+                # path.
+                num_sections = len(
+                    [key for key in section_keys if is_section_results_key(key)]
+                )
 
             needs_summarization = (num_sections > 1) or chunking_occurred
 
@@ -1711,10 +1823,13 @@ tr:hover {
         document: Document,
         config: Dict[str, Any],
         multiple_sections: bool = None,
+        section_uris: Optional[List[str]] = None,
     ) -> Document:
         """
         Synchronous wrapper for consolidate_and_save_all.
         Handles both regular Python scripts and Jupyter notebook environments.
+
+        ``section_uris`` is forwarded unchanged; see :meth:`load_section_results`.
         """
         import asyncio
         import concurrent.futures
@@ -1731,6 +1846,7 @@ tr:hover {
                             document,
                             config,
                             multiple_sections,
+                            section_uris,
                         ),
                     )
                     return future.result()
@@ -1741,6 +1857,7 @@ tr:hover {
                         document,
                         config,
                         multiple_sections,
+                        section_uris,
                     )
                 )
         except RuntimeError:
@@ -1753,6 +1870,7 @@ tr:hover {
                         document,
                         config,
                         multiple_sections,
+                        section_uris,
                     )
                 )
             finally:
