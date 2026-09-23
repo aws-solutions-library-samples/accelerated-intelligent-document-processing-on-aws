@@ -203,6 +203,153 @@ class TestAssertResolvesIn:
         fpp.assert_resolves_in("idp_common", loose / "tests" / "conftest.py")
 
 
+class TestRepair:
+    """The guard prefers this checkout's own copy before it refuses anything.
+
+    A check that can only refuse trains people to work around it, and the fix is
+    mechanical, so it is applied here instead of being described. The two cases that
+    stay refusals are the two that cannot be repaired without making things worse, and
+    both are asserted — a repair path that quietly swallowed them would turn a refusal
+    into a pass, which is the one outcome this file exists to prevent.
+    """
+
+    def _checkout_with_packages(self, root: Path, *names: str) -> Path:
+        """A fake checkout holding real importable packages under ``lib/``."""
+        _fake_checkout(root)
+        for name in names:
+            package_root = root / "lib" / f"{name}_pkg"
+            (package_root / name).mkdir(parents=True)
+            (package_root / "pyproject.toml").write_text(
+                f'[project]\nname = "{name}"\n', encoding="utf-8"
+            )
+            (package_root / name / "__init__.py").write_text(
+                f'ORIGIN = "{root.name}"\n', encoding="utf-8"
+            )
+        return root
+
+    def test_the_roots_are_derived_from_lib_pyproject(self, tmp_path):
+        root = self._checkout_with_packages(tmp_path / "repo", "alpha", "beta")
+        (root / "lib" / "not_a_package").mkdir()
+        assert fpp.first_party_roots(root) == [
+            root / "lib" / "alpha_pkg",
+            root / "lib" / "beta_pkg",
+        ]
+
+    def test_pin_checkout_is_idempotent(self, tmp_path, monkeypatch):
+        root = self._checkout_with_packages(tmp_path / "repo", "alpha")
+        monkeypatch.setattr(sys, "path", list(sys.path))
+        assert fpp.pin_checkout(root) == [str(root / "lib" / "alpha_pkg")]
+        assert fpp.pin_checkout(root) == []
+
+    def test_a_foreign_import_is_repaired_rather_than_refused(
+        self, tmp_path, monkeypatch
+    ):
+        """The end-to-end case: a real import, really redirected, really repaired."""
+        mine = self._checkout_with_packages(tmp_path / "mine", "pretendcommon")
+        theirs = self._checkout_with_packages(tmp_path / "theirs", "pretendcommon")
+        monkeypatch.setattr(sys, "path", [str(theirs / "lib" / "pretendcommon_pkg")])
+        monkeypatch.delitem(sys.modules, "pretendcommon", raising=False)
+
+        with pytest.warns(UserWarning, match="repaired"):
+            fpp.assert_resolves_in("pretendcommon", mine / "tests" / "conftest.py")
+
+        import pretendcommon  # noqa: PLC0415 - the import under test
+
+        assert pretendcommon.ORIGIN == "mine"
+
+    def test_a_correct_run_is_not_reported_as_repaired(self, tmp_path, monkeypatch):
+        """Paired with the case above: the notice must mean something when it appears."""
+        mine = self._checkout_with_packages(tmp_path / "mine", "alreadyright")
+        monkeypatch.setattr(sys, "path", [str(mine / "lib" / "alreadyright_pkg")])
+        monkeypatch.delitem(sys.modules, "alreadyright", raising=False)
+
+        import warnings as warnings_module
+
+        with warnings_module.catch_warnings():
+            warnings_module.simplefilter("error")
+            fpp.assert_resolves_in("alreadyright", mine / "tests" / "conftest.py")
+
+    def test_an_already_imported_foreign_module_is_still_refused(
+        self, tmp_path, monkeypatch
+    ):
+        """Repair stops where un-importing would start, and says so.
+
+        Deleting a package from ``sys.modules`` and importing it again leaves two live
+        copies of it wherever another module already holds a reference, which fails in
+        ways much harder to read than this refusal.
+        """
+        mine = self._checkout_with_packages(tmp_path / "mine", "occupied")
+        theirs = self._checkout_with_packages(tmp_path / "theirs", "occupied")
+        monkeypatch.setattr(sys, "path", [str(theirs / "lib" / "occupied_pkg")])
+        monkeypatch.delitem(sys.modules, "occupied", raising=False)
+        import occupied  # noqa: PLC0415 - imported deliberately, from `theirs`
+
+        assert occupied.ORIGIN == "theirs"
+
+        with pytest.raises(fpp.ForeignCheckoutError) as excinfo:
+            fpp.assert_resolves_in("occupied", mine / "tests" / "conftest.py")
+        assert "already imported" in str(excinfo.value)
+        monkeypatch.delitem(sys.modules, "occupied", raising=False)
+
+    def test_a_package_this_checkout_does_not_have_is_refused(
+        self, tmp_path, pin_import
+    ):
+        """Nothing local to prefer, so there is nothing to repair with."""
+        root = _fake_checkout(tmp_path / "repo")
+        foreign = _fake_checkout(tmp_path / "other")
+        pin_import(foreign / "lib" / "idp_common_pkg" / "idp_common" / "__init__.py")
+        with pytest.raises(fpp.ForeignCheckoutError):
+            fpp.assert_resolves_in("idp_common", root / "tests" / "conftest.py")
+
+
+class TestTheRefusalCannotReadAsAPass:
+    """What the message has to say, because the danger is being misread as a result.
+
+    A collection error at the end of a long log reads as "some tests failed" far more
+    readily than as "no test ran", and the remedy it prints has to be one that works on
+    the first try: a pin naming one package root is refused again by the next package.
+    """
+
+    def _refusal(self, tmp_path, pin_import) -> str:
+        root = _fake_checkout(tmp_path / "repo")
+        (root / "lib" / "idp_common_pkg").mkdir(parents=True)
+        (root / "lib" / "idp_common_pkg" / "pyproject.toml").write_text("", "utf-8")
+        (root / "lib" / "idp_sdk").mkdir(parents=True)
+        (root / "lib" / "idp_sdk" / "pyproject.toml").write_text("", "utf-8")
+        foreign = _fake_checkout(tmp_path / "other")
+        pin_import(foreign / "lib" / "idp_sdk" / "idp_sdk" / "__init__.py")
+        with pytest.raises(fpp.ForeignCheckoutError) as excinfo:
+            fpp.assert_resolves_in("idp_sdk", root / "tests" / "conftest.py")
+        return str(excinfo.value)
+
+    def test_it_says_it_did_not_run(self, tmp_path, pin_import):
+        message = self._refusal(tmp_path, pin_import)
+        assert message.startswith("REFUSED:")
+        assert "did not run" in message
+
+    def test_the_remedy_names_every_root(self, tmp_path, pin_import):
+        """Every root, or the remedy fails on the next package and reads as a new fault."""
+        message = self._refusal(tmp_path, pin_import)
+        pin_line = next(
+            line
+            for line in message.splitlines()
+            if line.strip().startswith("PYTHONPATH=")
+        )
+        assert "idp_common_pkg" in pin_line
+        assert "idp_sdk" in pin_line
+
+    def test_the_remedy_is_absolute(self, tmp_path, pin_import):
+        """A relative pin is dropped by any subprocess that changes directory."""
+        message = self._refusal(tmp_path, pin_import)
+        pin_line = next(
+            line
+            for line in message.splitlines()
+            if line.strip().startswith("PYTHONPATH=")
+        )
+        value = pin_line.strip()[len("PYTHONPATH=") :].split()[0]
+        assert all(Path(entry).is_absolute() for entry in value.split(":"))
+
+
 class TestGuardIsWiredIn:
     """The helper existing is not the same as it being called.
 

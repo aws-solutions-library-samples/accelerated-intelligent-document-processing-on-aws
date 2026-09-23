@@ -187,9 +187,15 @@ You can check any environment at any time:
 python3 scripts/check_first_party_deps.py
 ```
 
-Exit code 0 means every installed first-party package came from source. This
-runs in both CI systems and inside `make setup`. The full explanation is in
-[docs/dependency-confusion.md](docs/dependency-confusion.md).
+Exit code 0 means every installed first-party package came from source **and, for an
+editable install, from this checkout** — two different questions, and the second is
+the one that decides what your next `import` reads. On a machine where several
+checkouts are worked on at once and `python3` resolves to a shared interpreter, any
+`pip install -e` repoints that pointer for all of them, so the check names both trees
+when they disagree. This runs in both CI systems and inside `make setup`. The full
+explanation is in [docs/dependency-confusion.md](docs/dependency-confusion.md), and
+what it means for a test run is in
+[docs/testing.md](docs/testing.md#a-run-can-measure-the-wrong-checkout-and-the-make-targets-pin-against-it).
 
 ### Modular extras, and why Lambda package size matters
 
@@ -553,6 +559,18 @@ and failure routing that no Python test can see. It is registered only in
 but neither CI configuration file names it; whether a CI job reaches it depends
 on which `make` target that job calls, and `make -n test-packages-cicd` will tell
 you. If you edit the state machine definition, run that root.
+
+**Run the suites through `make`, and a run measures the checkout you started it
+from.** Every pytest invocation in both Makefiles goes through one wrapper that
+exports an absolute `PYTHONPATH` naming this checkout's `lib/*` package roots, so an
+editable install pointing at another tree cannot decide what the gate reads. Running
+`pytest` by hand you have to supply that pin yourself — every root, not just
+`lib/idp_common_pkg`, because the packages import each other — and a guard wired into
+several conftests will put the roots on `sys.path` for you and say so, or refuse the
+run when it cannot.
+[docs/testing.md](docs/testing.md#a-run-can-measure-the-wrong-checkout-and-the-make-targets-pin-against-it)
+has the detail; the short version is that a refusal from that guard means the run
+**did not happen**, rather than that something failed.
 
 The project's intent is that there is **no standing failure set**, so treat a
 failure as a real regression until you have shown otherwise. Two things to check

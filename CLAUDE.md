@@ -504,6 +504,35 @@ pytest -m "unit"
 pytest -m "integration"
 ```
 
+#### A run measures the checkout you started it from — through `make`
+
+`import idp_common` follows the editable-install pointer in the interpreter's
+`site-packages`, not the checkout a suite lives in, and on a machine where `python3`
+resolves to a shared interpreter every `pip install -e` anywhere on the host rewrites
+that pointer for everyone. One of this repo's own gates is such a writer
+(`lib/idp_common_pkg`'s `test-unit-cicd` reinstalls unless `SKIP_INSTALL=1`). The
+resulting run is **green and about another tree**, which is why it cost several
+sessions a day each ([#1094](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/1094)).
+
+`PYTEST_HERMETIC` in `make/hermetic_aws.mk` — the wrapper every pytest invocation in
+both Makefiles goes through — now exports an absolute `PYTHONPATH` naming every
+`lib/*` package root of the checkout that makefile belongs to, and
+`scripts/run_all_tests.py` passes the same value to every subprocess `make test`
+starts. The set is derived from `lib/*/pyproject.toml`, so a new package under `lib/`
+is covered without being listed; `FIRST_PARTY_PYTHONPATH=` suppresses the pin for the
+deliberate case of testing an installed copy.
+
+⚠️ **Running `pytest` directly, pin it yourself: every root, and absolute.** The
+packages import each other, so `PYTHONPATH=lib/idp_common_pkg` alone is refused by the
+next one, and a relative pin is lost by any subprocess that changes directory. The
+guard in `scripts/tests/first_party_provenance.py` will prepend this checkout's roots
+and tell you it did; when it cannot (the package was already imported, or this tree has
+no copy) it refuses, and **its refusal means the run did not happen** — it opens with
+`REFUSED:` for that reason. `scripts/check_first_party_deps.py` answers the
+environment-level question, "from source *and from which tree*", and fails on an
+editable pointer into another checkout. `IDP_ALLOW_FOREIGN_FIRST_PARTY=1` downgrades
+both to a note.
+
 ### Security Scanning
 
 The project includes automated security scanning with the [Sample Security Review Tool (SRT)](https://github.com/aws-samples/sample-security-review-tool):
