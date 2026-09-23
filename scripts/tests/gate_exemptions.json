@@ -1141,12 +1141,18 @@
       "premise": [
         "JUDGEMENT"
       ],
-      "ratchet": "none",
-      "reason": "SRT findings suppressed with a justification through `make srt-fix`. Two properties of the register are checked, in scripts/srt/tests/test_ci_paths.py: every entry's path is git-tracked, and every suppressed entry carries a suppressionReason. Neither is a staleness check, which is what this label used to claim — nothing asks whether an entry still shields a finding, and measured today most do not: a scan consults 52 of the 111 entries, and of the Bandit entries whose issue text quotes the matched literal, 24 name a line that no longer contains it. Each of those is a line-pinned suppression over whatever finding next lands at that path and line.",
-      "ratchetGap": "No non-vacuity or staleness check on an individual entry. An entry whose finding was fixed in the source, or whose line moved, keeps its suppression indefinitely and pre-suppresses whatever next occupies that (path, line, check_id). The check cannot be offline: matching is SRT's, so the only place that knows which entries were consulted is the scan itself, and 59 entries are dead today, so a scan-time assertion would red-line until the register is swept.",
+      "ratchet": "non-vacuity",
+      "reason": "SRT findings suppressed with a justification through `make srt-fix`. Three properties of the register are now checked. Two are offline, in scripts/srt/tests/test_ci_paths.py: every entry's path is git-tracked, and every suppressed entry carries a suppressionReason. The third is non-vacuity, in scripts/srt/run.py: a suppressed entry whose source is measured and which this scan produced no finding for fails the gate, because the suppression key is (path, resourceType, resourceName, check_id) and carries no line -- a dead entry pre-suppresses every future finding of that check in that file. It runs in the scan rather than offline because only the scanner can answer whether it still reports a finding: bandit is not a dependency of this repository (the SRT installer puts it in .srt/.venv), so an offline test would skip in CI, and re-implementing the detection is worse -- asking whether the pinned line still contains the literal the entry quotes reported 25 of the 52 dead entries as live, because the line is still there and an inline `# nosec` is what silenced it.",
+      "ratchetGap": "The non-vacuity check measures only the sources in register.WHOLE_REPO_SUMMARIES -- Bandit -- and the register holds no Bandit suppression today, so it is a forward ratchet over that source rather than a check with live members. The three other sources are excused per source in register.NON_VACUITY_EXEMPT_SOURCES with the mechanism that makes an absent finding uninformative for each, and the two sets are asserted offline to cover every source in the register, so the gap is enumerable rather than open-ended. Four suppressed entries outside the measured source look vacuous by a weaker signal (SRT increments assessmentCount only on re-detection, and theirs did not move across a full scan): one Semgrep, one Checkov and two security-matrix. They are kept, because that signal is an inference about SRT's internal bookkeeping and this check's remedy is deletion.",
       "memberKind": "finding id",
       "crossReferences": [
-        "scripts/srt/ci_paths.py::NAME_HEURISTIC_EXEMPT"
+        "scripts/srt/ci_paths.py::NAME_HEURISTIC_EXEMPT",
+        "scripts/srt/register.py::NON_VACUITY_EXEMPT_SOURCES"
+      ],
+      "ratchetEvidence": [
+        "scripts/srt/run.py",
+        "scripts/srt/register.py",
+        "scripts/srt/tests/test_register.py"
       ]
     },
     "scripts/tests/exemption_discovery.py::EXEMPTION_PROSE": {
@@ -2343,6 +2349,35 @@
       "reason": "Whether a condition being false is an operator's deliberate choice or an accident is a fact about what the deployer was asked for, not about the tree: ShouldSubscribeAdminToAlerts is true on a default deployment and false only when AdminEmail is empty or is the CI sentinel address that can never confirm a subscription, which is an opt-out. Nothing here computes intent. What the owning gate does require is that the condition's own definition be pinned by a separate test in the same file, so the exemption cannot be satisfied by a condition whose meaning is free to change: test_admin_email_is_subscribed_to_alerts pins this one. Discovered by the OPT_OUT fragment added to exemption_discovery.NAME_VOCABULARY for issue #1163 -- before that widening this surface was matched by neither the name vocabulary nor the prose fallback.",
       "memberKind": "CloudFormation condition name",
       "ratchetEvidence": "scripts/tests/test_alerts_topic_subscription.py"
+    },
+    "scripts/srt/register.py::NON_VACUITY_EXEMPT_SOURCES": {
+      "kind": "exemption",
+      "turnsOff": "the scan-time non-vacuity check on scripts/srt/issues.json, for suppressions whose `source` is one of three named scanners",
+      "premise": [
+        "JUDGEMENT"
+      ],
+      "ratchet": "universe-closure",
+      "reason": "Each member names a mechanism by which that scanner's finding set moves without the tree moving, which is what makes an absent finding uninformative rather than evidence: security-matrix and Checkov evaluate per template into a scan directory with no whole-repo summary, so a template whose scan did not complete is indistinguishable from a clean one (scanner_health.failed_checkov_scans exists because that happens on the largest templates here), and Checkov additionally reads what is on disk, where `sam package` has dropped the skip comments the source templates carry; Semgrep takes its rules from a remote registry, so a withdrawn rule or a failed fetch removes findings with no change to this repository. Whether a given scanner's silence is evidence is a property of how that scanner works and is not computable from this tree. The direction of the risk decides the shape: this check's remedy is DELETION, so reading absence as evidence where it is not would delete a live suppression on a bad day -- worse than not checking.",
+      "memberKind": "SRT finding source name",
+      "ratchetEvidence": "scripts/srt/tests/test_register.py",
+      "crossReferences": [
+        "scripts/srt/issues.json::issues.json",
+        "scripts/srt/register.py::WHOLE_REPO_SUMMARIES"
+      ]
+    },
+    "scripts/srt/register.py::WHOLE_REPO_SUMMARIES": {
+      "kind": "enforced-universe",
+      "turnsOff": "nothing -- this is the ENFORCED half of the source split: a source listed here is measured for non-vacuity on every scan",
+      "premise": [
+        "JUDGEMENT"
+      ],
+      "ratchet": "universe-closure",
+      "reason": "Registered because it is the positive half of a two-set closure and reading only the exclusion list would leave the split's completeness unexamined -- the same asymmetry that let an exemption list be audited while the universe it subtracted from was not. Membership turns on whether a scan's silence about a source means the finding is gone: Bandit runs locally over every file with rules compiled into the package, so its finding set is a function of the tree alone. test_every_source_in_the_register_is_measured_or_has_a_reason asserts the two sets cover every source among the register's suppressed entries and that they do not overlap.",
+      "memberKind": "SRT finding source name",
+      "ratchetEvidence": "scripts/srt/tests/test_register.py",
+      "crossReferences": [
+        "scripts/srt/register.py::NON_VACUITY_EXEMPT_SOURCES"
+      ]
     }
   }
 }

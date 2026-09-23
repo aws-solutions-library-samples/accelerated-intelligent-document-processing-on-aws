@@ -80,22 +80,22 @@ RATCHETS = {
 #: go stale in the one comment that explains the incentive the whole mechanism rests on.
 #: State the rule, let the assignment below carry the number.
 #:
-#: ⚠️ One of the two directions this budget can move in is **correcting a label**, and it
-#: is worth separating from the one the rule is aimed at. The number went up by one when
-#: `scripts/srt/issues.json` stopped claiming a staleness ratchet it did not have: the two
-#: checks on that register assert tracked paths and a written reason, and neither asks
-#: whether an entry still shields a finding. No exemption was added and nothing became
-#: less protected — an entry that read as ratcheted now reads as the gap it always was,
-#: which is the move this mechanism is supposed to make attractive. Raising the budget to
-#: absorb a NEW exemption is the thing it exists to refuse.
+#: ⚠️ The budget can also move for a reason the rule is **not** aimed at: **correcting a
+#: label**. An entry claiming a ratchet nothing implements reads as protection that is not
+#: there, which is worse than a declared gap, so relabelling it `none` is a move this
+#: mechanism is supposed to make attractive even though it raises the number — no
+#: exemption is added and nothing becomes less protected. Raising the budget to absorb a
+#: NEW exemption is the thing it exists to refuse. An increment of this kind has to carry
+#: its own measurement at the pin: what the entry does not check, and evidence that the
+#: gap is one the tree exhibits now rather than a theoretical one.
 #:
-#: The measurement that justifies that one increment, because the next person will want it
-#: rather than the argument: a scan consults **52 of the register's 111 entries**, and of
-#: the **49** Bandit entries whose `issue` text quotes the literal it matched, **24** name
-#: a line that no longer contains that literal. So the gap being declared is one the tree
-#: exhibits now, not a theoretical one — each of those 24 is a line-pinned suppression
-#: over whatever finding next lands at that path and line.
-MAX_UNRATCHETED = 59
+#: The number comes down when a gap is closed, and `scripts/srt/issues.json` is the worked
+#: example in both directions. It was relabelled from a staleness ratchet it did not have
+#: to `none`, and it is now `non-vacuity`: a suppressed entry whose source is measured and
+#: which a scan produces no finding for fails the gate. That check lives in the scan
+#: because only the scanner can answer it, and its own residual is written out in that
+#: entry's `ratchetGap` rather than being absorbed here.
+MAX_UNRATCHETED = 58
 
 #: Entries whose premise is computable but whose gate does not yet call the predicate.
 #: Same ratchet direction, same reason: this state must not become a comfortable place

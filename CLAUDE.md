@@ -352,8 +352,11 @@ So:
   is not there, which is worse than a declared gap and is the defect this registry
   exists to prevent. The increment then has to carry its own evidence at the pin,
   naming what the entry does *not* check and the measurement showing the gap is one
-  the tree exhibits now; `scripts/srt/issues.json` is the worked example. What is
-  refused is the increment with no such reason beside it.
+  the tree exhibits now. What is refused is the increment with no such reason beside
+  it. `scripts/srt/issues.json` is the worked example in both directions: relabelled
+  to `none` when it turned out to claim a staleness ratchet nothing implemented, and
+  back to `non-vacuity` once the scan gained the check, with its remaining residual
+  written out in that entry's `ratchetGap` rather than absorbed into this budget.
 
 Membership is **derived** and only the judgement is authored:
 `scripts/tests/exemption_discovery.py` finds exemption surfaces by constant name
@@ -585,6 +588,20 @@ make srt-fix       # Interactive fix mode
 - Does not run on feature branch pushes to avoid blocking development
 - Pipeline fails if high-priority security findings are detected
 - Provides security gate before code is merged to `develop`
+- **It also fails on a suppression that shields nothing.** `scripts/srt/issues.json`
+  is the committed disposition register, and a suppression key is `(path,
+  resourceType, resourceName, check_id)` with **no line** — so an entry whose finding
+  has since been fixed does not go inert, it pre-suppresses every future finding of
+  that check in that file. The scan now reports any suppressed entry it produced no
+  finding for and fails in CI. **Fixing a finding in source therefore has a second
+  half: delete its register entry.** Every one of the 52 Bandit suppressions the
+  register used to carry was in that state, each site having been fixed with an inline
+  `# nosec`; they are gone. The check covers the sources in
+  `register.WHOLE_REPO_SUMMARIES` — Bandit, whose finding set is a function of the tree
+  alone — and the three per-template or remote-ruleset sources are excused per source
+  in `register.NON_VACUITY_EXEMPT_SOURCES`, because for those an absent finding can
+  mean the scanner failed rather than that the finding is gone, and this check's remedy
+  is deletion. The two sets are asserted offline to cover every source in the register
 
 **SRT does NOT cover dependency CVEs.** Its `syft` stage builds an SBOM
 (inventory only, no vulnerability matching), so a separate gate handles SCA:
