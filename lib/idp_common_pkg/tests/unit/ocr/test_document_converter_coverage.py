@@ -922,7 +922,7 @@ class TestWordPageGeometry:
             "</w:sectPr></w:body>"
         )
 
-        geometry = DocumentConverter._extract_page_geometry(body, qn("w:sectPr"), qn)
+        geometry = _converter(150)._extract_page_geometry(body, qn("w:sectPr"), qn)
 
         assert geometry["usable_height_px"] == int((11906 - 1440) / 1440 * 150)
         assert geometry["usable_width_px"] == int((16838 - 1440) / 1440 * 150)
@@ -931,7 +931,7 @@ class TestWordPageGeometry:
 
     def test_a_body_without_sectpr_falls_back_to_us_letter(self):
         body = parse_xml(f"<w:body {nsdecls('w')}/>")
-        geometry = DocumentConverter._extract_page_geometry(body, qn("w:sectPr"), qn)
+        geometry = _converter(150)._extract_page_geometry(body, qn("w:sectPr"), qn)
         assert geometry == {"usable_height_px": 1350, "usable_width_px": 975}
 
     def test_a_sectpr_missing_its_attributes_falls_back_to_us_letter(self):
@@ -940,20 +940,21 @@ class TestWordPageGeometry:
         body = parse_xml(
             f"<w:body {nsdecls('w')}><w:sectPr><w:pgSz/><w:pgMar/></w:sectPr></w:body>"
         )
-        geometry = DocumentConverter._extract_page_geometry(body, qn("w:sectPr"), qn)
+        geometry = _converter(150)._extract_page_geometry(body, qn("w:sectPr"), qn)
         assert geometry == {"usable_height_px": 1350, "usable_width_px": 975}
 
-    def test_the_layout_budget_ignores_the_converters_dpi(self):
-        """Pins current behaviour, and it is a defect.
+    def test_the_layout_budget_scales_with_the_converters_dpi(self):
+        """The budget must track the canvas it will be drawn on (#1156).
 
-        `_extract_page_geometry` converts twips at a hardcoded 150 dpi while the
+        `_extract_page_geometry` converted twips at a hardcoded 150 dpi while the
         canvas `_render_word_page` draws on is sized from `self.dpi`. Every real
-        .docx has a `<w:sectPr>`, so this path — not the dpi-aware
-        `_default_page_geometry` — is what paginates Word documents, and
-        `OcrService` builds the converter at 300 dpi by default. Below 150 dpi the
-        budget exceeds the canvas and the overflow is drawn off the bottom edge;
-        above it the budget is smaller than the canvas and pages come back part
-        empty and too numerous."""
+        `.docx` has a `<w:sectPr>`, so this path — not the dpi-aware
+        `_default_page_geometry` — is what paginates Word documents, and `OcrService`
+        builds the converter at 300 dpi by default. So at the production default the
+        budget filled 45% of the canvas and a document became roughly 2.2x the pages
+        it has, each separately uploaded, OCR'd, classified and billed; below 150 it
+        inverted and the overflow was drawn off the bottom edge.
+        """
         body = parse_xml(
             f"<w:body {nsdecls('w')}>"
             '<w:sectPr><w:pgSz w:w="12240" w:h="15840"/>'
@@ -962,21 +963,52 @@ class TestWordPageGeometry:
         )
 
         budgets = {
-            dpi: DocumentConverter._extract_page_geometry(body, qn("w:sectPr"), qn)
+            dpi: _converter(dpi)._extract_page_geometry(body, qn("w:sectPr"), qn)
             for dpi in (72, 150, 300)
         }
-        assert {g["usable_height_px"] for g in budgets.values()} == {1350}
+        # 9 usable inches (11 less two 1-inch margins) at each dpi.
+        assert budgets[72]["usable_height_px"] == 648
+        assert budgets[150]["usable_height_px"] == 1350
+        assert budgets[300]["usable_height_px"] == 2700
 
-        # The dpi-aware helper, by contrast, tracks the canvas it draws on.
-        assert _converter(72)._default_page_geometry()["usable_height_px"] == 720
-        assert _converter(300)._default_page_geometry()["usable_height_px"] == 3000
+    def test_the_budget_stays_within_the_canvas_at_every_dpi(self):
+        """The property that actually matters, expressed as a ratio rather than as
+        three numbers: the budget must never exceed the drawable canvas, or the
+        overflow is drawn off the edge, and it must not be a small fraction of it, or
+        pages break early and multiply.
 
-    def test_text_survives_even_when_the_rendered_page_overflows_its_canvas(self):
-        """The consequence of the budget mismatch above, stated as the thing that
-        is still true: at 72 dpi a page is packed past the canvas and the excess is
-        clipped out of the image, but none of it is missing from the page text.
-        Downstream text extraction is therefore intact; only what a model sees in
-        the image is not."""
+        The ratio is about 0.90 rather than 1.00, and that is deliberate: the budget
+        uses the **document's own** margins from `<w:pgMar>` (1 inch here) while the
+        canvas uses the converter's 0.5 inch margin. Keeping the document's margins is
+        what makes the page count match how the document paginates in Word, and the
+        spare canvas is whitespace rather than lost content.
+        """
+        body = parse_xml(
+            f"<w:body {nsdecls('w')}>"
+            '<w:sectPr><w:pgSz w:w="12240" w:h="15840"/>'
+            '<w:pgMar w:top="1440" w:bottom="1440" w:left="1440" w:right="1440"/>'
+            "</w:sectPr></w:body>"
+        )
+
+        for dpi in (72, 150, 300, 600):
+            converter = _converter(dpi)
+            budget = converter._extract_page_geometry(body, qn("w:sectPr"), qn)
+            canvas_h = converter.page_height - 2 * converter.margin
+            ratio = budget["usable_height_px"] / canvas_h
+            assert 0.85 <= ratio <= 1.0, (
+                f"at {dpi} dpi the budget is {ratio:.2f} of the canvas; above 1.0 the "
+                "page is drawn off its bottom edge and well below 1.0 it breaks early "
+                "and multiplies the page count"
+            )
+
+    def test_a_low_dpi_page_is_no_longer_drawn_past_its_bottom_margin(self):
+        """The rendered consequence, asserted on the IMAGE rather than the text.
+
+        At 72 dpi the budget used to exceed the canvas, so a page carried more lines
+        than it could render and the excess was clipped out of the page image while
+        remaining in the page text. A text assertion cannot fail for that, which is
+        why this measures the ink bounding box.
+        """
         converter = _converter(72)
         lines = [f"LINE{i:03d} body text for this paragraph" for i in range(80)]
 
@@ -985,15 +1017,18 @@ class TestWordPageGeometry:
                 document.add_paragraph(line)
 
         pages = converter.convert_word_to_pages(_docx_bytes(build))
+
+        # Text is still complete -- that was never the defect.
         text = "\n".join(t for _, t in pages)
         for line in lines:
             assert line in text, f"{line!r} lost from the page text"
 
-        first = _open(pages[0][0])
-        bbox = _ink_bbox(first)
+        bbox = _ink_bbox(_open(pages[0][0]))
         assert bbox is not None
-        assert bbox[3] >= converter.page_height - converter.margin, (
-            "expected the first page to be drawn past its bottom margin"
+        assert bbox[3] < converter.page_height - converter.margin, (
+            f"ink reaches y={bbox[3]} on a page whose bottom margin starts at "
+            f"{converter.page_height - converter.margin}, so content is being drawn "
+            "off the rendered page"
         )
 
 

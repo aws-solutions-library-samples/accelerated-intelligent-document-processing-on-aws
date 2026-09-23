@@ -524,15 +524,33 @@ class DocumentConverter:
             "usable_width_px": self.page_width - 2 * self.margin,
         }
 
-    @staticmethod
-    def _extract_page_geometry(body, _w_sectPr, qn) -> dict:
+    def _extract_page_geometry(self, body, _w_sectPr, qn) -> dict:
         """Read ``<w:sectPr>`` from the document body to get page dimensions.
 
-        Converts twips (1/20 of a point, 1440 twips = 1 inch) into pixels
-        at 150 DPI (the converter default).
+        Converts twips (1/20 of a point, 1440 twips = 1 inch) into pixels at **this
+        converter's** DPI, which is what the page is rendered at.
+
+        ⚠️ **The DPI here has to be the converter's, not a constant.** It was
+        hardcoded to 150 while the drawable canvas is sized from ``self.dpi``, and
+        every real ``.docx`` contains a ``<w:sectPr>`` — so this path, not the
+        DPI-aware :meth:`_default_page_geometry`, is what paginates Word documents.
+        At the production default of 300 the budget came to 1350 px against a 3000 px
+        canvas, so pages broke at 45% fill and a document was split into roughly
+        2.2x the pages it has, each separately uploaded, OCR'd, classified and
+        billed. Below 150 it inverted: at 72 the 1350 px budget exceeded a 720 px
+        canvas and the remainder was drawn off the bottom edge. Page *text* was
+        correct in both directions, which is why neither surfaced (#1156).
+
+        The budget stays slightly smaller than the canvas after this, and that is
+        deliberate rather than a leftover: the budget uses the **document's own**
+        margins from ``<w:pgMar>`` (1 inch by default), while the canvas uses the
+        converter's 0.5 inch margin, so the ratio is about 0.90 at every DPI.
+        Keeping the document's margins is what makes the page count match how the
+        document paginates in Word; the spare canvas is whitespace, not lost content.
+        Equalising them would change page counts again for a cosmetic gain.
         """
         _TWIPS_PER_INCH = 1440
-        _DPI = 150  # match converter default
+        _DPI = self.dpi
 
         sect = body.find(".//" + _w_sectPr)
         if sect is None:
