@@ -177,6 +177,24 @@ fails there naming the directory. Two staged copies of `lib/idp_common_pkg` unde
 computes per path. Before that check existed those copies put 20 errors on
 `make typecheck` for anyone who had packaged that feature locally, and none in CI.
 
+`exclude` is itself closed, because `exclude` beats `include` and an entry there is
+the cheapest way to remove a tree from the type gate. Every pattern in it must fall
+in one of four categories or the gate fails naming it: a bare `**/<directory>` name,
+a staged build tree (`STAGED_BUILD_OUTPUT_EXEMPT`), a scope decision over tracked
+files (`TYPECHECK_SCOPE_EXCLUSIONS`), or a filename another tool writes into the tree
+while it runs (`GENERATED_ARTIFACT_EXCLUSIONS`). The bare-directory category is
+**derived rather than listed** — the leaf must satisfy
+`gate_premises.vcs_ignored_build_output` — so `**/notebooks` does not qualify by
+having the same shape as `**/build`.
+
+⚠️ **`make srt-scan` and the offline suite may be run concurrently.** For the
+duration of a scan the tree holds an `<nb>-converted.py` beside every notebook (the
+scan's own nbconvert step, so bandit can read them), which is gitignored `.py` inside
+basedpyright's walk. `**/*-converted.py` is excluded, so neither `make typecheck` nor
+the walk assertion reports them; before that, an overlapping suite run failed once
+and then could not be made to fail again, which is the most expensive shape a red
+mark can have.
+
 **`make cfn-lint`** discovers templates by **content** (anything declaring
 `AWSTemplateFormatVersion`), not by filename, so a new template cannot be added
 without being covered. `make check-arn-partitions` uses the **same** discovery
@@ -299,11 +317,14 @@ So:
   Bounding a reason to one file is what makes the mismatch show up while you are
   writing it rather than in an audit later.
 - **If the premise is computable, compute it.** The predicates live in
-  `scripts/tests/gate_premises.py` — `not_a_nested_stack_of_parent`,
-  `built_separately_from_main_stack`, `file_absent_or_untracked`,
-  `installer_manifest_pins_parameter` — each taking **one** member and returning a
-  verdict. Name the predicate in your registry entry and parametrise your gate over
-  the members; a named predicate the gate never calls is itself a test failure.
+  `scripts/tests/gate_premises.py` (`gate_premises.PREDICATES` is the list; do not
+  restate it here, it grows) — each taking **one** member and returning a verdict. Name
+  the predicate in your registry entry and parametrise your gate over the members; a
+  named predicate the gate never calls is itself a test failure. **A new predicate also
+  needs wording in `PREDICATE_DOMAIN_WORDING`**, the vocabulary that catches a reason
+  invoking a predicate's subject while recording `JUDGEMENT`; a predicate with no
+  wording is one that check can never demand, which is the state
+  `vcs_ignored_build_output` was in.
 - **If it genuinely is not computable, say `JUDGEMENT` and write the reason.** That is
   a legitimate answer (a foreign account's partition, another assistant's
   capabilities, an acknowledged backlog). It is not an exemption from scrutiny: the
@@ -313,7 +334,16 @@ So:
   store how many sites it shielded when written, so a new site inside an exempt tree
   still fails. *Universe closure* — derive the universe and fail if any member is in
   neither the enforced nor the exempt set; this is what makes an exemption list
-  trustworthy at all. *Staleness* — a dead entry fails.
+  trustworthy at all. *Staleness* — a dead entry fails. The `ratchet` label is checked
+  against `RATCHET_EVIDENCE_MARKERS`, wording a file implementing that kind of ratchet
+  necessarily contains, and **a marker matching nothing in any file any entry names is
+  deleted** — unlike a `PREDICATE_DOMAIN_WORDING` phrase, which may match nothing yet.
+  The direction decides the rule: a marker widens what *satisfies* a claim, so a dead
+  one is pre-approval of whatever next claims the label; a phrase widens what *demands*
+  engagement, so a dead one costs nothing and exists for entries not yet written. What
+  is pinned for the phrases instead is that each one demonstrably fires, run through the
+  real matcher on a synthetic entry, because the reason text is lowercased before the
+  comparison and a phrase carrying an uppercase letter is inert.
 - **If it can have none, say what is unprotected** in `ratchetGap`. Those are the
   honest residuals and they are counted: `MAX_UNRATCHETED` in the meta-test does not
   grow to absorb a **new** exemption, so declaring a gap cannot quietly become the
@@ -322,18 +352,63 @@ So:
   is not there, which is worse than a declared gap and is the defect this registry
   exists to prevent. The increment then has to carry its own evidence at the pin,
   naming what the entry does *not* check and the measurement showing the gap is one
-  the tree exhibits now; `scripts/srt/issues.json` is the worked example. What is
-  refused is the increment with no such reason beside it.
+  the tree exhibits now. What is refused is the increment with no such reason beside
+  it. `scripts/srt/issues.json` is the worked example in both directions: relabelled
+  to `none` when it turned out to claim a staleness ratchet nothing implemented, and
+  back to `non-vacuity` once the scan gained the check, with its remaining residual
+  written out in that entry's `ratchetGap` rather than absorbed into this budget.
 
 Membership is **derived** and only the judgement is authored:
-`scripts/tests/exemption_discovery.py` finds exemption surfaces by constant name, by
-the prose of the attached comment (a constant whose comment argues for an exclusion is
-one, whatever it is called), in the `Makefile` and `make/*.mk`, in `scripts/*.sh`, in
-`ruff.toml` and `pyrightconfig.json`, and in the three JSON baselines. It reads
-**source**, not imported modules, because two of these constants change after import.
-It discovers through `git ls-files`, so it cannot report findings against build output
-or a sibling worktree. The meta-test fails in **both** directions — unregistered, and
-registered-but-vanished.
+`scripts/tests/exemption_discovery.py` finds exemption surfaces by constant name
+(`NAME_VOCABULARY`), by the prose of the attached comment (`EXEMPTION_PROSE`), in the
+`Makefile` and `make/*.mk`, in `scripts/*.sh`, in `ruff.toml` and `pyrightconfig.json`,
+and in the three JSON baselines. It reads **source**, not imported modules, because two
+of these constants change after import. It discovers through `git ls-files` —
+**including files you have not committed**, so the verdict does not change at `git add`
+time — so it cannot report findings against build output or a sibling worktree. The
+meta-test fails in **both** directions — unregistered, and registered-but-vanished.
+
+**Name your exemption constant with a word from the vocabulary.** The name route is
+what carries discovery; the prose route is a safety net over it, not an equivalent.
+Both are wording lists, so both have a reach, and it is written out in
+`exemption_discovery.py` rather than left to be inferred: the name vocabulary covers
+the words for what a gate *does* (`EXEMPT`, `EXCLU`, `ALLOW`, `SKIP`, `SUPPRESS`,
+`WAIV`, `OPEN_`, `PERMIT`, …) and the words for what the members *are* (`NOT_A`,
+`NON_`, `_ELSEWHERE`, `TOLERAT`, `BENIGN`, `FALSE_POSITIV`, `OPT_OUT`, …), and the
+prose list covers four families of phrasing, each named in the comment above it. A
+comment can still argue for an exclusion in words neither list holds — "read by a
+different consumer, so the gate does not flag it" is matched by nothing — which is why
+the name is the reliable route.
+
+The **three surfaces match the same names**: fragments go into the `Makefile` and shell
+patterns verbatim apart from case, so `KNOWN_` does not match `WELL_KNOWN` there while
+being rejected on the Python side. They used to be underscore-stripped first, which made
+those two surfaces quietly broader and turned `NON_` into a bare `non`. A false positive
+is not the harmless direction here: the remedy for a discovered surface is an authored
+judgement, and a registry that asks for judgements on noise is how a reviewer learns to
+rubber-stamp it.
+
+**A dead pattern in either vocabulary is a failure.** A fragment that matches nothing
+in the tree today is doing its job (it is there to recognise a constant not yet
+written), so in-tree matching is *not* the rule; what is pinned instead is that every
+fragment and every phrase demonstrably **works**.
+`scripts/tests/test_exemption_discovery.py` drives the real collector over a synthetic
+checkout per pattern — Python constant, `Makefile` variable and shell variable for each
+name fragment, an attached comment for each prose phrase — so a pattern that can never
+fire fails there. Three ways of being inert are covered on **both** surfaces: a
+mis-cased duplicate (names are compared uppercased, comments lowercased), a pattern
+shadowed by a shorter one that already matches everything it would, and a fragment
+eaten by the polarity guard that keeps `DISALLOWED` from reading as an allowlist; the
+regex metacharacter that would corrupt the alternation `TEXT_SOURCES` builds is a
+name-surface concern only, since prose matching is plain substring. All of those reach
+the probe through one assertion: a hit must be **attributable** to the pattern under
+test and to no other, which is what makes the first two visible at all — `"Exempt"`
+beside `"EXEMPT"`, and `"Exclusion"` beside `"exclusion"`, each left every probe green
+until the respective surface had that guard.
+
+What is **not** claimed is that a phrase the vocabulary does not hold will be caught.
+Both lists have a reach and a boundary, the prose one is written out where it is
+declared, and no test can read a sentence — the name is the reliable route.
 
 ### CI parity between GitHub and GitLab
 
@@ -529,6 +604,20 @@ make srt-fix       # Interactive fix mode
 - Does not run on feature branch pushes to avoid blocking development
 - Pipeline fails if high-priority security findings are detected
 - Provides security gate before code is merged to `develop`
+- **It also fails on a suppression that shields nothing.** `scripts/srt/issues.json`
+  is the committed disposition register, and a suppression key is `(path,
+  resourceType, resourceName, check_id)` with **no line** — so an entry whose finding
+  has since been fixed does not go inert, it pre-suppresses every future finding of
+  that check in that file. The scan now reports any suppressed entry it produced no
+  finding for and fails in CI. **Fixing a finding in source therefore has a second
+  half: delete its register entry.** Every one of the 52 Bandit suppressions the
+  register used to carry was in that state, each site having been fixed with an inline
+  `# nosec`; they are gone. The check covers the sources in
+  `register.WHOLE_REPO_SUMMARIES` — Bandit, whose finding set is a function of the tree
+  alone — and the three per-template or remote-ruleset sources are excused per source
+  in `register.NON_VACUITY_EXEMPT_SOURCES`, because for those an absent finding can
+  mean the scanner failed rather than that the finding is gone, and this check's remedy
+  is deletion. The two sets are asserted offline to cover every source in the register
 
 **SRT does NOT cover dependency CVEs.** Its `syft` stage builds an SBOM
 (inventory only, no vulnerability matching), so a separate gate handles SCA:
@@ -1001,8 +1090,17 @@ Lambda functions reference the `idp_common_pkg` library:
 
 The build system uses checksums to avoid rebuilding UI unnecessarily:
 - Checksum stored in `src/ui/.checksum` and root `.checksum`
-- `make ui-lint` skips linting if checksum unchanged
-- Speeds up CI/CD and local development
+- `make ui-lint` skips **both** eslint and `tsc` when `src/ui` matches the stored
+  checksum, and reports that as a `⏭️  UI lint SKIPPED` line rather than a green
+  tick, because a cache hit is not a pass. `FORCE=1` runs them regardless
+- `make lint-cicd` passes `UI_LINT_NO_SKIP=1`, so the CI-equivalent target cannot
+  take the cache. `.checksum` is gitignored, so CI itself never had a stored hash
+  to hit; making the local mirror behave the same way is what keeps its green mark
+  meaning the same thing in both places. `lint` and `fastlint` keep the cache,
+  which is the iteration latency it was added for
+- Enforced by `test_the_ui_lint_skip_is_reported_as_a_skip` and
+  `test_lint_cicd_cannot_skip_the_ui_lint` in
+  `scripts/tests/test_ci_gate_parity.py`
 
 ## Sample Documents
 

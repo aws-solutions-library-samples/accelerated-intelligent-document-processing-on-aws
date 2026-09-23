@@ -403,14 +403,19 @@
         "JUDGEMENT"
       ],
       "ratchet": "staleness",
-      "reason": "Generated, vendored and build-output trees. Members split by why they are here rather than sharing one reason: the cache and artifact directory names (**/build, **/dist, **/.venv, **/.aws-sam, **/cdk.out, **/node_modules, **/__pycache__) are bare on purpose, since such a directory is build output wherever it sits, while the two named paths under feature-platform/idp-data-generator are specific staged trees and each carries its own reason and its own computed premise in scripts/tests/test_pyright_config.py::STAGED_BUILD_OUTPUT_EXEMPT. notebooks/**/*.ipynb is a scope decision recorded in TYPECHECK_SCOPE_EXCLUSIONS in the same file. What makes the array as a whole trustworthy is not this reason but the closure tests around it: every include path must exist, every first-party distribution must be covered, no exclude may shadow an include, every tracked .py must be reached, and the walk must reach nothing an ignore rule covers.",
+      "reason": "Generated, vendored and build-output trees. Members split by why they are here rather than sharing one reason, and every category is now either computed per member or carries its own record. The bare cache and artifact directory names (**/build, **/dist, **/.venv, **/.aws-sam, **/cdk.out, **/node_modules, **/__pycache__) are bare on purpose, since such a directory is build output wherever it sits -- and that claim is computed rather than asserted: each leaf must satisfy vcs_ignored_build_output, which is what stops `**/<name>` becoming the spelling that excludes anything without a reason (**/notebooks has the same shape and does not qualify). The two named paths under feature-platform/idp-data-generator are specific staged trees, each with its own reason and computed premise in scripts/tests/test_pyright_config.py::STAGED_BUILD_OUTPUT_EXEMPT. notebooks/**/*.ipynb is a scope decision recorded in TYPECHECK_SCOPE_EXCLUSIONS in the same file. **/*-converted.py is a generated filename shape recorded in GENERATED_ARTIFACT_EXCLUSIONS there. What makes the array as a whole trustworthy is not this reason but the closure tests around it: every include path must exist, every first-party distribution must be covered, no exclude may shadow an include, every tracked .py must be reached, the walk must reach nothing an ignore rule covers, and every exclude entry must fall in one of those four categories or fail.",
       "memberKind": "path",
       "ratchetEvidence": "scripts/tests/test_pyright_config.py",
       "crossReferences": [
         "scripts/tests/test_pyright_config.py::STAGED_BUILD_OUTPUT_EXEMPT",
         "scripts/tests/test_pyright_config.py::TYPECHECK_SCOPE_EXCLUSIONS",
-        "ruff.toml::exclude"
-      ]
+        "ruff.toml::exclude",
+        "scripts/tests/test_pyright_config.py::GENERATED_ARTIFACT_EXCLUSIONS"
+      ],
+      "predicateConsidered": {
+        "vcs_ignored_build_output": "Settles it for the bare directory names, and is in fact what decides their membership -- but it cannot be named as this entry's premise, because the surface is a JSON config file: test_a_computable_premise_is_actually_computed looks for a CALL in the file the registry key names, and pyrightconfig.json holds no code. The call lives in the sibling entry's gate, scripts/tests/test_pyright_config.py, which parametrises it over every bare `**/<name>` pattern in this array -- that is the cross-reference below, and it is why the two entries point at each other.",
+        "vcs_ignored_generated_filename": "Same shape and same reason: it settles the one generated-filename member (**/*-converted.py) and is evaluated per member in scripts/tests/test_pyright_config.py::GENERATED_ARTIFACT_EXCLUSIONS, not here, because this surface is data rather than code."
+      }
     },
     "ruff.toml::exclude": {
       "kind": "exemption",
@@ -576,9 +581,9 @@
         "Makefile::ARN_PARTITION_EXEMPT"
       ],
       "predicateConsidered": {
-        "not_a_nested_stack_of_parent": "True of all nine paths and irrelevant to the premise. None is a template the parent stack instantiates \u2014 they are a CI configuration, two deployment helpers, two of their tests, a credential-vendor template and three configuration presets \u2014 and nothing claims otherwise. What makes a line unredactable is that the id on it is read as a value, which is a fact about the surrounding code rather than about stack topology.",
+        "not_a_nested_stack_of_parent": "True of all nine paths and irrelevant to the premise. None is a template the parent stack instantiates — they are a CI configuration, two deployment helpers, two of their tests, a credential-vendor template and three configuration presets — and nothing claims otherwise. What makes a line unredactable is that the id on it is read as a value, which is a fact about the surrounding code rather than about stack topology.",
         "built_separately_from_main_stack": "True for the SDLC paths and the presets, and irrelevant for the same reason: whether one publish run builds a path says nothing about whether an account id inside it is consulted at run time. The count pin bounds the entry instead.",
-        "file_absent_or_untracked": "False for all nine \u2014 every path is tracked and present. The gate re-measures that on every run, because an entry whose line has moved or been redacted shields nothing and is failed as stale."
+        "file_absent_or_untracked": "False for all nine — every path is tracked and present. The gate re-measures that on every run, because an entry whose line has moved or been redacted shields nothing and is failed as stale."
       },
       "memberKind": "deployable path",
       "ratchetEvidence": "scripts/check_account_ids.py",
@@ -886,7 +891,10 @@
       "ratchet": "none",
       "reason": "A CORS preflight MOCK integration and two static-SPA GETs. The integration type and HTTP method are readable from the template, so this is a candidate for a real predicate.",
       "ratchetGap": "No check that each named method is still the MOCK/static method the reason describes, so a method that gained a real integration would keep its exemption.",
-      "memberKind": "CloudFormation logical id"
+      "memberKind": "CloudFormation logical id",
+      "crossReferences": [
+        "scripts/sdlc/scan_api_rbac.py::FUNCTION_URL_OPEN_ROUTES"
+      ]
     },
     "scripts/sdlc/scan_api_rbac.py::SCOPE_PATTERNS": {
       "kind": "enforced-universe",
@@ -1136,12 +1144,18 @@
       "premise": [
         "JUDGEMENT"
       ],
-      "ratchet": "none",
-      "reason": "SRT findings suppressed with a justification through `make srt-fix`. Two properties of the register are checked, in scripts/srt/tests/test_ci_paths.py: every entry's path is git-tracked, and every suppressed entry carries a suppressionReason. Neither is a staleness check, which is what this label used to claim — nothing asks whether an entry still shields a finding, and measured today most do not: a scan consults 52 of the 111 entries, and of the Bandit entries whose issue text quotes the matched literal, 24 name a line that no longer contains it. Each of those is a line-pinned suppression over whatever finding next lands at that path and line.",
-      "ratchetGap": "No non-vacuity or staleness check on an individual entry. An entry whose finding was fixed in the source, or whose line moved, keeps its suppression indefinitely and pre-suppresses whatever next occupies that (path, line, check_id). The check cannot be offline: matching is SRT's, so the only place that knows which entries were consulted is the scan itself, and 59 entries are dead today, so a scan-time assertion would red-line until the register is swept.",
+      "ratchet": "non-vacuity",
+      "reason": "SRT findings suppressed with a justification through `make srt-fix`. Three properties of the register are now checked. Two are offline, in scripts/srt/tests/test_ci_paths.py: every entry's path is git-tracked, and every suppressed entry carries a suppressionReason. The third is non-vacuity, in scripts/srt/run.py: a suppressed entry whose source is measured and which this scan produced no finding for fails the gate, because the suppression key is (path, resourceType, resourceName, check_id) and carries no line -- a dead entry pre-suppresses every future finding of that check in that file. It runs in the scan rather than offline because only the scanner can answer whether it still reports a finding: bandit is not a dependency of this repository (the SRT installer puts it in .srt/.venv), so an offline test would skip in CI, and re-implementing the detection is worse -- asking whether the pinned line still contains the literal the entry quotes reported 25 of the 52 dead entries as live, because the line is still there and an inline `# nosec` is what silenced it.",
+      "ratchetGap": "The non-vacuity check measures only the sources in register.WHOLE_REPO_SUMMARIES -- Bandit -- and the register holds no Bandit suppression today, so it is a forward ratchet over that source rather than a check with live members. The three other sources are excused per source in register.NON_VACUITY_EXEMPT_SOURCES with the mechanism that makes an absent finding uninformative for each, and the two sets are asserted offline to cover every source in the register, so the gap is enumerable rather than open-ended. Four suppressed entries outside the measured source look vacuous by a weaker signal (SRT increments assessmentCount only on re-detection, and theirs did not move across a full scan): one Semgrep, one Checkov and two security-matrix. They are kept, because that signal is an inference about SRT's internal bookkeeping and this check's remedy is deletion.",
       "memberKind": "finding id",
       "crossReferences": [
-        "scripts/srt/ci_paths.py::NAME_HEURISTIC_EXEMPT"
+        "scripts/srt/ci_paths.py::NAME_HEURISTIC_EXEMPT",
+        "scripts/srt/register.py::NON_VACUITY_EXEMPT_SOURCES"
+      ],
+      "ratchetEvidence": [
+        "scripts/srt/run.py",
+        "scripts/srt/register.py",
+        "scripts/srt/tests/test_register.py"
       ]
     },
     "scripts/tests/exemption_discovery.py::EXEMPTION_PROSE": {
@@ -1269,7 +1283,7 @@
     },
     "scripts/tests/test_api_policy_counts_in_docs.py::ALL_DOCS": {
       "kind": "enforced-universe",
-      "turnsOff": "nothing. It is SCANNED_DOCS plus the partially-excluded documents, and it exists so the per-document comparison runs over an excluded page too \u2014 for the measures its exclusion does not name. A member adds coverage. Discovery matches it on the prose of the comment above it, which explains that an excluded document is still compared.",
+      "turnsOff": "nothing. It is SCANNED_DOCS plus the partially-excluded documents, and it exists so the per-document comparison runs over an excluded page too — for the measures its exclusion does not name. A member adds coverage. Discovery matches it on the prose of the comment above it, which explains that an excluded document is still compared.",
       "memberKind": "repo-relative path to a Markdown document",
       "premise": [
         "JUDGEMENT"
@@ -1437,7 +1451,7 @@
         "JUDGEMENT"
       ],
       "ratchet": "universe-closure",
-      "reason": "Whether a target CAN be a CI gate is a property of what it does \u2014 mutates the tree, prompts a human, needs AWS credentials, needs a deployed stack, reports rather than asserts \u2014 and none of that is readable from the Makefile. So one sentence per target, naming that target's own obstacle.",
+      "reason": "Whether a target CAN be a CI gate is a property of what it does — mutates the tree, prompts a human, needs AWS credentials, needs a deployed stack, reports rather than asserts — and none of that is readable from the Makefile. So one sentence per target, naming that target's own obstacle.",
       "ratchetGap": "The reasons themselves are unchecked prose. What is mechanical: no target IN THE UNIVERSE may be absent from both this list and CI; a listed target CI has since started running fails; a listed target that no longer exists fails. Read 'in the universe' precisely -- it is every target in the 5 sections GATE_SECTION_PREFIXES names, plus any check-shaped-by-name target in any other section except Stack tests. It is NOT every Makefile target, and the residual is stated on the GATE_SECTION_PREFIXES entry.",
       "memberKind": "make target",
       "crossReferences": [
@@ -1452,7 +1466,7 @@
         "JUDGEMENT"
       ],
       "ratchet": "staleness",
-      "reason": "Two of `make lint`'s prerequisites auto-fix, so `lint-cicd` cannot invoke them \u2014 it runs the check-only command instead, and that command's spelling is not derivable from the target's name. The substituted command must still be present in the recipe, so this relaxes how the gate is spelled and not whether it runs.",
+      "reason": "Two of `make lint`'s prerequisites auto-fix, so `lint-cicd` cannot invoke them — it runs the check-only command instead, and that command's spelling is not derivable from the target's name. The substituted command must still be present in the recipe, so this relaxes how the gate is spelled and not whether it runs.",
       "memberKind": "make target",
       "ratchetEvidence": "scripts/tests/test_ci_gate_parity.py"
     },
@@ -2332,6 +2346,217 @@
       ],
       "reason": "All five are deferred rather than exempt in principle, and the deferral is forced by order-sensitivity: adding raise_if_transient to a handler CONVERTS a modeled ThrottlingException into TransientError, so doing that without adding the name to the state's Retry list would REMOVE retryability that exists today. Both halves have to land per state and neither is in this change; none of the five handlers swallows, so what is lost meanwhile is the retry rather than the diagnosis. Each entry carries what is specific to that handler -- OCRStep calls a model only on the bedrock backend, ClassificationStep once per page, SummarizationStep once over the whole document at the end of the pipeline, EvaluationStep only through the LLM-judge comparators, and RecordEvaluationFailure on a deliberately shorter transient tier because it runs on the failure path -- and the gate asserts those reasons are distinct, because length plus a substring would accept five identical strings. Whether a handler SHOULD convert is a judgement about its failure modes, which no predicate computes; what the gate computes is membership of the universe, from the ASL Resource placeholder through DefinitionSubstitutions to the granted IAM actions of the target function and of any role it references.",
       "ratchetGap": "The predicate answers 'permitted to invoke a model', not 'does invoke one', so an entry can be justified by a grant its handler never uses. It reads actions out of Action: position rather than out of the block's raw text, which is what stops an ARN's wildcard REGION (arn:<partition>:bedrock:*::foundation-model/*, twelve of them here) being read as a bedrock:* action -- there is no such action in this template, and reading one put a data-automation-only function in the universe. What remains loose is the action pattern itself: any future action whose name begins InvokeModel or Converse would qualify regardless of what it does. Over-inclusion is the safe direction for a closure. The closure is also one-directional by design: a state that is NOT Bedrock-capable may still list TransientError legitimately (PolicyClassificationStep does, for DynamoDB and S3 transients), so nothing here detects a listing that is no longer needed."
+    },
+    "scripts/tests/test_pyright_config.py::GENERATED_ARTIFACT_EXCLUSIONS": {
+      "kind": "exemption",
+      "turnsOff": "basedpyright type checking, and the ignored-.py walk assertion in the same file, for files matching one generated-filename glob",
+      "premise": [
+        "vcs_ignored_generated_filename"
+      ],
+      "ratchet": "universe-closure",
+      "reason": "The one member covers `<nb>-converted.py`, which `srt assess` writes beside each notebook to run bandit over it and deletes when it finishes. While those files exist the tree holds gitignored .py inside basedpyright's walk, which is the condition the walk assertion in the same file is about -- so a suite run overlapping a scan failed for the duration and passed afterwards with nothing changed in the tree.",
+      "memberKind": "pyrightconfig exclude pattern naming a filename glob",
+      "ratchetEvidence": "scripts/tests/test_pyright_config.py",
+      "crossReferences": [
+        "pyrightconfig.json::exclude"
+      ]
+    },
+    "scripts/tests/test_alerts_topic_subscription.py::OPERATOR_OPT_OUT_GUARDS": {
+      "kind": "exemption",
+      "turnsOff": "the assertion that an SNS subscription serving an alarm carries no CloudFormation Condition other than the alarm's own -- for one named condition, which may therefore make the subscription absent while the alarm exists",
+      "premise": [
+        "JUDGEMENT"
+      ],
+      "ratchet": "staleness",
+      "reason": "Whether a condition being false is an operator's deliberate choice or an accident is a fact about what the deployer was asked for, not about the tree: ShouldSubscribeAdminToAlerts is true on a default deployment and false only when AdminEmail is empty or is the CI sentinel address that can never confirm a subscription, which is an opt-out. Nothing here computes intent. What the owning gate does require is that the condition's own definition be pinned by a separate test in the same file, so the exemption cannot be satisfied by a condition whose meaning is free to change: test_admin_email_is_subscribed_to_alerts pins this one. Discovered by the OPT_OUT fragment added to exemption_discovery.NAME_VOCABULARY for issue #1163 -- before that widening this surface was matched by neither the name vocabulary nor the prose fallback.",
+      "memberKind": "CloudFormation condition name",
+      "ratchetEvidence": "scripts/tests/test_alerts_topic_subscription.py"
+    },
+    "scripts/srt/register.py::NON_VACUITY_EXEMPT_SOURCES": {
+      "kind": "exemption",
+      "turnsOff": "the scan-time non-vacuity check on scripts/srt/issues.json, for suppressions whose `source` is one of three named scanners",
+      "premise": [
+        "JUDGEMENT"
+      ],
+      "ratchet": "universe-closure",
+      "reason": "Each member names a mechanism by which that scanner's finding set moves without the tree moving, which is what makes an absent finding uninformative rather than evidence: security-matrix and Checkov evaluate per template into a scan directory with no whole-repo summary, so a template whose scan did not complete is indistinguishable from a clean one (scanner_health.failed_checkov_scans exists because that happens on the largest templates here), and Checkov additionally reads what is on disk, where `sam package` has dropped the skip comments the source templates carry; Semgrep takes its rules from a remote registry, so a withdrawn rule or a failed fetch removes findings with no change to this repository. Whether a given scanner's silence is evidence is a property of how that scanner works and is not computable from this tree. The direction of the risk decides the shape: this check's remedy is DELETION, so reading absence as evidence where it is not would delete a live suppression on a bad day -- worse than not checking.",
+      "memberKind": "SRT finding source name",
+      "ratchetEvidence": "scripts/srt/tests/test_register.py",
+      "crossReferences": [
+        "scripts/srt/issues.json::issues.json",
+        "scripts/srt/register.py::WHOLE_REPO_SUMMARIES"
+      ]
+    },
+    "scripts/srt/register.py::WHOLE_REPO_SUMMARIES": {
+      "kind": "enforced-universe",
+      "turnsOff": "nothing -- this is the ENFORCED half of the source split: a source listed here is measured for non-vacuity on every scan",
+      "premise": [
+        "JUDGEMENT"
+      ],
+      "ratchet": "universe-closure",
+      "reason": "Registered because it is the positive half of a two-set closure and reading only the exclusion list would leave the split's completeness unexamined -- the same asymmetry that let an exemption list be audited while the universe it subtracted from was not. Membership turns on whether a scan's silence about a source means the finding is gone: Bandit runs locally over every file with rules compiled into the package, so its finding set is a function of the tree alone. test_every_source_in_the_register_is_measured_or_has_a_reason asserts the two sets cover every source among the register's suppressed entries and that they do not overlap.",
+      "memberKind": "SRT finding source name",
+      "ratchetEvidence": "scripts/srt/tests/test_register.py",
+      "crossReferences": [
+        "scripts/srt/register.py::NON_VACUITY_EXEMPT_SOURCES"
+      ]
+    },
+    "lib/idp_common_pkg/tests/unit/config/test_config_migration_hardening.py::_NON_CONFIG_YAMLS": {
+      "kind": "exemption",
+      "turnsOff": "the config-migration hardening scan, for named YAML files under config_library/ that are not IDPConfig documents",
+      "premise": [
+        "JUDGEMENT"
+      ],
+      "ratchet": "none",
+      "reason": "Lookup tables that live beside the presets -- pricing, model token limits, finetuning models, marketplace listings. Whether a YAML is an IDPConfig document is a judgement about its shape rather than a fact this tree computes. The same split is made per file, for a different gate, in scripts/tests/test_preset_keys_are_read.py.",
+      "ratchetGap": "No check that each named file still exists under config_library/, so a renamed or deleted lookup table keeps its exclusion and pre-excludes whatever next takes the name.",
+      "memberKind": "file name under config_library/"
+    },
+    "lib/idp_sdk/tests/unit/test_webui_rebuild_triggers.py::_NON_VITE_BUILD_AFFECTING": {
+      "kind": "enforced-universe",
+      "turnsOff": "nothing; it ADDS a CodeBuild env var to the set the gate requires to force a UI rebuild, for one that affects the built artifact without being named VITE_*",
+      "premise": [
+        "JUDGEMENT"
+      ],
+      "ratchet": "none",
+      "reason": "WEB_UI_HOSTING selects the CloudFront-invalidation branch of the buildspec, so it changes the artifact although its name carries no VITE_ prefix. This widens enforcement rather than narrowing it.",
+      "ratchetGap": "No closure check that every non-VITE_ env var affecting the artifact is listed; one that is not simply goes unasserted, so the gate is quieter rather than wrong.",
+      "memberKind": "CodeBuild environment variable name"
+    },
+    "scripts/generate_standard_classes.py::non_document_names": {
+      "kind": "prune",
+      "turnsOff": "nothing in any gate; it drops audio, video and image BDA blueprints from a generated document-class list",
+      "premise": [
+        "JUDGEMENT"
+      ],
+      "ratchet": "none",
+      "reason": "A generator script, not a gate. The modality of a service-owned BDA blueprint is not readable from its name, which is why the names are written out.",
+      "ratchetGap": "Not a gate; an over-broad prune shows up as a missing document class in the generated output.",
+      "memberKind": "BDA blueprint name"
+    },
+    "scripts/sdlc/check_retired_models.py::_NON_BEDROCK_RUNTIME_PREFIXES": {
+      "kind": "exemption",
+      "turnsOff": "the retired-model lifecycle lookup, for model families whose lifecycle bedrock:GetFoundationModel cannot report",
+      "premise": [
+        "JUDGEMENT"
+      ],
+      "ratchet": "none",
+      "reason": "Families served by the bedrock-mantle Responses API rather than bedrock-runtime. Reporting them as unresolvable would be misleading, and which API serves a family is a fact about Bedrock rather than about this tree. The constant's own comment states that naming them is what makes the gap visible rather than silent.",
+      "ratchetGap": "No check that a listed prefix still names a family bedrock-runtime does not serve, so a family that migrates keeps its exclusion and its end-of-life would go unreported.",
+      "memberKind": "Bedrock model id prefix"
+    },
+    "scripts/sdlc/codebuild_deployment.py::non_iam": {
+      "kind": "fixture",
+      "turnsOff": "nothing; a local that splits stale test stacks by suffix so the -iam stacks are deleted last",
+      "premise": [
+        "JUDGEMENT"
+      ],
+      "ratchet": "none",
+      "reason": "Deletion ordering, not an exclusion. Matched on the NON_ fragment.",
+      "ratchetGap": "Not an exemption.",
+      "memberKind": "CloudFormation stack name"
+    },
+    "scripts/sdlc/scan_api_rbac.py::FUNCTION_URL_OPEN_ROUTES": {
+      "kind": "exemption",
+      "turnsOff": "the Function URL route checks' requirement that a route be declared with per-user authorization (S6-S9), for named routes",
+      "premise": [
+        "JUDGEMENT"
+      ],
+      "ratchet": "none",
+      "reason": "One liveness probe, GET /health, which returns no caller data and has no side effects. Whether a route needs per-user authorization depends on what it returns, which is not computable from the route string. Kept as a module constant rather than a data file so adding one is a code change a reviewer sees -- the same choice ALLOWED_UNAUTH_METHODS makes for the REST API, and the sibling this one's own comment names.",
+      "ratchetGap": "No check that a listed route still exists on the Function URL app, and none that it still returns no caller data. A route that gained a body would keep its exclusion, and a deleted one pre-excludes whatever next takes the path. This is an authorization carve-out, so it is the entry in this file most worth giving a real ratchet.",
+      "memberKind": "HTTP method + Function URL route",
+      "crossReferences": [
+        "scripts/sdlc/scan_api_rbac.py::ALLOWED_UNAUTH_METHODS"
+      ]
+    },
+    "scripts/security/curate_results.py::non_pass": {
+      "kind": "fixture",
+      "turnsOff": "nothing; a local selecting the ZAP rules whose outcome is not PASS, for a published table",
+      "premise": [
+        "JUDGEMENT"
+      ],
+      "ratchet": "none",
+      "reason": "Report formatting. Matched on the NON_ fragment.",
+      "ratchetGap": "Not an exemption.",
+      "memberKind": "ZAP rule id"
+    },
+    "scripts/security/curate_results.py::open_high": {
+      "kind": "enforced-universe",
+      "turnsOff": "nothing; it is the set the published snapshot treats as gate-blocking -- HIGH priority with status open or reopened",
+      "premise": [
+        "JUDGEMENT"
+      ],
+      "ratchet": "none",
+      "reason": "The enforced half, deliberately including 'reopened': treating only 'Open' as blocking once published a PASS while a re-detected HIGH sat in the matrix one section below. Kept in step with the CI gate in scripts/srt/run.py.",
+      "ratchetGap": "No test asserts the two definitions agree, so the curator and the scan could drift apart again; the inclusion of 'reopened' is asserted in neither place.",
+      "memberKind": "SRT finding status"
+    },
+    "scripts/srt/run.py::high_open_issues": {
+      "kind": "enforced-universe",
+      "turnsOff": "nothing; it is the set the SRT gate fails on -- HIGH priority with a gating status",
+      "premise": [
+        "JUDGEMENT"
+      ],
+      "ratchet": "none",
+      "reason": "The enforced half of the gate. Membership is decided by ci_paths.is_gating_status rather than written here, and the two partitions applied after it (CI visibility, identifier-name scope) are registered separately.",
+      "ratchetGap": "No closure check that every priority the scanners emit is classified as gating or not; a new priority spelling would simply not gate.",
+      "memberKind": "SRT finding status"
+    },
+    "scripts/srt/scanner_health.py::_NON_SCAN_DIRS": {
+      "kind": "prune",
+      "turnsOff": "nothing in any gate; it drops two directories under .srt/ from the per-template scan-directory walk",
+      "premise": [
+        "JUDGEMENT"
+      ],
+      "ratchet": "none",
+      "reason": "`logs` and `.venv` are SRT's own working directories, not per-template scan outputs. That they are not scan dirs is a fact about SRT's layout.",
+      "ratchetGap": "No check that either directory still exists, and none that every other child of .srt/ really is a scan dir -- so a future non-scan directory would be read as a template whose scan failed, which fails the build rather than hiding anything.",
+      "memberKind": "directory name under .srt/"
+    },
+    "scripts/tests/test_csp_policies_in_sync.py::PERMITTED_DIFFERENCES": {
+      "kind": "exemption",
+      "turnsOff": "the assertion that the CloudFront and API Gateway Content-Security-Policy headers carry identical directives, for named directives",
+      "premise": [
+        "JUDGEMENT"
+      ],
+      "ratchet": "count-pinned",
+      "reason": "One directive, frame-ancestors, which differs because the two hosting variants have different framing postures. Whether a difference is intended is a judgement about the posture, not a fact the templates state. What keeps the carve-out narrow is that the entry stores the exact pair of values rather than merely naming the directive: test_the_permitted_difference_is_what_it_says asserts CloudFront is 'self' and API Gateway is 'none', so the exclusion cannot widen to cover a different value of the same directive.",
+      "memberKind": "CSP directive name",
+      "ratchetEvidence": "scripts/tests/test_csp_policies_in_sync.py"
+    },
+    "scripts/tests/test_model_surface_consistency.py::NON_MODEL_CHOICES": {
+      "kind": "exemption",
+      "turnsOff": "the price and token-limit coverage checks, for values that appear in a `model` enum but are not Bedrock model ids",
+      "premise": [
+        "JUDGEMENT"
+      ],
+      "ratchet": "none",
+      "reason": "LambdaHook selects a customer Lambda rather than a model, so it has no price and no limits to cover. That a picklist value is not a model id is a judgement about what the value selects.",
+      "ratchetGap": "No check that a listed value still appears in a `model` enum, so an entry for a removed choice pre-excludes whatever next takes the name. The sibling NON_SELECTABLE_DEFAULTS in the same file does have that check, which is the shape this one is missing.",
+      "memberKind": "model enum value"
+    },
+    "scripts/tests/test_model_surface_consistency.py::NON_SELECTABLE_DEFAULTS": {
+      "kind": "exemption",
+      "turnsOff": "the requirement that a model named as a code default also be selectable in a template enum, for named models",
+      "premise": [
+        "JUDGEMENT"
+      ],
+      "ratchet": "staleness",
+      "reason": "One Knowledge Base embedding model, which is not a text-generation model and so appears in no picklist. Whether a model is a chat model is not computable from its id. Each member carries its own reason in the dict value rather than sharing one.",
+      "memberKind": "Bedrock model id",
+      "ratchetEvidence": "scripts/tests/test_model_surface_consistency.py"
+    },
+    "scripts/tests/test_pyright_config.py::NON_SOURCE_TOP_LEVELS": {
+      "kind": "prune",
+      "turnsOff": "nothing in any gate; it names the top-level directories inside a distribution that are not shipped importable source, so the include-coverage check looks past them",
+      "premise": [
+        "JUDGEMENT"
+      ],
+      "ratchet": "none",
+      "reason": "tests, test, examples, build, dist, docs. Mirrors IGNORED_DIR_NAMES in test_package_discovery.py. Every one of those trees is still type-checked through pyrightconfig's own `include`; what this excludes is only the question of which directory constitutes a distribution's importable source.",
+      "ratchetGap": "No check that the two mirrored lists stay in step, so this one could narrow while the other did not.",
+      "memberKind": "top-level directory name inside a distribution"
     }
   }
 }

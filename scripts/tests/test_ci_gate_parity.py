@@ -56,6 +56,7 @@ from __future__ import annotations
 
 import json
 import re
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -785,6 +786,84 @@ def test_the_ui_lint_gate_checks_rather_than_fixes() -> None:
     assert "--fix" in package_json["scripts"]["lint:fix"], (
         "src/ui has no `lint:fix` script that fixes, so removing --fix from the "
         "gate left contributors with no auto-fix entry point."
+    )
+
+
+@pytest.mark.unit
+def test_the_ui_lint_skip_is_reported_as_a_skip() -> None:
+    """A cache hit must not print a success marker.
+
+    ``ui-lint`` caches on a checksum of ``src/ui`` and the skip branch printed a
+    green ✅, so on a warm tree the target reported success for work that did not
+    happen — both ``npm run lint`` and ``npm run typecheck``. That is the defect
+    class this repository keeps filing against itself: a control that exists,
+    reports success, and did not run. Issue #1152.
+
+    This reads the two branches of the recipe's own conditional rather than the
+    whole recipe, because the failure being guarded is precisely that one branch
+    claims what the other earns.
+    """
+    recipe = _recipe("ui-lint")
+    _, _, skip_branch = recipe.rpartition("else")
+    assert skip_branch.strip(), (
+        "`ui-lint`'s recipe no longer has an else branch, so this test is reading "
+        "nothing. Re-derive the slice before trusting it."
+    )
+    assert "SKIP" in skip_branch.upper(), (
+        f"`ui-lint`'s skip branch does not say it skipped: {skip_branch!r}. A reader "
+        "scanning a long log needs the cache hit to be distinguishable from a pass."
+    )
+    assert "✅" not in skip_branch, (
+        f"`ui-lint`'s skip branch prints a success marker: {skip_branch!r}. eslint "
+        "and tsc did not run, so nothing was checked and nothing passed."
+    )
+
+
+@pytest.mark.unit
+def test_lint_cicd_cannot_skip_the_ui_lint() -> None:
+    """The CI-equivalent target must not be able to take the checksum cache.
+
+    ``make lint-cicd`` exited 0 on a warm tree having skipped both ``npm run lint``
+    and ``npm run typecheck``. CI could never hit that skip — ``.checksum`` is
+    gitignored, so a fresh checkout has no stored hash and the comparison always
+    differs — which makes it exactly the asymmetry this module exists to catch: the
+    local command documented as mirroring CI was the one gate in the set whose green
+    mark could mean nothing. ``lint`` and ``fastlint`` keep the cache, which is what
+    it was added for.
+
+    Read from ``make -n`` rather than from the file, so that a variable expansion or
+    a moved recipe line is measured as make sees it.
+    """
+    dry_run = subprocess.run(
+        ["make", "-n", "lint-cicd"],
+        cwd=REPO_ROOT,
+        capture_output=True,
+        text=True,
+    )
+    assert dry_run.returncode == 0, (
+        f"`make -n lint-cicd` failed ({dry_run.returncode}), so this assertion is "
+        f"reading nothing:\n{dry_run.stderr[-2000:]}"
+    )
+    invocations = [
+        line
+        for line in _uncommented(dry_run.stdout).splitlines()
+        if re.search(r"\bmake\s+ui-lint\b", line)
+    ]
+    assert invocations, (
+        "`make -n lint-cicd` shows no `make ui-lint` invocation at all, so the UI "
+        "lint is not reached from the CI-equivalent target. That is a bigger gap "
+        f"than the one this test is about. Recipe seen:\n{dry_run.stdout[-2000:]}"
+    )
+    unguarded = [line for line in invocations if "UI_LINT_NO_SKIP" not in line]
+    assert not unguarded, (
+        f"`lint-cicd` invokes ui-lint without UI_LINT_NO_SKIP=1: {unguarded}. On a "
+        "tree whose src/ui/.checksum matches, that invocation skips eslint and tsc "
+        "and the target still exits 0 — a green mark for a gate that did not run."
+    )
+    condition = _recipe("ui-lint").split("then", 1)[0]
+    assert "UI_LINT_NO_SKIP" in condition, (
+        "`lint-cicd` passes UI_LINT_NO_SKIP=1 but `ui-lint`'s own condition does not "
+        f"read it, so the flag does nothing: {condition!r}"
     )
 
 

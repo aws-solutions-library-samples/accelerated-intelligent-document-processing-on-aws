@@ -410,6 +410,158 @@ STAGED_BUILD_OUTPUT_EXEMPT: dict[str, str] = {
 }
 
 
+def _bare_directory_name(pattern: str) -> str | None:
+    """The directory name in a `**/<name>` pattern, or None if it is not one.
+
+    The seven cache and artifact directory names in `exclude` are bare on purpose —
+    a `build/` or a `node_modules/` is build output wherever it sits — and they are
+    the one group here with no per-member reason written down. They do not need one,
+    because the claim is computable: :func:`gate_premises.vcs_ignored_build_output`
+    asks whether an ignore rule covers the name and whether git tracks anything under
+    it, and that is the whole of what "build output at any depth" means.
+
+    Deriving membership this way rather than listing it is what stops `**/<name>`
+    becoming the spelling that excludes anything without giving a reason. `**/build`
+    and `**/notebooks` are the same shape; only one of them is ignored, so only one of
+    them lands in this group and the other has to justify itself.
+    """
+    if not pattern.startswith("**/"):
+        return None
+    leaf = pattern.removeprefix("**/")
+    return leaf if leaf and "*" not in leaf and "/" not in leaf else None
+
+
+def _ignored_bare_directory_exclusions() -> list[str]:
+    """`exclude` patterns that are a bare, ignored build-output directory name."""
+    return [
+        pattern
+        for pattern in _config().get("exclude", [])
+        if (leaf := _bare_directory_name(pattern))
+        and gate_premises.vcs_ignored_build_output(leaf)[0]
+    ]
+
+
+@pytest.mark.parametrize(
+    "pattern",
+    [p for p in _config().get("exclude", []) if _bare_directory_name(p)],
+)
+def test_a_bare_directory_exclusion_is_ignored_build_output(pattern: str) -> None:
+    """Per member: every bare `**/<name>` in `exclude` is covered by an ignore rule.
+
+    `**/cdk.out` was not. Nothing tracked lived under it, so it cost no coverage
+    today — but the durable half of this premise is the ignore rule, and without one
+    a `cdk.out/` holding committed Python could appear and be excluded from
+    `make typecheck` with no edit to any file a reviewer would look at. The remedy is
+    an ignore rule, not a longer reason.
+    """
+    leaf = _bare_directory_name(pattern)
+    assert leaf is not None
+    holds, why = gate_premises.vcs_ignored_build_output(leaf)
+    assert holds, (
+        f"pyrightconfig.json `exclude` carries the bare directory name {pattern!r} as "
+        f"build output at any depth, and that is not true of it: {why}. Add an ignore "
+        "rule for it, or — if it holds code that ships — stop excluding it."
+    )
+
+
+#: Filename shapes another gate writes **into** the tree while it runs, keyed by the
+#: `exclude` pattern, with the reason for that one shape. One entry, one artifact, one
+#: reason — never a shared "generated files" carve-out, because the thing that makes
+#: each of these safe is a specific ignore rule and a specific writer.
+#:
+#: These are distinct from :data:`STAGED_BUILD_OUTPUT_EXEMPT` in the axis they name.
+#: That one excludes a *tree* a local build stages, and its members are directories. A
+#: member here is a **filename glob**: `srt assess` nbconverts every notebook to
+#: `<nb>-converted.py` *beside* the notebook, so the artifact has no fixed home and no
+#: directory-keyed exclusion reaches it.
+#:
+#: The failure this closes is a gate that fails only while another gate is running.
+#: `make srt-scan` takes ~15 minutes and the offline suite ~7, both read-only with
+#: respect to tracked files, so overlapping them is the obvious thing to do — and doing
+#: so made `test_the_typecheck_walk_reaches_no_ignored_python` fail for the duration and
+#: pass afterwards with nothing changed in the tree. A red mark that depends on what
+#: else was running is unreadable: the reader cannot tell it from a real finding without
+#: re-running, which they will only do if they already suspect it. Both gates are right;
+#: they interfered through the filesystem. In CI they are separate jobs and cannot
+#: overlap, so this was local-only — and local gate runs are what branch decisions get
+#: made on here. Issue #1176.
+#:
+#: `vcs_ignored_generated_filename` computes the premise per member, including the part
+#: that stops this becoming a general escape hatch: the pattern's final component must
+#: be a wildcard over filenames, so a bare directory name cannot be registered here and
+#: the exclusion cannot widen as a tree grows.
+GENERATED_ARTIFACT_EXCLUSIONS: dict[str, str] = {
+    "**/*-converted.py": (
+        "`srt assess` runs bandit over notebooks by nbconverting each one to "
+        "`<nb>-converted.py` beside it, and deletes them when it finishes; ignored at "
+        ".gitignore line 30. They exist only while a scan runs, they are a "
+        "machine translation of a notebook this gate already covers as a notebook, "
+        "and basedpyright would read them as first-party source — it walks the "
+        "filesystem and has no ignore-file support"
+    ),
+}
+
+
+@pytest.mark.parametrize("pattern", sorted(GENERATED_ARTIFACT_EXCLUSIONS))
+def test_generated_artifact_exclusion_is_still_in_the_config(pattern: str) -> None:
+    """Staleness: the reason must not outlive the exclusion it justifies."""
+    assert pattern in _config().get("exclude", []), (
+        f"GENERATED_ARTIFACT_EXCLUSIONS justifies {pattern!r}, which pyrightconfig.json "
+        "`exclude` no longer contains. Drop the entry, or restore the pattern — a "
+        "reason for a carve-out that is gone reads as a live decision and hides the "
+        "next real gap."
+    )
+
+
+@pytest.mark.parametrize("pattern", sorted(GENERATED_ARTIFACT_EXCLUSIONS))
+def test_generated_artifact_exclusion_premise_holds(pattern: str) -> None:
+    """Per member: an ignore rule covers the shape, nothing tracked matches it, and
+    the pattern cannot widen past a filename.
+
+    The premise computed rather than asserted in prose. The direction that costs
+    coverage is an exclusion that starts out over a generated artifact and ends up
+    over committed code — `exclude` beats `include`, so a tracked `x-converted.py`
+    would leave the gate quieter with every other test here still green.
+    """
+    holds, why = gate_premises.vcs_ignored_generated_filename(pattern)
+    assert holds, (
+        f"GENERATED_ARTIFACT_EXCLUSIONS excludes {pattern!r} from `make typecheck` as "
+        f"an ignored generated artifact, and that is not true of it: {why}."
+    )
+
+
+def test_every_generated_artifact_exclusion_is_registered() -> None:
+    """Universe closure over the `exclude` array: no pattern is unaccounted for.
+
+    This is what stops the array being the quiet place a carve-out lands. Every entry
+    in pyrightconfig's `exclude` must be categorised by exactly one of the four things
+    that can justify one — a bare cache/build directory name, a staged build tree, a
+    scope decision, or a generated filename shape — and an entry in **neither** set
+    fails here rather than being read as obviously fine. `exclude` beats `include`, so
+    an uncategorised entry is the cheapest way to remove a tree from the type gate.
+    """
+    categorised = (
+        set(_ignored_bare_directory_exclusions())
+        | {_staged_copy_pattern(rel) for rel in STAGED_BUILD_OUTPUT_EXEMPT}
+        | set(TYPECHECK_SCOPE_EXCLUSIONS)
+        | set(GENERATED_ARTIFACT_EXCLUSIONS)
+    )
+    unaccounted = [p for p in _config().get("exclude", []) if p not in categorised]
+    assert not unaccounted, (
+        f"pyrightconfig.json `exclude` holds {len(unaccounted)} pattern(s) that no "
+        f"carve-out record in this file accounts for: {unaccounted}. `exclude` beats "
+        "`include`, so each one silently removes files from `make typecheck`. Put it "
+        "in STAGED_BUILD_OUTPUT_EXEMPT (a tree a local build stages), "
+        "TYPECHECK_SCOPE_EXCLUSIONS (a scope decision about tracked files) or "
+        "GENERATED_ARTIFACT_EXCLUSIONS (a filename another tool writes while it runs) "
+        "— with the reason for that one entry. The fourth category, a bare "
+        "`**/<directory>` name, is DERIVED rather than listed: it qualifies only if an "
+        "ignore rule covers the name and git tracks nothing under it, which is what "
+        "keeps `**/notebooks` from being categorised by having the same shape as "
+        "`**/build`."
+    )
+
+
 def _staged_copy_pattern(rel: str) -> str:
     """The pyrightconfig `exclude` pattern that covers one staged tree.
 
@@ -525,9 +677,16 @@ def test_the_typecheck_walk_reaches_no_ignored_python() -> None:
     same commit is green on a clean checkout and in CI, red for anyone who has
     packaged the feature. A gate with that property cannot be used to decide anything.
 
-    The remedy for a failure here is an `exclude` pattern plus an entry in
-    `STAGED_BUILD_OUTPUT_EXEMPT` with the reason for that path — not a wider
-    `exclude`, and not a bare directory name, which would match at every depth.
+    The remedy for a failure here is an `exclude` pattern plus a record of it, and
+    **which record depends on what the artifact is keyed by**: a tree a local build
+    stages goes in `STAGED_BUILD_OUTPUT_EXEMPT` as `<path>/**`, while something named by
+    its filename wherever it lands — a tool writing `<x>-converted.py` beside each
+    notebook — goes in `GENERATED_ARTIFACT_EXCLUSIONS` as a filename glob. The two are
+    not interchangeable: `vcs_ignored_generated_filename` refuses a pattern whose final
+    component is not a wildcard, so a `<path>/**` entry registered as a generated
+    filename fails, and a filename glob registered as a staged tree has no directory to
+    ask about. Neither is a wider `exclude`, and neither is a bare directory name outside
+    the derived build-output category.
     """
     includes = _include_paths()
     reached = [
@@ -543,9 +702,13 @@ def test_the_typecheck_walk_reaches_no_ignored_python() -> None:
         + "\n  ".join(trees[:10])
         + "\n\nThese are not part of this repository — an ignore rule covers them — "
         "and basedpyright has no way to know that: it has no ignore-file support, so "
-        "`exclude` is the only mechanism. Add a `<path>/**` entry to pyrightconfig "
-        "`exclude` and register the path in STAGED_BUILD_OUTPUT_EXEMPT in this file "
-        "with the reason for that one path."
+        "`exclude` is the only mechanism. Add a pyrightconfig `exclude` pattern and "
+        "register it in this file with the reason for that one entry, in whichever "
+        "record matches what the artifact is keyed by: STAGED_BUILD_OUTPUT_EXEMPT for a "
+        "tree a local build stages (as `<path>/**`), or GENERATED_ARTIFACT_EXCLUSIONS "
+        "for a filename another tool writes wherever it runs (as a filename glob, e.g. "
+        "`**/*-converted.py`). The two are not interchangeable — the generated-filename "
+        "premise refuses a pattern whose final component is not a wildcard."
     )
 
 

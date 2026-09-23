@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """SRT run script to execute security assessment."""
 
+import json
 import os
 import shlex
 import subprocess
@@ -17,8 +18,11 @@ from ci_paths import (  # noqa: E402
     tracked_files,
 )
 from register import (  # noqa: E402
+    WHOLE_REPO_SUMMARIES,
     describe_unsynced,
+    describe_vacuous,
     restore_committed_register,
+    vacuous_suppressions,
 )
 from scanner_health import (  # noqa: E402
     failed_checkov_scans,
@@ -176,6 +180,102 @@ def report_scanner_health(srt_dir, project_root, scan_started, is_ci):
     return is_ci
 
 
+def report_vacuous_suppressions(project_root, srt_dir, scan_started, is_ci):
+    """Print committed suppressions this scan produced no finding for; gate in CI.
+
+    THE GAP THIS CLOSES. Two checks already guard the committed register — every
+    entry's path is git-tracked, and every suppressed entry carries a reason — and
+    neither asks whether an entry still shields anything. Measured when this was
+    written: **52 of the register's suppressed entries shielded nothing**, every one
+    of the Bandit ones, because each site had since been fixed in source with an
+    inline `# nosec` and the register entry was never removed. The suppression key is
+    `(path, resourceType, resourceName, check_id)` and carries no line, so each dead
+    entry was pre-suppressing every future finding of that check in that file.
+
+    WHY THIS LIVES IN THE SCAN AND NOT IN THE OFFLINE SUITE. The question is "did the
+    scanner report this finding", and the only thing that can answer it is the
+    scanner. Bandit is not a dependency of this repository — the SRT installer puts it
+    in `.srt/.venv` — so an offline test would skip wherever it is absent, which in CI
+    is everywhere, and a gate that skips is the shape of defect this whole check is
+    about. A re-implementation of bandit's own detection would be worse: probing
+    whether the pinned line still contains the literal the entry quotes reports **25**
+    of these 52 as live, because the line is still there and an inline `# nosec` is
+    what silenced it. A proxy that disagrees with the scanner in the direction of
+    "still needed" keeps dead suppressions alive, which is the state being fixed.
+
+    WHAT IT DOES NOT COVER, precisely. Only the sources in `WHOLE_REPO_SUMMARIES` —
+    Bandit today, which is 54 of the register's entries. The rest are checkov and
+    SRT's own per-template AWS checks, where an absent finding can mean the template
+    is clean or that the scanner failed on that template; reading the second as a dead
+    suppression would delete a live one on a bad day. A scanner that did not complete
+    is skipped here for the same reason, and `report_scanner_health` fails the build
+    for it separately.
+    """
+    missing = missing_whole_repo_scanners(srt_dir, scan_started)
+    committed_path = project_root / "scripts" / "srt" / "issues.json"
+    if not committed_path.exists():
+        return False
+    try:
+        committed = json.loads(committed_path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, UnicodeDecodeError, OSError):
+        return False
+    if not isinstance(committed, list):
+        return False
+
+    dead, unmeasured = [], []
+    for source, (scanner, filename) in sorted(WHOLE_REPO_SUMMARIES.items()):
+        if scanner in missing:
+            unmeasured.append(source)
+            continue
+        try:
+            findings = json.loads((srt_dir / filename).read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, UnicodeDecodeError, OSError):
+            unmeasured.append(source)
+            continue
+        if not isinstance(findings, list):
+            unmeasured.append(source)
+            continue
+        dead.extend(vacuous_suppressions(committed, findings, sources={source}))
+
+    if unmeasured:
+        print(
+            f"\nℹ️  Non-vacuity of the suppression register not checked for "
+            f"{', '.join(unmeasured)}: that scanner wrote no readable summary for this "
+            "scan."
+        )
+
+    if not dead:
+        return False
+
+    print("\n" + "=" * 120)
+    print(
+        f"🔴 SUPPRESSIONS THAT SHIELD NOTHING - TOTAL: {len(dead)} "
+        "(scripts/srt/issues.json)"
+    )
+    print("=" * 120)
+    print(describe_vacuous(dead))
+    print("=" * 120)
+    print(
+        "This scan reported no finding matching these entries, so each one currently\n"
+        "suppresses nothing. They are not inert: the suppression key is\n"
+        "(path, resourceType, resourceName, check_id) and carries no line, so each one\n"
+        "pre-suppresses the next finding of that check in that file -- a real\n"
+        "hardcoded credential landing in a pre-registered file would be suppressed on\n"
+        "arrival with nothing to notice.\n"
+        "\n"
+        "Delete them from scripts/srt/issues.json. If you just fixed a finding in\n"
+        "source (an inline `# nosec`, or removing the value), deleting its entry is\n"
+        "the second half of that fix.\n"
+        "\n"
+        "⚠️  Locally, the NEXT scan will then refuse to start: .srt/issues.json still\n"
+        "   holds the dispositions you removed, and restore_committed_register cannot\n"
+        "   tell a deliberate deletion from a local disposition nobody saved yet. Run\n"
+        "   the next scan once with SRT_DISCARD_LOCAL=1 (or delete .srt/issues.json).\n"
+        "   CI never sees this: it starts from a fresh checkout."
+    )
+    return is_ci
+
+
 def print_issue_table(title, issues):
     """Print a numbered table of findings under a banner."""
     separator = "=" * 120
@@ -327,8 +427,6 @@ def main():
     high_open_issues = []
 
     if issues_json_path.exists():
-        import json
-
         try:
             with open(issues_json_path, encoding="utf-8") as f:
                 issues = json.load(f)
@@ -410,6 +508,12 @@ def main():
         srt_dir, project_root, scan_started, is_ci
     )
 
+    # A suppression that shields nothing pre-suppresses the next finding of that check
+    # in that file, and the scan is the only thing that can tell. See issue #1149.
+    register_is_stale = report_vacuous_suppressions(
+        project_root, srt_dir, scan_started, is_ci
+    )
+
     if gating_issues:
         if is_ci:
             # In CI/CD: fail the build
@@ -423,6 +527,16 @@ def main():
         # CI only (report_scanner_health returns False locally): no HIGH findings,
         # but coverage was lost on a file CI does scan, so this is not a pass.
         print("\n❌ SRT scan INCOMPLETE - a scanner did not run; results unreliable.")
+        sys.exit(1)
+
+    if register_is_stale:
+        # CI only (report_vacuous_suppressions returns False locally): no HIGH
+        # findings, but the register carries suppressions over findings that no longer
+        # exist, each pre-approving whatever next lands on its (path, check_id).
+        print(
+            "\n❌ SRT scan found no open HIGH findings, but the committed suppression\n"
+            "   register carries entries that shield nothing. Delete them (above)."
+        )
         sys.exit(1)
 
     print("\n✅ SRT scan complete - no high-priority security issues found!")
