@@ -62,7 +62,7 @@ Verified locally against the actual scanner binaries (not assumed):
 | semgrep | `# nosemgrep: rule-id` | 43 already in use. |
 | grype / npm-audit | none exists | Must go in a config file. |
 
-Three traps that cost real time:
+Four traps that cost real time:
 
 1. **bandit's `# nosec` is line-scoped, and on a multi-line string the pragma
    must sit on a line INSIDE the string node.** The closing `"""` works; the
@@ -72,7 +72,33 @@ Three traps that cost real time:
 2. **detect-secrets dedupes by secret hash**, reporting one line per unique
    secret per file. Suppress the first occurrence and the next one surfaces — so
    annotate *every* occurrence of the pattern, then re-scan to confirm zero.
-3. **A semgrep rule can match your own justification comment.** Writing
+3. **The marker is parsed, not pattern-matched, and four shapes mean something
+   other than they look like.** Bandit's parser is `NOSEC_COMMENT` →
+   `NOSEC_COMMENT_TESTS` (`bandit/core/manager.py`): it feeds every word after the
+   marker to the plugin registry, keeps what resolves to a check, and — this is the
+   part that surprises — treats an **empty** resolved set as "suppress everything on
+   this line". Measured through that parser over all 310 markers in this tree, the
+   237 written `<id> - reason` are all correct. These are the shapes that are not:
+
+   | Shape | What it actually does |
+   |---|---|
+   | `# nosec b101` | **blanket.** The lookup is case-sensitive for short ids, so a lowercase id resolves to nothing — easier to type than a typo, and it silences every check on the line |
+   | `# nosec B101,B311` | **scoped to B311 only.** Without a space the two ids parse as one token and only the last survives, so B101 still fires while the comment says it is covered. `# nosec B101, B311` and `# nosec B101 B311` both work |
+   | `# nosec B9999 - typo` | **blanket**, same empty-set path as above |
+   | `# nosec B105 - value is random, not real` | **scoped to B105 *and* B311**, because `random` is B311's plugin name. The one-word plugin names are `ciphers`, `eval`, `ftplib`, `marshal`, `md5`, `pickle`, `random`, `telnetlib`, `trojansource` |
+   | a comment that merely **quotes** the pragma | a live blanket marker for the line it sits on. Writing *about* it counts as writing it |
+
+   ⚠️ **A blanket marker on a comment line inside a multi-line call covers the
+   whole node's `linerange`,** not the one line, so it can silence a finding several
+   lines away.
+
+   None of this is visible in a scan. Bandit warns only about words it **fails** to
+   resolve, so the widened marker — the one case where the scope silently grew —
+   produces no diagnostic at any verbosity; and the warnings it does emit go to
+   stderr, which SRT's own bandit command redirects to `/dev/null` before anything
+   could capture it. So: name the id, capitalise it, comma-**space** between ids, and
+   keep plugin words out of the prose.
+4. **A semgrep rule can match your own justification comment.** Writing
    `min-release-age=0` inside an explanatory comment in `.npmrc` re-triggered the
    very rule the comment was explaining.
 
@@ -351,10 +377,23 @@ the check passes, then re-scan to confirm it flips to resolved.
   conditionally-set `AccessLogSetting`, `MethodSettings`, etc. read as absent.
   (SRT's security-matrix checks call a `resolveValue` that handles `Ref` but not
   `Fn::If` branches.)
-- **Tool heuristic false positive** — e.g. bandit **B105** "hardcoded password"
-  fires on any literal assigned near an identifier containing `token`/`secret`/
-  `password`/`pwd`/`pass`/`key`/`auth`. A variable/dict-key like
-  `shard_token_budget = 40000` trips it though `40000` is an LLM token budget.
+- **Tool heuristic false positive** — e.g. bandit **B105**/**B106** "hardcoded
+  password", which match an identifier's **name** against the wordlist
+  `pas+wo?r?d|pass(phrase)?|pwd|token|secrete?` (not `key`, not `auth`) wherever a
+  constant is assigned, compared or passed. `shard_token_budget = 40000`,
+  `pass_count`, `next_token` and `_COMPACT_TOKEN` all trip it.
+  ⚠️ **In test code that no deployment artifact is built from, these two no longer
+  gate**, so there is nothing to suppress and a per-line marker for one of them is
+  the accretion that scope decision replaced (#1086): three of them took `develop`
+  red in one day and each response added another marker. `make srt-scan` lists them
+  under their own non-blocking heading. Everywhere that **ships** they still gate —
+  fix the name, or justify that one line. Note where the boundary is, because path
+  shape alone gets it wrong: a `test_*.py` or a `tests/` directory inside a Lambda's
+  `CodeUri` is copied into the artifact verbatim by `sam build`, so it counts as
+  shipped and keeps gating even though it is a test. `ci_paths.is_test_only_path`
+  decides, from the `CodeUri`/`ContentUri` directories the templates declare, and
+  the rationale — including why no Bandit rule can express this scope — is in
+  `NAME_HEURISTIC_EXEMPT` there.
 - **Accepted architectural risk** — the flagged config is intentional and
   compensated. Example: `AuthorizationType: NONE` on the Web UI SPA static-asset
   routes (`WebUIRootMethod`, `WebUIProxyMethod`) — the browser must fetch
