@@ -634,14 +634,25 @@ document's decision, and to the consolidation step — which previously returned
 empty result rather than failing, so a throttle could finish a document with **no**
 verdicts, no failed status and nothing recorded anywhere.
 
-Two related faults are handled the same way, because both silently changed a result
-rather than reporting a failure. A page whose text could not be read is a page whose
+A related fault is handled the same way, because it silently changed a result rather
+than reporting a failure: a page whose text could not be read is a page whose
 policy-matching regexes never ran, so a policy type evidenced only on that page went
-unmatched and none of its rules were validated. And the cleanup that removes the
-previous run's per-section results is not best-effort: the orchestrator reads exactly
-the prefix it clears, so a cleanup that silently did not happen meant last run's
-verdicts were consolidated as if they were this run's. Both are now retried rather
-than absorbed.
+unmatched and none of its rules were validated. It is now retried rather than absorbed.
+
+**The cleanup that removes the previous run's per-section results is best-effort, and
+consolidation does not depend on it.** Consolidation reads the explicit list of
+per-section outputs *this* run produced, passed to it by the orchestration step, so an
+object the cleanup failed to delete is not in that list and is not read. A surviving
+object costs storage and makes the prefix confusing to read by hand; it cannot reach a
+verdict. A transient failure of the cleanup is still retried, because a retry is the
+right answer to a throttle on its own terms.
+
+⚠️ **If you call the consolidation service directly, pass `section_uris`.** Omitting it
+falls back to listing the prefix, which is the right behaviour for re-consolidating an
+existing prefix by hand and the wrong behaviour for a run of your own: on a reprocessed
+document that prefix can still hold the previous run's verdicts for the same document,
+which are plausible enough to be consolidated and acted on. See the module README for
+the parameter's three values.
 
 **A document-scope explanation has no section to attach to, and is not invented
 one.** The collate step also collects free-text errors that belong to the document

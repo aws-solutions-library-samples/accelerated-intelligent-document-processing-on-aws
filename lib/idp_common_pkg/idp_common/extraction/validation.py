@@ -446,9 +446,10 @@ def shard_validation_schema(schema: dict[str, Any]) -> dict[str, Any]:
     real schema.
 
     ⚠️ Scope: this schema feeds the agent's in-loop **feedback** validator only. The
-    shard's ``extraction_tool`` is generated from the whole-section transport model,
-    so a ``minItems`` floor is still enforced per shard at the tool boundary — a
-    section-sized floor is therefore unsatisfiable by a shard covering part of the
+    shard's ``extraction_tool`` is generated from the **shard** transport model, which
+    relaxes *presence* for a required container and carries every **row-count bound**
+    unchanged — so a ``minItems`` floor is still enforced per shard at the tool
+    boundary, a section-sized floor is unsatisfiable by a shard covering part of the
     pages, and ``extraction.row_shortfall_action`` is the shard-aware lever.
 
     Only the KEYWORD forms are dropped: ``required`` as a list of names, and the
