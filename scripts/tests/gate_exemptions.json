@@ -2298,6 +2298,21 @@
       "crossReferences": [
         "scripts/check_coverage_debt.py::NOT_MEASURED"
       ]
+    },
+    "patterns/unified/tests/test_workflow_transient_retry.py::TRANSIENT_CONVERSION_EXEMPT": {
+      "kind": "exemption",
+      "memberKind": "Step Functions task state name",
+      "turnsOff": "the requirement that a task state permitted to invoke a Bedrock model retry TransientError, for five named states",
+      "premise": [
+        "JUDGEMENT"
+      ],
+      "ratchet": "universe-closure",
+      "ratchetEvidence": "patterns/unified/tests/test_workflow_transient_retry.py",
+      "issues": [
+        1142
+      ],
+      "reason": "All five are deferred rather than exempt in principle, and the deferral is forced by order-sensitivity: adding raise_if_transient to a handler CONVERTS a modeled ThrottlingException into TransientError, so doing that without adding the name to the state's Retry list would REMOVE retryability that exists today. Both halves have to land per state and neither is in this change; none of the five handlers swallows, so what is lost meanwhile is the retry rather than the diagnosis. Each entry carries what is specific to that handler -- OCRStep calls a model only on the bedrock backend, ClassificationStep once per page, SummarizationStep once over the whole document at the end of the pipeline, EvaluationStep only through the LLM-judge comparators, and RecordEvaluationFailure on a deliberately shorter transient tier because it runs on the failure path -- and the gate asserts those reasons are distinct, because length plus a substring would accept five identical strings. Whether a handler SHOULD convert is a judgement about its failure modes, which no predicate computes; what the gate computes is membership of the universe, from the ASL Resource placeholder through DefinitionSubstitutions to the granted IAM actions of the target function and of any role it references.",
+      "ratchetGap": "The predicate answers 'permitted to invoke a model', not 'does invoke one', so an entry can be justified by a grant its handler never uses. It reads actions out of Action: position rather than out of the block's raw text, which is what stops an ARN's wildcard REGION (arn:<partition>:bedrock:*::foundation-model/*, twelve of them here) being read as a bedrock:* action -- there is no such action in this template, and reading one put a data-automation-only function in the universe. What remains loose is the action pattern itself: any future action whose name begins InvokeModel or Converse would qualify regardless of what it does. Over-inclusion is the safe direction for a closure. The closure is also one-directional by design: a state that is NOT Bedrock-capable may still list TransientError legitimately (PolicyClassificationStep does, for DynamoDB and S3 transients), so nothing here detects a listing that is no longer needed."
     }
   }
 }
