@@ -677,3 +677,37 @@ def test_validate_config_stays_quiet_about_a_correct_configuration():
         "pattern-2",
     )
     assert [w for w in result["warnings"] if "configuration key" in w] == []
+
+
+def test_validate_config_does_not_report_a_legacy_key_the_migration_relocates():
+    """The CLI sees pre-migration shapes, so it has to migrate before it asks.
+
+    ``extraction.agentic.validation`` became ``extraction.validation`` in v0.7 and is
+    moved on load rather than dropped. Reporting it would name a working key as a
+    typo, which is a worse failure than the silence this change removes: it sends the
+    author to edit something that is correct.
+    """
+    from idp_common.config.merge_utils import validate_config
+
+    result = validate_config(
+        {
+            "classes": [{"name": "invoice"}],
+            "extraction": {"agentic": {"validation": {"enabled": True}}},
+        },
+        "pattern-2",
+    )
+    offending = [w for w in result["warnings"] if "configuration key" in w]
+    assert offending == [], offending
+
+
+def test_validate_config_does_not_mutate_the_config_it_was_handed():
+    """The migration runs on a copy: a caller's dict is an input, not scratch space."""
+    from idp_common.config.merge_utils import validate_config
+
+    config = {
+        "classes": [{"name": "invoice"}],
+        "extraction": {"agentic": {"validation": {"enabled": True}}},
+    }
+    before = copy.deepcopy(config)
+    validate_config(config, "pattern-2")
+    assert config == before
