@@ -1504,6 +1504,47 @@ class TestAFailedLaterPageKeepsWhatWasGathered:
             "presented as the finding with no caveat"
         )
 
+    def test_the_pagination_token_is_never_assigned_a_literal(self):
+        """``next_token`` holds only what the service returned; the partial-read state
+        has its own flag.
+
+        This has to be a **source** assertion, and the reason is worth stating because
+        the behavioural version of it is vacuous. Overloading ``next_token`` with a
+        sentinel string was invisible at runtime: the assignment is immediately followed
+        by ``break``, so the made-up value was never sent anywhere, and a test asserting
+        that every ``nextToken`` sent came from a response passes identically on both
+        spellings — measured, not assumed. So no input distinguishes them, and the only
+        thing that does is the text.
+
+        What the overload cost was legibility and a false secret-scanner hit: one
+        variable carried two unrelated meanings (a token to send back, and "stop and
+        report unresolved"), and a name containing "token" bound to a constant is what a
+        credential scanner is built to flag. Pinning it here keeps the separation without
+        adding a suppression, which would have shielded the whole line from that scanner
+        for good.
+        """
+        import ast
+        import inspect
+
+        from idp_common.agents.error_analyzer.tools import stepfunction_tool
+
+        tree = ast.parse(inspect.getsource(stepfunction_tool))
+        literal_assignments = [
+            node.lineno
+            for node in ast.walk(tree)
+            if isinstance(node, ast.Assign)
+            and isinstance(node.value, ast.Constant)
+            and isinstance(node.value.value, str)
+            and any(
+                isinstance(t, ast.Name) and t.id == "next_token" for t in node.targets
+            )
+        ]
+        assert not literal_assignments, (
+            f"next_token is assigned a string literal at line(s) {literal_assignments}; "
+            "it must only ever hold a token the service returned, with any other state "
+            "kept in its own variable"
+        )
+
     def test_a_failure_on_the_very_first_page_still_propagates(self):
         """With no events there is nothing to analyse, so the caller's own handler
         should report the read failure rather than an empty timeline."""
