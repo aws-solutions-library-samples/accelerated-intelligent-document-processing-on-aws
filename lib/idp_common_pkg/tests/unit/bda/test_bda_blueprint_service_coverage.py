@@ -17,15 +17,17 @@ and changes what the next document extracts. These tests therefore assert the
 `update_project_with_custom_configurations`, `delete_blueprint` and
 `handle_update_custom_configuration`, rather than that the call happened.
 
-Four things shaped the choice of cases.
+Five things shaped the choice of cases.
 
 **The transform is lossy on purpose, and the loss is the thing to pin.** BDA supports
 neither objects inside objects nor arrays inside object definitions, so
-`_process_object_properties` and `_extract_complex_objects` silently *drop* such
-properties, recording them in `_skipped_properties` for reporting. A test that only
-checked "transform produced a blueprint" would pass whether one field or half the
-schema went missing, so each drop is asserted on the surviving property set and on the
-warning that explains it.
+`_process_object_properties` and `_extract_complex_objects` *drop* such properties,
+recording each in `_skipped_properties` — which is what reaches the caller as a
+per-class warning. A test that only checked "transform produced a blueprint" would pass
+whether one field or half the schema went missing, so each drop is asserted on the
+surviving property set **and** on the warning that explains it. The warning half is not
+decoration: a drop that is only logged reaches the user as `status: success` with no
+warnings for a class whose entire line-items section has left the contract.
 
 **Project identity is per config version and must be stable.** A version whose
 recorded project ARN is re-created instead of reused ends up with its blueprints split
@@ -34,13 +36,17 @@ The reuse path, the ResourceNotFound replacement path, the exact DynamoDB key, a
 region the tracking row is read in (`idp-cli config-sync-bda --region` used to write it
 to the ambient region) are each pinned separately.
 
-**Every error contract here is deliberate and they disagree.** `_retrieve_all_blueprints`
-answers `[]` for a `ClientError` but `None` when given no project ARN;
-`_remove_aws_standard_blueprints_from_project`, `_synchronize_deletes`' delete loop and
-the project-association step swallow exceptions and let the caller report success;
-`cleanup_orphaned_blueprints` converts a failure into a result dict; and
-`_convert_aws_standard_blueprints_to_custom` re-raises wrapped. Callers behave very
-differently under each, so the shape is asserted per method instead of assumed uniform.
+**The error contracts here still disagree with each other, so each is asserted rather
+than assumed.** `_retrieve_all_blueprints` raises — for a read failure and for a
+missing project ARN alike — because an empty list is a statement about the project and
+in replace mode it clears every IDP class; `_synchronize_deletes` returns the ARNs it
+could not delete, since `delete_blueprint` reports failure by returning `False` and
+those orphans are disassociated by then; the project-association step downgrades the
+affected classes to `failed`; `_remove_aws_standard_blueprints_from_project` still
+swallows; `cleanup_orphaned_blueprints` converts a failure into a result dict; and
+`_convert_aws_standard_blueprints_to_custom` re-raises wrapped. What separates the
+ones that raise from the ones that swallow is whether the caller can tell the failure
+apart from a legitimate answer.
 
 **`sync_mode` and `sync_direction` select which side is destroyed.** `replace` means
 the source of truth wins and the other side's extra entries are deleted; `merge` means
@@ -48,12 +54,15 @@ nothing is deleted. Those pairs are tested against each other — the same fixtu
 both ways — because a mode that quietly behaves like the other one is exactly the
 failure that costs a user their classes or their blueprints.
 
-Four statements are left uncovered because no input reaches them. In
-`_process_array_property_simple`, the `"instruction" not in result` fallback runs after
-`_add_bda_fields_to_schema`, which has already defaulted an array's `instruction`, so the
-guard is always false. In `create_blueprints_from_custom_configuration`,
-`classess_added` is initialised empty and never appended to, so the
-`classess.extend(classess_added)` branch cannot run. Both are dead rather than untested.
+**Nothing here is left uncovered as dead.** Three statements that used to be
+unreachable are gone rather than untested: the
+`"instruction" not in result` fallback in `_process_array_property_simple` (which ran
+after `_add_bda_fields_to_schema` had already defaulted it), the
+`classess.extend(classess_added)` branch in `create_blueprints_from_custom_configuration`
+(whose list was never appended to), and `_process_array_property`'s degrade-to-a-typed-
+array branch for nesting items, which its only caller drops before delegating on the
+same four conditions. That last one mattered more than dead code usually does: it was a
+second, different intended behaviour for one input shape.
 
 No AWS call is made: `boto3` is patched at the module boundary and both collaborators
 (`BDABlueprintCreator`, `ConfigurationManager`) are mocks.
@@ -328,28 +337,32 @@ class TestGetOrCreateProjectForVersion:
             "arn:aws:bedrock:::project/fresh"
         )
 
-    def test_a_throttled_verification_also_falls_through_to_a_second_project(
-        self, service, table
+    @pytest.mark.parametrize(
+        "code", ["ThrottlingException", "AccessDeniedException", "InternalServerError"]
+    )
+    def test_an_inconclusive_verification_does_not_create_a_second_project(
+        self, service, table, code
     ):
-        """Behaviour pin: the `else: raise` for a non-NotFound error does not escape.
+        """Only "the project is gone" may lead to a replacement.
 
-        The re-raise sits in an inner `try` whose enclosing `try` also catches
-        `ClientError`, so a throttle or an AccessDenied on
-        `GetDataAutomationProject` is handled exactly like "project is gone": a second
-        project is created and the tracking row is overwritten, orphaning the first
-        project's blueprints. Asserted so that narrowing the outer handler shows up
-        here as a deliberate change rather than as a surprise.
+        A throttle, an AccessDenied or a server error on `GetDataAutomationProject`
+        says nothing about whether the recorded project still exists. Creating one
+        anyway overwrites the tracking row and orphans the first project's
+        blueprints while the version's config names the new, empty one — and the
+        sync reports success, because nothing raised. The assertion is on the
+        second project *not* being created, which is the thing that was lost.
         """
         table.get_item.return_value = {"Item": {"ProjectArn": RECORDED_ARN}}
         service.blueprint_creator.bedrock_client.get_data_automation_project.side_effect = _client_error(
-            "ThrottlingException", "GetDataAutomationProject"
+            code, "GetDataAutomationProject"
         )
         self._wire_creation(service, project_arn="arn:aws:bedrock:::project/second")
 
-        result = self._run(service, table, "v1")
+        with pytest.raises(ClientError):
+            self._run(service, table, "v1")
 
-        assert result == "arn:aws:bedrock:::project/second"
-        service.blueprint_creator.create_data_automation_project.assert_called_once()
+        service.blueprint_creator.create_data_automation_project.assert_not_called()
+        table.put_item.assert_not_called()
 
     def test_an_unreadable_tracking_row_falls_through_to_creation(self, service, table):
         table.get_item.side_effect = _client_error("ProvisionedThroughput", "GetItem")
@@ -560,30 +573,58 @@ class TestRetrieveAllBlueprints:
 
         assert result[0]["blueprintVersion"] == "1"
 
-    def test_a_client_error_listing_the_project_answers_an_empty_list(self, service):
+    def test_a_read_failure_raises_rather_than_answering_an_empty_list(self, service):
+        """An empty list is an answer about the project, not about the read.
+
+        `[]` is how a caller learns a project associates no blueprints, and in
+        replace mode that clears every IDP class; returning it for an AccessDenied
+        therefore deleted the user's configuration on a transient error. In phase 2
+        it also hid every existing blueprint from `_blueprint_lookup`, so the sync
+        created a second blueprint for every class.
+        """
         service.blueprint_creator.list_blueprints.side_effect = _client_error(
             "AccessDeniedException", "ListBlueprints"
         )
 
-        assert service._retrieve_all_blueprints(PROJECT_ARN) == []
+        with pytest.raises(ClientError):
+            service._retrieve_all_blueprints(PROJECT_ARN)
 
-    def test_no_project_arn_answers_none_rather_than_an_empty_list(self, service):
-        """Pinned because the two are not interchangeable downstream: `[]` means "the
-        project has no blueprints" and `None` blows up in `_blueprint_lookup` two
-        frames later. `get_or_create_project_for_version`'s docstring names this as
-        the reason it raises instead of returning a `None` ARN."""
-        assert service._retrieve_all_blueprints("") is None
+    def test_no_project_arn_raises_rather_than_answering_at_all(self, service):
+        """There is no honest answer for a missing ARN.
 
-    def test_one_blueprint_without_an_arn_discards_the_entire_project_view(
+        This used to return `None` for a falsy ARN and `[]` for a read failure —
+        two different shapes for two different non-answers, one of which failed two
+        frames later in `_blueprint_lookup` on an unrelated `TypeError`.
+        `get_or_create_project_for_version`'s docstring cited that `TypeError` as
+        the reason it raises rather than returning a `None` ARN.
+        """
+        with pytest.raises(ValueError, match="project ARN is required"):
+            service._retrieve_all_blueprints("")
+
+    def test_a_project_with_no_custom_output_configuration_has_no_blueprints(
         self, service
     ):
-        """Behaviour pin for a real defect, not an endorsement of it.
+        """`customOutputConfiguration` is optional on the API response, so
+        `list_blueprints` answers `None` for a project configured for standard
+        output only. That is a project with no blueprints; reading `.get` on it
+        raised an `AttributeError` that the outer handler turned into `[]` — the
+        same empty view, arrived at by a crash."""
+        service.blueprint_creator.list_blueprints.return_value = None
 
-        The AWS-standard filter tests `"aws:blueprint" in blueprint_arn` against a
-        value that may be `None`; the resulting `TypeError` is caught by the method's
-        outer handler, which answers `[]`. So a single malformed entry makes every
-        *other* blueprint in the project invisible — and in replace mode an empty view
-        clears all IDP classes.
+        assert service._retrieve_all_blueprints(PROJECT_ARN) == []
+
+    def test_one_blueprint_without_an_arn_does_not_hide_the_others(self, service):
+        """A malformed entry costs that entry only.
+
+        The AWS-standard filter tested `"aws:blueprint" in blueprint_arn` against a
+        value that could be `None`; the `TypeError` was caught by the method's outer
+        handler, which answered `[]`, so one bad entry made every *other* blueprint
+        in the project invisible — and in replace mode an empty view clears all IDP
+        classes. The assertion is on the good blueprint surviving.
+
+        The service model declares `blueprintArn` required on this response, so this
+        is defensive rather than an observed input; what it pins is that one
+        unusable entry cannot take the project's other blueprints with it.
         """
         good = _bda_blueprint("Invoice")
         service.blueprint_creator.list_blueprints.return_value = {
@@ -596,7 +637,9 @@ class TestRetrieveAllBlueprints:
             "blueprint": {"blueprintName": good["blueprintName"], "schema": "{}"}
         }
 
-        assert service._retrieve_all_blueprints(PROJECT_ARN) == []
+        result = service._retrieve_all_blueprints(PROJECT_ARN)
+
+        assert [bp["blueprintName"] for bp in result] == [good["blueprintName"]]
 
 
 # ---------------------------------------------------------------------------
@@ -856,8 +899,16 @@ class TestTransformDropsUnsupportedStructures:
 
         assert result["name"]["instruction"] == "Extract this field from the document"
 
-    def test_a_top_level_object_whose_children_nest_is_dropped_whole(self, service):
-        """The section disappears from the contract — not just its nested child."""
+    def test_a_top_level_object_whose_children_nest_is_dropped_with_a_warning(
+        self, service
+    ):
+        """The section disappears from the contract — not just its nested child.
+
+        The warning is the half that matters. `_process_single_class` reports only
+        what is in `_skipped_properties`, so a drop that was merely logged reached
+        the user as `status: success` with no warnings for a class whose entire
+        section had left the extraction contract.
+        """
         simple, defs = service._extract_complex_objects(
             {
                 "party": {
@@ -875,6 +926,9 @@ class TestTransformDropsUnsupportedStructures:
 
         assert list(simple) == ["total"]
         assert defs == {}
+        dropped = [w for w in service._skipped_properties if w["property"] == "party"]
+        assert dropped, "the dropped section was not reported to the caller"
+        assert dropped[0]["type"] == "nested_object"
 
     def test_a_flat_top_level_object_becomes_a_definition_and_a_ref(self, service):
         simple, defs = service._extract_complex_objects(
@@ -891,9 +945,10 @@ class TestTransformDropsUnsupportedStructures:
         assert defs["party"]["description"] == "The payer"
         assert defs["party"]["properties"]["name"]["inferenceType"] == "explicit"
 
-    def test_an_array_of_objects_that_nest_is_dropped_whole(self, service):
+    def test_an_array_of_objects_that_nest_is_dropped_with_a_warning(self, service):
         """The rows are not degraded, they are gone: no `$ref`, no definition, and no
-        property at all for the array."""
+        property at all for the array — which for a line-items section is the whole
+        table. Reported as a warning for the same reason as the object case above."""
         simple, defs = service._extract_complex_objects(
             {
                 "rows": {
@@ -914,50 +969,42 @@ class TestTransformDropsUnsupportedStructures:
 
         assert simple == {}
         assert defs == {}
+        dropped = [w for w in service._skipped_properties if w["property"] == "rows"]
+        assert dropped, "the dropped line-items section was not reported to the caller"
+        assert dropped[0]["type"] == "nested_array"
 
-    def test_a_non_dict_property_value_reaches_the_transform_and_fails_the_class(
+    def test_a_non_dict_property_value_is_skipped_by_name_rather_than_failing(
         self, service
     ):
-        """Behaviour pin for a defect, described in the module docstring of the report.
+        """A property whose value is not a schema object cannot be described to BDA.
 
-        `_extract_complex_objects` passes a non-dict property value through unchanged,
-        but `_process_flat_schema` immediately calls `.get` on it. A class carrying
-        `"properties": {"x": null}` therefore fails with an opaque `AttributeError` /
-        `TypeError` rather than being skipped with the property named.
+        Passing it through used to hand a `None` (or a bare string) to
+        `_process_flat_schema`, which called `.get` on it: the class was reported
+        failed with a raw `TypeError` / `AttributeError` naming neither the class nor
+        the property. The rest of the schema is kept and the offending property is
+        named.
         """
-        with pytest.raises(TypeError):
-            service._transform_json_schema_to_bedrock_blueprint(
-                _idp_class(properties={"broken": None})
-            )
-
-    def test_an_array_whose_items_nest_is_flattened_to_an_instruction_only_array(
-        self, service
-    ):
-        """Reachable only via `_process_array_property` directly: the flat path drops
-        such arrays earlier. Asserted because the output is a typed array with no
-        `items` at all, which is what BDA would be asked to extract."""
-        extracted: dict = {}
-
-        result = service._process_array_property(
-            "rows",
-            {
-                "type": "array",
-                "description": "Line items",
-                "items": {
-                    "type": "object",
-                    "properties": {
-                        "sub": {
-                            "type": "object",
-                            "properties": {"a": {"type": "string"}},
-                        }
-                    },
-                },
-            },
-            extracted,
+        blueprint = service._transform_json_schema_to_bedrock_blueprint(
+            _idp_class(properties={"broken": None, "total": {"type": "string"}})
         )
 
-        assert result == {"type": "array", "instruction": "Line items"}
-        assert extracted == {}
+        assert list(blueprint["properties"]) == ["total"]
+        dropped = [w for w in service._skipped_properties if w["property"] == "broken"]
+        assert dropped, "the unusable property was dropped without telling the caller"
+        assert dropped[0]["type"] == "invalid_property_schema"
+        assert "NoneType" in dropped[0]["message"]
+
+    def test_a_string_property_value_is_skipped_too(self, service):
+        """A string passes the `"$ref" in prop_value` substring test and then fails on
+        `.get`, so it reached a different error from `None` on the way to the same
+        opaque failure."""
+        blueprint = service._transform_json_schema_to_bedrock_blueprint(
+            _idp_class(properties={"broken": "a string", "total": {"type": "string"}})
+        )
+
+        assert list(blueprint["properties"]) == ["total"]
+        dropped = [w for w in service._skipped_properties if w["property"] == "broken"]
+        assert dropped and "str" in dropped[0]["message"]
 
     def test_an_array_of_flat_objects_is_extracted_to_an_item_definition(self, service):
         """The definition name and the `$ref` must agree, or the array resolves to
@@ -1574,19 +1621,28 @@ class TestProcessClassesParallel:
         assert [entry["class"] for entry in status] == ["Receipt"]
         assert len(updated) == 1
 
-    def test_a_failure_to_associate_still_reports_the_classes_as_successful(
-        self, service
-    ):
-        """Behaviour pin: the association error is logged and swallowed, so the caller
-        reports success for classes whose blueprints are not in the project."""
+    def test_a_failure_to_associate_fails_the_classes_it_affects(self, service):
+        """A blueprint outside the project's `customOutputConfiguration` extracts
+        nothing.
+
+        The blueprint exists in the account, so every per-class step succeeded; what
+        failed is the one write that makes BDA recognise the document type. Reporting
+        `success` was the only outcome that hid it completely — a clean sync report
+        and nothing extracting.
+        """
         service.blueprint_creator.bulk_update_data_automation_project.side_effect = (
             RuntimeError("conflict")
         )
 
-        status, updated, _ = service._process_classes_parallel([_idp_class()], [])
+        status, updated, _ = service._process_classes_parallel(
+            [_idp_class("Invoice"), _idp_class("Receipt")], []
+        )
 
-        assert status[0]["status"] == "success"
-        assert len(updated) == 1
+        assert [entry["status"] for entry in status] == ["failed", "failed"]
+        assert all("not be recognised" in entry["error"] for entry in status)
+        # The ARNs stay claimed: they name blueprints that do exist, and dropping
+        # them here would offer them to `_synchronize_deletes` for deletion.
+        assert len(updated) == 2
 
     def test_no_successful_class_means_no_project_write_at_all(self, service):
         """An empty association payload would clear the project's blueprint list."""
@@ -1738,7 +1794,12 @@ class TestConvertAwsStandardBlueprints:
 
         assert [entry["class"] for entry in result["conversion_status"]] == ["Payslip"]
 
-    def test_a_failure_to_associate_converted_blueprints_is_swallowed(self, service):
+    def test_a_failure_to_associate_converted_blueprints_fails_the_conversion(
+        self, service
+    ):
+        """Same shape as `_process_classes_parallel`: the new custom blueprint exists
+        but is not in the project, so the document type it replaces is no longer
+        recognised at all."""
         service.blueprint_creator.bulk_update_data_automation_project.side_effect = (
             RuntimeError("conflict")
         )
@@ -1746,9 +1807,8 @@ class TestConvertAwsStandardBlueprints:
 
         result = service._convert_aws_standard_blueprints_parallel([aws_bp], [])
 
-        assert result["conversion_status"] == [
-            {"status": "success", "class": "Payslip"}
-        ]
+        assert result["conversion_status"][0]["status"] == "failed"
+        assert "not be recognised" in result["conversion_status"][0]["error"]
 
     def test_converting_without_a_version_refuses_rather_than_guessing(self, service):
         """The version names which configuration the derived classes are written to;
@@ -1947,22 +2007,69 @@ class TestSyncDirectionAndMode:
         ]
         assert {"status": "failed", "class": "idp-Broken-bbbb"} in status
 
-    def test_a_failure_writing_the_replaced_classes_does_not_abort_the_sync(
-        self, service
-    ):
-        """Phase 1 is best-effort; the caller still gets the per-class statuses rather
-        than an exception that hides them."""
+    def test_a_failure_writing_the_replaced_classes_fails_the_sync(self, service):
+        """A replace that did not write is not a replace.
+
+        Everything left in this block either reads the project or writes the aligned
+        class list — per-blueprint conversion errors are caught one level in and
+        reported per class. So a failure here means the alignment the user asked for
+        did not happen, and reporting the per-class statuses as though it had left
+        them with the pre-sync classes and no sign of it.
+        """
         self._config(service, [])
         _wire_project(service, [_bda_blueprint("Invoice")])
         service.config_manager.handle_update_custom_configuration.side_effect = (
             RuntimeError("table write failed")
         )
 
-        status = service.create_blueprints_from_custom_configuration(
-            version="v1", sync_direction="bda_to_idp", sync_mode="replace"
+        with pytest.raises(Exception, match="Failed to process blueprint creation"):
+            service.create_blueprints_from_custom_configuration(
+                version="v1", sync_direction="bda_to_idp", sync_mode="replace"
+            )
+
+    def test_a_project_that_cannot_be_read_does_not_clear_the_idp_classes(
+        self, service
+    ):
+        """The costliest of these: replace mode reading `[]` as "BDA is empty".
+
+        An AccessDenied or a throttle on the project read used to answer `[]`, which
+        this branch treats as "no blueprints in BDA" and responds to by clearing
+        every IDP class. The assertion is that the configuration is not written at
+        all — the classes are what was lost.
+        """
+        self._config(service, [_idp_class(class_id="Invoice")])
+        service.blueprint_creator.list_blueprints.side_effect = _client_error(
+            "AccessDeniedException", "GetDataAutomationProject"
         )
 
-        assert status == [{"status": "success", "class": "Invoice"}]
+        with pytest.raises(Exception, match="Failed to process blueprint creation"):
+            service.create_blueprints_from_custom_configuration(
+                version="v1", sync_direction="bda_to_idp", sync_mode="replace"
+            )
+
+        service.config_manager.handle_update_custom_configuration.assert_not_called()
+
+    def test_a_project_that_cannot_be_read_does_not_duplicate_every_blueprint(
+        self, service
+    ):
+        """The phase-2 half of the same defect.
+
+        An empty view makes every existing blueprint invisible to
+        `_blueprint_lookup`, so each class takes the create path and the project ends
+        up with two blueprints per document type. The assertion is that no blueprint
+        is created.
+        """
+        self._config(service, [_idp_class(class_id="Invoice")])
+        service.blueprint_creator.list_blueprints.side_effect = _client_error(
+            "ThrottlingException", "GetDataAutomationProject"
+        )
+
+        with pytest.raises(Exception, match="Failed to process blueprint creation"):
+            service.create_blueprints_from_custom_configuration(
+                version="v1", sync_direction="idp_to_bda", sync_mode="replace"
+            )
+
+        service.blueprint_creator.create_blueprint.assert_not_called()
 
     def test_bidirectional_uses_merge_for_phase_one_whatever_the_mode_says(
         self, service
@@ -2443,12 +2550,9 @@ class TestSynchronizeDeletes:
 
         service.blueprint_creator.delete_blueprint.assert_not_called()
 
-    def test_a_delete_failure_stops_the_remaining_deletes(self, service):
-        """Behaviour pin: the `try` wraps the whole loop rather than each iteration, so
-        one `ConflictException` leaves the later orphans undeleted — and they have
-        already been removed from the project, so nothing will offer to delete them
-        again."""
-        orphans = [
+    @pytest.fixture
+    def orphans(self) -> list:
+        return [
             {
                 "blueprintName": f"idp-Old{i}-aaaa",
                 "blueprintArn": f"arn:aws:x:::b/o{i}",
@@ -2456,20 +2560,51 @@ class TestSynchronizeDeletes:
             }
             for i in (1, 2, 3)
         ]
+
+    def test_one_delete_failure_does_not_abandon_the_rest(self, service, orphans):
+        """The project's blueprint list is rewritten first — BDA refuses to delete an
+        associated blueprint — so a `try` around the whole loop left every later
+        orphan both undeleted and no longer visible to the project-scoped retrieval.
+        The assertion is that all three deletes are attempted."""
         service.blueprint_creator.list_blueprints.return_value = {
             "blueprints": [{"blueprintArn": bp["blueprintArn"]} for bp in orphans]
         }
-        service.blueprint_creator.delete_blueprint.side_effect = _client_error(
-            "ConflictException", "DeleteBlueprint"
-        )
+        service.blueprint_creator.delete_blueprint.side_effect = [
+            _client_error("ConflictException", "DeleteBlueprint"),
+            True,
+            True,
+        ]
 
-        service._synchronize_deletes(orphans, [])
+        failed = service._synchronize_deletes(orphans, [])
 
-        assert service.blueprint_creator.delete_blueprint.call_count == 1
+        assert service.blueprint_creator.delete_blueprint.call_count == 3
+        assert failed == ["arn:aws:x:::b/o1"]
         payload = service.blueprint_creator.update_project_with_custom_configurations.call_args.kwargs[
             "customConfiguration"
         ]
         assert payload == {"blueprints": []}
+
+    def test_a_delete_that_reports_false_is_reported_as_orphaned(
+        self, service, orphans
+    ):
+        """`BDABlueprintCreator.delete_blueprint` reports failure by returning `False`
+        rather than raising, so the return value is the only signal there is — and it
+        was discarded. An orphan left behind here is disassociated already, so the
+        caller has to be told to run the account-wide cleanup."""
+        service.blueprint_creator.list_blueprints.return_value = {
+            "blueprints": [{"blueprintArn": bp["blueprintArn"]} for bp in orphans]
+        }
+        service.blueprint_creator.delete_blueprint.side_effect = [True, False, True]
+
+        assert service._synchronize_deletes(orphans, []) == ["arn:aws:x:::b/o2"]
+
+    def test_deleting_everything_reports_nothing_orphaned(self, service, orphans):
+        service.blueprint_creator.list_blueprints.return_value = {
+            "blueprints": [{"blueprintArn": bp["blueprintArn"]} for bp in orphans]
+        }
+        service.blueprint_creator.delete_blueprint.return_value = True
+
+        assert service._synchronize_deletes(orphans, []) == []
 
 
 @pytest.mark.unit

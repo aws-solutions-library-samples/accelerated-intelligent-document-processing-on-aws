@@ -161,6 +161,62 @@ For optimal performance with BDA:
 
 The BDA service is designed to be thread-safe, supporting concurrent processing of multiple documents in parallel workloads.
 
+## Blueprint Synchronization (`BdaBlueprintService`)
+
+`create_blueprints_from_custom_configuration` aligns a config version's IDP document
+classes with the blueprints its BDA project associates. A blueprint *is* the extraction
+contract in BDA mode — the project's `customOutputConfiguration.blueprints` list decides
+which document types are recognised and which fields come back — so the error contracts
+below are what stop a sync from quietly changing what the next document extracts.
+
+### Reading the project is allowed to fail; it is not allowed to look empty
+
+`_retrieve_all_blueprints` **raises** when the project cannot be read, and when it is
+given no project ARN. It returns an empty list only when the project genuinely
+associates no blueprints, because that is what the empty list means to its callers:
+
+- in replace mode, BDA → IDP reads it as "BDA is empty" and **clears every IDP class**;
+- in phase 2, it hides every existing blueprint from `_blueprint_lookup`, so the sync
+  creates a **second blueprint for every class**.
+
+A project configured for standard output only has no `customOutputConfiguration` at all,
+which the API reports by omitting the field. That is an empty list, not a failure.
+
+### A recorded project is replaced only when it is known to be gone
+
+`get_or_create_project_for_version` verifies the ARN recorded for a version and creates
+a replacement **only** for `ResourceNotFoundException`. A throttle, an `AccessDenied` or
+a server error on `GetDataAutomationProject` raises: it says nothing about whether the
+project still exists, and creating one anyway overwrites the tracking row and orphans
+the first project's blueprints while the version's config names the new, empty one.
+
+### Every dropped property is a warning, not just a log line
+
+BDA supports neither objects inside objects nor arrays whose items nest further, so the
+transform drops those properties. Each drop is recorded in `_skipped_properties`, which
+`_process_single_class` returns as per-class `warnings` and the sync resolver surfaces in
+its response. The recorded `type` values are `nested_object`, `nested_array` and
+`invalid_property_schema` (a property whose value is not a JSON Schema object — `null`,
+or a bare string — which cannot be described to BDA at all and used to fail the whole
+class with a raw `TypeError`).
+
+### Failing to associate a blueprint fails its class
+
+Creating a blueprint and then failing to write it into the project leaves it existing in
+the account but absent from the extraction contract, so that document type is not
+recognised. `_process_classes_parallel` and `_convert_aws_standard_blueprints_parallel`
+therefore downgrade the affected classes to `status: failed` with the reason, rather
+than reporting a clean sync.
+
+### Deletes are per-blueprint and their failures are returned
+
+`_synchronize_deletes` removes the blueprints to be deleted from the project first —
+BDA refuses to delete an associated blueprint — and then deletes them one at a time,
+returning the ARNs it could not delete. Those are orphans that the project-scoped
+retrieval can no longer see; `cleanup_orphaned_blueprints` lists account-wide and will
+still find them. Note that `BDABlueprintCreator.delete_blueprint` reports failure by
+returning `False` rather than raising, so its return value is the signal to read.
+
 ## Blueprint Optimization
 
 The `BlueprintOptimizer` class uses the BDA `InvokeBlueprintOptimizationAsync` API to improve extraction accuracy by comparing results against ground truth data.
