@@ -67,12 +67,15 @@ make typecheck     # basedpyright
 `make typecheck` fails with `make: basedpyright: No such file or directory` if the
 tool is absent — it is not in the `[test]` extra. `pip install basedpyright` (CI
 installs it via `npm install -g basedpyright`). Compare its output against the
-baseline on `develop` rather than reading it absolutely: it reports **4 errors / 51
-warnings** on a clean tree (2026-09-11). Note **which files those errors land in
-shifts with the installed dependency set** — with `z3-solver` present they sit in
-`rule_validation/z3/z3_validator.py` and `calculate_capacity/index.py`, without it
-they move — so compare the **totals**, and check that no diagnostic names a file
-your change touched.
+baseline on `develop` rather than reading it absolutely: it reports **0 errors / 42
+warnings** on a clean tree (2026-09-22), over every tracked `.py` file — the number of
+those is not worth quoting, and `git ls-files '*.py' | wc -l` must equal the
+`filesAnalyzed` it prints. Errors are the gate, so a
+single one is a regression; the warnings are a standing set (`reportUnsupportedDunderAll`
+on several `__init__.py` re-export lists, one duplicate import). Note **which files a
+diagnostic lands in shifts with the installed dependency set** — `z3-solver` moves two
+of the warnings between `rule_validation/z3/__init__.py` and the validator itself — so
+compare the **totals**, and check that no diagnostic names a file your change touched.
 
 Per-suite (isolated) — `PP=<checkout>/lib/idp_common_pkg`:
 
@@ -110,6 +113,31 @@ fails if they disagree, and also fails if `docs/testing.md` or
 exists because those three documents claimed zero for weeks while
 `pii-anonymizer/feature-api/tests/test_handler.py::test_report_list_and_aggregate`
 failed on any machine with an assume-role `AWS_PROFILE` (#974).
+
+**`make test` compares this table against what it observed**, in both directions,
+and fails the run on either asymmetry: a failure the table does not declare (a
+regression, as before), or a declared row whose test passed (a waiver that has
+outlived its cause — delete the row and lower the count). So the table is
+load-bearing rather than advisory: while it is empty, any failure is red; a row in
+it makes exactly that node id acceptable and nothing else. Two consequences worth
+knowing before you write a row:
+
+- **Write the Test cell as a pytest node id** — `path/to/test_x.py::test_name`,
+  repo-relative, backticks optional. That is the form a run reports, so it is the
+  only form the comparison can key on, and a row written as prose fails the gate
+  rather than being silently ignored.
+- **A run that produces no JUnit entry at all cannot be declared away**, and is
+  reported separately: a crash, an internal pytest error, or a failure before
+  anything was collected. Note where that boundary actually falls — a module that
+  fails to **import** *does* get an entry, under a synthetic name derived from the
+  module, so that failure is declarable like any other and a row naming that id
+  makes the run green. The undeclarable case is only the one where nothing was
+  collected.
+
+Each root's results are written as JUnit XML under `test-reports/`, with a
+`test-reports/run_all_tests.json` summary naming the observed, declared,
+unexpected and resolved sets. Those are for reading; the verdict is decided in the
+run that produced them, so there is no stale-results path through the check.
 
 <!-- STANDING-FAILURES-BEGIN -->
 | Suite | Test | Expected failure mode | Verified cause | Date |
