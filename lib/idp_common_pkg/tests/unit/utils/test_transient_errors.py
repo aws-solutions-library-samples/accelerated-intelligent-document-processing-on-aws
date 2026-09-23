@@ -12,10 +12,14 @@ import botocore.exceptions
 import pytest
 
 from idp_common.utils.transient_errors import (
+    _NOT_TRANSIENT_AT_TASK_LEVEL,
+    _PINNED_BOTOCORE_RETRY_CODES,
     DETERMINISTIC_MESSAGE_MARKERS,
+    TRANSIENT_ERROR_NAMES,
     TRANSIENT_EXCEPTION_TYPES,
     TRANSIENT_MESSAGE_MARKERS,
     TransientError,
+    _botocore_retry_codes,
     is_model_tool_use_sequence_error,
     is_transient_error,
     raise_if_transient,
@@ -375,3 +379,167 @@ class TestEachRuleInIsolation:
             exc = odd(**kwargs) if kwargs else odd("plain text")
         assert "read timed out" not in str(exc).lower()
         assert is_transient_error(exc) is True
+
+
+class TestTheThrottlingVocabularyIsDerivedFromBotocore:
+    """#1132: the vocabulary knew one spelling of "throttled" and AWS uses six.
+
+    ``ThrottlingException`` was the only throttling code listed, so a service answering
+    with the legacy ``Throttling`` — 345 of 345 throttles under concurrent
+    CloudFormation reads — was judged deterministic. That fails in both directions at
+    once: the persistence carve-out withholds a record only for a failure it judges
+    transient, and the state machine retries only the name this predicate produces.
+
+    These tests pin the resulting **set** rather than checking one new string, and they
+    pin it against botocore's own retry configuration rather than against a list written
+    here, which is the part that stops the next spelling going missing the same way.
+    """
+
+    @staticmethod
+    def _client_error(code: str) -> botocore.exceptions.ClientError:
+        """The shape the reported failures arrived in: a bare ``ClientError``."""
+        return botocore.exceptions.ClientError(
+            {"Error": {"Code": code, "Message": "Rate exceeded"}}, "DescribeStacks"
+        )
+
+    def test_the_pin_matches_what_botocore_currently_ships(self):
+        """The gate. A dependency bump that adds a spelling stops here for review.
+
+        `_botocore_retry_codes` already includes it in the live vocabulary by then —
+        which is the safe direction — so what this failure asks for is a decision about
+        whether the new code is really a rate limit, not an emergency.
+        """
+        live = _botocore_retry_codes()
+        assert live == _PINNED_BOTOCORE_RETRY_CODES, (
+            "botocore's retryable codes changed. Added: "
+            f"{sorted(live - _PINNED_BOTOCORE_RETRY_CODES)}; removed: "
+            f"{sorted(_PINNED_BOTOCORE_RETRY_CODES - live)}. Decide per code whether it "
+            "is a rate limit a retry clears (leave it in the derived set) or a quota "
+            "that is genuinely full (add it to _NOT_TRANSIENT_AT_TASK_LEVEL with a "
+            "reason), then update the pin."
+        )
+
+    def test_the_derivation_reads_botocore_rather_than_the_pin(self):
+        """Not vacuous: if the read silently fell through, the pin would still match
+        itself and this class would prove nothing about botocore."""
+        from botocore.retries.standard import (
+            ThrottledRetryableChecker,
+            TransientRetryableChecker,
+        )
+
+        assert len(ThrottledRetryableChecker._THROTTLED_ERROR_CODES) >= 10
+        assert "Throttling" in ThrottledRetryableChecker._THROTTLED_ERROR_CODES
+        assert TransientRetryableChecker._TRANSIENT_ERROR_CODES
+
+    def test_the_fallback_returns_the_pin_when_the_checkers_move(self, monkeypatch):
+        """The attributes read are private, so the failure mode of a rename has to be a
+        stale vocabulary rather than an ImportError at Lambda cold start."""
+        import sys
+        import types
+
+        monkeypatch.setitem(
+            sys.modules, "botocore.retries.standard", types.ModuleType("stub")
+        )
+        assert _botocore_retry_codes() == _PINNED_BOTOCORE_RETRY_CODES
+
+    def test_every_botocore_retry_code_is_classified(self):
+        """Universe closure: no code may sit in neither the transient set nor the
+        deliberately-excluded one. This is what makes the exclusion trustworthy — an
+        unclassified code silently reads as deterministic, which is the defect."""
+        unclassified = {
+            code
+            for code in _botocore_retry_codes()
+            if code.lower() not in TRANSIENT_ERROR_NAMES
+            and code not in _NOT_TRANSIENT_AT_TASK_LEVEL
+        }
+        assert not unclassified, unclassified
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            "Throttling",  # the reported case: CloudFormation and others
+            "ThrottledException",
+            "RequestThrottled",
+            "RequestThrottledException",
+            "TransactionInProgressException",
+            "BandwidthLimitExceeded",
+            "PriorRequestNotComplete",
+            "EC2ThrottledException",
+        ],
+    )
+    def test_each_newly_recognised_code_is_transient(self, code):
+        """One case per spelling added, so removing any single one fails a test."""
+        assert is_transient_error(self._client_error(code)) is True
+
+    def test_the_spelling_that_was_already_recognised_still_is(self):
+        assert is_transient_error(self._client_error("ThrottlingException")) is True
+
+    def test_limit_exceeded_is_deliberately_not_transient(self):
+        """The one code botocore calls a throttle that this does not.
+
+        On some services it is a rate limit; on others it reports a quota that is
+        genuinely full, where eight attempts at 2.5x backoff cannot help. The code alone
+        does not say which, and every service this solution calls that rate-limits also
+        answers with a spelling that IS listed — so it stays out, and that is a decision
+        rather than an omission.
+        """
+        assert "LimitExceededException" in _botocore_retry_codes()
+        assert "LimitExceededException" in _NOT_TRANSIENT_AT_TASK_LEVEL
+        assert is_transient_error(self._client_error("LimitExceededException")) is False
+
+    def test_the_deterministic_exclusions_still_hold(self):
+        """Widening the vocabulary must not have swept these back in."""
+        for code in ("ValidationException", "ModelErrorException"):
+            assert code in _NOT_TRANSIENT_AT_TASK_LEVEL
+            assert is_transient_error(self._client_error(code)) is False
+
+    def test_the_whole_vocabulary_is_pinned(self):
+        """The exact set, so any change to it — in either direction — is reviewed.
+
+        A predicate this shared decides whether a failure is recorded as a permanent
+        diagnosis or suppressed pending a retry, on every path that uses it, so a name
+        arriving or leaving unnoticed is the thing worth preventing.
+        """
+        assert sorted(TRANSIENT_ERROR_NAMES) == [
+            "awshttpsconnectionpool",
+            "bandwidthlimitexceeded",
+            "brokenpipeerror",
+            "connectionclosederror",
+            "connectionrefusederror",
+            "connectionresetterror",
+            "connecttimeouterror",
+            "ec2throttledexception",
+            "endpointconnectionerror",
+            "incompletereaderror",
+            "internalerror",
+            "internalservererror",
+            "internalserverexception",
+            "modelnotreadyexception",
+            "modelstreamerrorexception",
+            "modelthrottledexception",
+            "modeltimeoutexception",
+            "newconnectionerror",
+            "priorrequestnotcomplete",
+            "protocolerror",
+            "provisionedthroughputexceededexception",
+            "proxyconnectionerror",
+            "read timed out",
+            "readtimeouterror",
+            "remotedisconnected",
+            "requestlimitexceeded",
+            "requestthrottled",
+            "requestthrottledexception",
+            "requesttimeout",
+            "requesttimeoutexception",
+            "responsestreamingerror",
+            "servicequotaexceededexception",
+            "serviceunavailable",
+            "serviceunavailableexception",
+            "slowdown",
+            "throttledexception",
+            "throttling",
+            "throttlingexception",
+            "timeouterror",
+            "toomanyrequestsexception",
+            "transactioninprogressexception",
+        ]

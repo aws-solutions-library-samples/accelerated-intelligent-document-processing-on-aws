@@ -61,6 +61,26 @@ a retry loop's chained attempts or a swallowed transient error cannot make an
 unrelated deterministic failure look transient); message markers are limited to
 transport text (`Read timed out`, `Connection reset`, ...).
 
+⚠️ **The throttling half of the vocabulary is read from botocore, not listed here.**
+AWS has at least six spellings meaning "you are being rate limited" — `Throttling`,
+`ThrottlingException`, `ThrottledException`, `RequestThrottled`,
+`RequestThrottledException`, `TooManyRequestsException` — and different services answer
+with different ones. Knowing only `ThrottlingException` meant a service using the legacy
+`Throttling`, which CloudFormation does, had its throttle judged **deterministic**: the
+failure was recorded as a permanent diagnosis and the state machine did not retry it,
+so the document failed on its first attempt for a condition that would have cleared
+(#1132). `_botocore_retry_codes()` therefore reads botocore's own
+`ThrottledRetryableChecker._THROTTLED_ERROR_CODES` and
+`TransientRetryableChecker._TRANSIENT_ERROR_CODES`, so a spelling AWS adds arrives with
+a dependency bump rather than with an incident. Those attributes are private, so there
+is an audited pin (`_PINNED_BOTOCORE_RETRY_CODES`) as the fallback, and a test that
+fails when botocore's live sets differ from it — that failure is a prompt to decide
+about the new code, not an outage. `LimitExceededException` is the one code botocore
+calls a throttle that this does not: on some services it is a rate limit, on others a
+quota that is genuinely full, and the code alone cannot tell you which. Widening the
+vocabulary is a **per-service decision**, so add to `_NOT_TRANSIENT_AT_TASK_LEVEL` with
+a written reason rather than reaching for the message text.
+
 One exception cuts the other way. `DETERMINISTIC_MESSAGE_MARKERS` lists message text
 that marks a **reproducible** outcome even though the error *code* carrying it is
 transient, and it is evaluated **first** for each node — ahead of the `ClientError`

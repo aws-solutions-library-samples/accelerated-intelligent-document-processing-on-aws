@@ -564,7 +564,7 @@ class TestOcrService:
                 assert service._feature_combo() == expected, features
 
     @patch("boto3.client")
-    @patch("idp_common.s3.write_content")
+    @patch("idp_common.ocr.service.s3.write_content")
     def test_process_single_page_textract(
         self, mock_write_content, mock_boto_client, mock_textract_response
     ):
@@ -611,10 +611,10 @@ class TestOcrService:
         )  # image, raw, confidence, parsed, pageData
 
     @patch("boto3.client")
-    @patch("idp_common.s3.write_content")
-    @patch("idp_common.bedrock.invoke_model")
-    @patch("idp_common.bedrock.extract_text_from_response")
-    @patch("idp_common.image.prepare_bedrock_image_attachment")
+    @patch("idp_common.ocr.service.s3.write_content")
+    @patch("idp_common.ocr.service.bedrock.invoke_model")
+    @patch("idp_common.ocr.service.bedrock.extract_text_from_response")
+    @patch("idp_common.ocr.service.image.prepare_bedrock_image_attachment")
     def test_process_single_page_bedrock(
         self,
         mock_prepare_image,
@@ -775,7 +775,7 @@ class TestOcrService:
         assert "No confidence data available from LLM OCR" in confidence["text"]
 
     @patch("boto3.client")
-    @patch("idp_common.s3.write_content")
+    @patch("idp_common.ocr.service.s3.write_content")
     def test_process_single_page_none(self, mock_write_content, mock_boto_client):
         """Test single page processing with 'none' backend."""
         # Mock PDF document with pypdfium2 API
@@ -1018,7 +1018,7 @@ class TestOcrService:
                     assert "Error extracting text" in result["text"]
 
     @patch("boto3.client")
-    @patch("idp_common.s3.write_content")
+    @patch("idp_common.ocr.service.s3.write_content")
     @patch("idp_common.ocr.service.pdfium")
     def test_process_single_page_with_resize_config(
         self, mock_pdfium, mock_write_content, mock_boto_client, mock_textract_response
@@ -1065,6 +1065,12 @@ class TestOcrService:
         assert "image_uri" in result
 
     @patch("boto3.client")
+    # NOT patched at `idp_common.ocr.service.image.…` like the four targets above:
+    # `_process_single_page_textract` imports this one with a FUNCTION-LOCAL
+    # `from idp_common.image import apply_adaptive_binarization`, so the name is
+    # resolved from `sys.modules` at call time rather than from the module-level
+    # `image` global. Patching the service module's captured `image` object would
+    # not be seen (measured: called 0 times).
     @patch("idp_common.image.apply_adaptive_binarization")
     def test_process_single_page_with_preprocessing(
         self,
@@ -1099,7 +1105,7 @@ class TestOcrService:
         preprocessing_config = {"enabled": True}
         service = OcrService(preprocessing_config=preprocessing_config)
 
-        with patch("idp_common.s3.write_content"):
+        with patch("idp_common.ocr.service.s3.write_content"):
             result, metering = service._process_single_page_textract(
                 0, mock_pdf_doc, "output-bucket", "test-prefix"
             )
