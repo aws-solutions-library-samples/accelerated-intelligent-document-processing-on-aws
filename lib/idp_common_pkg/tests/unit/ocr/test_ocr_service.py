@@ -9,6 +9,7 @@ Unit tests for the OCR Service class.
 # The above line disables E402 (module level import not at top of file) and I001 (import block sorting) for this file
 
 import pytest
+from pydantic import ValidationError
 
 # Import standard library modules first
 import sys
@@ -317,8 +318,19 @@ class TestOcrService:
             }
             assert service.dpi == 150
 
-    def test_init_config_pattern_invalid_sizing_fallback(self):
-        """Test initialization with invalid sizing values falls back to defaults."""
+    def test_init_config_pattern_rejects_an_unreadable_sizing_value(self):
+        """An unreadable dimension fails config validation rather than defaulting.
+
+        This asserted the silent fallback, and that fallback is what made the defect
+        invisible: `parse_dimensions` turned `"invalid"` into `None`, which is the same
+        value "not configured" produces, so the service applied the default ceiling and
+        logged *"No image sizing configured, applying default ceiling"* — the opposite
+        of what had happened. The warning written for this case could never fire,
+        because by then the value was already `int | None` (#1158).
+
+        `dpi` in the same config block has always raised for an unreadable value, so
+        this also removes an asymmetry rather than inventing a rule.
+        """
         config = {
             "ocr": {
                 "image": {
@@ -329,15 +341,39 @@ class TestOcrService:
             }
         }
 
+        with patch("boto3.client"), pytest.raises(ValidationError) as caught:
+            OcrService(config=config)
+
+        message = str(caught.value)
+        assert "target_width" in message and "target_height" in message
+        assert "invalid" in message, "the rejected value should be named"
+
+    def test_an_empty_sizing_value_is_still_unset_rather_than_rejected(self):
+        """Empty is how the UI and a YAML preset express "not configured", so it must
+        keep meaning that — only an unreadable value is an error."""
+        config = {"ocr": {"image": {"target_width": "", "target_height": None}}}
+
         with patch("boto3.client"):
             service = OcrService(config=config)
 
-            # Verify fallback to defaults on invalid values
-            assert service.resize_config == {
-                "target_width": DEFAULT_TARGET_WIDTH,
-                "target_height": DEFAULT_TARGET_HEIGHT,
-            }
-            assert service.dpi == 150
+        assert service.resize_config == {
+            "target_width": DEFAULT_TARGET_WIDTH,
+            "target_height": DEFAULT_TARGET_HEIGHT,
+        }
+
+    def test_one_configured_dimension_leaves_the_other_unset(self):
+        """A single dimension is meaningful: the resize keeps the aspect ratio. The
+        removed branch would have coerced the missing one, so this pins that it stays
+        None."""
+        config = {"ocr": {"image": {"target_width": 1500}}}
+
+        with patch("boto3.client"):
+            service = OcrService(config=config)
+
+        assert service.resize_config == {
+            "target_width": 1500,
+            "target_height": None,
+        }
 
     def test_init_with_preprocessing_config(self):
         """Test initialization with preprocessing configuration."""
