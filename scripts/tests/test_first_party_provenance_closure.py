@@ -35,6 +35,7 @@ inside its source.
 
 from __future__ import annotations
 
+import re
 import subprocess
 from pathlib import Path
 
@@ -93,21 +94,56 @@ def _tracked_python() -> list[Path]:
     return [Path(p) for p in out]
 
 
+def _first_party_imports(text: str) -> set[str]:
+    return {
+        name
+        for name in FIRST_PARTY
+        if f"import {name}" in text or f"from {name}" in text
+    }
+
+
+def _read(rel: Path) -> str | None:
+    try:
+        return (REPO_ROOT / rel).read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError):  # pragma: no cover - unreadable file
+        return None
+
+
 def first_party_test_directories() -> dict[Path, set[str]]:
-    """Every directory holding a ``test_*.py`` that imports a first-party package."""
+    """Every directory holding a ``test_*.py`` that reaches a first-party package.
+
+    **Reaches**, not imports. A Lambda suite's test module typically imports the handler
+    beside it (``from index import handler``) and the handler imports ``idp_common``, so
+    the run resolves the shared library through the editable-install pointer exactly as a
+    direct import would -- and matching only a literal first-party import in the
+    ``test_*.py`` put six such directories outside the universe. They were unguarded, and
+    the closure check reported every member guarded, which is the half that matters: a
+    derived gate whose derivation is too narrow gives the right answer about the wrong
+    set.
+
+    So a sibling module the test imports is read too, one hop. One hop rather than a full
+    transitive walk because that is what the shape here needs and because each further
+    hop widens the universe faster than it adds real exposure -- if a second hop ever
+    matters, the right response is to add it deliberately and re-measure the floor below,
+    not to have taken it speculatively.
+    """
     found: dict[Path, set[str]] = {}
     for rel in _tracked_python():
         if not rel.name.startswith("test_"):
             continue
-        try:
-            text = (REPO_ROOT / rel).read_text(encoding="utf-8")
-        except (OSError, UnicodeDecodeError):  # pragma: no cover - unreadable file
+        text = _read(rel)
+        if text is None:
             continue
-        hits = {
-            name
-            for name in FIRST_PARTY
-            if f"import {name}" in text or f"from {name}" in text
-        }
+        hits = _first_party_imports(text)
+        # One hop: a module imported by name from the test's own directory.
+        for sibling in re.findall(
+            r"^\s*(?:from|import)\s+([a-z_][a-z0-9_]*)", text, re.M
+        ):
+            candidate = rel.parent / f"{sibling}.py"
+            if (REPO_ROOT / candidate).is_file():
+                sibling_text = _read(candidate)
+                if sibling_text is not None:
+                    hits |= _first_party_imports(sibling_text)
         if hits:
             found.setdefault(rel.parent, set()).update(hits)
     return found
@@ -138,9 +174,14 @@ def test_the_universe_is_not_empty():
     count so it does not need editing for ordinary growth.
     """
     directories = first_party_test_directories()
-    assert len(directories) >= 30, (
-        f"only {len(directories)} first-party-importing test directories were derived; "
-        f"the derivation is probably broken rather than the tree having shrunk"
+    # 50 today. The floor sits at 45 deliberately: 44 directories reach a first-party
+    # package by a literal import in the test module itself, so any floor at or below 44
+    # is satisfied with the one-hop lookup completely broken -- which is the regression
+    # this pins, not general shrinkage of the tree.
+    assert len(directories) >= 45, (
+        f"only {len(directories)} first-party-reaching test directories were derived; "
+        f"the derivation is probably broken rather than the tree having shrunk. If the "
+        f"count is near 44, the one-hop sibling lookup is what stopped working"
     )
 
 
@@ -241,3 +282,36 @@ def test_the_shared_helper_is_what_the_guards_call():
             f"{guard}/conftest.py calls the guard without importing the shared helper, "
             f"so it is a local reimplementation"
         )
+
+
+@pytest.mark.unit
+def test_the_one_hop_lookup_contributes_members_a_direct_scan_would_miss():
+    """A raw floor is a weak pin on this; the contribution itself is the property.
+
+    Six directories reach `idp_common` only through the handler beside their test module
+    (`from index import handler`, and `index.py` imports the library). A derivation that
+    reads the test file alone finds none of them, and the closure check then reports every
+    member of its universe guarded -- correctly, about a universe missing exactly the
+    directories that had no guard. This asserts the difference between the two derivations
+    is non-empty, so the lookup cannot be removed while the counts still look plausible.
+    """
+    full = first_party_test_directories()
+    direct_only = {
+        rel.parent
+        for rel in _tracked_python()
+        if rel.name.startswith("test_")
+        and (text := _read(rel)) is not None
+        and _first_party_imports(text)
+    }
+    only_via_sibling = sorted(set(full) - direct_only)
+    assert only_via_sibling, (
+        "the one-hop sibling lookup found nothing a direct scan would not have found, so "
+        "it is either broken or no longer needed; if the Lambda suites stopped importing "
+        "their handlers, delete it deliberately rather than leaving it inert"
+    )
+    # Every one of them must be guarded, which is what the closure check asserts -- named
+    # here so a reader of this failure sees which directories depend on the lookup.
+    unguarded = [str(d) for d in only_via_sibling if guard_directory(d) is None]
+    assert not unguarded, (
+        f"reached only via a sibling import and unguarded: {unguarded}"
+    )
