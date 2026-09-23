@@ -34,6 +34,7 @@ The IDP Common library provides these main modules:
 - **[Config](config/README.md)**: Configuration loading, merging, validation, and typed models
 - **[Hooks](hooks/README.md)**: Helpers for authoring pipeline-hook Lambdas (load / mutate / return a Document)
 - **[Monitoring](monitoring/README.md)**: Shared monitoring foundation (logs, X-Ray, Step Functions, stack discovery)
+- **Step Functions history** (`stepfunctions_history.py`): the one rule for reading an execution history and naming the state that failed — see [Naming the state that failed](#-naming-the-state-that-failed) below
 
 ## 🗃️ Key Classes
 
@@ -490,6 +491,58 @@ literal in `src/ui/src/components/common/processing-issues-utils.ts`. That is a
 different language, so nothing about adding a code here would make it appear there —
 `scripts/tests/test_failure_code_ui_parity.py` fails when the two disagree in either
 direction. Add the code to the `ProcessingIssue` docstring's inventory too.
+
+## 🧭 Naming the state that failed
+
+`stepfunctions_history.py` answers one question about a Step Functions execution
+history — which state the terminal failure is attributable to — and it exists because
+two callers answered it separately and both got it wrong the same way.
+
+```python
+from idp_common.stepfunctions_history import failing_state, failing_state_is_resolvable
+
+state = failing_state(events)          # events in either direction; None if unknowable
+```
+
+**Why "the last state entered before the failure" is the wrong answer.** A `Catch` that
+routes to a `Fail` state enters that handler *before* the terminal `ExecutionFailed`
+arrives, and `FailStateEntered` is a real `HistoryEventType` that matches a
+`StateEntered` suffix like any other transition. So the history reads:
+
+```
+TaskStateEntered:  Extraction      <- the state that actually failed
+TaskFailed
+FailStateEntered:  <handler>
+ExecutionFailed
+```
+
+Both the chronological spelling ("the last state entered") and the reverse-order one
+("the first state entered we see") name the handler, and both read as obviously right.
+The rule that works keeps the two sources apart: the **state** comes from the last
+task-level failure, the **error text** from the terminal event. Nine of this workflow's
+states route a caught failure to a `Fail` state, so this is the ordinary case, not an
+edge one.
+
+Two things to know before relying on the answer:
+
+- It returns `None` rather than a placeholder when the window holds no state transition
+  older than the failure. Callers render their own "unknown", because a confident wrong
+  state name costs more than an admitted gap — it sends a reader to the wrong log group.
+  `failing_state_is_resolvable(events, more_pages=...)` is the matching stop condition
+  for a caller paging backwards from the failure, and it deliberately refuses to call an
+  execution-level failure resolved while pages remain: the handler's own transition
+  would otherwise satisfy it.
+- Attribution infers causality from **adjacency**, so inside a concurrent `Map` — whose
+  iterations share one history and therefore interleave — it can name a sibling
+  iteration's state. Walking `previousEventId` is the exact fix and has not been made.
+  Such a walk has to start from an **outcome** event: a `TaskStateEntered` precedes its
+  own `TaskScheduled`, so walking back from a state transition reaches the *previous*
+  state's events.
+
+The module imports nothing outside the standard library, deliberately — the CodeBuild
+deployment harness (`scripts/sdlc/codebuild_deployment.py`) is one of its two callers
+and cannot afford `strands`, which the other one (the error-analyzer agent tool) pulls
+in.
 
 ## 📝 Best Practices
 

@@ -410,3 +410,99 @@ class TestExtractFailureDetails:
         result = extract_failure_details(events)
         # The last TaskStateEntered before id=5 is ExtractDocument (id=4)
         assert result["failed_state"] == "ExtractDocument"
+
+
+# ---------------------------------------------------------------------------
+# The Catch-handler misattribution (#1139, #1168) does NOT arise here — pinned.
+# ---------------------------------------------------------------------------
+
+
+def _caught_failure_events():
+    """`ExtractDocument` failed, a Catch routed to a Fail state, the execution ended.
+
+    `FailStateEntered` is a real `HistoryEventType` and matches a `StateEntered`
+    suffix, and it sits between the task failure and the terminal event — which is
+    what made two other readers of this history report the handler.
+    """
+    return [
+        {
+            "id": 1,
+            "type": "TaskStateEntered",
+            "timestamp": "2026-03-01T10:00:01+00:00",
+            "stateEnteredEventDetails": {"name": "ExtractDocument"},
+        },
+        {
+            "id": 2,
+            "type": "TaskFailed",
+            "timestamp": "2026-03-01T10:00:02+00:00",
+            "taskFailedEventDetails": {
+                "error": "ExtractionBoom",
+                "cause": "Traceback",
+                "resource": "placeholder",
+                "resourceType": "lambda",
+            },
+        },
+        {
+            "id": 3,
+            "type": "FailStateEntered",
+            "timestamp": "2026-03-01T10:00:03+00:00",
+            "stateEnteredEventDetails": {"name": "ExtractionShardMapFailed"},
+        },
+        {
+            "id": 4,
+            "type": "ExecutionFailed",
+            "timestamp": "2026-03-01T10:00:04+00:00",
+            "executionFailedEventDetails": {
+                "error": "States.TaskFailed",
+                "cause": "propagated",
+            },
+        },
+    ]
+
+
+class TestCatchHandlerIsNotReportedAsTheFailingState:
+    """This module is immune to #1139/#1168, and the immunity is incidental.
+
+    Both attribution rules here filter to `TaskStateEntered` exactly, and a `Fail`
+    state never emits one — so the handler's transition is skipped and the real state
+    is found. That is luck rather than intent: broadening either filter to a
+    `StateEntered` *suffix* match, which reads like a strict improvement and is how the
+    other two readers of this history were written, reintroduces the defect. These
+    assertions are here so that change fails instead of shipping.
+
+    The rule those two readers now share lives in
+    `idp_common.stepfunctions_history`; unifying this module onto it as well is
+    separate work, because its failure vocabulary is wider (it recognises activity and
+    Lambda-timeout failures the shared set does not).
+    """
+
+    def test_extract_failure_details_skips_the_handler(self):
+        result = extract_failure_details(_caught_failure_events())
+        assert result["failed_state"] == "ExtractDocument"
+        assert result["error"] == "States.TaskFailed"
+
+    def test_analyze_execution_timeline_skips_the_handler(self):
+        events = _caught_failure_events()
+        sf = _make_sf_client(status="FAILED", events=events)
+        with patch("idp_common.monitoring.stepfunctions_service.boto3") as mock_boto3:
+            mock_boto3.client.return_value = sf
+            timeline = analyze_execution_timeline(_EXEC_ARN)
+
+        assert timeline["failed_state"] == "ExtractDocument"
+        assert "ExtractionShardMapFailed" not in [
+            state["name"] for state in timeline["states"]
+        ]
+
+    def test_a_fail_state_transition_is_not_a_task_state_transition(self):
+        """The fact the immunity rests on, read from the service model rather than
+        assumed: the eight state-transition event types share one detail key, so only
+        the event `type` distinguishes a `Fail` entry from a `Task` entry."""
+        import botocore.session
+
+        model = botocore.session.get_session().get_service_model("stepfunctions")
+        types = set(model.shape_for("HistoryEventType").enum)
+        assert {"FailStateEntered", "TaskStateEntered"} <= types
+        assert (
+            "failStateEnteredEventDetails"
+            not in model.shape_for("HistoryEvent").members
+        )

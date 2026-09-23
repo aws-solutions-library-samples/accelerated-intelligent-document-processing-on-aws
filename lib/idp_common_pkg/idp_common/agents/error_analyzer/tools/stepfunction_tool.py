@@ -11,25 +11,26 @@ from typing import Any, Dict, List, Optional
 import boto3
 from strands import tool
 
+from idp_common.stepfunctions_history import (
+    EXECUTION_LEVEL_FAILURE_EVENTS,
+    FAILURE_EVENTS,
+    TASK_LEVEL_FAILURE_EVENTS,
+    failing_state,
+    failing_state_is_resolvable,
+    to_chronological,
+)
+
 from ..config import get_ea_param
 
 logger = logging.getLogger(__name__)
 
-# Failure event types, split by whether the failure is attributable to a STATE or to
-# the execution as a whole. The split is what lets the analysis report the state that
-# failed rather than the Catch handler the workflow moved into afterwards; the union
-# is what `_extract_failure_details` matches on, so the two readings are one list and
-# cannot drift apart.
-#
-# Task-level: a state was doing work and that work failed.
-_TASK_LEVEL_FAILURE_EVENTS = frozenset(
-    {"TaskFailed", "LambdaFunctionFailed", "TaskTimedOut"}
-)
-# Execution-level: the execution ended. By this point a caught failure has already
-# transitioned into its handler, so these events say nothing about which state failed
-# — only why the execution stopped. Their error text is still the text to report.
-_EXECUTION_LEVEL_FAILURE_EVENTS = frozenset({"ExecutionFailed", "ExecutionTimedOut"})
-_FAILURE_EVENTS = _TASK_LEVEL_FAILURE_EVENTS | _EXECUTION_LEVEL_FAILURE_EVENTS
+# The vocabulary and the history-reading rule live in `idp_common.stepfunctions_history`
+# because the CodeBuild deployment harness needs the same answer and cannot import this
+# module (it would pull in `strands`). Two copies of this walk is how #1139 and #1168
+# came to be the same defect filed twice. These aliases keep the module-local spelling.
+_TASK_LEVEL_FAILURE_EVENTS = TASK_LEVEL_FAILURE_EVENTS
+_EXECUTION_LEVEL_FAILURE_EVENTS = EXECUTION_LEVEL_FAILURE_EVENTS
+_FAILURE_EVENTS = FAILURE_EVENTS
 
 
 @tool
@@ -218,7 +219,7 @@ def _get_execution_data(execution_arn: str) -> Dict[str, Any]:
         # Stop as soon as the window explains the failure. Checked after each page
         # rather than by counting events, because how many events back the state sits
         # depends on the shape of the execution, not on a number.
-        resolvable = _failing_state_is_resolvable(events, more_pages=bool(next_token))
+        resolvable = failing_state_is_resolvable(events, more_pages=bool(next_token))
         if resolvable or not next_token:
             break
 
@@ -227,62 +228,6 @@ def _get_execution_data(execution_arn: str) -> Dict[str, Any]:
         "events": events,
         "state_unresolved_due_to_truncation": bool(next_token) and not resolvable,
     }
-
-
-def _failing_state_is_resolvable(
-    events: List[Dict[str, Any]], *, more_pages: bool
-) -> bool:
-    """Can the failing state be named from the events fetched so far?
-
-    ``events`` is newest-first, which is how the history is requested, so "older than"
-    means "at a higher index".
-
-    The analysis attributes a failure to the state that was entered before it, and
-    prefers a **task-level** failure over the execution-level one (see
-    ``_analyze_execution_timeline``). So the window is sufficient once it holds the
-    failure the analysis will pick AND a state transition older than it.
-
-    ⚠️ **An execution-level failure alone is NOT sufficient while pages remain**, and
-    that exception is the whole reason this takes ``more_pages``. On a caught failure
-    the history reads, newest first::
-
-        ExecutionFailed
-        FailStateEntered: <handler>      <- the nearest older StateEntered
-        TaskFailed
-        TaskStateEntered: <the state that failed>
-
-    so "the picked failure has an older ``StateEntered``" is satisfied by the Catch
-    handler's own transition. Stopping there reports the handler — the misattribution
-    ``_analyze_execution_timeline`` exists to avoid — and, worse, reports it with
-    ``state_unresolved_due_to_truncation`` false, removing the one signal that the
-    answer might be wrong. Continuing instead reaches the ``TaskFailed`` and names the
-    real state; if the pages run out first, the flag stays true and the caller says so.
-
-    Returns True when there is no failure at all: nothing is being explained, so there
-    is nothing further back worth fetching.
-    """
-    task_level_index = None
-    for index, event in enumerate(events):
-        if event.get("type", "") in _TASK_LEVEL_FAILURE_EVENTS:
-            task_level_index = index
-            break
-
-    failure_index = task_level_index
-    if failure_index is None:
-        for index, event in enumerate(events):
-            if event.get("type", "") in _FAILURE_EVENTS:
-                failure_index = index
-                break
-    if failure_index is None:
-        return True
-
-    if task_level_index is None and more_pages:
-        return False
-
-    return any(
-        event.get("type", "").endswith("StateEntered")
-        for event in events[failure_index + 1 :]
-    )
 
 
 def _extract_execution_metadata(execution_response: Dict[str, Any]) -> Dict[str, Any]:
@@ -461,45 +406,6 @@ def _get_execution_arn_from_document(document_id: str) -> Optional[str]:
         return None
 
 
-def _to_chronological(events: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-    """
-    Return Step Functions history events oldest-first, whatever order they arrive in.
-
-    ``get_execution_history`` returns a page newest-first or oldest-first depending
-    on ``reverseOrder``, and every consumer here wants chronological. The ordering
-    key is the event ``id``, which the history API documents as a required integer
-    numbered sequentially from one, so it is a total order with no ties and no
-    direction to infer. ``timestamp`` is deliberately *not* used: it has millisecond
-    resolution, adjacent events routinely share a value, and any tie-prone key
-    leaves a sort dependent on the arrival order it is supposed to be correcting.
-
-    A list whose events do not all carry an integer ``id`` is not a history page
-    from the API. The direction is then read from the two ends and corrected by
-    reversing, which is exact when it applies but cannot see a tie between them --
-    so the fallback is logged rather than silent.
-    """
-    if len(events) < 2:
-        return events
-
-    if all(isinstance(event.get("id"), int) for event in events):
-        return sorted(events, key=lambda event: event["id"])
-
-    first = events[0].get("timestamp")
-    last = events[-1].get("timestamp")
-    try:
-        newest_first = first is not None and last is not None and first > last
-    except TypeError:
-        newest_first = False
-
-    logger.debug(
-        "Step Functions history events carry no usable 'id'; ordering was inferred "
-        "from the first and last timestamps (newest_first=%s). A page whose two "
-        "ends share a timestamp cannot be told apart this way.",
-        newest_first,
-    )
-    return list(reversed(events)) if newest_first else events
-
-
 def _analyze_execution_timeline(events: List[Dict[str, Any]]) -> Dict[str, Any]:
     """
     Analyze Step Function execution timeline to identify failure patterns and state transitions.
@@ -507,14 +413,18 @@ def _analyze_execution_timeline(events: List[Dict[str, Any]]) -> Dict[str, Any]:
     and identify the exact point of failure with context.
 
     Events may arrive in either direction -- the caller fetches them newest-first so
-    that a capped page covers the failure -- and are ordered oldest-first here. The
-    chronological walk is what makes the analysis correct: the failing state is the
-    state most recently entered *before* the failure event, so seeing the failure
-    first would report no state at all.
+    that a capped page covers the failure -- and are ordered oldest-first here.
 
     The failure reported is the **last** one in the history, not the first. Retries
     mean an execution can survive several failure events, and the terminal one is the
     only one that explains why it ended.
+
+    Which state that failure is attributed to is decided by
+    :func:`idp_common.stepfunctions_history.failing_state`, not here. That rule is
+    shared with the CodeBuild deployment harness, which needs the same answer and had
+    reached the same wrong one independently (#1139, #1168); its docstring carries the
+    history shape that makes the wrong answer look right, and the concurrent-``Map``
+    caveat that still applies to the answer this returns.
 
     Args:
         events: List of Step Function execution events, in either direction
@@ -525,16 +435,19 @@ def _analyze_execution_timeline(events: List[Dict[str, Any]]) -> Dict[str, Any]:
     if not events:
         return {"error": "No execution events available"}
 
-    events = _to_chronological(events)
+    events = to_chronological(events)
 
     max_timeline_events = get_ea_param("max_stepfunction_timeline_events", 50)
 
     timeline = []
     failure_point = None
     last_successful_state = None
-    # The state a TASK-level failure happened in, which is not the same thing as the
-    # last state entered. See the comment at the failure branch below.
-    last_task_failure_state = None
+    # Which state the terminal failure is attributable to, decided by the shared rule
+    # in `idp_common.stepfunctions_history` rather than by this loop. It is NOT the last
+    # state entered: on a caught failure that is the `Catch` handler the workflow moved
+    # into, and the whole point of the rule is to keep the two apart (#1139, #1168). The
+    # module docstring there carries the history shape and the concurrent-`Map` caveat.
+    attributed_failing_state = failing_state(events)
 
     for event in events:
         timestamp = event.get("timestamp")
@@ -578,48 +491,15 @@ def _analyze_execution_timeline(events: List[Dict[str, Any]]) -> Dict[str, Any]:
         # naturally.
         failure_details = _extract_failure_details(event)
         if failure_details:
-            # A TASK-level failure is attributable to the state that was doing the
-            # work, so remember which state that was. An execution-level one
-            # (ExecutionFailed, ExecutionTimedOut) is not: by the time it arrives the
-            # workflow has usually transitioned into a Catch handler, and the last
-            # state entered is that handler rather than the state that failed.
-            #
-            # This workflow makes that the normal case rather than an edge one, and
-            # the figures are derived rather than stated -- see
-            # `TestTheMisattributionPopulationIsDerivedFromTheWorkflow`, which reads
-            # them out of the ASL: 17 Catch blocks over 55 states, 13 distinct targets,
-            # and **9** states whose caught failure lands on a `Fail` state and so ends
-            # the execution. Only 2 of those 9 match on `States.ALL`; the population is
-            # keyed on the catch's TARGET rather than on the breadth of its
-            # `ErrorEquals`. So the history reads
-            #
-            #     TaskStateEntered: Extraction
-            #     TaskFailed
-            #     FailStateEntered: <handler>
-            #     ExecutionFailed
-            #
-            # and taking the last state entered names the handler. Keeping the two
-            # apart is what puts the terminal event's error text next to the state
-            # that actually failed, which is the pair an operator needs to pick a log
-            # group.
-            #
-            # ⚠️ This infers causality from ADJACENCY, which is wrong inside a
-            # concurrent Map. `ProcessSections` runs at MaxConcurrency 10 and the shard
-            # Map at 5, and their iterations share one execution history, so it
-            # interleaves: with iteration A entering ExtractionStep, B then entering
-            # AssessmentStep, and A's task failing, the last state entered at the
-            # failure is B's. Measured -- `AssessmentStep` is reported where
-            # `ExtractionStep` failed. The previous rule reported the same wrong state
-            # on that history, so this is not a regression, and it is right whenever
-            # the iterations do not overlap. The exact fix is to walk `previousEventId`,
-            # which gives the causal chain instead of the neighbouring event; that is a
-            # larger change and is not made here.
-            if event_type in _TASK_LEVEL_FAILURE_EVENTS:
-                last_task_failure_state = last_successful_state
+            # The state and the error text come from DIFFERENT events, deliberately:
+            # the error from the terminal failure (the one that explains why the
+            # execution ended), the state from the last task-level failure. Pairing the
+            # terminal event's error with the state that actually did the failing is
+            # what an operator needs to pick a log group.
             failure_point = {
                 "timestamp": timestamp,
                 "event_type": event_type,
-                "state": last_task_failure_state or last_successful_state,
+                "state": attributed_failing_state,
                 "details": failure_details,
             }
 
