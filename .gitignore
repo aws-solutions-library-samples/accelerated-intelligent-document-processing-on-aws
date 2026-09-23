@@ -20,15 +20,6 @@ build/
 __pycache__
 *.code-workspace
 .ruff_cache
-# `make check-coverage-debt` reads the report `make test-cicd` writes, and coverage
-# leaves its binary data file beside it. Untracked and unignored, it is picked up by
-# the next `git add -A` — which is how it first reached a commit. `test-reports/`
-# holds coverage.xml and the JUnit xml from the same run.
-.coverage
-.coverage.*
-test-reports/
-htmlcov/
-.pytest_cache/
 .kiro
 notebooks/examples/data
 .idea/
@@ -133,6 +124,18 @@ zap-reports/
 # and the XML records that machine's hostname. The standing-failure verdict is
 # decided in the process that produced these, so nothing reads them back.
 /test-reports/
+
+# The same artifacts one directory down, plus coverage's own files. `make test-cicd
+# -C lib/idp_common_pkg` writes lib/idp_common_pkg/test-reports/, which the
+# root-anchored pattern above does not match, and coverage leaves its binary data
+# file in the working directory beside it. Neither was tracked nor ignored, so a
+# `git add -A` picked .coverage up and committed it. Unanchored deliberately: the
+# whole point is to catch the copy under lib/ that the entry above misses.
+.coverage
+.coverage.*
+test-reports/
+htmlcov/
+.pytest_cache/
 
 # Local scratch / capture artifacts — never committed. Some contain customer
 # references from live-stack captures and must never reach a fork or upstream.
