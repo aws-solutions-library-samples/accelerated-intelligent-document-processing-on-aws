@@ -2186,6 +2186,25 @@
       "reason": "Enforced vocabulary.",
       "ratchetGap": "An unrecognised status would be silently uncounted."
     },
+    "scripts/tests/test_config_head_writers.py::_KNOWN_UNPRESERVED_HEAD_WRITERS": {
+      "kind": "exemption",
+      "memberKind": "write site (source path plus the enclosing function name)",
+      "turnsOff": "the requirement that a put_item replacing a configuration profile head item the same function just read must preserve _PRESERVED_HEAD_FIELDS, for one named function in one file",
+      "premise": [
+        "JUDGEMENT"
+      ],
+      "ratchet": "non-vacuity",
+      "ratchetEvidence": "scripts/tests/test_config_head_writers.py",
+      "issues": [
+        1111
+      ],
+      "reason": "Two pre-existing head replacements that the gate added alongside the register_feature_hooks fix discovers and that fix does not touch. Neither is computable from this tree: what makes each one out of scope is which write path it belongs to and how much else changes if it moves. _write_sparse is the fallback taken only when the idp_common layer is unavailable or the preset cannot be merged over the host default, and it writes Config#<featureId> rather than the active profile; save_configuration_bypass_manager is a stack-deployment write path. Both are reported in issue #1111 for their own changes, and each entry carries its own sentence in the constant rather than sharing one. The ratchet is that an entry which shields nothing fails, so neither can outlive the site it describes or pre-exempt a later writer at the same name.",
+      "predicateConsidered": {
+        "file_absent_or_untracked": "Both members are tracked files that are present, and the gate asserts that directly per entry. The premise is not about a path's existence but about which write path the function belongs to, which no predicate here computes.",
+        "built_separately_from_main_stack": "One member sits in a feature-platform Lambda tree and the other in the main stack's Lambda sources, so the predicate would return different answers for the two and settle neither: the reason for exempting each is the blast radius of changing its write path, not how it is built or shipped.",
+        "not_a_nested_stack_of_parent": "Neither member is a CloudFormation template, so the predicate has nothing to evaluate. Both are Python write sites."
+      }
+    },
     "scripts/tests/test_documented_counts.py::DOCUMENTED_COUNTS": {
       "kind": "enforced-universe",
       "turnsOff": "nothing; it IS the set of counts whose stated value is asserted against the thing that produces it",
@@ -2197,6 +2216,51 @@
       "reason": "Each entry pairs a count with the code that derives it, so the risk is a count nobody registered rather than a member escaping a check. Which phrasings in English carry a count cannot be computed. Two mechanisms make an entry non-vacuous, and they cover different members. For an entry naming documents, test_every_document_making_a_count_claim_states_a_pinned_one requires each named document to still contain a statement some pattern reads, so a dead entry and a claim reworded out of reach both fail. For an entry naming NO documents -- a guard against a deleted figure being reintroduced, where matching nothing is the correct state -- that check can say nothing, so test_no_pattern_is_one_that_could_never_match fires every pattern at a sample statement of the shape it is for. That second mechanism exists because a pattern that compiles and has one capturing group can still be unable to match anything: the requireable-contexts pattern spelled a literal space where both real sentences wrap across lines, so a derived number was computed and compared against nothing. The file scan is NOT a list -- it runs over every tracked .md/.py/.mk/.yml/.yaml and the Makefile from git ls-files, so no file is carved out of it, and test_this_module_does_not_match_its_own_patterns keeps that true by asserting the module needs no exclusion for itself (which is why the probes hold a placeholder where the number goes rather than spelling one out).",
       "ratchetGap": "Three residuals. A NEW document inventing a phrasing none of the registered patterns match states an unchecked count; the per-document check closes this only for documents already registered. A registered pattern can still be narrower than the prose it is aimed at -- it is fired at a probe the same author wrote, so a shared misreading of the real sentence would satisfy both. And for an entry with no documents, nothing asserts the figure is actually absent from the tree: the patterns report a wrong one if it returns, but prose could state the count in an unregistered phrasing and go unseen.",
       "memberKind": "other"
+    },
+    "scripts/tests/test_preset_keys_are_read.py::PRESET_SCAN_EXCLUDED_LOOKUP_TABLES": {
+      "kind": "prune",
+      "memberKind": "file name under config_library/",
+      "turnsOff": "the requirement that every top-level key in a config_library YAML be one IDPConfig reads, for three files that are lookup tables rather than deployable configurations",
+      "premise": [
+        "JUDGEMENT"
+      ],
+      "ratchet": "non-vacuity",
+      "ratchetEvidence": "scripts/tests/test_preset_keys_are_read.py",
+      "issues": [
+        1145
+      ],
+      "reason": "pricing.yaml maps a model id to a rate, model_config_limits.yaml maps one to a context window, and finetuning_models.yaml lists fine-tunable base models. None is installed by `idp-cli deploy --custom-config` and none is an IDPConfig document, so their top-level keys -- model ids and their own section names -- are not keys IDPConfig could read or discard. Whether a given YAML is a deployable configuration or a lookup table is a judgement about what the file is for, which no predicate here computes; what IS computed is that each named file still exists (test_the_excluded_lookup_tables_are_present), so the entry cannot outlive its members.",
+      "ratchetGap": "A NEW lookup table added under config_library/ is scanned as a preset and will fail this gate until it is named here, which is the safe direction. The count of keys each excluded file holds is not pinned, so a lookup table growing a key that IDPConfig would have read is not detected."
+    },
+    "scripts/tests/test_preset_keys_are_read.py::PRESET_SCAN_EXCLUDED_NON_CONFIGS": {
+      "kind": "prune",
+      "memberKind": "file name under config_library/",
+      "turnsOff": "the same top-level-key requirement, for the two feature-platform extension manifests, which are not IDPConfig documents at all",
+      "premise": [
+        "JUDGEMENT"
+      ],
+      "ratchet": "non-vacuity",
+      "ratchetEvidence": "scripts/tests/test_preset_keys_are_read.py",
+      "issues": [
+        1145
+      ],
+      "reason": "extensions-marketplace.yaml and extensions-oss.yaml carry their own schema (`schemaVersion`, `features`) and are read by the feature platform; IDPConfig never sees either, so 'IDPConfig discards this key' is not a statement about them. They sit under config_library/ for distribution rather than because they are configurations, which is the judgement here. test_the_excluded_extension_manifests_are_present computes that both files still exist, so neither name can pre-exempt a future file that takes it.",
+      "ratchetGap": "Their own schema is not validated by this gate; a malformed extension manifest is a different gate's finding."
+    },
+    "scripts/tests/test_preset_keys_are_read.py::TOP_LEVEL_KEY_EXEMPT": {
+      "kind": "exemption",
+      "memberKind": "top-level YAML key, paired with its production reader's path and the source text that constitutes the read",
+      "turnsOff": "the requirement that a preset's top-level key be one IDPConfig models, for one key that a DIFFERENT consumer reads",
+      "premise": [
+        "JUDGEMENT"
+      ],
+      "ratchet": "non-vacuity",
+      "ratchetEvidence": "scripts/tests/test_preset_keys_are_read.py",
+      "issues": [
+        1145
+      ],
+      "reason": "`description` is read by src/lambda/update_configuration/index.py, which POPS it off the configuration dict before IDPConfig is constructed and embeds it in the DynamoDB sort key the UI renders (Config#{version}#{description}). That pop is why IDPConfig models no such field, so the gate's own question -- does IDPConfig discard this key -- answers 'yes' and is the wrong question for this key. This is the one entry that exists because the gate's premise is false for a specific key, so it is recorded per key with its reader named rather than as a blanket allowance. Which consumers exist for a key is not computable from the tree; that the named reader still mentions it IS, and test_every_read_elsewhere_key_really_is_read asserts exactly that per member. The path names the PRODUCTION consumer deliberately: pointing it at a test that merely contains the string would leave the entry green after the real reader was deleted, which is the failure this premise check exists to prevent.",
+      "ratchetGap": "The read is matched as source text rather than by resolving it at runtime, so a reader that moved the pop into a helper with a different spelling would fail the premise even though the key is still read -- a false alarm, which is the safe direction. Bounding it to one key with one named path and one marker is what keeps that cheap to review."
     },
     "scripts/tests/test_first_party_provenance_closure.py::EXEMPT": {
       "kind": "exemption",
@@ -2253,6 +2317,21 @@
       "crossReferences": [
         "scripts/check_coverage_debt.py::NOT_MEASURED"
       ]
+    },
+    "patterns/unified/tests/test_workflow_transient_retry.py::TRANSIENT_CONVERSION_EXEMPT": {
+      "kind": "exemption",
+      "memberKind": "Step Functions task state name",
+      "turnsOff": "the requirement that a task state permitted to invoke a Bedrock model retry TransientError, for five named states",
+      "premise": [
+        "JUDGEMENT"
+      ],
+      "ratchet": "universe-closure",
+      "ratchetEvidence": "patterns/unified/tests/test_workflow_transient_retry.py",
+      "issues": [
+        1142
+      ],
+      "reason": "All five are deferred rather than exempt in principle, and the deferral is forced by order-sensitivity: adding raise_if_transient to a handler CONVERTS a modeled ThrottlingException into TransientError, so doing that without adding the name to the state's Retry list would REMOVE retryability that exists today. Both halves have to land per state and neither is in this change; none of the five handlers swallows, so what is lost meanwhile is the retry rather than the diagnosis. Each entry carries what is specific to that handler -- OCRStep calls a model only on the bedrock backend, ClassificationStep once per page, SummarizationStep once over the whole document at the end of the pipeline, EvaluationStep only through the LLM-judge comparators, and RecordEvaluationFailure on a deliberately shorter transient tier because it runs on the failure path -- and the gate asserts those reasons are distinct, because length plus a substring would accept five identical strings. Whether a handler SHOULD convert is a judgement about its failure modes, which no predicate computes; what the gate computes is membership of the universe, from the ASL Resource placeholder through DefinitionSubstitutions to the granted IAM actions of the target function and of any role it references.",
+      "ratchetGap": "The predicate answers 'permitted to invoke a model', not 'does invoke one', so an entry can be justified by a grant its handler never uses. It reads actions out of Action: position rather than out of the block's raw text, which is what stops an ARN's wildcard REGION (arn:<partition>:bedrock:*::foundation-model/*, twelve of them here) being read as a bedrock:* action -- there is no such action in this template, and reading one put a data-automation-only function in the universe. What remains loose is the action pattern itself: any future action whose name begins InvokeModel or Converse would qualify regardless of what it does. Over-inclusion is the safe direction for a closure. The closure is also one-directional by design: a state that is NOT Bedrock-capable may still list TransientError legitimately (PolicyClassificationStep does, for DynamoDB and S3 transients), so nothing here detects a listing that is no longer needed."
     }
   }
 }

@@ -1875,6 +1875,17 @@ class ErrorAnalyzerParameters(BaseModel):
     max_stepfunction_error_length: int = Field(
         default=400, gt=0, description="Maximum length for Step Function error messages"
     )
+    max_stepfunction_history_pages: int = Field(
+        default=10,
+        gt=0,
+        le=50,
+        description=(
+            "Maximum pages of Step Function execution history to walk back through "
+            "when looking for the transition into the failing state. Each page is 100 "
+            "events. Bounded above because the walk is one API call per page and an "
+            "unbounded value would make a misconfiguration expensive rather than slow."
+        ),
+    )
 
     # X-Ray analysis thresholds
     xray_slow_segment_threshold_ms: int = Field(
@@ -1908,6 +1919,7 @@ class ErrorAnalyzerParameters(BaseModel):
         "max_log_groups",
         "max_stepfunction_timeline_events",
         "max_stepfunction_error_length",
+        "max_stepfunction_history_pages",
         "xray_slow_segment_threshold_ms",
         "xray_response_time_threshold_ms",
         "xray_analysis_hours",
