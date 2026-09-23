@@ -115,7 +115,13 @@ Textract's synchronous `Bytes` limits are 5 MB and 10,000×10,000 pixels. A
 
 - Defaults apply when both `target_width` and `target_height` are unspecified,
   empty strings, or `None`.
-- Invalid values fall back to the defaults with a warning.
+- ⚠️ **An unreadable value is rejected, not ignored.** A `target_width` or
+  `target_height` that is not a number and not empty — `abc`, say — fails
+  configuration validation, and the error names the offending value. Correct it to
+  a pixel count or clear it. (`dpi` in the same block behaves the same way, so the
+  three settings are consistent.) An **empty** value is not an error: it means "not
+  configured", which is how the web UI and the YAML presets express it, so the
+  defaults above apply.
 - A partial configuration (only width **or** only height) disables the ceiling
   entirely, preserving legacy behavior.
 - Resizing always preserves aspect ratio and never upscales.
@@ -127,12 +133,15 @@ INFO OCR Service initialized - DPI: 300, Image sizing: 2600x3600
 INFO No image sizing configured, applying default ceiling: 2600x3600 (out-of-memory guard; does not bind for A4/Letter at 300 dpi)
 INFO Page 1 already fits target size, extracted at: 2482x3510
 INFO Using configured image sizing: 1200x1600
-WARNING Invalid resize configuration values: width=abc, height=xyz. Falling back to defaults: 2600x3600
 ```
 
 The `Extracted page N at target size` / `already fits target size` lines report
 the dimensions actually sent to OCR — the quickest way to confirm what
 resolution a document was really processed at.
+
+An unreadable dimension produces no log line here, because it never reaches the
+service: it is refused when the configuration is validated, so look for it where
+the configuration was saved or uploaded rather than in the OCR function's logs.
 
 ## Troubleshooting
 
