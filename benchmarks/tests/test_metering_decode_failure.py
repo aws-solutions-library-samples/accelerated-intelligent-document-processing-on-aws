@@ -57,12 +57,12 @@ list is now in the artifact. The shipped writer stores ``Metering`` as
 states need a row some other writer produced. This is a contract fix, not a
 correction to a published number.
 
-One adjacent defect is **filed rather than fixed**: ``lib.ddb_to_py(None)`` raises
-``TypeError`` instead of answering ``None``, and ``detection_ab`` calls it unguarded on
-``ObjectStatus`` and on ``Sections`` — the second is genuinely optional on a tracking
-row, so a document with no sections takes the whole analysis down. Different class,
-different function, so the row fixture here carries both attributes rather than the
-change growing to cover it.
+One adjacent defect is **filed rather than fixed** (#1223): ``lib.ddb_to_py(None)``
+raises ``TypeError`` instead of answering ``None``, and ``detection_ab`` calls it
+unguarded on ``ObjectStatus`` and on ``Sections`` — the second is written only when
+non-empty, so a document that produced no sections takes the whole analysis down.
+Different class, different function, so the row fixture here carries both attributes
+rather than the change growing to cover it.
 """
 
 from __future__ import annotations
@@ -136,7 +136,7 @@ def _item(attribute: dict | None) -> dict:
     ``ObjectStatus`` and ``Sections`` are present because ``detection_ab`` reads both
     through ``lib.ddb_to_py`` with no guard, and ``ddb_to_py(None)`` raises
     ``TypeError`` rather than answering ``None``. A real completed row carries both.
-    That fragility is a separate defect and is filed rather than fixed here — see the
+    That fragility is a separate defect, filed as #1223 rather than fixed here — see the
     module docstring — so this fixture stays a realistic row rather than a minimal one.
     """
     row = {
