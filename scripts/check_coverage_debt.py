@@ -38,14 +38,27 @@ decision about whether that blocks a merge belongs to whoever is merging. Neithe
 [deliberate](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/933),
 so a red result here informs rather than refuses.
 
-## Why coverage is measured serially
+## Where the report comes from
 
-A submodule-scoped `--cov` under `pytest -n auto` produces spurious failures on this
-package, because `idp_common/__init__.py` caches lazily-imported submodules privately and
-a patch can land on a different module object than the one under test (issue #1159). This
-script reads a coverage XML report produced by the normal whole-package run, so it does
-not re-measure and is unaffected — but anyone regenerating the baseline by hand should
-know which flag combinations are trustworthy.
+This script re-measures nothing: it reads the coverage XML that the normal
+whole-package run (`make test-cicd -C lib/idp_common_pkg`) writes to
+`lib/idp_common_pkg/test-reports/coverage.xml`.
+
+⚠️ **Check that run succeeded before believing a drop reported here.** A partially
+failed pytest still writes a report, and a report from a run where some xdist workers
+errored shows large, uniform-looking falls across unrelated files — the tests that would
+have covered them never executed. Two symptoms to recognise, because both have been
+mistaken for a real regression: `Different tests were collected between gw1 and gwN`
+(usually because a test file was edited while the run was in flight), and a file whose
+own suite you know to be green reported far below its baseline. Re-run before recording
+anything.
+
+A submodule-scoped `--cov` under `pytest -n auto` used to produce spurious failures on
+this package as well, because `idp_common/__init__.py` cached lazily-imported submodules
+in a package-private dict and a patch could land on a different module object than the
+one under test (issue #1159). That is fixed — the loader defers to `sys.modules` — and
+`tests/unit/test_lazy_submodule_loading.py` holds the property, so every flag
+combination now agrees.
 """
 
 from __future__ import annotations
