@@ -227,8 +227,9 @@ GATES_DELIBERATELY_OUT_OF_CI = {
         "aggregate floor disabled (`COV_FLOOR=`), discards its output and ignores "
         "its exit status — so there is no verdict for a CI to carry. The ratchet it "
         "reports on does run in both CIs: the aggregate floor inside "
-        "`test-cicd -C lib/idp_common_pkg`, and the per-file baseline asserted by "
-        "`scripts/tests/test_coverage_debt.py` under `test-packages-cicd`."
+        "`test-cicd -C lib/idp_common_pkg`, and the per-file baseline via "
+        "`make check-coverage-debt`, which both configurations invoke immediately "
+        "after that test step because it reads the report the step writes."
     ),
     "coverage-table": (
         "Reprints the table from the last measurement without re-measuring. Reading "
