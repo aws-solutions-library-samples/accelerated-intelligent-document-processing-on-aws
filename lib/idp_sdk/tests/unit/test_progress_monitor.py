@@ -466,6 +466,51 @@ class TestBatchStatus:
         assert again["all_complete"] is True
         assert len(invocations) == 1
 
+    def test_a_redacted_superseded_document_is_cached_and_never_re_queried(
+        self, monitor, stubber, invocations
+    ):
+        """``REDACTED_SUPERSEDED`` must be terminal, or a finished batch polls forever.
+
+        A preprocessing hook can replace an uploaded document with a redacted
+        copy and stop; the original then settles in ``REDACTED_SUPERSEDED`` and
+        never reaches ``COMPLETED``. It is in ``_TERMINAL_STATES`` for that
+        reason, and this test is about the consequence of it *not* being there.
+
+        The distinction is worth stating because it is easy to get wrong in both
+        directions. ``_SUCCESS_STATES`` is what makes such a document count
+        towards ``all_complete``, and that is covered separately. What
+        ``_TERMINAL_STATES`` controls is the ``finished_docs`` cache, so dropping
+        the state from it does not hang the caller — it makes every later poll
+        re-query a document whose answer cannot change, one Lambda invocation per
+        document per poll for as long as the caller keeps polling. The assertion
+        that distinguishes the two implementations is therefore the invocation
+        count, not the returned summary: the summary is identical either way.
+
+        This test was added because a mutation that removed the state from
+        ``_TERMINAL_STATES`` survived the suite — the caching behaviour was
+        covered for ``COMPLETED``, ``ABORTED`` and ``NOT_FOUND``, but not for the
+        one state whose membership carries a comment explaining why it is there.
+        """
+        _expect_batch(
+            stubber,
+            ["redacted.pdf"],
+            [{"object_key": "redacted.pdf", "status": "REDACTED_SUPERSEDED"}],
+        )
+
+        first = monitor.get_batch_status(["redacted.pdf"])
+        assert [doc["document_id"] for doc in first["completed"]] == ["redacted.pdf"]
+        assert first["all_complete"] is True
+        stubber.assert_no_pending_responses()
+
+        # No second response is queued, so a second query would fail outright;
+        # the cache is what makes this poll answerable at all.
+        second = monitor.get_batch_status(["redacted.pdf"])
+
+        assert "redacted.pdf" in monitor.finished_docs
+        assert [doc["document_id"] for doc in second["completed"]] == ["redacted.pdf"]
+        assert second["all_complete"] is True
+        assert len(invocations) == 1
+
     def test_not_found_is_cached_so_an_early_poll_marks_a_document_failed_forever(
         self, monitor, stubber, invocations
     ):
