@@ -508,24 +508,6 @@
     "suppressionReason": "Accepted: CloudTrail DynamoDB data-plane logging is an account-level control (trail + log bucket) owned by the deploying customer; the solution template cannot assume or create account-wide trails."
   },
   {
-    "source": "Checkov",
-    "path": "nested/api-resolvers/template.yaml",
-    "line": 2751,
-    "issue": "Ensure WAF prevents message lookup in Log4j2. See CVE-2021-44228 aka log4jshell",
-    "check_id": "CKV_AWS_192",
-    "priority": "HIGH",
-    "fix": "Add a rule to your AWS::WAFv2::WebACL resource that blocks requests containing Log4j2 JNDI lookup patterns. Create a ByteMatchSet with pattern strings like '${jndi:' and configure your WAF to block these patterns. This protects against Log4Shell vulnerabilities (CVE-2021-44228) that could allow remote code execution.",
-    "status": "resolved",
-    "stack": "nested-api-resolvers-template",
-    "resourceType": "WAFv2 WebACL",
-    "resourceName": "ApiWafWebACL",
-    "isCustomResource": false,
-    "firstDetectedAt": "2026-07-07T03:02:04.772Z",
-    "assessmentCount": 2,
-    "suppressionReason": "Accepted: WebACL uses DefaultAction Block with an explicit IP allowlist (deny-by-default), so the Log4j managed rule group adds no protection for already-blocked traffic.",
-    "resolvedAt": "2026-07-08T23:11:40.738Z"
-  },
-  {
     "source": "security-matrix",
     "path": "nested/api-resolvers/template.yaml",
     "resourceType": "AWS::DynamoDB::Table",

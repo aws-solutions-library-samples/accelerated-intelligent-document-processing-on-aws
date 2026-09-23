@@ -21,6 +21,7 @@ sys.path.insert(0, str(SRT_DIR))
 from register import (  # noqa: E402
     NON_VACUITY_EXEMPT_SOURCES,
     WHOLE_REPO_SUMMARIES,
+    _key,
     describe_unsynced,
     restore_committed_register,
     suppressed_sources,
@@ -332,4 +333,38 @@ def test_the_bandit_suppressions_that_were_swept_are_gone():
         "here; for B105/B106 in test code that no deployment artifact is built from, "
         "ci_paths.NAME_HEURISTIC_EXEMPT already reports them without gating. If a "
         "register entry really is the right answer, delete this test and say why."
+    )
+
+
+def test_no_two_entries_disagree_about_the_same_disposition_key():
+    """One key, one disposition.
+
+    SRT keys a disposition on `(path, resourceType, resourceName, check_id)` and the
+    line is **not** part of it, so two entries differing only in `line` are two
+    dispositions of the same thing. When they disagree on `status`, which one the merge
+    picks decides whether the finding gates — `suppressed` is sticky while `resolved`
+    re-opens on re-detection — and nothing in the register says which was intended. One
+    such pair existed: the same WAF WebACL finding recorded `resolved` at one line and
+    `suppressed` at another, with the same reason written twice.
+
+    Duplicates that **agree** are deliberately allowed. They are redundant rather than
+    ambiguous: whichever the merge picks, the gating verdict is the same. Two entries for
+    a single fixed finding at two source lines are the honest record of that.
+    """
+    with open(SRT_DIR / "issues.json", encoding="utf-8") as handle:
+        committed = json.load(handle)
+    by_key = {}
+    for issue in committed:
+        by_key.setdefault(_key(issue), []).append(issue)
+    conflicting = {
+        key: sorted({(i.get("status") or "").lower() for i in entries})
+        for key, entries in by_key.items()
+        if len({(i.get("status") or "").lower() for i in entries}) > 1
+    }
+    assert not conflicting, (
+        "these disposition keys carry more than one status, so which one applies is "
+        f"decided by SRT's merge rather than by anything written down: {conflicting}. "
+        "The line is not part of the key, so entries differing only in `line` are the "
+        "same disposition. Keep one — `suppressed` if the finding is accepted, since "
+        "`resolved` re-opens on re-detection and gates."
     )
