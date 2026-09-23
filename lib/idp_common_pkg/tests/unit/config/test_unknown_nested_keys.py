@@ -219,6 +219,47 @@ def test_the_resolver_answers_each_annotation_shape_as_documented(annotation, ex
     assert _target(annotation) == expected
 
 
+class _MapLeaf(BaseModel):
+    knob: str = ""
+
+
+class _MapMid(BaseModel):
+    leaf: _MapLeaf = _MapLeaf()
+
+
+class _MapRoot(BaseModel):
+    """A root with a ``Dict[str, Model]`` field, which the real tree does not have.
+
+    The walk supports that shape and the suggestion index deliberately does not, and
+    no configuration in this repository can tell the two decisions apart — removing
+    the index's exclusion left every test green. So the discriminating input is built
+    here instead: the walk takes any root model, so a synthetic one is a real
+    measurement rather than a stand-in.
+    """
+
+    buckets: typing.Dict[str, _MapMid] = {}
+
+
+def test_a_mapping_subtree_is_walked_but_never_suggested_into():
+    findings = collect_ignored_config_keys(
+        {"buckets": {"b1": {"knob": "x"}}}, _MapRoot, include_top_level=True
+    )
+    # Walked: the finding names the key the author actually used, so the path is one
+    # they can go and edit.
+    assert [f.path for f in findings] == ["buckets.b1.knob"]
+    # Not suggested into: `knob` is a real field one level deeper, at
+    # `buckets.<name>.leaf.knob`, and there is no spelling of that a reader could
+    # paste — every candidate either invents a bucket name or breaks the dotted
+    # round-trip. Absent beats invented.
+    assert findings[0].suggestion is None, findings[0].suggestion
+    assert all(
+        "*" not in segment
+        for path in models_module._field_path_index(_MapRoot).values()
+        for segments in path
+        for segment in segments
+    )
+
+
 def test_the_production_traversal_agrees_with_an_independent_walk():
     """The duplicated resolver above is pinned against the one the report uses.
 
