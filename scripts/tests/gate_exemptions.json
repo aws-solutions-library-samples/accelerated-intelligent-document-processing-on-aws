@@ -717,6 +717,20 @@
       "ratchetGap": "Same as ALLOWED_EMAILS: no staleness check.",
       "memberKind": "literal string"
     },
+    "scripts/hooks/check_commit_text.py::CI_SUPPRESSION_DIRECTIVES": {
+      "kind": "enforced-universe",
+      "memberKind": "CI directive",
+      "turnsOff": "nothing -- it is the set of commit-message directives the hook REFUSES, so the hazard here is a member missing from it rather than a carve-out in it",
+      "premise": [
+        "JUDGEMENT"
+      ],
+      "ratchet": "universe-closure",
+      "reason": "Each member is a directive one of the two CI platforms honours natively, taken from that platform's documentation: GitHub Actions skips a push- or pull_request-triggered run on any of the five, GitLab skips pipeline creation on two of them. Whether a platform still honours a given spelling is a fact about that platform and not about this tree, so no predicate in gate_premises.py can decide it. What is checkable here, and is checked, is that the list a reader sees and the regex that actually runs agree in both directions, and that prose merely mentioning CI is not matched.",
+      "ratchetEvidence": [
+        "scripts/tests/test_no_skip_ci_markers.py",
+        "scripts/tests/test_check_commit_text.py"
+      ]
+    },
     "scripts/lint_debt.json::lint_debt.json": {
       "kind": "exemption",
       "memberKind": "path",

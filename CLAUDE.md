@@ -376,6 +376,14 @@ nothing checked.
 push** as well as MRs; GitHub's workflows are `pull_request`-only, so a direct push
 to `develop` runs nothing on GitHub.
 
+⚠️ **Parity does not survive a CI-suppressing commit message.** `[skip ci]` and its
+four siblings are honoured natively by both platforms, so one of them in a head commit
+takes *every* gate above out on *both* — the strongest thing in this file and the
+weakest, at the same time. What detects it is the `check-commit-text` hook before the
+commit exists, and `scripts/tests/test_no_skip_ci_markers.py` afterwards; both are
+described under that hook below, including the case neither can catch on the pull
+request that causes it.
+
 ### Visible is not blocking — `make check-branch-protection`
 
 Parity between the two CIs only means both *run* the gates. Whether a red gate can
@@ -839,6 +847,31 @@ judgment above to you. The patterns live in the script itself rather than being
 restated here. If it blocks a string that is legitimately public, add that string
 to the allowlist in the script with a comment saying why, rather than loosening the
 pattern. Run its tests with `make test-hooks`.
+
+**It also refuses a commit message that suppresses CI.** `[skip ci]`, `[ci skip]`,
+`[no ci]`, `[skip actions]` and `[actions skip]` are honoured **natively by both
+platforms** — neither CI configuration opts in and neither can switch it off in YAML
+— so one of them in a commit message takes out lint, types, tests, the security scan
+and the dependency audit at once. With no required status check on this repository
+(#933) the pull request then does not show red: it shows *nothing*, which a reviewer
+cannot tell apart from a clean run. That has already happened here, and the commit it
+let through broke the security gate for every branch cut from `develop` afterwards
+([#1072](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/1072)).
+`ALLOW_SKIP_CI=1` in front of the command overrides it, per command, and an honoured
+override prints a line saying so. Note the override is read from the **command text**,
+because an inline assignment never reaches the hook's own environment — the hook runs
+before the command does.
+
+`scripts/tests/test_no_skip_ci_markers.py` is the other half, and it runs in both CIs
+(inside `make test-packages-cicd`). It scans the commits after a pinned start point
+and fails on any that carries one of those directives. **Its bound is worth knowing:
+the commit that carries the marker takes this gate with it when it is the head commit
+— GitHub decides whether to run at all from the head commit's message — so that case
+is caught on the next pull request whose checks do run, not on the one that introduced
+it.** A marked commit anywhere else in a branch is caught on its own pull request.
+Seventeen commits before the start point carry a directive and cannot be reworded now;
+the gate pins that count, so moving the start point forward over a new one fails
+instead of passing quietly.
 
 #### The `check-shared-branch` guard
 

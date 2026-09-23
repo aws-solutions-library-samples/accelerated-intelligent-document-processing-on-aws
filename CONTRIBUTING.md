@@ -744,6 +744,16 @@ A note on CI status: if GitHub reports "no checks reported" after you push, the
 usual cause is that the PR has become unmergeable against `develop`. Merge
 `develop` into your branch and push again.
 
+**Do not put `[skip ci]` (or `[ci skip]`, `[no ci]`, `[skip actions]`,
+`[actions skip]`) in a commit message on a branch you intend to merge.** Both CI
+platforms honour those natively — neither configuration opts in and neither can
+switch it off — so one of them in your branch's head commit runs *no* gate on
+either platform. No check on this repository is a required status check, so the
+result is not a red pull request but an empty one, which a reviewer cannot
+distinguish from a clean run. A `PreToolUse` hook refuses such a commit, and
+`scripts/tests/test_no_skip_ci_markers.py` reports one that reached history
+anyway on the next pull request whose checks do run.
+
 There is no Contributor License Agreement for this project; it is licensed
 MIT-0 (see `LICENSE`), and your pull request is contributed under those terms.
 
