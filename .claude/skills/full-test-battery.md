@@ -136,12 +136,14 @@ rows in the table above finish in under four seconds and need none of that.
 | `timeout 1 sleep 5` | **124** |
 | `timeout 1 sleep 5 > log 2>&1` | **124** |
 | `timeout 1 sleep 5 2>&1 \| tail -1` | **0** |
+| `set -o pipefail; timeout 1 sleep 5 2>&1 \| tail -1` | **124** |
 
 So `timeout` reports a kill reliably, and **in the redirect-only form 124 is a usable
 signal — check it.** The misleading 0 comes from the **pipeline**, which returns the
-last command's status, so a trailing `| tail` throws the kill away. Prefer redirecting
-to a log and reading the file; if you do pipe, the status tells you nothing and only
-the summary line does.
+last command's status, so a trailing `| tail` throws the kill away — unless
+`pipefail` is set, which restores it. Prefer redirecting to a log and reading the
+file; if you must pipe, set `pipefail` in the same command, and remember that without
+it the status tells you nothing and only the summary line does.
 
 Either way the log of a killed run *looks* exactly like a completed one — a column of
 dots, no failure section, nothing obviously wrong. Measured: `pytest scripts/tests/`
@@ -184,8 +186,11 @@ Two invocation corrections for the CI-equivalent gates:
   imports, and do not conclude from that that the tool ignores the environment.**
   `pyrightconfig.json`'s `extraPaths` names the five first-party roots, so resolution
   is a property of the configuration rather than of the invocation. Measured on the
-  current tree the two are identical — **0 errors, 42 warnings, exit 0** both with
-  `PYTHONPATH` exported and under `env -u PYTHONPATH`.
+  current tree the two agree exactly — same error count, same warning count, same exit
+  status — both with `PYTHONPATH` exported and under `env -u PYTHONPATH`. The point is
+  the **equality**, so no figure is quoted here: per the warning-total note above, the
+  absolute number is not stable across machines and would go stale, while the
+  equivalence is what this bullet is about.
 
   ⚠️ That equivalence is a **consequence of `extraPaths` being populated**, not a
   property of `basedpyright`, which does honour `PYTHONPATH`. Before those entries
