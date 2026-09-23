@@ -71,6 +71,7 @@ No AWS call is made: `boto3` is patched at the module boundary and both collabor
 from __future__ import annotations
 
 import json
+import threading
 from pathlib import Path
 from typing import Any
 from unittest.mock import MagicMock, patch
@@ -819,7 +820,6 @@ class TestTransformDropsUnsupportedStructures:
         return _service()
 
     def test_a_nested_object_inside_a_definition_is_dropped_and_reported(self, service):
-        service._current_class = "Invoice"
         schema = _idp_class(
             properties={"party": {"$ref": "#/$defs/Party"}},
             **{
@@ -838,7 +838,8 @@ class TestTransformDropsUnsupportedStructures:
             },
         )
 
-        blueprint = service._transform_json_schema_to_bedrock_blueprint(schema)
+        with service._recording_drops_for("Invoice") as recording:
+            blueprint = service._transform_json_schema_to_bedrock_blueprint(schema)
 
         assert list(blueprint["definitions"]["Party"]["properties"]) == ["name"]
         warnings = [
@@ -847,9 +848,11 @@ class TestTransformDropsUnsupportedStructures:
         assert warnings and warnings[0]["type"] == "nested_object"
         assert warnings[0]["class"] == "Invoice"
         assert "does not support nested objects" in warnings[0]["message"]
+        # The recording is the channel `_process_single_class` reports from, so the
+        # drop has to be in it and not only in the instance-wide list.
+        assert recording.drops == warnings
 
     def test_a_nested_array_inside_a_definition_is_dropped_and_reported(self, service):
-        service._current_class = "Invoice"
         schema = _idp_class(
             properties={"party": {"$ref": "#/$defs/Party"}},
             **{
@@ -869,11 +872,13 @@ class TestTransformDropsUnsupportedStructures:
             },
         )
 
-        blueprint = service._transform_json_schema_to_bedrock_blueprint(schema)
+        with service._recording_drops_for("Invoice"):
+            blueprint = service._transform_json_schema_to_bedrock_blueprint(schema)
 
         assert list(blueprint["definitions"]["Party"]["properties"]) == ["name"]
         warnings = [w for w in service._skipped_properties if w["property"] == "phones"]
         assert warnings and warnings[0]["type"] == "nested_array"
+        assert warnings[0]["class"] == "Invoice"
 
     def test_a_ref_inside_a_definition_is_rewritten_to_the_draft07_path(self, service):
         """A `#/$defs/…` ref in a draft-07 blueprint resolves to nothing."""
@@ -1501,7 +1506,12 @@ class TestProcessSingleClass:
 
     def test_the_warnings_for_this_class_only_are_returned(self, service):
         """`_skipped_properties` accumulates across classes on the shared service, so
-        an unfiltered read would blame one class for another's dropped fields."""
+        reading it would blame one class for another's dropped fields.
+
+        The result comes from this invocation's own recording instead, which is why a
+        sibling's entry sitting in the instance-wide list is not merely filtered out —
+        it is never consulted.
+        """
         service._skipped_properties = [
             {"class": "Receipt", "property": "other", "type": "nested_object"}
         ]
@@ -1655,6 +1665,128 @@ class TestProcessClassesParallel:
         service._process_classes_parallel([_idp_class()], [])
 
         service.blueprint_creator.bulk_update_data_automation_project.assert_not_called()
+
+
+@pytest.mark.unit
+class TestDropsAreAttributedPerWorkerThread:
+    """Two classes dropping a section each must each be told about their own.
+
+    The label a drop is filed under used to be one instance attribute, written by
+    `_process_single_class` and read by the recorder at the bottom of the transform's
+    call tree, while `_process_classes_parallel` runs that method on up to
+    `BDA_SYNC_MAX_WORKERS` threads. The collection then *filtered* the shared list on
+    that label, so a drop labelled with a sibling's name was not merely misfiled — it
+    vanished from its own class's warnings, and the class came back `success` with none
+    while a whole section had left its extraction contract.
+
+    **The interleaving is forced, not hoped for.** `_blueprint_lookup` is the first
+    thing each worker does after the class id is known, i.e. after the point the label
+    used to be assigned and before anything that can record a drop, so a
+    `threading.Barrier(2)` there holds both workers until both have passed that point.
+    The barrier releases only when both have arrived, so "both labels assigned before
+    either drop is recorded" is a happens-before relation rather than a scheduling
+    accident. Under natural scheduling the defect did not reproduce at all.
+    """
+
+    @pytest.fixture
+    def service(self) -> Any:
+        service = _service()
+        service.max_workers = 2
+        service.blueprint_creator.create_blueprint.side_effect = lambda **kw: {
+            "status": "success",
+            "blueprint": {
+                "blueprintArn": f"arn:aws:bedrock:::blueprint/{kw['blueprint_name']}",
+                "blueprintName": kw["blueprint_name"],
+            },
+        }
+        service.blueprint_creator.create_blueprint_version_without_project_update.return_value = {
+            "blueprint": {"blueprintVersion": "1"}
+        }
+        return service
+
+    @staticmethod
+    def _hold_every_worker_past_the_label(service: Any, parties: int) -> None:
+        """Make each worker wait, in `_blueprint_lookup`, for the others to get there.
+
+        `parties` is derived from the number of classes rather than hard-coded, because
+        a `Barrier` whose party count does not match the number of arrivals does not
+        fail as a wrong answer: every worker waits out the timeout, the resulting
+        `BrokenBarrierError` is caught by `_process_single_class` and reported as a
+        failed class, and the red mark says nothing about what this test is for.
+        Measured — hard-coding 2 with three classes turns a 0.6 s failure into a 31 s
+        one whose message is about warning counts.
+        """
+        barrier = threading.Barrier(parties, timeout=30)
+        real_lookup = service._blueprint_lookup
+
+        def _blueprint_lookup(existing_blueprints, docu_class):
+            barrier.wait()
+            return real_lookup(existing_blueprints, docu_class)
+
+        service._blueprint_lookup = _blueprint_lookup
+
+    def test_each_class_is_told_about_its_own_dropped_section(self, service):
+        classes = [
+            _class_with_nested_definition(class_id="Invoice"),
+            _class_with_nested_definition(class_id="Receipt"),
+        ]
+        self._hold_every_worker_past_the_label(service, parties=len(classes))
+
+        status, _updated, _modified = service._process_classes_parallel(classes, [])
+
+        counts = {entry["class"]: len(entry.get("warnings", [])) for entry in status}
+        assert counts == {"Invoice": 1, "Receipt": 1}
+        # And each warning names the class it actually belongs to. Collecting per
+        # invocation would give the right *count* even with a wrong label, so the label
+        # is asserted separately.
+        for entry in status:
+            assert [w["class"] for w in entry["warnings"]] == [entry["class"]]
+            assert [w["property"] for w in entry["warnings"]] == ["address"]
+
+    def test_a_reused_worker_thread_does_not_inherit_the_previous_class_drops(
+        self, service
+    ):
+        """One worker, two classes: the second must not be handed the first's drop.
+
+        This does not discriminate the shared-label defect — filtering by class name
+        happened to cover this case — it pins the failure mode of the fix itself. A
+        `threading.local()` list would isolate the workers from each other but not the
+        two tasks one worker picks up in turn, and the executor reuses its threads.
+        """
+        service.max_workers = 1
+        classes = [
+            _class_with_nested_definition(class_id="Invoice"),
+            _class_with_nested_definition(class_id="Receipt"),
+        ]
+
+        status, _updated, _modified = service._process_classes_parallel(classes, [])
+
+        assert {entry["class"]: len(entry["warnings"]) for entry in status} == {
+            "Invoice": 1,
+            "Receipt": 1,
+        }
+        # Both drops are still on the instance-wide diagnostic record, correctly
+        # labelled — that list is kept, it is just not what a class's warnings are
+        # read from.
+        assert sorted(w["class"] for w in service._skipped_properties) == [
+            "Invoice",
+            "Receipt",
+        ]
+
+    def test_a_transform_run_outside_a_recording_still_drops_and_logs(self, service):
+        """`BlueprintOptimizer` calls the transform with no class context at all.
+
+        It must not raise, and the drop must still be recorded somewhere — with no
+        class, because there is no class to name.
+        """
+        blueprint = service._transform_json_schema_to_bedrock_blueprint(
+            _class_with_nested_definition()
+        )
+
+        assert list(blueprint["definitions"]["Party"]["properties"]) == ["name"]
+        assert [(w["class"], w["property"]) for w in service._skipped_properties] == [
+            (None, "address")
+        ]
 
 
 # ---------------------------------------------------------------------------

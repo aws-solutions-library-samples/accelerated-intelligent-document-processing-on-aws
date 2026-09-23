@@ -200,15 +200,38 @@ its response. The recorded `type` values are `nested_object`, `nested_array` and
 or a bare string — which cannot be described to BDA at all and used to fail the whole
 class with a raw `TypeError`).
 
-Two known imprecisions in that report. The harmless one: on the **update** path each
-dropped property is recorded **twice**, because `_check_for_updates` runs the transform to
-diff against the existing blueprint and the update itself runs it again;
-`_skipped_properties` is a per-instance list and nothing de-duplicates it. The one that
-can still lose a warning: `_current_class` is a single instance attribute while `_process_classes_parallel` runs
-`_process_single_class` on up to `BDA_SYNC_MAX_WORKERS` threads, so a drop can in
-principle be filed against a sibling class — and because the collection filters on that
-label, it is then omitted from its real class's warnings rather than merely misfiled. It
-does not reproduce under natural scheduling ([#1193](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/1193)).
+One known imprecision remains in that report: on the **update** path each dropped
+property is recorded **twice**, because `_check_for_updates` runs the transform to diff
+against the existing blueprint and the update itself runs it again, and nothing
+de-duplicates.
+
+**The class a drop is filed under is ambient, per thread, and per invocation.** The
+recorder sits at the bottom of the transform's call tree, several frames below the method
+that knows which class is being processed, so the label cannot practically be a
+parameter — `_transform_json_schema_to_bedrock_blueprint` and the six helpers below it
+are called from dozens of sites outside this module, all but one of them in tests, and a
+*defaulted* parameter would reintroduce the silent path the label exists to close.
+`_process_single_class` therefore opens a
+`_recording_drops_for()` block around its whole body and `_record_skipped_property`
+reads the recording in force, from a module-level `contextvars.ContextVar`.
+
+⚠️ The reason it is a `ContextVar` and not an instance attribute is the shape of the
+defect it replaced. A label on the instance is shared by every worker
+`_process_classes_parallel` starts, and the collection *filtered* a shared list on that
+label — so a drop labelled with a sibling's name did not arrive misfiled, it arrived
+nowhere, and the class came back `success` with no warnings while a whole section had
+left its extraction contract. A new thread starts with an empty context, so a worker
+cannot see or overwrite a sibling's label; resetting the token on exit is what stops one
+worker's second class inheriting its first class's drops, which is the part a
+`threading.local()` list would get wrong, because an executor reuses its threads. Both
+properties are pinned in `TestDropsAreAttributedPerWorkerThread`, whose interleaving is
+forced with a `threading.Barrier` rather than hoped for — the original defect did not
+reproduce under natural scheduling.
+
+`_skipped_properties` is still on the instance and still receives every drop, in order,
+as a diagnostic record. Nothing reads it to decide what a class's warnings are. Outside
+a recording — `BlueprintOptimizer`, or a direct call to one of the transform helpers —
+a drop is logged and recorded there with a `class` of `None`.
 
 ### Failing to associate a blueprint fails its class
 
