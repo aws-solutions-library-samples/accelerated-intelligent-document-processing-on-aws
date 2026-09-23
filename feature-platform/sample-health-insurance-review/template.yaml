@@ -108,8 +108,11 @@ Resources:
   # Pipeline hook: invoked by the host's pipeline-hooks dispatcher at
   # postRuleValidation. The dispatcher's IAM policy only allows invoking
   # Lambdas tagged `idp:feature-id` — the Tags below are REQUIRED, not
-  # decorative. Registered with the host by the ui-deployer custom resource
-  # (registerFeatureHooks mutation).
+  # decorative. This hook's ARN reaches the host inside the config preset the
+  # ui-deployer applies, NOT through the host's registerFeatureHooks mutation:
+  # that mutation writes into whichever profile is active at install time, so the
+  # hook would be orphaned once an admin activates this feature's preset profile.
+  # See _inject_post_rule_validation_hook in ui-deployer/handler.py.
   ###########################################################################
   ClaimStatusHookFunction:
     Type: AWS::Serverless::Function
