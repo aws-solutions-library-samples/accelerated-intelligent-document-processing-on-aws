@@ -40,11 +40,12 @@ What these tests pin
    ``cmd_analyse`` functions end to end, asserting the *arithmetic*: an excluded
    document changes ``n_pairs`` and the mean, so a test that only checked for a
    printed warning would pass while the zero was still being averaged in.
-6. A third local decoder fails a guard — two independent rules, because the first
-   one alone was walked past: the ``"Metering"`` literal is confined to ``lib.py``,
-   and so is deciding whether a ``ddb_to_py`` result is a map. The second is what
-   catches a decoder that builds the attribute name at runtime. Their residual is
-   written out where they are implemented rather than left to be discovered.
+6. A third local decoder fails a guard, and the guard is about **capability**
+   rather than spelling: ``ddb_to_py`` — the only thing that turns a DynamoDB
+   attribute value into a Python value — is callable from ``lib.py`` alone, so a
+   module that cannot decode cannot write a decoder however it spells one. Two
+   earlier spelling-based rules were each walked past; the seven spellings that did
+   it are kept as probes. The residual is written where the rule is implemented.
 
 What is NOT claimed
 -------------------
@@ -57,12 +58,13 @@ list is now in the artifact. The shipped writer stores ``Metering`` as
 states need a row some other writer produced. This is a contract fix, not a
 correction to a published number.
 
-One adjacent defect is **filed rather than fixed** (#1223): ``lib.ddb_to_py(None)``
-raises ``TypeError`` instead of answering ``None``, and ``detection_ab`` calls it
-unguarded on ``ObjectStatus`` and on ``Sections`` — the second is written only when
-non-empty, so a document that produced no sections takes the whole analysis down.
-Different class, different function, so the row fixture here carries both attributes
-rather than the change growing to cover it.
+``lib.ddb_to_py(None)`` still raises ``TypeError`` instead of answering ``None``, and
+that is tracked in #1223. What is resolved here is its one reachable consequence: the
+two unguarded call sites are gone, because confining ``ddb_to_py`` to ``lib.py`` meant
+giving ``ObjectStatus`` and ``Sections`` named readers, and a named reader has to
+decide what an absent attribute means. ``Sections`` is written only when non-empty, so
+a document that produced none used to take the whole analysis down. The primitive's own
+fragility is what remains open.
 """
 
 from __future__ import annotations
@@ -79,6 +81,8 @@ lib = harness_module("lib")
 real_corpus_ab = harness_module("real_corpus_ab")
 detection_ab = harness_module("detection_ab_teststudio")
 per_class_ab = harness_module("per_class_ab")
+
+REPO = Path(lib.REPO)
 
 # A pricing key the shipped table holds, so a "present" reading prices to a real
 # non-zero number rather than to the zero these tests are distinguishing it from.
@@ -133,11 +137,11 @@ _UNHANDLED = {"B": b"x", "NULL": True, "SS": ["a"], "NS": ["1"], "BS": [b"x"]}
 def _item(attribute: dict | None) -> dict:
     """A tracking row, in the attribute-value form a ``Scan`` returns.
 
-    ``ObjectStatus`` and ``Sections`` are present because ``detection_ab`` reads both
-    through ``lib.ddb_to_py`` with no guard, and ``ddb_to_py(None)`` raises
-    ``TypeError`` rather than answering ``None``. A real completed row carries both.
-    That fragility is a separate defect, filed as #1223 rather than fixed here — see the
-    module docstring — so this fixture stays a realistic row rather than a minimal one.
+    ``ObjectStatus`` and ``Sections`` are here because a real completed row carries
+    both, and a fixture that is minimal rather than realistic is how a test ends up
+    describing a shape the code never sees. The readers tolerate their absence
+    (``test_the_named_readers_survive_an_absent_attribute``), so this is realism
+    rather than a workaround.
     """
     row = {
         "PK": {"S": "doc#r/d"},
@@ -377,6 +381,41 @@ class TestDetectionAbWithholdsBothCounts:
     def test_a_genuinely_unmetered_row_still_reports_zero(self):
         assert detection_ab._tokens(_item(None)) == (0.0, 0.0, None)
 
+    def test_cache_tokens_are_summed_into_the_input_count_on_purpose(self):
+        """⚠️ Do not "fix" this: a published page depends on it.
+
+        This tool matches token units by substring, so ``inputTokens``,
+        ``cacheReadInputTokens`` and ``cacheWriteInputTokens`` all land in ``in_tok``.
+        That looks like the substring defect removed from production pricing in #926
+        and it is not the same thing — ``docs/benchmarking/studies/prompt-caching.md``
+        §7 documents it as this instrument's known limitation and names
+        ``real_corpus_ab.py`` as the one that keeps the four classes separate. Making
+        the matching exact here would make that page wrong. Measured before this test
+        existed: narrowing it to the two exact names was undetected.
+        """
+        item = _item(
+            _av(
+                {
+                    f"Extraction/{REAL_MODEL}": {
+                        "inputTokens": 100,
+                        "cacheReadInputTokens": 20,
+                        "cacheWriteInputTokens": 3,
+                        "outputTokens": 7,
+                        "totalTokens": 130,
+                    }
+                }
+            )
+        )
+        inp, outp, why = detection_ab._tokens(item)
+        assert why is None
+        assert inp == 123.0, "the three input-side classes are summed, by design"
+        assert outp == 7.0
+        page = (REPO / "docs/benchmarking/studies/prompt-caching.md").read_text()
+        assert "contains both" in page and "cacheReadInputTokens" in page, (
+            "the page documenting this behaviour has changed; re-read it before "
+            "relying on the assertion above"
+        )
+
     def test_a_token_count_that_is_not_a_number_withholds_both(self):
         item = _item(
             {"M": {f"Extraction/{REAL_MODEL}": {"M": {"inputTokens": {"S": "lots"}}}}}
@@ -479,15 +518,51 @@ class TestTheExclusionReachesTheReport:
 
     def test_the_token_mean_is_over_the_remainder(self, tmp_path, monkeypatch, capsys):
         """Both arms use the same items here, so every paired delta is 0 — the mean
-        that would move is the arm mean, which is printed rather than reported."""
+        that would move is the arm mean, which is printed rather than reported.
+
+        ⚠️ **Both columns are asserted, by position.** The line carries the A mean and
+        the B mean, and this fixture makes them equal, so a substring test for the
+        expected figure is satisfied by either one. Measured: making the A column drop
+        a document left ``"2,000" in line`` true and the suite green.
+        """
         _report, printed = self._run(tmp_path, monkeypatch, capsys)
         line = next(
             ln for ln in printed.splitlines() if ln.strip().startswith("inputTokens")
         )
-        # (1000 + 3000) / 2 = 2,000. Including the broken document's zero would give
-        # 4000/3 = 1,333.
-        assert "2,000" in line, line
+        # class, A, B, delta, % — (1000 + 3000) / 2 = 2,000 in BOTH arms. Including
+        # the broken document's zero would give 4000/3 = 1,333.
+        columns = line.split()
+        assert columns[0] == "inputTokens", line
+        assert columns[1] == "2,000", f"A column: {line}"
+        assert columns[2] == "2,000", f"B column: {line}"
         assert "1,333" not in line
+
+    def test_the_token_table_prints_its_surviving_denominator(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        """Otherwise a thinned mean and a whole one look identical on the console.
+
+        ⚠️ Asserted against the token table's **own** line. Both the cost line and
+        this one print the same sentence, so a search of the whole output is satisfied
+        by the other one — measured: hardcoding this numerator to the paired count
+        left the suite green, because the cost line still said `over 2 of 3`.
+        """
+        _report, printed = self._run(tmp_path, monkeypatch, capsys)
+        own_line = next(
+            (ln for ln in printed.splitlines() if ln.strip().startswith("over ")), None
+        )
+        assert own_line is not None, printed
+        assert own_line.strip().startswith("over 2 of 3 paired document(s)"), own_line
+        assert "would not read" in own_line, own_line
+
+    def test_the_cost_line_prints_its_surviving_denominator_too(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        """The token table said this and the cost line did not, which is the same
+        asymmetry within one report that the change argues against elsewhere."""
+        _report, printed = self._run(tmp_path, monkeypatch, capsys)
+        cost_line = next(ln for ln in printed.splitlines() if "COST/doc:" in ln)
+        assert "over 2 of 3 paired document(s)" in cost_line, cost_line
 
     def test_the_reason_is_in_the_artifact_and_not_only_on_the_console(
         self, tmp_path, monkeypatch, capsys
@@ -566,8 +641,13 @@ class TestTheExclusionReachesTheDetectionReport:
         # with the label — matching the wrong one is how this assertion first
         # passed against a line carrying no number at all.
         line = next(ln for ln in printed.splitlines() if "INPUT tokens: off" in ln)
-        # 2,000 is the mean over the two readable rows; 1,333 would include the zero.
-        assert "2,000" in line, line
+        # ⚠️ BOTH arms asserted, by label. The line is
+        # "INPUT tokens: off 2,000  on 2,000  (+0.00%)" and this fixture makes the two
+        # equal, so a substring test for the figure is satisfied by either column.
+        # Measured: making the `off` arm drop a document left `"2,000" in line` true
+        # and the whole suite green.
+        assert "off 2,000" in line, line
+        assert "on 2,000" in line, line
         assert "1,333" not in line
 
     def test_a_clean_run_says_nothing_and_averages_all_three(
@@ -580,7 +660,8 @@ class TestTheExclusionReachesTheDetectionReport:
         # with the label — matching the wrong one is how this assertion first
         # passed against a line carrying no number at all.
         line = next(ln for ln in printed.splitlines() if "INPUT tokens: off" in ln)
-        assert "2,000" in line, line
+        assert "off 2,000" in line, line
+        assert "on 2,000" in line, line
 
 
 # --------------------------------------------------------------------------- #
@@ -588,215 +669,342 @@ class TestTheExclusionReachesTheDetectionReport:
 # --------------------------------------------------------------------------- #
 @pytest.mark.unit
 class TestTheDecoderCannotBeDuplicated:
-    """The rule is positional and about WHERE the literal may appear, not about
-    recognising a bad shape.
+    """The rule is structural: **outside ``lib.py``, nothing decodes.**
 
-    An earlier guard in this repository enumerated the ways a value could be misused
-    and a spelling nobody had enumerated walked past it. So this does not try to
-    recognise a decoder: reading the attribute at all requires naming it, and the
-    name may be written in exactly one module.
+    An earlier form of this guard confined the ``"Metering"`` string literal to
+    ``lib.py``, and a second confined deciding whether a ``ddb_to_py`` result is a
+    map. Both were about *spelling*, and both were walked past — the first by
+    ``"Meter" + "ing"``, the second by a conditional-expression assignment and then
+    by an annotated one, each time with the whole suite green. A rule that enumerates
+    how a thing might be written loses to the next spelling; that is the lesson this
+    file is carrying forward from the ``_cost`` guard in #1146.
 
-    Two **independent** rules, because one was not enough and the gap was found by
-    trying rather than by reading: naming the attribute is caught by the first, and a
-    *computed* name (``"Meter" + "ing"``) walks past it and is caught by the second,
-    which is about decoding rather than about naming. Each rule's reach is written
-    where it is implemented.
+    So the rule is about **capability** instead. ``ddb_to_py`` is the only thing in
+    the harness that turns a DynamoDB attribute value into a Python value, and it is
+    callable from ``lib.py`` only. A module that cannot decode cannot write a
+    decoder, however it spells one. The named per-attribute readers
+    (``metering_of_item``, ``status_of_item``, ``sections_of_item``) are what other
+    modules use, and adding one is the way to read a new attribute.
 
-    ⚠️ **What neither catches**, stated because a guard whose limits are unstated is
-    how the last one in this repository failed: a decoder that neither names the
-    attribute as a literal nor tests the decoded value with ``isinstance(..., dict)``
-    — for example one reaching it through a constant imported from another module and
-    checking the type some other way. No ast rule closes that, and the behavioural
-    tests above are the primary cover; these two are the cheap extra that name the
-    file and line for the shapes somebody writes by accident.
+    ⚠️ **The residual, stated rather than left to be discovered:** a module could
+    re-implement ``ddb_to_py``'s body inline — ``v["M"]``, ``float(v["N"])`` — and
+    decode without calling it. That is a much larger thing to write by accident than
+    a four-line local reader, and no ast rule closes it. The behavioural tests above
+    are the primary cover; this pins the layering.
+
+    The collectors use ``rglob``, not ``glob``: ``benchmarks/harness/compat/``
+    already exists and already talks to DynamoDB, and a non-recursive walk did not
+    look at it. A verbatim copy of the #1205 decoder placed there passed both earlier
+    rules with the suite byte-identically green.
     """
 
     @staticmethod
-    def _modules_naming_the_attribute() -> dict[str, list[int]]:
-        out = {}
-        for path in sorted(Path(HARNESS).glob("*.py")):
+    def _harness_modules() -> list[Path]:
+        """Every harness module, including the ones in subdirectories."""
+        files = sorted(Path(HARNESS).rglob("*.py"))
+        assert len(files) > 5, f"harness not found at {HARNESS}"
+        assert any(f.parent != Path(HARNESS) for f in files), (
+            "no module in a harness subdirectory, so rglob is indistinguishable from "
+            "glob here and this guard has lost the property it was fixed for"
+        )
+        return files
+
+    @staticmethod
+    def _modules_calling(name: str, files: list[Path]) -> dict[str, list[int]]:
+        """``{module: line numbers}`` for calls to ``name``, however it is reached.
+
+        Covers a bare call, an attribute call (``lib.ddb_to_py``) and
+        ``getattr(lib, "ddb_to_py")``, because the last is a one-line way around a
+        rule that only looks at call syntax.
+        """
+        out: dict[str, list[int]] = {}
+        for path in files:
+            lines = []
+            for node in ast.walk(ast.parse(path.read_text())):
+                if not isinstance(node, ast.Call):
+                    continue
+                fn = node.func
+                if isinstance(fn, ast.Name) and fn.id == name:
+                    lines.append(node.lineno)
+                elif isinstance(fn, ast.Attribute) and fn.attr == name:
+                    lines.append(node.lineno)
+                elif (
+                    isinstance(fn, ast.Name)
+                    and fn.id == "getattr"
+                    and any(
+                        isinstance(a, ast.Constant) and a.value == name
+                        for a in node.args
+                    )
+                ):
+                    lines.append(node.lineno)
+            if lines:
+                out[path.name] = sorted(lines)
+        return out
+
+    def test_only_lib_decodes_a_dynamodb_attribute_value(self):
+        calling = self._modules_calling("ddb_to_py", self._harness_modules())
+        assert "lib.py" in calling, (
+            "lib.py no longer calls ddb_to_py, so this rule measures nothing"
+        )
+        assert set(calling) == {"lib.py"}, (
+            "a module outside lib.py decodes a DynamoDB attribute value, which is "
+            "what every local metering decoder was built out of. Add a named reader "
+            f"to lib.py (see metering_of_item / status_of_item) and call that: {calling}"
+        )
+
+    def test_only_lib_names_the_metering_attribute(self):
+        """Kept as a second, cheaper rule: it names the file and line directly, and
+        an accidental copy trips it before the structural one is consulted."""
+        naming = {}
+        for path in self._harness_modules():
             lines = [
                 node.lineno
                 for node in ast.walk(ast.parse(path.read_text()))
                 if isinstance(node, ast.Constant) and node.value == "Metering"
             ]
             if lines:
-                out[path.name] = lines
-        return out
-
-    def test_only_lib_names_the_metering_attribute(self):
-        naming = self._modules_naming_the_attribute()
+                naming[path.name] = lines
         assert "lib.py" in naming, (
-            "lib.py no longer names the attribute, so this guard is measuring nothing"
+            "lib.py no longer names the attribute, so this rule measures nothing"
         )
         assert set(naming) == {"lib.py"}, (
             "a second module names the `Metering` attribute, which means a second "
             f"decoder: {naming}. Call lib.metering_of_item(item) instead."
         )
 
-    @staticmethod
-    def _modules_decoding_into_a_dict_test() -> dict[str, list[int]]:
-        """Modules that call ``ddb_to_py`` and then ask whether the result is a dict.
-
-        The second rule, and it is about the decoding rather than about the attribute
-        name — which is what lets it catch a decoder that builds the name at runtime.
-        A metering decoder has to do both of these things: get a value out of
-        ``ddb_to_py`` and decide whether it came back as a map. Reading
-        ``ObjectStatus`` or ``Sections`` through ``ddb_to_py`` does neither, so the
-        rule does not touch the legitimate callers.
-        """
-
-        def _calls_the_decoder(expression: ast.AST) -> bool:
-            """Anywhere in the assigned expression, not just at its root.
-
-            ⚠️ This is the part to keep whole-subtree. Requiring the call to *be* the
-            assigned value missed ``m = lib.ddb_to_py(item.get(attr)) if attr in item
-            else None`` — an ``IfExp``, and the shape the original decoders were
-            written in — while catching the same decoder written without the
-            conditional. Measured: the conditional form walked past and the plain
-            form did not, which is a guard sensitive to spelling rather than to what
-            the code does.
-            """
-            return any(
-                isinstance(node, ast.Call)
-                and isinstance(fn := node.func, (ast.Name, ast.Attribute))
-                and (fn.id if isinstance(fn, ast.Name) else fn.attr) == "ddb_to_py"
-                for node in ast.walk(expression)
-            )
-
-        out = {}
-        for path in sorted(Path(HARNESS).glob("*.py")):
-            tree = ast.parse(path.read_text())
-            decoded = {
-                target.id
-                for node in ast.walk(tree)
-                if isinstance(node, ast.Assign) and _calls_the_decoder(node.value)
-                for target in node.targets
-                if isinstance(target, ast.Name)
-            }
-            lines = [
-                node.lineno
-                for node in ast.walk(tree)
-                if isinstance(node, ast.Call)
-                and isinstance(node.func, ast.Name)
-                and node.func.id == "isinstance"
-                and len(node.args) == 2
-                and isinstance(node.args[0], ast.Name)
-                and node.args[0].id in decoded
-                and isinstance(node.args[1], ast.Name)
-                and node.args[1].id == "dict"
-            ]
-            if lines:
-                out[path.name] = lines
-        return out
-
-    def test_only_lib_decides_whether_a_decoded_value_is_a_metering_map(self):
-        naming = self._modules_decoding_into_a_dict_test()
-        assert "lib.py" in naming, (
-            "lib.py no longer decodes into a dict test, so this rule measures nothing"
-        )
-        assert set(naming) == {"lib.py"}, (
-            "a second module decodes a DynamoDB attribute and asks whether it is a "
-            f"map, which is a metering decoder however it names the attribute: {naming}"
-        )
-
-    def test_the_second_rule_sees_a_computed_attribute_name(
-        self, tmp_path, monkeypatch
-    ):
-        """The spelling that walks past the first rule.
-
-        Found by trying it rather than by reading: the first rule was written, the
-        defect was reintroduced with ``"Meter" + "ing"``, and the whole suite stayed
-        green. That is the same failure the ``_cost`` guard in #1146 had.
-        """
-        (tmp_path / "lib.py").write_text("m = ddb_to_py(x)\nok = isinstance(m, dict)\n")
-        # Written as a conditional expression, which is how both original decoders
-        # were written and which an earlier version of this rule did not see.
-        (tmp_path / "sneaky_ab.py").write_text(
-            'attr = "Meter" + "ing"\n'
-            "m = lib.ddb_to_py(item.get(attr)) if attr in item else None\n"
-            "out = m if isinstance(m, dict) else {}\n"
-        )
-        monkeypatch.setattr(
-            "test_metering_decode_failure.HARNESS", str(tmp_path), raising=False
-        )
-        # The first rule does not see it...
-        assert set(self._modules_naming_the_attribute()) == set()
-        # ...and the second does.
-        assert set(self._modules_decoding_into_a_dict_test()) == {
-            "lib.py",
+    # Each entry is a list of LINES, joined at run time — an embedded newline in a
+    # source-code fixture is the kind of thing that survives review and then does not
+    # parse. Five of these seven were green against an earlier version of this guard.
+    DECODER_SPELLINGS = [
+        pytest.param(
             "sneaky_ab.py",
-        }
+            [
+                'm = lib.ddb_to_py(item.get("Metering")) if "Metering" in item else None',
+                "out = m if isinstance(m, dict) else {}",
+            ],
+            id="verbatim",
+        ),
+        pytest.param(
+            "sneaky_ab.py",
+            [
+                'a = "Meter" + "ing"',
+                "m = lib.ddb_to_py(item.get(a)) if a in item else None",
+                "out = m if isinstance(m, dict) else {}",
+            ],
+            id="computed-name",
+        ),
+        pytest.param(
+            "sneaky_ab.py",
+            [
+                'a = "".join(["Meter", "ing"])',
+                "m: dict | None = lib.ddb_to_py(item[a]) if a in item else None",
+                "out = m if isinstance(m, dict) else {}",
+            ],
+            id="annotated-assign",
+        ),
+        pytest.param(
+            "sneaky_ab.py",
+            [
+                "ok = isinstance(m := lib.ddb_to_py(item[attr]), dict)",
+                "out = m if ok else {}",
+            ],
+            id="walrus",
+        ),
+        pytest.param(
+            "sneaky_ab.py",
+            [
+                "m = lib.ddb_to_py(item[attr])",
+                "out = m if type(m) is dict else {}",
+            ],
+            id="type-is-dict",
+        ),
+        pytest.param(
+            "sneaky_ab.py",
+            [
+                'm = getattr(lib, "ddb_to_py")(item[attr])',
+                "out = m if isinstance(m, abc.Mapping) else {}",
+            ],
+            id="getattr",
+        ),
+        pytest.param(
+            "compat/rollup.py",
+            [
+                'm = lib.ddb_to_py(item.get("Metering")) if "Metering" in item else None',
+                "out = m if isinstance(m, dict) else {}",
+            ],
+            id="subdirectory",
+        ),
+    ]
 
-    def test_the_second_rule_leaves_the_legitimate_decoders_alone(
+    @pytest.mark.parametrize(("filename", "lines"), DECODER_SPELLINGS)
+    def test_the_rule_rejects_every_way_of_writing_a_second_decoder(
+        self, tmp_path, monkeypatch, filename, lines
+    ):
+        """Seven spellings, five of which got past an earlier version of this guard.
+
+        Run through the real collector. The point of a capability rule rather than a
+        spelling rule is that this list does not have to be complete — but it is the
+        record of what was tried, and every entry was green at some point.
+        """
+        (tmp_path / "lib.py").write_text(
+            'X = "Metering"' + "\n" + "m = ddb_to_py(v)" + "\n"
+        )
+        target = tmp_path / filename
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text("\n".join(lines) + "\n")
+        monkeypatch.setattr(
+            "test_metering_decode_failure.HARNESS", str(tmp_path), raising=False
+        )
+        files = sorted(Path(tmp_path).rglob("*.py"))
+        calling = self._modules_calling("ddb_to_py", files)
+        assert set(calling) - {"lib.py"}, (
+            f"a decoder written as {filename}: {lines!r} is not seen by the rule"
+        )
+
+    def test_the_rule_leaves_a_module_that_decodes_nothing_alone(
         self, tmp_path, monkeypatch
     ):
-        """Reading a non-metering attribute is not a metering decoder."""
-        (tmp_path / "lib.py").write_text("m = ddb_to_py(x)\nok = isinstance(m, dict)\n")
+        """It is about decoding, not about touching a tracking row at all."""
+        (tmp_path / "lib.py").write_text("m = ddb_to_py(v)\n")
         (tmp_path / "fine_ab.py").write_text(
-            "status = lib.ddb_to_py(item.get(status_attr))\n"
-            "secs = lib.ddb_to_py(item.get(sections_attr)) or []\n"
-            "ok = isinstance(secs, list)\n"
+            "status = lib.status_of_item(item)\n"
+            "secs = lib.sections_of_item(item)\n"
+            "read = lib.metering_of_item(item)\n"
         )
         monkeypatch.setattr(
             "test_metering_decode_failure.HARNESS", str(tmp_path), raising=False
         )
-        assert set(self._modules_decoding_into_a_dict_test()) == {"lib.py"}
+        files = sorted(Path(tmp_path).rglob("*.py"))
+        assert set(self._modules_calling("ddb_to_py", files)) == {"lib.py"}
 
-    def test_the_guard_sees_a_second_module_that_names_it(self, tmp_path, monkeypatch):
-        """Run through the real collector over a synthetic harness directory."""
-        (tmp_path / "lib.py").write_text('X = "Metering"\n')
-        (tmp_path / "sneaky_ab.py").write_text(
-            'm = lib.ddb_to_py(item.get("Metering"))\n'
-        )
-        monkeypatch.setattr(
-            "test_metering_decode_failure.HARNESS", str(tmp_path), raising=False
-        )
-        naming = self._modules_naming_the_attribute()
-        assert set(naming) == {"lib.py", "sneaky_ab.py"}, naming
+    def test_the_named_readers_exist_and_are_what_the_callers_use(self):
+        """The rule is only satisfiable because these exist; a rule nobody can
+        satisfy gets deleted rather than obeyed."""
+        for name in ("metering_of_item", "status_of_item", "sections_of_item"):
+            assert callable(getattr(lib, name)), name
+        source = Path(HARNESS, "detection_ab_teststudio.py").read_text()
+        assert "lib.status_of_item(" in source
+        assert "lib.sections_of_item(" in source
+
+    def test_the_named_readers_survive_an_absent_attribute(self):
+        """The membership tests inside them are load-bearing, not padding.
+
+        ``ddb_to_py(None)`` raises ``TypeError`` rather than answering ``None``
+        (#1223), so ``ddb_to_py(item.get(attr))`` is the crash these readers exist to
+        remove. Measured before this test existed: dropping the membership test from
+        ``status_of_item`` left the whole suite green.
+        """
+        for empty in ({}, None, {"PK": {"S": "doc#r/d"}}):
+            assert lib.status_of_item(empty) is None, empty
+            assert lib.sections_of_item(empty) == [], empty
+        assert lib.status_of_item({"ObjectStatus": {"S": "COMPLETED"}}) == "COMPLETED"
+        # ...and the underlying primitive really does raise, so the above is not
+        # asserting something that would hold either way.
+        with pytest.raises(TypeError):
+            lib.ddb_to_py(None)
+
+    def test_sections_absent_is_a_real_empty_list_not_a_collapsed_state(self):
+        """⚠️ The one place a two-state reader is correct, so it is pinned here.
+
+        ``idp_common/dynamodb/service.py`` writes ``Sections`` only when non-empty,
+        so an absent attribute IS a document with no sections. Making this
+        three-stated would report a real measurement as unknown — the opposite of
+        #1205 — and ``ddb_to_py(None)`` raising is what made the old unguarded call
+        crash instead (#1223).
+        """
+        assert lib.sections_of_item({"PK": {"S": "x"}}) == []
+        assert lib.sections_of_item(None) == []
+        assert lib.sections_of_item(
+            {"Sections": {"L": [{"M": {"a": {"N": "1"}}}]}}
+        ) == [{"a": 1.0}]
 
     def test_a_degenerate_sample_prints_rather_than_raising(self):
         """``t`` is null when the paired deltas have zero spread.
 
-        Found by this change rather than caused by it, and fixed here rather than
-        filed because excluding a document shrinks the sample and so makes a
-        degenerate one *more* likely — leaving the crash would mean shipping a new
-        route into it. Two arms agreeing exactly on every document is enough on its
-        own. ``per_class_ab``'s summary table already printed ``—``; four other sites
-        formatted it unconditionally and raised ``TypeError`` after the analysis had
-        finished computing.
+        Found while testing this change rather than caused by it, and fixed here
+        because excluding a document shrinks the sample and so makes a degenerate one
+        *more* likely — leaving it would mean shipping a new route into a crash. Two
+        arms agreeing exactly on every document is enough on its own.
         """
         degenerate = real_corpus_ab._paired_stats([(1.0, 0.0), (2.0, 1.0)], "cost")
         assert degenerate is not None
         assert degenerate["sd"] == 0.0
         assert degenerate["t"] is None, "the premise of this test no longer holds"
-        assert real_corpus_ab._t(degenerate) == "—"
-        assert per_class_ab._t(None) == "—"
+        assert lib.format_t(degenerate["t"]) == "—"
+        assert lib.format_t(None) == "—"
         # ...and a real one still formats.
         real = real_corpus_ab._paired_stats([(1.0, 0.0), (5.0, 1.0)], "cost")
         assert real is not None and real["t"] is not None
-        assert re.fullmatch(r"[+-]\d+\.\d\d", real_corpus_ab._t(real))
-        assert re.fullmatch(r"[+-]\d+\.\d\d", per_class_ab._t(2.5))
+        assert re.fullmatch(r"[+-]\d+\.\d\d", lib.format_t(real["t"]))
 
-    def test_no_print_site_formats_a_t_statistic_directly(self):
-        """The rule positionally: a ``t`` reaches a format string only through ``_t``.
+    def test_there_is_one_formatter_and_it_takes_the_scalar(self):
+        """Two modules that import each other had ``_t`` with different argument
+        types — the stats dict in one, the scalar in the other — so either mis-call
+        rendered a real t as an em-dash. That is a computed figure reported as a
+        missing one, which is this change's own defect class applied to its reporting.
+        """
+        for module in (real_corpus_ab, per_class_ab, detection_ab):
+            assert not hasattr(module, "_t"), module.__name__
+        assert lib.format_t(2.5) == "+2.50"
+        assert lib.format_t({"t": 2.5}) == "—", (
+            "format_t must take the scalar; accepting a dict would make the "
+            "mis-call it exists to prevent silent again"
+        )
 
-        The guard that matters is not "does this one line handle None" — the crash
-        existed in four places while a fifth in the same file handled it. So no
-        harness module may format ``['t']`` or a ``_paired`` tuple's third element
-        inside an f-string.
+    def test_no_print_site_formats_a_t_statistic_at_all(self):
+        """Positional, and over the whole subtree: a ``t`` reaches a format string
+        only after ``lib.format_t`` has turned it into a string.
+
+        ⚠️ The earlier version of this rule was two regexes, one of which required an
+        ``s_`` prefix, and it missed ``per_class_ab``'s own summary table — two sites
+        formatting a ``_paired`` tuple's third element inside a nested f-string, which
+        the PR describing the rule cited as already safe. Measured: removing their
+        null guards reintroduced the crash with the suite green. So the rule is now
+        about the **shape of the access** rather than about the variable's name — any
+        subscript by ``'t'`` or by ``2`` appearing inside an f-string interpolation,
+        anywhere in harness code including the nested f-strings the old rule could
+        not see.
         """
         offenders = []
-        for path in sorted(Path(HARNESS).glob("*.py")):
-            for n, line in enumerate(path.read_text().splitlines(), 1):
-                if re.search(r"\{s?t?_?\w*\[['\"]t['\"]\]:", line) or re.search(
-                    r"\{s_\w+\[2\]:", line
-                ):
-                    offenders.append(f"{path.name}:{n}: {line.strip()}")
+        for path in sorted(Path(HARNESS).rglob("*.py")):
+            for node in ast.walk(ast.parse(path.read_text())):
+                if not isinstance(node, ast.FormattedValue):
+                    continue
+                for inner in ast.walk(node):
+                    if not isinstance(inner, ast.Subscript):
+                        continue
+                    key = inner.slice
+                    if isinstance(key, ast.Constant) and key.value in ("t", 2):
+                        offenders.append(
+                            f"{path.name}:{inner.lineno}: subscript [{key.value!r}] "
+                            "inside an f-string"
+                        )
         assert not offenders, (
-            "a t statistic is formatted directly; it is null whenever the paired "
-            f"deltas have zero spread, so this raises TypeError: {offenders}"
+            "a t statistic looks to be formatted inside an f-string; it is null "
+            "whenever the paired deltas have zero spread, so this raises TypeError. "
+            f"Call lib.format_t() first and interpolate the string: {offenders}"
         )
+
+    def test_that_rule_sees_the_nested_f_string_the_regex_missed(self):
+        """The exact spelling from ``per_class_ab``'s summary table."""
+        probe = tmp = None  # noqa: F841 - documents that no fixture is needed
+        source = (
+            "print(\n"
+            '    f"{cls:28} "\n'
+            "    f\"{(f'{acc[2]:+.2f}' if acc and acc[2] is not None else '-'):>6} \"\n"
+            ")\n"
+        )
+        found = [
+            inner.lineno
+            for node in ast.walk(ast.parse(source))
+            if isinstance(node, ast.FormattedValue)
+            for inner in ast.walk(node)
+            if isinstance(inner, ast.Subscript)
+            and isinstance(inner.slice, ast.Constant)
+            and inner.slice.value in ("t", 2)
+        ]
+        assert found, "the rule cannot see a subscript nested inside an inner f-string"
+        del probe, tmp
 
     def test_neither_former_decoder_survives_in_any_form(self):
         """The two function bodies must go through the shared reader.

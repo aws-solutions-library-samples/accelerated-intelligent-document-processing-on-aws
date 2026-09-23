@@ -469,6 +469,58 @@ def ddb_to_py(v):
     return None
 
 
+def format_t(t) -> str:
+    """A t statistic for printing, or ``—`` when there is not one.
+
+    ``t`` is null whenever the paired deltas have zero spread, which is not an edge
+    case: two arms that agree exactly on every document produce it, and so does any
+    sample of identical deltas. Formatting it unconditionally raises ``TypeError``
+    and takes an analysis down at the point it has finished computing. Excluding a
+    document makes the remaining sample smaller and so makes a degenerate one more
+    likely (#1205), which is why this is not left as the pre-existing crash it was.
+
+    One function rather than one per module, because the two modules that needed it
+    import each other and had defined ``_t`` with **different** argument types — the
+    stats dict in one, the scalar in the other. Either mis-call silently rendered a
+    perfectly good t as an em-dash, which is a real figure reported as a missing one:
+    the defect class this whole line of work is about, in the reporting of it.
+    """
+    return f"{t:+.2f}" if isinstance(t, (int, float)) else "—"
+
+
+def status_of_item(item) -> Any:
+    """``ObjectStatus`` from a tracking row, or ``None`` when the row lacks one.
+
+    One of the named per-attribute readers that exist so that ``ddb_to_py`` — a
+    low-level attribute-value decoder — is called from this module only. Every
+    module decoding raw attribute values for itself is how two of them came to write
+    their own metering decoder, each answering ``{}`` for anything it could not read
+    (#1205). Note ``ddb_to_py(None)`` raises rather than answering ``None``, so the
+    membership test here is load-bearing and not defensive padding.
+    """
+    return ddb_to_py(item["ObjectStatus"]) if item and "ObjectStatus" in item else None
+
+
+def sections_of_item(item) -> list:
+    """``Sections`` from a tracking row, or ``[]``.
+
+    ⚠️ **Two-stated on purpose, unlike ``metering_of_item``.** The shipped writer
+    omits this attribute when a document produced no sections (``if sections_data:``
+    in ``idp_common/dynamodb/service.py``), so an absent attribute IS an empty list
+    and reporting it as one is correct rather than a collapsed state. A *present*
+    attribute that will not decode to a list is a different matter and is currently
+    also reported as empty; that residual belongs with the rest of ``ddb_to_py``'s
+    fragility in
+    [#1223](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/1223)
+    rather than here, because nothing prices or averages it — it feeds a count of
+    processing issues.
+    """
+    if not item or "Sections" not in item:
+        return []
+    decoded = ddb_to_py(item["Sections"])
+    return decoded if isinstance(decoded, list) else []
+
+
 def metering_of_item(item, where: str = "") -> Reading[dict]:
     """The ``Metering`` attribute of ONE tracking row, as a three-state reading.
 

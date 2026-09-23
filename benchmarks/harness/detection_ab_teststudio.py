@@ -253,9 +253,14 @@ def _tokens(item):
 
 
 def _suspected(item):
-    secs = lib.ddb_to_py(item.get("Sections")) or []
+    # `lib.sections_of_item` rather than a local decode: `ddb_to_py` is callable
+    # from lib.py only, so no module here can build a decoder of its own (#1205).
+    # It also handles the ABSENT attribute, which the old `or []` read as a guard
+    # and was not — `ddb_to_py(None)` raises, and this attribute is written only
+    # when a document produced sections, so absence is the ordinary case (#1223).
+    secs = lib.sections_of_item(item)
     n = 0
-    for sec in secs if isinstance(secs, list) else []:
+    for sec in secs:
         for iss in (sec or {}).get("ProcessingIssues") or []:
             if iss.get("code") == SUSPECTED:
                 n += 1
@@ -294,7 +299,7 @@ def cmd_analyse(a):
                 inp, outp, tok_unread = _tokens(item)
                 score, unread = _score(res["output_bucket"], r["run_id"], key)
                 rows[key] = {
-                    "status": lib.ddb_to_py(item.get("ObjectStatus")),
+                    "status": lib.status_of_item(item),
                     "score": score,
                     "score_unread": unread,
                     "in_tok": inp,

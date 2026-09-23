@@ -176,7 +176,10 @@ What the callers do with that:
   prefix, and leaves an unreadable row un-augmented.
 - **There is one metering decoder, `lib.metering_of_item`**, and everything that reads
   a `Metering` attribute goes through it — `lib.read_metering` is that function plus a
-  `GetItem`. Splitting them apart is the fix for a specific way this class comes back:
+  `GetItem`. More generally `lib.ddb_to_py` is callable from `lib.py` only, with a
+  named reader per attribute (`metering_of_item`, `status_of_item`,
+  `sections_of_item`); reading a new attribute means adding one rather than decoding
+  locally, and a test holds that layering. Splitting them apart is the fix for a specific way this class comes back:
   a caller working from a `Scan` rather than a key could not reuse a reader that did
   its own fetch, so it wrote a local one, and a local one written to get a number out
   answers `{}` for everything it cannot decode. Two had

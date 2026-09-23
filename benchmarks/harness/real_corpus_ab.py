@@ -257,22 +257,6 @@ def _sign_test(better, worse):
     return min(1.0, 2 * tail)
 
 
-def _t(stats) -> str:
-    """A t statistic for printing, or ``—`` when there is not one.
-
-    ``t`` is null whenever the paired deltas have zero spread, which is not an
-    edge case: two arms that agree exactly on every document produce it, and so does
-    any sample of identical deltas. Formatting it unconditionally raised
-    ``TypeError`` and took the whole analysis down at the point it had finished
-    computing. Excluding a document makes the remaining sample smaller and so makes
-    a degenerate one more likely, which is why this is fixed alongside #1205 rather
-    than left as the pre-existing crash it was. ``per_class_ab``'s summary table
-    already guarded it; its own detail lines did not.
-    """
-    t = (stats or {}).get("t") if isinstance(stats, dict) else None
-    return f"{t:+.2f}" if isinstance(t, (int, float)) else "—"
-
-
 def _paired_stats(pairs, name):
     """Paired mean/sd/t for a list of (a, b) numeric pairs."""
     deltas = [a - b for a, b in pairs if a is not None and b is not None]
@@ -380,9 +364,10 @@ def cmd_analyse(a):
             print(f"    A mean {statistics.fmean(x[1] for x in acc):.4f}")
             print(f"    B mean {statistics.fmean(x[0] for x in acc):.4f}")
             st = _paired_stats(acc, "accuracy")
+            acc_t = lib.format_t(st and st["t"])
             print(
                 f"    mean paired delta (B-A) {st['mean_delta']:+.4f}  "
-                f"sd {st['sd']:.4f}  t {_t(st)}"
+                f"sd {st['sd']:.4f}  t {acc_t}"
                 if st
                 else "    (too few pairs)"
             )
@@ -397,10 +382,18 @@ def cmd_analyse(a):
             ma = statistics.fmean(x[1] for x in cost)
             mb = statistics.fmean(x[0] for x in cost)
             pct = 100 * st["mean_delta"] / ma if ma else float("nan")
+            cost_t = lib.format_t(st["t"])
+            verdict = "SEPARATES" if abs(st["t"] or 0) > 2 else "not resolvable"
+            short = (
+                f"  ⚠ over {st['n_pairs']} of {len(paired)} paired document(s)"
+                if st["n_pairs"] < len(paired)
+                else ""
+            )
             print(
                 f"\n  COST/doc: A ${ma:.4f}  B ${mb:.4f}  "
-                f"delta {st['mean_delta']:+.4f} ({pct:+.1f}%)  t {_t(st)}  "
-                f"{'SEPARATES' if abs(st['t'] or 0) > 2 else 'not resolvable'}"
+                f"delta {st['mean_delta']:+.4f} ({pct:+.1f}%)  t {cost_t}  "
+                f"{verdict}"
+                f"{short}"
             )
 
         print(
