@@ -156,6 +156,11 @@ def handler(event, context):
         # is always available here; an empty one means this run produced no section
         # output, which is a reason to consolidate nothing rather than to fall back
         # to reading the prefix.
+        #
+        # An empty list is reachable as a Map over ZERO sections. It is not reachable
+        # as a run whose sections all failed: the Map carries no `Catch` and no
+        # tolerated-failure setting, and neither does the task inside it, so one
+        # failed iteration fails the Map and this state never runs.
         section_uris = [r["section_uri"] for r in section_results]
         logger.info(f"Consolidating rule validation results for {len(document.sections)} section(s)")
         updated_document = summarization_service.consolidate_and_save(

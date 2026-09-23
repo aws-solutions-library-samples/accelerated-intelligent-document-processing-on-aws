@@ -632,8 +632,15 @@ class RuleValidationOrchestratorService:
         manual re-consolidation of an existing prefix — so the distinction is
         ``None`` (no list available, read the prefix) versus ``[]`` (this run wrote
         nothing, so there is nothing to consolidate). Those two must not collapse:
-        treating an empty list as "fall back to the prefix" would restore the defect
-        in exactly the case that triggers it, a run whose sections all failed.
+        treating an empty list as "fall back to the prefix" would read the previous
+        run's objects in a case where this run produced none of its own, which is the
+        defect at its worst rather than an edge of it.
+
+        The reachable shape of that case is a **Map over zero sections**. It is not a
+        run whose sections all failed: ``ProcessRuleValidationSections`` carries no
+        ``Catch`` and no tolerated-failure setting, and neither does
+        ``RuleValidationStep`` inside it, so one failed iteration fails the Map and
+        ``RuleValidationOrchestration`` never runs at all.
         """
         try:
             if section_uris is None:
@@ -1605,9 +1612,20 @@ tr:hover {
         :meth:`load_section_results` for why passing it matters.
         """
         try:
+            # Resolved ONCE, here, and used for both the load and the section count.
+            # `_section_keys_from_uris` logs a warning per URI it drops, so calling it
+            # twice reported the same bad URI twice and read as two bad objects.
+            # `load_section_results` passes a bare key through unchanged, so handing
+            # it keys rather than URIs is idempotent.
+            section_keys = (
+                None
+                if section_uris is None
+                else self._section_keys_from_uris(section_uris, document.output_bucket)
+            )
+
             # Load all section results and check if chunking occurred
             all_responses, chunking_occurred = self.load_section_results(
-                document.input_key, document.output_bucket, section_uris
+                document.input_key, document.output_bucket, section_keys
             )
 
             if not all_responses:
@@ -1629,7 +1647,7 @@ tr:hover {
             # otherwise push the count past 1 and route a single-section document
             # through LLM summarization, which is a cost and latency difference on
             # top of the wrong verdicts (#1143).
-            if section_uris is None:
+            if section_keys is None:
                 prefix = f"{document.input_key}/rule_validation/sections/"
                 pattern = f"{prefix}section_*_responses.json"
                 section_files = s3.find_matching_files(document.output_bucket, pattern)
@@ -1637,8 +1655,14 @@ tr:hover {
                     [f for f in section_files if f.endswith("_responses.json")]
                 )
             else:
+                # Counted from the keys the loader actually READ, not from the raw
+                # list. A URI naming another bucket is dropped, so counting the raw
+                # list reads one object and reports two — which takes the LLM
+                # summarization branch for a single-section document. That is the same
+                # defect this change exists to remove, reintroduced on the defensive
+                # path.
                 num_sections = len(
-                    [uri for uri in section_uris if uri.endswith("_responses.json")]
+                    [key for key in section_keys if key.endswith("_responses.json")]
                 )
 
             needs_summarization = (num_sections > 1) or chunking_occurred

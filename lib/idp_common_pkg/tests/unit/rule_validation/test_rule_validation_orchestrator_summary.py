@@ -1457,10 +1457,10 @@ class TestConsolidationReadsWhatThisRunWrote:
     def test_an_empty_list_consolidates_nothing_rather_than_falling_back(self):
         """``[]`` and ``None`` must not collapse.
 
-        An empty list means this run wrote no section output — every section failed,
-        say. Falling back to the prefix there would consolidate the previous run's
-        verdicts *in their entirety*, which is the worst case of the defect rather
-        than an edge of it.
+        An empty list means this run wrote no section output, which is reachable as a
+        Map over zero sections. Falling back to the prefix there would consolidate the
+        previous run's verdicts *in their entirety*, which is the worst case of the
+        defect rather than an edge of it.
         """
         with patch("idp_common.rule_validation.orchestrator.s3") as s3_mock:
             self._both_objects_present(s3_mock)
@@ -1488,6 +1488,65 @@ class TestConsolidationReadsWhatThisRunWrote:
         assert _service()._section_keys_from_uris([self.THIS_RUN], "bucket") == [
             self.THIS_RUN
         ]
+
+    def test_a_dropped_uri_does_not_count_towards_the_section_total(self):
+        """The count must come from the keys that were READ, not from the raw list.
+
+        One real URI plus one naming another bucket reads **one** object. Counting the
+        raw list reports two, which crosses `num_sections > 1` and routes a
+        single-section document through LLM summarization — a Bedrock call and its
+        latency, bought by a URI that was discarded. That is the same defect this
+        change exists to remove, reintroduced on the defensive path.
+
+        The key resolution also happens once rather than twice, so the warning for a
+        dropped URI is logged once: two identical warnings read as two bad objects.
+        """
+        service = _service()
+        uris = [
+            "s3://bucket/doc/rule_validation/sections/section_1_responses.json",
+            "s3://other-bucket/doc/rule_validation/sections/section_9_responses.json",
+        ]
+
+        with patch("idp_common.rule_validation.orchestrator.s3") as s3_mock:
+            s3_mock.get_json_content.return_value = {
+                "responses": {"Lending": [_response("r1", "Pass")]}
+            }
+            document = MagicMock()
+            document.input_key = "doc"
+            document.output_bucket = "bucket"
+            document.id = "doc-1"
+            document.metering = {}
+
+            service.save_policy_type_responses = MagicMock(return_value=[])
+            service._generate_consolidated_summary = MagicMock(return_value={})
+            service.save_consolidated_summary = MagicMock(return_value="s3://b/k")
+            service._process_z3_cross_section_rules = _async_identity
+
+            summarized = {"called": False}
+
+            async def _never(*args, **kwargs):
+                summarized["called"] = True
+                return {}
+
+            service._summarize_responses_with_llm = _never
+
+            import asyncio
+
+            asyncio.run(
+                service.consolidate_and_save_all(
+                    document, {}, multiple_sections=None, section_uris=uris
+                )
+            )
+
+        assert s3_mock.get_json_content.call_count == 1, "read more than the one key"
+        assert not summarized["called"], (
+            "a single-section document was routed through LLM summarization because "
+            "the dropped URI was counted"
+        )
+        service._generate_consolidated_summary.assert_called_once()
+        assert s3_mock.find_matching_files.call_count == 0, (
+            "the prefix was listed even though a list was supplied"
+        )
 
     def test_the_section_count_comes_from_the_list_too(self):
         """The prefix was listed twice, and the second one chooses the code path.

@@ -904,10 +904,22 @@ def test_orchestration_passes_this_runs_section_uris_to_consolidation():
 def test_orchestration_passes_an_empty_list_not_none_when_no_section_wrote_output():
     """``[]`` and ``None`` mean different things downstream, so this must be ``[]``.
 
-    ``None`` tells ``load_section_results`` to list the prefix. A run whose sections
-    all failed wrote nothing, so listing the prefix there consolidates the previous
-    run's verdicts in full — the worst case of #1143 rather than an edge of it.
+    ``None`` tells ``load_section_results`` to list the prefix, and a run that wrote
+    no section output of its own would then consolidate the previous run's verdicts in
+    full — the worst case of #1143 rather than an edge of it.
+
+    The reachable shape is a Map over **zero** sections, not a run whose sections all
+    failed: ``ProcessRuleValidationSections`` carries no ``Catch`` and no
+    tolerated-failure setting, and neither does ``RuleValidationStep`` inside it, so
+    one failed iteration fails the Map and ``RuleValidationOrchestration`` never runs.
+    This test drives the handler directly, which is why it can present a shape the
+    workflow itself would not produce.
     """
     kwargs = _orch_capture_consolidate_kwargs([_section_map_result("1", None)])
+    # `== []` already excludes None, so also asserting `is not None` added nothing.
+    # What is worth pinning instead is that the key is PRESENT: omitting the argument
+    # entirely would leave the parameter at its `None` default and send the loader to
+    # the prefix, which is the failure this test exists to prevent and which an
+    # equality check on a missing key cannot distinguish.
+    assert "section_uris" in kwargs
     assert kwargs["section_uris"] == []
-    assert kwargs["section_uris"] is not None
