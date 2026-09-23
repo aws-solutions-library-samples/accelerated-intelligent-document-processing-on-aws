@@ -129,6 +129,12 @@ Treat both as published text.
       resolve only on the internal network, internal review or ticket ids. A
       `PreToolUse` hook (`scripts/hooks/check_commit_text.py`) blocks the common
       cases; if it fires, fix the text rather than working around it.
+- [ ] No CI-suppressing directive (`[skip ci]` and its four siblings). Both
+      platforms honour them natively, so one in a head commit runs **no** gate on
+      either, and with no required status check the pull request shows nothing
+      rather than red. The same hook refuses it; `ALLOW_SKIP_CI=1` is the override
+      if you mean it, and `scripts/tests/test_no_skip_ci_markers.py` reports one
+      that reached history anyway.
 - [ ] Written at summary altitude: what the change accomplishes and why, not an
       inventory of the individual strings it touched. "Trim the governance docs to
       community-facing guidance" is the right altitude; the line-by-line detail

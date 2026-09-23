@@ -407,8 +407,16 @@ class TestCreatePydanticModelFromJsonSchema:
         instance = Model(field="value")
         assert instance.field == "value"
 
-    def test_circular_reference_detection(self):
-        """Test that circular references are handled (may or may not raise)."""
+    def test_self_referential_defs_resolve_to_a_usable_model(self):
+        """A `$defs` entry that refers to itself generates a working model.
+
+        datamodel-code-generator emits a forward reference for the recursive
+        property, so the recursion has to survive both generation and the
+        `model_rebuild()` this module performs afterwards. Both the base case
+        (no `next`) and one level of nesting are asserted, because a forward
+        reference that was generated but never resolved builds the class fine
+        and only fails when the nested value is actually validated.
+        """
         schema = {
             "type": "object",
             "title": "CircularModel",
@@ -424,31 +432,38 @@ class TestCreatePydanticModelFromJsonSchema:
             "properties": {"root": {"$ref": "#/$defs/Node"}},
         }
 
-        # datamodel-code-generator can handle some circular refs with forward references
-        # This test just ensures it doesn't crash completely
-        try:
-            Model = create_pydantic_model_from_json_schema(schema, "CircularModel")
-            # If it succeeds, verify we can create an instance
-            instance = Model(root={"value": "test"})
-            assert instance.root.value == "test"
-        except Exception:
-            # If it fails, that's also acceptable behavior
-            pass
+        Model = create_pydantic_model_from_json_schema(schema, "CircularModel")
 
-    def test_invalid_schema(self):
-        """Test handling of invalid schema."""
+        leaf = Model(root={"value": "test"})
+        assert leaf.root.value == "test"
+        assert leaf.root.next is None
+
+        nested = Model(root={"value": "a", "next": {"value": "b"}})
+        assert nested.root.next.value == "b"
+
+    def test_an_unrecognised_type_keyword_yields_a_permissive_model(self):
+        """An unusable `type` keyword does not raise; it degrades to `Any`.
+
+        The previous version of this test accepted either outcome, which made
+        it unable to fail (#1129). The measured behaviour is that neither
+        datamodel-code-generator nor this module validates the schema against
+        the JSON Schema metaschema, so generation succeeds and the caller gets
+        a model that accepts anything. That is worth pinning in either
+        direction: if a dependency upgrade starts rejecting such a schema, the
+        callers that today get a permissive model would start seeing an
+        exception, and this test is what says so.
+        """
         schema = {
-            "type": "invalid_type",  # Invalid type
+            "type": "invalid_type",  # not a JSON Schema type
             "properties": {},
         }
 
-        # datamodel-code-generator may or may not raise for invalid types
-        # Just ensure it doesn't crash silently
-        try:
-            create_pydantic_model_from_json_schema(schema, "InvalidModel")
-        except Exception:
-            # Expected - invalid schema should raise some exception
-            pass
+        Model = create_pydantic_model_from_json_schema(schema, "InvalidModel")
+
+        assert issubclass(Model, BaseModel)
+        assert "root" in Model.model_fields
+        # Nothing is constrained, so an arbitrary payload validates.
+        assert Model(root={"anything": 1}).root == {"anything": 1}
 
     def test_empty_properties(self):
         """Test model with empty properties."""

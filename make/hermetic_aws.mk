@@ -52,6 +52,56 @@ HERMETIC_AWS := env -u AWS_REGION -u AWS_DEFAULT_REGION -u AWS_PROFILE \
 	AWS_CONFIG_FILE=/dev/null AWS_SHARED_CREDENTIALS_FILE=/dev/null \
 	AWS_EC2_METADATA_DISABLED=true
 
+# The checkout this file belongs to, resolved from this file's own path rather
+# than from the working directory, because the two including Makefiles are
+# entered from different directories (`make` at the root, `make -C
+# lib/idp_common_pkg` from CI).
+FIRST_PARTY_CHECKOUT := $(abspath $(dir $(lastword $(MAKEFILE_LIST)))..)
+
+# Every first-party package root in THIS checkout, pinned onto PYTHONPATH for
+# every pytest invocation below.
+#
+# `import idp_common` does not read the checkout a suite lives in. These packages
+# are editable installs, so the import follows whichever pointer currently sits in
+# the active interpreter's site-packages — and where `python3` resolves to an
+# interpreter shared between checkouts, every `pip install -e` on the host
+# rewrites that pointer for all of them, last writer wins. One of this
+# repository's own gates is a writer: `lib/idp_common_pkg`'s `test-unit-cicd`
+# reinstalls unless SKIP_INSTALL=1, so running the test gate repoints it at
+# whichever checkout ran it. A suite that then runs unpinned elsewhere measures
+# that tree. It does not announce itself either: the imported package is a real,
+# self-consistent revision of this one, so most tests still pass and the run reads
+# green while describing other code (#1094).
+#
+# Three properties this pin has to have, each of which was a way of getting it
+# wrong:
+#
+#  * ABSOLUTE. A relative entry does not survive into a subprocess that runs with
+#    a different working directory, which several suites here start.
+#  * ALL of them, not just idp_common. The packages import each other, so pinning
+#    one leaves the rest resolving wherever they were pointing, and the provenance
+#    guard in scripts/tests/conftest.py then refuses the run.
+#  * DERIVED, not listed. `lib/*/pyproject.toml` is what makes a directory an
+#    installable first-party root, so the same rule that decides what
+#    FIRST_PARTY_EDITABLES installs decides what is pinned here, and a package
+#    added to lib/ is covered without anyone remembering to add it.
+#    scripts/tests/test_first_party_pythonpath.py asserts this expansion, the
+#    equivalent rule in Python, and FIRST_PARTY_EDITABLES all name the same set.
+_FIRST_PARTY_EMPTY :=
+_FIRST_PARTY_SPACE := $(_FIRST_PARTY_EMPTY) $(_FIRST_PARTY_EMPTY)
+FIRST_PARTY_ROOTS := $(patsubst %/,%,$(dir \
+	$(wildcard $(FIRST_PARTY_CHECKOUT)/lib/*/pyproject.toml)))
+FIRST_PARTY_PYTHONPATH ?= $(subst $(_FIRST_PARTY_SPACE),:,$(strip $(FIRST_PARTY_ROOTS)))
+
 # Recursive (`=`, not `:=`) so $(PYTHON) resolves in whichever Makefile includes
 # this, at the point of use — the two including Makefiles derive it differently.
-PYTEST_HERMETIC = $(HERMETIC_AWS) $(PYTHON) -m pytest
+#
+# The caller's own PYTHONPATH is appended rather than dropped, so a pin a
+# developer set for some other reason still applies — after this one, which is the
+# order that makes the checkout under test win. `FIRST_PARTY_PYTHONPATH=` (empty)
+# suppresses the pin entirely, for the deliberate case of testing an installed
+# copy; the `$(if ...)` is what keeps that from exporting an empty PYTHONPATH,
+# whose first entry is the working directory.
+PYTEST_HERMETIC = $(HERMETIC_AWS) $(if $(FIRST_PARTY_PYTHONPATH),\
+	PYTHONPATH=$(FIRST_PARTY_PYTHONPATH)$${PYTHONPATH:+:$$PYTHONPATH}) \
+	$(PYTHON) -m pytest

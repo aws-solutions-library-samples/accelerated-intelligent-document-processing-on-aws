@@ -79,7 +79,42 @@ RATCHETS = {
 #: declared, so a figure written here would have to be maintained in two places and would
 #: go stale in the one comment that explains the incentive the whole mechanism rests on.
 #: State the rule, let the assignment below carry the number.
-MAX_UNRATCHETED = 58
+#:
+#: ⚠️ The budget can also move for a reason the rule is **not** aimed at: **correcting a
+#: label**. An entry claiming a ratchet nothing implements reads as protection that is not
+#: there, which is worse than a declared gap, so relabelling it `none` is a move this
+#: mechanism is supposed to make attractive even though it raises the number — no
+#: exemption is added and nothing becomes less protected. Raising the budget to absorb a
+#: NEW exemption is the thing it exists to refuse. An increment of this kind has to carry
+#: its own measurement at the pin: what the entry does not check, and evidence that the
+#: gap is one the tree exhibits now rather than a theoretical one.
+#:
+#: The number comes down when a gap is closed, and `scripts/srt/issues.json` is the worked
+#: example in both directions. It was relabelled from a staleness ratchet it did not have
+#: to `none`, and it is now `non-vacuity`: a suppressed entry whose source is measured and
+#: which a scan produces no finding for fails the gate. That check lives in the scan
+#: because only the scanner can answer it, and its own residual is written out in that
+#: entry's `ratchetGap` rather than being absorbed here.
+#:
+#: ⚠️ **The third direction, and the only one that moves this budget in bulk: widening
+#: DISCOVERY.** Adding a fragment to ``exemption_discovery.NAME_VOCABULARY`` does not add
+#: an exemption; it makes one that was already in the tree visible for the first time, and
+#: each newly visible surface arrives needing a judgement it has never had. So the budget
+#: rises, and nothing became less protected — the opposite. Reading such an increment as
+#: the thing this rule refuses would make the correct response "do not widen discovery",
+#: which is the defect the whole vocabulary exists for.
+#:
+#: The measurement for the increment that put this number here, because the argument alone
+#: is not enough: the ``NON_``/``OPEN_``/``PERMIT`` fragments discovered **14** surfaces,
+#: **12** of which have no ratchet in their owning gate today. Two already had one
+#: (``NON_SELECTABLE_DEFAULTS`` a staleness check, ``PERMITTED_DIFFERENCES`` an exact-value
+#: pin), and the most consequential of the twelve is
+#: ``scan_api_rbac.py::FUNCTION_URL_OPEN_ROUTES`` — an authorization carve-out whose
+#: registered sibling in the same file was discovered only because its name contains
+#: ``ALLOW``. Each of the twelve names what is unprotected in its own ``ratchetGap``; that
+#: is the state the tree was already in, now written down. What this budget still refuses
+#: is a NEW exemption arriving with `ratchet: none` and no such reason beside it.
+MAX_UNRATCHETED = 70
 
 #: Entries whose premise is computable but whose gate does not yet call the predicate.
 #: Same ratchet direction, same reason: this state must not become a comfortable place
@@ -400,11 +435,41 @@ def test_discovery_sees_a_file_that_is_not_committed_yet() -> None:
 #: already covers without engaging with it. The repo's own rule is that a weak proxy
 #: must not be called a check, and this is not standing in for a premise: it is the
 #: thing that stops JUDGEMENT being used INSTEAD of a premise.
+#:
+#: **Two properties keep this from being decorative, and they are different properties.**
+#: Eleven of the sixteen phrases it started with matched nothing in the registry, and
+#: three of the five predicates it knew about had no live phrase at all -- so for those
+#: three the check could not fire, and one predicate (``vcs_ignored_build_output``) was
+#: not listed here at all, which is the gap that actually costs coverage.
+#:
+#: 1. **Coverage of the predicate set.** Every predicate in ``gate_premises.PREDICATES``
+#:    must appear as a key here with at least one phrase, so a predicate added without
+#:    wording fails instead of being quietly unreachable. That is the ratchet this needed;
+#:    per-phrase staleness is not, for the reason below.
+#: 2. **Every phrase demonstrably fires.** A phrase matching nothing *today* is not dead
+#:    -- this vocabulary exists to recognise wording in entries **not yet written**, and
+#:    requiring a live match would force it to describe only the entries that already
+#:    exist, making deletion the correct response to a forward-looking phrase. What is
+#:    checkable is whether a phrase can fire at all, so
+#:    :func:`test_every_domain_phrase_can_actually_fire` runs a synthetic entry through
+#:    the same matcher per phrase. Matching is substring against the reason LOWERCASED,
+#:    so a phrase carrying an uppercase letter is inert; that is the way one of these
+#:    dies, and it is the way this catches it.
+#:
+#: Contrast :data:`RATCHET_EVIDENCE_MARKERS` below, where a dead entry IS deleted. The
+#: direction decides the rule: a phrase here widens what *demands* engagement, so an
+#: unused one costs nothing; a marker there widens what *satisfies* a claim, so an unused
+#: one is a loophole waiting to be reached for.
 PREDICATE_DOMAIN_WORDING = {
     "not_a_nested_stack_of_parent": (
         "nested stack",
         "nested stacks",
         "parameters reach",
+        "child stack",
+        "independently deployed",
+        "deployed independently",
+        "parent template",
+        "parent stack",
     ),
     "built_separately_from_main_stack": (
         "built separately",
@@ -412,15 +477,130 @@ PREDICATE_DOMAIN_WORDING = {
         "versioned separately",
         "same publish run",
         "publish run",
+        "own build",
+        "separate build",
+        "release train",
+        "own release",
+        "publisher builds",
     ),
-    "installer_manifest_pins_parameter": ("feature.yaml", "defaultparameters"),
+    "installer_manifest_pins_parameter": (
+        "feature.yaml",
+        "defaultparameters",
+        "installer manifest",
+        "manifest pins",
+        "feature manifest",
+    ),
     "file_absent_or_untracked": (
         "does not exist",
         "no longer exists",
         "only after a build",
+        "untracked",
+        "not tracked",
+        "git does not track",
+        "is absent",
     ),
-    "collects_zero_tests": ("collects zero", "collects no", "zero pytest tests"),
+    "collects_zero_tests": (
+        "collects zero",
+        "collects no",
+        "zero pytest tests",
+        "no tests",
+        "not a test suite",
+        "collects nothing",
+    ),
+    "vcs_ignored_build_output": (
+        "ignore rule",
+        "gitignored build",
+        "build output at any depth",
+        "only exists after a build",
+    ),
+    "vcs_ignored_generated_filename": (
+        "generated artifact",
+        "generated filename",
+        "written into the tree while",
+    ),
 }
+
+
+def _implicated_predicates(entry: dict) -> list[str]:
+    """Predicates whose subject ``entry``'s prose invokes without engaging with them.
+
+    Factored out of the assertion below so the same matcher can be driven by a synthetic
+    entry per phrase. A phrase-liveness test that re-implemented ``phrase in text`` would
+    be testing itself, and would miss the two things that actually make one of these
+    inert: the lowercasing of the text, and the set of fields read.
+    """
+    if gate_premises.JUDGEMENT not in entry["premise"]:
+        return []
+    text = f"{entry.get('reason', '')} {entry.get('turnsOff', '')}".lower()
+    already = set(entry.get("predicateConsidered", {})) | set(entry["premise"])
+    return sorted(
+        predicate
+        for predicate, wording in PREDICATE_DOMAIN_WORDING.items()
+        if any(phrase in text for phrase in wording) and predicate not in already
+    )
+
+
+def test_every_predicate_has_domain_wording() -> None:
+    """A predicate with no wording here is one this check can never demand.
+
+    The gap measured on this vocabulary: ``vcs_ignored_build_output`` was a predicate
+    two gates compute per member and it had no entry at all, so an entry recording
+    JUDGEMENT over exactly its subject -- an ignore rule covering a path -- passed
+    silently. Coverage of the predicate set is the property worth asserting, because
+    it fails when a predicate is *added* without wording, which is how this arose.
+    """
+    missing = sorted(set(gate_premises.PREDICATES) - set(PREDICATE_DOMAIN_WORDING))
+    assert not missing, (
+        f"gate_premises.PREDICATES contains {missing}, which PREDICATE_DOMAIN_WORDING "
+        "does not cover. Until it does, an entry can record JUDGEMENT over precisely "
+        "that predicate's subject and nothing will ask why the predicate does not "
+        "settle it. Add the wording a reason would use for it."
+    )
+    stray = sorted(set(PREDICATE_DOMAIN_WORDING) - set(gate_premises.PREDICATES))
+    assert not stray, (
+        f"PREDICATE_DOMAIN_WORDING has wording for {stray}, which are not predicates "
+        "in gate_premises.PREDICATES. Wording for a predicate that does not exist "
+        "demands engagement with nothing."
+    )
+    empty = sorted(p for p, w in PREDICATE_DOMAIN_WORDING.items() if not w)
+    assert not empty, (
+        f"PREDICATE_DOMAIN_WORDING lists {empty} with no phrases, which is the same as "
+        "not listing them at all while reading as covered."
+    )
+
+
+@pytest.mark.parametrize(
+    ("predicate", "phrase"),
+    [
+        (p, phrase)
+        for p, wording in PREDICATE_DOMAIN_WORDING.items()
+        for phrase in wording
+    ],
+)
+def test_every_domain_phrase_can_actually_fire(predicate: str, phrase: str) -> None:
+    """Each phrase, run through the real matcher on a synthetic entry.
+
+    This is the half that makes the vocabulary more than a list. A phrase is allowed to
+    match nothing in the registry today -- it is there for entries not yet written -- but
+    it is not allowed to be incapable of matching, and the usual cause is invisible:
+    the text is lowercased before the comparison, so a phrase with any uppercase letter
+    in it can never fire. The phrase is written into the synthetic reason with its first
+    letter capitalised, the way a person would open a sentence, which is what makes that
+    case fail here.
+    """
+    sentence = f"{phrase[0].upper()}{phrase[1:]}, which is why this member is exempt."
+    entry = {
+        "premise": [gate_premises.JUDGEMENT],
+        "reason": sentence,
+        "turnsOff": "a gate, for one member",
+    }
+    implicated = _implicated_predicates(entry)
+    assert predicate in implicated, (
+        f"PREDICATE_DOMAIN_WORDING maps {predicate!r} to {phrase!r}, and a reason "
+        f"reading {sentence!r} does not implicate it. Matching is substring against the "
+        f"reason LOWERCASED, so a phrase carrying an uppercase letter can never fire. "
+        f"Implicated instead: {implicated}"
+    )
 
 
 @pytest.mark.parametrize("key", sorted(_registry()))
@@ -444,18 +624,7 @@ def test_judgement_does_not_stand_in_for_an_available_predicate(key: str) -> Non
     restating in prose a fact the tree can compute -- which is exactly what all four
     original defects did.
     """
-    entry = _registry()[key]
-    if gate_premises.JUDGEMENT not in entry["premise"]:
-        return
-
-    text = f"{entry.get('reason', '')} {entry.get('turnsOff', '')}".lower()
-    considered = set(entry.get("predicateConsidered", {}))
-    already = considered | set(entry["premise"])
-    implicated = sorted(
-        predicate
-        for predicate, wording in PREDICATE_DOMAIN_WORDING.items()
-        if any(phrase in text for phrase in wording) and predicate not in already
-    )
+    implicated = _implicated_predicates(_registry()[key])
     assert not implicated, (
         f"{key} records JUDGEMENT, but its reason invokes the subject of "
         f"{implicated} -- predicate(s) that exist in gate_premises.py and are computed "
@@ -490,6 +659,16 @@ def test_a_considered_predicate_is_named_and_explained(key: str) -> None:
 #: check anywhere, which kept the unratcheted count down and the suite green, making
 #: mislabelling cheaper than declaring a gap and inverting the incentive MAX_UNRATCHETED
 #: exists to create.
+#:
+#: ⚠️ **A marker that matches nothing is deleted here, and that is the opposite of the
+#: rule for PREDICATE_DOMAIN_WORDING above.** The direction decides it. A phrase there
+#: widens what *demands* engagement, so one matching nothing yet costs nothing and may be
+#: forward-looking. A marker here widens what *satisfies* a claimed ratchet, so one
+#: matching nothing in any evidence file cannot do anything except let a future entry
+#: claim a ratchet on the strength of a word -- it is pre-approval, the same shape as a
+#: vacuous exemption. Four were dead when this was measured ("no longer match",
+#: "stale_allowlist", "still needed", "no more sites") and are gone;
+#: :func:`test_every_ratchet_marker_is_live` keeps the list swept.
 RATCHET_EVIDENCE_MARKERS = {
     "non-vacuity": (
         "hides nothing",
@@ -497,16 +676,12 @@ RATCHET_EVIDENCE_MARKERS = {
         "shields nothing",
         "vacuous",
         "matched nothing",
-        "no longer match",
-        "stale_allowlist",
         "still_needed",
-        "still needed",
     ),
     "count-pinned": (
         "pinned",
         "expected count",
         "audited when",
-        "no more sites",
         "expected number",
     ),
     "universe-closure": (
@@ -579,6 +754,54 @@ def test_a_named_ratchet_is_implemented_somewhere(key: str) -> None:
         f"files contains any of {list(markers)}. Either the ratchet is not implemented "
         "there -- in which case say so and set ratchet to 'none' with a ratchetGap -- "
         "or point at the file that does implement it."
+    )
+
+
+def test_every_ratchet_marker_is_live() -> None:
+    """A marker no evidence file contains can only ever excuse a future claim.
+
+    This is the non-vacuity ratchet on the ratchet-evidence vocabulary itself, and it is
+    the right rule *here* for a reason that does not generalise to the wording list above:
+    a marker widens what satisfies a claimed ratchet. One that matches nothing in any file
+    any entry names cannot be doing its job today and cannot start; what it can do is let
+    the next entry claim "staleness" because a file happens to contain the word. That is
+    pre-approval of whatever next takes the label, which is exactly what the registry's
+    non-vacuity rule exists to refuse.
+
+    Scoped per ratchet kind, because a marker is only reachable through the files entries
+    claiming *that* kind name. A marker live for `staleness` and dead for `non-vacuity` is
+    dead where it is written.
+    """
+    registry = _registry()
+    dead: list[str] = []
+    for ratchet, markers in RATCHET_EVIDENCE_MARKERS.items():
+        paths: set[str] = set()
+        for entry in registry.values():
+            if entry["ratchet"] != ratchet:
+                continue
+            evidence = entry.get("ratchetEvidence") or []
+            paths.update([evidence] if isinstance(evidence, str) else evidence)
+        texts = [
+            (REPO_ROOT / rel).read_text(encoding="utf-8").lower()
+            for rel in sorted(paths)
+            if (REPO_ROOT / rel).exists()
+        ]
+        assert texts, (
+            f"no entry claiming ratchet {ratchet!r} names a readable ratchetEvidence "
+            "file, so every marker for it would read as dead and this check would "
+            "delete a working vocabulary. Look at the registry, not at the list."
+        )
+        for marker in markers:
+            if not any(marker.lower() in text for text in texts):
+                dead.append(f"{ratchet}:{marker!r}")
+    assert not dead, (
+        f"these ratchet-evidence markers appear in none of the files entries claiming "
+        f"that ratchet name: {dead}. Delete them. A marker here widens what SATISFIES a "
+        "claimed ratchet, so one that matches nothing cannot help today and can only "
+        "let a future entry claim a ratchet it did not build — the same pre-approval a "
+        "vacuous exemption is. (This is deliberately the opposite rule to "
+        "PREDICATE_DOMAIN_WORDING, where a phrase widens what DEMANDS engagement and "
+        "matching nothing yet is fine.)"
     )
 
 

@@ -187,9 +187,15 @@ You can check any environment at any time:
 python3 scripts/check_first_party_deps.py
 ```
 
-Exit code 0 means every installed first-party package came from source. This
-runs in both CI systems and inside `make setup`. The full explanation is in
-[docs/dependency-confusion.md](docs/dependency-confusion.md).
+Exit code 0 means every installed first-party package came from source **and, for an
+editable install, from this checkout** — two different questions, and the second is
+the one that decides what your next `import` reads. On a machine where several
+checkouts are worked on at once and `python3` resolves to a shared interpreter, any
+`pip install -e` repoints that pointer for all of them, so the check names both trees
+when they disagree. This runs in both CI systems and inside `make setup`. The full
+explanation is in [docs/dependency-confusion.md](docs/dependency-confusion.md), and
+what it means for a test run is in
+[docs/testing.md](docs/testing.md#a-run-can-measure-the-wrong-checkout-and-the-make-targets-pin-against-it).
 
 ### Modular extras, and why Lambda package size matters
 
@@ -290,6 +296,22 @@ no ref list for a push that has **nothing to send**, so an up-to-date `git push`
 while `HEAD` happens to sit on `develop` or `main` is refused. Every refusal says
 which basis it used, so you can tell that case from a real one — and the override
 gets you past it.
+
+**Work in your own working directory, not somebody else's.** The guard reasons about
+branches and destinations, not about who else is standing in the checkout, so two
+people — or two assistant sessions — sharing one working tree can pull it out from
+under each other with an ordinary `git switch`, and nothing refuses that or warns
+about it. Use a worktree instead of switching branches in a checkout somebody else is
+using:
+
+```bash
+git worktree add ../idp-my-change -b fix/my-change origin/develop
+```
+
+The `PreToolUse` half of the guard prints a line when it notices another session's id
+was the last to run a git command where you are, and when the branch moved between two
+of your own commands. That is a notice, not a refusal: a per-command hook cannot tell
+a deliberate branch switch from a collision.
 
 ### Where the domain conventions live
 
@@ -395,7 +417,7 @@ now a **named list of individual files** rather than a directory. Any file you
 add, anywhere in the repository, is linted and format-checked from the moment it
 exists. The files that are skipped are the ones that already carried findings
 when the exclusions were narrowed: `ruff.toml`'s `[lint] exclude` names 84 files
-holding 193 pre-existing findings, and `[format] exclude` names 182 files that
+holding 193 pre-existing findings, and `[format] exclude` names 180 files that
 `ruff format` has never been run over. Both counts fall as files are paid off, and
 `scripts/tests/test_contributing_doc.py` reads them out of
 `scripts/lint_debt.json`, so they cannot drift from it. Two further entries in the
@@ -554,6 +576,18 @@ but neither CI configuration file names it; whether a CI job reaches it depends
 on which `make` target that job calls, and `make -n test-packages-cicd` will tell
 you. If you edit the state machine definition, run that root.
 
+**Run the suites through `make`, and a run measures the checkout you started it
+from.** Every pytest invocation in both Makefiles goes through one wrapper that
+exports an absolute `PYTHONPATH` naming this checkout's `lib/*` package roots, so an
+editable install pointing at another tree cannot decide what the gate reads. Running
+`pytest` by hand you have to supply that pin yourself — every root, not just
+`lib/idp_common_pkg`, because the packages import each other — and a guard wired into
+several conftests will put the roots on `sys.path` for you and say so, or refuse the
+run when it cannot.
+[docs/testing.md](docs/testing.md#a-run-can-measure-the-wrong-checkout-and-the-make-targets-pin-against-it)
+has the detail; the short version is that a refusal from that guard means the run
+**did not happen**, rather than that something failed.
+
 The project's intent is that there is **no standing failure set**, so treat a
 failure as a real regression until you have shown otherwise. Two things to check
 before you conclude you caused it: a stale virtualenv missing the pinned
@@ -616,11 +650,20 @@ with the tree. It takes **about a minute** through `make` (48–60 s measured ac
 several trees; the bare `basedpyright` binary is ~47 s, but the `make` figure is the
 one CI pays).
 
-Errors fail it and warnings do not. There are **91** warnings today, and they are
-not one thing: `reportCallIssue` 34, `reportUnsupportedDunderAll` 26,
-`reportReturnType` 19, `reportImportCycles` 11, `reportDuplicateImport` 1. So
-clearing the two return/call rules — the pair most often discussed — takes the tree
-to 38 warnings, not to zero.
+It also resolves this repository's own packages, via `pyrightconfig.json`'s
+`extraPaths`. That matters more than it sounds: without it `idp_common` did not
+resolve, `reportMissingImports` is configured `"none"`, and so **no call into the
+shared library could produce a diagnostic** — the gate read every file and proved
+much less than that suggests. If you add a `lib/<something>` distribution, add its
+package root to `extraPaths`; the suite fails until you do.
+
+Errors fail it and warnings do not. To see today's warning split, run
+`make typecheck` and read the tally it prints rather than a list written here — it
+moves as files are added. Two things about it that do not move: `reportCallIssue` and
+`reportReturnType` are **errors** repo-wide and sit at zero, and the handful still
+reported as *warnings* come from the vendored `feature-platform/pii-anonymizer` tree,
+which is relaxed to warning level on purpose because its annotations are upstream's
+to fix.
 
 `make typecheck-pr` is a **convenience, not a gate**. It narrows `basedpyright`
 to the files you are editing so the answer comes back in a second or two, which
@@ -716,6 +759,16 @@ Widening the measurement is the prerequisite for making it a gate, in that order
 A note on CI status: if GitHub reports "no checks reported" after you push, the
 usual cause is that the PR has become unmergeable against `develop`. Merge
 `develop` into your branch and push again.
+
+**Do not put `[skip ci]` (or `[ci skip]`, `[no ci]`, `[skip actions]`,
+`[actions skip]`) in a commit message on a branch you intend to merge.** Both CI
+platforms honour those natively — neither configuration opts in and neither can
+switch it off — so one of them in your branch's head commit runs *no* gate on
+either platform. No check on this repository is a required status check, so the
+result is not a red pull request but an empty one, which a reviewer cannot
+distinguish from a clean run. A `PreToolUse` hook refuses such a commit, and
+`scripts/tests/test_no_skip_ci_markers.py` reports one that reached history
+anyway on the next pull request whose checks do run.
 
 There is no Contributor License Agreement for this project; it is licensed
 MIT-0 (see `LICENSE`), and your pull request is contributed under those terms.

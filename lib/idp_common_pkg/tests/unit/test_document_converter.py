@@ -9,6 +9,7 @@ from xml.etree.ElementTree import (  # nosec B405 - constructing XML in-memory f
 )
 
 import pytest
+from docx import Document
 
 from idp_common.ocr.document_converter import DocumentConverter
 
@@ -409,27 +410,29 @@ def test_convert_word_to_pages_with_ocr_callback():
 
 @pytest.mark.unit
 def test_build_table_element():
-    """Test _build_table_element preserves table formatting."""
-    mock_table = MagicMock()
+    """_build_table_element preserves table formatting, against a REAL .docx table.
 
-    # Create mock rows and cells
-    header_row = MagicMock()
-    data_row = MagicMock()
-    mock_table.rows = [header_row, data_row]
+    ⚠️ **This test used `MagicMock` rows and asserted the opposite of what the real
+    library does.** `MagicMock` rows held in a plain list return the *same* object on
+    each `rows[0]` access and so compare equal by identity, which made
+    `is_header = table.rows[0] == row` report `True` here — while against real
+    `python-docx` objects it is `False` for every row, because `table.rows[idx]` builds
+    a fresh `_Row` and `_Row` defines no `__eq__`. Measured on python-docx 1.2.0:
+    `table.rows[0] is table.rows[0]` is `False`.
 
-    header_cell1 = MagicMock()
-    header_cell1.text = "Name"
-    header_cell2 = MagicMock()
-    header_cell2.text = "Value"
-    header_row.cells = [header_cell1, header_cell2]
+    So the mock encoded a belief about a dependency instead of measuring it, and the
+    test reported a passing header row while every real document lost its header
+    emphasis in the rendered page image (#1157). A real table costs one `Document()`
+    call, which is why this no longer uses a double at all.
+    """
+    document = Document()
+    table = document.add_table(rows=2, cols=2)
+    table.cell(0, 0).text = "Name"
+    table.cell(0, 1).text = "Value"
+    table.cell(1, 0).text = "Field1"
+    table.cell(1, 1).text = "Data1"
 
-    data_cell1 = MagicMock()
-    data_cell1.text = "Field1"
-    data_cell2 = MagicMock()
-    data_cell2.text = "Data1"
-    data_row.cells = [data_cell1, data_cell2]
-
-    result = DocumentConverter._build_table_element(mock_table)
+    result = DocumentConverter._build_table_element(table)
 
     assert result is not None
     assert result["type"] == "table"
@@ -437,8 +440,10 @@ def test_build_table_element():
     assert result["data"][0][0]["text"] == "Name"
     assert result["data"][0][0]["is_header"] is True
     assert result["data"][0][0]["bold"] is True
+    assert result["data"][0][0]["alignment"] == "center"
     assert result["data"][1][0]["text"] == "Field1"
     assert result["data"][1][0]["is_header"] is False
+    assert result["data"][1][0]["alignment"] == "left"
 
 
 # ---------------------------------------------------------------------------

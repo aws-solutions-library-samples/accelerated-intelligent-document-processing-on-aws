@@ -394,9 +394,15 @@ def _decompress_config_item(item):
         # pinned revision: this config is written straight into the run's
         # DynamoDB item, and the resource client rejects Python floats ("Float
         # types are not supported. Use Decimal types instead."). A compressed
-        # config carrying any non-integer number (the shipped `ocr-benchmark`
-        # preset has `criteria_validation.temperature: 0.0`) failed every
-        # startTestRun at submit until this matched the revision path.
+        # config carrying any non-integer number failed every startTestRun at
+        # submit until this matched the revision path. Two shipped presets still
+        # carry one: `unified/ds11-passport-application` (seven
+        # x-aws-idp-evaluation-threshold values) and `unified/rvl-cdip-package-sample`
+        # (three x-aws-idp-confidence-threshold values). Both reproduce it through
+        # this exact path -- gzip, json.dumps, then json.loads WITHOUT
+        # parse_float=Decimal yields seven and three Python floats respectively, and
+        # zero with it. test_compressed_config_floats.py is the deterministic
+        # reproduction; those two are the live ones.
         config_data = json.loads(
             gzip.decompress(raw_bytes).decode("utf-8"), parse_float=Decimal
         )

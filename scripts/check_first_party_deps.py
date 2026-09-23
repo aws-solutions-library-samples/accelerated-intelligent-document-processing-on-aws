@@ -31,15 +31,38 @@ This works for editable and non-editable installs alike, which a
 path-based check cannot do (a non-editable local install lands in
 site-packages, indistinguishable by path from a PyPI install).
 
+Which source tree — the second question
+---------------------------------------
+"from source" and "from *this* checkout" are different questions, and answering only
+the first is how this check stayed green while ``idp_common`` resolved into another
+worktree of this repository and the other four into a different project entirely
+(#1094). Both are local paths, so PEP 610 is satisfied either way.
+
+That matters because an **editable** install's recorded path is where the import will
+actually read from, every time, for as long as the pointer stands. So for editable
+installs this also compares the recorded checkout against the one this script belongs
+to, and fails when they differ. Non-editable installs are not compared: their code was
+copied into ``site-packages`` at install time, so the recorded path says where it came
+from once and nothing about what imports now.
+
+The comparison is checkout **identity**, not ancestry: a git worktree of this
+repository lives at ``<root>/.claude/worktrees/<name>/`` — a path the tooling here
+creates — and is a different revision, so asking whether the recorded path is *under*
+this root accepts precisely the case most likely to occur.
+
 Run after install (``make setup`` / ``make setup-venv`` do) and in CI.
-Exit codes: 0 = all good, 1 = something is missing or came from an index.
+Exit codes: 0 = all good, 1 = something is missing, came from an index, or points at
+another checkout.
 """
 
 from __future__ import annotations
 
 import json
+import os
 import sys
 from importlib.metadata import PackageNotFoundError, distribution
+from pathlib import Path
+from urllib.parse import unquote, urlparse
 
 # Distribution names that must never be satisfied from a package index.
 # Keep in sync with FIRST_PARTY_EDITABLES in the Makefile.
@@ -66,6 +89,50 @@ TRUSTED_URL_FRAGMENTS = (
     "accelerated-intelligent-document-processing-on-aws",
     "genaiic-idp-accelerator",
 )
+
+# Downgrades a foreign-checkout finding to a note. Same variable the pytest-side
+# provenance guard reads (scripts/tests/first_party_provenance.py), because one switch
+# for one decision is easier to reason about than two: "I am deliberately testing an
+# installed copy from elsewhere". Like that one it is NOT registered in
+# scripts/tests/gate_exemptions.json — it is a per-invocation switch on a local
+# convention rather than a gate turned off for a named file, line or rule.
+ESCAPE_HATCH = "IDP_ALLOW_FOREIGN_FIRST_PARTY"
+_AFFIRMATIVE = frozenset({"1", "true", "yes", "y", "on"})
+
+
+def _checkout_root(path: Path) -> Path:
+    """The root of the checkout containing ``path``: the nearest ancestor with ``.git``.
+
+    ``.git`` is a FILE in a worktree and a directory in a primary checkout, so
+    existence rather than type is the test. Falls back to the path itself when there is
+    no ``.git`` above it, which makes an unrelated directory compare unequal rather
+    than raising.
+    """
+    resolved = path.resolve()
+    for candidate in (resolved, *resolved.parents):
+        if (candidate / ".git").exists():
+            return candidate
+    return resolved
+
+
+#: The checkout this script belongs to — what an editable pointer has to agree with.
+THIS_CHECKOUT = _checkout_root(Path(__file__).resolve().parent)
+
+#: Whether the which-tree comparison can be made at all. An exported source tree with
+#: no ``.git`` — a downloaded archive, a container build context — has no checkout
+#: identity to compare against, and `make setup` runs this script in exactly that
+#: situation. Answering "foreign" there would be a false failure on a first install,
+#: so the comparison is skipped and said to be skipped. The dependency-confusion half
+#: above still applies, since it reads packaging metadata rather than paths.
+CAN_COMPARE_CHECKOUTS = (THIS_CHECKOUT / ".git").exists()
+
+
+def _local_path(url: str) -> Path | None:
+    """The filesystem path in a ``file://`` URL, or ``None`` if it is not one."""
+    if not url.startswith("file://"):
+        return None
+    parsed = urlparse(url)
+    return Path(unquote(parsed.path))
 
 
 def _direct_url(dist_name: str) -> dict | None:
@@ -112,6 +179,18 @@ def _classify(name: str) -> tuple[str, str]:
     if url.startswith("file://"):
         editable = bool(info.get("dir_info", {}).get("editable"))
         kind = "editable local" if editable else "local"
+        path = _local_path(url)
+        if (
+            editable
+            and CAN_COMPARE_CHECKOUTS
+            and path is not None
+            and _checkout_root(path) != THIS_CHECKOUT
+        ):
+            return "foreign", (
+                f"editable install points at another checkout -> {path}\n"
+                f"      Every `import {name.replace('-', '_')}` in this environment "
+                f"reads that tree, not {THIS_CHECKOUT}."
+            )
         return "ok", f"{kind} -> {url}"
 
     if "vcs_info" in info:
@@ -123,8 +202,14 @@ def _classify(name: str) -> tuple[str, str]:
     return "bad", f"installed from an unrecognized source -> {url or '(unknown)'}"
 
 
+def _escape_hatch_set() -> bool:
+    return os.environ.get(ESCAPE_HATCH, "").strip().lower() in _AFFIRMATIVE
+
+
 def main() -> int:
     failures: list[str] = []
+    foreign: list[str] = []
+    waived = _escape_hatch_set()
     checked = 0
 
     # Report every package first, then the error block — otherwise the stderr
@@ -136,6 +221,10 @@ def main() -> int:
             print(f"  ✓ {name}: {detail}")
         elif status == "absent":
             print(f"  - {name}: {detail}")
+        elif status == "foreign":
+            checked += 1
+            print(f"  {'!' if waived else '✗'} {name}: see below")
+            foreign.append(f"{name}: {detail}")
         else:
             checked += 1
             print(f"  ✗ {name}: see error below")
@@ -164,6 +253,41 @@ def main() -> int:
             file=sys.stderr,
         )
 
+    if foreign:
+        print(
+            f"\n{'NOTE' if waived else 'ERROR'}: an editable install points at another "
+            "checkout.\n\n"
+            "The package came from source, so the dependency-confusion question above\n"
+            "is answered — but not the one that decides what your next command reads.\n"
+            "An editable pointer is followed on every import, so tests, coverage and\n"
+            "type checks describe the tree it names, and they do it quietly: that tree\n"
+            "is a real revision of this one, so most of them still pass.\n\n"
+            "Details:",
+            file=sys.stderr,
+        )
+        for item in foreign:
+            print(f"  {'!' if waived else '✗'} {item}", file=sys.stderr)
+        if waived:
+            print(
+                f"\n{ESCAPE_HATCH} is set, so this is a note rather than a failure.",
+                file=sys.stderr,
+            )
+        else:
+            print(
+                "\nTo fix, reinstall from THIS checkout, naming the interpreter you\n"
+                "mean rather than whichever pip is first on PATH — a venv can be\n"
+                "active by environment variable and still behind another interpreter\n"
+                "on PATH, which is how one host ends up with one shared pointer:\n\n"
+                "  <your-venv>/bin/python -m pip install -e "
+                f'"{THIS_CHECKOUT}/lib/idp_common_pkg[all,dev,test]" ...\n'
+                "  # or, all five in one pass:  make install-first-party\n\n"
+                "Install by PATH, never by bare name: these distribution names on\n"
+                "public PyPI belong to unrelated parties (docs/dependency-confusion.md).\n"
+                f"Set {ESCAPE_HATCH}=1 if you are deliberately using a copy installed\n"
+                "from somewhere else.\n",
+                file=sys.stderr,
+            )
+
     if failures:
         print(
             "\nERROR: first-party dependency check FAILED.\n\n"
@@ -186,6 +310,9 @@ def main() -> int:
         )
         return 1
 
+    if foreign and not waived:
+        return 1
+
     if checked == 0:
         print(
             "\nWARNING: no first-party packages are installed — nothing to verify.",
@@ -193,10 +320,18 @@ def main() -> int:
         )
         return 0
 
-    print(
-        f"\nAll {checked} installed first-party package(s) resolved from source "
-        "(not from an index)."
-    )
+    if CAN_COMPARE_CHECKOUTS:
+        print(
+            f"\nAll {checked} installed first-party package(s) resolved from source "
+            f"(not from an index), from {THIS_CHECKOUT}."
+        )
+    else:
+        print(
+            f"\nAll {checked} installed first-party package(s) resolved from source "
+            "(not from an index). WHICH source tree was not checked: this directory is "
+            "not a git checkout, so there is no identity to compare an editable "
+            "pointer against."
+        )
     return 0
 
 

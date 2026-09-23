@@ -62,7 +62,7 @@ Verified locally against the actual scanner binaries (not assumed):
 | semgrep | `# nosemgrep: rule-id` | 43 already in use. |
 | grype / npm-audit | none exists | Must go in a config file. |
 
-Three traps that cost real time:
+Four traps that cost real time:
 
 1. **bandit's `# nosec` is line-scoped, and on a multi-line string the pragma
    must sit on a line INSIDE the string node.** The closing `"""` works; the
@@ -72,7 +72,33 @@ Three traps that cost real time:
 2. **detect-secrets dedupes by secret hash**, reporting one line per unique
    secret per file. Suppress the first occurrence and the next one surfaces — so
    annotate *every* occurrence of the pattern, then re-scan to confirm zero.
-3. **A semgrep rule can match your own justification comment.** Writing
+3. **The marker is parsed, not pattern-matched, and four shapes mean something
+   other than they look like.** Bandit's parser is `NOSEC_COMMENT` →
+   `NOSEC_COMMENT_TESTS` (`bandit/core/manager.py`): it feeds every word after the
+   marker to the plugin registry, keeps what resolves to a check, and — this is the
+   part that surprises — treats an **empty** resolved set as "suppress everything on
+   this line". Measured through that parser over all 310 markers in this tree, the
+   237 written `<id> - reason` are all correct. These are the shapes that are not:
+
+   | Shape | What it actually does |
+   |---|---|
+   | `# nosec b101` | **blanket.** The lookup is case-sensitive for short ids, so a lowercase id resolves to nothing — easier to type than a typo, and it silences every check on the line |
+   | `# nosec B101,B311` | **scoped to B311 only.** Without a space the two ids parse as one token and only the last survives, so B101 still fires while the comment says it is covered. `# nosec B101, B311` and `# nosec B101 B311` both work |
+   | `# nosec B9999 - typo` | **blanket**, same empty-set path as above |
+   | `# nosec B105 - value is random, not real` | **scoped to B105 *and* B311**, because `random` is B311's plugin name. The one-word plugin names are `ciphers`, `eval`, `ftplib`, `marshal`, `md5`, `pickle`, `random`, `telnetlib`, `trojansource` |
+   | a comment that merely **quotes** the pragma | a live blanket marker for the line it sits on. Writing *about* it counts as writing it |
+
+   ⚠️ **A blanket marker on a comment line inside a multi-line call covers the
+   whole node's `linerange`,** not the one line, so it can silence a finding several
+   lines away.
+
+   None of this is visible in a scan. Bandit warns only about words it **fails** to
+   resolve, so the widened marker — the one case where the scope silently grew —
+   produces no diagnostic at any verbosity; and the warnings it does emit go to
+   stderr, which SRT's own bandit command redirects to `/dev/null` before anything
+   could capture it. So: name the id, capitalise it, comma-**space** between ids, and
+   keep plugin words out of the prose.
+4. **A semgrep rule can match your own justification comment.** Writing
    `min-release-age=0` inside an explanatory comment in `.npmrc` re-triggered the
    very rule the comment was explaining.
 
@@ -130,6 +156,33 @@ for our own first-party names.
   `status: resolved`. If you intend a finding to stay quiet, write
   `status: "suppressed"` **with** a `suppressionReason`; never leave it
   `resolved`, because the next scan will re-detect it and now correctly block.
+- **A suppression that shields nothing fails the gate too — so fixing a finding has a
+  second half.** The suppression key is `(path, resourceType, resourceName, check_id)`
+  with **no line**, so an entry whose finding you fixed in source does not go inert: it
+  pre-suppresses every future finding of that check in that file, and a real hardcoded
+  credential landing in a pre-registered file would be suppressed on arrival. `run.py`
+  now prints a `SUPPRESSIONS THAT SHIELD NOTHING` table for every suppressed entry the
+  scan produced no finding for, and exits 1 in CI. **If you add an inline `# nosec` (or
+  remove the value), delete the register entry in the same change.** Every one of the 52
+  Bandit suppressions the register used to carry was dead for exactly that reason.
+  - Measured per source, and only where silence is evidence: `register.WHOLE_REPO_SUMMARIES`
+    (Bandit — rules compiled into the package, runs over every file, so its finding set
+    is a function of the tree alone). `security-matrix`, `Checkov` and `Semgrep` are
+    excused in `register.NON_VACUITY_EXEMPT_SOURCES`, each with the mechanism that moves
+    its finding set without the tree moving — the first two evaluate per template and a
+    failed template scan looks exactly like a clean one, the third takes rules from a
+    remote registry. The remedy here is deletion, so reading absence as evidence where it
+    is not would delete a live suppression.
+  - An **empty** scanner summary is treated as "not measured", not as a clean tree. A
+    fresh but empty summary passes `scanner_health` (which only checks freshness) and
+    would otherwise report every suppression for that source as dead at once.
+  - ⚠️ **After you delete entries, the next local scan refuses to start.**
+    `.srt/issues.json` still holds them, and `restore_committed_register` cannot tell a
+    deliberate deletion from a local disposition nobody saved yet — both look like "HIGH
+    dispositions the committed register lacks". Run the next scan once with
+    `SRT_DISCARD_LOCAL=1 make srt-scan`, or `rm .srt/issues.json` first. CI never hits
+    it: a fresh checkout has no live file, and `make srt-setup` writes the committed
+    register into it.
 - **Exit code differs by environment** (`run.py`):
   - **CI** (`CI`/`GITLAB_CI`/`GITHUB_ACTIONS` set): exits **1** on any HIGH-open
     → pipeline fails.
@@ -351,10 +404,23 @@ the check passes, then re-scan to confirm it flips to resolved.
   conditionally-set `AccessLogSetting`, `MethodSettings`, etc. read as absent.
   (SRT's security-matrix checks call a `resolveValue` that handles `Ref` but not
   `Fn::If` branches.)
-- **Tool heuristic false positive** — e.g. bandit **B105** "hardcoded password"
-  fires on any literal assigned near an identifier containing `token`/`secret`/
-  `password`/`pwd`/`pass`/`key`/`auth`. A variable/dict-key like
-  `shard_token_budget = 40000` trips it though `40000` is an LLM token budget.
+- **Tool heuristic false positive** — e.g. bandit **B105**/**B106** "hardcoded
+  password", which match an identifier's **name** against the wordlist
+  `pas+wo?r?d|pass(phrase)?|pwd|token|secrete?` (not `key`, not `auth`) wherever a
+  constant is assigned, compared or passed. `shard_token_budget = 40000`,
+  `pass_count`, `next_token` and `_COMPACT_TOKEN` all trip it.
+  ⚠️ **In test code that no deployment artifact is built from, these two no longer
+  gate**, so there is nothing to suppress and a per-line marker for one of them is
+  the accretion that scope decision replaced (#1086): three of them took `develop`
+  red in one day and each response added another marker. `make srt-scan` lists them
+  under their own non-blocking heading. Everywhere that **ships** they still gate —
+  fix the name, or justify that one line. Note where the boundary is, because path
+  shape alone gets it wrong: a `test_*.py` or a `tests/` directory inside a Lambda's
+  `CodeUri` is copied into the artifact verbatim by `sam build`, so it counts as
+  shipped and keeps gating even though it is a test. `ci_paths.is_test_only_path`
+  decides, from the `CodeUri`/`ContentUri` directories the templates declare, and
+  the rationale — including why no Bandit rule can express this scope — is in
+  `NAME_HEURISTIC_EXEMPT` there.
 - **Accepted architectural risk** — the flagged config is intentional and
   compensated. Example: `AuthorizationType: NONE` on the Web UI SPA static-asset
   routes (`WebUIRootMethod`, `WebUIProxyMethod`) — the browser must fetch

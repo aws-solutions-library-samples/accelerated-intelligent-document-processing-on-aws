@@ -85,11 +85,12 @@ workflow:
 code_checks:
   stage: fast_checks
   interruptible: true
-  # Larger runner (4 vCPU / 16 GB, same as SRT): the Vite production build and
+  # Larger runner (16 vCPU / 64 GB, size:2xlarge): the Vite production build
   # tsc/eslint are CPU-bound and ran ~6 min on the default small runner vs
   # seconds locally; more cores also make `pytest -n auto` worthwhile.
   tags:
-    - size:large
+    - size:2xlarge
+    - arch:arm64
   # Cheap, no-AWS checks — run on EVERY push (any branch) and every MR, so
   # developers get lint/typecheck/unit feedback (emailed by GitLab on failure)
   # without waiting for an MR, and this gates the expensive deploy.
@@ -175,6 +176,9 @@ code_checks:
     # on the command line twice, which pytest answers by collecting NOTHING and
     # exiting 5 -- loud rather than silent, but a broken job either way.
     - make test-cicd -C lib/idp_common_pkg SKIP_INSTALL=1
+    # Ratchet per-file coverage against scripts/coverage_debt.json. Must follow the
+    # line above: it reads the coverage report that step writes.
+    - make check-coverage-debt
     # Package/Lambda suites not covered by idp_common_pkg (idp_cli, idp_sdk,
     # idp_feature_sdk, feature-platform, capacity, circuit-breaker, chat,
     # config_library) — all green headless, previously CI-untested.

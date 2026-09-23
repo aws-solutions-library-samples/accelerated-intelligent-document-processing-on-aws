@@ -24,6 +24,24 @@ Low-level client for DynamoDB operations:
 - `scan()` - Scan table with filters
 - `query()` - Query with key conditions
 
+`put_item()` and `update_item()` both take an optional `condition_expression`,
+evaluated by DynamoDB against the item as it exists at write time and surfaced as a
+`DynamoDBError` with `error_code == "ConditionalCheckFailedException"`. **Pass one
+whenever the value you are writing was computed from a value you read.** Without it
+the write is unconditional, so two callers that read the same state both succeed and
+the loser's contribution is gone with nothing raising — the read cannot serve as its
+own guard, because nothing ties it to the write. `attribute_exists(<key>)` is the
+narrowest useful form: `update_item` is an upsert, so with no condition an item
+deleted between the read and the write is silently re-created holding only the
+attributes the expression sets.
+
+**Prefer a targeted `update_item` over a `put_item` that re-lists the attributes to
+keep.** `put_item` replaces the whole item, so any attribute absent from the dict is
+deleted; a hand-maintained list of attributes to carry forward fails silently and
+permanently the first time somebody adds a field and does not extend it.
+`scripts/tests/test_config_head_writers.py` enforces this for the configuration
+profile head record, which is where it went wrong.
+
 ### DocumentDynamoDBService
 
 High-level service for document operations:

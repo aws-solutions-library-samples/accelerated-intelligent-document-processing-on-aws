@@ -26,6 +26,11 @@ refuses three commands:
   on either side of the subcommand, because misreading either one leaves the check
   unable to run and so allows the merge with nothing printed.
 
+It also *says something without refusing anything*, in one case: when another session
+has been running git commands in the same working directory, or when the branch there
+moved between two of this session's commands. That is advice rather than a verdict, and
+why it is only advice is in the co-tenancy item of the uncovered list below.
+
 Overrides, because each refusal has a legitimate case: set
 ``ALLOW_SHARED_BRANCH=1`` for the first two and ``ALLOW_RED_MERGE=1`` for the
 third. Both are read from an inline assignment on the command itself
@@ -80,6 +85,18 @@ required status checks, and these are the routes it does not see:
 * History written onto a shared branch by anything other than ``git commit`` --
   ``merge``, ``cherry-pick``, ``revert``, ``rebase``, ``am``. Those are local
   until pushed, and the push is what this refuses.
+* **Another session standing in the same working directory.** Every answer above is
+  about a *branch or a destination*; none is about who else is in the directory.
+  Several assistant sessions share the repository root here -- one working tree, not a
+  worktree each -- so a ``git switch`` by either moves the tree under the other with no
+  refusal and no warning, because nothing unusual happened as far as git is concerned.
+  A session can then test a branch it did not check out or commit a file another
+  session edited, with every gate green. This one is *reported* rather than refused:
+  see ``tenancy_notices``, which says when another session's id was the last to run a
+  git command here and when the branch moved between this session's commands. Refusing
+  would mean refusing the legitimate case -- one session switching branches on purpose
+  -- which nothing available to a per-command hook can tell apart from a collision. The
+  convention that actually avoids it is a ``git worktree`` per session (#1087).
 
 Two behaviours that are deliberate rather than oversights:
 
@@ -120,12 +137,14 @@ develop`` is refused even in a directory that is not a repository.
 
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 import re
 import shlex
 import subprocess  # noqa: S404 - fixed argv, no shell; see _git/_gh
 import sys
+import time
 from pathlib import Path
 
 #: Branches that changes reach through a pull request rather than directly.
@@ -241,6 +260,15 @@ HEREDOC_START = re.compile(r"<<-?\s*(['\"]?)([A-Za-z_][A-Za-z0-9_]*)\1")
 
 #: Subcommands that move ``HEAD`` to another branch.
 SWITCH_SUBCOMMANDS = frozenset({"switch", "checkout"})
+
+#: Subcommands after which it is worth saying that somebody else is standing in this
+#: working directory: the two that write history and the two that move the tree.
+#: Deliberately not every git command -- the notice costs a file read and a `git
+#: rev-parse` per invocation, and `git status` in a loop should not pay for it.
+TENANCY_SUBCOMMANDS = frozenset({"commit", "push", "switch", "checkout"})
+
+#: Where the co-tenancy note is kept, inside the working tree's own git directory.
+TENANCY_FILE = "idp-session-tenancy.json"
 
 #: ``switch`` / ``checkout`` options whose value is the name of the branch being
 #: created, and so the branch HEAD ends up on.
@@ -842,6 +870,108 @@ def _waived(name: str, what: str) -> str:
     return f"shared-branch guard: {name} is set, so {what} is not checked here."
 
 
+def _tenancy_file(repo: Path) -> Path | None:
+    """Where this working tree's co-tenancy note lives, or ``None`` if unknown.
+
+    ``--absolute-git-dir`` answers per *working tree*: in a worktree it is
+    ``<main>/.git/worktrees/<name>``, which is what makes the record about the
+    directory somebody is standing in rather than about the repository. Inside the git
+    directory rather than in a temp directory on purpose — a predictable name under
+    ``/tmp`` is writable by anything on the host, and this one travels with the
+    checkout, is never tracked, and disappears with it.
+    """
+    git_dir = _git(repo, "rev-parse", "--absolute-git-dir")
+    return Path(git_dir) / TENANCY_FILE if git_dir else None
+
+
+def _read_tenancy(path: Path) -> dict[str, str] | None:
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    return data if isinstance(data, dict) else None
+
+
+def _write_tenancy(path: Path, session: str, branch: str | None) -> None:
+    """Record who is standing here and on what branch. Failure is not reported.
+
+    A guard that cannot write its note still has to allow the command, so every error
+    here is swallowed: the cost is a missed notice next time, not a blocked command.
+    """
+    payload = {
+        "session": session,
+        "branch": branch or "",
+        "wrote": str(int(time.time())),
+    }
+    temporary = path.with_suffix(".tmp")
+    try:
+        temporary.write_text(json.dumps(payload), encoding="utf-8")
+        os.replace(temporary, path)
+    except OSError:
+        with contextlib.suppress(OSError):
+            temporary.unlink()
+
+
+def tenancy_notices(
+    payload: dict[str, object], repo: Path, branch_after: str | None
+) -> list[str]:
+    """Advisory lines about somebody else standing in this working directory.
+
+    The guard's other answers are about *branches and destinations*; this one is about
+    the directory. Several assistant sessions share the repository root here — one
+    working directory, not a worktree each — so a ``git switch`` by either yanks the
+    tree out from under the other, silently, because from git's point of view nothing
+    unusual happened. A session can then test a branch it did not check out, or commit a
+    file another session edited, with every gate green (#1087).
+
+    **This never refuses, and that is a design decision rather than caution.** Refusing
+    a switch when the tree is not where this session left it would fire on the entirely
+    legitimate case of one session deliberately switching branches, and nothing available
+    here distinguishes the two: the hook is one subprocess per command with no memory
+    beyond this file. So it reports, and the two things it can report are both facts
+    rather than guesses — another session's id was the last to run a git command in this
+    directory, and the branch moved between this session's last command and this one.
+
+    ``branch_after`` is where the command in hand will leave HEAD, so a session that
+    switches branches itself does not then report the move to itself next time.
+    """
+    session = payload.get("session_id")
+    if not isinstance(session, str) or not session:
+        # With no session id there is nothing to compare: two sessions would look like
+        # one, and reporting either way would be a guess. Silence is the honest answer.
+        return []
+
+    path = _tenancy_file(repo)
+    if path is None:
+        return []
+
+    previous = _read_tenancy(path)
+    standing_on = current_branch(repo)
+    _write_tenancy(path, session, branch_after if branch_after else standing_on)
+
+    if previous is None:
+        return []
+
+    lines: list[str] = []
+    other = previous.get("session")
+    if isinstance(other, str) and other and other != session:
+        lines.append(
+            f"shared-branch guard: another session ({other[:8]}) last ran a git command "
+            f"in {repo}. A switch by either of you moves this tree under the other, and "
+            "nothing refuses it — work in `git worktree add <path> -b <branch>` instead "
+            "of sharing one checkout."
+        )
+    was = previous.get("branch") or None
+    if was != standing_on:
+        lines.append(
+            f"shared-branch guard: {repo} was on {was or 'a detached HEAD'} when this "
+            f"session last ran a git command here and is now on "
+            f"{standing_on or 'a detached HEAD'}. Nothing here moved it, so check what "
+            "you are about to commit or test is the branch you think it is."
+        )
+    return lines
+
+
 def chdir_target(argv: list[str], base: Path) -> Path | None:
     """Where a ``cd`` / ``pushd`` segment moves to, or ``None`` if not one.
 
@@ -881,6 +1011,11 @@ def decide(payload: dict[str, object], notices: list[str] | None = None) -> str 
     head: str | None = None
     head_known = True
 
+    # The working tree to say something about co-tenancy for, and the notice is left to
+    # the end of the loop because what it reports -- the branch this command leaves HEAD
+    # on -- is only known once every segment has been read.
+    tenancy_repo: Path | None = None
+
     def note(line: str) -> None:
         if notices is not None and line not in notices:
             notices.append(line)
@@ -900,6 +1035,8 @@ def decide(payload: dict[str, object], notices: list[str] | None = None) -> str 
         git_args = subcommand(argv, "git")
         if git_args:
             repo = command_repo(argv, base)
+            if git_args[0] in TENANCY_SUBCOMMANDS and tenancy_repo is None:
+                tenancy_repo = repo
 
             if git_args[0] in SWITCH_SUBCOMMANDS:
                 moves_head, target = switch_target(git_args)
@@ -967,6 +1104,12 @@ def decide(payload: dict[str, object], notices: list[str] | None = None) -> str 
                 "is not one, and a pull request whose checks never ran is not refused "
                 "at all."
             )
+
+    if tenancy_repo is not None:
+        for line in tenancy_notices(
+            payload, tenancy_repo, head if head_known else None
+        ):
+            note(line)
 
     return None
 

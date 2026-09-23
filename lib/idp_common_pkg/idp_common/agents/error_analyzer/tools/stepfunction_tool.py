@@ -11,9 +11,26 @@ from typing import Any, Dict, List, Optional
 import boto3
 from strands import tool
 
+from idp_common.stepfunctions_history import (
+    EXECUTION_LEVEL_FAILURE_EVENTS,
+    FAILURE_EVENTS,
+    TASK_LEVEL_FAILURE_EVENTS,
+    failing_state,
+    failing_state_is_resolvable,
+    to_chronological,
+)
+
 from ..config import get_ea_param
 
 logger = logging.getLogger(__name__)
+
+# The vocabulary and the history-reading rule live in `idp_common.stepfunctions_history`
+# because the CodeBuild deployment harness needs the same answer and cannot import this
+# module (it would pull in `strands`). Two copies of this walk is how #1139 and #1168
+# came to be the same defect filed twice. These aliases keep the module-local spelling.
+_TASK_LEVEL_FAILURE_EVENTS = TASK_LEVEL_FAILURE_EVENTS
+_EXECUTION_LEVEL_FAILURE_EVENTS = EXECUTION_LEVEL_FAILURE_EVENTS
+_FAILURE_EVENTS = FAILURE_EVENTS
 
 
 @tool
@@ -84,18 +101,22 @@ def analyze_workflow_execution(document_id: str = "") -> Dict[str, Any]:
             execution_data["execution_response"]
         )
 
-        history_truncated = bool(execution_data.get("history_truncated"))
-        if history_truncated:
-            timeline_analysis["history_truncated"] = True
+        state_unresolved_due_to_truncation = bool(
+            execution_data.get("state_unresolved_due_to_truncation")
+        )
+        if state_unresolved_due_to_truncation:
+            timeline_analysis["state_unresolved_due_to_truncation"] = True
 
         # Build analysis summary
         analysis_summary = _build_analysis_summary(
-            execution_metadata["status"], timeline_analysis, history_truncated
+            execution_metadata["status"],
+            timeline_analysis,
+            state_unresolved_due_to_truncation,
         )
 
         # Generate recommendations
         recommendations = _generate_recommendations(
-            timeline_analysis, history_truncated
+            timeline_analysis, state_unresolved_due_to_truncation
         )
 
         return _build_response(
@@ -132,11 +153,22 @@ def _get_execution_data(execution_arn: str) -> Dict[str, Any]:
     Consumers must therefore not assume chronological order --
     ``_analyze_execution_timeline`` orders the events it is given.
 
-    The page is **not** paginated, so a long execution is analysed from its newest
-    100 events only. ``history_truncated`` reports that, because the truncation is
-    not harmless: the failure event survives the window but the failing state's
-    ``StateEntered`` may not, and the analysis then reports no state at all. Without
-    the flag that is indistinguishable from an execution where nothing failed.
+    Pages are followed **backwards from the failure** rather than to the beginning of
+    the history. One page is enough to contain the failure event, but the failing
+    state's ``StateEntered`` is the earlier of the two and can sit outside it: the
+    unified workflow has 55 states and three inline ``Map`` states whose iterations
+    share one history, so at five to seven events per task invocation a document with
+    more than a couple of sections exceeds 100 events comfortably. Fetching the
+    *whole* history instead would be thousands of events on a large document, most of
+    them irrelevant, so the walk stops as soon as the state can be resolved and is
+    capped besides.
+
+    ``state_unresolved_due_to_truncation`` reports that the walk stopped **without** being able to
+    resolve the state — the cap was reached and more pages remain. It is deliberately
+    not "more pages exist": after pagination that is true of almost every large
+    execution and would fire the warning on runs whose state was identified perfectly
+    well. The flag is read only to explain an unidentified state, so narrowing it to
+    exactly that case keeps the explanation and drops the noise.
     """
     stepfunctions_client = boto3.client("stepfunctions")
 
@@ -144,16 +176,64 @@ def _get_execution_data(execution_arn: str) -> Dict[str, Any]:
         executionArn=execution_arn
     )
 
-    history_response = stepfunctions_client.get_execution_history(
-        executionArn=execution_arn,
-        maxResults=100,
-        reverseOrder=True,  # Most recent events first; see the docstring above.
-    )
+    max_pages = get_ea_param("max_stepfunction_history_pages", 10)
+
+    events: List[Dict[str, Any]] = []
+    next_token: Optional[str] = None
+    resolvable = False
+    # A page failed mid-walk. Tracked separately from ``next_token`` so that variable
+    # only ever holds a token the service gave us: overloading it with a sentinel
+    # string made the two states indistinguishable to a reader, and the sentinel's
+    # value was arbitrary while being assigned to a name containing "token", which a
+    # secret scanner reads as a hardcoded credential.
+    read_incomplete = False
+
+    for page in range(max(1, int(max_pages))):
+        kwargs: Dict[str, Any] = {
+            "executionArn": execution_arn,
+            "maxResults": 100,
+            "reverseOrder": True,  # Most recent events first; see the docstring above.
+        }
+        if next_token:
+            kwargs["nextToken"] = next_token
+        try:
+            history_response = stepfunctions_client.get_execution_history(**kwargs)
+        except Exception as exc:  # noqa: BLE001 - any read failure is handled the same
+            # Keep what earlier pages gathered rather than losing the analysis.
+            #
+            # A page beyond the first is only ever fetched BECAUSE page one could not
+            # resolve the state, which is precisely the case that used to return a
+            # usable partial with a truncation warning. Letting this propagate would
+            # turn that into no analysis at all, and the extra pages multiply the
+            # chance of hitting a throttle — so the failure would land hardest on the
+            # executions this walk exists to serve. The first page is different: with
+            # no events at all there is nothing to analyse, so that one propagates.
+            if not events:
+                raise
+            logger.warning(
+                "Execution history page %d failed (%s); analysing the %d event(s) "
+                "already fetched and reporting the state as unresolved",
+                page + 1,
+                exc,
+                len(events),
+            )
+            read_incomplete = True  # keeps the unresolved flag true below
+            break
+        events.extend(history_response.get("events", []))
+        next_token = history_response.get("nextToken")
+
+        # Stop as soon as the window explains the failure. Checked after each page
+        # rather than by counting events, because how many events back the state sits
+        # depends on the shape of the execution, not on a number.
+        resolvable = failing_state_is_resolvable(events, more_pages=bool(next_token))
+        if resolvable or not next_token:
+            break
 
     return {
         "execution_response": execution_response,
-        "events": history_response.get("events", []),
-        "history_truncated": bool(history_response.get("nextToken")),
+        "events": events,
+        "state_unresolved_due_to_truncation": (read_incomplete or bool(next_token))
+        and not resolvable,
     }
 
 
@@ -175,12 +255,12 @@ def _extract_execution_metadata(execution_response: Dict[str, Any]) -> Dict[str,
 def _build_analysis_summary(
     execution_status: str,
     timeline_analysis: Dict[str, Any],
-    history_truncated: bool = False,
+    state_unresolved_due_to_truncation: bool = False,
 ) -> str:
     """
     Build human-readable analysis summary.
 
-    When the state could not be identified and the history window was truncated, the
+    When the state could not be identified and the history walk hit its page cap, the
     summary says so. "at state 'None'" on its own reads as a finding; the two facts
     together read as the measurement limit it actually is.
     """
@@ -192,17 +272,17 @@ def _build_analysis_summary(
         analysis_summary += f" at state '{state}'"
         if failure_point.get("details", {}).get("error"):
             analysis_summary += f": {failure_point['details']['error']}"
-        if state is None and history_truncated:
+        if state is None and state_unresolved_due_to_truncation:
             analysis_summary += (
-                " (the failing state could not be identified: only the most recent "
-                "100 history events were read, and the state was entered before them)"
+                " (the failing state could not be identified: the history walk "
+                "reached its page limit before finding the transition into it)"
             )
 
     return analysis_summary
 
 
 def _generate_recommendations(
-    timeline_analysis: Dict[str, Any], history_truncated: bool = False
+    timeline_analysis: Dict[str, Any], state_unresolved_due_to_truncation: bool = False
 ) -> List[str]:
     """
     Generate actionable recommendations based on analysis.
@@ -214,12 +294,13 @@ def _generate_recommendations(
         "Consider timeout adjustments if execution timed out",
     ]
 
-    if history_truncated:
+    if state_unresolved_due_to_truncation:
         recommendations.insert(
             0,
-            "Only the most recent 100 execution history events were read, so an "
-            "unidentified state means the window did not reach it rather than that "
-            "no state failed -- inspect the full execution history in the console",
+            "The execution history was longer than this tool reads, so an "
+            "unidentified state means the walk did not reach the transition into it "
+            "rather than that no state failed -- inspect the full execution history "
+            "in the console",
         )
 
     return recommendations
@@ -264,15 +345,7 @@ def _extract_failure_details(event: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     """
     event_type = event.get("type", "")
 
-    failure_events = [
-        "ExecutionFailed",
-        "TaskFailed",
-        "LambdaFunctionFailed",
-        "TaskTimedOut",
-        "ExecutionTimedOut",
-    ]
-
-    if event_type not in failure_events:
+    if event_type not in _FAILURE_EVENTS:
         return None
 
     details = {}
@@ -340,45 +413,6 @@ def _get_execution_arn_from_document(document_id: str) -> Optional[str]:
         return None
 
 
-def _to_chronological(events: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-    """
-    Return Step Functions history events oldest-first, whatever order they arrive in.
-
-    ``get_execution_history`` returns a page newest-first or oldest-first depending
-    on ``reverseOrder``, and every consumer here wants chronological. The ordering
-    key is the event ``id``, which the history API documents as a required integer
-    numbered sequentially from one, so it is a total order with no ties and no
-    direction to infer. ``timestamp`` is deliberately *not* used: it has millisecond
-    resolution, adjacent events routinely share a value, and any tie-prone key
-    leaves a sort dependent on the arrival order it is supposed to be correcting.
-
-    A list whose events do not all carry an integer ``id`` is not a history page
-    from the API. The direction is then read from the two ends and corrected by
-    reversing, which is exact when it applies but cannot see a tie between them --
-    so the fallback is logged rather than silent.
-    """
-    if len(events) < 2:
-        return events
-
-    if all(isinstance(event.get("id"), int) for event in events):
-        return sorted(events, key=lambda event: event["id"])
-
-    first = events[0].get("timestamp")
-    last = events[-1].get("timestamp")
-    try:
-        newest_first = first is not None and last is not None and first > last
-    except TypeError:
-        newest_first = False
-
-    logger.debug(
-        "Step Functions history events carry no usable 'id'; ordering was inferred "
-        "from the first and last timestamps (newest_first=%s). A page whose two "
-        "ends share a timestamp cannot be told apart this way.",
-        newest_first,
-    )
-    return list(reversed(events)) if newest_first else events
-
-
 def _analyze_execution_timeline(events: List[Dict[str, Any]]) -> Dict[str, Any]:
     """
     Analyze Step Function execution timeline to identify failure patterns and state transitions.
@@ -386,14 +420,18 @@ def _analyze_execution_timeline(events: List[Dict[str, Any]]) -> Dict[str, Any]:
     and identify the exact point of failure with context.
 
     Events may arrive in either direction -- the caller fetches them newest-first so
-    that a capped page covers the failure -- and are ordered oldest-first here. The
-    chronological walk is what makes the analysis correct: the failing state is the
-    state most recently entered *before* the failure event, so seeing the failure
-    first would report no state at all.
+    that a capped page covers the failure -- and are ordered oldest-first here.
 
     The failure reported is the **last** one in the history, not the first. Retries
     mean an execution can survive several failure events, and the terminal one is the
     only one that explains why it ended.
+
+    Which state that failure is attributed to is decided by
+    :func:`idp_common.stepfunctions_history.failing_state`, not here. That rule is
+    shared with the CodeBuild deployment harness, which needs the same answer and had
+    reached the same wrong one independently (#1139, #1168); its docstring carries the
+    history shape that makes the wrong answer look right, and the concurrent-``Map``
+    caveat that still applies to the answer this returns.
 
     Args:
         events: List of Step Function execution events, in either direction
@@ -404,13 +442,19 @@ def _analyze_execution_timeline(events: List[Dict[str, Any]]) -> Dict[str, Any]:
     if not events:
         return {"error": "No execution events available"}
 
-    events = _to_chronological(events)
+    events = to_chronological(events)
 
     max_timeline_events = get_ea_param("max_stepfunction_timeline_events", 50)
 
     timeline = []
     failure_point = None
     last_successful_state = None
+    # Which state the terminal failure is attributable to, decided by the shared rule
+    # in `idp_common.stepfunctions_history` rather than by this loop. It is NOT the last
+    # state entered: on a caught failure that is the `Catch` handler the workflow moved
+    # into, and the whole point of the rule is to keep the two apart (#1139, #1168). The
+    # module docstring there carries the history shape and the concurrent-`Map` caveat.
+    attributed_failing_state = failing_state(events)
 
     for event in events:
         timestamp = event.get("timestamp")
@@ -454,10 +498,15 @@ def _analyze_execution_timeline(events: List[Dict[str, Any]]) -> Dict[str, Any]:
         # naturally.
         failure_details = _extract_failure_details(event)
         if failure_details:
+            # The state and the error text come from DIFFERENT events, deliberately:
+            # the error from the terminal failure (the one that explains why the
+            # execution ended), the state from the last task-level failure. Pairing the
+            # terminal event's error with the state that actually did the failing is
+            # what an operator needs to pick a log group.
             failure_point = {
                 "timestamp": timestamp,
                 "event_type": event_type,
-                "state": last_successful_state,
+                "state": attributed_failing_state,
                 "details": failure_details,
             }
 

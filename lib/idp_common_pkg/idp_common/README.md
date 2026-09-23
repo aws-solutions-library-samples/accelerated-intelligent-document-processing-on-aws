@@ -34,6 +34,7 @@ The IDP Common library provides these main modules:
 - **[Config](config/README.md)**: Configuration loading, merging, validation, and typed models
 - **[Hooks](hooks/README.md)**: Helpers for authoring pipeline-hook Lambdas (load / mutate / return a Document)
 - **[Monitoring](monitoring/README.md)**: Shared monitoring foundation (logs, X-Ray, Step Functions, stack discovery)
+- **Step Functions history** (`stepfunctions_history.py`): the one rule for reading an execution history and naming the state that failed — see [Naming the state that failed](#-naming-the-state-that-failed) below
 
 ## 🗃️ Key Classes
 
@@ -490,6 +491,90 @@ literal in `src/ui/src/components/common/processing-issues-utils.ts`. That is a
 different language, so nothing about adding a code here would make it appear there —
 `scripts/tests/test_failure_code_ui_parity.py` fails when the two disagree in either
 direction. Add the code to the `ProcessingIssue` docstring's inventory too.
+
+## 🐢 Lazy submodule loading, and where `mock.patch` goes wrong
+
+`idp_common/__init__.py` loads every submodule through `__getattr__`, so `import
+idp_common` costs the standard library and nothing else. That is what lets a Lambda
+install `idp_common[core]` without dragging in the `[all]` dependency set — nothing
+imports Strands, pypdfium2 or the Textract parser until something asks for it.
+`tests/unit/test_lazy_submodule_loading.py` measures that in a fresh interpreter, which
+is the only place it can be measured: by the time a test suite is running, half the
+library is imported.
+
+The loader defers to `importlib`, which means to `sys.modules`. It deliberately keeps no
+cache of its own: a second cache beside `sys.modules` can hold a **different object for
+the same name**, and `unittest.mock.patch` resolves its target through `sys.modules`, so
+a patch applied to one copy is invisible to code holding the other (#1159).
+
+⚠️ **Removing that cache does not make patching safe, and the difference is worth
+understanding before writing a test.** The duplication that prompted #1159 is created
+outside this package: `coverage` imports each `--cov=<module>` target inside a
+`sys_modules_saved()` block and then deletes every `sys.modules` entry that import
+added, while the module objects survive as attributes of their parent packages. Any
+later import of such a name re-executes the file and yields a second object. Nothing in
+`__init__.py` can prevent that.
+
+**So patch at the point of use, and check how the consumer reached the name** — the two
+cases need different targets and the wrong one fails silently, as a mock that records
+zero calls:
+
+| How the consumer imports it | Patch target |
+|---|---|
+| Module-level `from idp_common import s3`, then `s3.write_content(...)` | `idp_common.<consumer module>.s3.write_content` — the consumer's own captured object |
+| Function-local `from idp_common.image import f` inside the method | `idp_common.image.f` — the name is resolved from `sys.modules` at call time |
+
+## 🧭 Naming the state that failed
+
+`stepfunctions_history.py` answers one question about a Step Functions execution
+history — which state the terminal failure is attributable to — and it exists because
+two callers answered it separately and both got it wrong the same way.
+
+```python
+from idp_common.stepfunctions_history import failing_state, failing_state_is_resolvable
+
+state = failing_state(events)          # events in either direction; None if unknowable
+```
+
+**Why "the last state entered before the failure" is the wrong answer.** A `Catch` that
+routes to a `Fail` state enters that handler *before* the terminal `ExecutionFailed`
+arrives, and `FailStateEntered` is a real `HistoryEventType` that matches a
+`StateEntered` suffix like any other transition. So the history reads:
+
+```
+TaskStateEntered:  Extraction      <- the state that actually failed
+TaskFailed
+FailStateEntered:  <handler>
+ExecutionFailed
+```
+
+Both the chronological spelling ("the last state entered") and the reverse-order one
+("the first state entered we see") name the handler, and both read as obviously right.
+The rule that works keeps the two sources apart: the **state** comes from the last
+task-level failure, the **error text** from the terminal event. Nine of this workflow's
+states route a caught failure to a `Fail` state, so this is the ordinary case, not an
+edge one.
+
+Two things to know before relying on the answer:
+
+- It returns `None` rather than a placeholder when the window holds no state transition
+  older than the failure. Callers render their own "unknown", because a confident wrong
+  state name costs more than an admitted gap — it sends a reader to the wrong log group.
+  `failing_state_is_resolvable(events, more_pages=...)` is the matching stop condition
+  for a caller paging backwards from the failure, and it deliberately refuses to call an
+  execution-level failure resolved while pages remain: the handler's own transition
+  would otherwise satisfy it.
+- Attribution infers causality from **adjacency**, so inside a concurrent `Map` — whose
+  iterations share one history and therefore interleave — it can name a sibling
+  iteration's state. Walking `previousEventId` is the exact fix and has not been made.
+  Such a walk has to start from an **outcome** event: a `TaskStateEntered` precedes its
+  own `TaskScheduled`, so walking back from a state transition reaches the *previous*
+  state's events.
+
+The module imports nothing outside the standard library, deliberately — the CodeBuild
+deployment harness (`scripts/sdlc/codebuild_deployment.py`) is one of its two callers
+and cannot afford `strands`, which the other one (the error-analyzer agent tool) pulls
+in.
 
 ## 📝 Best Practices
 

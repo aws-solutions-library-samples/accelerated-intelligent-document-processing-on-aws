@@ -41,6 +41,7 @@ from __future__ import annotations
 
 from unittest.mock import MagicMock, patch
 
+import botocore.session
 import pytest
 from botocore.exceptions import ClientError
 
@@ -49,6 +50,27 @@ from idp_common.bda.bda_blueprint_creator import BDABlueprintCreator
 MODULE = "idp_common.bda.bda_blueprint_creator"
 
 SCHEMA = {"class": "Invoice", "properties": {"total": {"type": "string"}}}
+
+
+def _get_project_input_shape():
+    """The declared input of `GetDataAutomationProject`, from the botocore model.
+
+    Read from the service model rather than written out here. The bedrock client in
+    these tests is a `MagicMock`, which accepts any keyword and any value, so a test
+    that named the parameters itself would pass just as happily against a parameter
+    BDA does not have — which is how a double ends up encoding a belief about a
+    service instead of measuring it.
+    """
+    service = botocore.session.get_session().get_service_model(
+        "bedrock-data-automation"
+    )
+    return service.operation_model("GetDataAutomationProject").input_shape
+
+
+#: The stage values the API accepts, in the model's own order.
+PROJECT_STAGES: tuple[str, ...] = tuple(
+    _get_project_input_shape().members["projectStage"].enum
+)
 
 
 def _client_error(code: str = "ValidationException", op: str = "Op") -> ClientError:
@@ -505,24 +527,71 @@ class TestListBlueprints:
         )
         assert creator.list_blueprints("arn:project", "LIVE") == config
 
-    def test_the_projectStage_argument_is_ignored(self):
-        """`projectStage` is accepted and never used -- the call hardcodes LIVE.
+    def test_the_service_model_offers_a_choice_of_stage(self):
+        """Forwarding the argument is only meaningful if the API takes more than one
+        value for it, so that premise is measured rather than assumed. `LIVE` is
+        additionally asserted because it is this method's default."""
+        assert len(PROJECT_STAGES) > 1, PROJECT_STAGES
+        assert "LIVE" in PROJECT_STAGES
 
-        See #1126. Asserted in the direction that is true: a caller asking for
-        DEVELOPMENT silently receives the LIVE project's configuration, which reads as
-        an empty or stale blueprint list rather than as an error. Pinned here so the
-        argument cannot be quietly removed (which would break callers) or start working
-        (which would change what they receive) without a test saying so.
+    @pytest.mark.parametrize("stage", PROJECT_STAGES)
+    def test_the_requested_stage_reaches_the_api(self, stage):
+        """The stage asked for is the stage read.
+
+        The two stages of a project hold independent blueprint lists, so answering a
+        `DEVELOPMENT` request from `LIVE` returns a plausible list belonging to the
+        other contract — no error, and the caller then compares, syncs or deletes
+        against the wrong stage.
         """
         creator = _creator()
         creator.bedrock_client.get_data_automation_project.return_value = _project()
-        creator.list_blueprints("arn:project", "DEVELOPMENT")
+
+        creator.list_blueprints("arn:project", stage)
+
+        assert (
+            creator.bedrock_client.get_data_automation_project.call_args.kwargs[
+                "projectStage"
+            ]
+            == stage
+        )
+
+    def test_the_stage_defaults_to_live(self):
+        """Every caller in this repository reads LIVE, and did so by passing it
+        explicitly; the default keeps that true for a caller that omits it."""
+        creator = _creator()
+        creator.bedrock_client.get_data_automation_project.return_value = _project()
+
+        creator.list_blueprints("arn:project")
+
         assert (
             creator.bedrock_client.get_data_automation_project.call_args.kwargs[
                 "projectStage"
             ]
             == "LIVE"
         )
+
+    def test_every_argument_sent_is_declared_by_the_service_model(self):
+        """A `MagicMock` client accepts a parameter name BDA has never heard of, so
+        the names are checked against the model instead of against this test's own
+        expectations."""
+        creator = _creator()
+        creator.bedrock_client.get_data_automation_project.return_value = _project()
+
+        creator.list_blueprints("arn:project", "LIVE")
+
+        sent = set(creator.bedrock_client.get_data_automation_project.call_args.kwargs)
+        assert sent <= set(_get_project_input_shape().members)
+
+    def test_a_project_without_a_custom_output_configuration_answers_none(self):
+        """`customOutputConfiguration` is optional on the response — a project
+        configured for standard output only has no blueprint list at all — so callers
+        must not assume a dict."""
+        creator = _creator()
+        project = _project()
+        del project["project"]["customOutputConfiguration"]
+        creator.bedrock_client.get_data_automation_project.return_value = project
+
+        assert creator.list_blueprints("arn:project", "LIVE") is None
 
     def test_an_error_is_re_raised(self):
         creator = _creator()

@@ -199,7 +199,10 @@ in-process from DynamoDB. See `docs/migration-appsync-to-rest.md`.
 
 ## Commands
 ```bash
-make ui-lint             # Lint + typecheck (checksum-cached, use FORCE=1 to re-run)
+make ui-lint             # Lint + typecheck (checksum-cached; a cache hit prints
+                         # "⏭️  UI lint SKIPPED" and runs neither eslint nor tsc.
+                         # FORCE=1 runs them. `make lint-cicd` sets
+                         # UI_LINT_NO_SKIP=1, so that target never skips)
 make ui-build            # Production build
 make ui-start STACK_NAME=<name>   # Dev server on port 3000
 make codegen             # Regenerate GraphQL types
