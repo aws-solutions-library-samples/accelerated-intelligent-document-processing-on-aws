@@ -382,13 +382,14 @@ def _free_form_fields() -> list[tuple[str, tuple[tuple[str, str], ...], str, obj
             kind = _free_form_kind(field.annotation)
             if kind is None:
                 continue
+            # The probe value is itself a mapping on purpose: a free-form document
+            # usually is, and a scalar leaf cannot tell a walk that correctly stops
+            # at this field from one that descends into it and finds nothing to
+            # report. That difference was measured — see the mutation note on
+            # `_target`.
+            leaf: object = {BOGUS: {"nested": "kept"}}
             out.append(
-                (
-                    reached.path,
-                    reached.steps,
-                    name,
-                    [{BOGUS: "kept"}] if kind == "list" else {BOGUS: "kept"},
-                )
+                (reached.path, reached.steps, name, [leaf] if kind == "list" else leaf)
             )
     return out
 
