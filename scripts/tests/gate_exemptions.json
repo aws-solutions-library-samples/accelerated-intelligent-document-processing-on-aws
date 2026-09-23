@@ -868,12 +868,12 @@
     },
     "scripts/sdlc/retired_services.json::retired_services.json": {
       "kind": "exemption",
-      "turnsOff": "the retired-service documentation check, per (path, linePattern) pair and per excludedPaths glob",
+      "turnsOff": "the retired-service documentation check, per (path, linePattern) pair, per historicalMarkers pattern, and per excludedPaths glob",
       "premise": [
         "JUDGEMENT"
       ],
       "ratchet": "staleness",
-      "reason": "Triaged historical or vestigial mentions, each with a bucket and justification. This is the shape the ARN exemption was rebuilt on.",
+      "reason": "What is ratcheted is each individual | alternative of each pattern, on both exemption surfaces, not the entry it sits in: an entry counted as live as soon as any part of its compiled pattern matched, so a fragment pinned to a rewrapped sentence went dead in silence behind its siblings and the line it named stopped being excused (#1097). Triaged historical or vestigial mentions, each with a bucket and justification; whether a mention reads as historical is the judgement. historicalMarkers is named here because it is the heavier alternation surface and had no staleness check of any granularity before that. retiredServices[].pattern is deliberately outside the check: it detects rather than exempts, so its arms may legitimately match nothing.",
       "memberKind": "path + line pattern",
       "ratchetEvidence": "scripts/sdlc/check_retired_services.py"
     },
@@ -1112,16 +1112,37 @@
       "memberKind": "advisory id",
       "ratchetEvidence": "scripts/security/tests/test_dep_audit.py"
     },
+    "scripts/srt/ci_paths.py::NAME_HEURISTIC_EXEMPT": {
+      "kind": "exemption",
+      "turnsOff": "the SRT security gate for Bandit B105/B106 only, and only where is_test_only_path() answers true for the finding's path — test-shaped AND outside every directory a deployment artifact is built from; both checks still gate in shipped code",
+      "premise": [
+        "JUDGEMENT"
+      ],
+      "ratchet": "universe-closure",
+      "reason": "What is ratcheted is the classification of every tracked Python file as test code or shipped code, not a count of demoted findings: the members are derived by is_test_only_path() rather than written down, so there is no entry that could go stale. The closure assertion is stated against the CodeUri/ContentUri directories parsed from the templates rather than against the classifier, so it is not satisfied by construction — it fails on a classifier that reads path shape alone, which demoted 99 files that `sam build` copies into a deployment artifact. B105/B106 match an identifier's NAME against a password wordlist, so `pass_count` and `next_token` arrive as HIGH; whether a constant in a test fixture is a real credential is the judgement, and it is not computable. No Bandit RULE can express this scope: SRT's promotion of the two checks is compiled into its binary, and Bandit's config keys are one flat namespace where `skips` applies to the whole run and `exclude_dirs` drops the file from every check. Its `baseline` key does distinguish paths, but it is a frozen list of findings matched on the literal value, so it cannot cover a finding that does not exist yet.",
+      "memberKind": "check id + path scope",
+      "ratchetEvidence": "scripts/srt/tests/test_name_heuristic_scope.py",
+      "crossReferences": [
+        "scripts/srt/issues.json::issues.json"
+      ],
+      "predicateConsidered": {
+        "file_absent_or_untracked": "Wrong axis, and the gate already applies the right one: partition_by_ci_visibility() runs first, so an untracked path is reported as local-only before this exemption is consulted. Every path this demotes is tracked and present.",
+        "collects_zero_tests": "Asks whether a directory yields any pytest cases, which is a fact about a suite. This exemption is about whether a *file* ships, and a test file that collects nothing still must not gate on a fixture identifier's name."
+      }
+    },
     "scripts/srt/issues.json::issues.json": {
       "kind": "exemption",
       "turnsOff": "the SRT security gate, per finding",
       "premise": [
         "JUDGEMENT"
       ],
-      "ratchet": "staleness",
-      "reason": "SRT findings suppressed with a justification through `make srt-fix`.",
+      "ratchet": "none",
+      "reason": "SRT findings suppressed with a justification through `make srt-fix`. Two properties of the register are checked, in scripts/srt/tests/test_ci_paths.py: every entry's path is git-tracked, and every suppressed entry carries a suppressionReason. Neither is a staleness check, which is what this label used to claim — nothing asks whether an entry still shields a finding, and measured today most do not: a scan consults 52 of the 111 entries, and of the Bandit entries whose issue text quotes the matched literal, 24 name a line that no longer contains it. Each of those is a line-pinned suppression over whatever finding next lands at that path and line.",
+      "ratchetGap": "No non-vacuity or staleness check on an individual entry. An entry whose finding was fixed in the source, or whose line moved, keeps its suppression indefinitely and pre-suppresses whatever next occupies that (path, line, check_id). The check cannot be offline: matching is SRT's, so the only place that knows which entries were consulted is the scan itself, and 59 entries are dead today, so a scan-time assertion would red-line until the register is swept.",
       "memberKind": "finding id",
-      "ratchetEvidence": "scripts/srt/tests/test_ci_paths.py"
+      "crossReferences": [
+        "scripts/srt/ci_paths.py::NAME_HEURISTIC_EXEMPT"
+      ]
     },
     "scripts/tests/exemption_discovery.py::EXEMPTION_PROSE": {
       "kind": "enforced-universe",
@@ -2176,6 +2197,51 @@
       "reason": "Each entry pairs a count with the code that derives it, so the risk is a count nobody registered rather than a member escaping a check. Which phrasings in English carry a count cannot be computed. Two mechanisms make an entry non-vacuous, and they cover different members. For an entry naming documents, test_every_document_making_a_count_claim_states_a_pinned_one requires each named document to still contain a statement some pattern reads, so a dead entry and a claim reworded out of reach both fail. For an entry naming NO documents -- a guard against a deleted figure being reintroduced, where matching nothing is the correct state -- that check can say nothing, so test_no_pattern_is_one_that_could_never_match fires every pattern at a sample statement of the shape it is for. That second mechanism exists because a pattern that compiles and has one capturing group can still be unable to match anything: the requireable-contexts pattern spelled a literal space where both real sentences wrap across lines, so a derived number was computed and compared against nothing. The file scan is NOT a list -- it runs over every tracked .md/.py/.mk/.yml/.yaml and the Makefile from git ls-files, so no file is carved out of it, and test_this_module_does_not_match_its_own_patterns keeps that true by asserting the module needs no exclusion for itself (which is why the probes hold a placeholder where the number goes rather than spelling one out).",
       "ratchetGap": "Three residuals. A NEW document inventing a phrasing none of the registered patterns match states an unchecked count; the per-document check closes this only for documents already registered. A registered pattern can still be narrower than the prose it is aimed at -- it is fired at a probe the same author wrote, so a shared misreading of the real sentence would satisfy both. And for an entry with no documents, nothing asserts the figure is actually absent from the tree: the patterns report a wrong one if it returns, but prose could state the count in an unregistered phrasing and go unseen.",
       "memberKind": "other"
+    },
+    "scripts/tests/test_preset_keys_are_read.py::PRESET_SCAN_EXCLUDED_LOOKUP_TABLES": {
+      "kind": "prune",
+      "memberKind": "file name under config_library/",
+      "turnsOff": "the requirement that every top-level key in a config_library YAML be one IDPConfig reads, for three files that are lookup tables rather than deployable configurations",
+      "premise": [
+        "JUDGEMENT"
+      ],
+      "ratchet": "non-vacuity",
+      "ratchetEvidence": "scripts/tests/test_preset_keys_are_read.py",
+      "issues": [
+        1145
+      ],
+      "reason": "pricing.yaml maps a model id to a rate, model_config_limits.yaml maps one to a context window, and finetuning_models.yaml lists fine-tunable base models. None is installed by `idp-cli deploy --custom-config` and none is an IDPConfig document, so their top-level keys -- model ids and their own section names -- are not keys IDPConfig could read or discard. Whether a given YAML is a deployable configuration or a lookup table is a judgement about what the file is for, which no predicate here computes; what IS computed is that each named file still exists (test_the_excluded_lookup_tables_are_present), so the entry cannot outlive its members.",
+      "ratchetGap": "A NEW lookup table added under config_library/ is scanned as a preset and will fail this gate until it is named here, which is the safe direction. The count of keys each excluded file holds is not pinned, so a lookup table growing a key that IDPConfig would have read is not detected."
+    },
+    "scripts/tests/test_preset_keys_are_read.py::PRESET_SCAN_EXCLUDED_NON_CONFIGS": {
+      "kind": "prune",
+      "memberKind": "file name under config_library/",
+      "turnsOff": "the same top-level-key requirement, for the two feature-platform extension manifests, which are not IDPConfig documents at all",
+      "premise": [
+        "JUDGEMENT"
+      ],
+      "ratchet": "non-vacuity",
+      "ratchetEvidence": "scripts/tests/test_preset_keys_are_read.py",
+      "issues": [
+        1145
+      ],
+      "reason": "extensions-marketplace.yaml and extensions-oss.yaml carry their own schema (`schemaVersion`, `features`) and are read by the feature platform; IDPConfig never sees either, so 'IDPConfig discards this key' is not a statement about them. They sit under config_library/ for distribution rather than because they are configurations, which is the judgement here. test_the_excluded_extension_manifests_are_present computes that both files still exist, so neither name can pre-exempt a future file that takes it.",
+      "ratchetGap": "Their own schema is not validated by this gate; a malformed extension manifest is a different gate's finding."
+    },
+    "scripts/tests/test_preset_keys_are_read.py::TOP_LEVEL_KEY_EXEMPT": {
+      "kind": "exemption",
+      "memberKind": "top-level YAML key, paired with its production reader's path and the source text that constitutes the read",
+      "turnsOff": "the requirement that a preset's top-level key be one IDPConfig models, for one key that a DIFFERENT consumer reads",
+      "premise": [
+        "JUDGEMENT"
+      ],
+      "ratchet": "non-vacuity",
+      "ratchetEvidence": "scripts/tests/test_preset_keys_are_read.py",
+      "issues": [
+        1145
+      ],
+      "reason": "`description` is read by src/lambda/update_configuration/index.py, which POPS it off the configuration dict before IDPConfig is constructed and embeds it in the DynamoDB sort key the UI renders (Config#{version}#{description}). That pop is why IDPConfig models no such field, so the gate's own question -- does IDPConfig discard this key -- answers 'yes' and is the wrong question for this key. This is the one entry that exists because the gate's premise is false for a specific key, so it is recorded per key with its reader named rather than as a blanket allowance. Which consumers exist for a key is not computable from the tree; that the named reader still mentions it IS, and test_every_read_elsewhere_key_really_is_read asserts exactly that per member. The path names the PRODUCTION consumer deliberately: pointing it at a test that merely contains the string would leave the entry green after the real reader was deleted, which is the failure this premise check exists to prevent.",
+      "ratchetGap": "The read is matched as source text rather than by resolving it at runtime, so a reader that moved the pop into a helper with a different spelling would fail the premise even though the key is still read -- a false alarm, which is the safe direction. Bounding it to one key with one named path and one marker is what keeps that cheap to review."
     },
     "scripts/tests/test_first_party_provenance_closure.py::EXEMPT": {
       "kind": "exemption",

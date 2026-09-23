@@ -938,20 +938,6 @@ evaluation:
     task_prompt: "I need to evaluate attribute extraction for a document of class: {DOCUMENT_CLASS}. For the attribute named \"{ATTRIBUTE_NAME}\" described as \"{ATTRIBUTE_DESCRIPTION}\": - Expected value: {EXPECTED_VALUE} - Actual value: {ACTUAL_VALUE} Do these values match in meaning, taking into account formatting differences, word order, abbreviations, and semantic equivalence? Provide your assessment as a JSON with three fields: - \"match\": boolean (true if they match, false if not) - \"score\": number between 0 and 1 representing the confidence/similarity score - \"reason\": brief explanation of your decision Respond ONLY with the JSON and nothing else. Here's the exact format: {\n  \"match\": true or false,\n  \"score\": 0.0 to 1.0,\n  \"reason\": \"Your explanation here\"\n}"
     temperature: '0.0'
     model: us.amazon.nova-2-lite-v1:0
-criteria_validation:
-  model: us.anthropic.claude-sonnet-4-5-20250929-v1:0
-  temperature: 0.0
-  top_k: 20
-  top_p: 0.01
-  max_tokens: 4096
-  semaphore: 3
-  max_chunk_size: 180000
-  token_size: 4
-  overlap_percentage: 10
-  response_prefix: <response>
-  system_prompt: ''
-  task_prompt: ''
-  criteria: []
 agents:
   chat_companion:
     model_id: us.anthropic.claude-haiku-4-5-20251001-v1:0

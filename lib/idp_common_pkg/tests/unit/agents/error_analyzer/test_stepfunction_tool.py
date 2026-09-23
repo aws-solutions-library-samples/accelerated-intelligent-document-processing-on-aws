@@ -990,6 +990,34 @@ class TestACaughtFailureIsAttributedToTheStateThatFailed:
         assert result["failure_point"]["state"] == "Extraction"
         assert result["failure_point"]["event_type"] == "TaskFailed"
 
+    def test_a_concurrent_map_still_misattributes_and_that_is_recorded(self):
+        """The known limitation, pinned so it is a recorded gap rather than prose.
+
+        Two Map iterations share one execution history, so at `MaxConcurrency` above 1
+        their events interleave. Attribution infers causality from adjacency, so the
+        state reported is whichever iteration entered a state most recently before the
+        failure — not necessarily the one that failed.
+
+        Asserted at the WRONG answer deliberately: the previous rule gave the same
+        answer on this history, so this is not a regression, and writing the
+        aspiration here would make the test fail for a fix nobody has made. Walking
+        `previousEventId` is the exact route, and when someone takes it this test
+        should flip to `ExtractionStep`.
+        """
+        history = [
+            _entered("ProcessSections", 1, kind="Map"),
+            _entered("ExtractionStep", 2),  # iteration A
+            _entered("AssessmentStep", 3),  # iteration B
+            _task_failed(4),  # A's task fails
+            _execution_failed(5),
+        ]
+        with _fixed_timeline_cap():
+            result = _analyze_execution_timeline(history)
+        assert result["failure_point"]["state"] == "AssessmentStep", (
+            "if this now reports ExtractionStep, the causal-chain fix has landed and "
+            "this test should assert that instead"
+        )
+
     def test_the_two_failure_classes_partition_the_matched_set(self):
         """A new failure event type must be classified, not silently execution-level.
 
@@ -1014,7 +1042,12 @@ class TestTheMisattributionPopulationIsDerivedFromTheWorkflow:
 
     1. **`workflow.asl.json` is not valid JSON.** It is a CloudFormation-substituted
        template, and a `${Token}` sits in value position unquoted, so `json.load`
-       raises at the first one. It has to be substituted before parsing.
+       raises at the first one. Substituting only the UNQUOTED form is the spelling to
+       use, and it is already gated: `scripts/tests/test_asl_placeholder_substitution.py`
+       enumerates the substitution sites in this repository, asserts that enumeration is
+       not vacuous, and asserts each one preserves the task `Resource` ARNs -- a
+       substitution that also rewrote quoted values would corrupt those. This module's
+       pattern is one of the sites it covers.
     2. **States nest, and `Next` resolves within its own state map.** A Map's
        `ItemProcessor.States` and a Parallel's `Branches[].States` each hold a separate
        namespace, so a top-level-only walk sees 41 of 55 states, and a *global* name

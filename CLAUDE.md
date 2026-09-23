@@ -315,8 +315,15 @@ So:
   neither the enforced nor the exempt set; this is what makes an exemption list
   trustworthy at all. *Staleness* — a dead entry fails.
 - **If it can have none, say what is unprotected** in `ratchetGap`. Those are the
-  honest residuals and they are counted: `MAX_UNRATCHETED` in the meta-test may shrink
-  and not grow, so declaring a gap cannot quietly become the default answer.
+  honest residuals and they are counted: `MAX_UNRATCHETED` in the meta-test does not
+  grow to absorb a **new** exemption, so declaring a gap cannot quietly become the
+  default answer to adding one. It does grow, by one, to **correct a false ratchet
+  label** — an entry claiming a ratchet nothing implements reads as protection that
+  is not there, which is worse than a declared gap and is the defect this registry
+  exists to prevent. The increment then has to carry its own evidence at the pin,
+  naming what the entry does *not* check and the measurement showing the gap is one
+  the tree exhibits now; `scripts/srt/issues.json` is the worked example. What is
+  refused is the increment with no such reason beside it.
 
 Membership is **derived** and only the judgement is authored:
 `scripts/tests/exemption_discovery.py` finds exemption surfaces by constant name, by
