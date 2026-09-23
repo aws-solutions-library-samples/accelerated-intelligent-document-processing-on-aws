@@ -303,19 +303,78 @@ def _compress_config_item(item: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
-def _read_pricing_config(config_table: Any, config_key: str) -> Optional[Dict[str, Any]]:
-    """Read and decompress a pricing config from the ConfigurationTable."""
+# How many times an append may be rebuilt after losing a conflict.
+#
+# Small on purpose. Two writers is the realistic worst case here -- a second
+# deployment finishing in the same window, or an operator saving pricing in the UI
+# -- and each rebuild is a fresh GetItem against a single item, so a loser that
+# re-reads sees the winner's entry and either appends beside it or finds its own
+# name already present and stops. Exhausting the budget is not silent: the caller
+# already treats a failed pricing update as non-fatal and logs it, which is the
+# same outcome as any other error on this path and not a new way for the
+# deployment to fail.
+_MAX_PRICING_WRITE_ATTEMPTS = 5
+
+
+def _read_raw_pricing_config(
+    config_table: Any, config_key: str
+) -> Optional[Dict[str, Any]]:
+    """Read a pricing config exactly as stored, without decompressing it.
+
+    The stored form is what the write guard below has to talk about, and
+    decompression discards it.
+    """
     response = config_table.get_item(Key={"Configuration": config_key})
-    item = response.get("Item")
-    if item is None:
-        return None
-    return _decompress_config_item(item)
+    return response.get("Item")
 
 
-def _write_pricing_config(config_table: Any, item: Dict[str, Any]) -> None:
-    """Compress and write a pricing config to the ConfigurationTable."""
+def _pricing_write_guard(raw_item: Dict[str, Any]) -> tuple[str, Dict[str, Any]]:
+    """Build the condition that makes appending to a pricing row safe under overlap.
+
+    The entry is appended to a list held *inside* the row's content, and on the
+    compressed storage format that content is one opaque Binary attribute, so
+    there is no attribute a targeted update could add to and no atomic
+    ``list_append`` available. The guard therefore has to say "the content I read
+    is still the content that is stored", which is also the strongest available
+    statement: it catches every writer of the row rather than only the ones that
+    cooperate, and the pricing editor in the UI saves this same row through
+    ``ConfigurationManager`` knowing nothing about this Lambda.
+
+    Which attribute holds the content depends on the storage format, so the guard
+    names whichever one this row actually uses rather than assuming the current
+    one. A row written before compression keeps its ``pricing`` list at the top
+    level; either writer migrates such a row on its next write, and the
+    ``attribute_not_exists`` form detects that migration too.
+    """
+    if raw_item.get(_COMPRESSED_STORAGE_MARKER) == _COMPRESSED_STORAGE_VALUE:
+        attribute = _COMPRESSED_DATA_FIELD
+    else:
+        attribute = "pricing"
+    stored = raw_item.get(attribute)
+    if stored is None:
+        return f"attribute_not_exists({attribute})", {}
+    return f"{attribute} = :guard", {":guard": stored}
+
+
+def _write_pricing_config(
+    config_table: Any,
+    item: Dict[str, Any],
+    guard: Optional[tuple[str, Dict[str, Any]]] = None,
+) -> None:
+    """Compress and write a pricing config to the ConfigurationTable.
+
+    ``guard`` is the condition from :func:`_pricing_write_guard`. Without one this
+    is a blind whole-item replacement, which is why every caller that derives what
+    it writes from what it read passes one.
+    """
     compressed_item = _compress_config_item(item)
-    config_table.put_item(Item=compressed_item)
+    kwargs: Dict[str, Any] = {"Item": compressed_item}
+    if guard is not None:
+        expression, values = guard
+        kwargs["ConditionExpression"] = expression
+        if values:
+            kwargs["ExpressionAttributeValues"] = values
+    config_table.put_item(**kwargs)
 
 
 def _add_deployment_arn_to_pricing(deployment_arn: str) -> None:
@@ -370,30 +429,63 @@ def _add_entry_to_pricing_config(
 
     If the entry already exists (by name), it is not duplicated.
 
+    The append is conditional on the content that was read still being stored, and
+    is rebuilt on a fresh read if it is not. Writing the whole row back blind lost
+    a concurrent writer's work outright: both writes succeed, so a deployment ARN
+    added by an overlapping deployment -- or the operator's entire pricing edit,
+    since this is a whole-item replacement and not a targeted update -- disappeared
+    with nothing reporting it. These are two global singleton rows, so every writer
+    in the account contends on the same two keys.
+
     Args:
         config_table: DynamoDB Table resource for the ConfigurationTable
         config_key: The Configuration key (e.g., 'DefaultPricing' or 'CustomPricing')
         new_entry: The pricing entry dict with 'name' and 'units'
     """
-    item = _read_pricing_config(config_table, config_key)
-    if item is None:
-        logger.info(f"{config_key} not found in ConfigurationTable, skipping")
+    for attempt in range(1, _MAX_PRICING_WRITE_ATTEMPTS + 1):
+        raw_item = _read_raw_pricing_config(config_table, config_key)
+        if raw_item is None:
+            logger.info(f"{config_key} not found in ConfigurationTable, skipping")
+            return
+
+        item = _decompress_config_item(raw_item)
+        pricing_list: List[Dict[str, Any]] = item.get("pricing", [])
+
+        # Check if entry already exists. On a rebuilt attempt this is also what
+        # makes the retry converge rather than loop: if the writer that won the
+        # conflict added this same ARN, there is nothing left to do.
+        existing_names = {
+            entry.get("name") for entry in pricing_list if isinstance(entry, dict)
+        }
+        if new_entry["name"] in existing_names:
+            logger.info(
+                f"Deployment ARN already exists in {config_key} pricing, skipping: {new_entry['name']}"
+            )
+            return
+
+        # Add the new entry
+        pricing_list.append(new_entry)
+        item["pricing"] = pricing_list
+
+        # Write back, refusing to overwrite content that moved under us.
+        try:
+            _write_pricing_config(
+                config_table, item, guard=_pricing_write_guard(raw_item)
+            )
+        except config_table.meta.client.exceptions.ConditionalCheckFailedException:
+            logger.info(
+                f"{config_key} changed while adding {new_entry['name']}; "
+                f"rebuilding the append (attempt {attempt} of "
+                f"{_MAX_PRICING_WRITE_ATTEMPTS})"
+            )
+            continue
+        logger.info(f"Added deployment ARN to {config_key} pricing: {new_entry['name']}")
         return
 
-    pricing_list: List[Dict[str, Any]] = item.get("pricing", [])
-
-    # Check if entry already exists
-    existing_names = {entry.get("name") for entry in pricing_list if isinstance(entry, dict)}
-    if new_entry["name"] in existing_names:
-        logger.info(
-            f"Deployment ARN already exists in {config_key} pricing, skipping: {new_entry['name']}"
-        )
-        return
-
-    # Add the new entry
-    pricing_list.append(new_entry)
-    item["pricing"] = pricing_list
-
-    # Write back
-    _write_pricing_config(config_table, item)
-    logger.info(f"Added deployment ARN to {config_key} pricing: {new_entry['name']}")
+    # Raised rather than logged, so the caller's own non-fatal handler reports it
+    # the same way it reports any other failure here. Returning quietly would be
+    # indistinguishable from having written the entry.
+    raise RuntimeError(
+        f"Could not add {new_entry['name']} to {config_key} after "
+        f"{_MAX_PRICING_WRITE_ATTEMPTS} attempts: the row kept changing underneath"
+    )
