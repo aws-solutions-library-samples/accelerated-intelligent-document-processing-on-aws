@@ -17,6 +17,11 @@ dist/
 .data/
 *.egg-info/
 build/
+# CDK synth output. pyrightconfig.json excludes `**/cdk.out` as build output at any
+# depth, and that claim rests on an ignore rule covering it: without one a cdk.out/
+# holding committed Python could appear and be dropped from `make typecheck` with no
+# edit to any file a reviewer reads. test_pyright_config.py computes that per member.
+cdk.out/
 __pycache__
 *.code-workspace
 .ruff_cache

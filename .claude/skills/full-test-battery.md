@@ -176,11 +176,13 @@ the duplication argument stands regardless.)
 
 Two invocation corrections for the CI-equivalent gates:
 
-- **`make lint-cicd` needs `FORCE=1`** to exercise the UI lint and `npm run
-  typecheck`. Without it, an unchanged `src/ui` checksum skips both while the target
-  still runs the vite build and still reports success — so a green `lint-cicd` on a
-  warm tree does not mean the UI was linted. CI is unaffected: `.checksum` is
-  gitignored, so a fresh checkout has none and the lint always runs. See
+- **`make lint-cicd` exercises the UI lint and `npm run typecheck` unconditionally**,
+  because it passes `UI_LINT_NO_SKIP=1`; you do not need `FORCE=1` for it. Bare
+  `make ui-lint`, `make lint` and `make fastlint` still take the `src/ui` checksum
+  cache, and a cache hit there prints `⏭️  UI lint SKIPPED` naming the two tools that
+  did not run rather than a green tick — so if you are reading one of those logs for a
+  gate signal, check which line you got, or use `FORCE=1`. CI never hits the cache at
+  all: `.checksum` is gitignored, so a fresh checkout has none. See
   [#1152](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/1152).
 - **Do not reach for `PYTHONPATH` to make `make typecheck` resolve first-party
   imports, and do not conclude from that that the tool ignores the environment.**

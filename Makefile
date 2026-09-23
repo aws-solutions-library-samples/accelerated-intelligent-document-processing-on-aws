@@ -174,7 +174,15 @@ lint-cicd: ## CI/CD lint — checks only, no modifications
 		exit 1; \
 	fi
 	@echo "Frontend checks"
-	@if ! make ui-lint; then \
+	@# UI_LINT_NO_SKIP=1 is load-bearing here. `ui-lint` caches on a checksum of
+	@# src/ui, and this target reported overall success on a warm local tree
+	@# without having run eslint or tsc at all (issue #1152). CI never hits the
+	@# skip — `.checksum` is gitignored, so a fresh checkout has no stored hash —
+	@# which is precisely why the CI-equivalent target must not be able to either:
+	@# the one gate in this set whose green mark could mean nothing is the one
+	@# people read when the Actions queue is slow. `lint` and `fastlint` keep the
+	@# cache, since iteration latency is what it was added for.
+	@if ! make ui-lint UI_LINT_NO_SKIP=1; then \
 		echo -e "$(RED)ERROR: UI lint failed$(NC)"; \
 		exit 1; \
 	fi
@@ -1040,13 +1048,26 @@ NPM_CI := $(if $(SKIP_NPM_CI),true,npm ci --prefer-offline --no-audit)
 #
 # `npm run lint` now spells out `--max-warnings 0` and does not fix. Use
 # `make ui-lint-fix` to apply what is auto-fixable.
-ui-lint: ## Run UI linting with checksum caching (skips if unchanged). Use FORCE=1 to force re-run.
+# UI_LINT_NO_SKIP disables the checksum cache for callers that cannot afford a
+# skip, and it is deliberately a second variable rather than a reuse of FORCE.
+# FORCE is the operator saying "run it anyway"; UI_LINT_NO_SKIP is a property of
+# the calling target — `lint-cicd` sets it because its whole purpose is to mirror
+# CI, where `.checksum` is gitignored, no stored hash exists and the lint always
+# runs. Keeping them apart is what lets the log say WHY the lint ran.
+#
+# The skip branch reports a SKIP, not a pass. It used to print a green ✅, so a
+# warm tree produced a success line for work that did not happen — `npm run
+# lint` AND `npm run typecheck`, the second of which the target's name does not
+# even imply. Issue #1152.
+ui-lint: ## Run UI linting with checksum caching (skips if unchanged). Use FORCE=1 to force re-run; UI_LINT_NO_SKIP=1 forbids the skip.
 	@echo "Checking if UI lint is needed..."
 	@CURRENT_HASH=$$($(PYTHON) -c "from publish import IDPPublisher; p = IDPPublisher(); print(p.get_directory_checksum('src/ui'))"); \
 	STORED_HASH=$$(test -f src/ui/.checksum && cat src/ui/.checksum || echo ""); \
-	if [ -n "$(FORCE)" ] || [ "$$CURRENT_HASH" != "$$STORED_HASH" ]; then \
+	if [ -n "$(FORCE)" ] || [ -n "$(UI_LINT_NO_SKIP)" ] || [ "$$CURRENT_HASH" != "$$STORED_HASH" ]; then \
 		if [ -n "$(FORCE)" ]; then \
 			echo "FORCE=1 set - running lint..."; \
+		elif [ -n "$(UI_LINT_NO_SKIP)" ]; then \
+			echo "UI_LINT_NO_SKIP=1 set by the calling gate - running lint..."; \
 		else \
 			echo "UI code checksum changed - running lint..."; \
 		fi; \
@@ -1054,7 +1075,8 @@ ui-lint: ## Run UI linting with checksum caching (skips if unchanged). Use FORCE
 		echo "$$CURRENT_HASH" > .checksum; \
 		echo -e "$(GREEN)✅ UI lint and typecheck completed and checksum updated$(NC)"; \
 	else \
-		echo -e "$(GREEN)✅ UI code checksum unchanged - skipping lint (use FORCE=1 to force re-run)$(NC)"; \
+		echo -e "$(YELLOW)⏭️  UI lint SKIPPED - src/ui matches src/ui/.checksum, so eslint and tsc did NOT run.$(NC)"; \
+		echo -e "$(YELLOW)   This is a cache hit, not a pass. Run 'make ui-lint FORCE=1' to check the tree.$(NC)"; \
 	fi
 
 ui-lint-fix: ## Auto-fix what eslint can fix in src/ui, then re-run the strict gate

@@ -156,6 +156,33 @@ for our own first-party names.
   `status: resolved`. If you intend a finding to stay quiet, write
   `status: "suppressed"` **with** a `suppressionReason`; never leave it
   `resolved`, because the next scan will re-detect it and now correctly block.
+- **A suppression that shields nothing fails the gate too — so fixing a finding has a
+  second half.** The suppression key is `(path, resourceType, resourceName, check_id)`
+  with **no line**, so an entry whose finding you fixed in source does not go inert: it
+  pre-suppresses every future finding of that check in that file, and a real hardcoded
+  credential landing in a pre-registered file would be suppressed on arrival. `run.py`
+  now prints a `SUPPRESSIONS THAT SHIELD NOTHING` table for every suppressed entry the
+  scan produced no finding for, and exits 1 in CI. **If you add an inline `# nosec` (or
+  remove the value), delete the register entry in the same change.** Every one of the 52
+  Bandit suppressions the register used to carry was dead for exactly that reason.
+  - Measured per source, and only where silence is evidence: `register.WHOLE_REPO_SUMMARIES`
+    (Bandit — rules compiled into the package, runs over every file, so its finding set
+    is a function of the tree alone). `security-matrix`, `Checkov` and `Semgrep` are
+    excused in `register.NON_VACUITY_EXEMPT_SOURCES`, each with the mechanism that moves
+    its finding set without the tree moving — the first two evaluate per template and a
+    failed template scan looks exactly like a clean one, the third takes rules from a
+    remote registry. The remedy here is deletion, so reading absence as evidence where it
+    is not would delete a live suppression.
+  - An **empty** scanner summary is treated as "not measured", not as a clean tree. A
+    fresh but empty summary passes `scanner_health` (which only checks freshness) and
+    would otherwise report every suppression for that source as dead at once.
+  - ⚠️ **After you delete entries, the next local scan refuses to start.**
+    `.srt/issues.json` still holds them, and `restore_committed_register` cannot tell a
+    deliberate deletion from a local disposition nobody saved yet — both look like "HIGH
+    dispositions the committed register lacks". Run the next scan once with
+    `SRT_DISCARD_LOCAL=1 make srt-scan`, or `rm .srt/issues.json` first. CI never hits
+    it: a fresh checkout has no live file, and `make srt-setup` writes the committed
+    register into it.
 - **Exit code differs by environment** (`run.py`):
   - **CI** (`CI`/`GITLAB_CI`/`GITHUB_ACTIONS` set): exits **1** on any HIGH-open
     → pipeline fails.
