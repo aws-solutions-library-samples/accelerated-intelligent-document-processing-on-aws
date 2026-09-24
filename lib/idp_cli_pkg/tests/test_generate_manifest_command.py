@@ -1069,23 +1069,82 @@ def test_confirming_the_overwrite_clears_the_previous_test_set(runner, tmp_path)
 
 
 @pytest.mark.unit
-def test_eof_on_the_overwrite_prompt_overwrites_without_confirmation(runner, tmp_path):
-    """DEFECT (pinned, not fixed): the overwrite guard fails open on a closed stdin.
+def test_eof_on_the_overwrite_prompt_aborts_without_touching_the_test_set(
+    runner, tmp_path, api_calls
+):
+    """EOF on the confirmation aborts: no answer is not consent to clear baselines.
 
-    The confirmation is a bare `input()` inside a `try/except Exception` whose handler
-    prints "Warning: Could not check existing test set" and carries on. `input()` on a
-    closed or empty stdin raises `EOFError`, which is an `Exception`, so the guard is
-    swallowed by its own error handler and the command proceeds to clear and overwrite
-    the existing test set. Anything running this non-interactively — a CI job, a
-    `make` target, a shell with stdin redirected from `/dev/null` — therefore
-    overwrites an existing test set silently, which destroys the baselines a previous
-    evaluation was measured against.
+    `input()` raises `EOFError` on a closed or empty stdin, and `EOFError` is an
+    `Exception` — so while the prompt sat inside the listing's `try/except Exception`,
+    anything non-interactive (a CI job, a `make` target, a shell with stdin from
+    `/dev/null`) had its guard swallowed by that handler and went on to clear and
+    overwrite the existing test set, destroying the baselines a previous evaluation was
+    measured against, at exit 0 with a yellow warning as the only sign.
 
-    Here the pre-existing `set1/input/stale.pdf` is gone at the end and the exit code
-    is 0, with only a yellow warning to show for it. The abort path itself works
-    (`sys.exit` raises `SystemExit`, which that handler does not catch) — see
-    `test_declining_the_overwrite_prompt_makes_no_s3_writes` — so the bug is specific
-    to never getting an answer.
+    Supplying EOF rather than `n` is the whole point: answering `n` already aborted
+    (`test_declining_the_overwrite_prompt_makes_no_s3_writes`), so a test that answers
+    cannot tell the fix from the defect. `CliRunner` with `input=""` gives a stdin that
+    is immediately at EOF, which is the real non-interactive shape.
+
+    The pre-existing object is read back to show it survived, and the API log is
+    checked for the absence of the mutating calls rather than trusting the exit code:
+    an abort that had already deleted the previous baselines would be worse than the
+    overwrite it replaced.
+    """
+    from idp_cli.cli import generate_manifest
+
+    docs = tmp_path / "docs"
+    _write(docs / "invoice.pdf")
+    baselines = tmp_path / "baselines"
+    (baselines / "invoice.pdf").mkdir(parents=True)
+
+    with mock_aws():
+        s3 = boto3.client("s3", region_name="us-east-1")
+        s3.create_bucket(Bucket=TEST_SET_BUCKET)
+        s3.put_object(Bucket=TEST_SET_BUCKET, Key="set1/input/stale.pdf", Body=b"old")
+        before_invoke = len(api_calls)
+
+        with _patched_stack_resources({"TestSetBucket": TEST_SET_BUCKET}):
+            result = runner.invoke(
+                generate_manifest,
+                [
+                    "--dir",
+                    str(docs),
+                    "--baseline-dir",
+                    str(baselines),
+                    "--test-set",
+                    "set1",
+                    "--stack-name",
+                    "IDP",
+                ],
+                input="",
+            )
+
+        keys = {
+            obj["Key"]
+            for obj in s3.list_objects_v2(Bucket=TEST_SET_BUCKET).get("Contents", [])
+        }
+
+    assert result.exit_code == 1, result.output
+    assert "no answer read from stdin" in result.output
+    assert "--force" in result.output, "the abort has to name the non-interactive route"
+    assert keys == {"set1/input/stale.pdf"}, (
+        "the existing test set must survive an unanswered prompt"
+    )
+    made_by_the_command = [call.operation for call in api_calls[before_invoke:]]
+    assert "PutObject" not in made_by_the_command
+    assert "DeleteObjects" not in made_by_the_command
+    assert "DeleteObject" not in made_by_the_command
+
+
+@pytest.mark.unit
+def test_force_overwrites_an_existing_test_set_with_no_prompt(runner, tmp_path):
+    """`--force` is the non-interactive route to the overwrite, and it asks nothing.
+
+    Without it there would be no way to refresh a test set from a script, since EOF on
+    the prompt now aborts. Stdin is left empty here, so a prompt that were still
+    reached would raise `EOFError` and abort — reaching exit 0 with the stale object
+    gone is what shows the confirmation was skipped rather than answered.
     """
     from idp_cli.cli import generate_manifest
 
@@ -1111,6 +1170,7 @@ def test_eof_on_the_overwrite_prompt_overwrites_without_confirmation(runner, tmp
                     "set1",
                     "--stack-name",
                     "IDP",
+                    "--force",
                 ],
                 input="",
             )
@@ -1121,11 +1181,8 @@ def test_eof_on_the_overwrite_prompt_overwrites_without_confirmation(runner, tmp
         }
 
     assert result.exit_code == 0, result.output
-    assert "Warning: Could not check existing test set" in result.output
-    assert "✗ Aborted" not in result.output
-    assert keys == {"set1/input/invoice.pdf"}, (
-        "the previous test set was overwritten with no confirmation"
-    )
+    assert "Continue? [y/N]" not in result.output
+    assert keys == {"set1/input/invoice.pdf"}
 
 
 @pytest.mark.unit

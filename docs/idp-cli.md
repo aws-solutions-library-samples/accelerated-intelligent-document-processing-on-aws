@@ -1495,6 +1495,7 @@ idp-cli generate-manifest [OPTIONS]
 - **Test Set Creation:**
   - `--test-set`: Test set name - creates folder in test set bucket and uploads files
   - `--stack-name`: CloudFormation stack name (required with --test-set)
+  - `--force` / `-y`: Overwrite an existing test set without the confirmation prompt
 
 **Examples:**
 
@@ -1524,6 +1525,14 @@ idp-cli generate-manifest \
     --test-set "fcc example test" \
     --stack-name IDP \
     --output test-manifest.csv
+
+# Refresh an existing test set from a script or CI job (asks nothing)
+idp-cli generate-manifest \
+    --dir ./documents/ \
+    --baseline-dir ./baselines/ \
+    --test-set "fcc example test" \
+    --stack-name IDP \
+    --force
 ```
 
 **Test Set Creation:**
@@ -1533,6 +1542,14 @@ When using `--test-set`, the command:
 3. Uploads baseline files to `s3://test-set-bucket/{test-set-id}/baseline/`
 4. Creates proper test set structure for evaluation workflows
 5. Test set will be auto-detected by the Test Studio UI
+
+**Overwriting an existing test set:** if the test set name already exists, everything
+under its prefix — including the baselines a previous evaluation was scored against —
+is deleted before the new files are uploaded, so the command asks for confirmation
+first. Answer `y` to proceed, anything else to abort. Run non-interactively (a CI job,
+a `make` target, stdin from `/dev/null`) there is no answer to read, and the command
+**aborts with exit 1 and changes nothing**; pass `--force` to overwrite without the
+prompt. Baselines cleared this way are not recoverable from the CLI.
 
 Process the created test set:
 ```bash

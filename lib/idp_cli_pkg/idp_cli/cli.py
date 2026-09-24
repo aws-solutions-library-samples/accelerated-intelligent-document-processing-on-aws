@@ -2889,6 +2889,12 @@ def list_versions(stack_name: str, document_id: str, region: Optional[str]):
 @click.option(
     "--stack-name", help="CloudFormation stack name (required with --test-set)"
 )
+@click.option(
+    "--force",
+    "-y",
+    is_flag=True,
+    help="Overwrite an existing test set without the confirmation prompt (required to overwrite non-interactively)",
+)
 def generate_manifest(
     directory: Optional[str],
     s3_uri: Optional[str],
@@ -2899,6 +2905,7 @@ def generate_manifest(
     region: Optional[str],
     test_set: Optional[str],
     stack_name: Optional[str],
+    force: bool,
 ):
     """
     Generate a manifest file from directory or S3 URI
@@ -2926,6 +2933,9 @@ def generate_manifest(
 
       # Create test set with baseline matching and manifest output
       idp-cli generate-manifest --dir ./documents/ --baseline-dir ./baselines/ --test-set "fcc example test" --stack-name IDP --output manifest.csv
+
+      # Overwrite an existing test set from a script or CI job (no prompt to answer)
+      idp-cli generate-manifest --dir ./documents/ --baseline-dir ./baselines/ --test-set "fcc example test" --stack-name IDP --force
     """
     try:
         import csv
@@ -3091,28 +3101,49 @@ def generate_manifest(
 
         # Upload to test set bucket if test_set is specified
         if test_set:
-            # Check if test set already exists
+            # Check if test set already exists. The check and the confirmation are
+            # kept apart on purpose: a failed listing is a tidy-up problem and warns,
+            # but the confirmation is the only thing standing between this command and
+            # a previous test set's baselines, so a failure to READ an answer must
+            # never be absorbed by the listing's error handler. `input()` raises
+            # EOFError on a closed or empty stdin, and EOFError is an Exception.
+            test_set_exists = False
             try:
                 response = s3_client.list_objects_v2(
                     Bucket=test_set_bucket, Prefix=f"{test_set}/", MaxKeys=1
                 )
-                if response.get("Contents"):
-                    console.print(
-                        f"[yellow]Warning: Test set '{test_set}' already exists in bucket[/yellow]"
-                    )
-                    console.print(
-                        "[yellow]Files will be overwritten. Continue? [y/N][/yellow]",
-                        end=" ",
-                    )
-
-                    response = input().strip().lower()
-                    if response not in ["y", "yes"]:
-                        console.print("[red]✗ Aborted[/red]")
-                        sys.exit(1)
+                test_set_exists = bool(response.get("Contents"))
             except Exception as e:
                 console.print(
                     f"[yellow]Warning: Could not check existing test set: {e}[/yellow]"
                 )
+
+            if test_set_exists and not force:
+                console.print(
+                    f"[yellow]Warning: Test set '{test_set}' already exists in bucket[/yellow]"
+                )
+                console.print(
+                    "[yellow]Files will be overwritten. Continue? [y/N][/yellow]",
+                    end=" ",
+                )
+
+                try:
+                    answer = input().strip().lower()
+                except EOFError:
+                    # Non-interactive stdin. Overwriting clears the test set's
+                    # baselines, which are not recoverable from the CLI, so take the
+                    # absence of an answer as "no" rather than as consent.
+                    console.print()
+                    console.print(
+                        "[red]✗ Aborted: no answer read from stdin, so the existing "
+                        f"test set '{test_set}' was left untouched. Re-run with "
+                        "--force to overwrite it non-interactively.[/red]"
+                    )
+                    sys.exit(1)
+
+                if answer not in ["y", "yes"]:
+                    console.print("[red]✗ Aborted[/red]")
+                    sys.exit(1)
 
             console.print(
                 f"[bold blue]Uploading files to test set: {test_set}[/bold blue]"
