@@ -73,13 +73,46 @@ the setting the author believes they changed simply is not set — which is
 indistinguishable from a working configuration, because the shipped default is in
 force and the run completes.
 
-That scope is exactly `IDPConfig`'s tree. This module holds three other root
-models: `PricingConfig` and `ModelConfigLimitsConfig` take `extra="forbid"` (they
-raise, which is better than reporting) and `SchemaConfig` takes `extra="allow"`.
-But `ModelLimitEntry`, nested inside `ModelConfigLimitsConfig`, takes the default,
-so a mistyped key in a per-model limit row is still dropped in silence —
-[#1211](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/1211).
-The walk below takes any root model, so covering that is a call site.
+That scope is exactly `IDPConfig`'s tree, and **`extra="forbid"` on a record root
+buys nothing below it.** This module holds three other root models. `PricingConfig`
+and `ModelConfigLimitsConfig` forbid extras at depth 0, so a stray key *there*
+raises — but `PricingEntry`, `PricingUnit` and `ModelLimitEntry`, the element types
+of their one list field each, take the permissive default, so a mistyped key inside
+a row was dropped in silence
+([#1211](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/1211)).
+`SchemaConfig` takes `extra="allow"` and its fields name no model, so it drops
+nothing and has nothing to report.
+
+⚠️ **`ModelConfigLimitsConfig` is not reachable from `IDPConfig` at any depth** —
+there is no `model_limits` field on it — which is why the walk written for #1134
+never saw a limit row. `PricingEntry` *is* reachable, via `IDPConfig.pricing`, so a
+misspelled key in a pricing row was already reported when a whole configuration
+document was validated and not when the `DefaultPricing`/`CustomPricing` record was
+validated on its own. The walk takes any root model, so what was missing in both
+cases was the call.
+
+Each record root now makes that call from its own `mode="before"` validator, through
+the shared `log_ignored_config_keys`, which is also what `IDPConfig`'s validator uses
+— one wording, one `deprecated`/`unknown` split, one bound on the line, and the
+message names the root it came from. **Attach a new root's report there and not to a
+save path:** these roots are built from a dict in four modules — the configuration
+resolver behind the Pricing and Model Limits panels, `update_configuration` at deploy
+time, `ConfigurationManager` (both `save_configuration` and the per-record `save_*`
+helpers), and, for pricing, the merge that re-validates a dumped record — and the
+resolver, the operator-facing one, does not go through `save_configuration`.
+
+`include_top_level` stays off for all of them, and on the two that forbid extras that
+is not a matter of taste: Pydantic raises for a depth-0 key, so a line saying it was
+ignored would be false.
+
+`tests/unit/config/test_record_root_unknown_keys.py` derives the root set from the
+annotation on `ConfigurationManager.save_configuration` — the enumeration production
+code already keeps — and the models under each root from the annotations, so a fifth
+record type is covered by those tests without being named in them. It also checks
+`config_library/pricing.yaml` and `config_library/model_config_limits.yaml` against
+their own roots. `scripts/tests/test_preset_keys_are_read.py` deliberately excludes
+those two files from its scan, correctly, because they are not `IDPConfig` documents;
+the effect was that no gate read them against any model.
 
 `IDPConfig.log_deprecated_fields` reports those keys. It walks the whole model
 tree, so a key at any depth is named with its **dotted path**:
@@ -110,11 +143,12 @@ configurations that work, and would need a migration story for every key a later
 version removes.
 
 The walk is `models.collect_ignored_config_keys(data, model)`, and it is public
-because two gates ask the same question of shipped files —
-`scripts/tests/test_preset_keys_are_read.py` over `config_library/`, and
-`tests/unit/config/test_unknown_nested_keys.py` over the merged defaults. Both
-call it rather than reimplementing the resolution, so neither can drift from what
-a load actually drops.
+because the gates that ask the same question of shipped files call it rather than
+reimplementing the resolution, so none of them can drift from what a load actually
+drops: `scripts/tests/test_preset_keys_are_read.py` over `config_library/`,
+`tests/unit/config/test_unknown_nested_keys.py` over the merged defaults, and
+`tests/unit/config/test_record_root_unknown_keys.py` over the pricing and model-limit
+records.
 
 Three things to know before using it:
 
