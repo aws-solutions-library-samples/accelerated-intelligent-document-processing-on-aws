@@ -303,12 +303,15 @@ class TestPricingAppendUnderOverlap:
         # handler logs an error, and a silent return is indistinguishable from
         # having written the entry.
         #
-        # The competitor has to write *different* content on every read, not the
-        # same content repeatedly: the guard compares stored content, so a writer
-        # that rewrites an identical body legitimately leaves the condition holding
-        # and the append succeeds on the next attempt. A competitor that repeats one
-        # body therefore does not exhaust the budget and this assertion would not
-        # hold.
+        # The competitor writes *different* content on every read so the budget is
+        # exhausted for the reason being tested. A competitor repeating one body
+        # cannot be relied on to do that, but not because the condition would hold:
+        # `gzip.compress` embeds an mtime, so re-storing an identical body in a
+        # later second stores different bytes and the condition is false anyway.
+        # That makes the guard strictly stronger than content equality, which is
+        # safe -- it can refuse a no-op rewrite, never permit a real one -- and it
+        # is why this test names distinct entries rather than leaning on which of
+        # the two semantics is in force.
         moves = iter(range(1, 100))
         harness = _Harness(
             {"DefaultPricing": _compressed_row("DefaultPricing", {"pricing": []})},

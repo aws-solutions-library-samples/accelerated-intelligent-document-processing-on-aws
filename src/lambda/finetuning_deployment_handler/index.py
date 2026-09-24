@@ -334,11 +334,19 @@ def _pricing_write_guard(raw_item: Dict[str, Any]) -> tuple[str, Dict[str, Any]]
     The entry is appended to a list held *inside* the row's content, and on the
     compressed storage format that content is one opaque Binary attribute, so
     there is no attribute a targeted update could add to and no atomic
-    ``list_append`` available. The guard therefore has to say "the content I read
-    is still the content that is stored", which is also the strongest available
+    ``list_append`` available. The guard therefore has to say "the attribute I read
+    is still the attribute that is stored", which is also the strongest available
     statement: it catches every writer of the row rather than only the ones that
     cooperate, and the pricing editor in the UI saves this same row through
     ``ConfigurationManager`` knowing nothing about this Lambda.
+
+    On the compressed format this compares *bytes*, which is deliberately stronger
+    than comparing content: ``gzip.compress`` embeds an mtime, so a writer that
+    re-stores a byte-identical body in a later second still moves the attribute and
+    is refused. That direction is the safe one -- the condition can cost a rebuild
+    on a rewrite that changed nothing, and can never pass one that changed
+    something -- and the rebuild converges, because the re-read sees the bytes now
+    stored.
 
     Which attribute holds the content depends on the storage format, so the guard
     names whichever one this row actually uses rather than assuming the current
@@ -359,21 +367,27 @@ def _pricing_write_guard(raw_item: Dict[str, Any]) -> tuple[str, Dict[str, Any]]
 def _write_pricing_config(
     config_table: Any,
     item: Dict[str, Any],
-    guard: Optional[tuple[str, Dict[str, Any]]] = None,
+    guard: tuple[str, Dict[str, Any]],
 ) -> None:
     """Compress and write a pricing config to the ConfigurationTable.
 
-    ``guard`` is the condition from :func:`_pricing_write_guard`. Without one this
-    is a blind whole-item replacement, which is why every caller that derives what
-    it writes from what it read passes one.
+    ``guard`` is the condition from :func:`_pricing_write_guard`, and it is
+    **required** rather than defaulted. ``put_item`` here replaces the whole row,
+    so a call without a condition is the defect this function was changed to
+    prevent, and an optional parameter is how that comes back: the next caller
+    added to this module gets the unguarded behaviour by saying nothing at all.
+    Requiring it makes reintroducing the defect a thing somebody has to write
+    down, which is the same reason the decompress-only read helper was deleted
+    rather than left in place.
     """
     compressed_item = _compress_config_item(item)
-    kwargs: Dict[str, Any] = {"Item": compressed_item}
-    if guard is not None:
-        expression, values = guard
-        kwargs["ConditionExpression"] = expression
-        if values:
-            kwargs["ExpressionAttributeValues"] = values
+    expression, values = guard
+    kwargs: Dict[str, Any] = {
+        "Item": compressed_item,
+        "ConditionExpression": expression,
+    }
+    if values:
+        kwargs["ExpressionAttributeValues"] = values
     config_table.put_item(**kwargs)
 
 

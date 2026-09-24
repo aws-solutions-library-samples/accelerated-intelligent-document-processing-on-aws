@@ -272,10 +272,14 @@ class TestSkipAllHistoryAppend:
 
     @mock_aws
     def test_the_rest_of_the_skip_all_write_is_unchanged(self, mod):
-        # `HITLSectionsSkipped` is still a whole-list write, by decision rather
-        # than omission (see the comment at the call site: the value is
-        # convergent and recomputable). Pinned here so a later change to the
-        # shared `UpdateExpression` cannot drop one of its clauses unnoticed.
+        # `HITLSectionsSkipped` is still a whole-list write, and it is a residual
+        # rather than a safe value: what diverges between two callers is the
+        # `completed` set, which arrives from the document model and not from the
+        # read above, so every writer of it goes through the one unconditional
+        # whole-document write this PR does not touch. The call site states the
+        # residual in full. What is pinned here is only that the clauses sharing
+        # the `UpdateExpression` with the append still land, so a later edit to it
+        # cannot drop one unnoticed.
         harness = _Harness(
             seed={"HITLPendingReview": "true", "HITLSectionsSkipped": ["sec-0"]}
         )
