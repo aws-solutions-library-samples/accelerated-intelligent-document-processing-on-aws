@@ -68,9 +68,12 @@ before processing documents: `amazon.nova-lite-v1:0`, `amazon.nova-pro-v1:0`,
 > with `--bucket-basename` and `--prefix`.
 
 > **Note on `--parameters` formatting**: Commas inside multi-value parameters
-> (like `PrivateSubnetIds`) don't need escaping — the CLI parses
-> `--parameters` by looking for the next `key=` pattern, so commas within
-> values are preserved automatically.
+> (like `PrivateSubnetIds`) don't need escaping — a new pair starts at a comma or
+> whitespace followed by `key=`, so commas within values are preserved
+> automatically. An `=` inside a value needs no escaping either, and whitespace
+> around the `=` is ignored. Text before the first pair that forms no pair, and a
+> value that looks like it swallowed one, are both printed back to you rather than
+> passing unremarked — see [`--parameters`](./idp-cli.md#deploy) for the detail.
 
 ## Keeping the Web UI in GovCloud: `--govcloud`
 

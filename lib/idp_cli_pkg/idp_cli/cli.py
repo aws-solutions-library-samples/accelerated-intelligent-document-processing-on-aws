@@ -15,6 +15,10 @@ import time
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
+# Stdlib-only and in this package, so it belongs to neither import tier below: it
+# cannot fail to import and nothing has to be stubbed for it.
+from .parameters import parse_parameters
+
 _SETUP_HELP = """\
 Error: Required packages not found.
 
@@ -909,21 +913,15 @@ def deploy(
 
         console.print()
 
-        # Parse additional parameters
-        additional_params = {}
-        if parameters:
-            # Parse key=value pairs separated by commas, but handle values
-            # that themselves contain commas (e.g., subnet lists).
-            # Strategy: split on commas that are followed by a key= pattern.
-            import re
-
-            for match in re.finditer(
-                r"([A-Za-z][A-Za-z0-9]*)=((?:(?![A-Za-z][A-Za-z0-9]*=).)*)",
-                parameters,
-            ):
-                key = match.group(1).strip()
-                value = match.group(2).strip().rstrip(",")
-                additional_params[key] = value
+        # Parse additional parameters. The grammar, the three shapes it used to
+        # mis-read silently, and why it is committed twice are all in
+        # idp_cli/parameters.py. Anything it could not read is printed here
+        # rather than dropped: a parameter that never reached CloudFormation is
+        # indistinguishable afterwards from one submitted at its default.
+        additional_params = parse_parameters(
+            parameters,
+            on_warning=lambda message: console.print(f"[yellow]⚠ {message}[/yellow]"),
+        )
 
         if _default_email_mutable_for_new_federated_stack(
             additional_params, stack_exists=stack_exists, headless=headless
