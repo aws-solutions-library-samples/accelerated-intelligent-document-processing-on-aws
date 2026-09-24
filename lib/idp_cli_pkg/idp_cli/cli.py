@@ -171,6 +171,9 @@ def _build_from_local_code(
         region: AWS region
         stack_name: CloudFormation stack name (unused but kept for signature compatibility)
         headless: If True, also generate a headless template variant.
+        govcloud: If True, generate and deploy the GovCloud template variant
+            (CloudFront removed, API Gateway UI hosting). Mutually exclusive
+            with `headless` at the command layer.
         bucket: S3 bucket basename for artifacts (auto-generated if not provided).
         prefix: S3 key prefix for artifacts (default: idp-cli).
         public: If True, make artifacts publicly readable.
@@ -182,10 +185,14 @@ def _build_from_local_code(
 
     Returns:
         Tuple of (template_path, template_url) on success.
-        If headless, returns the headless template path/url instead.
+        If headless, returns the headless template path/url instead; if
+        govcloud, the GovCloud path/url, which takes precedence.
 
     Raises:
-        SystemExit: On build failure
+        SystemExit: On build failure, and when `govcloud` was requested but the
+            build produced no GovCloud template variant — deploying the
+            commercial template into a GovCloud partition is refused rather
+            than done silently.
     """
     console.print("[bold cyan]Building project from source...[/bold cyan]")
     console.print(f"[dim]Source: {from_code_dir}[/dim]")
@@ -221,8 +228,41 @@ def _build_from_local_code(
 
         console.print()
 
-        # Return govcloud template if govcloud mode
-        if govcloud and result.govcloud_template_path:
+        # Return govcloud template if govcloud mode.
+        #
+        # A build that reported success without emitting the variant is REFUSED
+        # rather than falling back to the plain template. The fallback is not a
+        # degraded outcome, it is a broken one: the commercial template declares
+        # `AWS::CloudFront::*` resources, which no GovCloud partition has, so the
+        # first sign of the ignored flag is a CloudFormation failure minutes into
+        # the deploy on a resource that looks unrelated to it. Issue #1233.
+        if govcloud:
+            if not result.govcloud_template_path:
+                # The path the publish build writes the variant to, named in full
+                # so the remedy below can be pasted from whatever directory this
+                # was run in rather than only from the source tree.
+                expected = os.path.join(from_code_dir, ".aws-sam", "idp-govcloud.yaml")
+                console.print(
+                    "[red]✗ Error: --govcloud was requested but the build did not "
+                    f"produce a GovCloud template variant ({expected}).[/red]"
+                )
+                console.print(
+                    "  Refusing to deploy the commercial template instead: its "
+                    "CloudFront resources do not exist in a GovCloud partition."
+                )
+                console.print("  To produce the GovCloud template, run:")
+                console.print(
+                    f"    [cyan]idp-cli publish --source-dir {from_code_dir} "
+                    f"--region {region} --govcloud[/cyan]"
+                )
+                console.print(
+                    "  which reports why the transform produced nothing. To deploy "
+                    "a transformed template you already have, pass it explicitly:"
+                )
+                console.print(
+                    f"    [cyan]idp-cli deploy --template-file {expected} ...[/cyan]"
+                )
+                sys.exit(1)
             console.print(
                 f"[green]✓ Build complete (GovCloud). Template: {result.govcloud_template_path}[/green]"
             )
