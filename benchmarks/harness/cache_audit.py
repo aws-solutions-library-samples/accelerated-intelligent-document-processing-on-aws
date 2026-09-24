@@ -60,6 +60,11 @@ import lib  # noqa: E402
 #: Deliberately keyed on a substring of the Bedrock model id. NOT monotonic across
 #: generations — that is the trap this whole module exists to catch.
 CACHE_MINIMUMS = {
+    # "claude-opus-5" matches "claude-opus-5-5" too, and because this dict is
+    # scanned in insertion order the longer id resolves here first — to 512, which
+    # is the published Opus 5.5 answer as well. Intended, not a lucky match; the
+    # same note is on the two other copies of this table
+    # (idp_common/bedrock/prompt_cache.py and src/ui/.../promptCacheModel.ts).
     "claude-opus-5": 512,
     "claude-fable-5": 512,
     "claude-opus-4-8": 1024,

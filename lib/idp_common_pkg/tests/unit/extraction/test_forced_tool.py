@@ -125,6 +125,33 @@ class TestShouldForce:
         assert reason and "Converse" in reason
 
     @pytest.mark.parametrize(
+        "model_id",
+        [
+            "us.anthropic.claude-opus-5-5",
+            "eu.anthropic.claude-opus-5-5",
+            "global.anthropic.claude-opus-5-5",
+            "us.anthropic.claude-opus-5-5:1m",
+            "arn:aws:bedrock:us-west-2:123456789012:inference-profile/"
+            "us.anthropic.claude-opus-5-5",
+        ],
+    )
+    def test_a_model_that_rejects_forcing_skips_with_a_reason(self, model_id):
+        """Claude Opus 5.5 reaches Converse and carries a toolConfig, so the
+        toolConfig gate alone lets it through — and then Bedrock rejects the forced
+        toolChoice with a 400. Forcing is what this module is for, so the answer is
+        to fall back to the prose schema and say why, per region prefix, ``:1m``
+        variant and inference-profile ARN alike."""
+        force, reason = should_force_tool(model_id, True, SCHEMA)
+        assert force is False
+        assert reason and "forced toolChoice" in reason
+
+    def test_opus_5_itself_still_forces(self):
+        """The 5.5 skip must not catch Opus 5 — the base names differ by a suffix
+        and every other gate in the tree matches them by substring."""
+        force, reason = should_force_tool("us.anthropic.claude-opus-5", True, SCHEMA)
+        assert force is True and reason is None
+
+    @pytest.mark.parametrize(
         "schema", [None, {}, {"type": "object"}, {"properties": {}}]
     )
     def test_a_class_with_no_properties_skips_with_a_reason(self, schema):

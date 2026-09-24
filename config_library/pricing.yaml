@@ -533,6 +533,37 @@ pricing:
       - name: cacheWriteInputTokens
         price: "6.25E-6"
 
+  # Claude Opus 5.5 — CHEAPER than Opus 5 in every category: $4/$20 per MTok
+  # (vs $5/$25) and, uniquely in the Claude family here, a cache read priced at
+  # 0.05x input rather than the usual 0.1x — $0.20/MTok, not $0.40. Do NOT derive
+  # cacheReadInputTokens from inputTokens by the 0.1x rule that holds for every
+  # other entry in this file; it would overstate cached reads by 2x. The 5-minute
+  # cache write keeps the standard 1.25x ($5/MTok). Source: Anthropic's published
+  # per-model rates, which Bedrock mirrors for Anthropic models.
+  - name: bedrock/us.anthropic.claude-opus-5-5
+    units:
+      - name: inputTokens
+        price: "4.0E-6"
+      - name: outputTokens
+        price: "2.0E-5"
+      - name: cacheReadInputTokens
+        price: "2.0E-7"
+      - name: cacheWriteInputTokens
+        price: "5.0E-6"
+
+  # ":1m" long-context variant — same rates as the base entry above. The 1M
+  # context window carries no price premium; see the header note.
+  - name: bedrock/us.anthropic.claude-opus-5-5:1m
+    units:
+      - name: inputTokens
+        price: "4.0E-6"
+      - name: outputTokens
+        price: "2.0E-5"
+      - name: cacheReadInputTokens
+        price: "2.0E-7"
+      - name: cacheWriteInputTokens
+        price: "5.0E-6"
+
   # ---------------------------------------------------------------------------
   # Amazon Bedrock Models - OpenAI GPT-5.x (bedrock-mantle Responses API)
   # ---------------------------------------------------------------------------
@@ -990,6 +1021,33 @@ pricing:
       - name: cacheWriteInputTokens
         price: "6.25E-6"
 
+  # Claude Opus 5.5 — $4/$20 per MTok, and a cache read at 0.05x input
+  # ($0.20/MTok), not the 0.1x that every other model here uses. See the us.
+  # entry above for why that must not be derived.
+  - name: bedrock/eu.anthropic.claude-opus-5-5
+    units:
+      - name: inputTokens
+        price: "4.0E-6"
+      - name: outputTokens
+        price: "2.0E-5"
+      - name: cacheReadInputTokens
+        price: "2.0E-7"
+      - name: cacheWriteInputTokens
+        price: "5.0E-6"
+
+  # ":1m" long-context variant — same rates as the base entry above. The 1M
+  # context window carries no price premium; see the header note.
+  - name: bedrock/eu.anthropic.claude-opus-5-5:1m
+    units:
+      - name: inputTokens
+        price: "4.0E-6"
+      - name: outputTokens
+        price: "2.0E-5"
+      - name: cacheReadInputTokens
+        price: "2.0E-7"
+      - name: cacheWriteInputTokens
+        price: "5.0E-6"
+
   # ---------------------------------------------------------------------------
   # Amazon Bedrock Models - Global/Cross-Region
   # ---------------------------------------------------------------------------
@@ -1229,6 +1287,33 @@ pricing:
         price: "5.0E-7"
       - name: cacheWriteInputTokens
         price: "6.25E-6"
+
+  # Claude Opus 5.5 — $4/$20 per MTok, and a cache read at 0.05x input
+  # ($0.20/MTok), not the 0.1x that every other model here uses. See the us.
+  # entry above for why that must not be derived.
+  - name: bedrock/global.anthropic.claude-opus-5-5
+    units:
+      - name: inputTokens
+        price: "4.0E-6"
+      - name: outputTokens
+        price: "2.0E-5"
+      - name: cacheReadInputTokens
+        price: "2.0E-7"
+      - name: cacheWriteInputTokens
+        price: "5.0E-6"
+
+  # ":1m" long-context variant — same rates as the base entry above. The 1M
+  # context window carries no price premium; see the header note.
+  - name: bedrock/global.anthropic.claude-opus-5-5:1m
+    units:
+      - name: inputTokens
+        price: "4.0E-6"
+      - name: outputTokens
+        price: "2.0E-5"
+      - name: cacheReadInputTokens
+        price: "2.0E-7"
+      - name: cacheWriteInputTokens
+        price: "5.0E-6"
 
   # ---------------------------------------------------------------------------
   # Amazon Bedrock Models - Third-Party

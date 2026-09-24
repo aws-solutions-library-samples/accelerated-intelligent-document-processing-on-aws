@@ -237,6 +237,20 @@ GATES_DELIBERATELY_OUT_OF_CI = {
         "read — the same vacuity the Makefile comment above the target records as "
         "the reason it is not wired into `lint` either."
     ),
+    "coverage-all": (
+        "Measures every tree and prints each one's figure. Like `coverage` above it has "
+        "no threshold and no failure mode of its own -- it exits non-zero only if a "
+        "tree's own tests fail, which the test gates already report -- so there is no "
+        "verdict for CI to carry. Its output is the input to `check-coverage-debt`, "
+        "which IS reached by both CIs. Wiring it into CI would re-run nine suites to "
+        "print a table nobody reads there."
+    ),
+    "coverage-summary": (
+        "Prints the recorded per-tree figures out of scripts/coverage_debt.json without "
+        "measuring anything. Reading a committed file is not an assertion. Registered "
+        "separately from `coverage-all` because this registry is per-target by design: "
+        "one entry, one target's worth of reason."
+    ),
     "test-circuit-breaker": (
         "Three circuit-breaker test paths under src/lambda, verbosely. Same "
         "residual as `test-capacity`: covered by `make test`, not by a CI target."

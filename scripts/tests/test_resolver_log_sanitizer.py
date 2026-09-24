@@ -307,9 +307,21 @@ def _lambda_dirs() -> list[Path]:
     Returned as paths rather than bare names because the two trees are indexed
     together from here on, and a name is not unique across them.
     """
+    # Discovered through git, not `iterdir()`. A bare filesystem listing counts anything
+    # that happens to be sitting there, and `__pycache__` appears the moment any `.py`
+    # exists at that level -- so adding a `conftest.py` beside these handlers turned a
+    # build artifact into a "resolver directory with no CodeUri" and failed this suite.
+    # A directory is a handler directory only if git tracks Python inside it, which is
+    # the same rule `_tracked_python` below already uses.
+    tracked = _tracked_python()
     dirs: list[Path] = []
     for root in LAMBDA_ROOTS:
-        dirs.extend(p.resolve() for p in root.iterdir() if p.is_dir())
+        for candidate in root.iterdir():
+            if not candidate.is_dir():
+                continue
+            here = candidate.resolve()
+            if any(f.parent == here for f in tracked):
+                dirs.append(here)
     return sorted(dirs)
 
 

@@ -114,6 +114,8 @@ MODEL_MAPPINGS = {
     "us.anthropic.claude-opus-4-8:1m": "eu.anthropic.claude-opus-4-8:1m",
     "us.anthropic.claude-opus-5": "eu.anthropic.claude-opus-5",
     "us.anthropic.claude-opus-5:1m": "eu.anthropic.claude-opus-5:1m",
+    "us.anthropic.claude-opus-5-5": "eu.anthropic.claude-opus-5-5",
+    "us.anthropic.claude-opus-5-5:1m": "eu.anthropic.claude-opus-5-5:1m",
     # Third-party models (US-only, no EU equivalent - fall back to themselves)
     "us.meta.llama4-maverick-17b-instruct-v1:0": "eu.anthropic.claude-sonnet-4-5-20250929-v1:0",
     "us.meta.llama4-scout-17b-instruct-v1:0": "eu.anthropic.claude-sonnet-4-5-20250929-v1:0",
