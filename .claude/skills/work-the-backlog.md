@@ -181,6 +181,8 @@ cat scratch/backlog-run-state.json 2>/dev/null || echo "NO STATE - fresh run"
   "deploysAuthorized": false,
   "stagingBranch": "backlog/staging",
   "lastPromotedSha": "2c87fa0b9",
+  "runId": "2026-09-23-1",
+  "worktreePrefix": "/home/ec2-user/wt/2026-09-23-1",
   "goal": "backlog to zero except human decisions",
   "composition": {"loopReady": 3, "needsDecision": 5, "needsDeploy": 2, "featureWork": 7, "stale": 2},
   "compositionPrev": {"loopReady": 12, "needsDecision": 2, "needsDeploy": 2, "featureWork": 5, "stale": 0},
@@ -659,7 +661,7 @@ the failures this repo keeps re-learning.
   concurrently. **Put it on real disk, not in `/tmp`**, and remove it when done:
 
   ```bash
-  W=$HOME/wt/<slug>-$$          # NOT /tmp — see the resource note in section 5
+  W=$HOME/wt/<runId>/<slug>-$$  # NOT /tmp, and under the run's prefix — see section 5
   git worktree add "$W" -b fix/<slug> github/backlog/staging
   # ... work ...
   git worktree remove "$W"      # or it stays registered and keeps its 130 MB
@@ -1137,10 +1139,43 @@ git worktree list | wc -l
 du -sh "$(git rev-parse --git-common-dir)/.." 2>/dev/null
 ```
 
-So: **agent and merge worktrees go on real disk** (`$HOME/wt/...`), every brief
-says `git worktree remove` when done, and the coordinator runs
-`git worktree prune` plus an explicit sweep of finished ones each cycle. Cap the
-registered count — if it passes ~30, stop dispatching and clear them first.
+So **agent and merge worktrees go on real disk**, and they go under **one prefix that
+belongs to this run**: `$HOME/wt/<runId>/<slug>`, with `runId` recorded in the state
+file. That convention is the whole mechanism, because it turns "my worktrees" from
+something you remember into something you can **compute** — and an instruction to tidy
+up is exactly what the previous version of this subsection was, which did not stop a
+run reaching 64 registered worktrees with every word of it in force.
+
+**Assert it at each check-in; do not exhort it.** The set registered under your prefix
+must equal the set of live agents. Remove the difference, and report the number:
+
+```bash
+RUN=$(python3 -c "import json;print(json.load(open('scratch/backlog-run-state.json'))['runId'])")
+# n>1 drops the FIRST entry, which is the main checkout — never yours to remove or report
+ALL=$(git worktree list --porcelain | awk '/^worktree /{if(++n>1)print $2}')
+echo "$ALL" | grep "/wt/$RUN/"      # mine: must equal live agents; remove the difference
+echo "$ALL" | grep -v "/wt/$RUN/"   # foreign: report with the three facts, never remove
+```
+
+⚠️ **Never remove a worktree you did not create, and do not count one against your
+cap.** Two reasons, and the second is the one that bites. A worktree outside your
+prefix may hold another session's uncommitted work or unpushed commits — measured: one
+cancelled agent's worktree held a defect fix, a fifth call site and three corrections
+that had never been reported, and a sweep that removed it would have destroyed all of
+it. And a cap over *all* registered worktrees lets another session's litter halt your
+dispatch for a condition you cannot fix, so **the cap of ~30 is on your own prefix**.
+
+**Report foreign worktrees instead of touching them**, with the three facts that decide
+what happens to them: whether the tree is dirty, how many commits are unpushed, and
+whether `HEAD` is already an ancestor of `develop`. A clean worktree whose `HEAD` is on
+`develop` is safe for its owner to delete; one with unpushed commits is not, whoever
+owns it.
+
+⚠️ **A foreign worktree in `/tmp` holding unpushed commits is the case to escalate, not
+to file.** It is unpushed work sitting in a tmpfs, so it is both consuming RAM the test
+processes need and one reboot away from being gone. Measured on this host: a 26-hour-old
+`/tmp` worktree with **12 unpushed commits**. Name it in the check-in explicitly rather
+than as part of a count.
 
 ### Token use — report it, never stop for it
 
@@ -1177,7 +1212,8 @@ sequence, which keeps its accumulated knowledge of the conflict shapes). Its
 brief:
 
 > Merge PR #`<n>` (branch `<branch>`) into `backlog/staging` — **not** `develop`. Work in a worktree on **real
-> disk**, not `/tmp`: `git worktree add --detach $HOME/wt/m<n> github/<branch>`,
+> disk** under the run's prefix, not `/tmp`:
+> `git worktree add --detach $HOME/wt/<runId>/m<n> github/<branch>`,
 > and `git worktree remove` it when done.
 >
 > 1. `git merge --no-edit github/backlog/staging`.
@@ -1269,7 +1305,9 @@ above would have been caught by the first question on its first asking.
 The check-in reports, briefly: what merged and the measured numbers; what reviews
 found that you did not expect; **every judgement call you made that could
 reasonably have gone the other way**; tokens spent this cycle and in total;
-worktree and disk state; **progress against the `goal`, not against the total open
+the worktree assertion from section 5 as a number — registered under your prefix
+against live agents, and how many you removed — plus any foreign worktree worth
+escalating; disk state; **progress against the `goal`, not against the total open
 count**; the `composition` split with the previous cycle's beside it so the trend is visible;
 `closed N / filed M, net X` with what the filed ones are; the next N items; anything in
 `blocked` or newly in `parked`, each with a link to its decision comment; and the
