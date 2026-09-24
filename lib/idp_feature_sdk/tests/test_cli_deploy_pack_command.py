@@ -197,6 +197,40 @@ def test_extra_parameters_reach_the_deploy_as_a_parsed_mapping(calls) -> None:
     }
 
 
+def test_a_spaced_out_pair_reaches_the_deploy_and_the_tolerance_is_reported(
+    calls,
+) -> None:
+    """`--parameters "LogLevel = DEBUG"` used to reach the deploy as `{}` (#1220).
+
+    The wrapper was then created with every parameter at its publish-time default
+    and nothing said so, which is indistinguishable afterwards from the override
+    having been applied. The pair is now read as written, and the notice is
+    asserted here rather than only on the parser, because printing it is the part
+    this call site owns.
+    """
+    result = _run(
+        *_required("--wrapper-url", _WRAPPER_URL, "--parameters", "LogLevel = DEBUG")
+    )
+    assert result.exit_code == 0, result.output
+    assert calls.deploy[0]["extra_parameters"] == {"LogLevel": "DEBUG"}
+    assert "whitespace" in result.output
+
+
+def test_text_that_forms_no_pair_is_reported_and_the_deploy_still_runs(calls) -> None:
+    """Not a refusal: exiting non-zero would change what the command accepts.
+
+    What was missing is any way for the operator to tell an ignored `--parameters`
+    value from one that worked, so the text is named back and the deploy proceeds
+    with the overrides that did parse.
+    """
+    result = _run(
+        *_required("--wrapper-url", _WRAPPER_URL, "--parameters", "JustAKey,A=1")
+    )
+    assert result.exit_code == 0, result.output
+    assert calls.deploy[0]["extra_parameters"] == {"A": "1"}
+    assert "JustAKey" in result.output
+
+
 def test_no_parameters_means_an_empty_mapping_not_none(calls) -> None:
     """The baked publish-time defaults are what a bare deploy is meant to use.
     An empty mapping leaves every one of them in place."""

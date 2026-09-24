@@ -2,14 +2,14 @@
 # SPDX-License-Identifier: MIT-0
 
 """The three pure resolvers every `idp-feature-cli` command routes its inputs
-through: `_parse_parameters`, `_resolve_bucket`, and
+through: `parse_parameters`, `_resolve_bucket`, and
 `_parse_published_template_url` (plus `_host_stack_value`, which reads a value
 back off a describe-stacks payload).
 
 Why these matter more than their size suggests. Each one turns an operator's
 flag into a value that is then handed to CloudFormation or S3 without further
 checking, and each has a wrong answer that is *accepted* rather than rejected.
-`_parse_parameters` mis-splitting a comma-bearing value (a subnet list is the
+`parse_parameters` mis-splitting a comma-bearing value (a subnet list is the
 motivating case) yields a CFN parameter whose value is the first subnet, which
 deploys. `_resolve_bucket` appending the region twice, or not at all, names a
 bucket that either does not exist (loud) or exists and belongs to a different
@@ -30,37 +30,37 @@ import pytest
 
 from idp_feature_sdk.cli import (
     _host_stack_value,
-    _parse_parameters,
     _parse_published_template_url,
     _resolve_bucket,
 )
+from idp_feature_sdk.parameters import parse_parameters
 
 pytestmark = pytest.mark.unit
 
 
 # ---------------------------------------------------------------------------
-# _parse_parameters
+# parse_parameters
 # ---------------------------------------------------------------------------
 
 
 def test_no_parameters_is_an_empty_dict() -> None:
     """Absent and empty must both mean "no overrides" — not a dict with one
     blank key, which `deploy_pack` would then submit to CloudFormation."""
-    assert _parse_parameters(None) == {}
-    assert _parse_parameters("") == {}
+    assert parse_parameters(None) == {}
+    assert parse_parameters("") == {}
 
 
 def test_a_key_with_an_empty_value_is_kept_as_an_empty_string() -> None:
     """`Key=` is the third case: the operator named the parameter and asked for
     the empty string. Dropping it would silently leave the template default in
     place — the opposite of what was asked for."""
-    assert _parse_parameters("LogLevel=") == {"LogLevel": ""}
+    assert parse_parameters("LogLevel=") == {"LogLevel": ""}
     # And it is distinguishable from the key being absent altogether.
-    assert "LogLevel" not in _parse_parameters("Other=x")
+    assert "LogLevel" not in parse_parameters("Other=x")
 
 
 def test_multiple_parameters_split_on_the_key_boundary() -> None:
-    assert _parse_parameters("LogLevel=DEBUG,MaxConcurrent=10") == {
+    assert parse_parameters("LogLevel=DEBUG,MaxConcurrent=10") == {
         "LogLevel": "DEBUG",
         "MaxConcurrent": "10",
     }
@@ -71,7 +71,7 @@ def test_a_value_containing_commas_survives_intact() -> None:
     `split(",")`: a subnet or security-group list is one value containing
     commas. Splitting on every comma would submit `subnet-aaa` alone, and the
     stack would deploy into one subnet instead of three."""
-    parsed = _parse_parameters(
+    parsed = parse_parameters(
         "VpcSubnetIds=subnet-aaa,subnet-bbb,subnet-ccc,LogLevel=INFO"
     )
     assert parsed == {
@@ -83,30 +83,76 @@ def test_a_value_containing_commas_survives_intact() -> None:
 def test_whitespace_around_a_pair_is_stripped() -> None:
     """Whitespace either side of a `key=value` pair is noise from a shell
     quoting, and is dropped from both the key and the value."""
-    assert _parse_parameters(" LogLevel=DEBUG ") == {"LogLevel": "DEBUG"}
-    assert _parse_parameters("A=1, B=2") == {"A": "1", "B": "2"}
+    assert parse_parameters(" LogLevel=DEBUG ") == {"LogLevel": "DEBUG"}
+    assert parse_parameters("A=1, B=2") == {"A": "1", "B": "2"}
 
 
-def test_a_space_before_the_equals_drops_the_parameter_silently() -> None:
-    """A sharp edge worth pinning rather than discovering. The parser requires
-    `key=` with no gap, so `--parameters "LogLevel = DEBUG"` matches nothing at
-    all: the deploy proceeds and every parameter keeps its template default.
-    Nothing warns. This test exists so a change to the grammar has to decide
-    deliberately whether to keep that, and so the behaviour is documented
-    somewhere an operator's bug report can be matched against."""
-    assert _parse_parameters("LogLevel = DEBUG") == {}
+def test_a_space_around_the_equals_is_tolerated() -> None:
+    """Spacing a pair out for readability used to match nothing at all, so the
+    deploy proceeded with every parameter at its publish-time default and nothing
+    warned (#1220). It is read as the pair it plainly is, and reported through
+    `on_warning` rather than either dropped or refused."""
+    assert parse_parameters("LogLevel = DEBUG") == {"LogLevel": "DEBUG"}
+    assert parse_parameters("LogLevel =DEBUG") == {"LogLevel": "DEBUG"}
+
+
+def test_an_underscore_in_a_key_is_part_of_the_key() -> None:
+    """`Log_Level=DEBUG` used to be submitted as `Level=DEBUG` — a wrapper
+    parameter name the feature author never wrote (#1220)."""
+    assert parse_parameters("Log_Level=DEBUG") == {"Log_Level": "DEBUG"}
+
+
+def test_an_equals_inside_a_value_stays_in_the_value() -> None:
+    """A value may contain `=` — base64 padding and a query string both do — and
+    splitting on it used to yield an empty value plus an invented parameter."""
+    assert parse_parameters("Tags=a=b") == {"Tags": "a=b"}
+    assert parse_parameters("Query=a=b=c") == {"Query": "a=b=c"}
+
+
+def test_pairs_may_be_separated_by_whitespace_as_well_as_a_comma() -> None:
+    """`aws cloudformation deploy --parameter-overrides` is space-separated, and
+    the pattern this replaced accepted that here too (it looked for the next
+    `key=` at any offset). A comma-only boundary would swallow every pair after
+    the first into the first one's value, silently — the same defect class #1220
+    is about, so the boundary is a comma *or* whitespace."""
+    assert parse_parameters("LogLevel=DEBUG MaxConcurrent=10") == {
+        "LogLevel": "DEBUG",
+        "MaxConcurrent": "10",
+    }
+    assert parse_parameters("A=1\tB=2") == {"A": "1", "B": "2"}
+
+
+def test_a_value_that_looks_like_it_swallowed_a_pair_is_named() -> None:
+    """A separator that is neither a comma nor whitespace, or a key with a
+    character CloudFormation does not allow, leaves text inside the preceding
+    value. It cannot be taken back out — a value may contain commas — so it is
+    named, with the parameter it landed in."""
+    collected: list[str] = []
+    assert parse_parameters("A=1;B=2", on_warning=collected.append) == {"A": "1;B=2"}
+    assert len(collected) == 1, collected
+    assert ";B=" in collected[0] and "A" in collected[0]
+
+
+def test_text_that_forms_no_pair_is_reported_rather_than_dropped() -> None:
+    """Nothing is refused, because refusing a shape the previous parser accepted
+    would break a script that runs today. What changed is that the operator is
+    told, which is the half that was missing."""
+    collected: list[str] = []
+    assert parse_parameters("JustAKey", on_warning=collected.append) == {}
+    assert len(collected) == 1, collected
+    assert "JustAKey" in collected[0]
 
 
 def test_a_trailing_comma_does_not_become_part_of_the_value() -> None:
     """A trailing separator is the single most common paste artefact, and
     `LogLevel=INFO,` must not set the LogLevel to the string `INFO,` — CFN
     would accept it and the Lambda would read an unrecognised level."""
-    assert _parse_parameters("LogLevel=INFO,") == {"LogLevel": "INFO"}
+    assert parse_parameters("LogLevel=INFO,") == {"LogLevel": "INFO"}
 
 
 def test_a_later_repeat_of_a_key_wins() -> None:
     """Last-one-wins, so a scripted base set can be overridden by appending."""
-    assert _parse_parameters("LogLevel=INFO,LogLevel=DEBUG") == {"LogLevel": "DEBUG"}
+    assert parse_parameters("LogLevel=INFO,LogLevel=DEBUG") == {"LogLevel": "DEBUG"}
 
 
 # ---------------------------------------------------------------------------
