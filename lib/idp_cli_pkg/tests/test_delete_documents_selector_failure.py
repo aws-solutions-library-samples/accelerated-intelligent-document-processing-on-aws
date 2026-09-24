@@ -31,8 +31,9 @@ only that the exit code is non-zero. The assertion on the output is what catches
 rows; the exit-code assertion catches only the first. Asserting the exit code alone would
 pass a command that fails with a bare traceback and tells the operator nothing.
 
-Three outcomes, which must stay distinguishable by exit code alone, since that is what a
-shell script wrapping the command reads:
+Three outcomes. The exit code does not tell all three apart — two of them are 1 — and
+what it has to carry is the one distinction a shell script wrapping the command can act
+on: **a failure is never 0**. Which failure it was is in the output.
 
 | Situation | Exit | Output |
 |---|---|---|
