@@ -764,6 +764,24 @@ class TestReportResolution:
         _install(monkeypatch, tmp_path, [tree])
         assert ccd._resolve_report(tree) is None
 
+    def test_the_missing_report_reason_names_every_path_that_would_be_accepted(
+        self, monkeypatch, tmp_path
+    ):
+        """Or the remedy misdirects.
+
+        `idp_common` is accepted from two paths, and the remedy printed under this reason
+        (`make test-cicd -C lib/idp_common_pkg`) produces the **legacy** one. Naming only
+        the other sends a reader who followed the remedy back to a file that is still
+        absent while the gate now passes.
+        """
+        legacy = tmp_path / "legacy-coverage.xml"
+        monkeypatch.setattr(ccd, "LEGACY_IDP_COMMON_REPORT", legacy)
+        idp = ccd.Tree("idp_common", str(tmp_path / "idpc"), "pkg")
+        (tmp_path / "idpc" / "pkg").mkdir(parents=True, exist_ok=True)
+        _install(monkeypatch, tmp_path, [idp], {"trees": {}})
+        reason = ccd.check().unchecked[0].reason
+        assert str(legacy) in reason and str(ccd.report_path(idp)) in reason, reason
+
     def test_the_legacy_coverage_xml_fallback_applies_only_to_idp_common(
         self, monkeypatch, tmp_path
     ):

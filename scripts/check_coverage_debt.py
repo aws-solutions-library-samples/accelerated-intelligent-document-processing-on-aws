@@ -559,9 +559,14 @@ def check(required: tuple[str, ...] = ()) -> CheckResult:
             # No claim about *when*: this gate compares mtimes of the report and its run
             # record against each other, and nothing against the current invocation, so a
             # report and record left behind together by an earlier run are accepted. Say
-            # only what was looked for.
+            # only what was looked for -- and say it for EVERY path that would have been
+            # accepted, or the reader follows the remedy, produces the other one, and
+            # finds the file this line named still absent.
+            looked_in = [str(report_path(tree))]
+            if tree.name == "idp_common":
+                looked_in.append(str(LEGACY_IDP_COMMON_REPORT))
             unchecked.append(
-                Unchecked(tree.name, f"no coverage report at {report_path(tree)}")
+                Unchecked(tree.name, f"no coverage report at {' or '.join(looked_in)}")
             )
             continue
         trust = run_trust(report)
