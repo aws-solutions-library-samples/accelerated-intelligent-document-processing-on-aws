@@ -298,20 +298,23 @@ def test_a_dated_model_id_matches_the_undated_family_entry(monkeypatch):
 
 
 @pytest.mark.unit
-def test_the_fuzzy_match_discards_the_region_prefix_that_selects_the_quota(monkeypatch):
+def test_the_fuzzy_match_keeps_the_region_prefix_that_selects_the_quota(monkeypatch):
     """A `us.` and a `global.` inference profile are separate Service Quotas entries.
 
     The production configuration lists both `us.anthropic.claude-sonnet-5`
     (`L-D4FBCF4E`) and `global.anthropic.claude-sonnet-5` (`L-DD84E5CA`) precisely
-    because their limits are held separately. The cleaning step strips everything
-    before the last two dots, so both mapping keys reduce to `claude-sonnet-5` and
-    an id that needs the fuzzy path takes whichever entry the dictionary yields
-    first — here the `us.` one, for a `global.` model.
+    because their limits are held separately, so the prefix has to survive the
+    cleaning step: an id reaching the fuzzy path must match only entries for its
+    own inference profile, whatever order the mapping happens to be in.
 
-    Asserted because the consequence is a confidently wrong number rather than an
-    error: the report reads a real quota from a real API for the wrong inference
-    profile and can print "✅ Sufficient" against a limit the workload will never
-    be measured by.
+    Asserted because the failure it guards is a confidently wrong number rather
+    than an error: the report would read a real quota from a real API for the
+    wrong inference profile and print "✅ Sufficient" against a limit the
+    workload will never be measured by.
+
+    Both directions are checked so that the result cannot come from dictionary
+    order — cleaning that discarded the prefix would reduce both keys to
+    `claude-sonnet-5` and return whichever came first for both ids.
     """
     monkeypatch.setenv(
         "BEDROCK_MODEL_RPM_QUOTA_CODES",
@@ -322,8 +325,11 @@ def test_the_fuzzy_match_discards_the_region_prefix_that_selects_the_quota(monke
             }
         ),
     )
-    model = "global.anthropic.claude-sonnet-5-20260401-v1:0"
-    assert index.generate_rpm_quota_codes([model])[model] == "L-D4FBCF4E"
+    global_model = "global.anthropic.claude-sonnet-5-20260401-v1:0"
+    us_model = "us.anthropic.claude-sonnet-5-20260401-v1:0"
+    codes = index.generate_rpm_quota_codes([global_model, us_model])
+    assert codes[global_model] == "L-DD84E5CA"
+    assert codes[us_model] == "L-D4FBCF4E"
 
 
 @pytest.mark.unit
