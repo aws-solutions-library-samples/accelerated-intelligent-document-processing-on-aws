@@ -137,6 +137,13 @@ either resume dispatch or report why you are idle. On a `MEMORY LOW` return, act
 before the host freezes — section 5 has what that costs. **Start a replacement each
 time it returns**, so the switch is never unarmed.
 
+⚠️ **Column 7, not column 4.** `free -g` prints `free` in column 4 and `available` in
+column 7, and they differ by the reclaimable page cache — 4 GB against 19 GB in one
+reading here, which produced a declared emergency that was not one. `available` is the
+figure that predicts whether an allocation will succeed, so the `awk` index above is
+load-bearing rather than incidental. The false-alarm direction is the one worth
+guarding, because nobody re-checks a number that says stop.
+
 Two properties make this the right shape rather than an external timer. It arrives as
 a **tool result**, not as a prompt, and a prompt arriving unbidden kills every
 background agent (see the ground rules); tool results demonstrably do not — ten-minute
@@ -671,6 +678,18 @@ the failures this repo keeps re-learning.
 > behavioural form was tried and measured vacuous, so the next reader does not
 > replace it with the version that looks more principled and tests nothing.
 >
+> **Sample your mutations two ways and quote both numbers.** Choosing the sites by
+> hand measures your own expectations. Measured on one suite here: an **unbiased**
+> sample — fixed-seed random production lines — came back **7 of 8 red**, while an
+> **adversarially-chosen** sample of the same suite came back **2 of 14**. Neither
+> figure is readable alone. The first on its own says the suite is fine; the second on
+> its own says eject it; together they say the true thing, which is that the suite is
+> sound and its weakness is one identifiable class. So run both, report both, and let
+> the gap between them name the class. The two it named there generalise: a guard whose
+> skip is indistinguishable from its downstream no-op, and a fixture more generous than
+> production — a field held as a decimal map where every production writer serialises
+> it, so about thirty tests defended a path that cannot be reached.
+>
 > Derive fixtures from the authority (the botocore service model, the library's
 > own API, `__all__`) rather than hand-writing them. A double that encodes a
 > belief about a dependency instead of measuring it is the most common defect
@@ -804,6 +823,15 @@ touches a CloudFormation template must run `make cfn-lint` and
   `Different tests were collected between gw1 and gwN` run still writes a
   `coverage.xml`, and the ratchet will then name fabricated losses and offer
   `--write`, which would launder them in permanently. Re-run clean first.
+- ⚠️ **Never `pkill -f`. Kill a PID you captured yourself, or nothing.** A reviewer
+  here ran `pkill -f "pytest.*idp_common_pkg"` to restart its own corrupted run, and
+  that pattern matches **every** concurrent agent's suite on the host. What makes this
+  a rule rather than a courtesy is what it does to the evidence: a run killed from
+  outside ends without its summary line, which is **indistinguishable from a mutation
+  the suite failed to catch** — so it silently corrupts the one measurement this loop
+  is built on, for every agent in the window, in the direction that reads as a pass.
+  If you ever cause one, disclose the window; everything measured inside it has to be
+  voided and re-run.
 - ⚠️ **Do not edit files in a worktree while a battery is running in it.** That
   is what produces the errored run above. Commit before any mutation demo.
 
@@ -1433,6 +1461,12 @@ permanent, and in the state file, which is resumable.
   error. `free -g` and `dmesg | grep oom-kill` are the only place the cause exists,
   which is why the memory watchdog is a standing child and not a diagnostic you
   reach for afterwards.
+- ⚠️ **One agent can void every other agent's measurements at once**, and the
+  coordinator is the only actor positioned to notice. A single `pkill -f` on a suite
+  pattern reached five concurrent agents here. When it happens, the response is not to
+  re-read the logs — it is to name the window and tell every agent in it to void and
+  re-run, with a specific warning to any doing mutation work that a kill from outside
+  and an uncaught mutation produce the same evidence.
 - ⚠️ **A turn that ends with nothing tracked ends the run**, and it looks exactly
   like a turn that ended because the work was done. Five and a half hours were lost
   to one of these. Name the live child before ending a turn.
