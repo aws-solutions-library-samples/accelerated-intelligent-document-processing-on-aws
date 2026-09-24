@@ -433,23 +433,34 @@ def test_validate_refuses_malformed_yaml():
 def test_validate_refuses_a_config_that_is_not_a_mapping_but_says_so_badly():
     """
     A YAML document whose top level is a list is refused, which is right, but the
-    diagnostic is the raw exception text.
+    diagnostic is still the raw exception text.
 
-    DEFECT (partly fixed): the diagnostic is still the raw exception text. It now
-    arrives as a proper validation failure — `✗ Validation failed` with a bullet —
-    rather than the bare `✗ Error:` it used to produce, and the attribute named moved
-    from `keys` to `items` as the merge path changed. What has not changed is that the
-    message describes a Python attribute rather than the user's file, so someone whose
-    YAML starts with a `-` is told `'list' object has no attribute 'items'`.
+    Two separate things are asserted, and only the first is a guarantee. The
+    guarantee: the refusal arrives on the **validation** path, not as an unhandled
+    exception in the command's own bookkeeping. `config-validate` hands the loaded
+    document straight to `validate_config` and reports what comes back, so a
+    top-level list is refused by the merge with a bulleted error under
+    `✗ Validation failed` — the same shape as every other refusal in this section.
+    It used to compute `set(user_config.keys())` itself before validating, which
+    raised `AttributeError` on anything that was not a dict and fell out of the
+    generic `except Exception` handler as a bare `✗ Error:` line.
 
-    Consequence: the exit code is right and the message does not say what to fix.
-    Pinned rather than fixed, per the tests-only constraint on this effort.
+    The residual, pinned rather than fixed: whichever path it takes, the text the
+    user sees is a Python attribute error about the type rather than a sentence
+    about their file. If someone teaches the command to say "top level must be a
+    mapping", the last assertion here is the one that will fail — update this test,
+    it is not defending that wording.
     """
     with write_config("- first\n- second\n") as runner:
         result = runner.invoke(cli, ["config-validate", "--config-file", "config.yaml"])
     assert result.exit_code == 1
+    # The document parses, so the refusal must not be filed under syntax, and it
+    # must come from the validator rather than from an unhandled AttributeError.
+    assert "YAML syntax valid" in result.output
+    assert "YAML syntax error" not in result.output
     assert "Validation failed" in result.output
-    assert "'list' object has no attribute 'items'" in result.output
+    assert "Config is valid!" not in result.output
+    # RESIDUAL: the diagnostic still does not describe the file. See the docstring.
     assert "not a mapping" not in result.output
 
 
@@ -526,13 +537,18 @@ def test_validate_warns_about_an_unknown_top_level_field_but_still_passes():
     """
     with write_config("banana: 1\nclasses: []\n") as runner:
         result = runner.invoke(cli, ["config-validate", "--config-file", "config.yaml"])
+    flat = " ".join(result.output.split())
     assert result.exit_code == 0, result.output
-    # The wording is per-key now rather than a list, and it states the consequence.
-    # Compared on whitespace-collapsed output because Rich wraps the line.
-    collapsed = " ".join(result.output.split())
-    assert "Unknown configuration key 'banana'" in collapsed, result.output
-    assert "will be ignored, leaving the default in force" in collapsed, result.output
+    # Asserted on substance, not on the sentence: the field is named, the reader is
+    # told it will be ignored, it is reported as a WARNING rather than an error, and
+    # the run still passes. A copy-edit to the wording leaves all four true.
+    assert "banana" in flat
+    assert "ignored" in flat
+    assert "Warnings:" in result.output
     assert "Config is valid!" in result.output
+    # A key the models do not declare is still classified as unknown rather than as
+    # deprecated — the two kinds carry different advice.
+    assert "Deprecated" not in flat
 
 
 @pytest.mark.unit
@@ -561,55 +577,73 @@ def test_validate_strict_refuses_a_deprecated_field_too():
         strict = runner.invoke(
             cli, ["config-validate", "--config-file", "config.yaml", "--strict"]
         )
+    plain_flat = " ".join(plain.output.split())
+    strict_flat = " ".join(strict.output.split())
+    # Without --strict: a warning that names the field and classifies it as
+    # deprecated, and the run passes. The classification is the substance — a
+    # deprecated field is one to delete, an unknown one is probably a typo to fix.
     assert plain.exit_code == 0, plain.output
-    collapsed = " ".join(plain.output.split())
-    assert deprecated in collapsed, plain.output
-    assert "will be ignored" in collapsed, plain.output
-    # `--strict` refuses it, and names it as an extra top-level field rather than
-    # distinguishing "deprecated" from "unknown" — one refusal covers both, which is
-    # what the flag is documented to do.
+    assert deprecated in plain_flat
+    assert "eprecated" in plain_flat
+    assert "ignored" in plain_flat
+    assert "Config is valid!" in plain.output
+    # With --strict: refused, and the refusal NAMES the field. Reporting only that
+    # "config contains extra fields" left the user to find it in a large document.
     assert strict.exit_code == 1
     assert "Strict mode" in strict.output
-    assert deprecated in " ".join(strict.output.split()), strict.output
+    assert deprecated in strict_flat
 
 
 @pytest.mark.unit
-def test_validate_names_a_mistyped_key_inside_a_section_but_strict_still_passes_it():
-    """A nested typo is now reported by its full path; `--strict` still does not fail.
+def test_validate_reports_a_mistyped_key_inside_a_section_by_its_dotted_path():
+    """
+    A key one level down that no model declares is REPORTED, and reported by its
+    dotted path.
 
-    The reporting half of this is FIXED on develop ("one reporter for unread
-    configuration keys, at every depth"), and that is the half that matters most:
-    `classification.maxPagesForClassifcation` — one missing 'i' — used to be dropped
-    without a word, so the setting silently did not apply and the command said
-    "Config is valid!". It is now named in full, with the consequence spelled out.
+    This is the guarantee #1134 exists to provide, and nested keys are where nearly
+    every real configuration typo lives. Every section model takes pydantic's
+    default `extra="ignore"`, so `classification.maxPagesForClassifcation` (one
+    missing 'i') used to be dropped in silence: the setting did not apply, the
+    config validated, and the output said nothing. `validate_config` now walks the
+    whole model tree and names each unread key by its path, so the author is told
+    where to look.
 
-    DEFECT (remaining): `--strict` exits **0** for a nested unknown key while exiting
-    1 for a top-level one. Its documented purpose is to fail on unknown fields, and
-    nested keys are where nearly every real configuration typo lives, so the flag is
-    still weakest exactly where it is most needed. Asserted both ways below: the
-    top-level refusal is covered by
-    `test_validate_strict_refuses_an_unknown_top_level_field`, and the contrast is
-    what makes this a defect rather than a policy.
+    The path, not just the leaf, is what is asserted. A mis-nested key is the more
+    damaging half of this class — the value is routed around the validator that
+    would have rejected it, so `ocr.dpi: "abc"` is accepted while `ocr.image.dpi:
+    "abc"` raises — and naming only `dpi` would not tell the author which of the two
+    they wrote.
 
-    Tracked in issue #1230. Pinned rather than fixed, per the tests-only constraint.
+    It reports rather than rejects, by design and in both directions:
+
+    * Without `--strict` the run still passes. `extra` is unchanged on every model,
+      so a configuration that loads today still loads and a key a later release
+      removes needs no migration story.
+    * `--strict` **also** still passes, and that is deliberate rather than a
+      leftover: its documented contract is top-level fields only, and widening it
+      downwards would start failing configurations that pass today — a decision for
+      a release, not for a fix. The key is reported either way, which is the part
+      that matters. If that contract is deliberately widened later, change the
+      `strict.exit_code` expectation here and say so in the CHANGELOG; do not
+      delete the test.
     """
     with write_config("classification:\n  notARealSetting: 3\nclasses: []\n") as runner:
         plain = runner.invoke(cli, ["config-validate", "--config-file", "config.yaml"])
         strict = runner.invoke(
             cli, ["config-validate", "--config-file", "config.yaml", "--strict"]
         )
-
-    collapsed = " ".join(plain.output.split())
+    plain_flat = " ".join(plain.output.split())
+    strict_flat = " ".join(strict.output.split())
+    # The guarantee: the key is reported, by its full dotted path, as something that
+    # will be ignored — so the author learns the default is still in force.
+    assert "classification.notARealSetting" in plain_flat, plain.output
+    assert "ignored" in plain_flat
+    assert "Warnings:" in plain.output
+    # Reported, not rejected.
     assert plain.exit_code == 0, plain.output
-    # The full dotted path, not just the leaf: a bare "notARealSetting" would not tell
-    # the user which section to look in, and the section is the hard part to find.
-    assert "classification.notARealSetting" in collapsed, plain.output
-    assert "will be ignored, leaving the default in force" in collapsed, plain.output
-
-    assert strict.exit_code == 0, (
-        "if --strict now refuses a nested unknown key, the rest of this defect is "
-        "fixed: assert exit 1 here and close the nested half of issue #1230"
-    )
+    # --strict's contract is top-level only; the nested key is still reported there.
+    assert strict.exit_code == 0, strict.output
+    assert "classification.notARealSetting" in strict_flat, strict.output
 
 
 @pytest.mark.unit
@@ -1745,6 +1779,13 @@ def patched_bda(sync_result=None, project_error=None):
     "Not yet implemented" — so this is the narrowest seam that lets the DynamoDB
     half of `sync_bda` (resolving the active profile, recording `BdaSyncStatus`)
     run against real state while the blueprint calls are stubbed.
+
+    `sync_result` entries must be keyed the way the real sync keys them —
+    `{"status": ..., "class": ...}` — since that is what `sync_bda` reads the class
+    names out of. Entries written with a key it does not emit made the assertions
+    on the printed names below agree with a read that could never work:
+    `test_config_operations_extended.py` derives the entries from the producer, and
+    that is the test to change first if the key moves.
     """
     with patch("idp_common.bda.bda_blueprint_service.BdaBlueprintService") as svc_cls:
         service = MagicMock()
@@ -1778,8 +1819,8 @@ def test_sync_bda_submits_the_underscored_direction_for_the_active_profile():
 
         with patched_bda(
             sync_result=[
-                {"status": "success", "class_name": "invoice"},
-                {"status": "success", "class_name": "receipt"},
+                {"status": "success", "class": "invoice"},
+                {"status": "success", "class": "receipt"},
             ]
         ) as service:
             result = invoke(
@@ -1820,7 +1861,7 @@ def test_sync_bda_syncs_the_named_profile_rather_than_the_active_one():
         stack.seed("claims", class_name="claim")
 
         with patched_bda(
-            sync_result=[{"status": "success", "class_name": "claim"}]
+            sync_result=[{"status": "success", "class": "claim"}]
         ) as service:
             result = invoke(
                 [
@@ -1897,8 +1938,8 @@ def test_sync_bda_reports_a_partial_sync_as_a_failure():
 
         with patched_bda(
             sync_result=[
-                {"status": "success", "class_name": "invoice"},
-                {"status": "failed", "class_name": "receipt"},
+                {"status": "success", "class": "invoice"},
+                {"status": "failed", "class": "receipt"},
             ]
         ):
             result = invoke(["config-sync-bda", "--stack-name", STACK])

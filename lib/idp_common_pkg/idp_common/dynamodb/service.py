@@ -634,11 +634,28 @@ class DocumentDynamoDBService:
                 set_expressions.append("#HITLPendingReview = :HITLPendingReview")
                 expression_names["#HITLPendingReview"] = "HITLPendingReview"
                 expression_values[":HITLPendingReview"] = "true"
-        if document.hitl_sections_pending:
+        # `is not None`, NOT truthiness. An empty list is a fact about the review —
+        # no sections are pending — and it has to be persisted, because
+        # `complete_section_review` derives `all_completed` from the stored list on
+        # the NEXT review. Under truthiness the emptying write emitted no clause at
+        # all, so the finished sections stayed stored, the review screen kept
+        # offering them, and reviewing one of them again re-derived "not finished"
+        # and put `HITLStatus` back to `InProgress` on a document already carrying
+        # `HITLCompleted` (#1214).
+        #
+        # This is safe for every other caller of `update_document` because `[]` can
+        # only get onto a Document by an in-process assignment: both fields default
+        # to `None`, and both loaders below read an empty stored list or payload key
+        # back as `None`. So a fresh Document, one rebuilt from a Step Functions
+        # payload, and one loaded from DynamoDB all emit no clause here — including
+        # a document whose stored list is already `[]`, which would otherwise
+        # re-write it and turn an unrelated whole-document write into a lost update
+        # against a concurrent re-trigger. See the field declarations in models.py.
+        if document.hitl_sections_pending is not None:
             set_expressions.append("#HITLSectionsPending = :HITLSectionsPending")
             expression_names["#HITLSectionsPending"] = "HITLSectionsPending"
             expression_values[":HITLSectionsPending"] = document.hitl_sections_pending
-        if document.hitl_sections_completed:
+        if document.hitl_sections_completed is not None:
             set_expressions.append("#HITLSectionsCompleted = :HITLSectionsCompleted")
             expression_names["#HITLSectionsCompleted"] = "HITLSectionsCompleted"
             expression_values[":HITLSectionsCompleted"] = (
@@ -880,8 +897,19 @@ class DocumentDynamoDBService:
 
         # Convert Review Status fields
         doc.hitl_status = item.get("HITLStatus")
-        doc.hitl_sections_pending = item.get("HITLSectionsPending", [])
-        doc.hitl_sections_completed = item.get("HITLSectionsCompleted", [])
+        # `or None`, so an absent attribute AND a stored empty list both read back
+        # as "this document object has nothing to say about the review lists". A
+        # caller that loads a document and writes it back without touching HITL then
+        # emits no clause for them — byte-identical to what the old truthiness test
+        # did, which is what keeps this change a no-op for every caller that is not
+        # resolving a review. Reading a stored `[]` back as `[]` would instead make
+        # every such write re-assert it, and an empty stored list is the normal state
+        # of a reviewed document, so that would put an unrelated whole-document write
+        # (an abort, a section re-grouping, an SDK rerun) in a position to overwrite
+        # a pending list a concurrent re-trigger had just derived. Clearing is
+        # reserved for an in-process assignment; see models.py (#1214).
+        doc.hitl_sections_pending = item.get("HITLSectionsPending") or None
+        doc.hitl_sections_completed = item.get("HITLSectionsCompleted") or None
 
         # Convert rule validation result if present
         if item.get("RuleValidationResult"):

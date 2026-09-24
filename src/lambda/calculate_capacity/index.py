@@ -606,21 +606,18 @@ def generate_rpm_quota_codes(model_ids):
             rpm_quotas[model_id] = rpm_mapping[model_id]
             continue
             
-        # Clean model ID by removing region prefix and version suffixes
-        clean_model_id = model_id.lower()
-        if '.' in clean_model_id:
-            clean_model_id = clean_model_id.split('.', 2)[-1]  # Remove region prefix like "us." or "eu."
-        clean_model_id = clean_model_id.split(':')[0]  # Remove version suffix like ":1m"
-        
+        # Clean model ID by removing the version suffix only. The region prefix
+        # ("us.", "eu.", "global.") is what selects the inference profile, and
+        # Service Quotas holds a separate limit per profile, so discarding it
+        # would let a "global." model take a "us." quota code.
+        clean_model_id = model_id.lower().split(':')[0]  # Remove version suffix like ":1m"
+
         # Try to match against cleaned mapping keys
         matched = False
         for model_type, quota_code in rpm_mapping.items():
             # Clean the mapping key the same way for comparison
-            clean_mapping_key = model_type.lower()
-            if '.' in clean_mapping_key:
-                clean_mapping_key = clean_mapping_key.split('.', 2)[-1]
-            clean_mapping_key = clean_mapping_key.split(':')[0]
-            
+            clean_mapping_key = model_type.lower().split(':')[0]
+
             # Match if the cleaned keys are equal or one contains the other
             if clean_model_id == clean_mapping_key or clean_model_id in clean_mapping_key or clean_mapping_key in clean_model_id:
                 rpm_quotas[model_id] = quota_code
@@ -1271,11 +1268,19 @@ def build_simple_quota_requirements(
                         else:
                             actual_pages_per_doc = (actual_pages_per_doc + pages) / 2  # Running average
                     
-                    # Find requests for this step in this document
-                    # For Assessment, we need to handle the case where only GranularAssessment entries exist
-                    assessment_requests_for_doc = 0
-                    found_assessment_data = False
-                    
+                    # Requests this document contributes to this step. A step can
+                    # issue several Bedrock calls under distinct metering keys —
+                    # agentic extraction records one entry per model or tool
+                    # invocation, and Assessment records regular and granular
+                    # entries separately — so every matching key is accumulated and
+                    # the document counts once towards the average however many it
+                    # carried. One accumulator serves both branches below: which of
+                    # them runs is fixed by step_name for the whole scan, and
+                    # counting per-key in one and per-document in the other is the
+                    # defect this replaced.
+                    requests_for_doc = 0
+                    found_data_for_doc = False
+
                     for key, value in metering_data.items():
                         # Look for bedrock entries that match the processing step
                         if isinstance(value, dict) and 'bedrock' in key.lower():
@@ -1292,8 +1297,8 @@ def build_simple_quota_requirements(
                                         # Count granular requests when enabled
                                         requests = value.get('requests', 0)
                                         if requests > 0:
-                                            assessment_requests_for_doc += requests
-                                            found_assessment_data = True
+                                            requests_for_doc += requests
+                                            found_data_for_doc = True
                                             print(f"🔍 Document {item.get('ObjectKey', 'unknown')}: GranularAssessment = {requests} requests (granular enabled)")
                                     else:
                                         # Skip GranularAssessment when disabled
@@ -1302,8 +1307,8 @@ def build_simple_quota_requirements(
                                     # Regular Assessment entry - always use actual requests
                                     requests = value.get('requests', 0)
                                     if requests > 0:
-                                        assessment_requests_for_doc += requests
-                                        found_assessment_data = True
+                                        requests_for_doc += requests
+                                        found_data_for_doc = True
                                         print(f"🔍 Document {item.get('ObjectKey', 'unknown')}: Assessment = {requests} requests (from {key})")
                                 # Continue iterating to find all assessment-related entries
                                 continue
@@ -1312,18 +1317,17 @@ def build_simple_quota_requirements(
                                 if step_name.lower() not in key_lower:
                                     continue
                                 
-                                # Use actual requests from metering data
+                                # Use actual requests from metering data, continuing
+                                # through the remaining keys rather than stopping at
+                                # the first match.
                                 requests = value.get('requests', 0)
                                 if requests > 0:
-                                    total_requests += requests
-                                    doc_count += 1
-                                    metering_data_available = True
-                                    print(f"🔍 Document {item.get('ObjectKey', 'unknown')}: {step_name} = {requests} requests (from metering)")
-                                    break  # Found data for this step in this doc, move to next doc
-                    
-                    # For Assessment, add the accumulated requests after checking all keys
-                    if step_name == "Assessment" and found_assessment_data:
-                        total_requests += assessment_requests_for_doc
+                                    requests_for_doc += requests
+                                    found_data_for_doc = True
+                                    print(f"🔍 Document {item.get('ObjectKey', 'unknown')}: {step_name} = {requests} requests (from {key})")
+
+                    if found_data_for_doc:
+                        total_requests += requests_for_doc
                         doc_count += 1
                         metering_data_available = True
                 
@@ -1340,10 +1344,18 @@ def build_simple_quota_requirements(
         # Calculate actual requests per hour based on scheduled docs/hour and avg requests/doc
         actual_requests_per_hour = 0
         if requests_per_doc > 0:
-            # Sum up docs per hour from schedule and multiply by avg requests per doc
-            total_scheduled_docs_per_hour = sum(h.get("docsPerHour", 0) for h in hourly_breakdown)
-            actual_requests_per_hour = requests_per_doc * total_scheduled_docs_per_hour
-            print(f"🔍 {step_name} RPM calc: {requests_per_doc:.1f} req/doc × {total_scheduled_docs_per_hour} docs/hour = {actual_requests_per_hour:.1f} requests/hour")
+            # Take the busiest hour's docs/hour and multiply by avg requests per doc.
+            # RPM is a per-minute limit, so it has to be scaled from one hour, as the
+            # peak_*_tpm figures above are: summing all 24 would report a whole day's
+            # volume as a per-minute rate, 24x over for a load spread evenly across
+            # the day. This maximum is over docsPerHour where TPM's is over that
+            # step's tokensPerHour, so the two can land on different hours; that is
+            # the conservative answer, since each quota must cover its own worst hour.
+            peak_scheduled_docs_per_hour = max(
+                (h.get("docsPerHour", 0) for h in hourly_breakdown), default=0
+            )
+            actual_requests_per_hour = requests_per_doc * peak_scheduled_docs_per_hour
+            print(f"🔍 {step_name} RPM calc: {requests_per_doc:.1f} req/doc × {peak_scheduled_docs_per_hour} docs/hour (peak hour) = {actual_requests_per_hour:.1f} requests/hour")
         
         # If no metering data available and no demand, skip this step quietly
         if (not metering_data_available or actual_requests_per_hour == 0) and peak_tpm == 0:

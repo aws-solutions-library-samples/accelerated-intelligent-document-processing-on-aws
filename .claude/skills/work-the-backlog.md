@@ -1616,9 +1616,10 @@ permanent, and in the state file, which is resumable.
 - **Ancestry is not identity.** `is_relative_to(root)` accepts a sibling
   worktree nested under the root. This has bitten three separate controls here.
   Compare roots by equality.
-- **A gate that measured nothing must not report success.** Two live instances:
-  the coverage ratchet with no report (#1190), and `lint-cicd` skipping the UI
-  lint on an unchanged checksum (fixed, #1152).
+- **A gate that measured nothing must not report success.** Two instances, both
+  fixed and worth reading as the template: the coverage ratchet exiting 0 with no
+  report, and on a report from a run that never finished (#1190), and `lint-cicd`
+  skipping the UI lint on an unchanged checksum (#1152).
 - **`[skip ci]` runs no gate on either platform.** It let three defects reach
   `develop` in one session. Now refused by a hook — do not override it.
 - **Pydantic's default `extra="ignore"` silently drops an undeclared key.** Three

@@ -46,15 +46,29 @@ confidence-curve observation and the reprocessing trigger must never fail a revi
 persisting the reviewer's edits to the section output must always fail it rather than
 report success. Those two contracts are opposite and easy to invert, so each is
 pinned with a failure injected at the boundary.
+
+⚠️ **On a best-effort path, "nothing was written and nothing raised" is not an
+assertion.** Every one of those functions ends in a blanket `except` that logs, and
+most of them hold two guards in a row, so deleting the first guard leaves the work
+below it to raise into the `except` — producing the same empty bucket, the same
+absent item and the same absence of an exception as the guard produced. A test
+asserting only that outcome passes with the guard it names deleted. So each guard
+here is asserted on something only the guard can produce: the call below it not
+being made (`recorded`, or a mock asserted `not_called`), or the specific line it
+logs (`log_spy`), which differs from the line the `except` logs. Where the two are
+genuinely indistinguishable by outcome, that is said in the test's own docstring.
 """
 
 from __future__ import annotations
 
+import ast
 import importlib
 import json
 import os
 import sys
+from contextlib import contextmanager
 from decimal import Decimal
+from pathlib import Path
 from unittest.mock import patch
 
 import pytest
@@ -235,6 +249,60 @@ def baseline_key(test_set_id, filename, section_id):
     return f"{test_set_id}/baseline/{filename}/sections/{section_id}/result.json"
 
 
+class LogSpy:
+    """What the resolver logged, as one blob of text.
+
+    Several guards below are distinguishable from the no-op they protect only by the
+    line they emit: with the guard the function returns quietly, without it the work
+    below raises into the blanket `except` and logs something else. Asserting on the
+    message is therefore asserting on the branch that ran.
+    """
+
+    def __init__(self):
+        self.lines = []
+
+    def record(self, message, *_args, **_kwargs):
+        self.lines.append(str(message))
+
+    @property
+    def text(self):
+        return "\n".join(self.lines)
+
+
+@contextmanager
+def log_spy(mod):
+    spy = LogSpy()
+    with (
+        patch.object(mod.logger, "info", spy.record),
+        patch.object(mod.logger, "warning", spy.record),
+        patch.object(mod.logger, "error", spy.record),
+    ):
+        yield spy
+
+
+@contextmanager
+def recorded(target, name):
+    """Record calls to `target.name` while still making them.
+
+    Yields the list of `(args, kwargs)` actually passed, so a guard can be asserted
+    on the call it prevents rather than on an outcome its absence reproduces. A
+    plain function is used rather than `patch.object(..., wraps=...)` because on a
+    class attribute a `MagicMock` is not a descriptor, so the call would arrive
+    without `self`; a function assigned to a class binds normally, and one assigned
+    to a module or to an instance is looked up without binding — which makes
+    `real(*args)` correct in all three cases.
+    """
+    real = getattr(target, name)
+    calls = []
+
+    def spy(*args, **kwargs):
+        calls.append((args, kwargs))
+        return real(*args, **kwargs)
+
+    with patch.object(target, name, spy):
+        yield calls
+
+
 # --------------------------------------------------------------------------
 # Authorization: who may reach a review operation at all
 # --------------------------------------------------------------------------
@@ -350,21 +418,38 @@ def test_an_annotator_who_also_holds_reviewer_stays_test_set_scoped(mod, table):
 def test_admin_and_author_are_the_only_groups_exempt_from_test_set_scope(
     mod, table, unscoped
 ):
+    """Exempt means the document's test set is never looked up at all.
+
+    The document belongs to `ts-other` and the caller is scoped to `ts-mine`, so a
+    scope check that ran would refuse. Asserting only that nothing was raised would
+    therefore be satisfied by the exemption *and* by a check that ran and reached
+    the wrong verdict; the tracking-table read is what only the exemption prevents.
+    """
     put_doc(table, TestSetId="ts-other")
     scope_user(mod.dynamodb.Table(USERS_TABLE), "rev@example.com", ["ts-mine"])
-    # No exception: scope is not consulted for these two.
-    mod._assert_annotator_scope(
-        event("completeSectionReview", ["Annotator", unscoped]), OBJECT_KEY
-    )
+    with recorded(mod.dynamodb, "Table") as lookups:
+        mod._assert_annotator_scope(
+            event("completeSectionReview", ["Annotator", unscoped]), OBJECT_KEY
+        )
+    assert lookups == []
 
 
 @pytest.mark.unit
 def test_an_annotator_scoped_to_the_documents_test_set_is_allowed(mod, table):
+    """Allowed because the scope check ran and passed, not because it was skipped.
+
+    Asserted on the library call and the test set it was handed. A handler that had
+    stopped consulting scope altogether would raise nothing here too, and that is
+    the defect `_assert_annotator_scope` exists to prevent.
+    """
     put_doc(table, TestSetId="ts-mine")
     scope_user(mod.dynamodb.Table(USERS_TABLE), "rev@example.com", ["ts-mine", "ts-2"])
-    mod._assert_annotator_scope(
-        event("completeSectionReview", ["Annotator"]), OBJECT_KEY
-    )
+    with recorded(testset_scope, "assert_can_access_test_set") as checks:
+        mod._assert_annotator_scope(
+            event("completeSectionReview", ["Annotator"]), OBJECT_KEY
+        )
+    assert len(checks) == 1
+    assert checks[0][0][1] == "ts-mine"
 
 
 @pytest.mark.unit
@@ -388,6 +473,152 @@ def test_an_annotator_with_no_scope_at_all_is_denied_rather_than_unrestricted(
         mod._assert_annotator_scope(
             event("completeSectionReview", ["Annotator"]), OBJECT_KEY
         )
+
+
+# Scope on the *claim* and *release* routes, not only on the edit route. These
+# exercise `handler` rather than `_assert_annotator_scope` directly, because what
+# they pin is that the branch makes the call at all.
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("field_name", ["claimReview", "releaseReview"])
+def test_claiming_and_releasing_are_test_set_scoped_for_an_annotator(
+    mod, table, field_name
+):
+    """Both routes write to a document, so both have to be scoped.
+
+    Claiming takes a document out of every other annotator's queue and releasing
+    puts someone else's back into it. The caller here is assigned to `ts-mine` and
+    the document belongs to `ts-other`, so the refusal has to come from the scope
+    check — and the stored item is read back, because a check placed after the
+    update would raise having already changed ownership.
+    """
+    put_doc(table, TestSetId="ts-other", HITLReviewOwner="")
+    scope_user(mod.dynamodb.Table(USERS_TABLE), "rev@example.com", ["ts-mine"])
+    document = FakeDocument([FakeSection("sec-1")])
+    with patch.object(
+        mod, "create_document_service", return_value=FakeDocumentService(document)
+    ):
+        with pytest.raises(ValueError, match="not assigned to test set 'ts-other'"):
+            mod.handler(
+                event(field_name, ["Annotator"], arguments={"objectKey": OBJECT_KEY}),
+                None,
+            )
+    stored = read_doc(table)
+    assert stored["HITLReviewOwner"] == ""
+    assert "HITLStatus" not in stored
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("field_name", ["claimReview", "releaseReview"])
+def test_an_annotator_can_neither_claim_nor_release_a_production_document(
+    mod, table, field_name
+):
+    """A document carrying no `TestSetId` is production HITL work, on every route."""
+    put_doc(table, HITLReviewOwner="")  # no TestSetId
+    scope_user(mod.dynamodb.Table(USERS_TABLE), "rev@example.com", ["ts-mine"])
+    document = FakeDocument([FakeSection("sec-1")])
+    with patch.object(
+        mod, "create_document_service", return_value=FakeDocumentService(document)
+    ):
+        with pytest.raises(ValueError, match="only review test-set documents"):
+            mod.handler(
+                event(field_name, ["Annotator"], arguments={"objectKey": OBJECT_KEY}),
+                None,
+            )
+    assert read_doc(table)["HITLReviewOwner"] == ""
+
+
+@pytest.mark.unit
+def test_an_in_scope_annotator_may_claim_a_document_from_their_own_test_set(mod, table):
+    """The other direction, so the two refusals above are not a blanket one.
+
+    A scope check that refused every annotator would satisfy both of them and break
+    the collaborative labelling queue outright.
+    """
+    put_doc(table, TestSetId="ts-mine", HITLReviewOwner="")
+    scope_user(mod.dynamodb.Table(USERS_TABLE), "rev@example.com", ["ts-mine"])
+    document = FakeDocument([FakeSection("sec-1")])
+    with patch.object(
+        mod, "create_document_service", return_value=FakeDocumentService(document)
+    ):
+        mod.handler(
+            event("claimReview", ["Annotator"], arguments={"objectKey": OBJECT_KEY}),
+            None,
+        )
+    stored = read_doc(table)
+    assert stored["HITLReviewOwner"] == "rev"
+    assert stored["HITLStatus"] == "InProgress"
+
+
+def _handler_field_branches():
+    """`fieldName` → the function names called in that branch of `handler`.
+
+    Read from the source rather than exercised, because what this answers is a
+    question about the shape of the dispatcher: which branches make the call.
+    """
+    tree = ast.parse((Path(MODULE_DIR) / "index.py").read_text())
+    handler = next(
+        node
+        for node in tree.body
+        if isinstance(node, ast.FunctionDef) and node.name == "handler"
+    )
+    branches = {}
+    for node in handler.body:
+        if not isinstance(node, ast.If):
+            continue
+        test = node.test
+        if (
+            isinstance(test, ast.Compare)
+            and isinstance(test.left, ast.Name)
+            and test.left.id == "field_name"
+            and isinstance(test.comparators[0], ast.Constant)
+        ):
+            branches[test.comparators[0].value] = {
+                call.func.id
+                for call in ast.walk(node)
+                if isinstance(call, ast.Call) and isinstance(call.func, ast.Name)
+            }
+    return branches
+
+
+@pytest.mark.unit
+def test_the_set_of_handler_branches_that_assert_annotator_scope_is_pinned():
+    """The defect class is one branch of the dispatcher missing the call.
+
+    `claimReview` and `releaseReview` had no coverage of annotator scope at all:
+    deleting `_assert_annotator_scope` from either left every behavioural test in
+    this directory green, because nothing reached those two branches as an
+    annotator. The three tests above close that, and this one closes the class — a
+    fifth `fieldName` added later without the call fails here rather than shipping.
+
+    `skipAllSectionsReview` is deliberately not in the set: `Annotator` is refused
+    that operation outright a few lines earlier, so no scoped caller survives to be
+    narrowed. `completeSectionReview` is the dispatcher's fall-through rather than a
+    `field_name ==` branch, and is asserted separately below.
+    """
+    branches = _handler_field_branches()
+    assert set(branches) == {"claimReview", "releaseReview", "skipAllSectionsReview"}
+    scoped = {
+        field for field, calls in branches.items() if "_assert_annotator_scope" in calls
+    }
+    assert scoped == {"claimReview", "releaseReview"}
+    assert "skip_all_sections_review" in branches["skipAllSectionsReview"]
+
+
+@pytest.mark.unit
+def test_the_fall_through_route_to_completion_also_asserts_scope(mod, table):
+    """`completeSectionReview` reaches the operation without naming a branch.
+
+    Any unrecognised `fieldName` lands here too, so this is the widest route into a
+    document and the one a new operation gets for free.
+    """
+    put_doc(table, TestSetId="ts-other")
+    scope_user(mod.dynamodb.Table(USERS_TABLE), "rev@example.com", ["ts-mine"])
+    with patch.object(mod, "complete_section_review") as completion:
+        with pytest.raises(ValueError, match="not assigned to test set 'ts-other'"):
+            mod.handler(event("completeSectionReview", ["Annotator"]), None)
+    completion.assert_not_called()
 
 
 # --------------------------------------------------------------------------
@@ -617,11 +848,19 @@ def test_a_failed_edit_write_aborts_the_review_instead_of_reporting_success(mod,
 
 @pytest.mark.unit
 def test_edits_for_a_section_the_document_does_not_have_are_refused(mod, table):
+    """The matched text has to name *this* guard, not the pair it belongs to.
+
+    Both guards open "Cannot save edited data: section '<id>'", and with the
+    not-found one deleted the section's output URI is `None`, so the second raises
+    for the same input. A match on the shared prefix therefore passes with the
+    guard this test is named for removed; the clause after the section id is what
+    separates them.
+    """
     put_doc(table)
     document = FakeDocument([FakeSection("sec-2", "s3://out/2.json")])
     service = FakeDocumentService(document)
     with patch.object(mod, "create_document_service", return_value=service):
-        with pytest.raises(ValueError, match="Cannot save edited data"):
+        with pytest.raises(ValueError, match="section 'sec-1' not found in document"):
             mod.complete_section_review(OBJECT_KEY, "sec-1", edited_data={"a": 1})
     assert service.updated == []
 
@@ -672,10 +911,19 @@ def test_a_document_outside_a_test_set_writes_no_baseline(mod, table):
 
 @pytest.mark.unit
 def test_no_baseline_is_written_when_the_test_set_bucket_is_not_configured(mod, table):
-    """A deployment without the test-set feature must not fail every review."""
+    """A deployment without the test-set feature must not fail every review.
+
+    Asserted on the tracking-table read never being made. An empty bucket does not
+    distinguish the guard from its absence: without it the function looks the
+    document's test set up, builds a key and calls `put_object` with an empty bucket
+    name, which raises into the blanket `except` — leaving the bucket exactly as
+    empty and nothing raised.
+    """
     put_doc(table, TestSetId="ts-1")
     mod.TEST_SET_BUCKET = ""
-    mod.write_correction_to_test_set_baseline(OBJECT_KEY, "sec-1", {"x": 1})
+    with recorded(mod.dynamodb, "Table") as lookups:
+        mod.write_correction_to_test_set_baseline(OBJECT_KEY, "sec-1", {"x": 1})
+    assert lookups == []
     assert "Contents" not in mod.s3_client.list_objects_v2(Bucket=TEST_SET_BUCKET)
 
 
@@ -830,22 +1078,46 @@ def test_a_diff_that_cannot_be_computed_still_records_who_reviewed(mod):
     two can be at different versions in a partially-updated deployment. Losing the
     field-level detail is acceptable; losing the reviewer's edit is not, so the
     entry is still written without `baselineEdits`.
+
+    The warning is asserted here, which is the other half of the pair described in
+    `test_a_first_review_with_no_prior_label_records_no_diff`: this input is the one
+    that must produce the line, that one the one that must not.
     """
     saved = {"inference_result": {"total": "2"}}
-    with patch.object(
-        curve_store, "flatten_values", side_effect=TypeError("incompatible layer")
+    with (
+        log_spy(mod) as log,
+        patch.object(
+            curve_store, "flatten_values", side_effect=TypeError("incompatible layer")
+        ),
     ):
         mod.append_edit_history(
             {"inference_result": {"total": "1"}}, saved, "alice", ""
         )
+    assert "Could not diff review changes" in log.text
+    assert "incompatible layer" in log.text
     assert "baselineEdits" not in saved["_editHistory"][-1]
     assert saved["_editHistory"][-1]["editedBy"] == "alice"
 
 
 @pytest.mark.unit
 def test_a_first_review_with_no_prior_label_records_no_diff(mod):
+    """Nothing to diff against, and that is recognised rather than crashed into.
+
+    An absent `baselineEdits` does not distinguish the guard from its removal:
+    without it, `previous.get(...)` on `None` raises `AttributeError` into the diff
+    helper's own `except`, which returns the same empty diff. Asserting that
+    `flatten_values` was not called does not distinguish them either — the attribute
+    access raises one expression *before* the call, so it is unmade in both cases.
+
+    What differs is the warning: the `except` logs "Could not diff review changes",
+    and the guard does not. The pair of tests holds that line in both directions —
+    absent here, present in `test_a_diff_that_cannot_be_computed_still_records_who
+    _reviewed` — so neither passes on a change that stops emitting it.
+    """
     saved = {"inference_result": {"total": "1"}}
-    mod.append_edit_history(None, saved, "alice", "")
+    with log_spy(mod) as log:
+        mod.append_edit_history(None, saved, "alice", "")
+    assert "Could not diff review changes" not in log.text
     assert "baselineEdits" not in saved["_editHistory"][-1]
     assert len(saved["_editHistory"]) == 1
 
@@ -903,9 +1175,18 @@ def test_confirming_an_already_confirmed_baseline_adds_no_second_entry(mod, tabl
 
 @pytest.mark.unit
 def test_confirming_a_section_with_no_baseline_yet_writes_nothing(mod, table):
-    """Nothing has been drafted, so there is no label to assert is correct."""
+    """Nothing has been drafted, so there is no label to assert is correct.
+
+    The logged line is the assertion. Without the `isinstance(existing, dict)`
+    guard, the `None` the read returned is asked for `labelSource`, which raises
+    into the blanket `except` and logs a *failure* instead — same empty bucket,
+    nothing raised, different branch.
+    """
     put_doc(table, TestSetId="ts-1")
-    mod.confirm_test_set_baseline_reviewed(OBJECT_KEY, "sec-1", "alice")
+    with log_spy(mod) as log:
+        mod.confirm_test_set_baseline_reviewed(OBJECT_KEY, "sec-1", "alice")
+    assert "No baseline to confirm" in log.text
+    assert "Failed to confirm" not in log.text
     assert "Contents" not in mod.s3_client.list_objects_v2(Bucket=TEST_SET_BUCKET)
 
 
@@ -914,20 +1195,42 @@ def test_a_tracking_table_failure_during_confirmation_does_not_fail_the_review(m
     """The confirmation path reads DynamoDB to find the owning test set.
 
     A throttle or a missing table there must be logged and dropped, not raised: the
-    section's own output has already been accepted at this point.
+    section's own output has already been accepted at this point. Asserted on the
+    logged failure, which is what shows the injected error was actually raised and
+    caught rather than the function having found nothing to do before reaching it.
     """
-    with patch.object(
-        mod.dynamodb, "Table", side_effect=RuntimeError("table unavailable")
-    ):
-        mod.confirm_test_set_baseline_reviewed(OBJECT_KEY, "sec-1", "alice")
+    with log_spy(mod) as log:
+        with patch.object(
+            mod.dynamodb, "Table", side_effect=RuntimeError("table unavailable")
+        ):
+            mod.confirm_test_set_baseline_reviewed(OBJECT_KEY, "sec-1", "alice")
+    assert "Failed to confirm test-set baseline" in log.text
+    assert "table unavailable" in log.text
 
 
 @pytest.mark.unit
-def test_confirmation_is_skipped_outside_a_test_set_and_without_a_bucket(mod, table):
+def test_confirmation_stops_at_a_document_that_belongs_to_no_test_set(mod, table):
+    """There is no baseline to confirm, so the S3 read is never attempted.
+
+    Asserted on `_read_json` not being called. Without the `TestSetId` guard the
+    function reads a key built from `None`, gets nothing back and returns on the
+    next guard — the same empty bucket and the same absence of an exception.
+    """
     put_doc(table)  # no TestSetId
-    mod.confirm_test_set_baseline_reviewed(OBJECT_KEY, "sec-1", "alice")
+    with recorded(mod, "_read_json") as reads:
+        mod.confirm_test_set_baseline_reviewed(OBJECT_KEY, "sec-1", "alice")
+    assert reads == []
+    assert "Contents" not in mod.s3_client.list_objects_v2(Bucket=TEST_SET_BUCKET)
+
+
+@pytest.mark.unit
+def test_confirmation_is_skipped_when_no_test_set_bucket_is_configured(mod, table):
+    """Same shape as the correction path: the tracking-table read is never made."""
+    put_doc(table, TestSetId="ts-1")
     mod.TEST_SET_BUCKET = ""
-    mod.confirm_test_set_baseline_reviewed(OBJECT_KEY, "sec-1", "alice")
+    with recorded(mod.dynamodb, "Table") as lookups:
+        mod.confirm_test_set_baseline_reviewed(OBJECT_KEY, "sec-1", "alice")
+    assert lookups == []
     assert "Contents" not in mod.s3_client.list_objects_v2(Bucket=TEST_SET_BUCKET)
 
 
@@ -1005,23 +1308,45 @@ def test_a_label_without_a_fingerprint_writes_no_revision_scoped_curve(mod, tabl
 
 @pytest.mark.unit
 def test_no_curve_is_recorded_when_there_was_no_prior_prediction(mod, table):
-    """With nothing predicted there is no verdict for the reviewer to deliver."""
-    mod.record_curve_observations("ts-1", None, CURVE_SAVED)
+    """With nothing predicted there is no verdict for the reviewer to deliver.
+
+    Asserted on the observation builder not being reached. Without the guard it is
+    called with `None`, raises into the blanket `except`, and leaves exactly the
+    same absent curve item.
+    """
+    with recorded(curve_store, "observations_from_baseline_review") as built:
+        mod.record_curve_observations("ts-1", None, CURVE_SAVED)
+    assert built == []
     assert curve_item(table, "ts-1", "curve#_aggregate") is None
 
 
 @pytest.mark.unit
 def test_a_label_with_no_recorded_confidences_records_nothing(mod, table):
+    """No claimed confidence means no `(confidence, correct)` pair to learn from.
+
+    Asserted on the store not being written to. `add_observations` with an empty
+    list writes nothing either, so an absent curve item cannot tell the guard from
+    the call it prevents.
+    """
     previous = {"inference_result": {"total": "1"}, "metadata": {}}
-    mod.record_curve_observations(
-        "ts-1", previous, {"inference_result": {"total": "2"}}
-    )
+    with recorded(curve_store.CurveStore, "add_observations") as added:
+        mod.record_curve_observations(
+            "ts-1", previous, {"inference_result": {"total": "2"}}
+        )
+    assert added == []
     assert curve_item(table, "ts-1", "curve#_aggregate") is None
 
 
 @pytest.mark.unit
 def test_a_curve_write_failure_does_not_fail_the_review(mod, table):
-    """The curve is an optimization; a reviewer's save outranks it."""
+    """The curve is an optimization; a reviewer's save outranks it.
+
+    Asserted on *which* handler swallowed it. A finished review does not
+    distinguish the two: had this function re-raised, the baseline writer's own
+    blanket `except` one frame up would have caught it and the review would have
+    completed just the same — with the correction reported as failed rather than the
+    curve. Both log lines are therefore checked, one present and one absent.
+    """
     put_doc(table, TestSetId="ts-1")
     key = baseline_key("ts-1", "invoice.pdf", "sec-1")
     mod.s3_client.put_object(
@@ -1030,11 +1355,18 @@ def test_a_curve_write_failure_does_not_fail_the_review(mod, table):
     document = FakeDocument(
         [FakeSection("sec-1", f"s3://{OUTPUT_BUCKET}/sections/sec-1/result.json")]
     )
-    with patch.object(
-        curve_store.CurveStore, "add_observations", side_effect=RuntimeError("no table")
+    with (
+        log_spy(mod) as log,
+        patch.object(
+            curve_store.CurveStore,
+            "add_observations",
+            side_effect=RuntimeError("no table"),
+        ),
     ):
         run_complete(mod, document, section_id="sec-1", edited_data=CURVE_SAVED)
     assert read_doc(table)["HITLCompleted"] is True
+    assert "Could not record confidence-curve observations" in log.text
+    assert "Failed to write correction to test-set baseline" not in log.text
 
 
 # --------------------------------------------------------------------------
@@ -1332,12 +1664,23 @@ def test_without_a_working_bucket_the_whole_document_is_sent_inline(mod, queue):
 
 @pytest.mark.unit
 def test_an_unconfigured_queue_url_is_logged_rather_than_raised(mod):
-    """A deployment without the reprocessing queue must still finish reviews."""
+    """A deployment without the reprocessing queue must still finish reviews.
+
+    Asserted on the warning and on the send never being attempted. With the guard
+    neutralised the send is made with no queue URL, raises into the blanket
+    `except`, and leaves the document in exactly the state checked below.
+    """
     document = FakeDocument([FakeSection("sec-1")])
-    with patch.object(
-        mod, "create_document_service", return_value=FakeDocumentService(document)
+    with (
+        log_spy(mod) as log,
+        patch.object(mod.sqs_client, "send_message") as send,
+        patch.object(
+            mod, "create_document_service", return_value=FakeDocumentService(document)
+        ),
     ):
         mod.trigger_reprocessing(OBJECT_KEY)  # no QUEUE_URL set
+    send.assert_not_called()
+    assert "QUEUE_URL not configured" in log.text
     assert document.status == mod.Status.QUEUED
 
 
@@ -1345,10 +1688,22 @@ def test_an_unconfigured_queue_url_is_logged_rather_than_raised(mod):
 def test_a_document_that_cannot_be_reloaded_sends_nothing_and_does_not_raise(
     mod, queue
 ):
-    with patch.object(
-        mod, "create_document_service", return_value=FakeDocumentService(None)
+    """The named cause is the assertion.
+
+    Without the guard the `None` document is assigned to, which raises into the
+    blanket `except` and leaves the queue just as empty — so the specific "not found
+    for reprocessing" line is the only thing that separates a recognised absence
+    from a swallowed `AttributeError`.
+    """
+    with (
+        log_spy(mod) as log,
+        patch.object(
+            mod, "create_document_service", return_value=FakeDocumentService(None)
+        ),
     ):
         mod.trigger_reprocessing(OBJECT_KEY)
+    assert f"Document {OBJECT_KEY} not found for reprocessing" in log.text
+    assert "Failed to trigger reprocessing" not in log.text
     assert drain(mod, queue) == []
 
 
