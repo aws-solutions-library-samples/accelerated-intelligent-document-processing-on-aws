@@ -131,8 +131,11 @@ The GenAI IDP Accelerator uses a **system defaults** architecture where configur
    configuration whose `classification.classificationMethod` is `bda`, and
    `pattern-2.yaml` otherwise — they do not read the top-level `use_bda` flag, so a
    BDA deployment configured only through `use_bda: true` resolves against
-   `pattern-2.yaml`. The two files differ only in which modules they compose;
-   `use_bda` itself is what routes the workflow at run time.
+   `pattern-2.yaml`. That is benign but not free: your own `use_bda: true` still wins
+   the merge, so the workflow routes to BDA as you asked, and the cost is a
+   configuration carrying the OCR, classification, chat, rule-validation and LLM
+   extraction defaults BDA mode does not use. `use_bda` is what routes the workflow at
+   run time; the pattern file only decides which defaults are merged underneath it.
 
 2. **User configurations** are merged on top, overriding only the specified values
 

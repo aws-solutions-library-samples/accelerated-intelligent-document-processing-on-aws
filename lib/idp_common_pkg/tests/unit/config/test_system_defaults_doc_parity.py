@@ -66,6 +66,32 @@ def _named_in(path: pathlib.Path) -> set[str]:
     return set(re.findall(_FILENAME_RE, path.read_text()))
 
 
+def _the_listing_in(path: pathlib.Path) -> str:
+    """Just the one region of ``path`` that is meant to enumerate the directory.
+
+    ``README.md`` names most modules three or four times — the directory listing, the
+    two ``_inherits`` examples, and the Module Contents table — so *completeness* asked
+    over the whole file only answers "is this name mentioned anywhere". A listing going
+    stale while the examples stay current is the realistic shape, and close to what
+    happened in #1203, so the completeness direction reads the fenced block alone. The
+    staleness direction still reads the whole file, because a dead name is worth
+    reporting wherever it sits.
+
+    For ``__init__.py`` the whole docstring *is* the listing, so the region is the file.
+    """
+    text = path.read_text()
+    if path.suffix != ".md":
+        return text
+    blocks = re.findall(r"```[a-z]*\n(.*?)```", text, re.DOTALL)
+    listing = [b for b in blocks if f"{_DEFAULTS.name}/" in b]
+    assert len(listing) == 1, (
+        f"expected exactly one fenced block in {path.name} listing "
+        f"`{_DEFAULTS.name}/`, found {len(listing)} — the region this check reads has "
+        "moved, so it would otherwise pass by reading nothing"
+    )
+    return listing[0]
+
+
 def test_every_defaults_file_is_named_in_the_configuration_doc():
     """A defaults file missing from the table is a whole stage's settings that a
     reader — or the extension agent grepping the bundled docs — will not discover."""
@@ -91,12 +117,17 @@ def test_every_file_named_in_the_doc_exists():
 def test_every_defaults_file_is_named_in_the_in_tree_inventory(
     inventory: pathlib.Path,
 ):
-    """The directory's own two lists are read more often than the published page."""
+    """The directory's own two lists are read more often than the published page.
+
+    Asked of the enumerating region rather than the whole file — see
+    ``_the_listing_in`` for why that distinction is the whole value of this direction.
+    """
     on_disk = {p.name for p in _DEFAULTS.glob("*.yaml")}
     assert on_disk, f"no defaults files found under {_DEFAULTS}"
-    missing = sorted(on_disk - _named_in(inventory))
+    listed = set(re.findall(_FILENAME_RE, _the_listing_in(inventory)))
+    missing = sorted(on_disk - listed)
     assert not missing, (
-        f"{inventory.name} does not list these system_defaults files: {missing}"
+        f"{inventory.name}'s inventory of this directory omits: {missing}"
     )
 
 
