@@ -94,16 +94,34 @@ cases was the call.
 Each record root now makes that call from its own `mode="before"` validator, through
 the shared `log_ignored_config_keys`, which is also what `IDPConfig`'s validator uses
 — one wording, one `deprecated`/`unknown` split, one bound on the line, and the
-message names the root it came from. **Attach a new root's report there and not to a
-save path:** these roots are built from a dict in four modules — the configuration
-resolver behind the Pricing and Model Limits panels, `update_configuration` at deploy
-time, `ConfigurationManager` (both `save_configuration` and the per-record `save_*`
-helpers), and, for pricing, the merge that re-validates a dumped record — and the
-resolver, the operator-facing one, does not go through `save_configuration`.
+message names the root it came from.
+
+⚠️ **Attach a new root's report to its validator, not to a save path**, and the reason
+is not that the save path is bypassed. `save_custom_pricing` and
+`save_custom_model_config_limits` both call `save_configuration`, and the UI resolver
+calls them — so `save_configuration` *is* reached for an operator's edit. What it is
+not reached with is a dict: the resolver validates `ModelConfigLimitsConfig(**payload)`
+itself and hands the helper a model, so `save_configuration`'s
+`if isinstance(config, dict)` branch — the only place a report there could live — never
+sees the operator's keys. By the time the record arrives, the keys have already been
+dropped. Three modules construct these roots from a dict
+(`ConfigurationManager`, the configuration resolver behind the Pricing and Model Limits
+panels, and `update_configuration` at deploy time), and the validator is the one place
+that covers all three.
 
 `include_top_level` stays off for all of them, and on the two that forbid extras that
 is not a matter of taste: Pydantic raises for a depth-0 key, so a line saying it was
-ignored would be false.
+ignored would be false. Note that a root's declared fields are not only its one list —
+both carry a `config_type` discriminator, which `save_custom_model_config_limits` sets
+deliberately — so "anything but the list raises" is not the rule; "anything no field
+matches" is.
+
+⚠️ **One shape joins neither the walk nor the report**, inherited from #1134 and
+unguarded for these three roots: a field whose annotation names *more than one* model
+resolves to no model, so its subtree is never entered and a key dropped inside it is
+reported by nothing. No field of that shape exists in any of the four root trees today.
+`test_no_field_in_the_tree_holds_a_model_the_walk_declines_to_enter` guards it for the
+`IDPConfig` tree only.
 
 `tests/unit/config/test_record_root_unknown_keys.py` derives the root set from the
 annotation on `ConfigurationManager.save_configuration` — the enumeration production

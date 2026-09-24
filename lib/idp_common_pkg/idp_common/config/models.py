@@ -3565,12 +3565,17 @@ def log_ignored_config_keys(
     them reading as the other.
 
     **It reports; it does not reject.** ``extra`` is unchanged on every model, so a
-    stored record that loads today still loads. Call it from a ``mode="before"``
-    validator rather than from a save path: the roots here are constructed from a
-    dict in several places — the UI resolvers, ``update_configuration`` at deploy
-    time, ``ConfigurationManager.save_configuration`` and the per-record
-    ``save_*`` helpers — and a report wired into one of those is absent from the
-    others, including the operator-facing one.
+    stored record that loads today still loads.
+
+    Call it from a ``mode="before"`` validator rather than from a save path, and note
+    the reason is not that the save path is bypassed. ``save_custom_pricing`` and
+    ``save_custom_model_config_limits`` do call ``save_configuration``, and the UI
+    resolvers call them — but they hand it an already-validated model, because the
+    resolver constructs the model itself. ``save_configuration`` reads a dict in one
+    branch only, and that branch is not on the operator's path: by the time the record
+    reaches it, the mistyped key is already gone. The validator is the one place that
+    covers every construction site — ``ConfigurationManager``, the configuration
+    resolver, and ``update_configuration`` at deploy time.
 
     Args:
         data: The record as written, before validation. A non-mapping is ignored.

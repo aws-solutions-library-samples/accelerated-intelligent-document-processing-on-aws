@@ -23,13 +23,17 @@ by these tests without being added to them, and a hand-written list naming
 the exact way #1134 left #1211 behind.
 
 **The report is attached to each root's own ``mode="before"`` validator, not to a save
-path.** These roots are built from a dict in four modules: the configuration resolver
-behind the Model Limits and Pricing UI panels, ``update_configuration`` at deploy
-time, ``ConfigurationManager.save_configuration`` and the per-record ``save_*``
-helpers. The resolver — the operator-facing one — does not go through
-``save_configuration``, so a report wired in there would be absent from the path the
-defect was reported against. ``test_the_operator_save_path_reports_too`` pins the save
-path as well, but the guarantee is the validator.
+path**, and the reason is not that the save path is bypassed. ``save_custom_pricing``
+and ``save_custom_model_config_limits`` both call ``save_configuration``, and the UI
+resolver calls them — so it *is* reached for an operator's edit. What it is not reached
+with is a dict: the resolver validates the payload into a model first, so
+``save_configuration``'s ``if isinstance(config, dict)`` branch, the only place a report
+there could live, never sees the operator's keys. Three modules construct these roots
+from a dict — ``ConfigurationManager``, the configuration resolver, and
+``update_configuration`` at deploy time — and the validator is the one place that covers
+all three. ``test_the_operator_save_path_reports_too`` pins the save path as well,
+because it is the path an operator's edit takes even though it is not where the report
+lives.
 
 **The mis-nested case is covered separately from the misspelled one**, because they
 fail differently: a misspelled key names nothing, while a mis-nested key names a
@@ -559,11 +563,17 @@ def test_a_price_written_on_the_entry_instead_of_the_unit_is_reported(caplog):
 
 
 def test_the_operator_save_path_reports_too(caplog):
-    """``save_configuration`` is one of four places a record is built from a dict.
+    """``save_configuration`` is one of the places a record is built from a dict.
 
     The guarantee is the validator on each root, which is why this needs no
-    parametrisation over the other three call sites — but the save path is the one
+    parametrisation over the other construction sites — but the save path is the one
     an operator's edit goes through, so it is measured rather than reasoned about.
+
+    Note this covers ``save_configuration``'s own dict branch, which is **not** the
+    branch an operator's edit reaches: the UI resolver validates the payload into a
+    model before calling ``save_custom_model_config_limits``, which forwards a model
+    here. That is exactly why the report lives on the root's validator and not in this
+    method.
     """
     mock_table = Mock()
     mock_table.get_item.return_value = {}

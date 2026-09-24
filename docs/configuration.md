@@ -277,11 +277,11 @@ The list index is part of the path, so the line tells you which row to fix. Two
 things worth knowing about these two records specifically:
 
 - **A stray key at the top of the record is refused outright**, with a validation
-  error rather than a warning, because only `pricing` and `model_limits` belong
-  there. The warning above is for a key *inside* a row, which is where the silent
-  drop was: a row's own settings were accepted permissively, so a misspelled
-  `max_input_tokens` left the shipped context window for that model family in force
-  while the save reported success.
+  error rather than a warning, because these records recognise only their own small
+  set of top-level keys. The warning above is for a key *inside* a row, which is
+  where the silent drop was: a row's own settings were accepted permissively, so a
+  misspelled `max_input_tokens` left the shipped context window for that model
+  family in force while the save reported success.
 - **A price belongs to a unit, not to the entry.** Writing `price` alongside `name`
   and `units` on a pricing entry is the mis-nesting equivalent of `ocr.dpi`: it is
   ignored, the shipped rate stays in force, and the cost figures carry on looking
