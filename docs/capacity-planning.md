@@ -467,6 +467,11 @@ part of the report.
 - **Symptom**: "No request count data found for [step_name]"
 - **Solution**: Process documents through the full workflow to generate metering data with request counts
 
+**Assessment Rows Missing After Disabling Granular Assessment**:
+- **Symptom**: The report is produced, but it carries no Assessment TPM or RPM row
+- **Cause**: Assessment records its Bedrock calls under `GranularAssessment/...` keys while granular assessment is enabled, and those keys are excluded from the request count when it is disabled. A history recorded entirely under them therefore leaves Assessment with token demand and nothing countable, so its rows are dropped rather than sized from a request rate the current configuration has never produced. The Lambda log names the step and the reason.
+- **Solution**: Process a document under the current configuration, which records an `Assessment/...` key — or re-enable granular assessment, which brings the recorded history back into scope. Every other step is reported either way.
+
 **No Processing Time Data**:
 - **Symptom**: "No processing time data found in documents"
 - **Solution**: Ensure documents have `/lambda/duration` gb_seconds or WorkflowStartTime/CompletionTime timestamps. Either is sufficient, so this message means **neither** was found in the sampled documents.

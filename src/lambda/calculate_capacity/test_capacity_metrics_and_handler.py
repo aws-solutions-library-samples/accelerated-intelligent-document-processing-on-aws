@@ -1317,18 +1317,89 @@ def test_disabling_granular_assessment_excludes_its_recorded_requests(tracking):
 
 
 @pytest.mark.unit
-def test_turning_off_granular_assessment_on_an_all_granular_history_fails_the_report(
-    tracking,
+def test_turning_off_granular_assessment_costs_its_rows_not_the_whole_report(
+    tracking, capsys
 ):
     """A history recorded entirely under granular keys leaves nothing to count.
 
-    The step then has demand but no request data, which is an unconditional failure
-    of the whole report — not a skipped row — with a message telling the operator to
-    process more documents. Pinned because the trigger is a configuration change
-    rather than anything about the documents.
+    Assessment then has demand and no countable request data — but because the
+    configuration excluded every entry it had rather than because none was recorded,
+    which is a distinction the operator acts on differently. The step's two rows are
+    dropped and every other step is still reported, rather than one configuration
+    change making the whole report unavailable. No request figure is invented for the
+    dropped step.
+
+    The absent rows do not say which guard produced them: Assessment here has real
+    demand, so the shared no-demand-and-no-metering skip is not the one that could
+    have fired, and the printed line is what identifies the branch — it is also the
+    only place the cause is stated, so its wording is asserted rather than described.
     """
-    put_metered(tracking, "doc-1", bedrock("GranularAssessment", 8))
+    metering = {}
+    metering.update(bedrock("GranularAssessment", 8))
+    metering.update(bedrock("Extraction", 3))
+    put_metered(tracking, "doc-1", metering)
+    hourly = hours(
+        **{
+            "9": {
+                "docsPerHour": 60,
+                "assessmentTokensPerHour": 60000,
+                "extractionTokensPerHour": 60000,
+            }
+        }
+    )
+    requirements = by_type(
+        build(
+            hourly,
+            config=model_config(assessment_model=MODEL, extraction_model=MODEL),
+            granular=False,
+        )
+    )
+
+    assert ("Assessment", "TPM") not in requirements
+    assert ("Assessment", "RPM") not in requirements
+    # 3 req/doc x 60 docs / 60 x 1.1 = 3.3 -> 3: the rest of the report survives.
+    assert requirements[("Extraction", "RPM")]["requiredQuota"] == "3"
+    printed = capsys.readouterr().out
+    assert "granular assessment is disabled" in printed
+    assert "no demand and no metering data" not in printed
+
+
+@pytest.mark.unit
+def test_a_granular_entry_that_recorded_nothing_does_not_excuse_the_missing_data(
+    tracking,
+):
+    """The skip above rests on a measurement having been excluded, not on a key.
+
+    A `GranularAssessment` entry carrying zero requests would not have contributed
+    to the average even with the feature on, so nothing was lost to the
+    configuration and the step is in the ordinary "demand but no measurement" state,
+    which still fails loudly. Without this, the skip would widen to any history that
+    merely mentions a granular key.
+    """
+    put_metered(tracking, "doc-1", bedrock("GranularAssessment", 0))
     hourly = hours(**{"9": {"docsPerHour": 60, "assessmentTokensPerHour": 60000}})
+    with pytest.raises(ValueError, match="No request count data found for Assessment"):
+        build(hourly, config=model_config(assessment_model=MODEL), granular=False)
+
+
+@pytest.mark.unit
+def test_a_history_that_did_yield_a_request_average_is_not_covered_by_the_skip(
+    tracking,
+):
+    """The skip also requires that *nothing* countable was found for the step.
+
+    Here the regular assessment entry gives a per-document average, so the step is
+    not in the all-granular state the skip is for; the request rate reaches zero
+    instead because the schedule asks for assessment tokens in an hour that
+    processes no documents. That contradictory schedule raises today and still does
+    — the point being pinned is the boundary of the new skip, which would otherwise
+    swallow any history that had a granular entry excluded from it.
+    """
+    metering = {}
+    metering.update(bedrock("Assessment", 2))
+    metering.update(bedrock("GranularAssessment", 8))
+    put_metered(tracking, "doc-1", metering)
+    hourly = hours(**{"9": {"docsPerHour": 0, "assessmentTokensPerHour": 60000}})
     with pytest.raises(ValueError, match="No request count data found for Assessment"):
         build(hourly, config=model_config(assessment_model=MODEL), granular=False)
 

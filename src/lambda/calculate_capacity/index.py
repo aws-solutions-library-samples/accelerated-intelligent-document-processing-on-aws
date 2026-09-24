@@ -1206,7 +1206,12 @@ def build_simple_quota_requirements(
         requests_per_doc = 0  # Average requests per document for this step
         actual_pages_per_doc = None
         metering_data_available = False
-        
+        # True once a recorded Bedrock request for this step has been left out
+        # because the configuration excludes the key it was recorded under. That
+        # is a different condition from "no request data was ever recorded", and
+        # the operator acts on it differently, so the two are not merged below.
+        requests_excluded_by_config = False
+
         if metering_table_name:
             try:
                 table = dynamodb.Table(metering_table_name)
@@ -1308,6 +1313,8 @@ def build_simple_quota_requirements(
                                             print(f"🔍 Document {item.get('ObjectKey', 'unknown')}: GranularAssessment = {requests} requests (granular enabled)")
                                     else:
                                         # Skip GranularAssessment when disabled
+                                        if value.get('requests', 0) > 0:
+                                            requests_excluded_by_config = True
                                         print(f"🔍 Skipping GranularAssessment (disabled): {key}")
                                 elif is_assessment:
                                     # Regular Assessment entry - always use actual requests
@@ -1374,7 +1381,25 @@ def build_simple_quota_requirements(
             if step_name == "OCR" and peak_tpm == 0:
                 print(f"ℹ️ Skipping OCR - no OCR tokens configured (OCR not in use)")
                 continue
-            
+
+            # Every recorded request for this step was excluded by the
+            # configuration rather than never measured: on a history recorded
+            # entirely under GranularAssessment keys, turning granular assessment
+            # off leaves Assessment with demand and nothing countable. That is a
+            # configuration change, not a gap in the documents, so it drops this
+            # step's rows instead of failing the report other steps are still
+            # measurable from. No request figure is invented for it. The message
+            # names GranularAssessment because the flag can only be set in the
+            # Assessment branch above; a second setter would have to generalise it.
+            if requests_excluded_by_config and not metering_data_available:
+                print(
+                    f"ℹ️ Skipping {step_name} - every recorded Bedrock request for it is "
+                    f"under a GranularAssessment key, which is excluded while granular "
+                    f"assessment is disabled. Process documents with the current "
+                    f"configuration, or re-enable granular assessment, to plan this step."
+                )
+                continue
+
             raise ValueError(
                 f"No request count data found for {step_name}. "
                 f"Documents must have metering data with '{step_name.lower()}/bedrock' entries. "
