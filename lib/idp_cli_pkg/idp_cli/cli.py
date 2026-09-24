@@ -12,6 +12,7 @@ import logging
 import os
 import sys
 import time
+from pathlib import Path
 from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
 _SETUP_HELP = """\
@@ -2015,8 +2016,10 @@ def reprocess(
           --batch-id cli-batch-20251015-143000 \\
           --monitor
     """
-    # Call the existing rerun_inference implementation
-    return rerun_inference(
+    # Call the shared implementation directly. `rerun_inference` is the
+    # `click.Command` the decorator stack leaves behind, not a function, so
+    # calling that name here would invoke `Command.main()` instead.
+    return _rerun_inference_impl(
         stack_name,
         step,
         document_ids,
@@ -5764,10 +5767,61 @@ def discover(
         sys.exit(1)
 
 
+def _schema_output_filename(class_name: str) -> str:
+    """Reduce a discovered class id to a filename, dropping anything path-like.
+
+    `class_name` is the schema's `$id` (or `x-aws-idp-document-type`), which a
+    model generated from the content of the document being analysed. It is a
+    label, not a path, and it is not trusted as one: a value holding `/` or `..`
+    would name a file outside the directory `-o` asked for, and an absolute one
+    would replace that directory altogether.
+
+    The reduction goes through `sanitize_class_name`, which is this repository's
+    canonical rule for a class id — `[a-zA-Z0-9_-]`, a set admitting no path
+    separator, no `..` and no drive letter — rather than through a second rule
+    written here that could drift from it.
+
+    A class id with nothing usable in it falls back to `unknown`, the same name a
+    schema carrying no id at all is given, so the schema is still written
+    somewhere the operator can find rather than silently dropped.
+    """
+    from idp_common.config.class_names import sanitize_class_name
+
+    return sanitize_class_name(class_name) or "unknown"
+
+
+def _schema_output_path(output_path: Path, class_name: str) -> Path:
+    """Decide where `class_name`'s schema is written, refusing to leave `-o`.
+
+    The containment check is kept *after* the sanitising rather than instead of
+    it. Sanitising decides what the name should be; this decides whether the
+    result is the directory the operator asked for, which is the half that cannot
+    be defeated by a spelling nobody anticipated. Reaching the refusal means the
+    sanitising stopped holding, so it raises rather than quietly relocating the
+    file: the command reports the error and exits non-zero.
+
+    What is resolved is the **directory being written into**, not the file. A
+    symlink the operator put at the target filename inside their own output
+    directory — schemas linked into a configuration repository is the ordinary
+    reason — is followed, exactly as it was before this check existed. Resolving
+    the file instead would refuse that write for a class id as ordinary as
+    `Invoice`, and would abandon the rest of the batch to do it. Every escaping
+    class id is still refused: a separator or a `..` moves the *directory*, and an
+    absolute id replaces it.
+    """
+    root = output_path.resolve()
+    file_path = output_path / f"{_schema_output_filename(class_name)}.json"
+    if file_path.parent.resolve() != root:
+        raise ValueError(
+            f"Refusing to write a discovered schema outside {root}: document "
+            f"class id {class_name!r} names the directory {file_path.parent}"
+        )
+    return file_path
+
+
 def _write_discover_output(output, all_schemas, console, is_batch=True):
     """Helper to write discovery output to file or stdout."""
     import json
-    from pathlib import Path
 
     if not all_schemas:
         return
@@ -5797,7 +5851,12 @@ def _write_discover_output(output, all_schemas, console, is_batch=True):
                     or schema.get("x-aws-idp-document-type")
                     or "unknown"
                 )
-                file_path = output_path / f"{class_name}.json"
+                file_path = _schema_output_path(output_path, class_name)
+                if file_path.stem != class_name:
+                    console.print(
+                        f"[yellow]  ↳ Class id {class_name!r} is not a usable class "
+                        f"id; written as {file_path.name}[/yellow]"
+                    )
                 with open(file_path, "w", encoding="utf-8") as f:
                     f.write(json.dumps(schema, indent=2))
                 console.print(f"[green]✓ Schema written to: {file_path}[/green]")

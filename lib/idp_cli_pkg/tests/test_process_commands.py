@@ -26,9 +26,13 @@ Refusals are asserted with the `api_calls` fixture as well as the patched client
 input validation happens before `idp_sdk` is even imported: a refusal must make no AWS
 call at all, and `api_calls` is the place that is visible.
 
-Two commands are pinned here as defective rather than working. `reprocess` cannot run
-at all, and `--config` is accepted by `process` and then never used; both are written up
-on the tests that pin them.
+Both spellings of the reprocess command are exercised through the `cli` group by name,
+not by calling the implementation: the wiring between the command and the body is
+itself something that has been wrong here, and a test that calls the body cannot see
+it.
+
+One command is pinned here as defective rather than working: `--config` is accepted by
+`process` and then never used, written up on the test that pins it.
 """
 
 from __future__ import annotations
@@ -778,28 +782,27 @@ class TestTestSetPath:
         assert "Error: test set not found" in result.output
 
 
-class TestReprocessIsBroken:
-    def test_the_reprocess_command_cannot_run_at_all(self, runner, api_calls):
-        """DEFECT, pinned as it behaves today (`cli.py:1995`).
+class TestReprocessReachesTheSharedImplementation:
+    """`reprocess` runs, and runs the same body its deprecated alias runs.
 
-        `reprocess` ends with `return rerun_inference(stack_name, step, ...)`, and
-        `rerun_inference` is not a function — it is the `click.Command` object the
-        `@cli.command` decorator left behind. Calling a `Command` invokes
-        `Command.main()`, whose signature is
-        `main(args, prog_name, complete_var, standalone_mode, windows_expand_args)`,
-        so the eight forwarded arguments overflow it and Python raises before any of
-        the command's own code runs.
+    The defect these pin is that `reprocess` used to end with
+    `return rerun_inference(...)`, and `rerun_inference` is not a function — it is
+    the `click.Command` the `@cli.command` decorator left behind. Calling a
+    `Command` invokes `Command.main()`, which takes at most five arguments, so the
+    eight forwarded ones raised `TypeError` before any of the command's own code
+    ran and `idp-cli reprocess` had never worked at all. The fix routes it to
+    `_rerun_inference_impl`, the plain function `rerun-inference` already called.
 
-        The observable result is the worst available shape: exit code 1, an empty
-        output — not even the "✗ Error:" line, because the `TypeError` escapes the
-        body rather than being raised inside the implementation's `try` — and
-        nothing reprocessed. `idp-cli reprocess` is the name the `--help` text, the
-        docstring of `rerun-inference` and `docs/idp-cli.md` all point users at, and
-        it has never worked. The working spelling today is the deprecated
-        `idp-cli rerun-inference`, which calls the plain `_rerun_inference_impl`
-        function directly.
-        """
-        with patch("idp_sdk.IDPClient") as mock_cls:
+    Every test here goes through the `cli` group with the command *named*, rather
+    than calling the implementation, because the defect was entirely in that
+    wiring: a test that called `_rerun_inference_impl` directly passed throughout.
+    """
+
+    def test_reprocess_runs_and_submits_the_documents(self, runner):
+        """Exit 0 and a real reprocess call — the shape that was unreachable."""
+        patcher, mock_cls, client = patched_client()
+        client.batch.reprocess.return_value = reprocess_result(queued=1)
+        try:
             result = runner.invoke(
                 cli,
                 [
@@ -813,30 +816,77 @@ class TestReprocessIsBroken:
                     "--force",
                 ],
             )
+        finally:
+            patcher.stop()
+
+        assert result.exit_code == 0, result.output
+        assert result.exception is None, result.exception
+        client.batch.reprocess.assert_called_once_with(
+            step="extraction",
+            document_ids=["batch-1/doc.pdf"],
+            batch_id=None,
+        )
+        assert "Queued 1 documents for extraction reprocessing" in result.output
+
+    @pytest.mark.parametrize("command", REPROCESS_COMMANDS)
+    def test_both_spellings_make_the_same_sdk_call(self, runner, command):
+        """The documented name and the deprecated one are interchangeable.
+
+        This is the property the fix is for: `reprocess` is what `--help` and
+        `docs/idp-cli.md` point users at, and it must do what `rerun-inference`
+        does rather than being a second, differently-behaving path. Parametrising
+        one test over both spellings is what makes a future divergence fail.
+        """
+        patcher, mock_cls, client = patched_client()
+        client.batch.reprocess.return_value = reprocess_result(queued=2)
+        try:
+            result = runner.invoke(
+                cli,
+                [
+                    command,
+                    "--stack-name",
+                    "my-stack",
+                    "--step",
+                    "classification",
+                    "--document-ids",
+                    "batch-1/a.pdf, batch-1/b.pdf",
+                    "--force",
+                ],
+            )
+        finally:
+            patcher.stop()
+
+        assert result.exit_code == 0, result.output
+        assert mock_cls.call_args.kwargs == {"stack_name": "my-stack", "region": None}
+        client.batch.reprocess.assert_called_once_with(
+            step="classification",
+            document_ids=["batch-1/a.pdf", "batch-1/b.pdf"],
+            batch_id=None,
+        )
+
+    def test_reprocess_reaches_its_own_input_validation(self, runner, api_calls):
+        """The refusal `_rerun_inference_impl` prints is now reachable.
+
+        Through the broken wiring the `TypeError` was raised before the body, so
+        neither `--document-ids` nor `--batch-id` produced no message at all. The
+        refusal must also cost nothing: no client, no AWS call.
+        """
+        with patch("idp_sdk.IDPClient") as mock_cls:
+            result = runner.invoke(
+                cli,
+                ["reprocess", "--stack-name", "my-stack", "--step", "classification"],
+            )
 
         assert result.exit_code == 1
-        assert isinstance(result.exception, TypeError)
-        assert "positional argument" in str(result.exception)
-        assert result.output == ""
+        assert not isinstance(result.exception, TypeError), result.exception
+        assert (
+            "Error: Must specify either --document-ids or --batch-id" in result.output
+        )
         assert mock_cls.called is False
         assert api_calls.operations() == []
 
-    def test_reprocess_does_not_even_reach_its_own_input_validation(self, runner):
-        """The same `TypeError`, so the refusal message is unreachable through it.
-
-        `_rerun_inference_impl` refuses an invocation with neither `--document-ids`
-        nor `--batch-id`, and through `reprocess` that refusal never prints.
-        """
-        result = runner.invoke(
-            cli, ["reprocess", "--stack-name", "my-stack", "--step", "classification"]
-        )
-
-        assert result.exit_code == 1
-        assert isinstance(result.exception, TypeError)
-        assert "Must specify either --document-ids or --batch-id" not in result.output
-
     def test_its_help_still_works(self, runner):
-        """The option surface is intact; only the body is unreachable."""
+        """The option surface, unchanged by the rewiring of the body."""
         result = runner.invoke(cli, ["reprocess", "--help"])
 
         assert result.exit_code == 0
