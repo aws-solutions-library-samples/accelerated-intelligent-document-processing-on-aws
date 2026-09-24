@@ -4521,11 +4521,13 @@ class TestTestSetResolver:
     ):
         """The idempotency above is a read; this is the write it has to survive.
 
-        The annotate view calls this on entry, so two annotators entering together
-        both read no draft, both compute a version and both write it. Unconditional,
-        the later write replaced the earlier: the metadata row named one transition
-        while two had been opened, and the queue links the first annotator was given
-        belonged to a transition the row no longer mentioned.
+        Two annotators pressing Start annotating on one set both read no draft, both
+        compute a version and both write it. Unconditional, the later write replaced
+        the earlier: the metadata row named one transition while two had been opened,
+        and the queue links the first annotator was given belonged to a transition the
+        row no longer mentioned. (The window is two deliberate presses, not every page
+        load -- the workspace does not open a transition on arrival, and a UI test
+        pins that it is never reached from a `useEffect`.)
 
         The interleaving is forced rather than raced -- the competing open is
         committed inside the metadata read this call goes on to compute from, so
@@ -4577,6 +4579,72 @@ class TestTestSetResolver:
         # The overlap is asserted rather than assumed: with no competing write this
         # test would pass against the unguarded version too.
         assert reads["n"] >= 1
+
+    def test_a_never_published_set_still_loses_one_of_two_simultaneous_opens(
+        self, labeling_env
+    ):
+        """Records the residual the condition above does **not** cover.
+
+        This asserts the defective outcome on purpose, because the alternative is a
+        reader concluding from the guarded test alone that every overlap is closed.
+
+        On a set with no published version the call publishes one first, and
+        publishing *removes* ``draftVersion`` as part of committing its own
+        transition. So when the other caller's whole open lands before this one's
+        publish, this call clears the winner's pointer itself and then finds
+        ``attribute_not_exists(draftVersion)`` true. Both callers report
+        ``alreadyOpen: False``, two transitions exist, and the row names only the
+        later one -- which is the loss the condition closes on every other path.
+
+        No condition fixes this: nothing a predicate can read distinguishes "nobody
+        has claimed" from "I removed the claim a moment ago". It needs the publish and
+        the claim to become one atomic step, which is a restructure of the resolver
+        and is deliberately not in this change. The exposure is the first annotation
+        session of a set and no other.
+
+        Change the outcome and this test should be rewritten to assert the fix, not
+        deleted -- the assertions below are the measurement, not the goal.
+        """
+        table, s3 = labeling_env
+        self._seed_labelled_set(table, s3)
+        real_get = test_set_index.db_client.get_item
+        state = {"reads": 0, "winner": None}
+
+        def competing_get(key):
+            item = real_get(key)
+            if key.get("SK") == "metadata":
+                state["reads"] += 1
+                if state["reads"] == 1:
+                    # The other annotator's *entire* open, publish included, between
+                    # this call's read and its own publish. Un-patched for the
+                    # duration so the competitor is an ordinary correct caller.
+                    test_set_index.db_client.get_item = real_get
+                    state["winner"] = test_set_index.open_test_set_annotation_draft(
+                        {"input": {"testSetId": "ts1"}}
+                    )
+                    test_set_index.db_client.get_item = competing_get
+            return item
+
+        test_set_index.db_client.get_item = competing_get
+        try:
+            mine = test_set_index.open_test_set_annotation_draft(
+                {"input": {"testSetId": "ts1"}}
+            )
+        finally:
+            test_set_index.db_client.get_item = real_get
+
+        # The competitor really did open a transition and really did publish, so the
+        # overlap under test exists rather than being asserted into being.
+        assert state["winner"]["draftVersion"] == 2
+        assert state["winner"]["alreadyOpen"] is False
+        # And this call opened a second one instead of being refused.
+        assert mine["draftVersion"] == 3
+        assert mine["alreadyOpen"] is False
+        meta = table.get_item(Key={"PK": "testset#ts1", "SK": "metadata"})["Item"]
+        assert int(meta["draftVersion"]) == 3, (
+            "the row names only the later transition; the winner's queue links point "
+            "at a transition it no longer mentions"
+        )
 
     def test_the_draft_is_recorded_on_the_set(self, labeling_env):
         # The queue link is built from this, so it has to be readable afterwards.

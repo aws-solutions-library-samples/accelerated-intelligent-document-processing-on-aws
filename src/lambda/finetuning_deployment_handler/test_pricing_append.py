@@ -276,9 +276,56 @@ class TestPricingAppendUnderOverlap:
         assert harness.wrapper.rejections == 1
 
     @mock_aws
+    def test_a_row_holding_content_in_neither_place_guards_both_places(self, mod):
+        """The branch where naming one attribute is not a statement about the row.
+
+        A row with no compression marker *and* no top-level `pricing` reduces the
+        guard to an absence assertion, and an absence assertion about `pricing` says
+        nothing about a competitor that writes `_compressed_config` instead --
+        migrating the row is exactly what such a writer does. Measured against the
+        single-attribute form: the competitor's entry was erased with **zero**
+        rejections, which is the defect this whole file is about, arriving through
+        the guard rather than past it.
+
+        Reachability is the reason this is a gap in expression rather than a loss
+        taken: nothing in this tree writes a pricing row with no pricing key. It is
+        here because the next storage-format change is what produces one.
+        """
+
+        def migrate_the_row(table):
+            table.put_item(
+                Item=_compressed_row(
+                    "DefaultPricing", {"pricing": [_entry("bedrock/theirs")]}
+                )
+            )
+
+        harness = _Harness(
+            {"DefaultPricing": {"Configuration": "DefaultPricing"}},
+            competitor=migrate_the_row,
+        )
+        mod._add_entry_to_pricing_config(
+            harness.wrapper, "DefaultPricing", _entry(DEPLOYMENT_ARN)
+        )
+        assert _names(harness.pricing("DefaultPricing")) == {
+            "bedrock/theirs",
+            DEPLOYMENT_ARN,
+        }
+        assert harness.wrapper.rejections == 1
+        assert harness.wrapper.reads == 2
+
+    @mock_aws
     def test_the_competitor_adding_the_same_arn_converges_without_duplicating(
         self, mod
     ):
+        """Convergence, not discrimination — stated so it is not read as a guard test.
+
+        Measured against the unguarded write this one passes too: the competitor
+        stored the same ARN, so a blind overwrite also ends with exactly one entry.
+        What it holds is that the *rebuild* does not duplicate an entry the winner
+        already added, which is the property that makes the retry terminate. The
+        two tests above it are the discriminators.
+        """
+
         def add_my_arn(table):
             table.put_item(
                 Item=_compressed_row(

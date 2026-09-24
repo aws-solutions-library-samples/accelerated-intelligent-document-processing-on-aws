@@ -1397,7 +1397,8 @@ def open_test_set_annotation_draft(args, event=None):
     anything, where the alternative is a number that refers to nothing at all.
 
     Idempotent: opening a draft that is already open returns it and copies nothing, which
-    matters because the annotate view calls this on entry.
+    matters because two annotators can press Start annotating on the same set, and
+    because the second press after a reload must not snapshot again.
     """
     input_data = args.get("input", args)
     test_set_id = input_data["testSetId"]
@@ -1482,15 +1483,33 @@ def open_test_set_annotation_draft(args, event=None):
     # was never captured.
     #
     # Conditional because the `existing_draft` check above is a read and this is the
-    # write, and between the two the annotate view -- which calls this on entry --
-    # can have been opened by a second annotator. Both then read no draft, both
-    # publish a base version, both compute a `draft_version`, and the later write
-    # replaces the earlier one: the pointer names one transition while two were
-    # opened, and the queue links handed to the first annotator belong to a
-    # transition the metadata row no longer mentions. The condition is the same
-    # statement the early return makes, evaluated where it can be relied on --
-    # `draftVersion` is only ever SET here and REMOVEd by publishing, never stored
-    # as zero, so `attribute_not_exists` and "no draft open" are the same fact.
+    # write, and between the two a second annotator can have opened the same
+    # transition -- two people pressing Start annotating on one set, which is the
+    # only thing that calls this. (It is *not* called on entering the annotate view:
+    # the workspace deliberately asks rather than opening a transition on arrival,
+    # and a UI test pins that it is never reached from a `useEffect`. So the window
+    # is two deliberate presses, not every page load.) Both then read no draft, both
+    # compute a `draft_version`, and the later write replaces the earlier one: the
+    # pointer names one transition while two were opened, and the queue links handed
+    # to the first annotator belong to a transition the metadata row no longer
+    # mentions. The condition is the same statement the early return makes, evaluated
+    # where it can be relied on -- `draftVersion` is only ever SET here and REMOVEd
+    # by publishing, never stored as zero, so `attribute_not_exists` and "no draft
+    # open" are the same fact.
+    #
+    # ⚠️ **It does not cover a set that has never been published, and that residual is
+    # measured rather than theoretical.** On that path the branch above calls
+    # `publish_test_set_version`, and publishing *removes* `draftVersion` as part of
+    # committing its transition. So if the other caller's whole open lands before
+    # this one's publish, this call's own publish clears the winner's pointer and the
+    # condition is then true: both callers return `alreadyOpen: False`, two
+    # transitions are opened, and the row names only the later one -- exactly the loss
+    # this condition closes everywhere else. Closing it needs the publish and the
+    # claim to be one atomic step, which is a restructure of this function rather than
+    # a stronger condition: no predicate over the row can distinguish "nobody has
+    # claimed" from "I just removed the claim myself". It is bounded to the first
+    # annotation session of a set, after which the guard holds. See the test named
+    # for it.
     try:
         db_client.update_item(
             key={"PK": f"testset#{test_set_id}", "SK": "metadata"},
@@ -2242,6 +2261,13 @@ def get_draft_label_job(args):
         # stored instead. The queue-side caller already treats a failed harvest
         # this way; this makes the read side match it, narrowly -- any other
         # failure still propagates.
+        #
+        # ⚠️ One rejection this cannot tell apart from that one is a condition that
+        # will never hold again, and absorbing it reports a stalled job as live
+        # progress on every poll with nothing raised. The condition and the shape of
+        # row that does it are written out at the condition itself; the two comments
+        # only describe the problem together. Logged at INFO for that reason: a run
+        # of these lines on one job id is the signal.
         logger.info(
             f"Draft labeling job {job_id}: another harvest held the write for "
             "every attempt; reporting the stored state and leaving the rest to "
@@ -3330,10 +3356,22 @@ def _harvest_label_job(job, deadline=None):
         expr_values[":exp_f"] = expected_failed
         # List equality in a condition is order-sensitive -- DynamoDB compares the
         # document, not the set -- so this holds only because every writer of these
-        # two attributes stores them sorted, a few lines above. A future writer that
-        # stores an unsorted list makes the condition permanently false and turns
-        # every harvest into an exhausted budget, so keep the `sorted(...)` when
-        # touching either.
+        # two attributes stores them sorted, a few lines above (and `failedFiles`
+        # deduplicated, which is why `expected_failed` applies `set` and
+        # `expected_done` does not). Keep the `sorted(...)` when touching either.
+        #
+        # ⚠️ **A stored list this cannot reproduce is a silent permanent stall, not a
+        # slow path, and the absorb in `get_draft_label_job` is half of why.** An
+        # unsorted or duplicated stored list makes the condition false on every
+        # attempt, the budget exhausts, this function raises -- and the poll then
+        # absorbs that rejection and reports the stored row. Measured: the job stays
+        # RUNNING across every poll with no error and no progress, indefinitely, where
+        # the unguarded write normalised such a row on the first poll. The absorb is
+        # still right (see the reasoning at it), because the rejection it is written
+        # for does heal itself; the two comments have to be read together, because
+        # neither is wrong on its own and the combination is what wedges. Reaching it
+        # needs a writer outside this function -- a manual repair or a migration, since
+        # every version of this code has stored both sorted.
         condition = (
             "(attribute_not_exists(#h) OR #h = :exp_h) "
             "AND (attribute_not_exists(#f) OR #f = :exp_f)"

@@ -351,8 +351,19 @@ def _pricing_write_guard(raw_item: Dict[str, Any]) -> tuple[str, Dict[str, Any]]
     Which attribute holds the content depends on the storage format, so the guard
     names whichever one this row actually uses rather than assuming the current
     one. A row written before compression keeps its ``pricing`` list at the top
-    level; either writer migrates such a row on its next write, and the
-    ``attribute_not_exists`` form detects that migration too.
+    level, and a writer migrating such a row to the compressed format removes that
+    attribute, so ``pricing = :guard`` detects the migration.
+
+    ⚠️ **A row holding content in neither place has to name both, and naming one is
+    not "the same statement about the attribute this row uses".** On a row with no
+    compression marker *and* no top-level ``pricing``, the shape above reduces to
+    ``attribute_not_exists(pricing)`` -- which a competitor that migrates the row
+    into ``_compressed_config`` still satisfies, because it never touches
+    ``pricing`` at all. Measured on such a row: the competitor's entry was erased
+    with nothing refused, in exactly the case the paragraph above claims to cover.
+    The absence branch therefore asserts that *both* content locations are still
+    empty. No writer in this tree produces such a row, so this was a gap in what the
+    guard could express rather than a loss anybody has taken.
     """
     if raw_item.get(_COMPRESSED_STORAGE_MARKER) == _COMPRESSED_STORAGE_VALUE:
         attribute = _COMPRESSED_DATA_FIELD
@@ -360,7 +371,10 @@ def _pricing_write_guard(raw_item: Dict[str, Any]) -> tuple[str, Dict[str, Any]]
         attribute = "pricing"
     stored = raw_item.get(attribute)
     if stored is None:
-        return f"attribute_not_exists({attribute})", {}
+        return (
+            f"attribute_not_exists({_COMPRESSED_DATA_FIELD}) "
+            "AND attribute_not_exists(pricing)"
+        ), {}
     return f"{attribute} = :guard", {":guard": stored}
 
 
