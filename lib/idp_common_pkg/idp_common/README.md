@@ -90,12 +90,69 @@ class Document:
     hitl_metadata: List[HitlMetadata] = field(default_factory=list)
     hitl_status: Optional[str] = None
     hitl_triggered: bool = False
-    hitl_sections_pending: List[str] = field(default_factory=list)
-    hitl_sections_completed: List[str] = field(default_factory=list)
+    # None = "nothing to say about the review"; [] = "no sections pending".
+    # See "The two review lists are Optional on purpose" below.
+    hitl_sections_pending: Optional[List[str]] = None
+    hitl_sections_completed: Optional[List[str]] = None
     
     # Confidence alerts
     confidence_alert_count: int = 0
 ```
+
+#### The two review lists are `Optional` on purpose
+
+`hitl_sections_pending` and `hitl_sections_completed` default to `None`, unlike
+every other collection on `Document`, and the default carries meaning that
+`DocumentDynamoDBService.update_document` depends on:
+
+| Value | Means | What the writer does |
+|---|---|---|
+| `None` | This document object has nothing to say about the review | Emits no clause; the stored attribute is left alone |
+| `[]` | No sections are pending (or none completed) | Writes the empty list, clearing the stored attribute |
+| `["sec-2"]` | These sections are outstanding | Writes the list |
+
+`[]` is a fact worth persisting: it is the state a document reaches when its last
+section is reviewed, and `complete_section_review` derives `all_completed` from the
+**stored** list on the next review — so a stale list there is what put `HITLStatus`
+back to `InProgress` on a finished document (#1214), and `HITLStatus` is what the
+web UI's review queue and its per-document badges are driven by. `None` is the state
+of every `Document` a pipeline step builds, since none of them touch review state,
+and those steps write the **whole** document — so a writer that cannot tell the two
+apart either never clears the list, which was the defect, or clears it on behalf of
+callers that never meant to, which is worse because nothing reports it.
+
+⚠️ **`[]` can only reach one of these fields by an in-process assignment.** Neither
+transport into a `Document` can produce it:
+
+| Route | An empty list arrives as |
+|---|---|
+| `Document.from_dict` (Step Functions payload, SQS body, a feature hook's hand-built `updatedDocument`) | `None` |
+| `DocumentDynamoDBService._dynamodb_item_to_document` (a stored `[]`, the normal state of a reviewed document) | `None` |
+| `Document.to_dict` (outbound) | omitted entirely |
+
+That is what bounds the change's reach. There are exactly four sites that assign one
+of these lists a literal `[]` — `complete_section_review` and the `processChanges`
+resolver on `pending`, `processresults_function` and `bda_processresults_function` on
+`completed` — each of them in the same process as its own `update_document` call, and
+they are the only code that can clear a stored attribute. Every other caller of
+`update_document` emits no clause for these two attributes, which is byte-identical
+to what the old truthiness test did. Two reasons that matters beyond the fresh-model
+case: a hook may spell out the whole document and include `"hitl_sections_pending":
+[]` as boilerplate, which read literally would destroy a live review list; and an
+unrelated whole-document write against an already-reviewed document (an abort, a
+section re-grouping, an SDK rerun) would otherwise re-assert the stored `[]` and
+become a lost update against a concurrent re-trigger.
+
+Two consequences for anyone touching this:
+
+- **Read them as `document.hitl_sections_pending or []`.** Every reader in the
+  repository already does.
+- **Do not change one side of that table without the others.** A writer that needs
+  an empty list to survive serialization has to change `to_dict` *and* the two
+  inbound coercions, and changing `to_dict` alone also changes the pipeline-hook
+  payload contract documented in `docs/feature-platform.md`. The pairing is pinned by
+  `test_neither_transport_can_carry_an_empty_review_list` in
+  `tests/unit/dynamodb/test_service_hitl_sections_clear.py`.
 
 ### Page
 

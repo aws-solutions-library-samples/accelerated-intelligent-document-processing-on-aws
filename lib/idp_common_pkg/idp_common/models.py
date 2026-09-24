@@ -703,8 +703,42 @@ class Document:
     hitl_metadata: List[HitlMetadata] = field(default_factory=list)
     hitl_status: Optional[str] = None  # PendingReview, InProgress, Completed, Skipped
     hitl_triggered: bool = False  # Whether HITL review was triggered for this document
-    hitl_sections_pending: List[str] = field(default_factory=list)
-    hitl_sections_completed: List[str] = field(default_factory=list)
+    # ⚠️ `None` and `[]` are different statements about these two lists, and the
+    # difference is what makes them writable at all. `None` means "this document
+    # object has nothing to say about the review list", and a writer must leave
+    # the stored attribute alone. `[]` means "no sections are pending", which is a
+    # fact to persist: it is the state a document reaches when its last section is
+    # reviewed, and `complete_section_review` derives `all_completed` from it — so
+    # a stale list there is what put `HITLStatus` back to `InProgress` on a
+    # finished document (#1214).
+    #
+    # They were `field(default_factory=list)`, so every Document asserted "no
+    # sections pending" by default and `DocumentDynamoDBService` could only tell
+    # the two apart by truthiness — which collapses them, dropped the update
+    # clause when the list emptied, and left the stale value stored.
+    #
+    # ⚠️ **Only an in-process assignment can produce `[]` here, and that is
+    # deliberate.** Neither transport into a Document can: `from_dict` and
+    # `_dynamodb_item_to_document` both read an explicit empty list back as
+    # `None`, and `to_dict` omits `None` and `[]` alike. So the four sites that
+    # assign one of these lists a literal `[]` — `complete_section_review` and the
+    # `processChanges` resolver on `pending`, `processresults_function` and
+    # `bda_processresults_function` on `completed` — are the only code that can
+    # clear a stored attribute, and each does it in the same process as its
+    # `update_document` call with no round trip in between. Every other caller of
+    # `update_document` (a fresh Document, one rebuilt from a Step Functions
+    # payload, one loaded from DynamoDB) therefore emits no clause for these two
+    # attributes, exactly as before this distinction existed. That symmetry is
+    # what bounds the blast radius, and it is not a property to break on one side
+    # only: `test_service_hitl_sections_clear.py` pins both directions, including
+    # a hand-built hook payload carrying `"hitl_sections_pending": []`, which a
+    # feature hook's `updatedDocument` may legitimately contain and which must not
+    # destroy a live review list.
+    #
+    # Read them as `document.hitl_sections_pending or []`; every reader in the
+    # tree already does.
+    hitl_sections_pending: Optional[List[str]] = None
+    hitl_sections_completed: Optional[List[str]] = None
 
     # Confidence alerts (top-level count for GSI projection)
     confidence_alert_count: int = 0
@@ -990,8 +1024,18 @@ class Document:
         # Convert Review Status fields
         document.hitl_status = data.get("hitl_status")
         document.hitl_triggered = data.get("hitl_triggered", False)
-        document.hitl_sections_pending = data.get("hitl_sections_pending", [])
-        document.hitl_sections_completed = data.get("hitl_sections_completed", [])
+        # `or None`, so BOTH an absent key and an explicit empty list read back as
+        # "this payload says nothing about the review lists". Neither can mean "no
+        # sections pending" here: `to_dict` omits an empty list, so no first-party
+        # payload can carry one, and the payloads that can are hand-built — a
+        # feature hook's `updatedDocument` is validated against an immutable-field
+        # list rather than a key allowlist, so a hook that spells out the whole
+        # document may include `"hitl_sections_pending": []` as boilerplate. Taking
+        # that literally would let it clear the review list of a document actually
+        # under review. Clearing is reserved for an in-process assignment; see the
+        # field declarations above (#1214).
+        document.hitl_sections_pending = data.get("hitl_sections_pending") or None
+        document.hitl_sections_completed = data.get("hitl_sections_completed") or None
 
         # Restore confidence alert count
         document.confidence_alert_count = int(data.get("confidence_alert_count", 0))
