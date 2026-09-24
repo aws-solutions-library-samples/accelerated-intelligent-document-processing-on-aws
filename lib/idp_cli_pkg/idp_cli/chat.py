@@ -203,13 +203,17 @@ class _ThinkingFilter:
 
     def close(self) -> str:
         """
-        Return whatever is still held and is genuinely text, and reset.
+        Return whatever is still held and is genuinely text, once per response.
 
         A response that ends mid-tag leaves a few held characters that no chunk
         will ever complete; they are ordinary text and are released. A response
         that ends inside an unterminated block leaves reasoning, which is
         discarded — an agent that stops mid-thought has no answer to show, and
         showing the thought is the defect this class exists to prevent.
+
+        A filter is **single-use**: this drains what is held but does not put the
+        instance back into its opening state, so `_stream_response` builds one per
+        response rather than reusing one.
         """
         tail = "" if self._inside else self._held
         self._held = ""
