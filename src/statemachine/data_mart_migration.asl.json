@@ -1,0 +1,479 @@
+{
+  "Comment": "DataMartMigrationStateMachine — retry-safe, chunked, resumable schema-migration of the four per-document rollup tables to the widened (document_class) grain. Orchestrated as a Step Functions state machine so per-chunk retries have their own Lambda budget instead of sharing one 15-min invocation. Replaces the earlier Lambda-only backfill_migrate design that thrashed on real-volume stacks. See docs/reporting-sql-layer.md §Track A and the CHANGELOG entry for the design rationale.",
+  "StartAt": "CheckMarker",
+  "States": {
+    "CheckMarker": {
+      "Type": "Task",
+      "Comment": "Read the SSM migration marker and return a routing decision (short_circuit | skip_purge | full_flow). Compares marker against BOTH days AND version — a future MigrationVersion bump for a new schema change must NOT short-circuit against a completed marker from the prior version. `_check_marker_state` treats a marker with NO `version=` segment (pre-versioning) OR a DIFFERENT version string as a MISMATCH and routes to full flow (destructive InitialPurge + re-migration). That is the intended behaviour — silent-accept of an unversioned marker would let a schema-widening deploy short-circuit against completed rollup partitions from the earlier schema and leave the customer's rollup tables at the old grain.",
+      "Resource": "arn:${Partition}:states:::lambda:invoke",
+      "Parameters": {
+        "FunctionName": "${DataMartRollupFunctionArn}",
+        "Payload": {
+          "mode": "check_marker_state",
+          "days.$": "$.days",
+          "version.$": "$.version"
+        }
+      },
+      "ResultSelector": {
+        "should_short_circuit.$": "$.Payload.should_short_circuit",
+        "should_skip_purge.$": "$.Payload.should_skip_purge",
+        "state.$": "$.Payload.state",
+        "anchor.$": "$.Payload.anchor"
+      },
+      "ResultPath": "$.marker_check",
+      "Retry": [
+        {
+          "ErrorEquals": [
+            "Lambda.ServiceException",
+            "Lambda.AWSLambdaException",
+            "Lambda.SdkClientException",
+            "Lambda.TooManyRequestsException"
+          ],
+          "MaxAttempts": 6,
+          "IntervalSeconds": 30,
+          "BackoffRate": 2
+        },
+        {
+          "Comment": "Catch-all retrier for domain raises the rollup Lambda emits by exception class name (RuntimeError from _purge_s3_prefix partial-delete surfacing, ClientError from boto3, SSM throttles, etc). Under the lambda:invoke service integration (see the Resource ARN template above) a Python `raise Foo(...)` surfaces as errorType='Foo', NOT Lambda.Unknown — Lambda.Unknown only covers Sandbox.Timedout / OOM / other Lambda-runtime-level failures the primary retrier already handles by class. Using States.ALL here catches the domain raise paths without enumerating every possible error class name. Narrow MaxAttempts=2 (vs 6 for Lambda-service errors) so transient issues recover without wasting cycles retrying a genuine code bug six times before failing.",
+          "ErrorEquals": ["States.ALL"],
+          "MaxAttempts": 2,
+          "IntervalSeconds": 30,
+          "BackoffRate": 2
+        }
+      ],
+      "Next": "RouteOnMarkerState"
+    },
+    "RouteOnMarkerState": {
+      "Type": "Choice",
+      "Comment": "Route based on the marker check. Completed → done (no work). In-progress from prior run → skip purge, adopt the persisted anchor so PlanChunks plans against the ORIGINAL window (not a fresh dispatcher anchor that has drifted), then only re-run backfill. Otherwise → full flow starting with the empty-lake probe.",
+      "Choices": [
+        {
+          "Variable": "$.marker_check.should_short_circuit",
+          "BooleanEquals": true,
+          "Next": "MigrationAlreadyDone"
+        },
+        {
+          "Variable": "$.marker_check.should_skip_purge",
+          "BooleanEquals": true,
+          "Next": "RouteOnResumeAnchor"
+        }
+      ],
+      "Default": "CheckLakeState"
+    },
+    "RouteOnResumeAnchor": {
+      "Type": "Choice",
+      "Comment": "Resume path only. Two sub-branches based on whether the marker persisted an anchor: (a) marker has an anchor — take AdoptMarkerAnchor so the ORIGINAL run's window is restored; (b) marker has no anchor (intermediate build predating anchor persistence) — skip AdoptMarkerAnchor because it would overwrite $.anchor with null and PlanChunks would then plan against ``_parse_anchor_time``'s ``now()`` fallback, drifting the window past any dates the failed run purged. Keeping the caller's dispatcher-stamped $.anchor in the null-marker case is the best available answer — CheckMarker only routes here on a version match, so the caller's anchor is at least in the neighbourhood of the ORIGINAL run's anchor for stacks whose retention window is longer than the time between the failed run and the retry. Both sub-branches converge on WriteInProgressMarker so ``started_at`` is refreshed — see the Comment on WriteInProgressMarker below.",
+      "Choices": [
+        {
+          "Variable": "$.marker_check.anchor",
+          "IsNull": true,
+          "Next": "WriteInProgressMarker"
+        }
+      ],
+      "Default": "AdoptMarkerAnchor"
+    },
+    "AdoptMarkerAnchor": {
+      "Type": "Pass",
+      "Comment": "Resume path — overwrite the dispatcher-stamped $.anchor with the anchor persisted in the marker by the ORIGINAL execution's WriteInProgressMarker. Without this, a state-machine restart after a failed first run computes a fresh anchor whose window has drifted (crossed UTC midnight, or just moved forward N hours). PlanChunks would then plan chunks whose start is later than the ORIGINAL run's start, so any dates the failed run PURGED that fall before the new window's start never get rebuilt — a silent data-loss on resume. The marker persists ``anchor=<ISO>`` inside its ``;``-delimited payload (see _write_marker); CheckMarker returns it as ``$.marker_check.anchor``. Only reached when RouteOnResumeAnchor has confirmed $.marker_check.anchor is non-null, so this Pass always sets a real anchor. Then routes to WriteInProgressMarker (rather than straight to PlanChunks) so ``started_at`` is refreshed on the marker: without that, a resume more than ``_MIGRATION_IN_PROGRESS_STALE_SECONDS`` (2 h) after the ORIGINAL run's start opens the ``_migration_in_progress`` gate on the scheduled hourly / daily / reconciler crons, and their nonce-free ClientRequestTokens then race the migration chunks' nonce-bearing ones with no distributed lock — the race the gate exists to close. InitialPurge is upstream of WriteInProgressMarker on the full-flow branch, so the resume path still skips it.",
+      "Parameters": {
+        "days.$": "$.days",
+        "chunk_hours.$": "$.chunk_hours",
+        "version.$": "$.version",
+        "anchor.$": "$.marker_check.anchor",
+        "marker_check.$": "$.marker_check"
+      },
+      "Next": "WriteInProgressMarker"
+    },
+    "MigrationAlreadyDone": {
+      "Type": "Succeed",
+      "Comment": "Marker says state=completed for the current days value. Migration was already run cleanly on a previous invocation; nothing to do."
+    },
+    "CheckLakeState": {
+      "Type": "Task",
+      "Comment": "Cheap emptiness probe against raw metering/. On a fresh install (no documents yet processed) the lake is empty; running the full migration then does ~720 chunk Athena queries plus the daily backfill against zero rows — ~20 min of workgroup time and no useful state produced. Short-circuits to WriteCompletedMarker (with the same anchor / days / version) so subsequent invocations skip via the completed-marker branch.",
+      "Resource": "arn:${Partition}:states:::lambda:invoke",
+      "Parameters": {
+        "FunctionName": "${DataMartRollupFunctionArn}",
+        "Payload": {
+          "mode": "check_lake_state"
+        }
+      },
+      "ResultSelector": {
+        "is_empty.$": "$.Payload.is_empty"
+      },
+      "ResultPath": "$.lake_state",
+      "Retry": [
+        {
+          "ErrorEquals": [
+            "Lambda.ServiceException",
+            "Lambda.AWSLambdaException",
+            "Lambda.SdkClientException",
+            "Lambda.TooManyRequestsException"
+          ],
+          "MaxAttempts": 6,
+          "IntervalSeconds": 30,
+          "BackoffRate": 2
+        },
+        {
+          "Comment": "Catch-all for domain raises. The helper is defensive — it returns is_empty=False on any list error rather than raising — so the only way here is a Lambda-runtime failure not caught by the primary retrier.",
+          "ErrorEquals": ["States.ALL"],
+          "MaxAttempts": 2,
+          "IntervalSeconds": 30,
+          "BackoffRate": 2
+        }
+      ],
+      "Next": "RouteOnLakeState"
+    },
+    "RouteOnLakeState": {
+      "Type": "Choice",
+      "Comment": "If the raw metering lake is empty, skip straight to WriteCompletedMarker — no work to do, and writing the marker lets subsequent invocations short-circuit via the completed-marker branch. Otherwise proceed with the full flow starting at InitialPurge.",
+      "Choices": [
+        {
+          "Variable": "$.lake_state.is_empty",
+          "BooleanEquals": true,
+          "Next": "WriteCompletedMarker"
+        }
+      ],
+      "Default": "InitialPurge"
+    },
+    "InitialPurge": {
+      "Type": "Task",
+      "Comment": "Delete date-partitioned parquet under the four per-document rollup prefixes, SCOPED to the migration window (date= partitions inside [anchor - days, anchor)) so the migration can repopulate at the widened (document_class) grain without colliding with pre-widening parquet in the same window. Older partitions outside the window are preserved — they predate the document_class column and query as NULL when the column is projected, which is the intended forward-compatible behaviour for stacks whose retention exceeds the migration window (default DataRetentionInDays=365 vs Days=30). Idempotent — a re-run on an already-empty prefix or a re-run over the same window is fast.",
+      "Resource": "arn:${Partition}:states:::lambda:invoke",
+      "Parameters": {
+        "FunctionName": "${DataMartRollupFunctionArn}",
+        "Payload": {
+          "mode": "purge_rollup_prefixes",
+          "days.$": "$.days",
+          "anchor.$": "$.anchor"
+        }
+      },
+      "Retry": [
+        {
+          "ErrorEquals": [
+            "Lambda.ServiceException",
+            "Lambda.AWSLambdaException",
+            "Lambda.SdkClientException",
+            "Lambda.TooManyRequestsException",
+            "States.Timeout"
+          ],
+          "MaxAttempts": 2,
+          "IntervalSeconds": 30,
+          "BackoffRate": 2
+        },
+        {
+          "Comment": "Catch-all for domain raises from _purge_rollup_prefixes_task (RuntimeError on partial-delete surfacing, ClientError on S3 5xx that escaped boto3's client retry). Under the lambda:invoke integration a Python raise surfaces as its class name, not Lambda.Unknown. Narrow MaxAttempts=2 covers the transient without extending retry indefinitely for a persistent bug.",
+          "ErrorEquals": ["States.ALL"],
+          "MaxAttempts": 2,
+          "IntervalSeconds": 30,
+          "BackoffRate": 2
+        }
+      ],
+      "ResultPath": "$.purge_result",
+      "Next": "WriteInProgressMarker"
+    },
+    "WriteInProgressMarker": {
+      "Type": "Task",
+      "Comment": "Write the SSM marker as state=in_progress with a fresh ``started_at``. Reached from TWO paths: (1) the full-flow branch immediately after InitialPurge — load-bearing so any state-machine restart reads this marker and SKIPS the purge; (2) the resume branch via RouteOnResumeAnchor / AdoptMarkerAnchor — refreshes ``started_at`` so the ``_migration_in_progress`` gate on scheduled hourly / daily / reconciler crons does not open in the middle of the resume (see the 2 h stale bound at ``_MIGRATION_IN_PROGRESS_STALE_SECONDS``). Persists ``anchor`` so the next resume can re-adopt the ORIGINAL window (see AdoptMarkerAnchor above). Also includes ``version`` so CheckMarker on a future run can compare it against the request's MigrationVersion.",
+      "Resource": "arn:${Partition}:states:::lambda:invoke",
+      "Parameters": {
+        "FunctionName": "${DataMartRollupFunctionArn}",
+        "Payload": {
+          "mode": "write_marker",
+          "state": "in_progress",
+          "days.$": "$.days",
+          "version.$": "$.version",
+          "anchor.$": "$.anchor"
+        }
+      },
+      "Retry": [
+        {
+          "ErrorEquals": [
+            "Lambda.ServiceException",
+            "Lambda.AWSLambdaException",
+            "Lambda.SdkClientException",
+            "Lambda.TooManyRequestsException"
+          ],
+          "MaxAttempts": 6,
+          "IntervalSeconds": 30,
+          "BackoffRate": 2
+        },
+        {
+          "Comment": "Catch-all retrier for domain raises the rollup Lambda emits by exception class name (RuntimeError from _purge_s3_prefix partial-delete surfacing, ClientError from boto3, SSM throttles, etc). Under the lambda:invoke service integration (see the Resource ARN template above) a Python `raise Foo(...)` surfaces as errorType='Foo', NOT Lambda.Unknown — Lambda.Unknown only covers Sandbox.Timedout / OOM / other Lambda-runtime-level failures the primary retrier already handles by class. Using States.ALL here catches the domain raise paths without enumerating every possible error class name. Narrow MaxAttempts=2 (vs 6 for Lambda-service errors) so transient issues recover without wasting cycles retrying a genuine code bug six times before failing.",
+          "ErrorEquals": ["States.ALL"],
+          "MaxAttempts": 2,
+          "IntervalSeconds": 30,
+          "BackoffRate": 2
+        }
+      ],
+      "ResultPath": "$.marker_write_in_progress",
+      "Next": "PlanChunks"
+    },
+    "PlanChunks": {
+      "Type": "Task",
+      "Comment": "Compute the list of (start, end) time ranges to iterate. The CFN CustomResource passes ChunkHours=1 (see template.yaml::DataMartMigrationCustomResource), which is the ACTUAL default in production — 720 one-hour chunks over the 30 d window. plan_migration_chunks's Lambda-side default of 24 h only applies to a caller that omits the ChunkHours field entirely (never happens through the dispatcher). 1 h chunks are used deliberately so per-chunk retries have the tightest possible blast radius.",
+      "Resource": "arn:${Partition}:states:::lambda:invoke",
+      "Parameters": {
+        "FunctionName": "${DataMartRollupFunctionArn}",
+        "Payload": {
+          "mode": "plan_migration_chunks",
+          "days.$": "$.days",
+          "chunk_hours.$": "$.chunk_hours",
+          "anchor.$": "$.anchor"
+        }
+      },
+      "ResultSelector": {
+        "chunks.$": "$.Payload.chunks",
+        "count.$": "$.Payload.count"
+      },
+      "ResultPath": "$.plan",
+      "Retry": [
+        {
+          "ErrorEquals": [
+            "Lambda.ServiceException",
+            "Lambda.AWSLambdaException",
+            "Lambda.SdkClientException",
+            "Lambda.TooManyRequestsException"
+          ],
+          "MaxAttempts": 6,
+          "IntervalSeconds": 30,
+          "BackoffRate": 2
+        },
+        {
+          "Comment": "Catch-all retrier for domain raises the rollup Lambda emits by exception class name (RuntimeError from _purge_s3_prefix partial-delete surfacing, ClientError from boto3, SSM throttles, etc). Under the lambda:invoke service integration (see the Resource ARN template above) a Python `raise Foo(...)` surfaces as errorType='Foo', NOT Lambda.Unknown — Lambda.Unknown only covers Sandbox.Timedout / OOM / other Lambda-runtime-level failures the primary retrier already handles by class. Using States.ALL here catches the domain raise paths without enumerating every possible error class name. Narrow MaxAttempts=2 (vs 6 for Lambda-service errors) so transient issues recover without wasting cycles retrying a genuine code bug six times before failing.",
+          "ErrorEquals": ["States.ALL"],
+          "MaxAttempts": 2,
+          "IntervalSeconds": 30,
+          "BackoffRate": 2
+        }
+      ],
+      "Next": "MigrateChunks"
+    },
+    "MigrateChunks": {
+      "Type": "Map",
+      "Comment": "Iterate each 1 h chunk, invoking mode: backfill per chunk. MaxConcurrency=8 pairs with the rollup Lambda's ReservedConcurrentExecutions=12 to run 8 chunks in parallel × 2 Athena INSERTs each = 16 concurrent DML queries, leaving 4 slots under Athena's default 20-per-workgroup DML concurrency for the scheduled crons that share this Lambda. Cuts a 720-hour migration from ~2 h serial → ~20 min. Idempotency guards (HeadObject-skip per partition + Athena ClientRequestToken dedup) make the parallel writes safe. SFN-native Retry replaces the async Lambda retries the earlier design relied on.",
+      "ItemsPath": "$.plan.chunks",
+      "MaxConcurrency": 8,
+      "ItemSelector": {
+        "start.$": "$$.Map.Item.Value.start",
+        "end.$": "$$.Map.Item.Value.end",
+        "anchor.$": "$.anchor"
+      },
+      "ItemProcessor": {
+        "ProcessorConfig": {
+          "Mode": "INLINE"
+        },
+        "StartAt": "BackfillChunk",
+        "States": {
+          "BackfillChunk": {
+            "Type": "Task",
+            "Resource": "arn:${Partition}:states:::lambda:invoke",
+            "Comment": "Arms are restricted to metering_hourly + metering_docs_hourly — the only two tables the widening deploy changed the schema of. control_plane_hourly and data_plane_lambda_hourly (a) don't have document_class, (b) were never purged, (c) are already populated by the routine :05 hourly cron. Including them here was scope creep that doubled per-chunk time and surfaced empty-CW-hour 'no rows' partial failures that blocked WriteCompletedMarker on a development stack. ResultSelector projects only the counters and range that _check_hours_failed._extract actually reads (hours_attempted/succeeded/partial/failed + start/end); keeping the whole $.Payload — which includes mode, arms, and a full failures[] list of per-hour Athena error strings — pushed the accumulated $.chunk_results toward Step Functions' 256 KB state quota (720 chunks × ~241 B ≈ 170 KB at Days=30 default, exceeds the quota at Days=60/90). failures[] is dropped from SFN state entirely because each failing chunk is logged per-item at INFO in _check_hours_failed (search CloudWatch for 'failing_chunk N/M:') — postmortem detail lives there.",
+            "Parameters": {
+              "FunctionName": "${DataMartRollupFunctionArn}",
+              "Payload": {
+                "mode": "backfill",
+                "start.$": "$.start",
+                "end.$": "$.end",
+                "arms": ["metering_hourly", "metering_docs_hourly"],
+                "anchor.$": "$.anchor"
+              }
+            },
+            "Retry": [
+              {
+                "ErrorEquals": [
+                  "Lambda.ServiceException",
+                  "Lambda.AWSLambdaException",
+                  "Lambda.SdkClientException",
+                  "Lambda.TooManyRequestsException",
+                  "States.Timeout"
+                ],
+                "MaxAttempts": 3,
+                "IntervalSeconds": 60,
+                "BackoffRate": 2
+              },
+              {
+                "Comment": "Catch-all for domain raises from _run_backfill on a single chunk (RuntimeError from _run_athena on wait timeout / probe exhaustion, ClientError from boto3 on transient Athena/S3 5xx that escaped the SDK's own retry). Under the lambda:invoke integration a Python raise surfaces as its class name, not Lambda.Unknown. Narrow MaxAttempts=2 — the inner Retry already gives 3 attempts on Lambda.* errors, so extending indefinitely on generic Python exceptions would mask real bugs. Idempotent per-partition data-presence probe makes the second attempt cheap when the first succeeded partially.",
+                "ErrorEquals": ["States.ALL"],
+                "MaxAttempts": 2,
+                "IntervalSeconds": 60,
+                "BackoffRate": 2
+              }
+            ],
+            "ResultSelector": {
+              "backfill": {
+                "hours_attempted.$": "$.Payload.hours_attempted",
+                "hours_succeeded.$": "$.Payload.hours_succeeded",
+                "hours_partial.$": "$.Payload.hours_partial",
+                "hours_failed.$": "$.Payload.hours_failed",
+                "start.$": "$.Payload.start",
+                "end.$": "$.Payload.end"
+              }
+            },
+            "End": true
+          }
+        }
+      },
+      "ResultPath": "$.chunk_results",
+      "Catch": [
+        {
+          "ErrorEquals": ["States.ALL"],
+          "Comment": "A chunk that exhausts its 3-attempt inner Retry fails the whole Map — without this Catch the state machine would end in the terminal FAILED state before CheckMigrationSuccess could run, and operators would lose all diagnostic detail. Route to MigrationHadMapFailure (distinct from MigrationHadFailures) so the Fail state can surface $.map_error via CausePath — ASL Fail states cannot express conditional Cause based on whether the state was reached via Catch or via Choice, so two Fail states is the least-drift way to get the caught error into the SFN execution history. Marker stays state=in_progress on both paths so a restart resumes.",
+          "ResultPath": "$.map_error",
+          "Next": "MigrationHadMapFailure"
+        }
+      ],
+      "Next": "BackfillDailyRange"
+    },
+    "BackfillDailyRange": {
+      "Type": "Task",
+      "Comment": "Iterate each day in the retention window and invoke the daily-rollup INSERTs. Runs AFTER MigrateChunks so metering_hourly / metering_docs_hourly are fully populated (the daily rollups aggregate from those). Single Lambda invocation because per-day daily rollup work is small (~5-10 s per day × 30 days ≈ 150-300 s, fits in Lambda's 900 s budget). Without this task, metering_daily and metering_docs_daily stay empty for 30 days waiting for the scheduled 00:15 UTC daily rollup to catch up one day at a time. On days=90 with worst-case Athena warmups (~20 s per day = 1800 s total) the first Lambda hits its 900 s timeout — under the ``lambda:invoke`` service integration (Resource ARN uses ${Partition} so it works in every partition; see the state's Resource line above) a Lambda function-timeout surfaces as ``Lambda.Unknown``, NOT ``States.Timeout`` (the latter only fires from a state-level ``TimeoutSeconds``, which we deliberately don't set — the Lambda's own 900 s cap is the timeout of record). So the effective retry budget comes from the ``Lambda.Unknown`` retrier below (MaxAttempts=5 on this state specifically, higher than the MaxAttempts=2 used on every other state), giving 5 × 900 s ≈ 75 min of forward-progress budget. Each retry HeadObject-skips already-completed days (``_run_daily`` idempotency) and picks up from the remainder. Typical Days=30 usage completes on attempt 1.",
+      "Resource": "arn:${Partition}:states:::lambda:invoke",
+      "Parameters": {
+        "FunctionName": "${DataMartRollupFunctionArn}",
+        "Payload": {
+          "mode": "backfill_daily_range",
+          "days.$": "$.days",
+          "anchor.$": "$.anchor"
+        }
+      },
+      "ResultSelector": {
+        "daily.$": "$.Payload"
+      },
+      "ResultPath": "$.daily_result",
+      "Retry": [
+        {
+          "ErrorEquals": [
+            "Lambda.ServiceException",
+            "Lambda.AWSLambdaException",
+            "Lambda.SdkClientException",
+            "Lambda.TooManyRequestsException",
+            "States.Timeout"
+          ],
+          "MaxAttempts": 5,
+          "IntervalSeconds": 60,
+          "BackoffRate": 2
+        },
+        {
+          "Comment": "Catch-all — covers BOTH Python-side raises (RuntimeError from _run_daily etc — surfaces by class name, NOT as Lambda.Unknown) AND Lambda function timeouts (Sandbox.Timedout, which DOES surface as Lambda.Unknown under the lambda:invoke integration). Using States.ALL is the shape that catches both without enumerating error classes. MaxAttempts=5 here (vs 2 elsewhere) because the 90-day Days path can legitimately hit the 900 s Lambda timeout and each retry HeadObject-skips completed days — 5 × 900 s ≈ 75 min covers that budget. The tradeoff is that a real Python bug in _run_backfill_daily_range takes 5 × 900 s to surface instead of 2 × 900 s; the state's own function is idempotent so retrying a bug is at worst wasteful, not destructive.",
+          "ErrorEquals": ["States.ALL"],
+          "MaxAttempts": 5,
+          "IntervalSeconds": 60,
+          "BackoffRate": 2
+        }
+      ],
+      "Next": "CheckMigrationSuccess"
+    },
+    "CheckMigrationSuccess": {
+      "Type": "Task",
+      "Comment": "Aggregate the Map state's per-chunk results PLUS the daily-backfill result. Returns all_hours_clean=true only when EVERY chunk AND the daily backfill reported hours_failed=0 AND hours_partial=0 — both counters must be zero. In the migration context a partial-hour result (some rollup arms succeeded, others didn't for the same hour) IS a blocker because a customer table with rows silently missing is not an acceptable end state — an early dev-stack run had 38 chunks report partial while zero rows landed in metering_hourly, and that failure mode is why _check_hours_failed treats partial as unclean. Routine hourly-cron ops treat partial as tolerated (reconciler will fill later), but MIGRATION does not. Passes chunk_results and daily_result as separate fields because ASL has no ArrayConcat intrinsic; the aggregator in the Lambda handles the union.",
+      "Resource": "arn:${Partition}:states:::lambda:invoke",
+      "Parameters": {
+        "FunctionName": "${DataMartRollupFunctionArn}",
+        "Payload": {
+          "mode": "check_hours_failed",
+          "chunk_results.$": "$.chunk_results",
+          "daily_result.$": "$.daily_result.daily"
+        }
+      },
+      "ResultSelector": {
+        "all_hours_clean.$": "$.Payload.all_hours_clean",
+        "total_failed.$": "$.Payload.total_failed",
+        "total_succeeded.$": "$.Payload.total_succeeded",
+        "total_partial.$": "$.Payload.total_partial",
+        "failing_chunks.$": "$.Payload.failing_chunks",
+        "chunk_hours_attempted.$": "$.Payload.chunk_hours_attempted",
+        "chunk_hours_succeeded.$": "$.Payload.chunk_hours_succeeded",
+        "chunk_hours_partial.$": "$.Payload.chunk_hours_partial",
+        "chunk_hours_failed.$": "$.Payload.chunk_hours_failed",
+        "daily_units_attempted.$": "$.Payload.daily_units_attempted",
+        "daily_units_succeeded.$": "$.Payload.daily_units_succeeded",
+        "daily_units_partial.$": "$.Payload.daily_units_partial",
+        "daily_units_failed.$": "$.Payload.daily_units_failed"
+      },
+      "ResultPath": "$.migration_check",
+      "Retry": [
+        {
+          "ErrorEquals": [
+            "Lambda.ServiceException",
+            "Lambda.AWSLambdaException",
+            "Lambda.SdkClientException",
+            "Lambda.TooManyRequestsException"
+          ],
+          "MaxAttempts": 6,
+          "IntervalSeconds": 30,
+          "BackoffRate": 2
+        },
+        {
+          "Comment": "Catch-all retrier for domain raises the rollup Lambda emits by exception class name (RuntimeError from _purge_s3_prefix partial-delete surfacing, ClientError from boto3, SSM throttles, etc). Under the lambda:invoke service integration (see the Resource ARN template above) a Python `raise Foo(...)` surfaces as errorType='Foo', NOT Lambda.Unknown — Lambda.Unknown only covers Sandbox.Timedout / OOM / other Lambda-runtime-level failures the primary retrier already handles by class. Using States.ALL here catches the domain raise paths without enumerating every possible error class name. Narrow MaxAttempts=2 (vs 6 for Lambda-service errors) so transient issues recover without wasting cycles retrying a genuine code bug six times before failing.",
+          "ErrorEquals": ["States.ALL"],
+          "MaxAttempts": 2,
+          "IntervalSeconds": 30,
+          "BackoffRate": 2
+        }
+      ],
+      "Next": "MigrationOutcome"
+    },
+    "MigrationOutcome": {
+      "Type": "Choice",
+      "Comment": "If every chunk was clean, mark migration completed; otherwise fail explicitly (marker stays in_progress so operator can restart the state machine and it resumes from where it left off, skipping the purge).",
+      "Choices": [
+        {
+          "Variable": "$.migration_check.all_hours_clean",
+          "BooleanEquals": true,
+          "Next": "WriteCompletedMarker"
+        }
+      ],
+      "Default": "MigrationHadFailures"
+    },
+    "WriteCompletedMarker": {
+      "Type": "Task",
+      "Comment": "Migration succeeded end-to-end: write the SSM marker as state=completed so future state-machine invocations short-circuit at CheckMarker. This is the ONLY completion signal customers should watch — CFN UPDATE_COMPLETE fires immediately after the CustomResource dispatcher returns and is decoupled from actual migration completion. Persists `anchor` in the marker so the resume-anchor path is symmetric across both terminal marker writes. Includes 'version' so a future MigrationVersion bump routes to full flow (destructive InitialPurge + re-migration) instead of short-circuiting against this one — that IS the intended path for a schema-widening bump.",
+      "Resource": "arn:${Partition}:states:::lambda:invoke",
+      "Parameters": {
+        "FunctionName": "${DataMartRollupFunctionArn}",
+        "Payload": {
+          "mode": "write_marker",
+          "state": "completed",
+          "days.$": "$.days",
+          "version.$": "$.version",
+          "anchor.$": "$.anchor"
+        }
+      },
+      "Retry": [
+        {
+          "ErrorEquals": [
+            "Lambda.ServiceException",
+            "Lambda.AWSLambdaException",
+            "Lambda.SdkClientException",
+            "Lambda.TooManyRequestsException"
+          ],
+          "MaxAttempts": 6,
+          "IntervalSeconds": 30,
+          "BackoffRate": 2
+        },
+        {
+          "Comment": "Catch-all retrier for domain raises the rollup Lambda emits by exception class name (RuntimeError from _purge_s3_prefix partial-delete surfacing, ClientError from boto3, SSM throttles, etc). Under the lambda:invoke service integration (see the Resource ARN template above) a Python `raise Foo(...)` surfaces as errorType='Foo', NOT Lambda.Unknown — Lambda.Unknown only covers Sandbox.Timedout / OOM / other Lambda-runtime-level failures the primary retrier already handles by class. Using States.ALL here catches the domain raise paths without enumerating every possible error class name. Narrow MaxAttempts=2 (vs 6 for Lambda-service errors) so transient issues recover without wasting cycles retrying a genuine code bug six times before failing.",
+          "ErrorEquals": ["States.ALL"],
+          "MaxAttempts": 2,
+          "IntervalSeconds": 30,
+          "BackoffRate": 2
+        }
+      ],
+      "ResultPath": "$.marker_write_completed",
+      "End": true
+    },
+    "MigrationHadFailures": {
+      "Type": "Fail",
+      "Comment": "Reached from MigrationOutcome's Default branch — CheckMigrationSuccess reported all_hours_clean=false because at least one chunk had hours_failed > 0 or hours_partial > 0, or the aggregator saw no work at all. Marker stays state=in_progress so restarting the state machine (via CustomResource re-fire or manual StartExecution) resumes: the Purge is skipped, already-written chunks are HeadObject-skipped, only the failing hours are retried. Operators inspect $.migration_check.failing_chunks in the SFN execution history for the specific chunk / hour / arm identity. Alarm on this failure via SFN's built-in CloudWatch integration.",
+      "Error": "MigrationIncomplete",
+      "Cause": "Aggregator reported all_hours_clean=false. See $.migration_check.failing_chunks in the SFN execution history for specifics. Marker left as state=in_progress. Restart the state machine (or wait for the next CustomResource fire) to resume."
+    },
+    "MigrationHadMapFailure": {
+      "Type": "Fail",
+      "Comment": "Reached from MigrateChunks' Catch — a chunk exhausted its 3-attempt inner Retry, failing the whole Map before CheckMigrationSuccess could aggregate. The caught error object is on $.map_error and gets surfaced via CausePath below so the SFN execution history shows the exception name + message directly (no CloudWatch log-hunt for the identity of the failing chunk). Marker stays state=in_progress — same recovery semantic as MigrationHadFailures (restart resumes, HeadObject-skip preserves prior progress).",
+      "ErrorPath": "$.map_error.Error",
+      "CausePath": "$.map_error.Cause"
+    }
+  }
+}
