@@ -1734,16 +1734,24 @@ Synchronize IDP document class schemas with BDA (Bedrock Data Automation) bluepr
 succeeded and the ones that failed alike, so its length is `classes_synced +
 classes_failed` — in the order the sync reported them. It is the only part of the result
 that says *which* classes reached BDA rather than how many, and it is what
-`idp-cli config-sync-bda` prints under "Classes synced". Each entry is the class id the
-sync itself used for that class, so a `success` entry names a class BDA now recognises
-under that id.
+`idp-cli config-sync-bda` prints under "Classes synced".
 
-⚠️ Two names can appear that are **not** class ids you configured, both from a schema
-the sync could not name: `Document`, for a blueprint whose schema carries no class id,
-and `unknown`, for a class or blueprint that failed before one could be read. Both are
-per-entry and rare. A result in which *every* entry is a placeholder is not this — it
-means something is reading the sync's per-class entries under the wrong key, which is
-what [#1208](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/1208)
+⚠️ **A successful entry names a class; a failed one may name something else.** Three
+values can appear that are not a class id you configured, each of them rare and
+per-entry:
+
+- `Document`, for a blueprint whose schema carries no class id at all. This one can
+  appear on a **successful** entry, so a clean sync listing `Document` really has synced
+  a class under that id.
+- A BDA **blueprint name**, such as `idp-Invoice-a1b2c3d4`, on an entry that failed while
+  syncing BDA → IDP — at that point the blueprint is the only handle the sync has on the
+  work. `idp-cli config-sync-bda` never shows one, because it prints the names only for a
+  sync that succeeded, but an SDK caller reading a partial result will see them.
+- `unknown`, where neither a class id nor a blueprint name was available.
+
+A result in which *every* entry is a placeholder is none of those. It means something is
+reading the sync's per-class entries under a key it does not write, which is what
+[#1208](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/1208)
 was.
 
 `orphaned_blueprint_arns` names blueprints a `replace`-mode sync removed from the BDA
