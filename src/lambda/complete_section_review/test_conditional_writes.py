@@ -12,10 +12,17 @@ the loser's entry is gone with nothing reporting it.
 Two things make these tests measure the defect rather than a keyword argument.
 
 The table is a **real** ``moto`` table, so ``list_append`` and ``if_not_exists``
-are evaluated by DynamoDB's own expression engine rather than by a double written
-to agree with the code under test. A ``MagicMock`` table -- which is what the rest
-of this directory's suite uses -- accepts any ``UpdateExpression`` at all and
-stores nothing, so it cannot tell the fixed write from the broken one.
+are parsed and evaluated by an implementation of the expression language rather
+than by a double written to agree with the code under test. A ``MagicMock`` table
+-- which is what the rest of this directory's suite uses -- accepts any
+``UpdateExpression`` at all and stores nothing, so it cannot tell the fixed write
+from the broken one.
+
+⚠️ ``moto`` is an independent reimplementation, **not** DynamoDB, so what these
+tests establish is that the expression says what it is meant to say and that the
+unguarded form loses the entry. Whether ``moto`` and DynamoDB agree on these two
+functions is the one thing a ``moto`` test cannot measure about itself; nothing
+here has been run against a DynamoDB endpoint.
 
 The interleaving is **forced, not raced**. ``_CompetingWriteTable`` commits the
 other reviewer's append inside the first ``get_item`` call, immediately after the
