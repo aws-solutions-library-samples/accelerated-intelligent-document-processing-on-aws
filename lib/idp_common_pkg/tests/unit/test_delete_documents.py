@@ -77,11 +77,17 @@ class TestGetDocumentsByBatch:
         assert len(result) == 2
         assert table.scan.call_count == 2
 
-    def test_handles_scan_error_gracefully(self):
+    def test_a_scan_error_reaches_the_caller(self):
+        """An empty list has to keep meaning "no documents in that batch".
+
+        The selector returns `List[str]`, so `[]` is the only thing a swallowed fault
+        could be reported as, and both callers turn `[]` into a success. The deeper
+        per-exception-class assertions are in `test_delete_documents_coverage.py`.
+        """
         table = MagicMock()
         table.scan.side_effect = Exception("DynamoDB error")
-        result = get_documents_by_batch(table, "batch-A")
-        assert result == []
+        with pytest.raises(Exception, match="DynamoDB error"):
+            get_documents_by_batch(table, "batch-A")
 
 
 # ---------------------------------------------------------------------------
@@ -151,11 +157,11 @@ class TestGetDocumentsByPattern:
         result = get_documents_by_pattern(table, "b/*", status_filter="FAILED")
         assert result == ["b/doc2.pdf"]
 
-    def test_handles_scan_error_gracefully(self):
+    def test_a_scan_error_reaches_the_caller(self):
         table = MagicMock()
         table.scan.side_effect = Exception("DynamoDB error")
-        result = get_documents_by_pattern(table, "*")
-        assert result == []
+        with pytest.raises(Exception, match="DynamoDB error"):
+            get_documents_by_pattern(table, "*")
 
     def test_handles_pagination(self):
         table = MagicMock()

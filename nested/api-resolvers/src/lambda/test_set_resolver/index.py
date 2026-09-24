@@ -1397,7 +1397,8 @@ def open_test_set_annotation_draft(args, event=None):
     anything, where the alternative is a number that refers to nothing at all.
 
     Idempotent: opening a draft that is already open returns it and copies nothing, which
-    matters because the annotate view calls this on entry.
+    matters because two annotators can press Start annotating on the same set, and
+    because the second press after a reload must not snapshot again.
     """
     input_data = args.get("input", args)
     test_set_id = input_data["testSetId"]
@@ -1480,11 +1481,70 @@ def open_test_set_annotation_draft(args, event=None):
     # Written after the snapshot: a failure part-way leaves no draft pointer, so the
     # next call retries the copy rather than annotating against a version whose content
     # was never captured.
-    db_client.update_item(
-        key={"PK": f"testset#{test_set_id}", "SK": "metadata"},
-        update_expression="SET draftVersion = :d",
-        expression_attribute_values={":d": draft_version},
-    )
+    #
+    # Conditional because the `existing_draft` check above is a read and this is the
+    # write, and between the two a second annotator can have opened the same
+    # transition -- two people pressing Start annotating on one set, which is the
+    # only thing that calls this. (It is *not* called on entering the annotate view:
+    # the workspace deliberately asks rather than opening a transition on arrival,
+    # and a UI test pins that it is never reached from a `useEffect`. So the window
+    # is two deliberate presses, not every page load.) Both then read no draft, both
+    # compute a `draft_version`, and the later write replaces the earlier one: the
+    # pointer names one transition while two were opened, and the queue links handed
+    # to the first annotator belong to a transition the metadata row no longer
+    # mentions. The condition is the same statement the early return makes, evaluated
+    # where it can be relied on -- `draftVersion` is only ever SET here and REMOVEd
+    # by publishing, never stored as zero, so `attribute_not_exists` and "no draft
+    # open" are the same fact.
+    #
+    # ⚠️ **It does not cover a set that has never been published, and that residual is
+    # measured rather than theoretical.** On that path the branch above calls
+    # `publish_test_set_version`, and publishing *removes* `draftVersion` as part of
+    # committing its transition. So if the other caller's whole open lands before
+    # this one's publish, this call's own publish clears the winner's pointer and the
+    # condition is then true: both callers return `alreadyOpen: False`, two
+    # transitions are opened, and the row names only the later one -- exactly the loss
+    # this condition closes everywhere else. Closing it needs the publish and the
+    # claim to be one atomic step, which is a restructure of this function rather than
+    # a stronger condition: no predicate over the row can distinguish "nobody has
+    # claimed" from "I just removed the claim myself". It is bounded to the first
+    # annotation session of a set, after which the guard holds. See the test named
+    # for it.
+    try:
+        db_client.update_item(
+            key={"PK": f"testset#{test_set_id}", "SK": "metadata"},
+            update_expression="SET draftVersion = :d",
+            expression_attribute_values={":d": draft_version},
+            condition_expression="attribute_not_exists(draftVersion)",
+        )
+    except DynamoDBError as e:
+        if e.error_code != "ConditionalCheckFailedException":
+            raise
+        # Somebody opened the transition first. Returning theirs is what the early
+        # return above would have done had the read seen it, so this is the same
+        # answer rather than a new failure. The snapshot this call took is wasted
+        # and harmless -- it copied a published version's labels to where they
+        # already were.
+        fresh = db_client.get_item({"PK": f"testset#{test_set_id}", "SK": "metadata"})
+        winner = _as_int((fresh or {}).get("draftVersion"))
+        if not winner:
+            # No draft to return: a publish committed the transition in the same
+            # window, which is the one thing that removes the attribute. The state
+            # this call computed no longer describes the set, and the annotate
+            # view's next on-entry call opens the right transition against the new
+            # base, so raising is the honest answer rather than writing anyway.
+            raise
+        logger.info(
+            f"Test set '{test_set_id}': another caller opened draft version "
+            f"{winner} first; returning it instead of version {draft_version}"
+        )
+        return {
+            "testSetId": test_set_id,
+            "baseVersion": winner - 1,
+            "draftVersion": winner,
+            "snapshotObjectCount": 0,
+            "alreadyOpen": True,
+        }
 
     logger.info(
         f"Opened annotation draft {draft_version} for test set '{test_set_id}' "
@@ -2177,18 +2237,45 @@ def get_draft_label_job(args):
     test_set_id = args["testSetId"]
     job_id = args["jobId"]
 
-    job = db_client.get_item(
-        {"PK": f"testset#{test_set_id}", "SK": _label_job_sk(job_id)}
-    )
+    key = {"PK": f"testset#{test_set_id}", "SK": _label_job_sk(job_id)}
+    job = db_client.get_item(key)
     if not job:
         raise Exception(f"Labeling job '{job_id}' not found")
 
     if job.get("status") in ("COMPLETED", "FAILED"):
         return _label_job_to_result(job)
 
-    return _label_job_to_result(
-        _harvest_label_job(job, deadline=time.monotonic() + HARVEST_TIME_BUDGET_SECONDS)
-    )
+    try:
+        harvested = _harvest_label_job(
+            job, deadline=time.monotonic() + HARVEST_TIME_BUDGET_SECONDS
+        )
+    except DynamoDBError as e:
+        if e.error_code != "ConditionalCheckFailedException":
+            raise
+        # The harvest refused to write blind after losing its merge budget, which
+        # is the right call there and the wrong answer here. This is the progress
+        # poll the UI drives on a timer, so propagating would turn a condition
+        # that heals itself into a visible error on a read: the writer that won
+        # every round has its progress in the row, this pass's S3 work is
+        # idempotent, and the next poll is five seconds away. Report what is
+        # stored instead. The queue-side caller already treats a failed harvest
+        # this way; this makes the read side match it, narrowly -- any other
+        # failure still propagates.
+        #
+        # ⚠️ One rejection this cannot tell apart from that one is a condition that
+        # will never hold again, and absorbing it reports a stalled job as live
+        # progress on every poll with nothing raised. The condition and the shape of
+        # row that does it are written out at the condition itself; the two comments
+        # only describe the problem together. Logged at INFO for that reason: a run
+        # of these lines on one job id is the signal.
+        logger.info(
+            f"Draft labeling job {job_id}: another harvest held the write for "
+            "every attempt; reporting the stored state and leaving the rest to "
+            "the next poll"
+        )
+        harvested = db_client.get_item(key) or job
+
+    return _label_job_to_result(harvested)
 
 
 def _walk_confidence(explainability_info):
@@ -2948,6 +3035,19 @@ TERMINAL_DOCUMENT_STATUSES = frozenset(
 # is deliberately far beyond any plausible processing time.
 STALE_LABEL_JOB_HOURS = 6
 
+# How many times a harvest may merge and re-attempt its progress write after
+# another harvest of the same job wrote first.
+#
+# Small, because a rebuilt attempt here costs one GetItem and no S3 work at all:
+# the conflict is resolved by taking the union of the two views, never by redoing
+# the copying. Contention is bounded in practice by the number of open UI views of
+# one job, and each loser's second attempt starts from the winner's state, so it
+# collides only with a third writer. Exhausting the budget raises rather than
+# writing unconditionally, because falling back to a blind write would be the
+# defect this guard exists to prevent, and the next poll -- five seconds away -- is
+# a harmless retry of the whole pass.
+_MAX_HARVEST_WRITE_ATTEMPTS = 4
+
 
 def _collect_doc_confidences(test_set_id):
     """Per-document minimum confidence, plus observed doc shape for the effort model.
@@ -3129,7 +3229,14 @@ def _harvest_label_job(job, deadline=None):
     done = set(job.get("harvestedFiles") or [])
     failed = list(job.get("failedFiles") or [])
     resolved = done | set(failed)
-    pending = 0
+    # The documents this pass is waiting on, by name rather than as a count. The
+    # names are what a merge after a lost write needs: another harvest of the same
+    # job may have resolved one of them, and subtracting the set it wrote is exact,
+    # where a count could only be guessed at. Recomputing the count from `files`
+    # instead would be wrong in the other direction -- a document whose copy raised
+    # below is deliberately in neither `done` nor `failed` and deliberately not
+    # pending, so counting it would hold the job RUNNING forever.
+    pending_files = set()
     out_of_time = False
     for file_name in files:
         if file_name in resolved:
@@ -3138,7 +3245,7 @@ def _harvest_label_job(job, deadline=None):
             # Remaining documents are pending, not lost: the job stays RUNNING and
             # the next poll picks them up.
             out_of_time = True
-            pending += 1
+            pending_files.add(file_name)
             continue
 
         doc = tracking_table.get_item(
@@ -3168,7 +3275,7 @@ def _harvest_label_job(job, deadline=None):
                 )
                 failed.append(file_name)
             else:
-                pending += 1
+                pending_files.add(file_name)
             continue
 
         try:
@@ -3202,41 +3309,105 @@ def _harvest_label_job(job, deadline=None):
                 f"Draft labeling: failed to harvest '{file_name}' for job {job_id}: {e}"
             )
 
-    labeled = len(done)
-    if pending:
-        status = "RUNNING"
-    elif failed and not labeled:
-        # Nothing to harvest and nothing left to wait for.
-        status = "FAILED"
-    else:
-        status = "COMPLETED"
     now = datetime.utcnow().isoformat() + "Z"
-    update_expr = "SET #st = :s, labeled = :n, harvestedFiles = :h, failedFiles = :f"
-    expr_values = {
-        ":s": status,
-        ":n": labeled,
-        ":h": sorted(done),
-        ":f": sorted(set(failed)),
-    }
-    if status == "FAILED":
-        update_expr += ", #er = :e"
-        expr_values[":e"] = (
-            f"All {len(set(failed))} document(s) failed processing; no labels were "
-            "produced"
+    job_key = {"PK": f"testset#{test_set_id}", "SK": _label_job_sk(job_id)}
+    # What this pass read, and therefore what the write is allowed to assume is
+    # still stored. Both are read-derived accumulating lists, so writing them back
+    # blind discarded an overlapping harvest's progress: every caller that displays
+    # a job drives this harvest on a five-second timer, and three separate UI
+    # components do, so two passes over one job is the ordinary case rather than an
+    # edge. What the loser dropped was not cosmetic -- a `failedFiles` entry lost
+    # this way makes the next pass count an already-failed document as pending,
+    # which is exactly the state that used to leave a job RUNNING forever.
+    expected_done = sorted(job.get("harvestedFiles") or [])
+    expected_failed = sorted(set(job.get("failedFiles") or []))
+    for attempt in range(1, _MAX_HARVEST_WRITE_ATTEMPTS + 1):
+        labeled = len(done)
+        if pending_files:
+            status = "RUNNING"
+        elif failed and not labeled:
+            # Nothing to harvest and nothing left to wait for.
+            status = "FAILED"
+        else:
+            status = "COMPLETED"
+        update_expr = (
+            "SET #st = :s, labeled = :n, harvestedFiles = :h, failedFiles = :f"
         )
-    if status in ("COMPLETED", "FAILED"):
-        update_expr += ", completedAt = :c"
-        expr_values[":c"] = now
+        expr_values = {
+            ":s": status,
+            ":n": labeled,
+            ":h": sorted(done),
+            ":f": sorted(set(failed)),
+        }
+        if status == "FAILED":
+            update_expr += ", #er = :e"
+            expr_values[":e"] = (
+                f"All {len(set(failed))} document(s) failed processing; no labels were "
+                "produced"
+            )
+        if status in ("COMPLETED", "FAILED"):
+            update_expr += ", completedAt = :c"
+            expr_values[":c"] = now
 
-    expr_names = {"#st": "status"}
-    if status == "FAILED":
-        expr_names["#er"] = "error"
-    db_client.update_item(
-        key={"PK": f"testset#{test_set_id}", "SK": _label_job_sk(job_id)},
-        update_expression=update_expr,
-        expression_attribute_names=expr_names,
-        expression_attribute_values=expr_values,
-    )
+        expr_names = {"#st": "status", "#h": "harvestedFiles", "#f": "failedFiles"}
+        if status == "FAILED":
+            expr_names["#er"] = "error"
+        expr_values[":exp_h"] = expected_done
+        expr_values[":exp_f"] = expected_failed
+        # List equality in a condition is order-sensitive -- DynamoDB compares the
+        # document, not the set -- so this holds only because every writer of these
+        # two attributes stores them sorted, a few lines above (and `failedFiles`
+        # deduplicated, which is why `expected_failed` applies `set` and
+        # `expected_done` does not). Keep the `sorted(...)` when touching either.
+        #
+        # ⚠️ **A stored list this cannot reproduce is a silent permanent stall, not a
+        # slow path, and the absorb in `get_draft_label_job` is half of why.** An
+        # unsorted or duplicated stored list makes the condition false on every
+        # attempt, the budget exhausts, this function raises -- and the poll then
+        # absorbs that rejection and reports the stored row. Measured: the job stays
+        # RUNNING across every poll with no error and no progress, indefinitely, where
+        # the unguarded write normalised such a row on the first poll. The absorb is
+        # still right (see the reasoning at it), because the rejection it is written
+        # for does heal itself; the two comments have to be read together, because
+        # neither is wrong on its own and the combination is what wedges. Reaching it
+        # needs a writer outside this function -- a manual repair or a migration, since
+        # every version of this code has stored both sorted.
+        condition = (
+            "(attribute_not_exists(#h) OR #h = :exp_h) "
+            "AND (attribute_not_exists(#f) OR #f = :exp_f)"
+        )
+        try:
+            db_client.update_item(
+                key=job_key,
+                update_expression=update_expr,
+                expression_attribute_names=expr_names,
+                expression_attribute_values=expr_values,
+                condition_expression=condition,
+            )
+            break
+        except DynamoDBError as e:
+            if e.error_code != "ConditionalCheckFailedException":
+                raise
+            if attempt == _MAX_HARVEST_WRITE_ATTEMPTS:
+                raise
+            # Merge rather than redo. The expensive part of this pass -- reading
+            # each document and writing its draft labels to S3 -- has already
+            # happened and is idempotent, so a lost conflict must not discard it
+            # and must not repeat it. Both attributes accumulate, so the union of
+            # the two views is the correct settled state, and subtracting it from
+            # the names still outstanding is what keeps the derived status honest
+            # without recomputing it from the file list.
+            fresh = db_client.get_item(job_key) or {}
+            expected_done = sorted(fresh.get("harvestedFiles") or [])
+            expected_failed = sorted(set(fresh.get("failedFiles") or []))
+            done |= set(expected_done)
+            failed = sorted(set(failed) | set(expected_failed))
+            pending_files -= done | set(failed)
+            logger.info(
+                f"Draft labeling job {job_id}: another harvest wrote first; "
+                f"merging and retrying (attempt {attempt} of "
+                f"{_MAX_HARVEST_WRITE_ATTEMPTS})"
+            )
 
     meta_expr = "SET labelJobStatus = :s"
     meta_values = {":s": status}
@@ -3251,7 +3422,7 @@ def _harvest_label_job(job, deadline=None):
     )
 
     logger.info(
-        f"Draft labeling job {job_id}: labeled={labeled} pending={pending} "
+        f"Draft labeling job {job_id}: labeled={labeled} pending={len(pending_files)} "
         f"failed={len(set(failed))} status={status}"
         + (
             f" (stopped after {HARVEST_TIME_BUDGET_SECONDS}s; resuming on the "

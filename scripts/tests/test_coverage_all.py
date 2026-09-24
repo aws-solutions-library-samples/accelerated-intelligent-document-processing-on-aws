@@ -325,3 +325,66 @@ class TestTreeSelection:
         monkeypatch.setattr(sys, "argv", ["coverage_all.py"])
         assert cov_all.main() == 0
         assert "check_coverage_debt" in capsys.readouterr().out
+
+
+@pytest.mark.unit
+class TestASerialTreeIsNeverRunInParallel:
+    """`Tree.serial` is a correctness property, so the flag cannot override it.
+
+    A suite that drives the code under test as a subprocess has its coverage
+    under-collected by xdist workers, and the symptom is a large fall in a file whose own
+    suite is green -- measured on `scripts`, two hook modules read 33 and 10 points below
+    their true figures. Recording that is worse than having no ratchet on those files: it
+    pre-approves a real regression down to the recorded floor. So the declaration wins
+    over the command line in the direction that protects the measurement.
+    """
+
+    def test_a_serial_tree_gets_no_n_auto_even_without_the_flag(
+        self, monkeypatch, tmp_path, capsys
+    ):
+        tree = ccd.Tree("alpha", "alpha", "pkg", (), serial=True)
+        (tmp_path / "alpha").mkdir(parents=True, exist_ok=True)
+        rec = _Recorder()
+        _install(monkeypatch, tmp_path, [tree], rec)
+        monkeypatch.setattr(sys, "argv", ["coverage_all.py"])
+        assert cov_all.main() == 0
+        capsys.readouterr()
+        assert "-n" not in rec.calls[0][0], rec.calls[0][0]
+
+    def test_a_parallel_tree_still_gets_n_auto_by_default(
+        self, monkeypatch, tmp_path, capsys
+    ):
+        """The other direction, so the flag is not simply disabled for everything."""
+        tree = ccd.Tree("alpha", "alpha", "pkg", (), serial=False)
+        (tmp_path / "alpha").mkdir(parents=True, exist_ok=True)
+        rec = _Recorder()
+        _install(monkeypatch, tmp_path, [tree], rec)
+        monkeypatch.setattr(sys, "argv", ["coverage_all.py"])
+        assert cov_all.main() == 0
+        capsys.readouterr()
+        assert "-n" in rec.calls[0][0]
+
+    def test_serial_declarations_and_the_flag_are_independent_per_tree(
+        self, monkeypatch, tmp_path, capsys
+    ):
+        """A mixed run: one declared serial, one not, with no flag given."""
+        a = ccd.Tree("ser", "ser", "pkg", (), serial=True)
+        b = ccd.Tree("par", "par", "pkg", (), serial=False)
+        for t in (a, b):
+            (tmp_path / t.cwd).mkdir(parents=True, exist_ok=True)
+        rec = _Recorder()
+        _install(monkeypatch, tmp_path, [a, b], rec)
+        monkeypatch.setattr(sys, "argv", ["coverage_all.py"])
+        assert cov_all.main() == 0
+        capsys.readouterr()
+        assert "-n" not in rec.calls[0][0]
+        assert "-n" in rec.calls[1][0]
+
+    def test_the_scripts_tree_is_declared_serial_in_the_real_registry(self):
+        """Not a synthetic tree: the one this was measured on.
+
+        `scripts/tests/test_check_commit_text.py` and `test_check_shared_branch.py` run
+        the hooks they cover as subprocesses. If this ever flips back to parallel, two
+        real 95%-plus baselines get re-recorded 10 and 33 points lower.
+        """
+        assert ccd.TREES_BY_NAME["scripts"].serial is True

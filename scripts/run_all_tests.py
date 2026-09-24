@@ -202,6 +202,7 @@ RUN_ROOTS = [
     "src/lambda/circuit_breaker_manager",
     "src/lambda/complete_section_review",
     "src/lambda/external_idp_group_mapping",
+    "src/lambda/finetuning_deployment_handler",
     "src/lambda/finetuning_job_creator/tests",
     "src/lambda/job_tracker",
     "src/lambda/queue_processor",

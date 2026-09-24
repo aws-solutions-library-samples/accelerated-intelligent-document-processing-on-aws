@@ -21,12 +21,10 @@ classification:
   max_tokens: "4096"
 extraction:
   model: amazon.nova-pro-v1:0
-  max_tokens: "10000"
   # v0.6: confidence scoring settings (was the top-level `assessment` block —
   # GovCloud pins a GovCloud-available assessment model).
   confidence:
     model: amazon.nova-lite-v1:0
-    max_tokens: "10000"
     # Self-healing escalation model (escalation_enabled defaults to true in
     # base-confidence.yaml) — used when Nova Lite leaves rows unscored after
     # hitting its output cap. The system default (us.anthropic.claude-sonnet-5:1m)
