@@ -41,6 +41,54 @@ It deliberately does **not** fail when coverage *rises*. A ratchet that demanded
 baseline be rewritten on every improvement would be re-recorded reflexively, and a file
 whose real coverage had fallen would be re-recorded along with it. `--write` is explicit.
 
+## What makes it refuse, which is not the same as failing
+
+A verdict needs a measurement, so two inputs produce **no verdict at all** (exit 2)
+rather than a pass:
+
+* **No usable report for any tree.** A gate that measured nothing must not report
+  success, and with one exit code serving both it did: on a tree with no report this
+  printed an informational line and exited 0, indistinguishable in a job log from a
+  clean ratchet. In both CI configurations it runs as a separate step from the run that
+  writes its input, so a reordering, a changed report path or a tolerated test failure
+  put a green tick on a run that measured no coverage. The refusal is unconditional and
+  needs no flag, which is what makes it cover every caller — both CI steps included —
+  rather than the one place somebody remembered to assert it. `--require-tree NAME` goes
+  further for a caller that knows which tree it just measured: it fails **by name** if
+  that tree was not checked, which is stronger than "something was checked" once more
+  than one tree can have a report. Issue #1190.
+* **A report whose run did not finish cleanly.** A partially failed pytest still writes
+  a `coverage.xml`, and a run where some xdist workers errored writes one showing large,
+  uniform-looking falls across unrelated files — the tests that would have covered them
+  never executed. Comparing such a report names losses that did not happen, and the
+  remedy this gate prints (`--write`) would then record them permanently, which is the
+  worse half: `--write` regenerates the whole baseline, so a fabricated drop is
+  indistinguishable from a deliberate one afterwards. So a report is compared only when
+  the **run record** beside it — the JUnit XML the same pytest invocation writes — says
+  the run finished with no errors and no failures. `--write` refuses outright on such a
+  report rather than skipping it, because the remedy is to re-run.
+
+A tree whose run record is **absent, unpaired or unreadable** is treated as unmeasured
+rather than as trustworthy: it is named as unchecked, and if that leaves nothing checked
+the run has measured nothing and refuses on the first rule above. Fail-closed is the
+point — dropping `--junitxml` from a producer cannot quietly turn the trust check off,
+it turns the whole gate red.
+
+**What this does not answer is *when*.** The pairing check compares the report and its
+record against each other, never against the current invocation, so a report and record
+left behind **together** by an earlier run are accepted and a full verdict is printed
+about a stale measurement. Neither CI can reach that state — each job starts from a fresh
+checkout and neither restores `test-reports/` from a cache or an artifact — but a local
+tree keeps whatever the last run wrote. A blanket age limit is the wrong fix: after
+`make coverage-all`, one tree failing its suite makes `--write` refuse everything, and the
+correct recovery is to re-run that one tree and record again, which depends on the other
+eight reports still being accepted an hour later. Freshness therefore has to be something
+a caller asks for, not a deadline the gate imposes.
+
+Partial measurement is still a pass: one tree measured and eight unmeasured exits 0 and
+names the eight, which is the ordinary local case (`make test-cicd -C lib/idp_common_pkg`
+measures `idp_common` alone) and the CI case as well.
+
 ## What it is not
 
 Not a blocking gate. It reports precisely — file, before, after, delta, remedy — and the
@@ -53,16 +101,9 @@ so a red result here informs rather than refuses.
 
 This script re-measures nothing: it reads the coverage XML that the normal
 whole-package run (`make test-cicd -C lib/idp_common_pkg`) writes to
-`lib/idp_common_pkg/test-reports/coverage.xml`.
-
-⚠️ **Check that run succeeded before believing a drop reported here.** A partially
-failed pytest still writes a report, and a report from a run where some xdist workers
-errored shows large, uniform-looking falls across unrelated files — the tests that would
-have covered them never executed. Two symptoms to recognise, because both have been
-mistaken for a real regression: `Different tests were collected between gw1 and gwN`
-(usually because a test file was edited while the run was in flight), and a file whose
-own suite you know to be green reported far below its baseline. Re-run before recording
-anything.
+`lib/idp_common_pkg/test-reports/coverage.xml`, and the per-tree reports
+`scripts/coverage_all.py` writes. Both producers also write the JUnit run record beside
+the report, which is what makes the second refusal above possible.
 
 A submodule-scoped `--cov` under `pytest -n auto` used to produce spurious failures on
 this package as well, because `idp_common/__init__.py` cached lazily-imported submodules
@@ -301,6 +342,136 @@ def _resolve_report(tree: Tree) -> Path | None:
     return None
 
 
+#: The run record's filename, for the one report name that does not follow the pattern.
+#:
+#: `lib/idp_common_pkg`'s suite writes `coverage.xml` and `test-results.xml`;
+#: `scripts/coverage_all.py` writes `coverage-<tree>.xml` and `coverage-<tree>-results.xml`.
+#: Both halves of each pair come from one pytest invocation, which is what lets the second
+#: vouch for the first. `scripts/tests/test_coverage_debt.py` derives the expected
+#: `--junitxml` argument for both producers from :func:`run_record_path`, so a rename on
+#: either side fails there rather than degrading this gate to "nothing verifiable".
+RUN_RECORD_NAMES = {"coverage.xml": "test-results.xml"}
+
+#: How far apart a coverage report and its run record may be written and still be read as
+#: one run.
+#:
+#: pytest writes both at session finish, seconds apart — the gap is the time to serialise
+#: a few hundred files. The window is wide because its job is *pairing*, not timing: it
+#: rules out a stale record vouching for a fresh report, which is what a hand-run
+#: `pytest --cov` with no `--junitxml` beside an older complete run would otherwise
+#: produce. Narrow enough to be defeated by a slow serialisation and it would refuse in
+#: CI for no reason, which is the failure mode that gets a gate switched off.
+RUN_RECORD_PAIRING_SECONDS = 600
+
+
+class RunTrust(NamedTuple):
+    """Whether a coverage report describes a finished run, and how that was decided."""
+
+    #: ``"clean"``, ``"errored"`` or ``"unverified"``.
+    state: str
+    #: One line naming the evidence, printed as-is.
+    detail: str
+
+
+def run_record_path(report: Path) -> Path:
+    """The JUnit XML the run that wrote ``report`` writes beside it."""
+    return report.with_name(
+        RUN_RECORD_NAMES.get(report.name, f"{report.stem}-results.xml")
+    )
+
+
+def run_trust(report: Path) -> RunTrust:
+    """Read the run record beside ``report`` and say whether the report can be compared.
+
+    The coverage XML itself cannot answer this. It carries no record of the session that
+    produced it: a run whose workers errored during collection writes a perfectly
+    well-formed report whose numbers are an artefact, and nothing inside the file says
+    so. The JUnit XML written by the same invocation does say so, in the ``errors`` and
+    ``failures`` attributes of its ``<testsuite>`` element — measured against a real
+    xdist collection mismatch, which records ``errors="3"`` with the
+    ``Different tests were collected between gw0 and gwN`` text in each ``<error>``.
+
+    The alternatives were rejected for availability rather than quality: pytest's exit
+    status and the xdist message on its stdout are both gone by the time this runs, since
+    both CI configurations invoke this gate as a **separate step** from the run — which is
+    the gap issue #1190 is about — and the coverage report's own internal consistency
+    cannot tell a genuinely low figure from a fabricated one.
+    """
+    record = run_record_path(report)
+    if not record.is_file():
+        return RunTrust(
+            "unverified",
+            f"no run record beside it ({record.name} is absent), so whether the run "
+            f"that wrote {report.name} finished cannot be established",
+        )
+    skew = abs(record.stat().st_mtime - report.stat().st_mtime)
+    if skew > RUN_RECORD_PAIRING_SECONDS:
+        return RunTrust(
+            "unverified",
+            f"{record.name} was written {skew / 60:.0f} min away from {report.name}, so "
+            f"it records a different run and vouches for nothing",
+        )
+    try:
+        root = ET.parse(record).getroot()
+    except (ET.ParseError, OSError) as exc:
+        # Every failure to read the record lands on "unverified", never on "clean", so
+        # widening this clause can only make the gate more cautious. A record it cannot
+        # read is a record that vouches for nothing.
+        return RunTrust("unverified", f"{record.name} cannot be read ({exc})")
+    suites = list(root.iter("testsuite"))
+    if not suites:
+        return RunTrust(
+            "unverified",
+            f"{record.name} has no <testsuite> element, so it records no run",
+        )
+    try:
+        errors = sum(int(s.get("errors") or 0) for s in suites)
+        failures = sum(int(s.get("failures") or 0) for s in suites)
+        tests = sum(int(s.get("tests") or 0) for s in suites)
+    except ValueError as exc:
+        return RunTrust(
+            "unverified", f"{record.name} has an unreadable test count ({exc})"
+        )
+    # The counts a `<testsuite>` attribute claims are the summary; the `<error>` and
+    # `<failure>` elements are the record itself. Taking the larger of the two reads a
+    # recorded error whichever way the producer wrote it, rather than trusting one
+    # spelling of it -- pytest writes both, and a record carrying an `<error>` under
+    # `errors="0"` would otherwise read as a clean run.
+    errors = max(errors, len(list(root.iter("error"))))
+    failures = max(failures, len(list(root.iter("failure"))))
+    if errors or failures:
+        return RunTrust(
+            "errored",
+            f"the run that wrote it recorded {errors} error(s) and {failures} "
+            f"failure(s), so tests that would have covered these files never ran — "
+            f"the falls it reports are artefacts of the run, not regressions. An xdist "
+            f"collection mismatch (`Different tests were collected between gw0 and "
+            f"gwN`) is the usual cause; re-run before recording anything",
+        )
+    if not tests:
+        return RunTrust(
+            "unverified",
+            f"{record.name} records 0 tests, so nothing executed and the report "
+            f"describes no measurement",
+        )
+    return RunTrust("clean", f"{record.name} records {tests} test(s), 0 errors")
+
+
+class Unchecked(NamedTuple):
+    """A tree this run could not compare, and why. Never a pass.
+
+    Not a carve-out, and the distinction matters because the list looks like one: the
+    scope decision about what is measured lives in :data:`TREES`, which is the enforced
+    universe, and membership here is a property of one invocation rather than of a tree.
+    What makes it safe is that every member is **printed with its reason** and under no
+    success marker, and that a run where every tree lands here has measured nothing and
+    refuses — so a run that checked one tree cannot be read as one that checked nine.
+    """
+
+    tree: str
+    reason: str
+
+
 def check_tree(
     tree: Tree, recorded: dict[str, float]
 ) -> tuple[list[str], float | None]:
@@ -345,37 +516,133 @@ def check_tree(
     return problems, report_total(report)
 
 
-def check() -> tuple[int, list[str], list[str]]:
-    """Check every tree with a report. Returns (exit code, problems, skipped names)."""
+class CheckResult(NamedTuple):
+    """One run's outcome. ``checked`` is why the caller can describe it accurately.
+
+    A refusal is per tree, so "this run measured nothing" is a claim about the whole run
+    that only :attr:`checked` can settle: one tree can be compared cleanly and produce a
+    genuine regression while another tree's report is refused. Reporting that combination
+    as "nothing was measured" tells a reader to dismiss a real finding as an artefact,
+    which is the same defect — a heading a log reader cannot tell apart from a different
+    outcome — that this gate exists to remove.
+    """
+
+    #: 2 when the run reached no verdict, 1 when the ratchet has findings, else 0.
+    code: int
+    #: Every line to print: findings first, then refusals.
+    problems: list[str]
+    #: Trees this run could not compare, each with its reason.
+    unchecked: list[Unchecked]
+    #: Trees actually compared against their baseline. A finding naming one of these is
+    #: a real regression whatever else the run refused.
+    checked: list[str]
+
+
+def check(required: tuple[str, ...] = ()) -> CheckResult:
+    """Check every tree with a trustworthy report.
+
+    The exit code is **2** when the run produced no verdict — nothing was measured, a
+    report came from a run that did not finish, or a tree named in ``required`` was not
+    checked — **1** when the ratchet has findings, and 0 otherwise. A refusal outranks a
+    finding: the findings from the trees that *were* measured are still printed, but the
+    run as a whole did not establish what it set out to.
+    """
     baseline = load_baseline()
     trees = baseline.get("trees", {})
     problems: list[str] = []
-    skipped: list[str] = []
+    refusals: list[str] = []
+    unchecked: list[Unchecked] = []
+    checked: list[str] = []
     for tree in TREES:
+        report = _resolve_report(tree)
+        if report is None:
+            # No claim about *when*: this gate compares mtimes of the report and its run
+            # record against each other, and nothing against the current invocation, so a
+            # report and record left behind together by an earlier run are accepted. Say
+            # only what was looked for -- and say it for EVERY path that would have been
+            # accepted, or the reader follows the remedy, produces the other one, and
+            # finds the file this line named still absent.
+            looked_in = [str(report_path(tree))]
+            if tree.name == "idp_common":
+                looked_in.append(str(LEGACY_IDP_COMMON_REPORT))
+            unchecked.append(
+                Unchecked(tree.name, f"no coverage report at {' or '.join(looked_in)}")
+            )
+            continue
+        trust = run_trust(report)
+        if trust.state == "errored":
+            refusals.append(
+                f"[{tree.name}] refusing to compare {report.name}: {trust.detail}."
+            )
+            continue
+        if trust.state != "clean":
+            unchecked.append(Unchecked(tree.name, trust.detail))
+            continue
         recorded = trees.get(tree.name, {}).get("files", {})
         tree_problems, overall = check_tree(tree, recorded)
-        if overall is None:
-            skipped.append(tree.name)
+        if overall is None:  # pragma: no cover - the report resolved a moment ago
+            unchecked.append(Unchecked(tree.name, "its report disappeared mid-run"))
             continue
+        checked.append(tree.name)
         if not recorded:
             problems.append(
                 f"[{tree.name}] a report exists but this tree has no recorded baseline, "
                 f"so nothing about it is ratcheted. Re-record with --write."
             )
         problems.extend(tree_problems)
-    return (1 if problems else 0), problems, skipped
+
+    for name in required:
+        if name in checked:
+            continue
+        reason = next(
+            (u.reason for u in unchecked if u.tree == name),
+            "its report was refused, see above",
+        )
+        refusals.append(
+            f"[{name}] --require-tree={name} was passed, but this tree was not "
+            f"checked: {reason}. The step that produces its report either did not run, "
+            f"did not finish, or wrote it somewhere this gate does not look."
+        )
+
+    if not checked:
+        refusals.append(
+            "no tree was checked, so this run measured nothing and has no verdict to "
+            "report. Produce a report first: `make test-cicd -C lib/idp_common_pkg "
+            "SKIP_INSTALL=1` for idp_common, or `make coverage-all` for every tree."
+        )
+    code = 2 if refusals else (1 if problems else 0)
+    return CheckResult(code, problems + refusals, unchecked, checked)
 
 
-def write_baseline() -> None:
+def write_baseline() -> int:
+    """Re-record baselines from the reports that a finished run produced.
+
+    Refuses outright — writing nothing — if any report came from a run that did not
+    finish, or if no report is recordable at all. This is the dangerous half of the gate:
+    it regenerates the whole file rather than appending, so a fall that a partial run
+    invented is indistinguishable from a deliberate one once recorded, and the gate's own
+    failure message offers this command as one of two remedies. Skipping the bad tree and
+    recording the rest would still leave the operator believing the baseline was
+    refreshed; the remedy for an unfinished run is to run it again.
+    """
     trees: dict[str, dict] = {}
+    measured_trees: list[str] = []
+    refusals: list[str] = []
+    recorded_now = load_baseline().get("trees", {})
     for tree in TREES:
         report = _resolve_report(tree)
-        if report is None:
-            print(f"  … {tree.name}: no report, leaving its baseline untouched")
-            existing = load_baseline().get("trees", {}).get(tree.name)
+        trust = None if report is None else run_trust(report)
+        if trust is not None and trust.state == "errored":
+            refusals.append(f"  ✗ {tree.name}: {trust.detail}")
+            continue
+        if report is None or trust is None or trust.state != "clean":
+            why = "no report" if report is None else trust.detail
+            print(f"  … {tree.name}: {why}, leaving its baseline untouched")
+            existing = recorded_now.get(tree.name)
             if existing:
                 trees[tree.name] = existing
             continue
+        measured_trees.append(tree.name)
         measured = read_report(report, tree_root(tree))
         tracked = set(tracked_source_files(tree))
         files = {
@@ -385,6 +652,27 @@ def write_baseline() -> None:
         }
         trees[tree.name] = {"total": report_total(report), "files": files}
         print(f"  ✓ {tree.name}: {len(files)} file(s) at {report_total(report):.2f}%")
+
+    if refusals:
+        print(
+            "\n🚫 recorded nothing. These reports came from runs that did not finish:"
+        )
+        for refusal in refusals:
+            print(refusal)
+        print(
+            "\nThe numbers in them are artefacts of the run, and --write would make them"
+            "\npermanent: it regenerates the whole baseline, so a fabricated fall is"
+            "\nindistinguishable from a deliberate one afterwards. Re-run the suite and"
+            "\nrecord from a clean report."
+        )
+        return 2
+    if not measured_trees:
+        print(
+            "\n🚫 recorded nothing: no tree has a report from a finished run, so there "
+            "is nothing to record.\n   Produce one with `make coverage-all`, or "
+            "`make test-cicd -C lib/idp_common_pkg SKIP_INSTALL=1` for idp_common alone."
+        )
+        return 2
 
     BASELINE.write_text(
         json.dumps(
@@ -417,6 +705,26 @@ def write_baseline() -> None:
         f"✅ recorded {total_files} file(s) across {len(trees)} tree(s) into "
         f"{BASELINE.relative_to(REPO_ROOT)}"
     )
+    return 0
+
+
+def _print_unchecked(unchecked: list[Unchecked]) -> None:
+    """Name every tree this run could not compare, with the reason, under no ✅.
+
+    Printed on both the passing and the refusing path. A tree whose report is present but
+    whose run cannot be vouched for is the case a reader is most likely to misread — a
+    `coverage.xml` is sitting right there — so "nothing was measured" has to come with
+    the reason that particular report was not used.
+    """
+    if not unchecked:
+        return
+    print(
+        f"⏭️  not checked ({len(unchecked)} of {len(TREES)} tree(s)) — nothing below is "
+        f"covered by any verdict above:"
+    )
+    for skip in sorted(unchecked):
+        print(f"     {skip.tree}: {skip.reason}")
+    print("   run `make coverage-all` to measure them")
 
 
 def main() -> int:
@@ -429,7 +737,37 @@ def main() -> int:
     parser.add_argument(
         "--summary", action="store_true", help="Print each tree's recorded figure"
     )
+    parser.add_argument(
+        "--require-tree",
+        action="append",
+        metavar="NAME",
+        default=[],
+        help=(
+            "Fail unless this tree was actually checked (repeatable). For a caller that "
+            "knows which tree it measured: the failure then names the tree, rather than "
+            "saying only that nothing was checked."
+        ),
+    )
     args = parser.parse_args()
+
+    unknown = [n for n in args.require_tree if n not in TREES_BY_NAME]
+    if unknown:
+        # A misspelled tree name must not read as a satisfied precondition: the whole
+        # point of the flag is to name something, so naming nothing is an error.
+        print(
+            f"🚫 --require-tree names {len(unknown)} tree(s) that do not exist: "
+            f"{', '.join(unknown)}. Known trees: {', '.join(t.name for t in TREES)}"
+        )
+        return 2
+    if args.require_tree and (args.summary or args.write):
+        # Refused rather than ignored. Neither of those modes compares anything, so a
+        # caller passing both has asserted a precondition that nothing will evaluate --
+        # and an ignored assertion is the exact shape of the defect this flag exists for.
+        print(
+            "🚫 --require-tree asserts that a tree was CHECKED, which neither --summary "
+            "nor --write does. Drop one of them."
+        )
+        return 2
 
     if args.summary:
         baseline = load_baseline()
@@ -446,36 +784,51 @@ def main() -> int:
         return 0
 
     if args.write:
-        write_baseline()
-        return 0
+        return write_baseline()
 
-    code, problems, skipped = check()
+    result = check(tuple(args.require_tree))
+    code, problems, unchecked = result.code, result.problems, result.unchecked
     if code:
-        print(f"❌ coverage ratchet: {len(problems)} problem(s)\n")
+        if code == 2 and not result.checked:
+            # Deliberately not the ❌ heading: this run reached no verdict, which is a
+            # different thing from finding a regression, and a reader scanning a job log
+            # has to be able to tell them apart. Issue #1190.
+            print(
+                f"🚫 coverage ratchet: no verdict — this run measured nothing. "
+                f"{len(problems)} problem(s):\n"
+            )
+        elif code == 2:
+            # Some trees WERE measured, so "nothing was measured" would be false here,
+            # and falsely reassuring in the worst direction: a reader would take the real
+            # regression printed below for another artefact of the unfinished run.
+            print(
+                f"🚫 coverage ratchet: no verdict for the whole tree set — "
+                f"{len(problems)} problem(s). "
+                f"{len(result.checked)} tree(s) WERE measured "
+                f"({', '.join(sorted(result.checked))}), so a finding naming one of them "
+                f"below is a real regression rather than an artefact:\n"
+            )
+        else:
+            print(f"❌ coverage ratchet: {len(problems)} problem(s)\n")
         for problem in problems:
             print(f"  - {problem}\n")
+        _print_unchecked(unchecked)
         print(
             "This gate reports; it does not decide. See "
             "scripts/check_coverage_debt.py's module docstring for what each means."
         )
-        return 1
+        return code
 
     baseline = load_baseline()
-    checked = [t.name for t in TREES if t.name not in skipped]
     files = sum(
-        len(baseline.get("trees", {}).get(n, {}).get("files", {})) for n in checked
+        len(baseline.get("trees", {}).get(n, {}).get("files", {}))
+        for n in result.checked
     )
     print(
-        f"✅ coverage ratchet: {files} file(s) across {len(checked)} tree(s) at or above "
-        f"their recorded coverage"
+        f"✅ coverage ratchet: {files} file(s) across {len(result.checked)} tree(s) at or "
+        f"above their recorded coverage"
     )
-    if skipped:
-        # Named rather than silent: a skipped tree is an unchecked tree, and a gate that
-        # passes while checking nothing is the failure this whole effort is about.
-        print(
-            f"   not checked (no report from this run): {', '.join(sorted(skipped))} — "
-            f"run `make coverage-all` to produce them"
-        )
+    _print_unchecked(unchecked)
     return 0
 
 

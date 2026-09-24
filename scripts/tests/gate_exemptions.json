@@ -2582,20 +2582,6 @@
       "reason": "tests, test, examples, build, dist, docs. Mirrors IGNORED_DIR_NAMES in test_package_discovery.py. Every one of those trees is still type-checked through pyrightconfig's own `include`; what this excludes is only the question of which directory constitutes a distribution's importable source.",
       "ratchetGap": "No check that the two mirrored lists stay in step, so this one could narrow while the other did not.",
       "memberKind": "top-level directory name inside a distribution"
-    },
-    "scripts/check_coverage_debt.py::skipped": {
-      "kind": "fixture",
-      "memberKind": "tree",
-      "turnsOff": "nothing durably; it accumulates the trees a single run could not check",
-      "premise": [
-        "JUDGEMENT"
-      ],
-      "ratchet": "non-vacuity",
-      "reason": "Not a carve-out list. It collects, per run, the trees whose coverage report does not exist yet -- a tree cannot be compared against its baseline without a report, and producing one means running that tree's suite. The scope decision lives in TREES, the enforced universe; this is a diagnostic. The failure mode it could have had -- a gate that passes while checking nothing -- is handled where it happens: the names are PRINTED on success ('not checked (no report from this run): ...') rather than swallowed, so a run that checked one tree cannot be mistaken for one that checked nine. No entry here can be ratcheted per member, because membership is a property of one invocation rather than of the tree.",
-      "ratchetEvidence": "scripts/tests/test_coverage_debt.py",
-      "predicateConsidered": {
-        "file_absent_or_untracked": "Answers a different question, and would answer it the same way every time. A coverage report is a BUILD ARTIFACT -- gitignored by design, written under test-reports/ -- so this predicate reports 'absent or untracked' for every report on every run, whether or not the run just produced one. The distinction that matters here is 'does this file exist on disk right now', which is per-invocation state rather than a property of the tree, and is exactly what git cannot see. The gate therefore tests the path itself (Path.is_file) and prints the trees it could not check; a predicate naming it would look like a computed premise while settling nothing."
-      }
     }
   }
 }
