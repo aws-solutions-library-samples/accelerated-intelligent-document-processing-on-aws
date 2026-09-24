@@ -1682,6 +1682,10 @@ class TestSyncBda:
         assert result.processed_classes == []
         assert result.error is not None
         assert "'class'" in result.error
+        # `error` is printed verbatim by the CLI, and `str()` of a KeyError is the
+        # message wrapped in quotes — so the sentence has to start the string, not
+        # sit inside a quoted repr of itself.
+        assert result.error.startswith("A BDA sync status entry carries no")
         assert "BdaSyncStatus" not in _item(aws_credentials, "Config#bda")
 
     @mock_aws

@@ -1011,10 +1011,16 @@ class ConfigOperation:
             # answer, so nothing ever went looking. A rename is now a sync that
             # reports failure and names the key it could not read, which no
             # caller can mistake for the name of a document class.
+            #
+            # Re-raised as a `RuntimeError` rather than re-raising the `KeyError`:
+            # the handler below stringifies whatever comes out into `error`, which
+            # the CLI prints, and `str()` of a `KeyError` is the message wrapped in
+            # quotes. Nothing reads the type — this method converts every exception
+            # into a result object — so the message is the whole payload.
             try:
                 processed_names = [item["class"] for item in sync_result]
             except KeyError as missing_key:
-                raise KeyError(
+                raise RuntimeError(
                     f"A BDA sync status entry carries no {missing_key} key, so "
                     "the classes the sync processed cannot be named. Those "
                     "entries are produced by "
