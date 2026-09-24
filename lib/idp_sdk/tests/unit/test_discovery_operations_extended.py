@@ -20,7 +20,7 @@ it is a schema for the wrong pages, or a model that silently drops the document
 and hallucinates. So the `BedrockClient` is replaced with a stand-in that records
 the call, and the assertions are on **what was sent**: the model id, the
 prompts, the sampling parameters, and — for the page-range case — the actual PDF
-bytes in the document block, reopened with `pypdf` and counted. Building that
+bytes in the document block, reopened with `pypdfium2` and counted. Building that
 input with a real four-page PDF and letting the real
 `ClassesDiscovery.extract_pdf_pages` do the slicing is what makes "pages 2-3
 were extracted" a measurement rather than a mock assertion.
@@ -51,9 +51,9 @@ from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import boto3
+import pypdfium2 as pdfium
 import pytest
 from moto import mock_aws
-from pypdf import PdfReader, PdfWriter
 
 from idp_sdk import IDPClient
 from idp_sdk.models import (
@@ -122,20 +122,40 @@ def discovery_env(monkeypatch):
 
 
 def _pdf(pages: int) -> bytes:
-    writer = PdfWriter()
+    """A blank multi-page PDF, built with the library production already uses.
+
+    `pypdfium2` rather than `pypdf`: it is a declared dependency of
+    `lib/idp_common_pkg` and is what `discovery.py` itself slices pages with, so
+    this fixture needs nothing installed that the code under test does not. `pypdf`
+    happens to be importable on a developer machine as somebody else's transitive
+    dependency and is declared nowhere, which is green locally and
+    `ModuleNotFoundError` in CI. Choosing the declared one also keeps the licence
+    decision that moved this repo off AGPL-licensed PyMuPDF intact.
+    """
+    document = pdfium.PdfDocument.new()
     for _ in range(pages):
-        writer.add_blank_page(width=200, height=200)
+        document.new_page(200, 200)
     buffer = io.BytesIO()
-    writer.write(buffer)
+    document.save(buffer)
     return buffer.getvalue()
+
+
+#: A minimal valid 1x1 PNG, written out byte for byte.
+#:
+#: Literal rather than generated with Pillow: these tests only need "a file that is
+#: not a PDF", and Pillow is declared in `lib/idp_common_pkg`'s extras rather than in
+#: `idp_sdk`'s, so whether it is importable depends on which extras the installing CI
+#: chose. A fixture that needs a dependency the tree does not guarantee is a test that
+#: passes on one machine and errors on another, for reasons unrelated to what it asserts.
+_PNG_1X1 = bytes.fromhex(
+    "89504e470d0a1a0a0000000d4948445200000001000000010802000000907753"
+    "de0000000c49444154789c63f8ffff3f0005fe02fe0def46b80000000049454e"
+    "44ae426082"
+)
 
 
 def _png() -> bytes:
-    from PIL import Image
-
-    buffer = io.BytesIO()
-    Image.new("RGB", (4, 4), "white").save(buffer, format="PNG")
-    return buffer.getvalue()
+    return _PNG_1X1
 
 
 def _converse_response(text: str) -> dict:
@@ -705,7 +725,7 @@ class TestRunLocal:
         """Pages 2-3 of a four-page packet, counted in the bytes that were sent.
 
         The slicing is done by the real `ClassesDiscovery.extract_pdf_pages`, so
-        reopening the document block with `pypdf` and finding two pages is a
+        reopening the document block with `pypdfium2` and finding two pages is a
         measurement of the extraction rather than a record that a helper was
         called. An off-by-one here produces a schema for the wrong document and
         nothing anywhere reports an error.
@@ -721,7 +741,7 @@ class TestRunLocal:
         sent = client.invoke_model.call_args.kwargs["content"][0]["document"]["source"][
             "bytes"
         ]
-        assert len(PdfReader(io.BytesIO(sent)).pages) == 2
+        assert len(pdfium.PdfDocument(io.BytesIO(sent))) == 2
         assert sent != document.read_bytes()
 
     def test_a_page_range_on_a_non_pdf_is_ignored_rather_than_refused(self, tmp_path):
