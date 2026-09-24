@@ -273,6 +273,7 @@ Navigate to the Web UI and select the "Capacity Planning" section:
 - Quick reference: 60s = 1 min | 120s = 2 min | 300s = 5 min | 600s = 10 min
 - Used for SLA compliance checking and performance validation
 - Displayed with automatic conversion to minutes for reference
+- `0` is outside the range and is refused as such ("maxAllowedLatency must be positive"), since no plan can meet a zero-second budget. Leaving the field empty is a different case and reports the field as missing.
 
 ### 4. Capacity Calculation and Results
 

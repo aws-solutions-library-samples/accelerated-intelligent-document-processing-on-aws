@@ -2324,21 +2324,65 @@ def test_an_invalid_request_is_described_specifically(wired, mutation, expected)
 
 
 @pytest.mark.unit
-def test_a_zero_sla_is_reported_as_missing_rather_than_as_out_of_range(wired):
-    """`get("maxAllowedLatency") or get("max_allowed_latency")` treats 0 as absent.
+def test_a_zero_sla_is_refused_as_out_of_range_rather_than_reported_as_missing(wired):
+    """Zero is a value an operator can type, and it is the wrong value, not a gap.
 
-    The "must be positive" check below it is therefore unreachable for the one value
-    an operator can actually type to reach it, and the message sends them looking
-    for a field they did fill in. Pinned as current behaviour.
+    The key is passed **explicitly** rather than omitted, which is the whole point:
+    omitting it exercises the missing-field path, which always worked. Zero is
+    refused rather than accepted — a latency budget of zero seconds cannot be met by
+    any plan, so every report built on one would say the same thing — and the message
+    now names the field's range instead of sending the operator to look for a field
+    they did fill in.
     """
     payload = json.loads(json.dumps(HAPPY_INPUT))
     payload["maxAllowedLatency"] = 0
     result = index.lambda_handler(payload, None)
     assert result["success"] is False
+    assert "maxAllowedLatency must be positive" in result["errorMessage"]
+    assert "is required" not in result["errorMessage"]
+
+
+@pytest.mark.unit
+def test_an_explicit_zero_is_not_replaced_by_the_other_spelling_of_the_field(wired):
+    """A request carrying both spellings, one of them zero, is contradictory.
+
+    Which spelling supplies the value is decided on presence, so the canonical
+    `maxAllowedLatency` wins and its zero is refused, rather than the request being
+    answered against the other spelling's number and a report returned for an SLA
+    nobody asked for. This is the one input whose outcome the presence rule changes
+    from success to refusal.
+    """
+    payload = json.loads(json.dumps(HAPPY_INPUT))
+    payload["maxAllowedLatency"] = 0
+    payload["max_allowed_latency"] = 600
+    result = index.lambda_handler(payload, None)
+    assert result["success"] is False
+    assert "maxAllowedLatency must be positive" in result["errorMessage"]
+
+
+@pytest.mark.unit
+def test_an_sla_left_blank_still_reads_as_a_missing_field(wired):
+    """A cleared field is a missing value, not a malformed number.
+
+    `""` is the shape a hand-built request or a non-console client sends, and the
+    numeric per-document fields in the same request treat it the same way. The
+    console's own cleared field arrives as `null` instead — it builds the payload
+    with `parseFloat`, and `JSON.stringify(NaN)` is `null` — and that shape is not
+    parametrised in here: it reaches the same message through the `is None` check
+    below the selection, so no mutation of the selection distinguishes it and a case
+    for it could not fail. `dict.get` answers `None` for a `null` and for an absent
+    key alike, so the selection step it does exercise is the one the snake-case test
+    above covers — a `None` under one spelling must not stop the other spelling from
+    supplying the value.
+    """
+    payload = json.loads(json.dumps(HAPPY_INPUT))
+    payload["maxAllowedLatency"] = ""
+    result = index.lambda_handler(payload, None)
+    assert result["success"] is False
     assert (
         "maxAllowedLatency or max_allowed_latency is required" in result["errorMessage"]
     )
-    assert "must be positive" not in result["errorMessage"]
+    assert "must be a number" not in result["errorMessage"]
 
 
 @pytest.mark.unit
