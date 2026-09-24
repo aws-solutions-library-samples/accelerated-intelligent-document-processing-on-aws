@@ -135,6 +135,22 @@ def patched_boto3(fake_lambda=None, fake_s3=None):
     return patch("idp_cli.cli.boto3.client", side_effect=_client)
 
 
+def all_keys(s3_client, bucket, prefix=""):
+    """Every key under `prefix`, read back through the paginator.
+
+    A bare `list_objects_v2` read-back stops at 1000 keys just as the code under test
+    used to, so a test whose fixture is deliberately larger than one page cannot use one
+    to check its own result: the assertion would be measured through the same ceiling it
+    exists to catch.
+    """
+    paginator = s3_client.get_paginator("list_objects_v2")
+    return {
+        obj["Key"]
+        for page in paginator.paginate(Bucket=bucket, Prefix=prefix)
+        for obj in page.get("Contents", [])
+    }
+
+
 def resources(**overrides):
     """The `resources` dict the helpers are given, with `TestSetBucket` by default."""
     base = {"TestSetBucket": TEST_SET_BUCKET}
@@ -832,41 +848,57 @@ def test_document_ids_degrades_to_empty_on_an_s3_error(capsys):
 
 
 @pytest.mark.unit
-def test_document_ids_silently_truncates_a_test_set_over_one_thousand_files():
-    """DEFECT (pinned, not fixed): the listing is not paginated, so it stops at 1000.
+def test_document_ids_covers_a_test_set_over_one_thousand_files(api_calls):
+    """Every input document gets an id, past the 1000-key ceiling on one listing.
 
-    `list_objects_v2` returns at most 1000 keys and sets `IsTruncated` with a
-    `NextContinuationToken`; this helper reads neither. A test set with more than 1000
-    input documents therefore yields document ids for the first 1000 only, and the
-    monitor reports the run complete once those finish while the rest are still being
-    processed — a silently short pass on the largest test sets, which are the ones a
-    regression run cares about most.
+    `list_objects_v2` returns at most 1000 keys per response and reports the rest
+    through `NextContinuationToken`. Reading a single response gave ids for the first
+    1000 documents only, so the monitor reported the run complete once those finished
+    while the remainder were still being processed, and any evaluation computed from it
+    was scored on a subset without saying so — a short pass on exactly the largest test
+    sets, which are the ones a regression run cares about most.
 
-    Proved with a fake S3 client rather than by putting 1001 objects into `moto`: the
-    claim is that the truncation flag is ignored and exactly one listing is made, and a
-    fake is the only way to assert the second half.
+    **The fixture has to exceed one page or it cannot tell the fix from the defect**: at
+    1000 objects or fewer a single listing returns everything and both versions agree.
+    The second page is produced by `moto` itself rather than by a hand-written double —
+    1001 real objects in a real bucket, which is where the truncation semantics are
+    authoritative. Measured on this fixture, `moto` answers an unpaginated
+    `list_objects_v2` with `KeyCount` 1000 and `IsTruncated` true, and the paginator
+    with 1001 keys over two pages.
+
+    Both halves of the property are asserted: the count and the presence of a document
+    that can only come from the second page, *and* — from the recorded API calls — that
+    a second `ListObjectsV2` was actually issued carrying a continuation token. Without
+    the second half a listing that happened to return everything in one response would
+    pass this test while leaving the ceiling in place.
     """
     from idp_cli.cli import _get_test_set_document_ids
 
-    listings = []
+    with mock_aws():
+        s3 = boto3.client("s3", region_name="us-east-1")
+        s3.create_bucket(Bucket=TEST_SET_BUCKET)
+        for i in range(1001):
+            s3.put_object(
+                Bucket=TEST_SET_BUCKET, Key=f"set1/input/doc{i:05d}.pdf", Body=b"x"
+            )
+        before_call = len(api_calls)
 
-    class TruncatingS3:
-        def list_objects_v2(self, **kwargs):
-            listings.append(kwargs)
-            return {
-                "Contents": [{"Key": "set1/input/first.pdf"}],
-                "IsTruncated": True,
-                "NextContinuationToken": "page-2",
-                "KeyCount": 1,
-            }
-
-    with patched_boto3(fake_s3=TruncatingS3()):
         ids = _get_test_set_document_ids("IDP", "set1", "run-9", None, resources())
 
-    assert ids == ["run-9/first.pdf"]
-    assert len(listings) == 1, "the continuation token is never followed"
-    assert "ContinuationToken" not in listings[0]
-    assert listings[0] == {"Bucket": TEST_SET_BUCKET, "Prefix": "set1/input/"}
+        made_by_the_helper = api_calls[before_call:]
+
+    assert len(ids) == 1001
+    # Keys sort lexically, so the last document is only reachable on page two.
+    assert "run-9/doc01000.pdf" in ids
+    assert ids[0] == "run-9/doc00000.pdf"
+
+    listings = [call for call in made_by_the_helper if call.operation == "ListObjectsV2"]
+    assert len(listings) == 2, [call.operation for call in made_by_the_helper]
+    assert "ContinuationToken" not in listings[0].params
+    assert listings[0].params["Prefix"] == "set1/input/"
+    assert listings[1].params.get("ContinuationToken"), (
+        "the second page must be fetched with the token the first one returned"
+    )
 
 
 # ================================================================================
@@ -1114,7 +1146,68 @@ def test_create_test_set_clears_only_its_own_prefix(tmp_path, capsys):
         }
 
     assert keys == {"set1/input/invoice.pdf", "set2/input/keep.pdf"}
-    assert "Cleared existing test set files" in capsys.readouterr().out
+    assert "Cleared 2 existing test set files" in capsys.readouterr().out
+
+
+@pytest.mark.unit
+def test_create_test_set_clears_every_object_past_the_first_page(
+    tmp_path, capsys, api_calls
+):
+    """Recreating a test set of more than 1000 objects deletes all of them.
+
+    The destructive half of the same unpaginated listing as
+    `test_document_ids_covers_a_test_set_over_one_thousand_files`, and the worse half:
+    the clear read one `list_objects_v2` response, so re-creating a test set larger than
+    one page deleted its first 1000 objects and left the rest in place, orphaned under a
+    prefix the caller was told it had emptied — and the very next thing the caller does
+    is upload a new test set over it, so the survivors become one set's inputs and
+    baselines mixed into another's, which is a wrong evaluation rather than a missing
+    one. Fixing the read and not this would have left the more damaging direction.
+
+    1001 stale objects, one manifest row. The assertions are that **no** stale object
+    survives — named individually for the lexically last one, which a single listing
+    cannot reach — and that every `DeleteObjects` request carried at most 1000 keys,
+    which is the other half of the same ceiling: S3 rejects a larger request outright,
+    and `moto` does not enforce that, so a test asserting only that the objects are gone
+    would pass here against code that fails against the real service.
+    """
+    from idp_cli.cli import _create_test_set_from_manifest
+
+    doc = tmp_path / "invoice.pdf"
+    doc.write_text("pdf")
+    manifest = _manifest_with(tmp_path, [(doc, "")])
+
+    with mock_aws():
+        s3 = boto3.client("s3", region_name="us-east-1")
+        s3.create_bucket(Bucket=TEST_SET_BUCKET)
+        for i in range(1001):
+            s3.put_object(
+                Bucket=TEST_SET_BUCKET, Key=f"set1/stale/{i:05d}.json", Body=b"{}"
+            )
+        s3.put_object(Bucket=TEST_SET_BUCKET, Key="set2/input/keep.pdf", Body=b"keep")
+        before_call = len(api_calls)
+
+        _create_test_set_from_manifest(str(manifest), "set1", "IDP", None, resources())
+
+        keys = all_keys(s3, TEST_SET_BUCKET)
+        deletes = [
+            call
+            for call in api_calls[before_call:]
+            if call.operation == "DeleteObjects"
+        ]
+
+    assert "set1/stale/01000.json" not in keys, (
+        "the object beyond the first listing page survived the clear"
+    )
+    assert not any(key.startswith("set1/stale/") for key in keys)
+    assert keys == {"set1/input/invoice.pdf", "set2/input/keep.pdf"}
+    assert "Cleared 1001 existing test set files" in capsys.readouterr().out
+
+    assert len(deletes) == 2, [len(d.params["Delete"]["Objects"]) for d in deletes]
+    for delete in deletes:
+        assert len(delete.params["Delete"]["Objects"]) <= 1000, (
+            "DeleteObjects takes at most 1000 keys; a larger request is rejected by S3"
+        )
 
 
 @pytest.mark.unit

@@ -1069,6 +1069,85 @@ def test_confirming_the_overwrite_clears_the_previous_test_set(runner, tmp_path)
 
 
 @pytest.mark.unit
+def test_the_overwrite_clears_every_object_past_the_first_listing_page(
+    runner, tmp_path, api_calls
+):
+    """Overwriting a test set of more than 1000 objects removes all of them.
+
+    The clear read one `list_objects_v2` response, which stops at 1000 keys, so
+    overwriting a test set larger than one page deleted its first 1000 objects and left
+    the remainder orphaned under a prefix the command had just reported it cleared —
+    with a fresh test set then uploaded on top, mixing one set's baselines into
+    another's. **The fixture must exceed one page**: at 1000 objects or fewer, one
+    listing returns everything and the fixed and broken code behave identically. The
+    second page comes from `moto` producing a genuine truncated response over 1001 real
+    objects.
+
+    Beyond the count in the message, the object that is only reachable on the second
+    page is named individually, and every `DeleteObjects` request is checked for the
+    1000-key limit that S3 enforces and `moto` does not — so the batching is measured
+    here rather than deferred to a real bucket.
+    """
+    from idp_cli.cli import generate_manifest
+
+    docs = tmp_path / "docs"
+    _write(docs / "invoice.pdf")
+    baselines = tmp_path / "baselines"
+    (baselines / "invoice.pdf").mkdir(parents=True)
+
+    with mock_aws():
+        s3 = boto3.client("s3", region_name="us-east-1")
+        s3.create_bucket(Bucket=TEST_SET_BUCKET)
+        for i in range(1001):
+            s3.put_object(
+                Bucket=TEST_SET_BUCKET, Key=f"set1/stale/{i:05d}.json", Body=b"{}"
+            )
+        s3.put_object(Bucket=TEST_SET_BUCKET, Key="other/keep.pdf", Body=b"keep")
+        before_invoke = len(api_calls)
+
+        with _patched_stack_resources({"TestSetBucket": TEST_SET_BUCKET}):
+            result = runner.invoke(
+                generate_manifest,
+                [
+                    "--dir",
+                    str(docs),
+                    "--baseline-dir",
+                    str(baselines),
+                    "--test-set",
+                    "set1",
+                    "--stack-name",
+                    "IDP",
+                ],
+                input="y\n",
+            )
+
+        paginator = s3.get_paginator("list_objects_v2")
+        keys = {
+            obj["Key"]
+            for page in paginator.paginate(Bucket=TEST_SET_BUCKET)
+            for obj in page.get("Contents", [])
+        }
+        deletes = [
+            call
+            for call in api_calls[before_invoke:]
+            if call.operation == "DeleteObjects"
+        ]
+
+    assert result.exit_code == 0, result.output
+    assert "Cleared 1001 existing files" in result.output
+    assert "set1/stale/01000.json" not in keys, (
+        "the object beyond the first listing page survived the overwrite"
+    )
+    assert keys == {"set1/input/invoice.pdf", "other/keep.pdf"}
+
+    assert len(deletes) == 2, [len(d.params["Delete"]["Objects"]) for d in deletes]
+    for delete in deletes:
+        assert len(delete.params["Delete"]["Objects"]) <= 1000, (
+            "DeleteObjects takes at most 1000 keys; a larger request is rejected by S3"
+        )
+
+
+@pytest.mark.unit
 def test_eof_on_the_overwrite_prompt_aborts_without_touching_the_test_set(
     runner, tmp_path, api_calls
 ):

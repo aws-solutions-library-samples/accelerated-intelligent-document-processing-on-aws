@@ -3151,24 +3151,11 @@ def generate_manifest(
 
             # Clear existing test set folder if it exists
             try:
-                response = s3_client.list_objects_v2(
-                    Bucket=test_set_bucket, Prefix=f"{test_set}/"
+                cleared = _clear_s3_prefix(
+                    s3_client, test_set_bucket, f"{test_set}/"
                 )
-
-                if "Contents" in response:
-                    # Delete all existing objects in the test set folder
-                    objects_to_delete = [
-                        {"Key": obj["Key"]} for obj in response["Contents"]
-                    ]
-
-                    if objects_to_delete:
-                        s3_client.delete_objects(
-                            Bucket=test_set_bucket,
-                            Delete={"Objects": objects_to_delete},
-                        )
-                        console.print(
-                            f"  Cleared {len(objects_to_delete)} existing files"
-                        )
+                if cleared:
+                    console.print(f"  Cleared {cleared} existing files")
 
             except Exception as e:
                 console.print(
@@ -3750,6 +3737,43 @@ def _invoke_test_runner(
     return result
 
 
+#: The most keys one `DeleteObjects` request may carry. A request over this limit is
+#: rejected outright by S3 (`MalformedXML`), and `moto` does not enforce it — so a
+#: test asserting only that the objects are gone cannot see an unbatched delete.
+_DELETE_OBJECTS_BATCH_SIZE = 1000
+
+
+def _clear_s3_prefix(s3_client, bucket: str, prefix: str) -> int:
+    """Delete every object under `prefix`, and return how many were deleted.
+
+    Both halves of this are load-bearing on a test set larger than one page.
+    `list_objects_v2` returns at most 1000 keys per response and reports the rest
+    through `NextContinuationToken`, and `delete_objects` accepts at most 1000 keys per
+    request. Reading a single response and deleting its keys in one call therefore
+    removes the first 1000 objects of a larger test set and leaves the remainder
+    behind, orphaned under a prefix the caller has been told it emptied — and the
+    caller's next act is to upload a new test set over it, so the leftovers become
+    baselines and inputs of an older set mixed into a newer one.
+    """
+    paginator = s3_client.get_paginator("list_objects_v2")
+    deleted = 0
+    batch: List[Dict[str, str]] = []
+
+    for page in paginator.paginate(Bucket=bucket, Prefix=prefix):
+        for obj in page.get("Contents", []):
+            batch.append({"Key": obj["Key"]})
+            if len(batch) == _DELETE_OBJECTS_BATCH_SIZE:
+                s3_client.delete_objects(Bucket=bucket, Delete={"Objects": batch})
+                deleted += len(batch)
+                batch = []
+
+    if batch:
+        s3_client.delete_objects(Bucket=bucket, Delete={"Objects": batch})
+        deleted += len(batch)
+
+    return deleted
+
+
 def _get_test_set_document_ids(
     stack_name: str,
     test_set: str,
@@ -3768,13 +3792,17 @@ def _get_test_set_document_ids(
     s3_client = boto3.client("s3", region_name=region)
 
     try:
-        response = s3_client.list_objects_v2(
-            Bucket=test_set_bucket, Prefix=f"{test_set}/input/"
-        )
+        # Paginated: a single `list_objects_v2` response stops at 1000 keys, and these
+        # ids are what the monitor waits for — a short list makes the run look complete
+        # while the documents it omits are still being processed, and any evaluation
+        # computed from it is scored on a subset without saying so.
+        paginator = s3_client.get_paginator("list_objects_v2")
 
         document_ids = []
-        if "Contents" in response:
-            for obj in response["Contents"]:
+        for page in paginator.paginate(
+            Bucket=test_set_bucket, Prefix=f"{test_set}/input/"
+        ):
+            for obj in page.get("Contents", []):
                 key = obj["Key"]
                 if key.endswith("/"):  # Skip directories
                     continue
@@ -3840,20 +3868,9 @@ def _create_test_set_from_manifest(
 
     # Clear existing test set folder if it exists
     try:
-        response = s3_client.list_objects_v2(
-            Bucket=test_set_bucket, Prefix=f"{test_set_name}/"
-        )
-
-        if "Contents" in response:
-            # Delete all existing objects in the test set folder
-            objects_to_delete = [{"Key": obj["Key"]} for obj in response["Contents"]]
-
-            if objects_to_delete:
-                s3_client.delete_objects(
-                    Bucket=test_set_bucket,
-                    Delete={"Objects": objects_to_delete},
-                )
-                console.print("  Cleared existing test set files")
+        cleared = _clear_s3_prefix(s3_client, test_set_bucket, f"{test_set_name}/")
+        if cleared:
+            console.print(f"  Cleared {cleared} existing test set files")
 
     except Exception as e:
         console.print(f"[yellow]Warning: Could not clear existing files: {e}[/yellow]")
