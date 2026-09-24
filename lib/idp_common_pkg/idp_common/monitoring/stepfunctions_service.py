@@ -31,9 +31,19 @@ from __future__ import annotations
 
 import logging
 from datetime import datetime, timezone
-from typing import Any, Dict, List, Optional, Set
+from typing import Any, Dict, List, Optional
 
 import boto3
+
+from idp_common.stepfunctions_history import (
+    EXECUTION_LEVEL_FAILURE_EVENTS,
+    STATE_ENTERED_SUFFIX,
+    TASK_LEVEL_FAILURE_EVENTS,
+    failing_state,
+    state_named_by,
+    terminal_failure,
+    to_chronological,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -52,27 +62,13 @@ def _get_sf_client(region: Optional[str] = None) -> Any:
     return _sf_clients[region]
 
 
-# ---------------------------------------------------------------------------
-# Event types that indicate a failure in the execution
-# ---------------------------------------------------------------------------
-_FAILURE_EVENT_TYPES: Set[str] = {
-    "TaskFailed",
-    "TaskTimedOut",
-    "ExecutionFailed",
-    "ActivityFailed",
-    "LambdaFunctionFailed",
-    "LambdaFunctionTimedOut",
-}
-
-# Mapping from event type to the key that holds failure detail in the event dict
-_FAILURE_DETAIL_KEYS: Dict[str, str] = {
-    "TaskFailed": "taskFailedEventDetails",
-    "TaskTimedOut": "taskTimedOutEventDetails",
-    "ExecutionFailed": "executionFailedEventDetails",
-    "ActivityFailed": "activityFailedEventDetails",
-    "LambdaFunctionFailed": "lambdaFunctionFailedEventDetails",
-    "LambdaFunctionTimedOut": "lambdaFunctionTimedOutEventDetails",
-}
+# The failure vocabulary and the rule for reading it are shared — see
+# `idp_common.stepfunctions_history`. This module used to carry its own copy of both: a
+# six-type event set and a hand-written map from each type to its detail key. That set was
+# the widest of the four copies in the repository and still left eight of the thirteen
+# task-level types unrecognised; the timeline loop below matched only three, so nine
+# members of the vocabulary were recognised by neither rule in this file. The two rules
+# also disagreed with each other for the same execution.
 
 
 # ---------------------------------------------------------------------------
@@ -216,18 +212,47 @@ def analyze_execution_timeline(
             "failed_state": str,
             "failure_details": dict,
         }``
+
+    ``max_events`` bounds the ``states`` timeline only, and it drops the **oldest**
+    events. Attribution — ``failed_state`` and ``failure_details`` — reads the whole
+    history however long it is, because a cap taken from the other end silently answers
+    "nothing failed" for exactly the long executions most worth asking about. The cost of
+    the cap is that a state entered before the window shows a zero **duration**, which is
+    visible in the row rather than being a wrong answer about the failure. The row's
+    **name** is not a cost: the state tracker is seeded from the dropped events, so a
+    failure row inside the window names the same state ``failed_state`` does however hard
+    the cap bites.
+
+    ⚠️ **This names the failure the history holds; it does not decide whether the
+    execution failed.** ``overall_status`` is the authority on that, and the two can
+    legitimately disagree: a ``Retry`` that recovered leaves a real ``TaskFailed`` behind
+    on an execution that went on to succeed, so a ``SUCCEEDED`` execution can carry a
+    ``failed_state``. Check ``overall_status`` first if that distinction matters to the
+    caller.
     """
     exec_data = get_execution_data(execution_arn, region=region)
-    all_events: List[Dict[str, Any]] = exec_data.get("events", [])
-    if len(all_events) > max_events:
+    # Order before doing anything else: every rule below reads the history in sequence,
+    # and `get_execution_data` paginates forward today but that is its choice, not this
+    # function's guarantee.
+    all_events: List[Dict[str, Any]] = to_chronological(exec_data.get("events", []))
+    if max_events <= 0:
         logger.warning(
-            "Execution %s has %d events; truncating to %d for timeline analysis. "
-            "Increase max_events to avoid missing failure details.",
+            "Execution %s: max_events=%d returns no states timeline at all. Failure "
+            "attribution still reads the whole history.",
+            execution_arn,
+            max_events,
+        )
+    elif len(all_events) > max_events:
+        logger.warning(
+            "Execution %s has %d events; the returned states timeline covers the most "
+            "recent %d. Failure attribution reads all of them.",
             execution_arn,
             len(all_events),
             max_events,
         )
-    events = all_events[:max_events]
+    # Keep the NEWEST events, which is where a terminal failure is. `[-max_events:]` is
+    # the whole list when `max_events` is 0, so the degenerate cap is spelled out.
+    events = all_events[-max_events:] if max_events > 0 else []
 
     timeline: Dict[str, Any] = {
         "execution_arn": execution_arn,
@@ -240,15 +265,47 @@ def analyze_execution_timeline(
 
     state_starts: Dict[str, str] = {}  # state_name → start_timestamp
     states: List[Dict[str, Any]] = []
+    # The most recently ENTERED state, tracked in event order. `state_starts` cannot
+    # answer this: it is keyed by state name, and re-assigning an existing key leaves it
+    # where it was first inserted, so `list(state_starts)[-1]` is the state entered
+    # longest ago among those still to be re-entered. A loop or a `Map` that re-enters a
+    # state therefore made the old fallback name a different state entirely — a `Retry`
+    # does not trigger it, because a retried task does not re-enter its state.
+    #
+    # ⚠️ Seeded from the events BEFORE the window, not from empty. The window can begin
+    # part-way through the history, and a failure inside it is then attributable to a state
+    # entered outside it — labelling the row from an empty tracker produced "Unknown" while
+    # `failed_state` named the state correctly, which is a third reading of one history in
+    # the very function whose two readings this unified.
+    last_entered: str = ""
+    # The state the last task-level failure is attributable to. An execution-level event
+    # must not be attributed to `last_entered`: by the time it arrives a caught failure
+    # has already entered its handler, which is #1139/#1168.
+    last_task_failure_state: str = ""
+
+    dropped = all_events[: len(all_events) - len(events)] if events else all_events
+    for event in dropped:
+        event_type = event.get("type", "")
+        if event_type.endswith(STATE_ENTERED_SUFFIX):
+            entered = event.get("stateEnteredEventDetails", {}).get("name", "")
+            if entered:
+                last_entered = entered
+        elif event_type in TASK_LEVEL_FAILURE_EVENTS:
+            last_task_failure_state = state_named_by(event) or last_entered or "Unknown"
 
     for event in events:
         event_type: str = event.get("type", "")
         timestamp: str = event.get("timestamp", "")
 
-        if event_type == "TaskStateEntered":
-            state_name = event.get("stateEnteredEventDetails", {}).get("name", "")
-            if state_name:
-                state_starts[state_name] = timestamp
+        # Every state-transition event type shares the `StateEntered` suffix, so this
+        # tracks entry into a `Map`, `Parallel` or `Choice` state as well as a `Task`.
+        # Only `Task` states are timed below; attribution needs all of them.
+        if event_type.endswith(STATE_ENTERED_SUFFIX):
+            entered = event.get("stateEnteredEventDetails", {}).get("name", "")
+            if entered:
+                last_entered = entered
+            if event_type == "TaskStateEntered" and entered:
+                state_starts[entered] = timestamp
             continue
 
         # --- State-completion and failure events that produce a timeline entry ---
@@ -257,20 +314,20 @@ def analyze_execution_timeline(
             is_failure = False
             status = "SUCCEEDED"
 
-        elif event_type in ("TaskFailed", "TaskTimedOut"):
-            # Task-level failures do not carry stateExitedEventDetails — look
-            # back to the most recently entered state to get the name.
-            state_name = list(state_starts.keys())[-1] if state_starts else "Unknown"
+        elif event_type in TASK_LEVEL_FAILURE_EVENTS:
+            # Attributed to the state most recently entered — unless the event names its
+            # own state, which only `EvaluationFailed` does, and then that is the
+            # authority. Labelling the ROW from `last_entered` alone is what made this
+            # function's rows disagree with its own `failed_state` for such an event.
+            state_name = state_named_by(event) or last_entered or "Unknown"
+            last_task_failure_state = state_name
             is_failure = True
             status = "FAILED"
 
-        elif event_type == "ExecutionFailed":
-            state_name = event.get("stateExitedEventDetails", {}).get("name", "")
-            if not state_name:
-                # Attribute failure to the last known entered state
-                state_name = (
-                    list(state_starts.keys())[-1] if state_starts else "Unknown"
-                )
+        elif event_type in EXECUTION_LEVEL_FAILURE_EVENTS:
+            # Prefer the state a task-level failure already named. Falling straight back
+            # to `last_entered` is what names a `Catch` handler.
+            state_name = last_task_failure_state or last_entered or "Unknown"
             is_failure = True
             status = "FAILED"
 
@@ -292,11 +349,14 @@ def analyze_execution_timeline(
             }
         )
 
-        if is_failure and not timeline["failed_state"]:
-            timeline["failed_state"] = state_name
-
     timeline["states"] = states
-    timeline["failure_details"] = extract_failure_details(events)
+    # Both answers come from the shared rule, read over the WHOLE history rather than the
+    # capped window, so they agree with each other and name the failure the execution
+    # ended on. Taking the first failure instead — which is what `if is_failure and not
+    # timeline["failed_state"]` did here — names the state of a retry the workflow
+    # survived, and an error nobody needs to act on.
+    timeline["failed_state"] = failing_state(all_events) or ""
+    timeline["failure_details"] = extract_failure_details(all_events)
 
     # Total execution duration
     start_date = exec_data.get("start_date", "")
@@ -313,9 +373,10 @@ def extract_failure_details(events: List[Dict[str, Any]]) -> Dict[str, Any]:
     """
     Parse Step Functions execution history events to extract failure information.
 
-    Handles all six failure event types:
-    ``TaskFailed``, ``TaskTimedOut``, ``ExecutionFailed``,
-    ``ActivityFailed``, ``LambdaFunctionFailed``, ``LambdaFunctionTimedOut``.
+    Recognises every failure event type the Step Functions service model declares —
+    fifteen of them — rather than a hand-kept subset; see
+    :mod:`idp_common.stepfunctions_history` for what qualifies and why. ``events`` may
+    arrive in either direction and is ordered here.
 
     Args:
         events: List of raw execution history event dicts (timestamps may be
@@ -329,43 +390,21 @@ def extract_failure_details(events: List[Dict[str, Any]]) -> Dict[str, Any]:
             "event_type": str,   # The Step Functions event type
         }``
         All fields are empty strings if no failure event is found.
+
+    The state and the error text come from **different events** — the last task-level
+    failure and the terminal one respectively — which is why this delegates rather than
+    reading both off whichever event it stopped at.
     """
-    result: Dict[str, Any] = {
-        "error": "",
-        "cause": "",
-        "failed_state": "",
-        "event_type": "",
+    failure = terminal_failure(events)
+    if failure is None:
+        return {"error": "", "cause": "", "failed_state": "", "event_type": ""}
+
+    return {
+        "error": failure["error"],
+        "cause": failure["cause"],
+        "failed_state": failure["state"],
+        "event_type": failure["event_type"],
     }
-
-    # Walk in reverse to find the most recent failure event
-    for event in reversed(events):
-        event_type: str = event.get("type", "")
-        if event_type not in _FAILURE_EVENT_TYPES:
-            continue
-
-        result["event_type"] = event_type
-
-        detail_key = _FAILURE_DETAIL_KEYS.get(event_type, "")
-        details: Dict[str, Any] = event.get(detail_key, {}) if detail_key else {}
-
-        result["error"] = details.get("error", "") or details.get("Error", "") or ""
-        result["cause"] = details.get("cause", "") or details.get("Cause", "") or ""
-
-        # Trace back to find which state was entered before this failure
-        event_id: int = event.get("id", 0)
-        for prior in reversed(events):
-            if (
-                prior.get("id", 0) < event_id
-                and prior.get("type") == "TaskStateEntered"
-            ):
-                result["failed_state"] = prior.get("stateEnteredEventDetails", {}).get(
-                    "name", ""
-                )
-                break
-
-        break  # Use the most recent failure only
-
-    return result
 
 
 # ---------------------------------------------------------------------------
