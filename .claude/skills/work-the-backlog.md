@@ -76,7 +76,8 @@ until gh pr checks <pr> --repo <repo> | grep -qv pending; do sleep 120; done
 
 The invariant is yours to check and it is cheap: **before ending a turn, name the
 live child.** If you cannot name one, you are about to stop the run rather than
-pause it.
+pause it. The heartbeat child in section 0 is the standing answer — it is running
+from the first action of the run precisely so that the answer is never "none".
 
 ⚠️ **A prompt typed into this session kills every background agent.** Twice in one
 run the harness recorded `agents_killed` — *"6 background agents were stopped by the
@@ -110,8 +111,49 @@ that has to be reverted and costs far more than parking it.
 
 ## 0. Resume or start
 
-**First action, every time this skill is invoked** — including after a
-compaction, which you may not notice has happened:
+### First action: start the heartbeat child
+
+**Before reading the state file, before anything else, background this.** It is the
+loop's dead-man's switch and it is deliberately structural rather than discretionary,
+because the failure it prevents is a coordinator not following a rule it had itself
+just written down — five and a half hours of silence with every gate green. One
+`run_in_background` Bash command, which re-invokes you when it exits, so the liveness
+invariant holds by construction from the first turn:
+
+```bash
+# exits after 30 minutes, or sooner if memory gets tight — either way it returns
+for i in $(seq 1 30); do
+  a=$(free -g | awk 'NR==2{print $7}')
+  if [ "$a" -lt 12 ]; then
+    echo "MEMORY LOW: ${a}G available"; ps -eo rss,pid,comm --sort=-rss | head -5; exit 0
+  fi
+  sleep 60
+done
+echo "HEARTBEAT: 30 min elapsed, ${a}G available"
+```
+
+It does two jobs with one child. On a `HEARTBEAT` return, run the sweep below and
+either resume dispatch or report why you are idle. On a `MEMORY LOW` return, act
+before the host freezes — section 5 has what that costs. **Start a replacement each
+time it returns**, so the switch is never unarmed.
+
+Two properties make this the right shape rather than an external timer. It arrives as
+a **tool result**, not as a prompt, and a prompt arriving unbidden kills every
+background agent (see the ground rules); tool results demonstrably do not — ten-minute
+background waits returned here with five agents alive. And it always exits, so it
+cannot itself become the thing that looks tracked while doing nothing.
+
+⚠️ **It does not survive the session dying**, only the session going idle: the child
+and the session go together. Protection against the process itself dying has to come
+from outside — a `/loop` wrapper at an interval well past the 300-second prompt-cache
+window — and that is worth adding only once it has been established, on a throwaway
+session holding a throwaway agent, that a scheduled wakeup leaves background agents
+alive. Until that is measured, the heartbeat is the whole mechanism.
+
+### Then read the state file
+
+Every time this skill is invoked — including after a compaction, which you may not
+notice has happened:
 
 ```bash
 cat scratch/backlog-run-state.json 2>/dev/null || echo "NO STATE - fresh run"
@@ -1032,15 +1074,11 @@ sudo dmesg -T | grep -iE "oom-kill|Killed process" | tail -5
 produced was a session that looked dead to the user, and the intervention that
 followed killed five agents. So unbounded memory in one probe is not merely a
 performance matter: **it is how this run lost a batch.** The controls are the
-`ulimit -v` and inner `timeout` in section 2, plus one watchdog — which doubles as
-the tracked child the liveness invariant needs, because it returns only when there
-is something to act on:
-
-```bash
-# background at run start; exits when available memory gets tight, re-invoking you
-while [ "$(free -g | awk 'NR==2{print $7}')" -gt 12 ]; do sleep 60; done
-echo "MEMORY LOW"; free -g; ps -eo rss,pid,comm --sort=-rss | head -5
-```
+`ulimit -v` and inner `timeout` in section 2, plus the **heartbeat child in section
+0**, which returns early on exactly this condition and names the largest resident
+processes when it does. Restart it every time it returns; an unarmed switch is how
+this gets missed, and a `MEMORY LOW` return is the only advance warning the loop
+gets.
 
 ### Disk and worktrees — check this every cycle, it is not self-limiting
 
@@ -1251,7 +1289,8 @@ specifies, add it to `parked` with a link to that comment, label it, and move on
 
 - **Disk or memory pressure you cannot relieve** by clearing worktrees. Nothing
   downstream can be trusted through a swap-thrashing host — see the memory note in
-  section 5, where a run lost 145 minutes and then a batch to exactly this.
+  section 5, where a run lost 145 minutes and then a batch to exactly this. The
+heartbeat child in section 0 reports this condition before it becomes a halt.
 - **A judgement of your own you cannot defend from a measurement.** This is the one
   class no control here catches, it does not self-correct, and continuing produces
   work that has to be reverted.
@@ -1448,8 +1487,9 @@ two unsolicited prompts this session ever received killed every background agent
 had. So an external keep-alive is not a substitute for the invariant, and if one is
 ever added it has to be established first — on a throwaway session holding a
 throwaway agent — that an injected prompt leaves background agents alive. Until then
-the recovery from a dead session is a human noticing, and what makes that cheap is
-the state file plus the journals, not a heartbeat.
+the heartbeat child covers the session going idle and nothing covers the process
+dying. Recovery from that is a human noticing, and what makes it cheap is the state
+file plus the journals.
 
 **It does not bound review quality.** A nested reviewer that reads the diff and
 agrees costs the same as one that re-runs every mutation, and only the second is
