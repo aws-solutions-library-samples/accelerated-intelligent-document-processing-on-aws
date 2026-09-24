@@ -3151,9 +3151,7 @@ def generate_manifest(
 
             # Clear existing test set folder if it exists
             try:
-                cleared = _clear_s3_prefix(
-                    s3_client, test_set_bucket, f"{test_set}/"
-                )
+                cleared = _clear_s3_prefix(s3_client, test_set_bucket, f"{test_set}/")
                 if cleared:
                     console.print(f"  Cleared {cleared} existing files")
 

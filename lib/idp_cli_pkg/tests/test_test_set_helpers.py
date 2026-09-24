@@ -4,7 +4,7 @@
 """
 Tests for the Test Studio test-set helpers in `idp_cli.cli`.
 
-Six module-level private functions sit between `idp-cli process --test-set` and the
+These module-level private functions sit between `idp-cli process --test-set` and the
 deployed stack:
 
 * `_invoke_test_set_resolver` finds the API-resolver Lambda by name and invokes it to
@@ -14,9 +14,11 @@ deployed stack:
 * `_get_test_set_document_ids` lists the test set's `input/` prefix and synthesises the
   document ids the monitor will watch for.
 * `_manifest_has_baselines` is a predicate over a manifest file.
-* `_create_test_set_from_manifest` builds a test set folder from a manifest.
-* `_process_test_set` chains the first three together and assembles the batch result
-  the monitoring code consumes.
+* `_create_test_set_from_manifest` builds a test set folder from a manifest, with
+  `_clear_s3_prefix` emptying the prefix first and `_copy_s3_baseline` bringing over a
+  baseline held in S3.
+* `_process_test_set` chains the resolver, the runner and the id listing together and
+  assembles the batch result the monitoring code consumes.
 
 Two things shaped these tests. The first is that **the Lambda payload is the contract
 with the deployed backend**: a renamed key, a string where an integer belongs or an
@@ -39,8 +41,12 @@ The Lambda client is a hand-written fake rather than `moto`, because the interes
 thing is the request this code sends and the shape of the response it is handed, and
 `moto` cannot produce a response from function code without running a container.
 Everything S3 (`_get_test_set_document_ids`, `_create_test_set_from_manifest`) runs
-against a real `moto` bucket and the objects are read back off it, except where the
-point of the test is a response `moto` will not generate — a truncated listing.
+against a real `moto` bucket and the objects are read back off it. That includes the
+paginated cases: `moto` truncates a listing at 1000 keys and issues a continuation token
+exactly as S3 does, so a fixture of 1001 real objects is what the over-one-page tests use
+rather than a hand-written double, which would only encode a belief about where the
+ceiling is. Note `moto` does **not** enforce the 1000-key limit on `DeleteObjects`, so
+the batching of the deletes is asserted from the recorded request parameters instead.
 """
 
 import io
@@ -892,7 +898,9 @@ def test_document_ids_covers_a_test_set_over_one_thousand_files(api_calls):
     assert "run-9/doc01000.pdf" in ids
     assert ids[0] == "run-9/doc00000.pdf"
 
-    listings = [call for call in made_by_the_helper if call.operation == "ListObjectsV2"]
+    listings = [
+        call for call in made_by_the_helper if call.operation == "ListObjectsV2"
+    ]
     assert len(listings) == 2, [call.operation for call in made_by_the_helper]
     assert "ContinuationToken" not in listings[0].params
     assert listings[0].params["Prefix"] == "set1/input/"
