@@ -44,7 +44,6 @@ and the download-by-revision path (`test_config_revisions_api.py`), the
 from __future__ import annotations
 
 import json
-import sys
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -262,8 +261,7 @@ class TestValidate:
         # `set(config) - set(IDPConfig.model_fields)` that named two keys the
         # loader honours.
         assert any(
-            "Deprecated configuration key 'output_bucket'" in w
-            for w in result.warnings
+            "Deprecated configuration key 'output_bucket'" in w for w in result.warnings
         )
         assert any(
             "Unknown configuration key 'clasification'" in w for w in result.warnings

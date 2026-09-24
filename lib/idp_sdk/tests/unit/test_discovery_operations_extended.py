@@ -51,8 +51,6 @@ from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import boto3
-import pytest
-from moto import mock_aws
 
 # pypdfium2, not pypdf: the production code under test (`ClassesDiscovery`) reads
 # PDFs with pypdfium2, so it is a declared dependency of `idp_common_pkg[all]` and
@@ -60,6 +58,8 @@ from moto import mock_aws
 # so importing it here passed on a developer machine that happened to have it and
 # failed collection in CI, taking the whole idp_sdk suite with it.
 import pypdfium2 as pdfium
+import pytest
+from moto import mock_aws
 
 from idp_sdk import IDPClient
 from idp_sdk.models import (
