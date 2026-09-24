@@ -9,7 +9,10 @@ single run across two roots is an import collision —
 :mod:`scripts.run_all_tests` shells out per root for the same reason.
 
 Each tree's report lands at ``<tree>/test-reports/coverage-<name>.xml``, which is where
-``scripts/check_coverage_debt.py`` looks for it.
+``scripts/check_coverage_debt.py`` looks for it, with the run's JUnit XML beside it at
+``coverage-<name>-results.xml``. The ratchet compares a report only when that record says
+the run finished: a run whose xdist workers errored writes a well-formed coverage report
+whose numbers are an artefact, and nothing inside the report itself says so.
 """
 
 from __future__ import annotations
@@ -35,6 +38,12 @@ _spec.loader.exec_module(_ccd)
 def run(tree, python: str, parallel: bool) -> tuple[str, int, float | None]:
     report = _ccd.report_path(tree)
     report.parent.mkdir(parents=True, exist_ok=True)
+    # The JUnit XML is what lets the ratchet tell a finished run from one whose workers
+    # errored: a coverage report carries no record of its own session, so without this
+    # the ratchet has to treat every report here as unverifiable. Its path is derived
+    # from the report's, never spelled out twice -- `check_coverage_debt.run_record_path`
+    # is the single answer to where it goes.
+    record = _ccd.run_record_path(report)
     cmd = [python, "-m", "pytest", "-q", "-p", "no:cacheprovider"]
     if parallel:
         cmd += ["-n", "auto"]
@@ -42,6 +51,7 @@ def run(tree, python: str, parallel: bool) -> tuple[str, int, float | None]:
         f"--cov={tree.cov}",
         f"--cov-report=xml:{report}",
         "--cov-report=",
+        f"--junitxml={record}",
         *tree.args,
     ]
     result = subprocess.run(cmd, cwd=REPO_ROOT / tree.cwd)

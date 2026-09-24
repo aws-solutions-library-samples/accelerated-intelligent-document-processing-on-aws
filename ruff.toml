@@ -250,8 +250,6 @@ exclude = [
     "nested/api-resolvers/src/lambda/finetuning_jobs_resolver/index.py",
     "nested/api-resolvers/src/lambda/get_file_contents_resolver/index.py",
     "nested/api-resolvers/src/lambda/get_file_contents_resolver/test_index.py",
-    "nested/api-resolvers/src/lambda/get_stepfunction_execution_resolver/index.py",
-    "nested/api-resolvers/src/lambda/get_stepfunction_execution_resolver/test_index.py",
     "nested/api-resolvers/src/lambda/http_api_dispatcher/authz.py",
     "nested/api-resolvers/src/lambda/http_api_dispatcher/ddb_direct.py",
     "nested/api-resolvers/src/lambda/list_agent_chat_sessions_resolver/index.py",
