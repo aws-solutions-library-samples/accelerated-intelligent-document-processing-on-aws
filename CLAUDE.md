@@ -415,6 +415,14 @@ declared, and no test can read a sentence — the name is the reliable route.
 GitLab and GitHub now run the **same** non-integration gates. Integration tests
 (`integration_tests`) remain GitLab-only, as they need AWS credentials.
 
+Two other GitLab-only jobs exist and neither is a gate, so the parity assertion is
+unaffected by both: `deployment_validation` (the pre-deploy IAM check, which
+belongs to the deploy path above) and `ai_mr_review`, the advisory AI review that
+posts a comment on every non-Draft MR. The reviewer needs AWS credentials for
+Bedrock and is `allow_failure: true` — it approves nothing and blocks nothing —
+which is why it is deliberately absent from `SHARED_GATES` rather than missing
+from it. A GitHub equivalent would need its own OIDC role.
+
 Historically several gates ran on GitLab only, so a change merged via a GitHub PR
 skipped them — the same class of gap as the SRT/dep-audit note below. Now on both:
 `make lint-cicd` (which itself covers `cfn-lint`, `validate-buildspec`,

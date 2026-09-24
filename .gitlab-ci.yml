@@ -640,17 +640,57 @@ ai_mr_review:
     # Node 22: @anthropic-ai/claude-code declares `engines: {node: ">=22.0.0"}`.
     # This was 20, and npm's EBADENGINE warning was the only sign — `npm install`
     # and `claude --version` both SUCCEED on 20, and the CLI then exits 1 with an
-    # empty stderr on the first real session. A version check that passes on an
-    # unsupported runtime is worse than no check, so the failure is asserted
-    # against the package's own requirement by
-    # scripts/tests/test_ai_mr_review.py::test_the_node_major_satisfies_claude_codes_engine
+    # empty stderr on the first real session.
+    #
+    # ⚠️ `curl ... | bash -` exits with BASH's status, not curl's, which is why
+    # .github/workflows/developer-tests.yml replaced this same pattern with
+    # actions/setup-node: a NodeSource 403 there left the repo unregistered, the
+    # apt-get below installed Debian's own nodejs, and the job failed several steps
+    # later with an unrelated error. GitLab has no equivalent first-party action
+    # and this image ships no Node, so the install stays — but the RUNTIME is now
+    # asserted rather than the intent, because a check on the pattern stays green
+    # in exactly that scenario.
     - curl -fsSL https://deb.nodesource.com/setup_22.x | bash -
     - apt-get install -y nodejs
-    - npm install -g "@anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}"
     - node --version
+    - >-
+      node -e 'const m=+process.versions.node.split(".")[0];
+      if (m < 22) { console.error("FATAL: node "+process.versions.node+
+      " but @anthropic-ai/claude-code needs >=22. The NodeSource install did not"+
+      " take (a `curl | bash` failure is silent) and Debian nodejs is in use.");
+      process.exit(1); }'
+    - npm install -g "@anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}"
     - claude --version
 
   script:
+    # ⚠️ PIN THE HARNESS TO THE TARGET BRANCH BEFORE RUNNING IT.
+    #
+    # This checkout is the MR head, so without this the reviewer is the MR's own
+    # copy of itself: the permission mode, both tool lists, the secret-stripping
+    # list and the prompt are all author-controlled, and the script's internal
+    # pinning of instruction files runs too late to matter because the code doing
+    # the pinning is also the MR's. The blast radius is this job's environment,
+    # which holds an AWS credential and GITLAB_REVIEW_TOKEN.
+    #
+    # So the harness comes from the target branch and only the DIFF comes from the
+    # MR. The tradeoff is explicit: an MR that improves the reviewer is not
+    # exercised by its own pipeline — it takes effect once merged. That is the same
+    # trade the instruction-file pinning makes, for the same reason.
+    #
+    # The `||` arm covers the first landing, when the target branch has no copy
+    # yet. It says so loudly rather than proceeding silently, because "no pinned
+    # copy" and "pinned successfully" must not look alike in a log.
+    - |
+      TARGET="${CI_MERGE_REQUEST_TARGET_BRANCH_NAME:-develop}"
+      git fetch -q origin "$TARGET"
+      HARNESS="scripts/sdlc/ai_mr_review.py .claude/skills/pr-review.md .claude/skills/pr-review-ci.md CLAUDE.md"
+      if git checkout FETCH_HEAD -- $HARNESS 2>/dev/null; then
+        echo "Harness pinned to origin/$TARGET: $HARNESS"
+      else
+        echo "⚠️  Could not pin the harness to origin/$TARGET — it does not carry"
+        echo "    all of: $HARNESS"
+        echo "    Running the MR's own copy. Expected only on the MR that adds this."
+      fi
     - |
       if [ -n "$CI_MERGE_REQUEST_IID" ]; then
         python3 scripts/sdlc/ai_mr_review.py --mr "$CI_MERGE_REQUEST_IID"

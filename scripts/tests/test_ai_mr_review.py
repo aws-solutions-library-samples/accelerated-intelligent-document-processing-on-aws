@@ -157,41 +157,242 @@ def test_the_gitlab_token_is_required_and_has_no_fallback(mod) -> None:
 
 
 @pytest.mark.unit
-def test_every_granted_tool_is_classified_as_read_only(mod) -> None:
-    """Universe closure over ``ALLOWED_TOOLS``: nothing may be unclassified.
+def test_the_allowlist_grants_reading_and_nothing_else(mod) -> None:
+    """Universe closure over ``ALLOWED_TOOLS``, and no Bash entry may return.
 
-    The allowlist is the whole of what the review can do, so this is asserted as
-    closure rather than as a snapshot of the list. Every member must fall into
-    one of the read-only categories below; an entry in none of them fails here
-    **naming itself**, which is what makes adding a tool a deliberate act rather
-    than a one-line widening nobody reads. A snapshot comparison would instead
-    just need updating, which is how a list like this grows a writer.
+    The previous version of this list held five ``Bash(git ...)`` entries and was
+    described as read-only. It was not: Claude Code matches a ``Bash(...)`` rule as
+    a command **prefix**, so it cannot forbid an option, and ``--output=<path>`` is
+    a diff option accepted by ``git diff``, ``git log`` and ``git show`` — each
+    writing an arbitrary file. Both were measured writing one. The old closure test
+    classified by verb, so it reported closure over a set containing three writers.
+
+    The lesson is about the *shape* of the check, not the entries: a per-entry
+    classifier cannot see a capability that arrives through an option. So the rule
+    is now categorical — three reading tools, nothing else — which is a claim that
+    can actually be verified.
     """
-    read_only_tools = {"Read", "Grep", "Glob"}
-    read_only_git = {"log", "show", "diff", "status", "blame"}
-
-    unclassified: list[str] = []
-    for entry in mod.ALLOWED_TOOLS:
-        if entry in read_only_tools:
-            continue
-        if entry.startswith("Bash("):
-            # `Bash(git log:*)` — the `:*` is Claude Code's prefix wildcard.
-            command = entry[len("Bash(") : -1].removesuffix(":*").split()
-            if command[:1] == ["rg"]:
-                continue
-            if command[:1] == ["git"] and command[1:2] and command[1] in read_only_git:
-                continue
-        unclassified.append(entry)
-
-    assert not unclassified, (
-        f"these entries in ALLOWED_TOOLS are in none of this test's read-only "
-        f"categories: {unclassified}. The review reads attacker-influenced text, "
-        f"so anything it is granted has to be something that cannot act. Either "
-        f"the entry does not belong, or it is a new read-only category and this "
-        f"test should say so explicitly."
+    assert set(mod.ALLOWED_TOOLS) == {"Read", "Grep", "Glob"}, (
+        f"ALLOWED_TOOLS is {mod.ALLOWED_TOOLS}. Only Read/Grep/Glob may be granted. "
+        f"In particular there is no read-only Bash entry available: prefix matching "
+        f"cannot exclude `--output=<path>`, which turns git diff/log/show into file "
+        f"writers."
+    )
+    assert not any(e.startswith("Bash") for e in mod.ALLOWED_TOOLS), (
+        "a Bash entry is back in ALLOWED_TOOLS. Besides the --output problem, Bash "
+        "is what gives the project's PreToolUse hooks — which execute scripts from "
+        "the checkout under review — something to fire on."
+    )
+    assert "Bash" in mod.DISALLOWED_TOOLS, (
+        "Bash must be denied by name, so that re-adding an allow entry still gets "
+        "nothing"
     )
 
 
+@pytest.mark.unit
+def test_the_deny_list_is_count_pinned(mod) -> None:
+    """The ratchet ``gate_exemptions.json`` claims for ``DISALLOWED_TOOLS``.
+
+    That entry claimed ``universe-closure`` and nothing implemented it — the only
+    assertion over the list was a five-name presence check, and the marker test
+    passed only because the same evidence file closes over ``ALLOWED_TOOLS``.
+    CLAUDE.md names that exact defect: a ratchet nothing implements reads as
+    protection that is not there.
+
+    A deny list has no universe to close over, so the honest ratchet is the audited
+    count: growing or shrinking it is a deliberate edit here, which is the moment to
+    ask whether the new shape still denies everything it should.
+    """
+    audited = 8  # Bash, Write, Edit, MultiEdit, NotebookEdit, WebFetch, WebSearch, Task
+    assert len(mod.DISALLOWED_TOOLS) == audited, (
+        f"DISALLOWED_TOOLS now has {len(mod.DISALLOWED_TOOLS)} entries, not the "
+        f"{audited} audited when gate_exemptions.json claimed a count-pinned ratchet "
+        f"for it: {mod.DISALLOWED_TOOLS}. Confirm the list still denies every tool "
+        f"that can write, execute or reach the network, then update the count."
+    )
+    assert len(set(mod.DISALLOWED_TOOLS)) == len(mod.DISALLOWED_TOOLS), (
+        "a duplicate entry inflates the count without denying anything new"
+    )
+
+
+@pytest.mark.unit
+def test_instruction_carrying_files_are_all_pinned(mod) -> None:
+    """Every file that reaches the model as *instructions* must be pinned.
+
+    The skills were pinned and ``CLAUDE.md`` was not, although Claude Code
+    auto-loads it as project instructions — so an MR editing it spoke to its own
+    reviewer at instruction level and never appeared as suspicious diff text.
+    """
+    assert "CLAUDE.md" in mod.PINNED_FROM_TARGET, (
+        "CLAUDE.md is not pinned. It is loaded as project instructions, so the MR's "
+        "copy would instruct its own reviewer."
+    )
+    for skill in (".claude/skills/pr-review.md", ".claude/skills/pr-review-ci.md"):
+        assert skill in mod.PINNED_FROM_TARGET, f"{skill} is no longer pinned"
+
+    # Count-pinned, which is the ratchet gate_exemptions.json claims for this list.
+    # Whether a file arrives as *instructions* is a property of how Claude Code
+    # loads it and cannot be derived from the tree, so membership is authored — and
+    # this list was already missing CLAUDE.md once.
+    audited = 3
+    assert len(mod.PINNED_FROM_TARGET) == audited, (
+        f"PINNED_FROM_TARGET now has {len(mod.PINNED_FROM_TARGET)} entries, not the "
+        f"{audited} audited when its registry entry was written: "
+        f"{mod.PINNED_FROM_TARGET}. Adding one is good; confirm it really is loaded "
+        f"as instructions, then update the count."
+    )
+
+
+@pytest.mark.unit
+def test_the_before_tree_is_supplied_since_there_is_no_git_tool(mod, tmp_path) -> None:
+    """History as data, and the specific question it has to answer.
+
+    Dropping Bash cost ``git log``/``show``/``blame``. What the two real reviews
+    actually used history for was neither: it was the target branch's **file
+    contents** — "``origin/develop`` has no ``_write_marker`` at all", "that mode
+    never shipped" — which is what supports the best finding class either produced,
+    a comment describing an earlier iteration of the branch as released behaviour.
+
+    So the merge-base tree is exported as plain files. Driven against a real
+    repository, because the whole point is what ``git archive`` produces.
+    """
+    import subprocess
+
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    run = lambda *a: subprocess.run(a, cwd=repo, check=True, capture_output=True)  # noqa: E731
+    run("git", "init", "-q")
+    run("git", "config", "user.email", "t@example.invalid")
+    run("git", "config", "user.name", "t")
+    (repo / "kept.py").write_text("ORIGINAL = 1\n")
+    run("git", "add", "-A")
+    run("git", "commit", "-qm", "base commit")
+    run("git", "update-ref", "refs/ai-review/target-develop", "HEAD")
+    base_sha = subprocess.run(
+        ("git", "rev-parse", "HEAD"), cwd=repo, capture_output=True, text=True
+    ).stdout.strip()
+
+    # A branch commit that rewrites the file and adds one.
+    (repo / "kept.py").write_text("CHANGED = 2\n")
+    (repo / "added.py").write_text("NEW = 3\n")
+    run("git", "add", "-A")
+    run("git", "commit", "-qm", "branch commit")
+    run("git", "update-ref", "refs/ai-review/7", "HEAD")
+
+    monkeypatch_target = tmp_path / "out"
+    original_root = mod.REPO_ROOT
+    mod.REPO_ROOT = repo
+    try:
+        returned = mod.export_base_tree(monkeypatch_target / "base", 7, "develop")
+        mod.write_commit_log(monkeypatch_target / "commits.log", 7, returned)
+    finally:
+        mod.REPO_ROOT = original_root
+
+    assert returned == base_sha, "the merge-base SHA must be reported to the review"
+    # The BEFORE state, which is the whole point.
+    assert (monkeypatch_target / "base" / "kept.py").read_text() == "ORIGINAL = 1\n", (
+        "the exported tree is not the merge-base state, so a claim about what the "
+        "target branch contains cannot be checked against it"
+    )
+    assert not (monkeypatch_target / "base" / "added.py").exists(), (
+        "a file the branch ADDED is present in the before-tree, so the export is of "
+        "the wrong revision"
+    )
+    assert not (monkeypatch_target / "base" / "base.tar").exists(), (
+        "the intermediate tarball was left behind; the review would read it as a file"
+    )
+    log = (monkeypatch_target / "commits.log").read_text()
+    assert "branch commit" in log and "base commit" not in log, (
+        f"commits.log must carry the MR's own commits and no more: {log!r}"
+    )
+
+
+@pytest.mark.unit
+def test_the_prompt_points_at_the_history_files(mod) -> None:
+    """Supplying them is useless if the review is not told they exist.
+
+    It has no git tool, so it has no way to discover that a before-tree is sitting
+    next to the diff. Naming them, and naming what they are *for*, is the half of
+    this that produces findings.
+    """
+    merge_request = mod.MergeRequest(
+        iid=1,
+        title="t",
+        author="a",
+        source_branch="s",
+        target_branch="develop",
+        head_sha="abc",
+        web_url="u",
+        draft=False,
+    )
+    prompt = " ".join(mod.build_prompt(merge_request, "m", "d", False).split())
+    assert ".ai-review/base/" in prompt
+    assert ".ai-review/commits.log" in prompt
+    assert "NO git tool" in prompt
+    assert "EARLIER ITERATION OF THIS BRANCH" in prompt, (
+        "the prompt names the before-tree but not the finding class it exists for"
+    )
+
+
+@pytest.mark.unit
+def test_the_worktree_cannot_execute_the_mrs_own_code(mod, tmp_path) -> None:
+    """``.claude/settings.json`` is the sharpest edge and must be removed.
+
+    It registers ``PreToolUse`` hooks that run
+    ``python3 "$CLAUDE_PROJECT_DIR/scripts/hooks/*.py"`` — the **MR's** copies of
+    those scripts — as soon as the session uses a matching tool, whatever the model
+    does or refuses. That is code execution reached without the model's
+    cooperation, so no amount of prompt hardening or tool denial touches it.
+    ``.mcp.json`` is the same shape: a server definition is a command line.
+    """
+    for relative in (".claude/settings.json", ".mcp.json"):
+        assert relative in mod.NEUTRALISED_IN_WORKTREE, (
+            f"{relative} is no longer removed from the worktree"
+        )
+
+    worktree = tmp_path / "head"
+    (worktree / ".claude").mkdir(parents=True)
+    (worktree / ".claude" / "settings.json").write_text('{"hooks": {}}')
+    (worktree / ".mcp.json").write_text("{}")
+
+    removed = mod.neutralise_agent_config(worktree)
+
+    assert not (worktree / ".claude" / "settings.json").exists()
+    assert not (worktree / ".mcp.json").exists()
+    assert set(removed) == {".claude/settings.json", ".mcp.json"}, (
+        f"the removal must be reported for the log, got {removed}"
+    )
+
+
+@pytest.mark.unit
+def test_the_ci_job_pins_the_harness_before_running_it(ci_config: dict) -> None:
+    """The outer channel, and the only place it can be closed.
+
+    In an MR pipeline the checkout is the MR, so ``ai_mr_review.py`` is the MR's
+    copy of itself — its permission mode, tool lists and prompt are all
+    author-controlled, and its internal pinning runs too late to matter. Nothing
+    inside the script can fix that: by the time Python starts, the code running is
+    already the MR's. So the job replaces the harness from the target branch first,
+    and that is asserted here because it is two lines of YAML with no other trace.
+    """
+    script = "\n".join(ci_config["ai_mr_review"]["script"])
+    assert "git checkout FETCH_HEAD --" in script, (
+        "the job no longer pins the harness from the target branch, so the reviewer "
+        "in an MR pipeline is the MR's own copy of the reviewer"
+    )
+    for pinned in (
+        "scripts/sdlc/ai_mr_review.py",
+        ".claude/skills/pr-review.md",
+        ".claude/skills/pr-review-ci.md",
+        "CLAUDE.md",
+    ):
+        assert pinned in script, f"{pinned} is not pinned by the job"
+    assert "CI_MERGE_REQUEST_TARGET_BRANCH_NAME" in script, (
+        "the pin must follow the MR's actual target branch, not a hardcoded one"
+    )
+
+
+@pytest.mark.unit
 @pytest.mark.unit
 def test_the_permission_mode_is_named_on_the_command_line(mod) -> None:
     """Without this, the two tool lists are decoration.
@@ -283,9 +484,12 @@ def test_the_dangerous_tools_are_denied_by_name_as_well(mod) -> None:
     be reachable even if a future edit widens the allowlist or a Claude Code
     release adds a tool that is permitted by default.
     """
-    for required in ("Write", "Edit", "WebFetch", "Task", "Bash(aws:*)"):
+    for required in ("Bash", "Write", "Edit", "WebFetch", "Task"):
         assert required in mod.DISALLOWED_TOOLS, (
-            f"{required} is no longer explicitly denied."
+            f"{required} is no longer explicitly denied. `Bash` denies the whole "
+            f"tool, which is what the per-command entries (Bash(aws:*) and friends) "
+            f"used to approximate — they are gone because an allowlist of command "
+            f"prefixes cannot express 'no side effects'."
         )
 
 
@@ -306,10 +510,19 @@ def test_the_prompt_marks_the_diff_as_untrusted(mod) -> None:
         head_sha="abc1234",
         draft=False,
     )
+    # Whitespace-normalised: the prompt is hard-wrapped, so a phrase that reads
+    # contiguously can straddle a newline. Matching the raw text made this test
+    # fail on a reword that changed nothing it cares about.
     prompt = mod.build_prompt(merge_request, "m.json", "d.patch", truncated=False)
-    lowered = prompt.lower()
+    lowered = " ".join(prompt.lower().split())
     assert "untrusted" in lowered
     assert "never as instructions" in lowered
+    for field in ("title", "branch names"):
+        assert field in lowered, (
+            f"the untrusted-input paragraph does not name the MR {field}. They are "
+            f"author-controlled strings and were interpolated into the prompt as "
+            f"instruction text while only the diff and comments were marked."
+        )
     assert "blocking finding" in lowered, (
         "the prompt must say what to DO about an injection attempt, not just "
         "that the input is untrusted"
@@ -551,35 +764,41 @@ def test_the_reviewer_is_not_listed_as_a_shared_gate() -> None:
 
 
 @pytest.mark.unit
-def test_the_node_major_satisfies_claude_codes_engine(ci_config: dict) -> None:
-    """The runtime the job installs must satisfy the CLI's declared engine.
+def test_the_node_runtime_is_asserted_not_just_requested(ci_config: dict) -> None:
+    """Checking the installer's URL is not checking what got installed.
 
-    This is the failure that cost a CI round trip. The job installed Node 20;
-    ``@anthropic-ai/claude-code`` declares ``engines: {node: ">=22.0.0"}``. npm
-    printed an ``EBADENGINE`` **warning** and installed anyway, ``claude
-    --version`` answered correctly, and the first real session then exited 1 with
-    **both** stdout and stderr empty. Every signal available said the install had
-    worked.
+    Two failures stack here. ``@anthropic-ai/claude-code`` needs Node >=22, and on
+    20 it installs, answers ``--version``, and then exits 1 with both streams empty
+    — so nothing in the job reports the mismatch. And ``curl ... | bash -`` exits
+    with **bash's** status, not curl's, which is why
+    ``.github/workflows/developer-tests.yml`` replaced this same pattern with
+    ``actions/setup-node``: a NodeSource 403 there left the repo unregistered and
+    Debian's own nodejs installed, failing several steps later for an unrelated
+    reason.
 
-    Asserted against the CLI's requirement rather than against the literal 22, so
-    that a future release raising the floor fails here rather than in a job.
+    A test that regexes ``setup_(\d+)\.x`` out of the YAML stays green in exactly
+    that scenario, because the URL is still correct — what changed is what arrived.
+    So assert the job **executes a runtime check**, and keep the URL assertion only
+    as the statement of intent it is.
     """
     before = "\n".join(ci_config["ai_mr_review"]["before_script"])
+
     installed = re.search(r"deb\.nodesource\.com/setup_(\d+)\.x", before)
-    assert installed, (
-        "the job no longer installs Node from nodesource, so this check cannot "
-        "see which major the review will run on"
+    assert installed and int(installed.group(1)) >= 22, (
+        f"the job does not request Node >=22 from NodeSource: {installed}"
+    )
+    assert "process.versions.node" in before, (
+        "the job does not verify the Node runtime it actually got. The installer "
+        "URL being right is not evidence the install worked — `curl | bash` hides a "
+        "download failure behind bash's exit status."
+    )
+    assert "process.exit(1)" in before, (
+        "the runtime check does not fail the job, so it is a log line rather than a "
+        "check"
     )
 
-    required = 22  # @anthropic-ai/claude-code engines.node, as of 2.1.281
-    assert int(installed.group(1)) >= required, (
-        f"the job installs Node {installed.group(1)} but Claude Code requires "
-        f">={required}. npm only WARNS about this and `claude --version` still "
-        f"works, so nothing in the job will tell you — the review just exits 1 "
-        f"with empty output."
-    )
 
-
+@pytest.mark.unit
 @pytest.mark.unit
 def test_a_failed_review_reports_both_streams(mod) -> None:
     """A failure message must carry enough to diagnose without a second run.
@@ -700,8 +919,16 @@ def test_the_review_criteria_come_from_the_target_branch_not_the_mr(
         "TRUSTED pr-review-ci.md\n"
     )
 
+    # A file that exists ONLY at head — the case that used to be silent.
+    (worktree / ".claude" / "skills" / "pr-review-new.md").write_text("added here\n")
+    monkeypatch.setattr(
+        mod,
+        "PINNED_FROM_TARGET",
+        (*mod.PINNED_FROM_TARGET, ".claude/skills/pr-review-new.md"),
+    )
+
     monkeypatch.setattr(mod, "REPO_ROOT", repo)
-    modified = mod.pin_skills_to_target_branch(worktree, "develop")
+    modified, unpinnable = mod.pin_instructions_to_target_branch(worktree, "develop")
 
     assert (worktree / ".claude/skills/pr-review.md").read_text() == (
         "TRUSTED pr-review.md\n"
@@ -709,6 +936,13 @@ def test_the_review_criteria_come_from_the_target_branch_not_the_mr(
     assert modified == [".claude/skills/pr-review.md"], (
         f"the modified-skill report is {modified}; it must name exactly the skill "
         f"files the MR changes, so the review can tell the reader about it"
+    )
+    assert len(unpinnable) == 1 and "pr-review-new.md" in unpinnable[0], (
+        f"a file that exists only at head must be reported as UNPINNABLE, got "
+        f"{unpinnable}. This was a bare `continue`: the one case where the control "
+        f"cannot work was also the case where nobody was told, and the MR that "
+        f"introduced pr-review-ci.md reviewed itself against its own criteria with "
+        f"`modifies_review_skills: []` in its metadata."
     )
 
 
@@ -730,13 +964,22 @@ def test_a_modified_skill_is_reported_in_the_prompt(mod) -> None:
         web_url="u",
         draft=False,
     )
-    plain = mod.build_prompt(merge_request, "m", "d", False, [])
+    plain = mod.build_prompt(merge_request, "m", "d", False, [], [])
     flagged = mod.build_prompt(
-        merge_request, "m", "d", False, [".claude/skills/pr-review-ci.md"]
+        merge_request, "m", "d", False, [".claude/skills/pr-review-ci.md"], []
     )
-    assert "modifies the review skill" in flagged
+    unpinned = mod.build_prompt(
+        merge_request, "m", "d", False, [], ["CLAUDE.md (added by this MR)"]
+    )
+    assert "modifies the pinned instruction file" in flagged
     assert ".claude/skills/pr-review-ci.md" in flagged
-    assert "modifies the review skill" not in plain
+    assert "modifies the pinned instruction file" not in plain
+
+    # The weaker case must be louder, not quieter: the model is reading criteria
+    # the MR supplied, and the review has to say so.
+    assert "could NOT be pinned" in unpinned
+    assert "CLAUDE.md (added by this MR)" in unpinned
+    assert "could NOT be pinned" not in plain
 
 
 @pytest.mark.unit

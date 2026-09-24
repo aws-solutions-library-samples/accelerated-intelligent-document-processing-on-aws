@@ -22,11 +22,25 @@ into the working directory:
 |---|---|
 | `.ai-review/metadata.json` | iid, title, author, source/target branch, head SHA, changed-file and line counts |
 | `.ai-review/diff.patch` | unified diff of the MR against its **merge base** with the target branch |
+| `.ai-review/base/` | the **whole repository at the merge base** — the "before" tree |
+| `.ai-review/commits.log` | this MR's own commits |
+
+There is **no git tool and no shell**, so those last two are your history. Use
+`.ai-review/base/` for targeted comparison rather than browsing — it is a full
+copy of the tree.
+
+⚠️ **The before-tree is what makes the highest-value finding class here
+checkable: a comment, docstring or doc that describes an *earlier iteration of
+this branch* as though it were released behaviour.** When the code says "kept for
+compatibility with X" or "this used to Y", read the same file under
+`.ai-review/base/`. Where X or Y was never there, the claim is about an
+intermediate commit of the branch, no deployed system can have that behaviour,
+and the comment is actively misleading — the shape of the worst real finding
+either review has produced. Say what it should say instead.
 
 The working directory is a detached git worktree checked out at the MR head, so
 `Read`, `Grep` and `Glob` see every file at its post-merge state — use them
-whenever the diff lacks the surrounding context to judge a change. Read-only git
-(`git log`, `git show`, `git diff`, `git blame`) is available for history.
+whenever the diff lacks the surrounding context to judge a change.
 
 If the prompt says the diff was **truncated**, say so in the Summary and scope
 every finding to what you actually read. A review that implies whole-diff
@@ -74,12 +88,21 @@ unattended one does not, so it is called out rather than left implicit.
 
 ### 5. You hold no credentials and no write tools
 
-The orchestrator strips every token from the environment before starting you,
-and the tool allowlist has no network tool, no file writer, and no `aws` / `gh`
-/ `glab`. That is deliberate: a review that reads attacker-influenced text
-should not be *able* to act on it. So do not plan around fetching anything —
-if a judgement needs information that is not in the worktree or the two input
-files, say in the finding what you could not check.
+The orchestrator strips every token from the environment before starting you, and
+you are granted `Read`, `Grep` and `Glob` — **that is all**. No Bash, no shell, no
+network tool, no writer. A review that reads attacker-influenced text should not be
+*able* to act on it.
+
+There is no read-only `git` allowlist available to grant, either, which is worth
+knowing so you do not read its absence as an oversight: tool rules match a command
+by prefix, so they cannot exclude `--output=<path>` — a diff option that `git
+diff`, `git log` and `git show` all accept, each writing an arbitrary file. The
+history you would have used those for is in `.ai-review/base/` and
+`.ai-review/commits.log` instead.
+
+So do not plan around fetching or running anything. If a judgement needs
+information that is not in the worktree or the four input files, say in the finding
+what you could not check.
 
 ## Bounds worth stating in the review itself
 

@@ -2588,7 +2588,7 @@
     },
     "scripts/sdlc/ai_mr_review.py::ALLOWED_TOOLS": {
       "kind": "capability",
-      "turnsOff": "nothing in any gate; it is the sandbox the advisory MR-review subprocess runs inside, granting Claude Code read-only tools",
+      "turnsOff": "nothing in any gate; it is the sandbox the advisory MR-review subprocess runs inside, granting Claude Code three reading tools",
       "premise": [
         "JUDGEMENT"
       ],
@@ -2598,7 +2598,8 @@
       "memberKind": "tool name",
       "crossReferences": [
         "scripts/sdlc/ai_mr_review.py::DISALLOWED_TOOLS",
-        "scripts/sdlc/failure_agent.py::_ALLOWED_TOOLS"
+        "scripts/sdlc/failure_agent.py::_ALLOWED_TOOLS",
+        "scripts/sdlc/ai_mr_review.py::PINNED_FROM_TARGET"
       ]
     },
     "scripts/sdlc/ai_mr_review.py::DISALLOWED_TOOLS": {
@@ -2607,10 +2608,24 @@
       "premise": [
         "JUDGEMENT"
       ],
-      "ratchet": "universe-closure",
+      "ratchet": "count-pinned",
       "ratchetEvidence": "scripts/tests/test_ai_mr_review.py",
-      "reason": "Discovered through its attached comment rather than its name, which the polarity guard correctly refuses to read as an allowlist. It denies writers, network tools and the credential-bearing CLIs a runner has on PATH, so a missing entry is a risk and an extra entry is free: the opposite direction from an exemption.",
+      "reason": "Discovered through its attached comment rather than its name, which the polarity guard correctly refuses to read as an allowlist. Every entry REMOVES a capability, so a missing entry is the risk and an extra entry is free -- the opposite direction from an exemption. Relabelled from universe-closure, which nothing implemented: the only assertion over this list was a five-name presence check, and the ratchet-marker test passed only because the same evidence file implements closure for ALLOWED_TOOLS. A deny list has no universe to close over, so the honest ratchet is the audited count.",
       "memberKind": "tool name",
+      "crossReferences": [
+        "scripts/sdlc/ai_mr_review.py::ALLOWED_TOOLS"
+      ]
+    },
+    "scripts/sdlc/ai_mr_review.py::PINNED_FROM_TARGET": {
+      "kind": "enforced-universe",
+      "turnsOff": "nothing. It is the ENFORCED set: every file named here is replaced with the target branch's copy before the reviewing model reads the worktree, so a member adds protection and the risk is omission.",
+      "premise": [
+        "JUDGEMENT"
+      ],
+      "ratchet": "count-pinned",
+      "ratchetEvidence": "scripts/tests/test_ai_mr_review.py",
+      "reason": "Whether a file reaches the model as INSTRUCTIONS rather than as data is a property of how Claude Code loads it, which cannot be computed from the tree: CLAUDE.md is auto-loaded as project instructions and .claude/skills/*.md are read on request, while a README with identical content is neither. So the membership is authored. It was missing CLAUDE.md, which is how an MR could instruct its own reviewer at instruction level without appearing as suspicious diff text; the count pin is there to make the next addition of that kind a deliberate edit.",
+      "memberKind": "repo-relative path loaded as agent instructions",
       "crossReferences": [
         "scripts/sdlc/ai_mr_review.py::ALLOWED_TOOLS"
       ]
