@@ -217,11 +217,21 @@ hours at a stretch.
 
 ```bash
 ListAgents          # which of inFlight is actually still alive
-AWS_PROFILE=default gh pr list --repo <repo> --state open \
+AWS_PROFILE=default gh pr list --repo <repo> --state open --limit 500 \
   --json number,baseRefName,headRefName,mergeable,statusCheckRollup
-AWS_PROFILE=default gh issue list --repo <repo> --state open --json number | \
+AWS_PROFILE=default gh issue list --repo <repo> --state open --limit 500 --json number | \
   python3 -c "import json,sys; print('open:', len(json.load(sys.stdin)))"
 ```
+
+⚠️ **`--limit` is not optional on a call whose result you are going to count.** `gh
+issue list` and `gh pr list` default to **30** and page silently, so a backlog of 36
+counts as 30 and a backlog of 300 also counts as 30 — and the wrong answer is stable,
+plausible and lands on exactly the round number an eye accepts. Measured here: the same
+repository answered **30** without the flag and **36** with it, and 36 is the figure
+that reconciles against the ledger (19 open at the start, plus 24 filed, minus 7
+closed). A truncated count is worse than a missing one, because every classification
+built on it — `composition`, `netClosure`, whether `loopReady` is empty — inherits it
+silently and the numbers stay self-consistent.
 
 Two assertions over that PR list, and each has caught something here:
 
@@ -460,7 +470,7 @@ yourself.
 Below ~30 issues, do it inline:
 
 ```bash
-AWS_PROFILE=default gh issue list --repo <repo> --state open --limit 100 \
+AWS_PROFILE=default gh issue list --repo <repo> --state open --limit 500 \
   --json number,title,labels,createdAt,comments
 ```
 
@@ -1277,8 +1287,8 @@ Compute `closed − filed` every cycle into `netClosure` and act on it without b
 asked. **If it is negative, filing stops** — for agents and for you — and the next
 unit of work is a triage-and-close pass rather than another fixer dispatch. Measured
 over one 18½-hour run: **7 issues closed, 24 filed**, against 19 open at the start
-and 30 at the end. Every fix was real and every filed issue was plausible, and the
-backlog still grew by more than half. The user had to impose a scope freeze by hand
+and **36** at the end. Every fix was real and every filed issue was plausible, and the
+backlog still **nearly doubled**. The user had to impose a scope freeze by hand
 twice, and the second one was breached within the hour, which is what tells you this
 belongs in the loop rather than in a policy sentence.
 
