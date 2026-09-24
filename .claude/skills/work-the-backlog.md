@@ -1447,6 +1447,15 @@ permanent, and in the state file, which is resumable.
   reported 20 and 7 more passes than the author measured, the right response was to
   attribute each delta exactly to the test files the merge brought in — which confirmed
   both figures. An unexplained delta in either direction is a finding.
+- ⚠️ **A gate figure without its base commit is not a reference, and handing one to an
+  agent manufactures false evidence.** A coordinator here gave an agent "62 invocations,
+  8,800 passed, 0 failed" as the expected baseline. The figure had been measured seven
+  minutes before a large merge landed; the agent matched it exactly, and **the match is
+  what made a pre-merge measurement read as evidence about the post-merge tree**,
+  concealing four failures. Quote the commit with every number, and treat a figure that
+  arrives without one as unmeasured. This is the same self-consistent-and-false shape as
+  the stale-green CI mark and the truncated issue count — three instances of it in one
+  day, which is why it is stated as a rule rather than an anecdote.
 - **Ancestry is not identity.** `is_relative_to(root)` accepts a sibling
   worktree nested under the root. This has bitten three separate controls here.
   Compare roots by equality.
@@ -1493,7 +1502,7 @@ verifies *code*. None verifies the premises the coordinator is operating on, and
 wrong premise is silent and self-consistent — see the check-in section for the
 worked example. The mandatory check-in is a mitigation, not a fix.
 
-Three further coordinator errors are recorded here because each survived every
+Four further coordinator errors are recorded here because each survived every
 code-level control and was caught only by the user asking a plain question:
 
 - **Idling the loop during a promotion CI wait**, having read "wait for its checks" as
@@ -1515,6 +1524,30 @@ The pattern in all three is the same and it is worth naming: **the coordinator's
 errors are about process and reporting, not about code, so a green tree proves nothing
 about them.** Ask at every check-in what you are treating as established without having
 measured it.
+
+**What actually catches them is another reader, and the self-audit is the instrument
+least able to.** The self-audit shares, by construction, whatever error it is looking
+for. Measured across one day of this loop, four coordinator-level errors surfaced — the
+idled promotion wait; an open-issue count truncated by `gh`'s default limit and
+presented as a total; an issue comment whose recommendation would have deleted the only
+pointer to a working capability; and a gate figure quoted to an agent without its base
+commit — and **all four were caught by a second reader going over the first one's
+output.** None by a gate, none by the self-audit. One of them had already cost 5 h 32 m
+of run time before anyone looked.
+
+So if a second session is available during a long run, the highest-value thing it can do
+is read the coordinator's reports adversarially: recompute every count from a call with
+an explicit `--limit`, re-run one measurement per report rather than accepting the
+figure, and check any "X was dropped" or "X is broken" claim against the commit graph
+before a decision rests on it.
+
+⚠️ **Bound that second reader to reading and recomputing.** It must not merge, close,
+re-triage or dispatch. A second session that starts doing the loop's work is a second
+coordinator, and every sequencing guarantee here — merges serialise, one actor holds the
+order — assumes exactly one. Observed: a reviewing session drifted from checking reports
+into verifying merge decisions and relaying check-ins, which duplicated the coordinator's
+job and put two actors on one queue. The value is in the reading; the risk is in
+everything past it.
 
 **It does not survive compaction losslessly.** The state file preserves the
 mechanical state; it does not preserve why a ranking was chosen, what an agent
