@@ -1327,6 +1327,32 @@ dep-audit: ## Audit all pinned Python + Node dependencies against OSV (fails on 
 dep-audit-fast: ## Same as dep-audit but reuses existing dist/manifests (no regeneration)
 	@$(PYTHON) scripts/security/dep_audit.py --no-generate
 
+##@ Automated review (advisory — reviews an MR, gates nothing)
+# Runs Claude Code over open GitLab MRs with .claude/skills/pr-review.md and
+# posts the review as an MR note. Deliberately NOT a gate and deliberately NOT
+# check-shaped in name or section: a model's opinion must not decide whether
+# code merges, and scripts/tests/test_ci_gate_parity.py derives its universe of
+# gates from the Makefile's sections and target names. The CI job that runs this
+# is allow_failure: true for the same reason. Needs GITLAB_REVIEW_TOKEN (api
+# scope) plus AWS credentials with bedrock:InvokeModel.
+.PHONY: ai-mr-review ai-mr-review-dry ai-mr-review-local
+
+ai-mr-review: ## Review every open non-Draft MR -> develop and post the reviews (MR=<iid> for one)
+	@$(PYTHON) scripts/sdlc/ai_mr_review.py \
+		$(if $(MR),--mr $(MR),--all-open) $(EXTRA_ARGS)
+
+ai-mr-review-dry: ## Same, but write reviews to ai-reviews/ instead of posting them
+	@$(PYTHON) scripts/sdlc/ai_mr_review.py \
+		$(if $(MR),--mr $(MR),--all-open) --dry-run $(EXTRA_ARGS)
+
+# For a laptop: gitlab.aws.dev's REST API sits behind an authenticating proxy
+# that redirects every request to federated sign-in, so a PRIVATE-TOKEN alone
+# cannot reach it from here. This form takes the MR head from git over SSH
+# instead — no token, always a dry run, and no MR description/comments/CI status.
+ai-mr-review-local: ## Dry-run one MR with NO token, from git over SSH (MR=<iid> required)
+	@$(if $(MR),,$(error set MR=<iid>, e.g. make ai-mr-review-local MR=786))
+	@$(PYTHON) scripts/sdlc/ai_mr_review.py --mr $(MR) --no-api $(EXTRA_ARGS)
+
 ##@ Deploy
 # Thin wrappers around `idp-cli publish` / `deploy` / `delete` for the common
 # 80% case. Uncommon flags can still be passed via EXTRA_ARGS="--foo --bar".
