@@ -113,3 +113,39 @@ def test_strict_keeps_its_contract_of_top_level_fields_only(
     assert result.exit_code == expected_exit, result.output
     if expected_exit == 1:
         assert "Strict mode" in result.output
+
+
+def test_the_findings_are_printed_when_validation_fails(tmp_path):
+    """The failing branch reports them too, and it is the branch that needs them most.
+
+    A key at the wrong depth is accepted in silence while its correctly-nested sibling
+    raises — ``ocr.dpi: "abc"`` validates and ``ocr.image.dpi: "abc"`` does not — so
+    the finding is usually *the explanation* for the error printed beside it rather
+    than a separate observation. Printing the findings only on the passing branch
+    withheld them from exactly the reader who was already looking at an error and
+    needed to know which key the models would not read.
+
+    Two halves, and both are asserted: ``validate_config`` has to compute the findings
+    before it gives up (they are a question about the submitted document, not about
+    the merge or the Pydantic pass), and this command has to print them on the branch
+    it takes when ``valid`` is false.
+    """
+    result = _validate(
+        tmp_path,
+        {
+            "classes": [{"name": "invoice"}],
+            "extracton": {"model": "x"},
+            "extraction": {"validation": {"enabld": False}},
+            "ocr": {"image": {"dpi": "not-a-number"}},
+        },
+    )
+    assert result.exit_code == 1, result.output
+    flat = " ".join(result.output.split())
+    # The failure really is reported, so this is the failing branch and not a pass
+    # that happens to print warnings.
+    assert "Validation failed" in flat
+    assert "ocr.image.dpi" in flat
+    # ...and both findings arrive with it, at both depths.
+    assert "extracton" in flat
+    assert "Did you mean 'extraction'?" in flat
+    assert "extraction.validation.enabld" in flat

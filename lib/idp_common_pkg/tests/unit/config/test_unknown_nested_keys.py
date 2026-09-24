@@ -1238,6 +1238,72 @@ def test_validate_config_returns_the_findings_structurally():
     ]
 
 
+def test_the_findings_survive_a_configuration_that_does_not_validate():
+    """An **invalid** configuration is the one whose unread keys matter most.
+
+    A key at the wrong depth is accepted in silence while its correctly-nested
+    sibling raises — ``ocr.dpi: "abc"`` validates and ``ocr.image.dpi: "abc"`` does
+    not — so "the models will not read ``ocr.dpi``, did you mean ``ocr.image.dpi``?"
+    is frequently *the explanation* for the error reported beside it rather than a
+    separate observation. This is also the only reporter either front end has:
+    ``idp-cli config-validate`` and ``idp_sdk``'s ``validate`` both consume
+    ``ignored_keys``, so a ``[]`` here means neither of them says anything at all
+    about an unread key for a configuration that failed.
+
+    The question needs neither the merge nor ``model_validate``: it is asked of the
+    submitted document. So this asserts against a config carrying **both** an unread
+    key and a genuine validation error, which is what pins the call above the two
+    failure returns rather than below them.
+    """
+    from idp_common.config.merge_utils import validate_config
+
+    result = validate_config(
+        {
+            "classes": [{"name": "invoice"}],
+            "extracton": {"model": "x"},
+            "extraction": {"validation": {"enabld": False}},
+            "ocr": {"image": {"dpi": "not-a-number"}},
+        },
+        "pattern-2",
+    )
+
+    assert result["valid"] is False
+    assert any("Pydantic validation failed" in e for e in result["errors"]), (
+        "the config has to actually fail for this to be the failing path; without "
+        "an error it would pass on the success path too and discriminate nothing"
+    )
+    # Sorted by dotted path, so the nested finding precedes the top-level one here:
+    # '.' sorts below 'o', which puts 'extraction.' ahead of 'extracton'.
+    assert result["ignored_keys"] == [
+        {
+            "path": "extraction.validation.enabld",
+            "kind": "unknown",
+            "suggestion": "extraction.validation.enabled",
+        },
+        {"path": "extracton", "kind": "unknown", "suggestion": "extraction"},
+    ]
+    assert [w for w in result["warnings"] if "extracton" in w], (
+        "the prose warning is what the CLI prints on its failing branch"
+    )
+
+
+def test_a_bad_pattern_name_is_answered_before_the_document_is_read():
+    """The pattern check stays above the findings, and that is a decision.
+
+    An unrecognised pattern is a fault in the *call*; there is no question about the
+    document worth answering until it names a real one, and answering both at once
+    puts a list of key paths in front of somebody whose mistake was the pattern
+    argument. So this one return keeps no findings, unlike the two below it.
+    """
+    from idp_common.config.merge_utils import validate_config
+
+    result = validate_config({"notes_typo": "x"}, "pattern-does-not-exist")
+
+    assert result["valid"] is False
+    assert result["ignored_keys"] == []
+    assert any("Invalid pattern" in e for e in result["errors"])
+
+
 @pytest.mark.parametrize("dotted", sorted(models_module.PATHS_READ_ELSEWHERE))
 def test_a_path_read_elsewhere_still_has_a_reader_doing_the_reading(dotted):
     """The premise, computed per entry, on the **read** rather than on the key name.

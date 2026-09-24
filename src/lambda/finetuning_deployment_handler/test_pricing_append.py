@@ -14,9 +14,19 @@ the list -- an operator's entire pricing edit made in the UI over the same windo
 These are two global singleton rows keyed only on ``Configuration``, so every
 writer in the account contends on the same two keys.
 
-The table is a **real** ``moto`` table, so the ``ConditionExpression`` is evaluated
-by DynamoDB's own engine. A mock would accept the keyword and prove nothing about
-the write it is supposed to refuse.
+The table is a **real** ``moto`` table, so the ``ConditionExpression`` is actually
+evaluated and a write that should be refused is refused. A mock would accept the
+keyword and prove nothing about the write it is supposed to refuse.
+
+⚠️ ``moto`` is an independent reimplementation, **not** DynamoDB. These tests
+establish that the condition expresses the intended statement and that the
+unguarded form loses the entry; they do not establish that ``moto`` and DynamoDB
+agree on comparing a Binary attribute with ``=``, or on the two-term
+``attribute_not_exists`` form. Nothing here has been run against a DynamoDB
+endpoint. The one size question that *is* settled offline is the guard value: the
+whole compressed attribute rides in ``ExpressionAttributeValues``, and DynamoDB
+allows 2 MB of substitution variables per expression against a 400 KB item limit,
+so ``:guard`` cannot outgrow the limit no matter how large the pricing row gets.
 
 The interleaving is **forced, not raced**: ``_CompetingWriteTable`` commits the
 other writer inside the ``get_item`` call, straight after the snapshot this
