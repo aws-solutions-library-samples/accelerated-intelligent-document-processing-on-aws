@@ -21,12 +21,18 @@ by the user at all.
 and creates and closes its own otherwise, and it must turn a streaming exception
 into a printed line rather than a traceback that ends the session.
 
-`_stream_response` is the only part with real text-processing logic. It accumulates
-the streamed text, strips `<thinking>...</thinking>` from the accumulation on every
-chunk, and prints whatever the strip newly revealed beyond what it has already
-shown. That works when a thinking block arrives whole inside one chunk; when the
-block is split across chunks it does not, and the two tests named
-`..._defect_...` pin what happens instead.
+`_stream_response` is the only part with real text-processing logic: it hides the
+agent's `<thinking>...</thinking>` reasoning and prints the answer around it, one
+streamed chunk at a time. **Where the chunk boundary falls is the whole risk**, and
+it is not the caller's choice. A `{"data": ...}` event is one
+`strands.types._events.TextStreamEvent`, which carries `delta["text"]` from a single
+Bedrock `contentBlockDelta` verbatim and unbuffered — so a chunk is an arbitrary
+substring of the response and a boundary can land anywhere, including between the
+`<` and the `t` of a tag. That is what licenses
+`test_no_split_point_anywhere_in_the_response_can_reveal_the_reasoning` to walk
+every boundary in a response rather than asserting a few hand-picked ones, and the
+named tests around it pin the two shapes that used to fail: a split inside the
+opening tag and a split inside the closing tag.
 
 Nothing here touches AWS or the network. `idp_sdk.IDPClient` is replaced on the
 source module, since `run_chat` imports it inside the function body, and
@@ -314,64 +320,278 @@ def test_a_thinking_only_chunk_prints_nothing_and_the_next_chunk_prints_normally
 
 
 @pytest.mark.unit
-def test_a_thinking_block_split_across_chunks_leaks_and_hides_the_answer_defect_1(
+def test_a_split_inside_the_closing_tag_hides_the_reasoning_and_prints_the_answer(
     recording_console,
 ):
     """
-    DEFECT (pinned, not fixed): a `<thinking>` block split across two chunks is
-    printed to the terminal, and the real answer that follows it is never printed.
+    The reported case: the boundary falls between the `</` and the `thinking>`.
 
-    The strip runs against the text accumulated *so far*, so a chunk ending inside
-    a thinking block has no closing tag to match and the raw block -- the model's
-    private reasoning, including the tags -- goes straight to the user's terminal.
-    Worse, `displayed` is then set to the length of that leaked text, and once the
-    next chunk completes the block the cleaned answer is *shorter*, so the
-    `len(clean) > len(displayed)` guard suppresses it. The user is shown the
-    reasoning and never shown the answer. Streaming is chunked by the service, so
-    which of these two paths a given response takes is not under the caller's
-    control.
+    Both halves of the old failure are asserted here and they are independent, so
+    that a change which stops one without the other cannot pass. The reasoning must
+    not reach the terminal, *and* the answer must -- from its first character, as
+    the only print. The first assertion alone would pass on code that hid
+    everything; the second alone would pass on code that printed the reasoning and
+    the answer both.
+
+    A chunk boundary inside the closing tag is the shape that hurt most, because
+    the whole reasoning body arrives before anything can classify it: there is no
+    closing tag in the buffer yet, so text-so-far stripping has nothing to match.
+    """
+    console = recording_console()
+    reasoning = "I must check the schema"
+
+    shown = _stream(
+        orchestrator=FakeOrchestrator(
+            [
+                {"data": f"<thinking>{reasoning}</"},
+                {"data": "thinking>Answer: 42"},
+            ]
+        )
+    )
+
+    assert reasoning not in console.text
+    assert "<thinking>" not in console.text
+    assert console.printed[0] == "Answer: 42"
+    assert shown == "Answer: 42"
+
+
+@pytest.mark.unit
+def test_a_split_inside_the_opening_tag_hides_the_reasoning_and_prints_the_answer(
+    recording_console,
+):
+    """
+    The same claim with the boundary inside the *opening* tag, after `<think`.
+
+    This is the other half of the old failure and it presented differently: the
+    fragment `<think` was shown and the answer was then printed from the middle,
+    starting `len("<think")` characters in. So the assertion that earns its place
+    here is that the answer arrives whole and first -- an answer printed from its
+    seventh character would still contain the answer's tail.
+    """
+    console = recording_console()
+    reasoning = "I must check the schema"
+
+    shown = _stream(
+        orchestrator=FakeOrchestrator(
+            [
+                {"data": "<think"},
+                {"data": f"ing>{reasoning}</thinking>Answer: 42"},
+            ]
+        )
+    )
+
+    assert reasoning not in console.text
+    assert "<think" not in console.text
+    assert console.printed[0] == "Answer: 42"
+    assert shown == "Answer: 42"
+
+
+@pytest.mark.unit
+def test_a_long_answer_after_a_split_block_is_printed_from_its_first_character(
+    recording_console,
+):
+    """
+    An answer long enough to outrun the block is printed whole, not from the middle.
+
+    This was the quiet half: an answer longer than the leak got past the old
+    length guard and looked like an answer, with exactly as many leading characters
+    missing as the leaked text had. Asserting `startswith` is the point -- a test
+    that only looked for the answer's tail would have passed on the broken code.
+    """
+    console = recording_console()
+    answer = "A: " + "x" * 60
+
+    shown = _stream(
+        orchestrator=FakeOrchestrator(
+            [{"data": "<thinking>short</"}, {"data": "thinking>" + answer}]
+        )
+    )
+
+    assert console.text.startswith(answer)
+    assert console.printed[0] == answer
+    assert shown == answer
+
+
+@pytest.mark.unit
+def test_a_thinking_block_spanning_three_chunks_is_hidden(recording_console):
+    """
+    Both tags split, with a chunk holding nothing but reasoning in between.
+
+    Two chunks is the minimum that reproduces the defect and three is where a
+    fix that only remembered the previous chunk would come apart, so the state has
+    to survive a chunk it releases nothing from.
     """
     console = recording_console()
 
     shown = _stream(
         orchestrator=FakeOrchestrator(
             [
-                {"data": "<thinking>I must check the schema</"},
-                {"data": "thinking>Answer: 42"},
+                {"data": "<thin"},
+                {"data": "king>secret plan"},
+                {"data": "</thinki"},
+                {"data": "ng>Answer: 42"},
             ]
         )
     )
 
-    assert console.printed[0] == "<thinking>I must check the schema</"
-    assert "Answer: 42" not in console.text
-    assert shown == "<thinking>I must check the schema</"
+    assert "secret plan" not in console.text
+    assert console.printed[0] == "Answer: 42"
+    assert shown == "Answer: 42"
 
 
 @pytest.mark.unit
-def test_a_thinking_block_split_across_chunks_truncates_a_long_answer_defect_2(
+def test_two_thinking_blocks_are_both_hidden_when_the_second_one_is_split(
     recording_console,
 ):
     """
-    DEFECT (pinned, not fixed): the same split also mangles an answer long enough
-    to get past the guard -- it is printed from the middle.
+    A second block after text already displayed, split across the boundary.
 
-    `displayed` holds the length of the leaked thinking text, so the suffix that
-    gets printed is `clean[len(leak):]`: the first characters of the genuine answer
-    are silently dropped, and the number dropped is the length of the leak. This is
-    the quieter half of the defect above, because the output looks like an answer.
+    The interesting part is the text *between* the blocks: it is printed before the
+    second block is known to exist, so whatever tracks progress has to keep that
+    output final while later text is still being withheld.
     """
     console = recording_console()
-    leak = "<thinking>short</"
-    answer = "A: " + "x" * 60
 
     shown = _stream(
-        orchestrator=FakeOrchestrator([{"data": leak}, {"data": "thinking>" + answer}])
+        orchestrator=FakeOrchestrator(
+            [
+                {"data": "<thinking>first</thinking>Part one. <thinking>second</thin"},
+                {"data": "king>Part two."},
+            ]
+        )
     )
 
-    assert console.printed[0] == leak
-    assert console.printed[1] == answer[len(leak) :]
-    assert not console.text.startswith(answer[:3])
-    assert shown == answer
+    assert "first" not in console.text
+    assert "second" not in console.text
+    assert console.printed[:2] == ["Part one. ", "Part two."]
+    assert shown == "Part one. Part two."
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("split", range(1, len("<thinking>reasoning</thinking>Answer")))
+def test_no_split_point_anywhere_in_the_response_can_reveal_the_reasoning(
+    recording_console, split
+):
+    """
+    Every two-chunk split of one response hides the reasoning and shows the answer.
+
+    A hand-picked boundary tests the boundary somebody thought of. The transport
+    picks it instead -- a `{"data": ...}` event carries one Bedrock text delta
+    verbatim, so any split is reachable -- so this walks all of them and asserts
+    both halves at every one. Both of the shapes that used to fail are in here
+    (inside the opening tag, inside the closing tag) alongside the ones that
+    always worked, which is what makes the set a claim about the response rather
+    than about a chosen example.
+
+    The answer is compared against the *joined* output rather than against the
+    first print, because a boundary landing inside the answer legitimately prints
+    it in two pieces. Joined equality still carries everything needed: the answer
+    is whole, it starts at its first character, and it is the only thing shown.
+    """
+    console = recording_console()
+    text = "<thinking>reasoning</thinking>Answer"
+
+    shown = _stream(
+        orchestrator=FakeOrchestrator([{"data": text[:split]}, {"data": text[split:]}])
+    )
+
+    assert "reasoning" not in console.text
+    assert "<think" not in console.text
+    assert console.text == "Answer"
+    assert shown == "Answer"
+
+
+@pytest.mark.unit
+def test_a_response_delivered_one_character_at_a_time_hides_the_reasoning(
+    recording_console,
+):
+    """
+    The degenerate chunking: every character its own event.
+
+    Nothing forbids a one-character text delta, and at this size every tag in the
+    response is split at every position at once, so a boundary rule that is right
+    only for some split lengths cannot survive it.
+    """
+    console = recording_console()
+    text = "<thinking>reasoning</thinking>Answer: 42"
+
+    shown = _stream(orchestrator=FakeOrchestrator([{"data": ch} for ch in text]))
+
+    assert "reasoning" not in console.text
+    assert "<think" not in console.text
+    assert console.text.startswith("A")
+    assert shown == "Answer: 42"
+
+
+@pytest.mark.unit
+def test_an_unterminated_thinking_block_is_never_printed(recording_console):
+    """
+    A stream that stops inside a block shows the text before it and nothing more.
+
+    This is a decision rather than a consequence: an agent that stops mid-thought
+    has no answer to print, so the choice is between showing the reasoning and
+    showing nothing, and showing the reasoning is the failure being fixed. The
+    text that preceded the block is unaffected and is still shown.
+    """
+    console = recording_console()
+
+    shown = _stream(
+        orchestrator=FakeOrchestrator(
+            [{"data": "Checking. "}, {"data": "<thinking>the stream died here"}]
+        )
+    )
+
+    assert "the stream died here" not in console.text
+    assert console.printed[0] == "Checking. "
+    assert shown == "Checking."
+
+
+@pytest.mark.unit
+def test_text_that_merely_looks_like_the_start_of_a_tag_is_still_printed(
+    recording_console,
+):
+    """
+    Held-back characters that no chunk completes are released when the stream ends.
+
+    Withholding a tag prefix is what makes the split-boundary cases work, and the
+    cost is that a response genuinely ending in `<think` has those characters in
+    hand when the stream stops. They are ordinary text and must appear: silently
+    dropping the end of an answer is the same class of failure as dropping the
+    start of one.
+    """
+    console = recording_console()
+
+    shown = _stream(orchestrator=FakeOrchestrator([{"data": "The opener is <think"}]))
+
+    assert console.text.startswith("The opener is ")
+    assert shown == "The opener is <think"
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("text", "tag", "expected"),
+    [
+        ("answer</think", "</thinking>", 7),
+        ("answer<", "<thinking>", 1),
+        ("answer", "<thinking>", 0),
+        ("<thinking>", "<thinking>", 0),
+        ("ing>", "<thinking>", 0),
+        ("<", "<thinking>", 1),
+        ("", "<thinking>", 0),
+    ],
+)
+def test_the_held_back_tail_is_the_longest_tag_prefix_the_text_ends_with(
+    text, tag, expected
+):
+    """
+    The boundary rule, asserted directly, because getting it wrong is silent.
+
+    Too small a tail releases part of a tag -- the leak -- and too large a one
+    holds back text that should already be on screen. A complete tag returns 0
+    because it is consumed rather than held, which is why the answer for
+    `"<thinking>"` against itself is not its own length.
+    """
+    assert chat._longest_partial_tag_suffix(text, tag) == expected
 
 
 @pytest.mark.unit

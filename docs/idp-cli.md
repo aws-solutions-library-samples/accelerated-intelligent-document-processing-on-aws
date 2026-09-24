@@ -2987,6 +2987,8 @@ Interactive Agent Companion Chat from the terminal. Provides access to the full 
 
 The chat command runs the same orchestrator as the Web UI's Agent Companion Chat, but locally in your terminal — with real-time streaming and multi-turn conversation support.
 
+Agents wrap their private reasoning in `<thinking>...</thinking>` and only the answer is printed. Because the response arrives as a stream of small pieces whose boundaries the service chooses, a reasoning block can be split across two of them; the terminal output is the same either way, and if a response ends mid-thought the incomplete reasoning is discarded rather than shown.
+
 **Usage:**
 ```bash
 idp-cli chat [OPTIONS]

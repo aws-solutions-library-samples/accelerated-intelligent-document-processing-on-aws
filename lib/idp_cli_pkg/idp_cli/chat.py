@@ -10,7 +10,6 @@ access to Analytics, Error Analyzer, and other agents from the terminal.
 
 import asyncio
 import logging
-import re
 import uuid
 from typing import Optional
 
@@ -18,6 +17,12 @@ from rich.console import Console
 
 logger = logging.getLogger(__name__)
 console = Console()
+
+# The tags agents wrap private reasoning in. Matched as exact literals, the same
+# alphabet the rest of the repository strips, so nothing that was displayed before
+# is hidden now and nothing that was hidden is displayed.
+_THINKING_OPEN = "<thinking>"
+_THINKING_CLOSE = "</thinking>"
 
 
 def run_chat(
@@ -121,22 +126,118 @@ def _handle_prompt(orchestrator, prompt: str, loop=None):
     console.print()
 
 
+def _longest_partial_tag_suffix(text: str, tag: str) -> int:
+    """
+    Length of the longest proper prefix of `tag` that `text` ends with.
+
+    This is how many trailing characters cannot yet be classified: they may turn
+    out to be the front of a tag that the next chunk completes. Zero means the
+    whole of `text` is decided.
+    """
+    for length in range(min(len(tag) - 1, len(text)), 0, -1):
+        if text.endswith(tag[:length]):
+            return length
+    return 0
+
+
+class _ThinkingFilter:
+    """
+    Remove `<thinking>...</thinking>` from a stream that arrives in pieces.
+
+    A chunk boundary can fall anywhere — a `{"data": ...}` event carries one
+    Bedrock text delta verbatim, so the split point is chosen by the service and
+    can land in the middle of either tag. Deciding what to show by re-running a
+    regex over the accumulated text cannot cope with that: with no closing tag in
+    the buffer yet the block matches nothing, so the reasoning is displayed, and
+    when the closing tag finally arrives the cleaned text is *shorter* than what
+    was already on screen, so the answer that follows is dropped or printed from
+    the middle.
+
+    So this holds a boundary instead of re-deriving one. Text is released only
+    once it is known to sit outside a block, which means holding back any trailing
+    run of characters that could still be the front of a tag. Whatever is released
+    is final: the visible output only ever grows, and a caller can print it
+    without keeping a cursor into a buffer that shrinks underneath it.
+    """
+
+    def __init__(self) -> None:
+        self._held = ""
+        self._inside = False
+        self._started = False
+
+    def feed(self, chunk: str) -> str:
+        """Add a streamed chunk and return the text that is now safe to display."""
+        self._held += chunk
+        released: list[str] = []
+
+        while True:
+            if self._inside:
+                end = self._held.find(_THINKING_CLOSE)
+                if end != -1:
+                    self._held = self._held[end + len(_THINKING_CLOSE) :]
+                    self._inside = False
+                    continue
+                # Still inside the block: this is reasoning and is discarded, bar
+                # any tail that could be the start of the closing tag.
+                keep = _longest_partial_tag_suffix(self._held, _THINKING_CLOSE)
+                self._held = self._held[len(self._held) - keep :] if keep else ""
+                break
+
+            start = self._held.find(_THINKING_OPEN)
+            if start != -1:
+                released.append(self._held[:start])
+                self._held = self._held[start + len(_THINKING_OPEN) :]
+                self._inside = True
+                continue
+            keep = _longest_partial_tag_suffix(self._held, _THINKING_OPEN)
+            if keep:
+                released.append(self._held[: len(self._held) - keep])
+                self._held = self._held[len(self._held) - keep :]
+            else:
+                released.append(self._held)
+                self._held = ""
+            break
+
+        return self._present("".join(released))
+
+    def close(self) -> str:
+        """
+        Return whatever is still held and is genuinely text, and reset.
+
+        A response that ends mid-tag leaves a few held characters that no chunk
+        will ever complete; they are ordinary text and are released. A response
+        that ends inside an unterminated block leaves reasoning, which is
+        discarded — an agent that stops mid-thought has no answer to show, and
+        showing the thought is the defect this class exists to prevent.
+        """
+        tail = "" if self._inside else self._held
+        self._held = ""
+        return self._present(tail)
+
+    def _present(self, text: str) -> str:
+        """Drop leading whitespace until the first real output, as `.strip()` did."""
+        if text and not self._started:
+            text = text.lstrip()
+            if text:
+                self._started = True
+        return text
+
+
 async def _stream_response(orchestrator, prompt: str) -> str:
     """Stream orchestrator response, printing chunks as they arrive."""
-    full_text = ""
+    thinking = _ThinkingFilter()
     displayed = ""
     current_subagent = None
 
+    def show(text: str) -> None:
+        nonlocal displayed
+        if text:
+            console.print(text, end="", highlight=False)
+            displayed += text
+
     async for event in orchestrator.stream_async(prompt):
         if "data" in event:
-            full_text += event["data"]
-            clean = re.sub(
-                r"<thinking>.*?</thinking>", "", full_text, flags=re.DOTALL
-            ).strip()
-            if len(clean) > len(displayed):
-                new = clean[len(displayed) :]
-                console.print(new, end="", highlight=False)
-                displayed = clean
+            show(thinking.feed(event["data"]))
 
         elif "current_tool_use" in event:
             tool_name = event["current_tool_use"].get("name", "")
@@ -145,5 +246,6 @@ async def _stream_response(orchestrator, prompt: str) -> str:
                 display_name = tool_name.replace("_agent", "").replace("_", " ").title()
                 console.print(f"\n[dim]⟶ {display_name}[/dim]", highlight=False)
 
+    show(thinking.close())
     console.print()
-    return displayed
+    return displayed.rstrip()
