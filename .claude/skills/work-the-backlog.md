@@ -132,6 +132,22 @@ resume that agent by name with `SendMessage` rather than starting a fresh one, s
 its context is not thrown away. If the agent is unreachable, dispatch a new one
 scoped to *finishing* the existing PR, not redoing it.
 
+⚠️ **An agent the user stopped cannot be resumed at all.** `SendMessage` refuses it
+outright ("was stopped by the user and won't be resumed"), so its report, its
+measurements and its reasoning are gone permanently even though its pushed commits
+survive. The replacement must therefore be briefed to **establish the PR's state from
+the diff and re-verify every claim by measurement**, explicitly told that no report
+exists — otherwise it inherits commits whose evidence nobody has seen, which is
+exactly the shape a vacuous test slips through in. Expect this to cost more than the
+work it repeats, and say so rather than presenting the replacement's output as
+continuous with the original.
+
+Also **look for uncommitted work in the stopped agent's worktree before removing it.**
+In one case a cancelled agent's worktree held a fifth site's fix, a genuine defect
+repair and three corrections that had never been reported to anyone; starting fresh
+would have silently lost all of it. `git -C <worktree> status --porcelain` and
+`git -C <worktree> diff` are the first two commands, not the cleanup.
+
 If there is no state, rank the backlog (section 1) and write the file before the
 first dispatch.
 
@@ -429,6 +445,42 @@ the user at the start and record it in `goal`:
 Report progress against the **goal**, never against the total open count. Under the
 default goal the two converge anyway, which is the point: issues filed during the run
 are counted in, so the number only reaches zero when the work is actually done.
+
+### ⚠️ Who may file, and why it has to be exactly one actor
+
+**Decide this before the first dispatch, and the workable answer is that agents file
+nothing.** Put it as the **first line** of every brief, fixer and reviewer alike, and
+require each fixer to copy it verbatim into its reviewer's brief:
+
+> You may not open a GitHub issue, and neither may any subagent you spawn. Not one,
+> for any reason. Out-of-scope findings come to me as one line each in your final
+> report and I decide. `gh issue create` is off limits.
+
+The reason is measured. One run filed **15 issues against 1 closed** before anyone
+looked at the ratio, and after the user intervened and filing went to zero, **eight
+more appeared in ninety seconds** — seven of them a sweep of a CLI package an agent had
+opened only to verify its own change's callers. Nothing in that sweep was wrong; the
+findings were real. But the loop had turned into an issue generator with a fix loop
+attached, and the coordinator reported "the policy is working" from a quiet interval
+rather than from an audit.
+
+So:
+
+- ⚠️ **Enumerating callers is a verification technique, not a licence to file.** Say
+  this explicitly, because it is the specific move that produced the breach: verifying a
+  change means reading the code around it, and an agent reading unfamiliar code finds
+  things. Reading is right. Filing is the coordinator's call.
+- **Audit the issue list after every agent report, not at check-ins.** One API call
+  (`gh issue list --search "created:>=<timestamp>"`) turns a breach from something
+  discovered hours later into something seen in minutes. A quiet interval is not
+  evidence; the audit is.
+- **Severe findings bypass the report and come immediately** — silent data loss, or a
+  security control that does not fire. Name those two categories, or the rule reads as
+  "stay silent".
+- **The coordinator may file, and should say so plainly when it does.** A measured
+  data-integrity residual in the file just fixed belongs in an issue, not in a chat
+  message that scrolls away. When you file one, tell the user it was your decision and
+  not an agent's, so the audit trail stays honest.
 
 ### A filed issue is work in progress, not an output
 
@@ -747,6 +799,20 @@ it is the gate.
   first as its own PR, then promote.
 - After promoting, `backlog/staging` is re-cut from the new `develop` tip so the
   next batch starts clean. Record the promotion SHA in `merged`.
+
+⚠️ **Waiting for the promotion PR's checks does not mean idling the loop, and
+conflating the two is the easiest way to stall a run that is working.** Those checks
+take around half an hour; keep dispatching fixers and keep re-ranking throughout.
+Branches cut from `backlog/staging` stay valid across the promotion, because the two
+refs converge at it — a fixer that branched before the promotion is branched from a
+commit that is now `develop`'s tip. So the only thing that waits is the promotion
+merge itself.
+
+This is worth stating because it is *not* symmetric with the rest of the loop: every
+other instruction here is "do not wait for CI", and the one place where waiting is
+correct reads, if you are not careful, as a general instruction to stop. It is not.
+A coordinator with nothing in flight while a promotion runs has mistaken a gate for
+a barrier, and this has happened.
 
 ### When a batch fails
 
@@ -1107,6 +1173,45 @@ permanent, and in the state file, which is resumable.
   from the fixture under test; an assertion behind an unmet guard; a probe that
   inherits the environment it is testing; a fixture that never reaches the call
   it asserts on. Only executing the mutation finds any of them.
+- ⚠️ **A guard that enumerates spellings instead of implementing its stated rule.**
+  This was the single most common defect in one run — **four** separate agents wrote
+  one, and a reviewer walked the original defect straight back past every one. The
+  worst case: of 11 spellings probed, **9 passed both of the author's rules**, including
+  an annotated assignment that spelled out in full the very construct the author's
+  stated residual claimed to cover; another was defeated by putting a verbatim copy of
+  the offending code in a sibling directory, because the collector used a non-recursive
+  `glob`. The remedy is to write the rule about **capability** — "this module cannot
+  import the decoder", not "this line must not match these patterns" — and to put
+  "attack your own guard before the reviewer does" in every brief. A guard protecting a
+  gate is the highest-risk instance, because a vacuous one there reads as protection
+  that is not present.
+- **A vacuous test can hide inside a correct authority.** One test derived its fault
+  codes from the botocore service model, which is the right authority — but an empty
+  derived list collects as a pytest *skip*, not a failure, so replacing the derivation
+  with `[]` left the suite green and took the whole guarantee with it. Deriving from the
+  authority is necessary and not sufficient: assert the derived set is non-empty.
+- **"Measured against X" is a claim to check.** Three documents in one run said
+  conditional-write behaviour was measured against DynamoDB's expression engine when it
+  was measured against `moto`, and that matters precisely because the property under
+  test *is* expression-language behaviour — the one thing a `moto` test cannot establish
+  about itself. Require every brief to name the engine, and treat a mismatch as a
+  finding rather than a wording nit.
+- **A conflict-marker probe can be silently broken by a missing trailing newline.**
+  `CHANGELOG.md` here ends without one, so a planted `<<<<<<<` appended directly
+  concatenates onto the final line and fails a `^` anchor — measured twice, matching
+  0 of 1 and 2 of 3. Plant with a leading newline, and prove the probe fires before
+  trusting a clean result. Use `^={7}( |$)` rather than `^={7}`, which excludes the
+  decorative 20-to-78-character `=` rules in six files structurally, with no exemption
+  list.
+- **Counting a log is not reading it.** Two measured ways to get a wrong number: ANSI
+  colour codes in summary lines break a naive tally (61 invocations and 7778 passes,
+  against a true 62 and 7997), and a `Makefile` recipe's apparent invocation count can
+  include `@#` prose comments that merely mention the variable. Strip ANSI, and
+  reconcile against the log's own per-target lines.
+- **A gate count that rises is as suspicious as one that falls.** When a merge result
+  reported 20 and 7 more passes than the author measured, the right response was to
+  attribute each delta exactly to the test files the merge brought in — which confirmed
+  both figures. An unexplained delta in either direction is a finding.
 - **Ancestry is not identity.** `is_relative_to(root)` accepts a sibling
   worktree nested under the root. This has bitten three separate controls here.
   Compare roots by equality.
@@ -1132,6 +1237,25 @@ unattended operation.
 verifies *code*. None verifies the premises the coordinator is operating on, and a
 wrong premise is silent and self-consistent — see the check-in section for the
 worked example. The mandatory check-in is a mitigation, not a fix.
+
+Three further coordinator errors are recorded here because each survived every
+code-level control and was caught only by the user asking a plain question:
+
+- **Idling the loop during a promotion CI wait**, having read "wait for its checks" as
+  "stop". Nothing was wrong with any gate; the run simply stopped producing.
+- **Reporting a policy as working from a quiet interval** rather than from an audit.
+  Filing had gone to zero for two hours and then produced eight issues in ninety
+  seconds; the audit that would have caught it costs one API call.
+- **Repeating a subordinate's figure without a measurement behind it** — "8
+  pre-existing failures" when the measured number at the base was 4, the difference
+  being that the agent had locally installed a tool the host lacked. Numbers arriving
+  in a report are claims until someone re-measures them, and the coordinator is the
+  actor most likely to launder one into the record.
+
+The pattern in all three is the same and it is worth naming: **the coordinator's
+errors are about process and reporting, not about code, so a green tree proves nothing
+about them.** Ask at every check-in what you are treating as established without having
+measured it.
 
 **It does not survive compaction losslessly.** The state file preserves the
 mechanical state; it does not preserve why a ranking was chosen, what an agent
