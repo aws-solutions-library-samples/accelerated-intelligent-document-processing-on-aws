@@ -453,6 +453,39 @@ def test_a_misnested_key_reaches_the_log_and_does_not_reach_the_model(
 
 
 @pytest.mark.parametrize(
+    "root",
+    [root for root in ROOTS if root is not IDPConfig],
+    ids=lambda r: r.__name__,
+)
+def test_no_suppression_written_for_the_config_tree_reaches_another_record(
+    root: type[BaseModel],
+):
+    """The walk's two path suppressions were reasoned about for one root only.
+
+    ``SUPPRESSED_IGNORED_KEY_PATHS`` and ``PATHS_READ_ELSEWHERE`` are compared
+    against the dotted path at any depth, and each entry's justification is a fact
+    about the configuration document — a dead knob this repository ships in its own
+    system defaults, and a key ``update_configuration`` pops before `IDPConfig` sees
+    it. Now that the walk runs with other roots, an entry could shield a finding in a
+    record its reason says nothing about, which is the defect class of one
+    justification attached to a set. Neither does today, and this is what says so if
+    an entry is added later.
+    """
+    suppressed = set(models_module.SUPPRESSED_IGNORED_KEY_PATHS) | set(
+        models_module.PATHS_READ_ELSEWHERE
+    )
+    assert suppressed, "both suppression sets are empty, so this check is vacuous"
+    fields = set(root.model_fields)
+    for dotted in suppressed:
+        head = dotted.split(".", 1)[0].split("[", 1)[0]
+        assert head not in fields, (
+            f"'{dotted}' is suppressed on a premise about the configuration document "
+            f"and '{head}' is a field of {root.__name__}, so it can now hide a "
+            "finding in that record"
+        )
+
+
+@pytest.mark.parametrize(
     "root", [root for root in ROOTS if _forbids_extras(root)], ids=lambda r: r.__name__
 )
 def test_a_nested_field_name_written_at_a_records_root_is_rejected_not_ignored(
