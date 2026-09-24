@@ -2511,6 +2511,20 @@ class PricingConfig(BaseModel):
         validate_assignment=True,
     )
 
+    @model_validator(mode="before")
+    @classmethod
+    def _report_ignored_keys(cls, data: Any) -> Any:
+        """Name every key below the root that this record will drop.
+
+        ``extra="forbid"`` above covers the root and nothing under it:
+        ``PricingEntry`` and ``PricingUnit`` take Pydantic's default
+        ``extra="ignore"``, so ``pricing[0].units[0].priec`` was discarded with no
+        diagnostic and the price the operator wrote was never recorded. Reports
+        only — nothing that loads today stops loading.
+        """
+        log_ignored_config_keys(data, cls)
+        return data
+
     def to_dict(self) -> Dict[str, Any]:
         """Convert to a mutable dictionary."""
         return self.model_dump(mode="python")
@@ -2584,6 +2598,23 @@ class ModelConfigLimitsConfig(BaseModel):
         extra="forbid",  # Strict validation - only 'model_limits' field allowed
         validate_assignment=True,
     )
+
+    @model_validator(mode="before")
+    @classmethod
+    def _report_ignored_keys(cls, data: Any) -> Any:
+        """Name every key inside a limit entry that this record will drop.
+
+        ``extra="forbid"`` above covers the root and nothing under it:
+        ``ModelLimitEntry`` takes Pydantic's default ``extra="ignore"``, so
+        ``model_limits[0].max_input_tokenz`` was accepted and discarded, leaving
+        the shipped context window for that model family in force while the UI
+        showed the save as successful. ``max_input_tokens`` is the window the
+        Bedrock client resolves a model against, so the effect is a limit that
+        appears to have been set and was not. Reports only — nothing that loads
+        today stops loading.
+        """
+        log_ignored_config_keys(data, cls)
+        return data
 
     def to_dict(self) -> Dict[str, Any]:
         """Convert to a mutable dictionary."""
@@ -3519,6 +3550,71 @@ def format_ignored_config_keys(findings: List[IgnoredConfigKey], kind: str) -> s
     return ", ".join(described)
 
 
+def log_ignored_config_keys(
+    data: Any,
+    model: type,
+    *,
+    include_top_level: bool = False,
+) -> List[IgnoredConfigKey]:
+    """Report every key ``model`` will drop to the module logger, and return them.
+
+    The one reporter every record root shares, so a root added to this module does
+    not have to re-derive the wording, the ``deprecated``/``unknown`` split or the
+    bound on the line. The message names ``model`` itself, which is what lets the
+    same code serve ``IDPConfig`` and the smaller record roots without either of
+    them reading as the other.
+
+    **It reports; it does not reject.** ``extra`` is unchanged on every model, so a
+    stored record that loads today still loads.
+
+    Call it from a ``mode="before"`` validator rather than from a save path, and note
+    the reason is not that the save path is bypassed. ``save_custom_pricing`` and
+    ``save_custom_model_config_limits`` do call ``save_configuration``, and the UI
+    resolvers call them — but they hand it an already-validated model, because the
+    resolver constructs the model itself. ``save_configuration`` reads a dict in one
+    branch only, and that branch is not on the operator's path: by the time the record
+    reaches it, the mistyped key is already gone. The validator is the one place that
+    covers every construction site — ``ConfigurationManager``, the configuration
+    resolver, and ``update_configuration`` at deploy time.
+
+    Args:
+        data: The record as written, before validation. A non-mapping is ignored.
+        model: The root model to interpret it against.
+        include_top_level: Report depth-0 keys too. Leave off for a root that
+            takes ``extra="forbid"``: Pydantic already raises for those, and a
+            warning beside the exception says the key was ignored when it was not.
+
+    Returns:
+        The findings, so a caller that needs to act can.
+    """
+    import logging
+
+    if not isinstance(data, dict):
+        return []
+    findings = collect_ignored_config_keys(
+        data, model, include_top_level=include_top_level
+    )
+    if not findings:
+        return findings
+    logger = logging.getLogger(__name__)
+    deprecated_line = format_ignored_config_keys(findings, "deprecated")
+    unknown_line = format_ignored_config_keys(findings, "unknown")
+    if deprecated_line:
+        logger.warning(
+            "%s: Ignoring deprecated nested fields (these are no longer used): %s",
+            model.__name__,
+            deprecated_line,
+        )
+    if unknown_line:
+        logger.warning(
+            "%s: Ignoring unknown nested fields (not defined in model, so the "
+            "shipped default stays in force): %s",
+            model.__name__,
+            unknown_line,
+        )
+    return findings
+
+
 class SchemaConfig(BaseModel):
     """
     Schema configuration model.
@@ -3991,22 +4087,12 @@ class IDPConfig(BaseModel):
             # setting, and in the mis-nested case routes the value around the
             # validator that would have rejected it. Reports only; `extra` is
             # unchanged, so nothing that loads today stops loading.
-            nested = collect_ignored_config_keys(data, cls)
-            if nested:
-                deprecated_line = format_ignored_config_keys(nested, "deprecated")
-                unknown_line = format_ignored_config_keys(nested, "unknown")
-                if deprecated_line:
-                    logger.warning(
-                        "IDPConfig: Ignoring deprecated nested fields (these are no "
-                        "longer used): %s",
-                        deprecated_line,
-                    )
-                if unknown_line:
-                    logger.warning(
-                        "IDPConfig: Ignoring unknown nested fields (not defined in "
-                        "model, so the shipped default stays in force): %s",
-                        unknown_line,
-                    )
+            #
+            # Shared with the other record roots in this module, which have the
+            # same defect one list-entry down and no top-level message of their
+            # own: the wording, the deprecated/unknown split and the bound on the
+            # line are written once.
+            log_ignored_config_keys(data, cls)
 
         return data
 
