@@ -1097,6 +1097,16 @@ class SaveReportingData:
                 ("timestamp", pa.timestamp("ms", tz="UTC")),
                 ("initial_event_time", pa.timestamp("ms", tz="UTC")),
                 ("config_version", pa.string()),
+                # ``document_class`` — the document's overall classification,
+                # derived from ``document.sections`` using the 0/1/N rule:
+                # 0 distinct section classes → 'unknown'; 1 → that class;
+                # >1 → 'mixed'. Excluded sections (instruction/legal
+                # boilerplate) are filtered out. Present on rows written
+                # by post-widening writers; older parquet files return
+                # NULL via Parquet schema evolution. The rollup Lambda
+                # falls back to a ``document_sections_*`` JOIN when this
+                # is NULL. See docs/reporting-sql-layer.md §10.
+                ("document_class", pa.string()),
             ]
         )
 
@@ -1154,6 +1164,27 @@ class SaveReportingData:
         timestamp_str = timestamp.strftime("%Y%m%d_%H%M%S_%f")[
             :-3
         ]  # Include milliseconds
+
+        # Derive the document's overall classification from its sections.
+        # 0 distinct classes → 'unknown' (in-flight, FAILED, or classifier
+        # didn't fire); 1 → that class; >1 → 'mixed' (packet document).
+        # Excluded sections (instruction/legal boilerplate — Section.excluded)
+        # are filtered out so a W2 with an instructions page doesn't read as
+        # 'mixed'. Matches the read-side 0/1/N rule that the widget
+        # previously computed at query time from ``document_sections_*``,
+        # but with the ``excluded`` filter that the read-side lacked — see
+        # docs/reporting-sql-layer.md §10 and the PR description.
+        section_classes = {
+            s.classification
+            for s in (document.sections or [])
+            if s.classification and not s.excluded
+        }
+        if not section_classes:
+            document_class = "unknown"
+        elif len(section_classes) == 1:
+            document_class = next(iter(section_classes))
+        else:
+            document_class = "mixed"
 
         # Process metering data
         metering_records = []
@@ -1214,6 +1245,7 @@ class SaveReportingData:
                     "timestamp": timestamp,
                     "initial_event_time": initial_event_time,
                     "config_version": document.config_version or "default",
+                    "document_class": document_class,
                 }
                 metering_records.append(metering_record)
 
