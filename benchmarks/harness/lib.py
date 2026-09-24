@@ -246,6 +246,112 @@ class SectionRead:
         )
 
 
+class Unpriced(Exception):
+    """A total was demanded from a metering map that did not all price.
+
+    Raised rather than returning the sum of the entries that happened to price,
+    because that sum is not a weaker reading of the document's cost — it is a
+    wrong one, and wrong in a known direction (always low).
+    """
+
+
+class Priced:
+    """What one metering map cost, and every entry in it that could NOT be priced.
+
+    ``price_metering`` used to return ``(total, by_key)`` and silently drop what it
+    could not price, so "this model has no entry in ``pricing.yaml``" and "this
+    model cost nothing" were the same answer at the call site
+    ([#1146](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/1146)).
+    That is the #1079 defect one layer along: there a failed *read* was recorded as
+    a value, here a successful read whose contents cannot be priced was.
+
+    It is harder to notice than #1079 was, and the reason is worth stating:
+    **the absence of a zero cost does not rule it out.** The other phases of a
+    document price normally, so the row's ``cost`` is non-zero, its
+    ``cost_by_phase`` looks populated, and nothing about it reads as partial.
+
+    So the total is not reachable without saying which case you are handling:
+
+    * ``total`` raises :class:`Unpriced` unless every entry priced;
+    * ``partial_total`` is the same number under a name that says what it is, for a
+      caller that has decided to report it and report the shortfall beside it;
+    * ``unpriced`` is one string per unpriceable entry, naming the metering key and
+      what about it could not be priced, and ``why`` folds them into one line for an
+      artifact field or a console note;
+    * ``__bool__`` raises — ``if priced:`` reads as "did it all price" and is in
+      fact always true, which is the quietest possible way to lose the distinction.
+
+    ``by_key`` is cost per *pricing* key (the model id), ``by_meter_key`` cost per
+    *metering* key (``Phase/service/api``); a metering key that resolved to a
+    pricing entry appears in the second even when it cost exactly 0.00, so a phase
+    breakdown derived from it keeps every phase the map mentions.
+    """
+
+    __slots__ = ("_total", "by_key", "by_meter_key", "unpriced")
+
+    def __init__(
+        self,
+        total: float,
+        by_key: dict[str, float],
+        by_meter_key: dict[str, float],
+        unpriced: tuple[str, ...] = (),
+    ) -> None:
+        self._total = total
+        self.by_key = by_key
+        self.by_meter_key = by_meter_key
+        self.unpriced = unpriced
+
+    @property
+    def complete(self) -> bool:
+        """True when every entry in the map priced — the only state in which
+        ``total`` is the document's cost."""
+        return not self.unpriced
+
+    @property
+    def total(self) -> float:
+        if self.unpriced:
+            raise Unpriced(
+                f"{self.why} — the total over the rest is BELOW truth. Either add "
+                "the missing pricing entry, or record `partial_total` together with "
+                "`why`; do not report it as the cost."
+            )
+        return self._total
+
+    @property
+    def partial_total(self) -> float:
+        """The cost of the entries that DID price.
+
+        Equal to ``total`` when :attr:`complete`. When it is not, this is strictly
+        below the document's real cost by however much the unpriced entries would
+        have added, and nothing in the number itself says so — which is why it is
+        spelled out rather than being what ``total`` returns.
+        """
+        return self._total
+
+    @property
+    def why(self) -> str:
+        """One line naming what could not be priced, for an artifact or a console."""
+        if not self.unpriced:
+            return ""
+        n = len(self.unpriced)
+        noun = "entry" if n == 1 else "entries"
+        return f"{n} unpriceable metering {noun}: " + "; ".join(self.unpriced)
+
+    def __bool__(self) -> NoReturn:
+        raise TypeError(
+            "a Priced result carries a total AND what could not be priced — "
+            f"truth-testing it is always True ({len(self.unpriced)} unpriceable "
+            "entries here). Test .complete, then use .total, or .partial_total "
+            "together with .why."
+        )
+
+    def __repr__(self) -> str:
+        return (
+            f"Priced(total={self._total!r}, keys={len(self.by_key)}, "
+            f"unpriced={self.unpriced!r})"
+        )
+
+
 # ----------------------------------------------------------------------------- pricing
 def load_pricing():
     raw = yaml.safe_load(open(PRICING_PATH))
@@ -264,9 +370,9 @@ def load_pricing():
 PRICING = load_pricing()
 
 
-def price_metering(metering):
+def price_metering(metering) -> Priced:
     """metering: {'Phase/service/api': {unit: count}}. Price by LONGEST pricing-key
-    suffix of the metering key. Returns (total, {matched_key: cost}).
+    suffix of the metering key. Returns a :class:`Priced`.
 
     Both the model key and the unit name are matched EXACTLY — never by substring.
     This is the reference form of the rule; production
@@ -279,27 +385,40 @@ def price_metering(metering):
     Takes a metering MAP, never a :class:`Reading`. A caller holding a reading has
     to establish that it is ``present`` first — pricing an unread metering row is
     how a failed measurement becomes $0.00 in a published artifact. Passing one
-    raises from ``Reading.__bool__`` below rather than pricing it, because
+    raises from ``Reading.__bool__`` above rather than pricing it, because
     ``reportArgumentType`` is disabled here and the type checker will not say so.
 
-    ⚠️ **This function still drops what it cannot price, and says nothing about it.**
-    An entry whose model has no ``pricing.yaml`` key, or whose unit that key does not
-    price, is skipped — so a model added to a run but not to the pricing table makes
-    every affected row price **below truth while still reporting a plausible non-zero
-    total**, because the other phases price normally. That is the same
-    absence-versus-failure defect as
-    [#1079](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/1079)
-    one layer along, on a successful read rather than a failed one, and it is tracked
-    as [#1146](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/1146).
-    Note what does **not** detect it: the absence of a zero cost. The row's cost is
-    non-zero and nothing about it reads as partial. All 14 pricing keys the committed
-    artifacts use are present with their full unit sets, so no published figure is
-    affected today — but check that before adding a model to a suite.
+    **Three things are reported rather than dropped** (GitHub #1146). Each was a
+    ``continue`` that contributed nothing to the total, which is the same arithmetic
+    as contributing zero:
+
+    * a metering key **no pricing entry matches**, at any suffix — the live hazard,
+      because adding a model to a suite without adding it to ``pricing.yaml`` is
+      exactly the run that introduces the thing being measured;
+    * an entry whose value is **not a map** of unit to count;
+    * a **count that is not a number** (a bool included: a count written as a
+      DynamoDB ``BOOL`` prices as 1 or 0, neither of which was metered).
+
+    Miss handling now matches production's, which had already decided it and
+    documented the reasoning: *no entry for the key at all* is unpriced and named,
+    while *a unit absent from an entry that exists* is $0.00. See
+    ``idp_common/reporting/README.md`` — the second is a real price rather than a
+    missing one, because ``pricing.yaml`` omits units that do not apply and **every
+    Bedrock call meters ``totalTokens`` and ``requests``, which Bedrock does not
+    charge for.** Flagging the unit axis would therefore report every Bedrock entry
+    in every row as unpriceable, which is why the exact-match rule is kept as it is
+    and the *key* axis is what this function reports on.
     """
     total = 0.0
-    by = {}
+    by: dict[str, float] = {}
+    by_meter: dict[str, float] = {}
+    unpriced: list[str] = []
     for meter_key, units in (metering or {}).items():
         if not isinstance(units, dict):
+            unpriced.append(
+                f"{meter_key!r}: entry is a {type(units).__name__}, not a map of "
+                "unit -> count"
+            )
             continue
         parts = meter_key.split("/")
         pu = matched = None
@@ -308,14 +427,31 @@ def price_metering(metering):
             if cand in PRICING:
                 pu, matched = PRICING[cand], cand
                 break
-        if not pu:
+        if pu is None or matched is None:
+            unpriced.append(
+                f"{meter_key!r}: no pricing.yaml entry matches it or any "
+                f"'/'-delimited suffix of it — add one, or this run's cost is "
+                f"below truth by whatever it spent here"
+            )
             continue
+        # Present even when it prices to exactly 0.00, so a phase breakdown derived
+        # from this keeps every phase the metering map mentions.
+        by_meter.setdefault(meter_key, 0.0)
         for unit, count in units.items():
-            if unit in pu and isinstance(count, (int, float)):
-                c = count * pu[unit]
-                total += c
-                by[matched] = by.get(matched, 0.0) + c
-    return total, by
+            if unit not in pu:
+                # Not chargeable for this service, not a missing price. See above.
+                continue
+            if isinstance(count, bool) or not isinstance(count, (int, float)):
+                unpriced.append(
+                    f"{meter_key!r} unit {unit!r}: count is a "
+                    f"{type(count).__name__}, not a number"
+                )
+                continue
+            c = count * pu[unit]
+            total += c
+            by[matched] = by.get(matched, 0.0) + c
+            by_meter[meter_key] = by_meter[meter_key] + c
+    return Priced(total, by, by_meter, tuple(unpriced))
 
 
 # ----------------------------------------------------------------------------- DDB
@@ -333,20 +469,123 @@ def ddb_to_py(v):
     return None
 
 
+def format_t(t) -> str:
+    """A t statistic for printing, or ``—`` when there is not one.
+
+    ``t`` is null whenever the paired deltas have zero spread, which is not an edge
+    case: two arms that agree exactly on every document produce it, and so does any
+    sample of identical deltas. Formatting it unconditionally raises ``TypeError``
+    and takes an analysis down at the point it has finished computing. Excluding a
+    document makes the remaining sample smaller and so makes a degenerate one more
+    likely (#1205), which is why this is not left as the pre-existing crash it was.
+
+    One function rather than one per module, because the two modules that needed it
+    import each other and had defined ``_t`` with **different** argument types — the
+    stats dict in one, the scalar in the other. Either mis-call silently rendered a
+    perfectly good t as an em-dash, which is a real figure reported as a missing one:
+    the defect class this whole line of work is about, in the reporting of it.
+    """
+    return f"{t:+.2f}" if isinstance(t, (int, float)) else "—"
+
+
+def status_of_item(item) -> Any:
+    """``ObjectStatus`` from a tracking row, or ``None`` when the row lacks one.
+
+    One of the named per-attribute readers that exist so that ``ddb_to_py`` — a
+    low-level attribute-value decoder — is called from this module only. Every
+    module decoding raw attribute values for itself is how two of them came to write
+    their own metering decoder, each answering ``{}`` for anything it could not read
+    (#1205). Note ``ddb_to_py(None)`` raises rather than answering ``None``, so the
+    membership test here is load-bearing and not defensive padding.
+    """
+    return ddb_to_py(item["ObjectStatus"]) if item and "ObjectStatus" in item else None
+
+
+def sections_of_item(item) -> list:
+    """``Sections`` from a tracking row, or ``[]``.
+
+    ⚠️ **Two-stated on purpose, unlike ``metering_of_item``.** The shipped writer
+    omits this attribute when a document produced no sections (``if sections_data:``
+    in ``idp_common/dynamodb/service.py``), so an absent attribute IS an empty list
+    and reporting it as one is correct rather than a collapsed state. A *present*
+    attribute that will not decode to a list is a different matter and is currently
+    also reported as empty; that residual belongs with the rest of ``ddb_to_py``'s
+    fragility in
+    [#1223](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/1223)
+    rather than here, because nothing prices or averages it — it feeds a count of
+    processing issues.
+    """
+    if not item or "Sections" not in item:
+        return []
+    decoded = ddb_to_py(item["Sections"])
+    return decoded if isinstance(decoded, list) else []
+
+
+def metering_of_item(item, where: str = "") -> Reading[dict]:
+    """The ``Metering`` attribute of ONE tracking row, as a three-state reading.
+
+    **This is the only decoder.** It exists as a separate function because
+    ``read_metering`` welded the fetch to the classification, so a caller that
+    already held a row — anything working from a ``Scan`` rather than a ``GetItem``
+    — could not reuse it and wrote its own. Two did, and both collapsed the states
+    back to ``{}`` for everything they could not decode
+    ([#1205](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/1205)),
+    which prices to a confident, complete $0.00 and sums into a token mean as a
+    zero. A convention repeated at each site is what produced them; one function
+    both fetchers and scanners can call is what stops the next one.
+
+    The three states, and why ``{}`` cannot stand in for two of them:
+
+    * **present** — the attribute decoded. The map may be ``{}``, and that is a real
+      measurement: a document that metered nothing costs $0.00. Note the shipped
+      writer omits the attribute entirely in that case (``if document.metering:``),
+      so the empty map arrives as an absent attribute rather than an empty one.
+    * **absent** — there is no row at all. Nothing was recorded, so there is no cost
+      to report; $0.00 would be a number that was never measured.
+    * **failed** — the attribute is there and will not decode. ``where`` is folded
+      into the reason so a caller holding many rows can say which one.
+
+    ⚠️ **The reachable failure states are decode states only**, which is narrower
+    than ``read_metering``'s: a caller that holds a row has already survived the
+    fetch, so the throttled request and the deleted table cannot arrive here — they
+    surface out of the ``Scan`` instead. What does arrive is any encoding this
+    decoder does not recognise, and the set is a property of ``ddb_to_py``: it
+    answers ``None`` for every attribute type outside ``M/N/S/L/BOOL``, a ``float``
+    for ``N``, a ``list`` for ``L`` and a ``bool`` for ``BOOL``, none of which is a
+    map. The shipped writer stores a JSON **string** (``json.dumps(...,
+    default=str)`` in both write paths), so the ``S`` branch is the ordinary path
+    here and not an edge case — which is exactly why a future change to that
+    encoding needs to arrive as a reported failure rather than as $0.00.
+    """
+    if not item:
+        return Reading.absent(f"no tracking row{f' {where}' if where else ''}")
+    if "Metering" not in item:
+        # The row exists and carries no metering: nothing was metered for this
+        # document. A real zero, and the one state that legitimately prices to $0.
+        return Reading.present({})
+    prefix = f"{where}: " if where else ""
+    m = ddb_to_py(item["Metering"])
+    if isinstance(m, str):
+        try:
+            m = json.loads(m)
+        except ValueError as exc:
+            return Reading.failed(f"{prefix}Metering is not JSON: {exc}")
+    if not isinstance(m, dict):
+        return Reading.failed(
+            f"{prefix}Metering decoded to {type(m).__name__}, not a map"
+        )
+    return Reading.present(m)
+
+
 def read_metering(tracking, run_id, doc_name) -> Reading[dict]:
     """Metering map from the ``doc#`` tracking row. Handles Map or JSON-string.
 
-    All three states are reachable and they price differently (GitHub #1079):
-
-    * **present** — the row is there. The map may be ``{}``, which is a real zero:
-      a run that consumed no metered unit costs $0.00 and that is a measurement.
-    * **absent** — there is no tracking row for this document. Nothing was recorded,
-      so there is no cost to report; pricing it as $0.00 would put a number in the
-      artifact that was never measured.
-    * **failed** — the table could not be read, or ``Metering`` would not decode.
-      Returning ``{}`` here is what made a deleted tracking table, a throttled
-      request and a genuinely unmetered run all report $0.00, and it is why
-      ``aggregate.augment_summary`` is a targeted backfill rather than a re-score.
+    Fetch plus :func:`metering_of_item`, which is where the three states and the
+    reasoning about them live. This adds the one state a row-holding caller cannot
+    reach: the table read itself failing. Returning ``{}`` for that is what made a
+    deleted tracking table, a throttled request and a genuinely unmetered run all
+    report $0.00 (GitHub #1079), and it is why ``aggregate.augment_summary`` is a
+    targeted backfill rather than a re-score.
 
     The caller decides what to do; ``analyze.score_doc`` refuses to price anything
     but ``present`` and records ``cost_unread`` instead of a zero.
@@ -360,22 +599,7 @@ def read_metering(tracking, run_id, doc_name) -> Reading[dict]:
         )
     except Exception as exc:  # noqa: BLE001 - reported to the caller, not swallowed
         return Reading.failed(f"{type(exc).__name__}: {exc}")
-    item = r.get("Item")
-    if not item:
-        return Reading.absent(f"no tracking row {pk}")
-    if "Metering" not in item:
-        # The row exists and carries no metering: nothing was metered for this
-        # document. A real zero, and the one state that legitimately prices to $0.
-        return Reading.present({})
-    m = ddb_to_py(item["Metering"])
-    if isinstance(m, str):
-        try:
-            m = json.loads(m)
-        except ValueError as exc:
-            return Reading.failed(f"Metering is not JSON: {exc}")
-    if not isinstance(m, dict):
-        return Reading.failed(f"Metering decoded to {type(m).__name__}, not a map")
-    return Reading.present(m)
+    return metering_of_item(r.get("Item"), where=pk)
 
 
 def doc_row(

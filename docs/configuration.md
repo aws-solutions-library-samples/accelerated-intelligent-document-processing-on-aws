@@ -196,6 +196,71 @@ classes:
   # ... your document classes
 ```
 
+### A key the solution does not recognise is reported, not applied
+
+A configuration key whose name no setting matches is **ignored on load**, at every
+level of the file. The configuration is still accepted and the run still completes —
+what changes is that the shipped default stays in force, which looks exactly like a
+working configuration. A misspelled `enabled` leaves a guard on; a mis-nested
+`fail_action` leaves the default `warn` in place, and the conclusion a reader draws
+is that escalation does not work.
+
+Every such key is therefore named, with the full path to where it was written:
+
+```
+IDPConfig: Ignoring unknown nested fields (not defined in model, so the shipped
+default stays in force): extraction.validation.enabld (did you mean
+extraction.validation.enabled?), ocr.dpi (did you mean ocr.image.dpi?)
+```
+
+Two places to look for it:
+
+- **Before you upload.** `idp-cli config-validate --config-file <file>` lists them
+  as warnings, with the path. This is the cheap moment — the file is in front of
+  you. Note that `idp-cli config-upload` does **not** print them: it checks only
+  whether the configuration is valid, and an ignored key does not make it invalid.
+  `--strict` turns a **top-level** extra into a non-zero exit; a nested one is
+  reported but does not fail, so adding this flag to a pipeline cannot break a
+  configuration that passes today.
+- **On load, in CloudWatch.** The same finding appears at `WARNING` from the Lambda
+  that loaded the configuration. Search the log group for `Ignoring` after changing
+  a configuration — that matches the unknown-key line and the deprecated-key one.
+
+⚠️ **A key at the wrong nesting level is the trap worth knowing about**, because the
+name itself is valid. `dpi` is a real setting, under `ocr.image`. Written as
+`ocr.dpi` it is ignored — and so is any bad *value* you gave it, because the check
+that would have rejected it lives with the real key:
+
+```yaml
+ocr:
+  dpi: 300          # ignored: no such setting at this level
+  image:
+    dpi: 300        # this is the one that takes effect
+```
+
+That is why the message offers the path the key belongs at. Since `ocr.backend` and
+`ocr.model_id` genuinely are one level up, this is an easy mistake to make and a hard
+one to see afterwards.
+
+The same works the other way round: write `ocr.image.backend`, one level too deep,
+and the message points you back at `ocr.backend`.
+
+**A "did you mean" appears only when there is one answer.** Some setting names are
+used in several places — `enabled` exists at eight different places one level under
+`extraction` — and in that case the key is still reported but no path is suggested,
+because a guess would send you to edit something that was already correct.
+
+**The warning is not an error.** An unrecognised key does not stop a configuration
+from being accepted or a deployment from loading it, so upgrading cannot break a
+stored configuration on this account. It also means the only signal is the warning:
+after changing a setting, confirm the value you set is the value in effect rather
+than inferring it from the absence of an error.
+
+Two kinds of key are deliberately *not* reported, because nothing is being dropped:
+free-form content whose names are yours to choose — your document `classes`, a
+pipeline hook's `args` — and the pipeline-hook blocks, which keep whatever they are
+given.
+
 ### Benefits
 
 - **Simpler configs** - Only specify what makes your use case unique
@@ -937,7 +1002,7 @@ Measured across the shipped presets, 25% of classes never cache on the 1,024-tok
 tier and **none** do on Haiku 4.5 — someone choosing Haiku to save money on extraction
 gets no caching at all and, until now, no indication of it.
 
-`idp-cli config validate` (and the SDK validate operation) now **warns per class**
+`idp-cli config-validate` (and the SDK validate operation) now **warns per class**
 when a Simple-mode extraction prompt prefix — system prompt plus the task prompt up
 to the marker, with the class schema substituted — is under the configured extraction
 model's minimum, naming both numbers. The estimate is chars/4, accurate to about
@@ -988,7 +1053,7 @@ section result and the Athena columns, in parentheses):
 |---|---|---|
 | **caching** (`caching`) | Reads are landing; the ~0.1× read price applies to the prefix (the read share is shown) | Nothing |
 | **write-only** (`write-only`) | Writes with no reads: paying 1.25× on the prefix and collecting nothing | Expected when a class is processed once per 5-minute TTL; a low-volume deployment can set `prompt_cache: off` |
-| **never cached** (`never-cached`) | Reads and writes are both zero although a cache point reached a model that supports it: the cache point is inert | The prefix is below the model's minimum (named); run `idp-cli config validate` for the per-class estimate, add real field descriptions, or pick a model with a lower minimum |
+| **never cached** (`never-cached`) | Reads and writes are both zero although a cache point reached a model that supports it: the cache point is inert | The prefix is below the model's minimum (named); run `idp-cli config-validate` for the per-class estimate, add real field descriptions, or pick a model with a lower minimum |
 | **off** (`disabled`) | `extraction.prompt_cache: off`, so zero/zero is the intended outcome | Nothing |
 | **no cache point** (`no-cache-point`) | No cache point reached the model: the prompt has no `<<CACHEPOINT>>` marker, or the model is not one the client sends cache points to (Claude still reports `cacheReadInputTokens: 0` in that case, so the counts alone cannot tell this from *never cached*) | Add a marker, or nothing if caching was not wanted |
 | ↳ **on an implicit-caching model** | Same state, different meaning — and the report says so explicitly. OpenAI GPT-6 Astra (Converse) and GPT-5.4 / GPT-5.5 (bedrock-mantle) cache **without** a `cachePoint` block, so this state is the normal, healthy one for them and does **not** mean caching is unavailable. Astra in fact *rejects* an explicit cache point. Expect the state to become `caching` once a prefix is seen a second time within the TTL. GPT-5.6 Sol/Terra/Luna are **not** in this set: their caching is explicit, driven by a `<<CACHEPOINT>>` marker the client translates into a Responses-API breakpoint (see [OpenAI models](./openai-models.md#gpt-5x-prompt-caching)), so for them the generic row above applies and the remedy is to add a marker | Nothing — do not add a `<<CACHEPOINT>>` marker for Astra or GPT-5.4/5.5 |
