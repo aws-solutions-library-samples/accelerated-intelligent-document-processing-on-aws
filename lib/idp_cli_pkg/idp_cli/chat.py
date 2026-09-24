@@ -18,9 +18,9 @@ from rich.console import Console
 logger = logging.getLogger(__name__)
 console = Console()
 
-# The tags agents wrap private reasoning in. Matched as exact literals, the same
-# alphabet the rest of the repository strips, so nothing that was displayed before
-# is hidden now and nothing that was hidden is displayed.
+# The tags agents wrap private reasoning in. Matched as exact literals — no
+# attributes, no case folding — so exactly the text that used to be recognised as a
+# reasoning block is recognised as one now.
 _THINKING_OPEN = "<thinking>"
 _THINKING_CLOSE = "</thinking>"
 
@@ -162,6 +162,7 @@ class _ThinkingFilter:
 
     def __init__(self) -> None:
         self._held = ""
+        self._pending_space = ""
         self._inside = False
         self._started = False
 
@@ -215,12 +216,26 @@ class _ThinkingFilter:
         return self._present(tail)
 
     def _present(self, text: str) -> str:
-        """Drop leading whitespace until the first real output, as `.strip()` did."""
+        """
+        Apply the whitespace trimming the previous `.strip()` of the buffer gave.
+
+        Leading whitespace is dropped until the first real output. Trailing
+        whitespace is *deferred* rather than dropped, because more text may follow
+        it and the space between two words belongs on screen — so it is emitted in
+        front of whatever comes next, and a run still deferred when the stream ends
+        is never printed. That is what the old whole-buffer `.strip()` amounted to,
+        and without it a response ending in blank lines pushes the shell prompt
+        down the terminal.
+        """
+        text = self._pending_space + text
+        self._pending_space = ""
         if text and not self._started:
             text = text.lstrip()
-            if text:
-                self._started = True
-        return text
+        visible = text.rstrip()
+        self._pending_space = text[len(visible) :]
+        if visible:
+            self._started = True
+        return visible
 
 
 async def _stream_response(orchestrator, prompt: str) -> str:
@@ -235,17 +250,25 @@ async def _stream_response(orchestrator, prompt: str) -> str:
             console.print(text, end="", highlight=False)
             displayed += text
 
-    async for event in orchestrator.stream_async(prompt):
-        if "data" in event:
-            show(thinking.feed(event["data"]))
+    # The release of held text is in a `finally` because a stream can raise
+    # part-way -- `_handle_prompt` catches that and prints the error -- and the few
+    # characters being withheld at that moment are answer text the user should see
+    # before the error rather than text the failure silently swallows.
+    try:
+        async for event in orchestrator.stream_async(prompt):
+            if "data" in event:
+                show(thinking.feed(event["data"]))
 
-        elif "current_tool_use" in event:
-            tool_name = event["current_tool_use"].get("name", "")
-            if tool_name and tool_name != current_subagent:
-                current_subagent = tool_name
-                display_name = tool_name.replace("_agent", "").replace("_", " ").title()
-                console.print(f"\n[dim]⟶ {display_name}[/dim]", highlight=False)
+            elif "current_tool_use" in event:
+                tool_name = event["current_tool_use"].get("name", "")
+                if tool_name and tool_name != current_subagent:
+                    current_subagent = tool_name
+                    display_name = (
+                        tool_name.replace("_agent", "").replace("_", " ").title()
+                    )
+                    console.print(f"\n[dim]⟶ {display_name}[/dim]", highlight=False)
+    finally:
+        show(thinking.close())
 
-    show(thinking.close())
     console.print()
     return displayed.rstrip()

@@ -413,13 +413,14 @@ def test_a_long_answer_after_a_split_block_is_printed_from_its_first_character(
 
 
 @pytest.mark.unit
-def test_a_thinking_block_spanning_three_chunks_is_hidden(recording_console):
+def test_a_thinking_block_spanning_four_chunks_is_hidden(recording_console):
     """
-    Both tags split, with a chunk holding nothing but reasoning in between.
+    Both tags split, across four chunks, with reasoning alone in the middle two.
 
-    Two chunks is the minimum that reproduces the defect and three is where a
-    fix that only remembered the previous chunk would come apart, so the state has
-    to survive a chunk it releases nothing from.
+    Two chunks is the minimum that reproduces the defect. Beyond two is where a
+    fix that only remembered the previous chunk would come apart: the first three
+    chunks here release nothing at all, so the state has to survive a run of them
+    and still be right when the fourth arrives.
     """
     console = recording_console()
 
@@ -463,7 +464,9 @@ def test_two_thinking_blocks_are_both_hidden_when_the_second_one_is_split(
 
     assert "first" not in console.text
     assert "second" not in console.text
-    assert console.printed[:2] == ["Part one. ", "Part two."]
+    # The space between the two parts is deferred onto the second print, which is
+    # where withholding a trailing whitespace run puts it.
+    assert console.printed[:2] == ["Part one.", " Part two."]
     assert shown == "Part one. Part two."
 
 
@@ -542,7 +545,7 @@ def test_an_unterminated_thinking_block_is_never_printed(recording_console):
     )
 
     assert "the stream died here" not in console.text
-    assert console.printed[0] == "Checking. "
+    assert console.printed[0] == "Checking."
     assert shown == "Checking."
 
 
@@ -565,6 +568,60 @@ def test_text_that_merely_looks_like_the_start_of_a_tag_is_still_printed(
 
     assert console.text.startswith("The opener is ")
     assert shown == "The opener is <think"
+
+
+@pytest.mark.unit
+def test_held_back_text_is_released_even_when_the_stream_raises(recording_console):
+    """
+    A stream that fails mid-answer still shows the characters being withheld.
+
+    Withholding a possible tag prefix means there is text in hand at every moment,
+    and the release happens once the stream ends -- so a stream that ends by
+    *raising* has to release it too, or the failure silently eats the tail of an
+    answer the user was already being shown. `_handle_prompt` turns the exception
+    into a printed line, so the visible consequence would be an answer a few
+    characters short of what arrived, right next to an error message.
+    """
+    console = recording_console()
+
+    class Failing:
+        def stream_async(self, prompt):
+            async def _generate():
+                yield {"data": "The answer is 42<"}
+                raise RuntimeError("stream broke")
+
+            return _generate()
+
+    with pytest.raises(RuntimeError):
+        _stream(orchestrator=Failing())
+
+    assert console.text == "The answer is 42<"
+
+
+@pytest.mark.unit
+def test_trailing_whitespace_is_deferred_rather_than_printed_then_the_prompt_moves(
+    recording_console,
+):
+    """
+    A response ending in blank lines does not push the shell prompt down.
+
+    Whitespace between two words has to reach the terminal, so a trailing run is
+    held rather than dropped and emitted in front of whatever follows -- which is
+    the first assertion here. A run still held when the stream ends is never
+    printed, which is the second. Together they are what the old whole-buffer
+    `.strip()` gave, and `_handle_prompt` prints a blank line after this function,
+    so an unprinted trailing `\\n\\n` is two blank lines the user does not see.
+    """
+    console = recording_console()
+
+    mid = _stream(orchestrator=FakeOrchestrator([{"data": "Answer: "}, {"data": "42"}]))
+    assert console.text == "Answer: 42"
+    assert mid == "Answer: 42"
+
+    console = recording_console()
+    end = _stream(orchestrator=FakeOrchestrator([{"data": "Done."}, {"data": "\n\n"}]))
+    assert console.text == "Done."
+    assert end == "Done."
 
 
 @pytest.mark.unit
