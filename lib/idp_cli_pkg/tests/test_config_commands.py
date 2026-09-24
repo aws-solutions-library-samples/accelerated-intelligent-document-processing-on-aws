@@ -1779,6 +1779,13 @@ def patched_bda(sync_result=None, project_error=None):
     "Not yet implemented" — so this is the narrowest seam that lets the DynamoDB
     half of `sync_bda` (resolving the active profile, recording `BdaSyncStatus`)
     run against real state while the blueprint calls are stubbed.
+
+    `sync_result` entries must be keyed the way the real sync keys them —
+    `{"status": ..., "class": ...}` — since that is what `sync_bda` reads the class
+    names out of. Entries written with a key it does not emit made the assertions
+    on the printed names below agree with a read that could never work:
+    `test_config_operations_extended.py` derives the entries from the producer, and
+    that is the test to change first if the key moves.
     """
     with patch("idp_common.bda.bda_blueprint_service.BdaBlueprintService") as svc_cls:
         service = MagicMock()
@@ -1812,8 +1819,8 @@ def test_sync_bda_submits_the_underscored_direction_for_the_active_profile():
 
         with patched_bda(
             sync_result=[
-                {"status": "success", "class_name": "invoice"},
-                {"status": "success", "class_name": "receipt"},
+                {"status": "success", "class": "invoice"},
+                {"status": "success", "class": "receipt"},
             ]
         ) as service:
             result = invoke(
@@ -1854,7 +1861,7 @@ def test_sync_bda_syncs_the_named_profile_rather_than_the_active_one():
         stack.seed("claims", class_name="claim")
 
         with patched_bda(
-            sync_result=[{"status": "success", "class_name": "claim"}]
+            sync_result=[{"status": "success", "class": "claim"}]
         ) as service:
             result = invoke(
                 [
@@ -1931,8 +1938,8 @@ def test_sync_bda_reports_a_partial_sync_as_a_failure():
 
         with patched_bda(
             sync_result=[
-                {"status": "success", "class_name": "invoice"},
-                {"status": "failed", "class_name": "receipt"},
+                {"status": "success", "class": "invoice"},
+                {"status": "failed", "class": "receipt"},
             ]
         ):
             result = invoke(["config-sync-bda", "--stack-name", STACK])
