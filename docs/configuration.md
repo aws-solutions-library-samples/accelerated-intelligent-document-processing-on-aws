@@ -122,8 +122,17 @@ The GenAI IDP Accelerator uses a **system defaults** architecture where configur
 ### How It Works
 
 1. **System defaults** are loaded first from `lib/idp_common_pkg/idp_common/config/system_defaults/`:
-   - `pattern-1.yaml` - BDA mode defaults (used when `use_bda: true`)
-   - `pattern-2.yaml` - Pipeline mode defaults (used when `use_bda: false`)
+   - `pattern-1.yaml` - BDA mode defaults
+   - `pattern-2.yaml` - Pipeline mode defaults
+
+   Which of the two is used comes from the caller's explicit pattern argument. Where
+   that is omitted, the tools that auto-detect it (the SDK's config download and
+   upload, and the `update_configuration` Lambda) select `pattern-1.yaml` only for a
+   configuration whose `classification.classificationMethod` is `bda`, and
+   `pattern-2.yaml` otherwise — they do not read the top-level `use_bda` flag, so a
+   BDA deployment configured only through `use_bda: true` resolves against
+   `pattern-2.yaml`. The two files differ only in which modules they compose;
+   `use_bda` itself is what routes the workflow at run time.
 
 2. **User configurations** are merged on top, overriding only the specified values
 
