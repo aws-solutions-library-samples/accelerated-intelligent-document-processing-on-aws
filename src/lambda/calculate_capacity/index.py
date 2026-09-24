@@ -606,21 +606,18 @@ def generate_rpm_quota_codes(model_ids):
             rpm_quotas[model_id] = rpm_mapping[model_id]
             continue
             
-        # Clean model ID by removing region prefix and version suffixes
-        clean_model_id = model_id.lower()
-        if '.' in clean_model_id:
-            clean_model_id = clean_model_id.split('.', 2)[-1]  # Remove region prefix like "us." or "eu."
-        clean_model_id = clean_model_id.split(':')[0]  # Remove version suffix like ":1m"
-        
+        # Clean model ID by removing the version suffix only. The region prefix
+        # ("us.", "eu.", "global.") is what selects the inference profile, and
+        # Service Quotas holds a separate limit per profile, so discarding it
+        # would let a "global." model take a "us." quota code.
+        clean_model_id = model_id.lower().split(':')[0]  # Remove version suffix like ":1m"
+
         # Try to match against cleaned mapping keys
         matched = False
         for model_type, quota_code in rpm_mapping.items():
             # Clean the mapping key the same way for comparison
-            clean_mapping_key = model_type.lower()
-            if '.' in clean_mapping_key:
-                clean_mapping_key = clean_mapping_key.split('.', 2)[-1]
-            clean_mapping_key = clean_mapping_key.split(':')[0]
-            
+            clean_mapping_key = model_type.lower().split(':')[0]
+
             # Match if the cleaned keys are equal or one contains the other
             if clean_model_id == clean_mapping_key or clean_model_id in clean_mapping_key or clean_mapping_key in clean_model_id:
                 rpm_quotas[model_id] = quota_code
