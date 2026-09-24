@@ -2887,6 +2887,12 @@ def list_versions(stack_name: str, document_id: str, region: Optional[str]):
 @click.option(
     "--stack-name", help="CloudFormation stack name (required with --test-set)"
 )
+@click.option(
+    "--force",
+    "-y",
+    is_flag=True,
+    help="Overwrite an existing test set without the confirmation prompt (required to overwrite non-interactively)",
+)
 def generate_manifest(
     directory: Optional[str],
     s3_uri: Optional[str],
@@ -2897,6 +2903,7 @@ def generate_manifest(
     region: Optional[str],
     test_set: Optional[str],
     stack_name: Optional[str],
+    force: bool,
 ):
     """
     Generate a manifest file from directory or S3 URI
@@ -2924,6 +2931,9 @@ def generate_manifest(
 
       # Create test set with baseline matching and manifest output
       idp-cli generate-manifest --dir ./documents/ --baseline-dir ./baselines/ --test-set "fcc example test" --stack-name IDP --output manifest.csv
+
+      # Overwrite an existing test set from a script or CI job (no prompt to answer)
+      idp-cli generate-manifest --dir ./documents/ --baseline-dir ./baselines/ --test-set "fcc example test" --stack-name IDP --force
     """
     try:
         import csv
@@ -3089,28 +3099,49 @@ def generate_manifest(
 
         # Upload to test set bucket if test_set is specified
         if test_set:
-            # Check if test set already exists
+            # Check if test set already exists. The check and the confirmation are
+            # kept apart on purpose: a failed listing is a tidy-up problem and warns,
+            # but the confirmation is the only thing standing between this command and
+            # a previous test set's baselines, so a failure to READ an answer must
+            # never be absorbed by the listing's error handler. `input()` raises
+            # EOFError on a closed or empty stdin, and EOFError is an Exception.
+            test_set_exists = False
             try:
                 response = s3_client.list_objects_v2(
                     Bucket=test_set_bucket, Prefix=f"{test_set}/", MaxKeys=1
                 )
-                if response.get("Contents"):
-                    console.print(
-                        f"[yellow]Warning: Test set '{test_set}' already exists in bucket[/yellow]"
-                    )
-                    console.print(
-                        "[yellow]Files will be overwritten. Continue? [y/N][/yellow]",
-                        end=" ",
-                    )
-
-                    response = input().strip().lower()
-                    if response not in ["y", "yes"]:
-                        console.print("[red]✗ Aborted[/red]")
-                        sys.exit(1)
+                test_set_exists = bool(response.get("Contents"))
             except Exception as e:
                 console.print(
                     f"[yellow]Warning: Could not check existing test set: {e}[/yellow]"
                 )
+
+            if test_set_exists and not force:
+                console.print(
+                    f"[yellow]Warning: Test set '{test_set}' already exists in bucket[/yellow]"
+                )
+                console.print(
+                    "[yellow]Files will be overwritten. Continue? [y/N][/yellow]",
+                    end=" ",
+                )
+
+                try:
+                    answer = input().strip().lower()
+                except EOFError:
+                    # Non-interactive stdin. Overwriting clears the test set's
+                    # baselines, which are not recoverable from the CLI, so take the
+                    # absence of an answer as "no" rather than as consent.
+                    console.print()
+                    console.print(
+                        "[red]✗ Aborted: no answer read from stdin, so the existing "
+                        f"test set '{test_set}' was left untouched. Re-run with "
+                        "--force to overwrite it non-interactively.[/red]"
+                    )
+                    sys.exit(1)
+
+                if answer not in ["y", "yes"]:
+                    console.print("[red]✗ Aborted[/red]")
+                    sys.exit(1)
 
             console.print(
                 f"[bold blue]Uploading files to test set: {test_set}[/bold blue]"
@@ -3118,24 +3149,9 @@ def generate_manifest(
 
             # Clear existing test set folder if it exists
             try:
-                response = s3_client.list_objects_v2(
-                    Bucket=test_set_bucket, Prefix=f"{test_set}/"
-                )
-
-                if "Contents" in response:
-                    # Delete all existing objects in the test set folder
-                    objects_to_delete = [
-                        {"Key": obj["Key"]} for obj in response["Contents"]
-                    ]
-
-                    if objects_to_delete:
-                        s3_client.delete_objects(
-                            Bucket=test_set_bucket,
-                            Delete={"Objects": objects_to_delete},
-                        )
-                        console.print(
-                            f"  Cleared {len(objects_to_delete)} existing files"
-                        )
+                cleared = _clear_s3_prefix(s3_client, test_set_bucket, f"{test_set}/")
+                if cleared:
+                    console.print(f"  Cleared {cleared} existing files")
 
             except Exception as e:
                 console.print(
@@ -3162,6 +3178,7 @@ def generate_manifest(
                 console.print(f"  Uploaded input {i + 1}/{len(documents)}: {filename}")
 
             # Upload baseline files
+            baseline_objects = 0
             for filename, baseline_path in baseline_map.items():
                 # Upload all files in the baseline directory recursively
                 import glob as glob_module
@@ -3170,18 +3187,34 @@ def generate_manifest(
                 baseline_files = glob_module.glob(
                     os.path.join(baseline_path, "**", "*"), recursive=True
                 )
+                uploaded = 0
                 for baseline_file in baseline_files:
                     if os.path.isfile(baseline_file):
                         # Preserve directory structure relative to baseline_path
                         rel_path = os.path.relpath(baseline_file, baseline_path)
                         s3_key = f"{test_set}/baseline/{filename}/{rel_path}"
                         s3_client.upload_file(baseline_file, test_set_bucket, s3_key)
+                        uploaded += 1
 
                 # Update baseline_map to point to S3 location
                 baseline_map[filename] = (
                     f"s3://{test_set_bucket}/{test_set}/baseline/{filename}/"
                 )
-                console.print(f"  Uploaded baseline: {filename}")
+                baseline_objects += uploaded
+
+                # Report the count, not the attempt. A baseline directory holding no
+                # files at its top level — empty, or one level deeper than expected —
+                # left this line claiming an upload that moved nothing, while the
+                # manifest row still named the `baseline/<document>/` prefix. The
+                # result is a test set an evaluation cannot score, described as ready.
+                if uploaded:
+                    console.print(f"  Uploaded baseline: {filename} ({uploaded} files)")
+                else:
+                    console.print(
+                        f"[yellow]  Warning: no baseline files found for {filename} "
+                        f"in {baseline_path} - its baseline_source will name an empty "
+                        f"prefix[/yellow]"
+                    )
 
         # Write manifest (2 columns only)
         if output:
@@ -3223,9 +3256,13 @@ def generate_manifest(
             console.print(
                 f"[green]✓ Test set '{test_set}' created successfully[/green]"
             )
-            console.print(f"  Input files: s3://{test_set_bucket}/{test_set}/input/")
             console.print(
-                f"  Baseline files: s3://{test_set_bucket}/{test_set}/baseline/"
+                f"  Input files: s3://{test_set_bucket}/{test_set}/input/ "
+                f"({len(documents)} documents)"
+            )
+            console.print(
+                f"  Baseline files: s3://{test_set_bucket}/{test_set}/baseline/ "
+                f"({baseline_objects} objects)"
             )
             console.print()
             console.print("[bold]Next Steps: Run inference[/bold]")
@@ -3717,6 +3754,110 @@ def _invoke_test_runner(
     return result
 
 
+#: The most keys one `DeleteObjects` request may carry. A request over this limit is
+#: rejected outright by S3 (`MalformedXML`), and `moto` does not enforce it — so a
+#: test asserting only that the objects are gone cannot see an unbatched delete.
+_DELETE_OBJECTS_BATCH_SIZE = 1000
+
+
+def _clear_s3_prefix(s3_client, bucket: str, prefix: str) -> int:
+    """Delete every object under `prefix`, and return how many were deleted.
+
+    Both halves of this are load-bearing on a test set larger than one page.
+    `list_objects_v2` returns at most 1000 keys per response and reports the rest
+    through `NextContinuationToken`, and `delete_objects` accepts at most 1000 keys per
+    request. Reading a single response and deleting its keys in one call therefore
+    removes the first 1000 objects of a larger test set and leaves the remainder
+    behind, orphaned under a prefix the caller has been told it emptied — and the
+    caller's next act is to upload a new test set over it, so the leftovers become
+    baselines and inputs of an older set mixed into a newer one.
+    """
+    paginator = s3_client.get_paginator("list_objects_v2")
+    deleted = 0
+    failures: List[Dict[str, str]] = []
+    batch: List[Dict[str, str]] = []
+
+    def _send(keys):
+        # Count what S3 says it deleted, not what was asked for. `DeleteObjects`
+        # answers 200 with a per-key `Errors` array — an object under a legal hold, or
+        # a key a policy denies — while deleting the rest, so a count of the request
+        # would report a prefix as emptied that still holds objects, which is the same
+        # harm as the unpaginated listing arriving by another route.
+        nonlocal deleted
+        response = s3_client.delete_objects(Bucket=bucket, Delete={"Objects": keys})
+        deleted += len(response.get("Deleted", []))
+        failures.extend(response.get("Errors", []))
+
+    for page in paginator.paginate(Bucket=bucket, Prefix=prefix):
+        for obj in page.get("Contents", []):
+            batch.append({"Key": obj["Key"]})
+            if len(batch) == _DELETE_OBJECTS_BATCH_SIZE:
+                _send(batch)
+                batch = []
+
+    if batch:
+        _send(batch)
+
+    if failures:
+        first = failures[0]
+        console.print(
+            f"[yellow]Warning: {len(failures)} object(s) under {prefix} could not be "
+            f"deleted, so it is not empty (first: {first.get('Key')}: "
+            f"{first.get('Code')}). Files uploaded now will sit alongside them."
+            "[/yellow]"
+        )
+
+    return deleted
+
+
+def _copy_s3_baseline(
+    s3_client, source_uri: str, dest_bucket: str, dest_prefix: str
+) -> int:
+    """Copy the baseline objects at `source_uri` under `dest_prefix`; return the count.
+
+    A manifest's `baseline_source` is an `s3://` URI whenever it came from
+    `generate-manifest --test-set`, which rewrites every baseline to point into the test
+    set bucket. A local `glob` over such a value matches nothing, so feeding that
+    manifest back produced a test set with a complete `input/` and an empty `baseline/`
+    — an evaluation with nothing to score against, reported as created.
+
+    The URI may name a prefix (what `generate-manifest` writes) or a single object, so
+    the destination key is the remainder of the source key below the prefix, falling
+    back to the object's basename when the URI names the object exactly. A key that
+    merely *starts* with the same characters is not a member and is skipped: listing
+    `gt/inv` would otherwise draw in `gt/inv2/other.json` and store it under a mangled
+    name. Paginated for the same reason the clear is: a baseline directory can hold
+    more than 1000 files.
+    """
+    source_bucket, _, source_key = source_uri[len("s3://") :].partition("/")
+    if not source_bucket or not source_key:
+        return 0
+
+    member_prefix = source_key if source_key.endswith("/") else source_key + "/"
+    paginator = s3_client.get_paginator("list_objects_v2")
+    copied = 0
+
+    for page in paginator.paginate(Bucket=source_bucket, Prefix=source_key):
+        for obj in page.get("Contents", []):
+            key = obj["Key"]
+            if key.endswith("/"):
+                continue  # a directory marker carries no baseline content
+            if key == source_key:
+                relative = os.path.basename(key)  # the URI names this object exactly
+            elif key.startswith(member_prefix):
+                relative = key[len(member_prefix) :]
+            else:
+                continue  # shares the leading characters without being under it
+            s3_client.copy_object(
+                CopySource={"Bucket": source_bucket, "Key": key},
+                Bucket=dest_bucket,
+                Key=f"{dest_prefix}{relative}",
+            )
+            copied += 1
+
+    return copied
+
+
 def _get_test_set_document_ids(
     stack_name: str,
     test_set: str,
@@ -3735,13 +3876,17 @@ def _get_test_set_document_ids(
     s3_client = boto3.client("s3", region_name=region)
 
     try:
-        response = s3_client.list_objects_v2(
-            Bucket=test_set_bucket, Prefix=f"{test_set}/input/"
-        )
+        # Paginated: a single `list_objects_v2` response stops at 1000 keys, and these
+        # ids are what the monitor waits for — a short list makes the run look complete
+        # while the documents it omits are still being processed, and any evaluation
+        # computed from it is scored on a subset without saying so.
+        paginator = s3_client.get_paginator("list_objects_v2")
 
         document_ids = []
-        if "Contents" in response:
-            for obj in response["Contents"]:
+        for page in paginator.paginate(
+            Bucket=test_set_bucket, Prefix=f"{test_set}/input/"
+        ):
+            for obj in page.get("Contents", []):
                 key = obj["Key"]
                 if key.endswith("/"):  # Skip directories
                     continue
@@ -3807,20 +3952,9 @@ def _create_test_set_from_manifest(
 
     # Clear existing test set folder if it exists
     try:
-        response = s3_client.list_objects_v2(
-            Bucket=test_set_bucket, Prefix=f"{test_set_name}/"
-        )
-
-        if "Contents" in response:
-            # Delete all existing objects in the test set folder
-            objects_to_delete = [{"Key": obj["Key"]} for obj in response["Contents"]]
-
-            if objects_to_delete:
-                s3_client.delete_objects(
-                    Bucket=test_set_bucket,
-                    Delete={"Objects": objects_to_delete},
-                )
-                console.print("  Cleared existing test set files")
+        cleared = _clear_s3_prefix(s3_client, test_set_bucket, f"{test_set_name}/")
+        if cleared:
+            console.print(f"  Cleared {cleared} existing test set files")
 
     except Exception as e:
         console.print(f"[yellow]Warning: Could not clear existing files: {e}[/yellow]")
@@ -3832,6 +3966,8 @@ def _create_test_set_from_manifest(
     )
 
     # Copy input files
+    baseline_sources = 0
+    baseline_objects = 0
     for _, row in df.iterrows():
         source_path = str(row["document_path"])
         filename = os.path.basename(source_path)
@@ -3854,19 +3990,42 @@ def _create_test_set_from_manifest(
         # Copy baseline if exists
         if "baseline_source" in row and pd.notna(row["baseline_source"]):
             baseline_path = str(row["baseline_source"])
+            baseline_sources += 1
+            copied = 0
 
-            # Upload all files in the baseline directory recursively
-            import glob as glob_module
+            if baseline_path.startswith("s3://"):
+                # An `s3://` baseline is what `generate-manifest --test-set` writes, so
+                # this is the ordinary shape of a manifest fed back in, not an exotic
+                # one. It is copied within S3 rather than globbed on the local disk.
+                copied = _copy_s3_baseline(
+                    s3_client,
+                    baseline_path,
+                    test_set_bucket,
+                    f"{test_set_name}/baseline/{filename}/",
+                )
+            else:
+                # Upload all files in the baseline directory recursively
+                import glob as glob_module
 
-            baseline_files = glob_module.glob(
-                os.path.join(baseline_path, "**", "*"), recursive=True
-            )
-            for baseline_file in baseline_files:
-                if os.path.isfile(baseline_file):
-                    # Preserve directory structure relative to baseline_path
-                    rel_path = os.path.relpath(baseline_file, baseline_path)
-                    s3_key = f"{test_set_name}/baseline/{filename}/{rel_path}"
-                    s3_client.upload_file(baseline_file, test_set_bucket, s3_key)
+                baseline_files = glob_module.glob(
+                    os.path.join(baseline_path, "**", "*"), recursive=True
+                )
+                for baseline_file in baseline_files:
+                    if os.path.isfile(baseline_file):
+                        # Preserve directory structure relative to baseline_path
+                        rel_path = os.path.relpath(baseline_file, baseline_path)
+                        s3_key = f"{test_set_name}/baseline/{filename}/{rel_path}"
+                        s3_client.upload_file(baseline_file, test_set_bucket, s3_key)
+                        copied += 1
+
+            baseline_objects += copied
+            if copied == 0:
+                # A test set whose baselines are missing cannot score anything, and the
+                # row count printed at the end cannot show it, so say so per row.
+                console.print(
+                    f"[yellow]Warning: no baseline files found for {filename} at "
+                    f"{baseline_path} - nothing was uploaded for it[/yellow]"
+                )
 
     # Remove .uploading marker now that all files are uploaded (issue #193)
     try:
@@ -3877,6 +4036,13 @@ def _create_test_set_from_manifest(
     console.print(
         f"[green]✓ Test set '{test_set_name}' created with {len(df)} files[/green]"
     )
+    if baseline_sources:
+        # Objects uploaded, not manifest rows: the row count above cannot distinguish a
+        # test set with baselines from one whose baseline step copied nothing.
+        console.print(
+            f"  Baseline objects uploaded: {baseline_objects} "
+            f"(from {baseline_sources} baseline sources)"
+        )
 
 
 @cli.command(name="stop-workflows")

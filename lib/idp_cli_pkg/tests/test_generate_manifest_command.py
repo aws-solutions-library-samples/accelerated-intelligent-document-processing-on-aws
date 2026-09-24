@@ -1069,23 +1069,161 @@ def test_confirming_the_overwrite_clears_the_previous_test_set(runner, tmp_path)
 
 
 @pytest.mark.unit
-def test_eof_on_the_overwrite_prompt_overwrites_without_confirmation(runner, tmp_path):
-    """DEFECT (pinned, not fixed): the overwrite guard fails open on a closed stdin.
+def test_the_overwrite_clears_every_object_past_the_first_listing_page(
+    runner, tmp_path, api_calls
+):
+    """Overwriting a test set of more than 1000 objects removes all of them.
 
-    The confirmation is a bare `input()` inside a `try/except Exception` whose handler
-    prints "Warning: Could not check existing test set" and carries on. `input()` on a
-    closed or empty stdin raises `EOFError`, which is an `Exception`, so the guard is
-    swallowed by its own error handler and the command proceeds to clear and overwrite
-    the existing test set. Anything running this non-interactively — a CI job, a
-    `make` target, a shell with stdin redirected from `/dev/null` — therefore
-    overwrites an existing test set silently, which destroys the baselines a previous
-    evaluation was measured against.
+    The clear read one `list_objects_v2` response, which stops at 1000 keys, so
+    overwriting a test set larger than one page deleted its first 1000 objects and left
+    the remainder orphaned under a prefix the command had just reported it cleared —
+    with a fresh test set then uploaded on top, mixing one set's baselines into
+    another's. **The fixture must exceed one page**: at 1000 objects or fewer, one
+    listing returns everything and the fixed and broken code behave identically. The
+    second page comes from `moto` producing a genuine truncated response over 1001 real
+    objects.
 
-    Here the pre-existing `set1/input/stale.pdf` is gone at the end and the exit code
-    is 0, with only a yellow warning to show for it. The abort path itself works
-    (`sys.exit` raises `SystemExit`, which that handler does not catch) — see
-    `test_declining_the_overwrite_prompt_makes_no_s3_writes` — so the bug is specific
-    to never getting an answer.
+    Beyond the count in the message, the object that is only reachable on the second
+    page is named individually, and every `DeleteObjects` request is checked for the
+    1000-key limit that S3 enforces and `moto` does not — so the batching is measured
+    here rather than deferred to a real bucket.
+    """
+    from idp_cli.cli import generate_manifest
+
+    docs = tmp_path / "docs"
+    _write(docs / "invoice.pdf")
+    baselines = tmp_path / "baselines"
+    (baselines / "invoice.pdf").mkdir(parents=True)
+
+    with mock_aws():
+        s3 = boto3.client("s3", region_name="us-east-1")
+        s3.create_bucket(Bucket=TEST_SET_BUCKET)
+        for i in range(1001):
+            s3.put_object(
+                Bucket=TEST_SET_BUCKET, Key=f"set1/stale/{i:05d}.json", Body=b"{}"
+            )
+        s3.put_object(Bucket=TEST_SET_BUCKET, Key="other/keep.pdf", Body=b"keep")
+        before_invoke = len(api_calls)
+
+        with _patched_stack_resources({"TestSetBucket": TEST_SET_BUCKET}):
+            result = runner.invoke(
+                generate_manifest,
+                [
+                    "--dir",
+                    str(docs),
+                    "--baseline-dir",
+                    str(baselines),
+                    "--test-set",
+                    "set1",
+                    "--stack-name",
+                    "IDP",
+                ],
+                input="y\n",
+            )
+
+        paginator = s3.get_paginator("list_objects_v2")
+        keys = {
+            obj["Key"]
+            for page in paginator.paginate(Bucket=TEST_SET_BUCKET)
+            for obj in page.get("Contents", [])
+        }
+        deletes = [
+            call
+            for call in api_calls[before_invoke:]
+            if call.operation == "DeleteObjects"
+        ]
+
+    assert result.exit_code == 0, result.output
+    assert "Cleared 1001 existing files" in result.output
+    assert "set1/stale/01000.json" not in keys, (
+        "the object beyond the first listing page survived the overwrite"
+    )
+    assert keys == {"set1/input/invoice.pdf", "other/keep.pdf"}
+
+    assert len(deletes) == 2, [len(d.params["Delete"]["Objects"]) for d in deletes]
+    for delete in deletes:
+        assert len(delete.params["Delete"]["Objects"]) <= 1000, (
+            "DeleteObjects takes at most 1000 keys; a larger request is rejected by S3"
+        )
+
+
+@pytest.mark.unit
+def test_eof_on_the_overwrite_prompt_aborts_without_touching_the_test_set(
+    runner, tmp_path, api_calls
+):
+    """EOF on the confirmation aborts: no answer is not consent to clear baselines.
+
+    `input()` raises `EOFError` on a closed or empty stdin, and `EOFError` is an
+    `Exception` — so while the prompt sat inside the listing's `try/except Exception`,
+    anything non-interactive (a CI job, a `make` target, a shell with stdin from
+    `/dev/null`) had its guard swallowed by that handler and went on to clear and
+    overwrite the existing test set, destroying the baselines a previous evaluation was
+    measured against, at exit 0 with a yellow warning as the only sign.
+
+    Supplying EOF rather than `n` is the whole point: answering `n` already aborted
+    (`test_declining_the_overwrite_prompt_makes_no_s3_writes`), so a test that answers
+    cannot tell the fix from the defect. `CliRunner` with `input=""` gives a stdin that
+    is immediately at EOF, which is the real non-interactive shape.
+
+    The pre-existing object is read back to show it survived, and the API log is
+    checked for the absence of the mutating calls rather than trusting the exit code:
+    an abort that had already deleted the previous baselines would be worse than the
+    overwrite it replaced.
+    """
+    from idp_cli.cli import generate_manifest
+
+    docs = tmp_path / "docs"
+    _write(docs / "invoice.pdf")
+    baselines = tmp_path / "baselines"
+    (baselines / "invoice.pdf").mkdir(parents=True)
+
+    with mock_aws():
+        s3 = boto3.client("s3", region_name="us-east-1")
+        s3.create_bucket(Bucket=TEST_SET_BUCKET)
+        s3.put_object(Bucket=TEST_SET_BUCKET, Key="set1/input/stale.pdf", Body=b"old")
+        before_invoke = len(api_calls)
+
+        with _patched_stack_resources({"TestSetBucket": TEST_SET_BUCKET}):
+            result = runner.invoke(
+                generate_manifest,
+                [
+                    "--dir",
+                    str(docs),
+                    "--baseline-dir",
+                    str(baselines),
+                    "--test-set",
+                    "set1",
+                    "--stack-name",
+                    "IDP",
+                ],
+                input="",
+            )
+
+        keys = {
+            obj["Key"]
+            for obj in s3.list_objects_v2(Bucket=TEST_SET_BUCKET).get("Contents", [])
+        }
+
+    assert result.exit_code == 1, result.output
+    assert "no answer read from stdin" in result.output
+    assert "--force" in result.output, "the abort has to name the non-interactive route"
+    assert keys == {"set1/input/stale.pdf"}, (
+        "the existing test set must survive an unanswered prompt"
+    )
+    made_by_the_command = [call.operation for call in api_calls[before_invoke:]]
+    assert "PutObject" not in made_by_the_command
+    assert "DeleteObjects" not in made_by_the_command
+    assert "DeleteObject" not in made_by_the_command
+
+
+@pytest.mark.unit
+def test_force_overwrites_an_existing_test_set_with_no_prompt(runner, tmp_path):
+    """`--force` is the non-interactive route to the overwrite, and it asks nothing.
+
+    Without it there would be no way to refresh a test set from a script, since EOF on
+    the prompt now aborts. Stdin is left empty here, so a prompt that were still
+    reached would raise `EOFError` and abort — reaching exit 0 with the stale object
+    gone is what shows the confirmation was skipped rather than answered.
     """
     from idp_cli.cli import generate_manifest
 
@@ -1111,6 +1249,7 @@ def test_eof_on_the_overwrite_prompt_overwrites_without_confirmation(runner, tmp
                     "set1",
                     "--stack-name",
                     "IDP",
+                    "--force",
                 ],
                 input="",
             )
@@ -1121,11 +1260,117 @@ def test_eof_on_the_overwrite_prompt_overwrites_without_confirmation(runner, tmp
         }
 
     assert result.exit_code == 0, result.output
-    assert "Warning: Could not check existing test set" in result.output
-    assert "✗ Aborted" not in result.output
-    assert keys == {"set1/input/invoice.pdf"}, (
-        "the previous test set was overwritten with no confirmation"
+    assert "Continue? [y/N]" not in result.output
+    assert keys == {"set1/input/invoice.pdf"}
+
+
+@pytest.mark.unit
+def test_a_baseline_directory_holding_no_files_is_reported_as_uploading_none(
+    runner, tmp_path
+):
+    """An empty baseline directory is a warning, not an "Uploaded baseline" line.
+
+    `--baseline-dir` matches by directory name, so a directory that exists but holds no
+    files at its top level — empty, or nested one level deeper than expected — matches a
+    document and contributes nothing. The upload loop's report sat after it
+    unconditionally, so the command printed `Uploaded baseline: invoice.pdf`, rewrote the
+    manifest row to name `baseline/invoice.pdf/`, and printed the baseline location, for
+    a prefix with nothing in it. The whole run then reads as a complete test set that an
+    evaluation cannot score.
+
+    Read off the bucket rather than the console for the objects, and off the console for
+    what the operator is told, since the defect was entirely in the second.
+    """
+    from idp_cli.cli import generate_manifest
+
+    docs = tmp_path / "docs"
+    _write(docs / "invoice.pdf")
+    baselines = tmp_path / "baselines"
+    (baselines / "invoice.pdf").mkdir(parents=True)  # matched, and empty
+
+    with mock_aws():
+        s3 = boto3.client("s3", region_name="us-east-1")
+        s3.create_bucket(Bucket=TEST_SET_BUCKET)
+
+        with _patched_stack_resources({"TestSetBucket": TEST_SET_BUCKET}):
+            result = runner.invoke(
+                generate_manifest,
+                [
+                    "--dir",
+                    str(docs),
+                    "--baseline-dir",
+                    str(baselines),
+                    "--test-set",
+                    "set1",
+                    "--stack-name",
+                    "IDP",
+                ],
+            )
+
+        keys = {
+            obj["Key"]
+            for obj in s3.list_objects_v2(Bucket=TEST_SET_BUCKET).get("Contents", [])
+        }
+
+    assert result.exit_code == 0, result.output
+    assert keys == {"set1/input/invoice.pdf"}
+    assert "Uploaded baseline: invoice.pdf" not in result.output, (
+        "nothing was uploaded, so nothing may claim it was"
     )
+    assert "Warning: no baseline files found for invoice.pdf" in result.output
+    assert "(0 objects)" in result.output
+
+
+@pytest.mark.unit
+def test_the_baseline_upload_counts_the_files_it_uploaded(runner, tmp_path):
+    """The per-baseline line and the summary both carry counts read off the uploads.
+
+    The count is the only thing that distinguishes a test set whose baselines arrived
+    from one whose did not, since every other line of the output is identical either
+    way. Two files in one baseline directory, one of them nested, so the number cannot
+    come from counting matched directories or manifest rows.
+    """
+    from idp_cli.cli import generate_manifest
+
+    docs = tmp_path / "docs"
+    _write(docs / "invoice.pdf")
+    baselines = tmp_path / "baselines"
+    _write(baselines / "invoice.pdf" / "result.json", "{}")
+    _write(baselines / "invoice.pdf" / "sections" / "1.json", "{}")
+
+    with mock_aws():
+        s3 = boto3.client("s3", region_name="us-east-1")
+        s3.create_bucket(Bucket=TEST_SET_BUCKET)
+
+        with _patched_stack_resources({"TestSetBucket": TEST_SET_BUCKET}):
+            result = runner.invoke(
+                generate_manifest,
+                [
+                    "--dir",
+                    str(docs),
+                    "--baseline-dir",
+                    str(baselines),
+                    "--test-set",
+                    "set1",
+                    "--stack-name",
+                    "IDP",
+                ],
+            )
+
+        keys = {
+            obj["Key"]
+            for obj in s3.list_objects_v2(Bucket=TEST_SET_BUCKET).get("Contents", [])
+        }
+
+    assert result.exit_code == 0, result.output
+    assert keys == {
+        "set1/input/invoice.pdf",
+        "set1/baseline/invoice.pdf/result.json",
+        "set1/baseline/invoice.pdf/sections/1.json",
+    }
+    assert "Uploaded baseline: invoice.pdf (2 files)" in result.output
+    assert "(2 objects)" in result.output
+    assert "Warning: no baseline files found" not in result.output
 
 
 @pytest.mark.unit
