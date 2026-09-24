@@ -608,13 +608,15 @@ touches a CloudFormation template must run `make cfn-lint` and
 - Long suites exceed the 120-second Bash timeout: run as
   `timeout N cmd > log 2>&1` in the background and read the log. **A log with no
   `N passed` summary line did not run**, whatever the exit status said.
-- `python3 scripts/check_coverage_debt.py` must stay green — and ⚠️ **it exits 0
-  when no coverage report exists**, so a green result means nothing unless you
-  generated one first (issue #1190).
-- ⚠️ **Never `--write` a coverage baseline from a run that errored.** An xdist
-  `Different tests were collected between gw1 and gwN` run still writes a
-  `coverage.xml`, and the ratchet will then name fabricated losses and offer
-  `--write`, which would launder them in permanently. Re-run clean first.
+- `python3 scripts/check_coverage_debt.py` must stay green, and a green result now
+  means something: with no usable report it exits **2** saying it measured nothing
+  rather than printing a ✅ over zero trees, and it names every tree its verdict
+  does not cover (#1190). Generate a report first — the exit-2 message says how.
+- ⚠️ **A coverage baseline cannot be `--write`ten from a run that errored**, and you
+  no longer have to notice: an xdist `Different tests were collected between gw1 and
+  gwN` run still writes a `coverage.xml`, and the ratchet reads the JUnit record
+  beside it, refuses to compare that report, and refuses to write anything at all.
+  Re-run clean rather than working around the refusal.
 - ⚠️ **Do not edit files in a worktree while a battery is running in it.** That
   is what produces the errored run above. Commit before any mutation demo.
 
@@ -1110,9 +1112,10 @@ permanent, and in the state file, which is resumable.
 - **Ancestry is not identity.** `is_relative_to(root)` accepts a sibling
   worktree nested under the root. This has bitten three separate controls here.
   Compare roots by equality.
-- **A gate that measured nothing must not report success.** Two live instances:
-  the coverage ratchet with no report (#1190), and `lint-cicd` skipping the UI
-  lint on an unchanged checksum (fixed, #1152).
+- **A gate that measured nothing must not report success.** Two instances, both
+  fixed and worth reading as the template: the coverage ratchet exiting 0 with no
+  report, and on a report from a run that never finished (#1190), and `lint-cicd`
+  skipping the UI lint on an unchanged checksum (#1152).
 - **`[skip ci]` runs no gate on either platform.** It let three defects reach
   `develop` in one session. Now refused by a hook — do not override it.
 - **Pydantic's default `extra="ignore"` silently drops an undeclared key.** Three

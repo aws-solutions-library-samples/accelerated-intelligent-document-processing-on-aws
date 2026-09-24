@@ -268,11 +268,14 @@ coverage-summary: ## Print the recorded per-tree figures, without measuring anyt
 
 # Deliberately NOT a prerequisite of `lint` or `fastlint`: it reads the coverage
 # report that `make test-cicd -C lib/idp_common_pkg` writes, and the lint targets
-# never build one. Wired there it would find no report, exit 0, and pass vacuously --
-# a gate that cannot fail is worse than an absent one, because it reads as coverage.
-# Both CI configurations invoke it immediately after the test step instead.
+# never build one. Wired there it would find no report and refuse (exit 2), red-lining
+# every lint run for a condition the lint targets themselves cause.
+# Both CI configurations invoke it immediately after the test step instead, with
+# CHECK_COVERAGE_DEBT_ARGS naming the tree that step is supposed to have measured, so a
+# report that never appears fails by name rather than reading as a clean ratchet (#1190).
+CHECK_COVERAGE_DEBT_ARGS ?=
 check-coverage-debt: ## Ratchet per-file coverage across all 9 trees: fail if a file loses coverage, or a new module arrives unratcheted
-	@python3 scripts/check_coverage_debt.py
+	@python3 scripts/check_coverage_debt.py $(CHECK_COVERAGE_DEBT_ARGS)
 
 check-lint-debt: ## Ratchet ruff's per-file exclusions: fail if an excluded file gains a finding, or is now clean (issue #975)
 	@# ruff.toml used to exclude five BARE directory names, which match at any
