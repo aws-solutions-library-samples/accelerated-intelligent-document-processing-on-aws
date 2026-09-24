@@ -190,12 +190,12 @@ GitHub's own Merge button runs no code from this tree.
 
 **Trigger matrix** — what runs, when:
 
-| Event | fast_checks (code + SRT) | deployment_validation | integration_tests |
-|-------|:---:|:---:|:---:|
-| Push to any branch, **no MR** | ✅ | — | — |
-| Push to branch with a **Draft** MR → `develop` | ✅ | ✅¹ | ▶️ **manual** (button on MR) |
-| Push to branch with a **non-Draft** MR → `develop` | ✅ | ✅¹ | ✅ auto¹ |
-| Push to **`develop`** | ✅ | ✅¹ | ✅ auto¹ |
+| Event | fast_checks (code + SRT) | ai_mr_review² | deployment_validation | integration_tests |
+|-------|:---:|:---:|:---:|:---:|
+| Push to any branch, **no MR** | ✅ | — | — | — |
+| Push to branch with a **Draft** MR → `develop` | ✅ | — | ✅¹ | ▶️ **manual** (button on MR) |
+| Push to branch with a **non-Draft** MR → `develop` | ✅ | ▶️ **manual** (button on MR) | ✅¹ | ✅ auto¹ |
+| Push to **`develop`** | ✅ | — | ✅¹ | ✅ auto¹ |
 
 ¹ **Doc-only commits skip the deploy stages.** `deployment_validation` and the
 auto `integration_tests` only run when the commit/MR touches a **deploy-affecting
@@ -207,6 +207,42 @@ path** (the `.deploy_affecting_changes` allowlist in `.gitlab-ci.yml`:
 is deliberately generous (a false "run" wastes CI minutes; a false "skip" could
 merge a broken deploy). The **Draft-MR manual button ignores this filter** — you
 can always force a deploy by clicking it, even on a doc-only branch.
+
+² **`ai_mr_review` is advisory, is not a gate, and does not run on its own.** It
+runs Claude Code (via Bedrock) over the MR diff with
+`.claude/skills/pr-review.md` and posts the review as an MR note; it is
+`allow_failure: true`, has `needs: []` so it does not wait for `code_checks`, and
+it is deliberately absent from `test_ci_gate_parity.py`'s `SHARED_GATES` — a
+model's opinion must not decide whether code merges, and a Bedrock throttle must
+not red-line an MR. It is **GitLab-only** because the AWS credentials are here; a
+GitHub equivalent would need its own OIDC role.
+
+⚠️ **It is a manual button, and the reason is measured cost.** Reviews are
+idempotent per head SHA, so an automatic trigger means a fresh paid review on
+every push: a 5,400-line MR measured **$6.12**, and an MR pushed ten times during
+review would cost $10–60 for intermediate states nobody reads. There is
+**no scheduled sweep** for the same reason, though the script supports one
+(`--all-open`); enabling it is a rule addition plus a schedule, and the cost note
+above the job in `.gitlab-ci.yml` is the thing to read first. The click is also
+the only human in the loop on a run that reads author-controlled text.
+
+⚠️ **The tool sandbox is enforced by `--permission-mode manual` in the argv, not
+by a settings file.** `--allowedTools` is *additive*, so a machine whose
+`~/.claude/settings.json` sets `"defaultMode": "bypassPermissions"` grants the
+review every tool regardless of the lists. That is not hypothetical: the first
+live run executed `make cfn-lint`, several `make check-*` targets and the MR's own
+pytest suite on the operator's machine — arbitrary code execution from an MR diff,
+beside an AWS credential. `scripts/tests/test_ai_mr_review.py` pins the flag, and
+`AI_REVIEW_LIVE_PROBE=1` runs an opt-in probe that measures the refusal.
+
+It needs a `GITLAB_REVIEW_TOKEN` CI variable (project access token, `api` scope,
+**masked and NOT protected** — a protected variable is absent from the MR-branch
+pipelines this job runs in) — without it the job prints `SKIPPED:` and exits 0.
+Run it by hand with `make ai-mr-review`, `make ai-mr-review-dry MR=<iid>` to see a
+review without posting it, or `make ai-mr-review-local MR=<iid>` from a laptop,
+which takes the MR head from git over SSH because this instance's REST API sits
+behind federated sign-in and a token alone cannot reach it. The unattended
+contract is `.claude/skills/pr-review-ci.md`.
 
 Notes:
 - **Every push runs fast_checks** (code checks + SRT), so lint/typecheck/unit and

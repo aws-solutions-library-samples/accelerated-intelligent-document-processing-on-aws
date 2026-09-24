@@ -546,3 +546,110 @@ dep_audit:
       - dist/manifests/python-packages.txt
       - dist/manifests/node-packages.txt
     expire_in: 1 week
+
+# Advisory AI code review. Runs Claude Code (via Amazon Bedrock) over the MR diff
+# with .claude/skills/pr-review.md and posts the result as an MR note.
+#
+# ⚠️ NOT A GATE, and `allow_failure: true` says so in the one place a reader will
+# look. A model's opinion must not decide whether code merges — the fast_checks
+# gates above do that. A Bedrock throttle, a token expiry or an empty response
+# must therefore not red-line an MR, and this job is excluded from
+# scripts/tests/test_ci_gate_parity.py's SHARED_GATES on the same basis (it is
+# GitLab-only because the AWS credentials are here; the GitHub side would need
+# its own OIDC role).
+#
+# ⚠️ ONE TRIGGER, AND IT IS A BUTTON. `when: manual` on a non-Draft MR targeting
+# develop — nothing here runs automatically, and that is a cost decision made
+# against a measurement rather than a guess. Reviews are idempotent per HEAD SHA
+# (see ai_mr_review.py), so an automatic trigger re-reviews on every push: a
+# measured 5,400-line MR cost $6.12, and an MR pushed ten times during review
+# would have cost $10-60 for reviews of intermediate states nobody reads. A click
+# also puts a person at the start of every run, which matters because the review
+# reads author-controlled text.
+#
+# NO SCHEDULED SWEEP, deliberately. The script supports one (`--all-open`, which
+# is what `make ai-mr-review` runs locally) and the script: block below still
+# dispatches to it, but no `$CI_PIPELINE_SOURCE == "schedule"` rule exists, so in
+# CI it is unreachable. To turn it on later: add
+# `- if: $CI_PIPELINE_SOURCE == "schedule"` above the terminal `never`, then
+# create the schedule in Build -> Pipeline schedules. Read the cost note above
+# first — a daily sweep of 10 MRs is the case that gets expensive.
+#
+# Requires two CI variables:
+#   GITLAB_REVIEW_TOKEN  project access token, `api` scope, MASKED. The review is
+#                        posted as this token's identity. CI_JOB_TOKEN cannot
+#                        create notes, so there is no fallback — without this the
+#                        job prints SKIPPED and exits 0.
+#   AWS credentials      the same ones integration_tests uses, plus
+#                        bedrock:InvokeModel. See the script's --help for how to
+#                        scope this job down to a Bedrock-only role.
+ai_mr_review:
+  stage: fast_checks
+  interruptible: true
+  # One review is a few minutes; --max-mrs 10 bounds the sweep. 45m leaves room
+  # for a slow sweep without letting a wedged run hold a runner for hours.
+  timeout: 45m
+  allow_failure: true
+
+  # Reviewing is read-only, but it reads the whole checkout at the MR head and a
+  # large diff wants memory for the model client + git worktree.
+  tags:
+    - size:large
+
+  rules:
+    # Non-Draft MRs targeting develop, as a MANUAL button on the MR page. Ordered
+    # before the catch-all so a Draft falls through to `never` rather than
+    # offering the button — a review posted on somebody's WIP is noise they did
+    # not ask for. `allow_failure: true` above is what keeps this manual job from
+    # blocking the pipeline while it sits un-clicked, which is the default for
+    # manual jobs.
+    - if: $CI_MERGE_REQUEST_TARGET_BRANCH_NAME == "develop" && $CI_MERGE_REQUEST_TITLE !~ /^Draft:/
+      when: manual
+    - when: never
+
+  # Nothing to wait for: it reads the MR, not another job's artifacts. In
+  # particular it does NOT wait for code_checks — a lint failure is exactly when
+  # a review is most useful, and gating the review on the gates would mean the
+  # MRs most in need of one never get it.
+  needs: []
+
+  variables:
+    # Pinned for the same reason CFN_LINT_VERSION is: an unpinned tool on a
+    # scheduled job changes behaviour with no commit here.
+    CLAUDE_CODE_VERSION: "2.1.281"
+    # Bedrock inference-profile id. Must be one this account has model access to.
+    ANTHROPIC_MODEL: "us.anthropic.claude-opus-5"
+    AWS_REGION: "us-east-1"
+    # Full history: the review diffs the MR head against its merge base with
+    # develop, which a shallow clone does not have.
+    GIT_DEPTH: 0
+
+  before_script:
+    - apt-get update -y
+    - apt-get install curl git -y
+    # Node 22: @anthropic-ai/claude-code declares `engines: {node: ">=22.0.0"}`.
+    # This was 20, and npm's EBADENGINE warning was the only sign — `npm install`
+    # and `claude --version` both SUCCEED on 20, and the CLI then exits 1 with an
+    # empty stderr on the first real session. A version check that passes on an
+    # unsupported runtime is worse than no check, so the failure is asserted
+    # against the package's own requirement by
+    # scripts/tests/test_ai_mr_review.py::test_the_node_major_satisfies_claude_codes_engine
+    - curl -fsSL https://deb.nodesource.com/setup_22.x | bash -
+    - apt-get install -y nodejs
+    - npm install -g "@anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}"
+    - node --version
+    - claude --version
+
+  script:
+    - |
+      if [ -n "$CI_MERGE_REQUEST_IID" ]; then
+        python3 scripts/sdlc/ai_mr_review.py --mr "$CI_MERGE_REQUEST_IID"
+      else
+        python3 scripts/sdlc/ai_mr_review.py --all-open --max-mrs 10
+      fi
+
+  artifacts:
+    when: always
+    paths:
+      - ai-reviews/
+    expire_in: 1 week
