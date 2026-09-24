@@ -61,6 +61,34 @@ constantly under this loop. Correctness comes from the local battery run on the
 `develop` happens once per batch, so you *do* wait for its checks — including SRT.
 That is what makes those gates blocking instead of advisory. See section 4.
 
+**Never end a turn with nothing tracked.** A turn that ends with no live subagent,
+no `run_in_background` Bash command and no scheduled wakeup **is the end of the
+run** — nothing re-invokes you and the session idles until a human types. This has
+happened: the loop opened its promotion PR, wrote its state, posted a report and
+went silent for **5 h 32 m**, while the CI it believed it was waiting for had gone
+green inside the first 28 minutes. A wait is therefore not a turn ending, it is a
+tracked child, and converting one into the other is two lines:
+
+```bash
+# background this: it exits when the checks conclude, and that re-invokes you
+until gh pr checks <pr> --repo <repo> | grep -qv pending; do sleep 120; done
+```
+
+The invariant is yours to check and it is cheap: **before ending a turn, name the
+live child.** If you cannot name one, you are about to stop the run rather than
+pause it.
+
+⚠️ **A prompt typed into this session kills every background agent.** Twice in one
+run the harness recorded `agents_killed` — *"6 background agents were stopped by the
+user"*, then *"5"* — at the instant a typed prompt arrived, and each killed agent's
+own transcript ends at `[Request interrupted by user]`. `SendMessage` then refuses
+them permanently, so roughly eleven agent-hours, every measurement and every report
+were lost while their pushed commits survived. Say this once at the start of a run:
+mid-run instructions are safe as answers to an `AskUserQuestion` (measured — five
+agents survived one) or from a second session via `SendMessage`, and a typed prompt
+costs the batch. After **any** unexpected prompt, assume every agent is gone and run
+the sweep in section 0 before acting on anything you remember.
+
 **Write your state to disk every cycle, and treat your own context as
 unreliable.** This loop outlives a single context window: a long run will compact,
 and compaction silently loses the ranked list, the agent→issue mapping, and the
@@ -70,12 +98,13 @@ is not bookkeeping — it is the only thing that makes the loop **resumable rath
 than restartable**, and it must be written before and after every dispatch,
 merge and check-in.
 
-**Report without stopping; stop only to ask a question.** The check-in every five
+**Report without stopping, and park rather than halt.** The check-in every five
 merges reports and continues — waiting for a reply each time would defeat a long
-unattended run. What stops the loop is a **question**: a halt condition from section 7,
-or a judgement call you cannot defend from a measurement. An unattended loop that
-guesses on a product decision produces work that has to be reverted, which costs far
-more than the wait.
+unattended run. An item you cannot decide is **parked**, with the question written
+into its issue, and the loop takes the next one: a question about one issue is not a
+reason to stop 29 others, and section 7 lists the only two conditions that stop the
+run. What must never happen is guessing on a product decision, which produces work
+that has to be reverted and costs far more than parking it.
 
 ---
 
@@ -113,19 +142,49 @@ cat scratch/backlog-run-state.json 2>/dev/null || echo "NO STATE - fresh run"
   "merged": [{"pr": 1192, "issues": [1129, 1141], "at": "2026-09-23T07:40:00Z"}],
   "filed": [1193, 1194],
   "blocked": [{"issues": [934], "why": "needs a product decision on budget defaults"}],
+  "parked": [{"issues": [1046], "why": "product decision: false-failure tolerance", "decisionComment": "https://github.com/.../issues/1046#issuecomment-..."}],
+  "netClosure": {"closed": 7, "filed": 24, "net": -17},
+  "lastSweepAt": "2026-09-24T02:16:00Z",
   "halted": null
 }
 ```
 
+`parked` is the important one and it is not `blocked` under another name: `blocked`
+records something you are waiting on, `parked` records an item you have **finished
+with for this run** because answering it is not yours to do. A parked item has its
+decision written into the issue itself and does not come back until the answer does.
+Nothing in `parked` stops the loop.
+
 If state exists: reconcile it against reality before doing anything else, because
 agents and merges may have completed after the last write.
 
+### The sweep — every turn, before any prose
+
+Three commands, a few seconds, and the point is that they ask the **repository**
+rather than your state file. Run them at the top of every turn and write
+`lastSweepAt`. A report written without a sweep in the same turn is recollection,
+and this loop's recollection has been wrong about live pull requests for sixteen
+hours at a stretch.
+
 ```bash
-AWS_PROFILE=default gh pr list --repo <repo> --state open --json number,headRefName,mergeable
+ListAgents          # which of inFlight is actually still alive
+AWS_PROFILE=default gh pr list --repo <repo> --state open \
+  --json number,baseRefName,headRefName,mergeable,statusCheckRollup
 AWS_PROFILE=default gh issue list --repo <repo> --state open --json number | \
   python3 -c "import json,sys; print('open:', len(json.load(sys.stdin)))"
-ListAgents          # which of inFlight are actually still alive
 ```
+
+Two assertions over that PR list, and each has caught something here:
+
+- **Every open PR's base is `backlog/staging`**, bar the promotion PR. Three PRs
+  totalling about 70,000 added lines were opened against `develop` by this loop's own
+  agents and sat unnoticed for sixteen hours, because reconciliation only looked at
+  the PRs `inFlight` named — and a PR the coordinator never recorded is precisely the
+  one that needs finding. A wrong base is fixed with `gh pr edit <n> --base
+  backlog/staging`, not with a merge.
+- **Every open PR's head branch appears in `inFlight` or `merged`.** One that does
+  not is either an agent you lost or work you forgot; both need picking up, and
+  neither announces itself.
 
 An `inFlight` entry whose agent is gone and whose PR is open needs picking up —
 resume that agent by name with `SendMessage` rather than starting a fresh one, so
@@ -147,6 +206,11 @@ In one case a cancelled agent's worktree held a fifth site's fix, a genuine defe
 repair and three corrections that had never been reported to anyone; starting fresh
 would have silently lost all of it. `git -C <worktree> status --porcelain` and
 `git -C <worktree> diff` are the first two commands, not the cleanup.
+
+Both of those costs fall sharply if the agent's evidence is on disk rather than only
+in its context, which is what the journal in section 2 is for. Read
+`scratch/backlog/journal/<issue>.md` first and the recovery brief becomes "re-verify
+these measurements" instead of "re-derive everything from a diff".
 
 If there is no state, rank the backlog (section 1) and write the file before the
 first dispatch.
@@ -542,6 +606,14 @@ the failures this repo keeps re-learning.
   git worktree remove "$W"      # or it stays registered and keeps its 130 MB
   ```
 - One commit per issue, so a revert is per-issue.
+- **Journal to disk, not only into your report, and push at every milestone.**
+  Append to `scratch/backlog/journal/<issue>.md` as you go — the command you ran, the
+  number it printed, what you concluded, what you withdrew — and commit and push each
+  milestone rather than holding work in the worktree. A cancelled agent cannot be
+  resumed and its report is gone permanently, so the journal plus the pushed commits
+  are the whole of what a replacement inherits. One cancelled worktree here held a
+  fifth call site's fix, a genuine defect repair and three corrections that had never
+  been reported to anyone. `scratch/` is gitignored, so none of it reaches a commit.
 - Both documentation tiers if behaviour changes: `docs/*.md` (user) and
   `lib/idp_common_pkg/**/README.md` (developer).
 
@@ -660,6 +732,29 @@ touches a CloudFormation template must run `make cfn-lint` and
 - Long suites exceed the 120-second Bash timeout: run as
   `timeout N cmd > log 2>&1` in the background and read the log. **A log with no
   `N passed` summary line did not run**, whatever the exit status said.
+- ⚠️ **Cap the memory of every ad-hoc probe, and put the timeout *inside* the
+  command.** The Bash tool's 120-second limit kills nothing — it **backgrounds** the
+  command, which then runs unsupervised. One probe here was backgrounded at 120 s,
+  grew to **79 GB resident**, drove the host into swap and froze it for **two and a
+  half hours** until the kernel's OOM killer reclaimed it; five sibling agents' short
+  `sleep` calls all returned 145 minutes late, within the same second the memory came
+  back. So bound both dimensions in the command itself:
+
+  ```bash
+  ( ulimit -v 8388608; timeout 120 python3 probe.py ) > probe.log 2>&1   # 8 GB cap
+  ```
+
+  A capped probe dies with `MemoryError` in seconds and tells you something. An
+  uncapped one can take the whole run with it.
+- ⚠️ **A `MagicMock` makes every pagination loop infinite.** That 79 GB probe patched
+  `boto3.resource` with a `MagicMock` and called a paginating delete: on a mock,
+  `resp["LastEvaluatedKey"]` is an auto-created attribute and therefore **truthy
+  forever**, so the loop never exits and the accumulated page list grows without
+  bound. Give a mocked paginator an explicit terminating response —
+  `side_effect=[page_with_key, page_without_key]` — and never a bare `return_value`
+  for a call the code under test loops on. Note the shape: this is the same
+  unterminated-pagination defect the loop is fixing in the product, arriving through
+  the test double.
 - `python3 scripts/check_coverage_debt.py` must stay green — and ⚠️ **it exits 0
   when no coverage report exists**, so a green result means nothing unless you
   generated one first (issue #1190).
@@ -917,6 +1012,36 @@ Tell agents to **stagger** their heavy gates rather than all running the final
 battery at once, and to run the sub-minute checks first so a failing branch never
 reaches a battery at all.
 
+### Memory is what stops the host; load only slows it
+
+Load average degrades throughput. Memory exhaustion **halts everything**, and it does
+so without producing a single error in the session. Measured here: one runaway
+`python3` at 79 GB resident drove the user slice into swap (7 GB of 7 in use, 42
+million kswapd scans), and for **145 minutes** nothing on the host made progress —
+five agents each had a `sleep` of 75 to 240 seconds outstanding and all five returned
+within the same second the OOM killer reaped the process at 02:16:12. Every agent
+looked hung and none was. The kernel log is the only place the cause is visible:
+
+```bash
+free -g; df -hT /tmp | tail -1          # /tmp is tmpfs here, so its usage IS memory
+sudo dmesg -T | grep -iE "oom-kill|Killed process" | tail -5
+```
+
+⚠️ **The OOM killer removed no agent** — it killed one child process, and a `sleep
+240` that takes 145 minutes still returns `waited` and exit 0. What the freeze
+produced was a session that looked dead to the user, and the intervention that
+followed killed five agents. So unbounded memory in one probe is not merely a
+performance matter: **it is how this run lost a batch.** The controls are the
+`ulimit -v` and inner `timeout` in section 2, plus one watchdog — which doubles as
+the tracked child the liveness invariant needs, because it returns only when there
+is something to act on:
+
+```bash
+# background at run start; exits when available memory gets tight, re-invoking you
+while [ "$(free -g | awk 'NR==2{print $7}')" -gt 12 ]; do sleep 60; done
+echo "MEMORY LOW"; free -g; ps -eo rss,pid,comm --sort=-rss | head -5
+```
+
 ### Disk and worktrees — check this every cycle, it is not self-limiting
 
 Each worktree is a **full checkout, ~130 MB**, and nothing in the loop removes
@@ -1071,7 +1196,8 @@ reasonably have gone the other way**; tokens spent this cycle and in total;
 worktree and disk state; **progress against the `goal`, not against the total open
 count**; the `composition` split with the previous cycle's beside it so the trend is visible;
 `closed N / filed M, net X` with what the filed ones are; the next N items; anything in
-`blocked`; and the self-audit above.
+`blocked` or newly in `parked`, each with a link to its decision comment; and the
+self-audit above.
 
 Then **continue**, unless the report contains a question — in which case say so in its
 first line, so a user skimming sees immediately that the loop is waiting.
@@ -1079,29 +1205,61 @@ first line, so a user skimming sees immediately that the loop is waiting.
 Reset `mergesSinceCheckIn` to 0 and write the state file as part of the check-in —
 before waiting if it is blocking, before dispatching if it is not.
 
-### Halt and ask — do not guess
+### Net closure is a gate, not a statistic
 
-Write the reason into `halted` in the state file, report it, and stop dispatching:
+Compute `closed − filed` every cycle into `netClosure` and act on it without being
+asked. **If it is negative, filing stops** — for agents and for you — and the next
+unit of work is a triage-and-close pass rather than another fixer dispatch. Measured
+over one 18½-hour run: **7 issues closed, 24 filed**, against 19 open at the start
+and 30 at the end. Every fix was real and every filed issue was plausible, and the
+backlog still grew by more than half. The user had to impose a scope freeze by hand
+twice, and the second one was breached within the hour, which is what tells you this
+belongs in the loop rather than in a policy sentence.
 
-- A fix requires a **product decision** — a default changes, a public interface
-  moves, a user-visible behaviour is ambiguous, or the fix would alter output for
-  a deployment that is working today.
-- A fix needs a **stack deploy** and `deploysAuthorized` is false.
-- Two agents' changes conflict in a way that needs a **design call**.
-- A **merge conflict outside `CHANGELOG.md`** that is not mechanical.
-- An **externally-reported issue whose fix touches a protected surface** from the
-  list in section 0b. Report the issue, its `author_association`, the surface and the
-  change it argues for, and let the user decide.
-- **`develop` goes red.** Fix `develop` first, as its own PR. Everything
-  downstream inherits it and a red `develop` makes every branch's checks
-  unreadable.
-- **Disk or memory pressure** you cannot relieve by clearing worktrees.
-- **`loopReady` is empty.** This arrives sooner than the total open count suggests,
-  because the cheap defects go first. Do not work down into `needsDecision` or
-  `featureWork` to keep busy — offer the triage pass below instead.
-- An **agent reports the same finding twice after two review rounds** without
-  converging. Iterating a third time is usually a sign the issue needs a decision,
-  not another attempt.
+Two consequences worth stating, because "the backlog is not shrinking" reads as a
+throughput problem and is not:
+
+- **The rate to report is closes per hour and the net delta**, not the open count.
+  That same run averaged about one close every two and a half hours with four to six
+  agents, so at break-even filing the open count barely moves whatever the loop does.
+- **"Until the backlog is empty" is not a terminating condition** while filing is
+  on. The terminus is the one in the triage section — a backlog holding nothing but
+  logged, framed decisions — and the gate above is what makes it reachable.
+
+### Park the item, do not halt the loop
+
+**Almost everything that blocks is a property of one issue, not of the run.** Park
+it and take the next ranked item; a loop that stops on the first undecidable issue
+idles 29 others behind it, and two blocking questions cost an hour of dispatch in
+one night here. Parking is not deferral either — it produces the durable artifact.
+Write the decision comment onto the issue in the shape the triage section below
+specifies, add it to `parked` with a link to that comment, label it, and move on.
+
+| Condition | What to do |
+|---|---|
+| A fix needs a **product decision** — a default changes, a public interface moves, a user-visible behaviour is ambiguous, or output changes for a deployment working today | **park** |
+| A fix needs a **stack deploy** and `deploysAuthorized` is false | **park**, and note which other parked items one deploy would cover |
+| Two agents' changes conflict in a way that needs a **design call** | **park the later one**, let the first land |
+| A **merge conflict outside `CHANGELOG.md`** that is not mechanical | **park**, re-dispatch on a fresh base if the conflict was staleness |
+| An **externally-reported issue whose fix touches a protected surface** from section 0b | **park** with the issue's `author_association`, the surface, and the change it argues for |
+| An **agent reports the same finding twice after two review rounds** without converging | **park** — a third round is usually an issue that needs a decision and is getting iteration instead |
+| **`develop` goes red** | **not a halt: it is the top-priority work item.** Fix it on `develop` as its own PR, because everything downstream inherits it and a red `develop` makes every branch's checks unreadable |
+| **`loopReady` is empty** | the triage pass below, not a stop |
+
+**Two conditions genuinely halt the run**, and only these two. Write the reason into
+`halted`, report it, and stop dispatching:
+
+- **Disk or memory pressure you cannot relieve** by clearing worktrees. Nothing
+  downstream can be trusted through a swap-thrashing host — see the memory note in
+  section 5, where a run lost 145 minutes and then a batch to exactly this.
+- **A judgement of your own you cannot defend from a measurement.** This is the one
+  class no control here catches, it does not self-correct, and continuing produces
+  work that has to be reverted.
+
+Parking is bounded by one rule: **a parked item must leave behind an answerable
+question.** If you cannot write the question, the options and a recommendation into
+the issue, you have not understood it well enough to park it — work it or say at the
+check-in that you could not.
 
 An issue whose **premise is false** is not a halt: retract it on the issue in your
 own words, re-rank, and continue. Do not work it, and do not leave a stale title
@@ -1225,6 +1383,20 @@ permanent, and in the state file, which is resumable.
   wrong answer because it wrote a key at the wrong nesting level (#1134).
 - **A green CI mark can be stale.** GitHub never re-runs a PR's workflows when
   the base moves, and the merge guard cannot see a run that never happened.
+- ⚠️ **A mocked paginator never terminates, and the cost lands on the host rather
+  than on the test.** `MagicMock` auto-creates any attribute, so a
+  `LastEvaluatedKey` read on one is truthy forever. A reviewer's probe built this
+  way reached **79 GB resident** and froze the whole host for 145 minutes. See the
+  memory note in section 5 and the `ulimit` rule in section 2.
+- ⚠️ **A hung agent and a frozen host are indistinguishable from inside the
+  session.** Under swap thrash a `sleep 240` returns `waited` with exit 0 after 145
+  minutes, five agents go quiet at once, and nothing in any transcript reports an
+  error. `free -g` and `dmesg | grep oom-kill` are the only place the cause exists,
+  which is why the memory watchdog is a standing child and not a diagnostic you
+  reach for afterwards.
+- ⚠️ **A turn that ends with nothing tracked ends the run**, and it looks exactly
+  like a turn that ended because the work was done. Five and a half hours were lost
+  to one of these. Name the live child before ending a turn.
 
 ---
 
@@ -1242,7 +1414,11 @@ Three further coordinator errors are recorded here because each survived every
 code-level control and was caught only by the user asking a plain question:
 
 - **Idling the loop during a promotion CI wait**, having read "wait for its checks" as
-  "stop". Nothing was wrong with any gate; the run simply stopped producing.
+  "stop". Nothing was wrong with any gate; the run simply stopped producing. The
+  mechanism is worth separating from the misreading, because the misreading is what a
+  rule can fix and the mechanism is not: the wait was expressed by **ending the turn**,
+  which in this harness is indistinguishable from finishing. The gate had gone green 28
+  minutes in and the session sat for 5 h 32 m.
 - **Reporting a policy as working from a quiet interval** rather than from an audit.
   Filing had gone to zero for two hours and then produced eight issues in ninety
   seconds; the audit that would have caught it costs one API call.
@@ -1262,6 +1438,18 @@ mechanical state; it does not preserve why a ranking was chosen, what an agent
 was told, or a decision's reasoning. A resumed loop is correct but shallower than
 one that never compacted. Prefer finishing a cycle and handing over to a fresh
 session over letting one session run through several compactions.
+
+**The liveness invariant keeps the loop running; it does not keep the session
+alive.** A tracked child re-invokes you when it finishes, which covers every wait the
+loop creates itself. It does not cover the session being interrupted, the process
+being restarted, or an agent dying without a notification — and the obvious remedy,
+a timer that pings the session, is worse than the problem it solves here: the only
+two unsolicited prompts this session ever received killed every background agent it
+had. So an external keep-alive is not a substitute for the invariant, and if one is
+ever added it has to be established first — on a throwaway session holding a
+throwaway agent — that an injected prompt leaves background agents alive. Until then
+the recovery from a dead session is a human noticing, and what makes that cheap is
+the state file plus the journals, not a heartbeat.
 
 **It does not bound review quality.** A nested reviewer that reads the diff and
 agrees costs the same as one that re-runs every mutation, and only the second is
