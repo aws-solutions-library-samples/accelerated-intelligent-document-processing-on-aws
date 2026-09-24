@@ -931,6 +931,22 @@ thirty minutes whether or not anything else happens:
 > State the two numbers in the check-in — `fixers 2/4, queue 5` — so an underrun is
 > visible as a number rather than as an absence.
 
+⚠️ **This is a floor on intent, not an override of the load guard in section 5 — read
+one without the other and the fix for under-dispatching becomes a cause of
+over-dispatching.** Measure load at the moment you dispatch, and if it already exceeds
+`nproc`, dispatch **what fits**, lower each agent's `PYTEST_PARALLEL` accordingly, tell
+them to run targeted tests first and defer the full suite, and record the rest as
+**deferred rather than satisfied** so the next heartbeat picks it up. Observed working:
+with a whole-tree battery running and load at 16 on 16 cores, two fixers at `-n 2` was
+the right answer where four at `-n 4` would have been the rule read literally.
+
+⚠️ **And measure it yourself, at that moment.** A load average quoted from earlier is
+the same defect as a gate figure quoted without its base commit — it is a number whose
+basis has gone. Measured here: 5.85 three minutes after a whole-tree battery started,
+**16.22** once it had ramped, from the same host and the same run; a dispatch decision
+taken on the first figure would have been taken against a host that no longer existed.
+`uptime` costs nothing; a stale reading of it costs an oversubscribed host.
+
 ⚠️ **Nothing about a merge or an integration run is a reason to hold fixer dispatch.**
 The merge lane is serial because merges invalidate each other's conflict resolution;
 the fix lane is not, and the two are independent. A batch integration takes 40–60
