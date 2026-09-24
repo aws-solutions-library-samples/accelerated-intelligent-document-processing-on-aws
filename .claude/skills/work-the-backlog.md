@@ -132,8 +132,10 @@ done
 echo "HEARTBEAT: 30 min elapsed, ${a}G available"
 ```
 
-It does two jobs with one child. On a `HEARTBEAT` return, run the sweep below and
-either resume dispatch or report why you are idle. On a `MEMORY LOW` return, act
+It does two jobs with one child. On a `HEARTBEAT` return, run the sweep below, then
+**assert fixer occupancy and dispatch the shortfall** — the rule is in section 3, it is
+the loop's throughput control, and this is the only thing that fires reliably enough to
+carry it. On a `MEMORY LOW` return, act
 before the host freezes — section 5 has what that costs. **Start a replacement each
 time it returns**, so the switch is never unarmed.
 
@@ -911,6 +913,36 @@ yours to resolve at merge time rather than theirs.
 When an agent's PR merges, dispatch the next item on the ranked list
 immediately. Keep exactly N in flight.
 
+### N counts fixers only, and occupancy is asserted rather than remembered
+
+**Merge agents, integration agents, triage agents and reviewers do not count toward
+N.** They are not the loop's throughput, they are its overhead, and counting them is
+how a run ends up at a quarter capacity while every individual decision looks
+reasonable. Measured: one three-hour window ran **one agent at a time** — two merge
+agents and a triage agent in sequence, then an integration agent — on a host at load
+5.85 of 16 cores with 56 GB free, with five workable issues sitting undispatched. The
+run was not stalled and not waiting for anything; it had simply stopped refilling.
+
+So the occupancy rule hangs off the heartbeat child in section 0, which returns every
+thirty minutes whether or not anything else happens:
+
+> **On every heartbeat return: count fixer agents in flight. If that count is below
+> `n` and `ranked` is non-empty, dispatch the difference before doing anything else.**
+> State the two numbers in the check-in — `fixers 2/4, queue 5` — so an underrun is
+> visible as a number rather than as an absence.
+
+⚠️ **Nothing about a merge or an integration run is a reason to hold fixer dispatch.**
+The merge lane is serial because merges invalidate each other's conflict resolution;
+the fix lane is not, and the two are independent. A batch integration takes 40–60
+minutes and a promotion's CI another 25–35, so treating either as a barrier idles the
+loop for over an hour per batch — which is the same mistake as idling during a
+promotion wait, in the one place the skill did not spell it out.
+
+The honest limit on N is not the merge lane, it is **rebase debt**: every fixer branch
+is cut from `backlog/staging`, staging moves when the merge lane lands something, and
+each concurrent fixer is one more branch that may need a rebase before it merges. That
+is what bounds N at around 6 here, not caution about the merge order.
+
 **Re-rank and re-classify every time, and include the issues this run's own
 reviews filed.** They are queue entries, not results — the run is not done while
 one is open — and being recent, specific and already measured they usually outrank
@@ -1305,7 +1337,9 @@ above would have been caught by the first question on its first asking.
 The check-in reports, briefly: what merged and the measured numbers; what reviews
 found that you did not expect; **every judgement call you made that could
 reasonably have gone the other way**; tokens spent this cycle and in total;
-the worktree assertion from section 5 as a number — registered under your prefix
+**fixer occupancy against N and the queue depth as two numbers** (`fixers 2/4, queue
+5`), since an underrun is otherwise invisible; the worktree assertion from section 5 as
+a number — registered under your prefix
 against live agents, and how many you removed — plus any foreign worktree worth
 escalating; disk state; **progress against the `goal`, not against the total open
 count**; the `composition` split with the previous cycle's beside it so the trend is visible;
