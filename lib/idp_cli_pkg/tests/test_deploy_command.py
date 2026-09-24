@@ -28,15 +28,15 @@ operation instantly; region/template-URL resolution must be observed *without*
 letting CloudFormation try to fetch a real ``https://`` template; and the
 ``--from-code`` build is a subprocess in the SDK.
 
-Two of the tests below pin behaviour that is wrong on purpose. The
-``--parameters`` regex at ``cli.py:896`` drops a pair written with a space before
-the ``=`` and mangles a key containing ``_``; both are issue #1220, both are
-currently silent, and both are asserted here as they behave today so that fixing
-them is a deliberate act that turns these tests red rather than an accident.
+``--parameters`` is parsed by ``idp_cli.parameters.parse_parameters``, and the
+shapes it used to mis-read in silence — a space before the ``=``, an underscore in
+the key, an ``=`` inside the value — are asserted here at the submitted-request
+level as well as on the parsed dict in ``test_parse_parameters.py``. Each of those
+produced a deploy that *succeeded* with the wrong parameter set, which is why the
+assertions are on what CloudFormation received (issue #1220).
 """
 
 import json
-import re
 import time
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -372,29 +372,29 @@ class TestTags:
         assert api_calls.of("CreateStack") == []
 
 
-class TestTheParametersRegexIsDefective:
-    """``--parameters`` is parsed by a regex that silently mis-reads two shapes.
+class TestParametersReachCloudFormationAsTyped:
+    """``--parameters`` shapes that used to be mis-read without saying anything.
 
-    ``cli.py:896`` uses::
-
-        ([A-Za-z][A-Za-z0-9]*)=((?:(?![A-Za-z][A-Za-z0-9]*=).)*)
-
-    with ``re.finditer``, so anything the pattern does not match is not an error
-    — it is simply absent from the parsed dict, and nothing warns. Both
-    consequences below are issue #1220. The tests assert today's wrong behaviour
-    deliberately: fixing the regex should turn them red and be a considered
-    change, not something that slips in.
+    Three of them, all issue #1220, and the reason they are asserted here as well
+    as in ``test_parse_parameters.py`` is that the parsed dict is not the
+    observable: what matters is the parameter set the request carried. Each defect
+    produced a **successful** deploy — a dropped pair leaves the publish-time
+    default in place, a mangled key submits a name the operator never typed — and
+    afterwards ``describe_stacks`` cannot tell either apart from a deliberate
+    choice, because CloudFormation fills every unsubmitted parameter in from the
+    template.
     """
 
-    def test_a_space_before_the_equals_silently_parses_nothing(
+    def test_a_space_before_the_equals_submits_the_pair_it_was_written_as(
         self, api_calls, cfn_template_file
     ):
-        """DEFECT (#1220): ``--parameters "MaxConcurrentWorkflows = 200"`` is ignored.
+        """``--parameters "MaxConcurrentWorkflows = 200"`` raises the limit.
 
-        ``finditer`` finds no match at all, ``additional_params`` stays empty, the
-        deploy proceeds, and no warning is printed. The user believes they raised
-        the concurrency limit; the stack keeps the publish-time default. The only
-        signal is in the CloudFormation console afterwards.
+        It previously matched nothing at all: the deploy proceeded, the stack kept
+        the publish-time default, and the only signal was in the CloudFormation
+        console afterwards. Spacing a pair out for readability is an ordinary
+        thing to type, so it is read as the pair it plainly is — and said so, in
+        case the spacing was a symptom of something else.
         """
         with mock_aws():
             result = _deploy(
@@ -410,25 +410,53 @@ class TestTheParametersRegexIsDefective:
                 REGION,
             )
         assert result.exit_code == 0, result.output
-        submitted = _explicit(api_calls.only("CreateStack"))
-        assert submitted == {"AdminEmail": EMAIL}, (
-            "pinning the defect: the space-separated pair matched nothing, so "
-            f"nothing was submitted for it. Got {submitted}"
-        )
-        assert "MaxConcurrentWorkflows" not in result.output
+        assert _explicit(api_calls.only("CreateStack")) == {
+            "AdminEmail": EMAIL,
+            "MaxConcurrentWorkflows": "200",
+        }
+        assert "whitespace" in result.output
 
-    def test_an_underscore_in_a_key_submits_a_parameter_the_user_never_named(
+    def test_an_underscored_key_is_submitted_as_the_operator_wrote_it(
         self, api_calls, cfn_template_file
     ):
-        """DEFECT (#1220): ``Log_Level=DEBUG`` is submitted as ``Level=DEBUG``.
+        """``Log_Level=DEBUG`` no longer becomes ``Level=DEBUG``.
 
-        ``_`` is not in the key character class, so the match starts after it and
-        the leading ``Log`` is discarded. The observable consequence is worse than
-        a dropped parameter: a real parameter name is sent that the user did not
-        write, and if the template happens to declare it the value lands on the
-        wrong setting. Here the template does not declare ``Level``, so
-        CloudFormation rejects the whole create with "Parameters: [Level] do not
-        exist in the template" — accurate about a name the user never typed.
+        The truncation was the worse half of the two silent shapes: a dropped
+        parameter leaves a default in place, but a real parameter name the operator
+        never wrote lands a value on whatever setting happens to carry that name.
+        """
+        with mock_aws():
+            result = _deploy(
+                "--stack-name",
+                STACK,
+                "--admin-email",
+                EMAIL,
+                "--parameters",
+                "Log_Level=DEBUG",
+                "--template-file",
+                cfn_template_file(extra_parameters=("Log_Level",)),
+                "--region",
+                REGION,
+            )
+        assert result.exit_code == 0, result.output
+        submitted = _explicit(api_calls.only("CreateStack"))
+        assert submitted == {"AdminEmail": EMAIL, "Log_Level": "DEBUG"}
+        assert "Level" not in submitted
+
+    def test_a_truncated_key_is_no_longer_applied_to_a_parameter_that_exists(
+        self, api_calls, cfn_template_file
+    ):
+        """The consequence, against a template that *does* declare ``Level``.
+
+        CloudFormation parameter names are alphanumeric, so ``Log_Level`` cannot be
+        a real one — which is the point. The template here declares ``Level``, and
+        what matters is that nothing is submitted for it: a setting the operator
+        never named is no longer configured behind their back.
+
+        The exit code is deliberately not asserted. Real CloudFormation refuses a
+        parameter the template does not declare, naming ``Log_Level`` — the string
+        that was actually typed — but moto accepts it, so the exit code here would
+        measure the test double rather than the fix.
         """
         with mock_aws():
             result = _deploy(
@@ -443,23 +471,75 @@ class TestTheParametersRegexIsDefective:
                 "--region",
                 REGION,
             )
-        assert result.exit_code == 0, result.output
         submitted = _explicit(api_calls.only("CreateStack"))
-        assert submitted == {"AdminEmail": EMAIL, "Level": "DEBUG"}, (
-            "pinning the defect: the key was truncated to 'Level' and submitted "
-            f"anyway. Got {submitted}"
-        )
-        assert "LogLevel" not in submitted
-        assert "Log_Level" not in submitted
+        assert "Level" not in submitted
+        assert submitted == {"AdminEmail": EMAIL, "Log_Level": "DEBUG"}, result.output
+
+    def test_an_equals_inside_a_value_stays_in_the_value(
+        self, api_calls, cfn_template_file
+    ):
+        """A federation metadata URL with a query string, the documented shape.
+
+        ``docs/external-idp.md`` passes ``ExternalIdPMetadataURL`` straight through
+        this flag, and an identity provider that serves its metadata from a query
+        string used to lose everything from the ``?`` onwards *and* have two
+        parameters invented from the query — neither of which the template
+        declares, so the whole create failed naming keys nobody typed.
+        """
+        url = "https://idp.example.invalid/md?id=a1&v=2"
+        with mock_aws():
+            result = _deploy(
+                "--stack-name",
+                STACK,
+                "--admin-email",
+                EMAIL,
+                "--parameters",
+                f"ExternalIdPMetadataURL={url}",
+                "--template-file",
+                cfn_template_file(extra_parameters=("ExternalIdPMetadataURL",)),
+                "--region",
+                REGION,
+            )
+        assert result.exit_code == 0, result.output
+        assert _explicit(api_calls.only("CreateStack")) == {
+            "AdminEmail": EMAIL,
+            "ExternalIdPMetadataURL": url,
+        }
+
+    def test_text_that_forms_no_pair_is_reported_rather_than_dropped(
+        self, api_calls, cfn_template_file
+    ):
+        """``--parameters "JustAKey"`` submits nothing for it, and says so.
+
+        This one is deliberately *not* a refusal. Exiting non-zero here would be a
+        change to what the command accepts, and scripts pass this flag; printing
+        what was not understood closes the half that matters, which is that the
+        operator could not tell an ignored flag from a working one.
+        """
+        with mock_aws():
+            result = _deploy(
+                "--stack-name",
+                STACK,
+                "--admin-email",
+                EMAIL,
+                "--parameters",
+                "JustAKey",
+                "--template-file",
+                cfn_template_file(),
+                "--region",
+                REGION,
+            )
+        assert result.exit_code == 0, result.output
+        assert _explicit(api_calls.only("CreateStack")) == {"AdminEmail": EMAIL}
+        assert "JustAKey" in result.output
 
     def test_a_value_containing_commas_survives_intact(
         self, api_calls, cfn_template_file
     ):
-        """What the regex is FOR: a subnet list is one value, not three pairs.
+        """What the pair-boundary rule is FOR: a subnet list is one value.
 
-        This is the case that motivated the lookahead — splitting on every comma
-        would turn ``SubnetIds=subnet-a,subnet-b`` into a parameter whose value is
-        one subnet and a nonsense pair after it.
+        Kept alongside the three corrections above because the ``=``-in-value fix
+        changes where a pair *ends*, which is the same question this depends on.
         """
         with mock_aws():
             result = _deploy(
@@ -1750,21 +1830,24 @@ class TestTheCommandSurface:
 
         assert {p.name for p in deploy.params if p.required} == {"stack_name"}
 
-    def test_the_parameters_regex_is_the_one_these_tests_pin(self):
-        """Guard the premise of the two #1220 tests above.
+    def test_parameters_are_parsed_by_the_shared_parser_and_not_here(self):
+        """``deploy`` owns no grammar of its own.
 
-        They assert a consequence of one specific pattern. If the pattern is
-        changed the consequence may no longer follow, and a reader needs to be
-        sent here rather than left puzzled by a passing test that no longer
-        measures anything.
+        The command used to carry the ``--parameters`` pattern inline, and so did
+        ``idp-feature-cli deploy-pack``; the same three defects reached both
+        because there were two copies and nothing compared them. Re-inlining a
+        regex here would restore exactly that, and it would do so invisibly — the
+        tests above would still pass against a second implementation that happened
+        to agree on the cases they name.
         """
         import inspect
 
+        from idp_cli import parameters as parameters_module
+
+        assert cli_module.parse_parameters is parameters_module.parse_parameters
         source = inspect.getsource(cli_module.deploy.callback)
-        assert r"([A-Za-z][A-Za-z0-9]*)=((?:(?![A-Za-z][A-Za-z0-9]*=).)*)" in source, (
-            "the --parameters pattern changed; re-check the two #1220 pins above"
+        assert "parse_parameters(" in source
+        assert "re.finditer" not in source, (
+            "the --parameters grammar belongs in idp_cli/parameters.py, which is "
+            "kept byte-identical with the Feature Platform SDK's copy"
         )
-        # And the two shapes, measured on the pattern directly.
-        pattern = r"([A-Za-z][A-Za-z0-9]*)=((?:(?![A-Za-z][A-Za-z0-9]*=).)*)"
-        assert re.findall(pattern, "MaxConcurrentWorkflows = 200") == []
-        assert re.findall(pattern, "Log_Level=DEBUG") == [("Level", "DEBUG")]

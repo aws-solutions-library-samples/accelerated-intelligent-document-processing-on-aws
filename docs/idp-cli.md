@@ -328,7 +328,13 @@ idp-cli deploy [OPTIONS]
   v0.4.11) — enable it in the Web UI under **Configuration → Assessment & HITL
   Configuration**, or in the config YAML passed to `--custom-config`. The flag is
   still accepted as `false` so existing scripts keep working.
-- `--parameters`: Additional parameters as `key=value,key2=value2`
+- `--parameters`: Additional CloudFormation parameters as `key=value,key2=value2`. A
+  new pair starts only at a comma followed by `key=`, so a value may itself contain
+  commas (`SubnetIds=subnet-a,subnet-b`) and `=` signs (a metadata URL with a query
+  string, a base64 value). Whitespace around the `=` and around each pair is ignored.
+  Anything the CLI cannot read as a pair is printed back to you and not submitted —
+  it is never dropped in silence, because a parameter that never reached
+  CloudFormation is indistinguishable afterwards from one left at its default.
 - `--tags`: Stack tags as `key=value,key2=value2`. CloudFormation applies these to the stack and propagates them to all taggable resources and nested stacks — useful for governance/ownership (e.g. `Owner`, `Team`, `Environment`). See [Resource tagging](#resource-tagging) below.
 - `--wait`: Wait for stack operation to complete
 - `--no-rollback`: Disable rollback on stack creation failure

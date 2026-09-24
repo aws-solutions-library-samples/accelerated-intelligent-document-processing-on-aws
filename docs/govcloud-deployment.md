@@ -68,9 +68,11 @@ before processing documents: `amazon.nova-lite-v1:0`, `amazon.nova-pro-v1:0`,
 > with `--bucket-basename` and `--prefix`.
 
 > **Note on `--parameters` formatting**: Commas inside multi-value parameters
-> (like `PrivateSubnetIds`) don't need escaping — the CLI parses
-> `--parameters` by looking for the next `key=` pattern, so commas within
-> values are preserved automatically.
+> (like `PrivateSubnetIds`) don't need escaping — a new pair starts only at a
+> comma followed by `key=`, so commas within values are preserved
+> automatically. An `=` inside a value needs no escaping either, and whitespace
+> around the `=` is ignored. Anything the CLI cannot read as a pair is printed
+> back to you rather than skipped.
 
 ## Keeping the Web UI in GovCloud: `--govcloud`
 
