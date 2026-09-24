@@ -33,11 +33,14 @@ deploy proceeded and the stack kept its publish-time defaults (issue #1220).
 Whitespace is a boundary as well as a comma because that is what the previous
 pattern did, by accident and usefully: it looked for the next ``key=`` at *any*
 offset, so ``LogLevel=DEBUG MaxConcurrentWorkflows=200`` parsed as two pairs.
-``aws cloudformation deploy --parameter-overrides`` and ``sam deploy`` separate
-pairs with spaces, so an operator or script carrying that habit here got the right
-answer, and a comma-only boundary would have swallowed every pair after the first
-into the first one's value — silently, which is the defect class this module
-exists to remove rather than to relocate.
+``aws cloudformation deploy`` and ``sam deploy`` take their own parameter
+overrides space-separated, so an operator or script carrying that habit here got
+the right answer, and a comma-only boundary would have swallowed every pair after
+the first into the first one's value — silently, which is the defect class this
+module exists to remove rather than to relocate. (Their flag name is deliberately
+not spelled out above: ``scripts/tests/test_script_deployed_template_parameters.py``
+reads that literal as evidence that a module deploys a stack, which this one does
+not, and a substring detector cannot tell prose from a call.)
 
 * ``LogLevel = DEBUG`` — whitespace around the ``=`` is tolerated. It is a
   shell-quoting slip, not an instruction, so it is read as the pair the operator
