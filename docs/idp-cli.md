@@ -333,13 +333,16 @@ idp-cli deploy [OPTIONS]
   list, as `aws cloudformation deploy --parameter-overrides` takes, also works), and
   everything up to the next pair is one value — so a value may itself contain commas
   (`SubnetIds=subnet-a,subnet-b`) and `=` signs (a metadata URL with a query string,
-  a base64 value). Whitespace around the `=` is ignored. Anything the CLI cannot read
-  as a pair is printed back to you rather than passing unremarked: text before the
-  first pair is named and nothing is submitted for it, and a value that looks like it
-  swallowed a pair — a key with a character CloudFormation does not allow, or pairs
-  separated with `;` or `|` — is named together with the parameter it landed in. The
+  a base64 value). Whitespace around the `=` is ignored. Two things it cannot read as
+  a pair are printed back to you rather than passing unremarked: text before the first
+  pair, which is named and not submitted, and a value that looks like it swallowed a
+  pair — a key holding a character CloudFormation does not allow, or pairs separated
+  with `;`, `|` or a stray backslash — which is named together with the parameter it
+  landed in, since a value may contain commas and so cannot be split back apart. The
   reason for the noise is that a parameter which never reached CloudFormation is
-  indistinguishable afterwards from one deliberately left at its default.
+  indistinguishable afterwards from one deliberately left at its default. Pairs
+  separated with `&` or `?` are the one case read silently as a value, because that is
+  exactly what a query string looks like.
 - `--tags`: Stack tags as `key=value,key2=value2`. CloudFormation applies these to the stack and propagates them to all taggable resources and nested stacks — useful for governance/ownership (e.g. `Owner`, `Team`, `Environment`). See [Resource tagging](#resource-tagging) below.
 - `--wait`: Wait for stack operation to complete
 - `--no-rollback`: Disable rollback on stack creation failure

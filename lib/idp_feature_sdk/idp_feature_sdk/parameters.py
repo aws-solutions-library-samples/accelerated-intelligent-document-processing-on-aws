@@ -69,7 +69,7 @@ silence, in the two places it can appear. Before the first pair (``JustAKey``,
 ``=value``, ``Log-Level=DEBUG``) it is left out of the result. *Inside* a value it
 cannot be — a value may contain commas, so there is no way to tell a swallowed
 pair from the value the operator meant — and what is reported there is a
-separator followed by something ending in ``=``, which is how a key
+separator followed by something shaped like a key and an ``=``, which is how a key
 CloudFormation would not accept (``,Log-Level=TRACE``) and a pair separated with
 ``;``, ``|`` or a stray backslash both look from inside a value.
 
@@ -91,13 +91,23 @@ __all__ = ["PARAMETERS_SYNTAX_HINT", "parse_parameters"]
 #: and the character class is CloudFormation's parameter-name alphabet plus ``_``.
 _PAIR_START = re.compile(r"(?:\A|[,\s])\s*(?P<key>[A-Za-z_][A-Za-z0-9_]*)\s*=")
 
-#: A separator and an ``=`` left *inside* a parsed value. Reaching here means the
-#: text was not a pair — its key holds a character CloudFormation does not allow,
-#: or the pairs were separated with something that is neither a comma nor
-#: whitespace. Deliberately narrow: ``?`` and ``&`` are absent, so a query string
-#: (``?id=a&v=2``) is a value rather than a warning, which is the shape #1220's
-#: third defect was about.
-_SWALLOWED_PAIR = re.compile(r"[,;|\\][^,;|]*=")
+#: A separator followed by something shaped like an attempted key and an ``=``,
+#: left *inside* a parsed value. Reaching here means the text was not a pair — its
+#: key holds a character CloudFormation does not allow, or the pairs were
+#: separated with something that is neither a comma nor whitespace.
+#:
+#: Narrow in two directions, both measured. ``?`` and ``&`` are absent from the
+#: separator class, so a query string (``?id=a&v=2``) is a value rather than a
+#: warning — that shape is #1220's third defect, and a pair genuinely separated
+#: with ``&`` is textually indistinguishable from it. And the text between the
+#: separator and the ``=`` must look like a key someone meant to type, which is
+#: what keeps a JSON value (``{"n":2,"expr":"a=y"}``), a comma inside a URL
+#: (``?ids=a,b&v=2``), an inequality (``x>1,y<=2``) and a regex (``a\d+=b``) quiet
+#: while still catching ``,Log-Level=``, ``,1Level=``, ``;B=``, ``|B=`` and
+#: ``\B=``. The residue it cannot separate is an LDAP-style DN whose attribute
+#: type is hyphenated or dotted (``cn=A,x-custom=B``), which is character for
+#: character the shape of a mistyped key.
+_SWALLOWED_PAIR = re.compile(r"[,;|\\]\s*[A-Za-z0-9_][A-Za-z0-9_.\-]*\s*=")
 
 #: Quoted back to the operator whenever something was not understood.
 PARAMETERS_SYNTAX_HINT = "expected key=value,key2=value2"

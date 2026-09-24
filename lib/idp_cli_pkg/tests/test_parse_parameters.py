@@ -256,13 +256,19 @@ class TestWhatTheOperatorIsTold:
             " LogLevel=DEBUG ",
             "Log_Level=DEBUG",
             "LogLevel=DEBUG MaxConcurrentWorkflows=200",
-            # The false-positive set for the swallowed-pair check: each of these
-            # values legitimately carries a separator, an `=`, or both.
+            # The false-positive set for the swallowed-pair check. Each of these
+            # values carries BOTH a separator character and a later `=`, which is
+            # what it takes to constrain that check at all: a value with only one
+            # of the two cannot produce the warning however wide the pattern gets,
+            # so it would sit here looking like a guard and measuring nothing.
+            'Cfg={"n":2,"expr":"a=y"}',
+            'Policy={"Effect":"Allow","Condition":{"StringEquals":{"k":"a=b"}}}',
+            "MetadataURL=https://idp.example.invalid/md?ids=a,b&v=2",
+            "MetadataURL=https://idp.example.invalid/a,b/md?appid=x",
+            "Expr=x>1,y<=2",
+            "Regex=a\\d+=b",
             "Url=https://idp.example.invalid/md?id=a1&v=2",
-            "Secret=YW+j/ZA==",
-            'Policy={"Version":"2012-10-17","Statement":[{"Effect":"Allow"}]}',
-            "Attr=http://schemas.xmlsoap.org/claims/Group",
-            "SubnetIds=subnet-a,subnet-b,subnet-c",
+            "Cmd=echo a; echo b",
         ],
     )
     def test_input_that_parsed_cleanly_says_nothing(
@@ -283,10 +289,19 @@ class TestWhatTheOperatorIsTold:
                 ",Log-Level=",
             ),
             ("A=1,1Level=x", {"A": "1,1Level=x"}, ",1Level="),
-            # A separator that is neither a comma nor whitespace.
+            ("A=1,a.b=c", {"A": "1,a.b=c"}, ",a.b="),
+            # A separator that is neither a comma nor whitespace. Each character in
+            # the class gets its own case: with a comma present as well, the match
+            # is found through the comma — leftmost wins — and the arm under test
+            # is never reached, which left the backslash arm unmeasured.
             ("A=1;B=2", {"A": "1;B=2"}, ";B="),
             ("A=1|B=2", {"A": "1|B=2"}, "|B="),
-            ("A=1,\\B=2", {"A": "1,\\B=2"}, ",\\B="),
+            ("A=1\\B=2", {"A": "1\\B=2"}, "\\B="),
+            # A comma and a backslash together: the backslash is what matches, since
+            # the text after the comma has to look like an attempted key and a
+            # backslash does not. So the comma arm is exercised by the three cases
+            # above rather than by this one.
+            ("A=1,\\B=2", {"A": "1,\\B=2"}, "\\B="),
         ],
     )
     def test_a_value_that_looks_like_it_swallowed_a_pair_is_named(
@@ -307,6 +322,20 @@ class TestWhatTheOperatorIsTold:
         # doubled — compare against the same rendering rather than the raw string.
         assert repr(named)[1:-1] in collected[0]
         assert next(iter(expected)) in collected[0], "the key it landed in"
+
+    def test_the_two_shapes_the_swallowed_pair_check_cannot_separate(self) -> None:
+        """Its residue, pinned so that closing it is a deliberate act.
+
+        An LDAP-style distinguished name whose attribute type is hyphenated or
+        dotted is character for character the shape of a mistyped key, so it warns
+        although the value is exactly what was meant. And a pair genuinely
+        separated with ``&`` or ``?`` is indistinguishable from a query string, so
+        it stays silent — deliberately, because the query string is both far more
+        likely and the shape #1220's third defect was about.
+        """
+        assert self._warnings("Group=cn=A,x-custom=B"), "warns, and cannot not"
+        assert self._warnings("A=1&B=2") == [], "silent, and cannot not be"
+        assert parse_parameters("A=1&B=2") == {"A": "1&B=2"}
 
     def test_a_value_that_reads_as_a_second_pair_is_not_silent_about_it(self) -> None:
         """The one ambiguity the whitespace tolerance introduces, pinned.

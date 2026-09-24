@@ -71,8 +71,9 @@ before processing documents: `amazon.nova-lite-v1:0`, `amazon.nova-pro-v1:0`,
 > (like `PrivateSubnetIds`) don't need escaping — a new pair starts at a comma or
 > whitespace followed by `key=`, so commas within values are preserved
 > automatically. An `=` inside a value needs no escaping either, and whitespace
-> around the `=` is ignored. Anything the CLI cannot read as a pair is printed
-> back to you rather than passing unremarked.
+> around the `=` is ignored. Text before the first pair that forms no pair, and a
+> value that looks like it swallowed one, are both printed back to you rather than
+> passing unremarked — see [`--parameters`](./idp-cli.md#deploy) for the detail.
 
 ## Keeping the Web UI in GovCloud: `--govcloud`
 
