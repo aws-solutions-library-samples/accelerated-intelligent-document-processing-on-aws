@@ -725,7 +725,6 @@ classes:
           labeled 'notes', 'remarks', or 'comments'.
 extraction:
   top_p: "0.0"
-  max_tokens: '4096'
   top_k: '5'
   task_prompt: >
     <background>

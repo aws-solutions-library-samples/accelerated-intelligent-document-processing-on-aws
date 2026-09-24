@@ -36,6 +36,8 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import cache_audit  # noqa: E402
 import real_corpus_ab as rc  # noqa: E402
 
+import lib  # noqa: E402
+
 
 def _sign_p(better, worse):
     n = better + worse
@@ -142,7 +144,17 @@ def main():
                 g.worse += 1
             else:
                 g.same += 1
-        g.cost.append(rc._cost(ib) - rc._cost(ia))
+        # `_cost` returns (cost, unpriced_reason) for the same reason `_score` returns
+        # an unread reason: a document carrying metering `pricing.yaml` cannot price
+        # has no cost delta to contribute, and a partial one is below truth by a
+        # different amount in each arm — which moves this class's delta in an unknown
+        # direction, not merely by an unknown amount (#1146).
+        cb, pb = rc._cost(ib)
+        ca, pa = rc._cost(ia)
+        if pa or pb:
+            unread_notes.append(f"{doc} [{cls}] cost: {pa or pb}")
+        elif cb is not None and ca is not None:
+            g.cost.append(cb - ca)
         ra, rb = rows_a.get(doc), rows_b.get(doc)
         if ra and rb:
             g.cr.append(rb["cacheReadInputTokens"] - ra["cacheReadInputTokens"])
@@ -153,9 +165,9 @@ def main():
     print(f"paired non-failed documents: {sum(g.n for g in by_class.values())}\n")
     if unread_notes:
         print(
-            f"⚠ {len(unread_notes)} document(s) contribute no accuracy delta because a "
-            "read FAILED, not because they scored nothing — the per-class figures "
-            "below are over the remainder:"
+            f"⚠ {len(unread_notes)} document(s) contribute no delta because a read "
+            "FAILED or a cost could not be priced, not because they measured nothing "
+            "— the per-class figures below are over the remainder:"
         )
         for note in unread_notes[:5]:
             print(f"    {note}")
@@ -173,13 +185,17 @@ def main():
         cost = _paired(g.cost)
         cr = statistics.fmean(g.cr) if g.cr else 0
         inp = statistics.fmean(g.inp) if g.inp else 0
+        # The t statistics are formatted BEFORE the f-string, through the one
+        # helper. Nested inside it they were two more sites that could raise on a
+        # null t, and the two here were the ones a regex-shaped guard did not see.
+        acc_t, cost_t = lib.format_t(acc and acc[2]), lib.format_t(cost and cost[2])
         print(
             f"{cls[:27]:28} {grp:>4} {g.n:>4} "
             f"{(f'{acc[0]:+.4f}' if acc else '—'):>9} "
-            f"{(f'{acc[2]:+.2f}' if acc and acc[2] is not None else '—'):>6} "
+            f"{acc_t:>6} "
             f"{_sign_p(g.better, g.worse):>7.3f} "
             f"{(f'{cost[0]:+.5f}' if cost else '—'):>10} "
-            f"{(f'{cost[2]:+.2f}' if cost and cost[2] is not None else '—'):>7} "
+            f"{cost_t:>7} "
             f"{cr:>+9,.0f} {inp:>+9,.0f}"
         )
         out[cls] = {
@@ -207,13 +223,18 @@ def main():
         w = sum(by_class[c].worse for c in keys)
         ndocs = sum(by_class[c].n for c in keys)
         print(f"\n{label} pooled ({len(keys)} classes, {ndocs} docs)")
+        # `t` is null when the paired deltas have zero spread — two arms agreeing
+        # exactly on every document is enough. Formatted through the one helper and
+        # BEFORE the f-string, so that a rule about f-strings can be absolute.
+        pooled_acc_t = lib.format_t(s_acc and s_acc[2])
+        pooled_cost_t = lib.format_t(s_cost and s_cost[2])
         if s_acc:
             print(
-                f"  accuracy Δ {s_acc[0]:+.4f}  sd {s_acc[1]:.4f}  t {s_acc[2]:+.2f}  "
+                f"  accuracy Δ {s_acc[0]:+.4f}  sd {s_acc[1]:.4f}  t {pooled_acc_t}  "
                 f"n={s_acc[3]}   better {b} / worse {w}  sign p={_sign_p(b, w):.4f}"
             )
         if s_cost:
-            print(f"  cost Δ     {s_cost[0]:+.5f}  t {s_cost[2]:+.2f}  n={s_cost[3]}")
+            print(f"  cost Δ     {s_cost[0]:+.5f}  t {pooled_cost_t}  n={s_cost[3]}")
 
     if a.json:
         json.dump(out, open(a.json, "w"), indent=2)

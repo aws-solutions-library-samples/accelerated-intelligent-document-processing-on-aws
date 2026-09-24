@@ -587,12 +587,18 @@ def validate_config(
         - errors: List[str] - validation errors if any
         - warnings: List[str] - validation warnings
         - merged_config: Dict - the merged config (if valid)
+        - ignored_keys: List[Dict] - one {path, kind, suggestion} per key the
+          configuration models will not read, at any depth. The same findings the
+          warnings above describe in prose, in the form a caller can act on: this is
+          what `idp-cli config-validate --strict` keys on, and what the SDK's
+          `deprecated_fields` / `unknown_fields` are built from.
     """
     result = {
         "valid": True,
         "errors": [],
         "warnings": [],
         "merged_config": None,
+        "ignored_keys": [],
     }
 
     # Check pattern is valid
@@ -602,6 +608,28 @@ def validate_config(
             f"Invalid pattern '{pattern}'. Valid patterns: {VALID_PATTERNS}"
         )
         return result
+
+    # Keys the models will drop, at every depth. Reported against the config as
+    # SUBMITTED rather than against `merged`, so every path named is one the author
+    # actually wrote and can go and fix — which is the whole value of catching it
+    # here, while they are still present, rather than in a Lambda log later.
+    #
+    # ⚠️ Above the two failure returns below, and that position is the point. This
+    # asks a question about the submitted document alone: it needs neither `merged`
+    # nor a successful `model_validate`, and it is the ONLY reporter of an unread key
+    # that `idp-cli config-validate` and `idp_sdk`'s `validate` have — both consume
+    # `ignored_keys` rather than computing a set difference of their own. Called after
+    # those returns, it produced nothing whenever validation failed, so neither of
+    # them said anything at all about an unread key for an invalid configuration.
+    # That is the reader who needs it most: a key at the wrong depth is accepted in
+    # silence while its correctly-nested sibling raises (`ocr.dpi: "abc"` versus
+    # `ocr.image.dpi: "abc"`), so "the models will not read `ocr.dpi`, did you mean
+    # `ocr.image.dpi`?" is frequently the explanation for the error printed beside it.
+    #
+    # The pattern check stays above this one: a bad pattern name is a fault in the
+    # call rather than in the document, and there is no document question worth
+    # answering until it names a real pattern.
+    _validate_ignored_keys(config, result)
 
     # Try to merge with defaults
     try:
@@ -641,6 +669,70 @@ def validate_config(
     _validate_pipeline_hook_reachability(merged, result)
 
     return result
+
+
+def _validate_ignored_keys(config: Dict[str, Any], result: Dict[str, Any]) -> None:
+    """Warn about every key in a submitted config that the models will not read.
+
+    A warning rather than an error, matching what ``IDPConfig`` does with the same
+    keys: they are dropped, not rejected, so a configuration that deploys today
+    still validates. What changes is that the author is told, at the one moment
+    fixing a typo is cheap, and told *where* — the dotted path, plus the declared
+    field the key most plausibly meant when there is one.
+
+    **Every depth, and this is now the only reporter at any of them.** ``idp_cli``'s
+    ``config-validate`` and ``idp_sdk``'s ``ConfigOperation.validate`` each used to
+    compute their own top-level extras as
+    ``set(config) - set(IDPConfig.model_fields)``, which put two differently-worded
+    warnings about one key in front of the same reader and — because a raw set
+    difference knows nothing about the tree — told the operator that two keys the
+    loader honours would be ignored: ``description``, which
+    ``update_configuration`` pops and stores, and ``rule_classes``, which is renamed
+    to ``policy_classes`` on load. Both now consume these findings instead, so the
+    knowledge that fixes those two lives in one place that production code can read.
+
+    The findings are also returned structurally as ``result["ignored_keys"]``, which
+    is what ``--strict`` keys on: its contract is about top-level fields and is left
+    exactly as it was, deliberately, because widening it would fail configurations
+    that pass today.
+
+    The migration chain runs first, on a copy — defensively: measured today,
+    ``migrate_config`` returns new containers and mutates nothing, so dropping the
+    copy changes no behaviour and no input can tell the difference. The property
+    worth keeping is that a caller's configuration dict is an input rather than
+    scratch space, and that is what the test asserts. A legacy-shaped key is relocated on
+    load rather than dropped — ``extraction.agentic.validation`` becomes
+    ``extraction.validation`` — so reporting it against the pre-migration shape
+    would name a key that works as one that does not. The cost is one duplicated
+    ``Migrated config ...`` line at INFO on this path for a legacy config, since the
+    validation above migrates the merged copy for its own purposes; the alternative
+    is asking this question of the merged configuration, which would attribute a
+    system default's key to the author.
+    """
+    from idp_common.config.migrations import migrate_config
+    from idp_common.config.models import IDPConfig, collect_ignored_config_keys
+
+    findings = collect_ignored_config_keys(
+        migrate_config(deepcopy(config)), IDPConfig, include_top_level=True
+    )
+    result["ignored_keys"] = [
+        {"path": f.path, "kind": f.kind, "suggestion": f.suggestion} for f in findings
+    ]
+    for finding in findings:
+        if finding.kind == "deprecated":
+            result["warnings"].append(
+                f"Deprecated configuration key '{finding.path}' is no longer used "
+                "and will be ignored"
+            )
+        else:
+            hint = (
+                f" Did you mean '{finding.suggestion}'?" if finding.suggestion else ""
+            )
+            result["warnings"].append(
+                f"Unknown configuration key '{finding.path}' is not defined in the "
+                "configuration model and will be ignored, leaving the default in "
+                f"force.{hint}"
+            )
 
 
 def _validate_pipeline_hook_reachability(
@@ -1444,7 +1536,7 @@ def _validate_simple_integrated_lists(
     so at config time is free. A hard error would wedge a stored config that
     validated yesterday (the rollback trap), so this is a warning only.
 
-    Surfaces wherever `validate_config` runs: `idp-cli config validate` and the SDK
+    Surfaces wherever `validate_config` runs: `idp-cli config-validate` and the SDK
     validate operation. The web UI does NOT validate on save; its Prompt Preview
     pane shows the same decision per class.
     """

@@ -212,39 +212,21 @@ class ConfigOperation:
 
         result = validate_config(user_config, pattern=pattern)
 
-        # Enhancement 3: detect deprecated and unknown fields
-        deprecated_fields: list = []
-        unknown_fields: list = []
+        # Keys the configuration models will not read, at every depth, as found by
+        # validate_config. Computing `set(config) - set(IDPConfig.model_fields)` here
+        # instead — which this did — reports every key IDPConfig does not declare, so
+        # it named two the loader honours: `description`, which update_configuration
+        # pops and stores, and `rule_classes`, which is renamed to `policy_classes`.
+        # It also saw only the top level, where a typo is least likely. The warnings
+        # already carry these findings in prose, with the path and, where there is
+        # one, the field the key was meant to be.
         errors = list(result.get("errors", []))
         warnings = list(result.get("warnings", []))
-
-        try:
-            from idp_common.config.models import IDP_CONFIG_DEPRECATED_FIELDS, IDPConfig
-
-            defined_fields = set(IDPConfig.model_fields.keys())
-            user_fields = (
-                set(user_config.keys()) if isinstance(user_config, dict) else set()
-            )
-            extra_fields = user_fields - defined_fields
-
-            deprecated_fields = sorted(extra_fields & IDP_CONFIG_DEPRECATED_FIELDS)
-            unknown_fields = sorted(extra_fields - IDP_CONFIG_DEPRECATED_FIELDS)
-
-            # Add informational warnings for deprecated / unknown fields
-            for field in deprecated_fields:
-                warnings.append(
-                    f"Deprecated field '{field}' found — it will be ignored by the pipeline"
-                )
-            for field in unknown_fields:
-                warnings.append(
-                    f"Unknown field '{field}' found — it is not part of the IDPConfig schema"
-                )
-
-        except ImportError:
-            # If idp_common.config.models is not available, skip the check gracefully
-            logger.warning(
-                "Could not import IDP_CONFIG_DEPRECATED_FIELDS — skipping deprecated field check"
-            )
+        ignored = result.get("ignored_keys", [])
+        deprecated_fields = sorted(
+            f["path"] for f in ignored if f["kind"] == "deprecated"
+        )
+        unknown_fields = sorted(f["path"] for f in ignored if f["kind"] == "unknown")
 
         return ConfigValidationResult(
             valid=result["valid"],
@@ -726,6 +708,16 @@ class ConfigOperation:
         name = self._client._require_stack(stack_name)
         self._configure_config_env(name)
 
+        # Bound here, before the try, rather than beside the other BDA locals inside
+        # it: the handler of last resort below has to be able to name it, and a local
+        # first assigned inside the try is unbound for every exception raised before
+        # that point — a `NameError` from inside an exception handler replaces the error
+        # the caller actually needs to see.
+        bda_service = None
+        bda_orphaned_arns: list = []
+        bda_classes_synced = 0
+        bda_classes_failed = 0
+
         try:
             os.environ["STACK_NAME"] = name
             from idp_common.config.configuration_manager import ConfigurationManager
@@ -751,8 +743,13 @@ class ConfigOperation:
             )
 
             bda_synced = False
-            bda_classes_synced = 0
-            bda_classes_failed = 0
+            # `bda_classes_synced`, `bda_classes_failed`, `bda_orphaned_arns` and
+            # `bda_service` are bound before the try above. The orphan list holds
+            # blueprints the sync took out of the project but could not delete: they
+            # belong to no class, so they are absent from the per-class status list and
+            # do not count as a class failure, and they are reported so that a caller
+            # told the activation succeeded — or that it failed — also learns that
+            # cleanup is outstanding.
 
             if use_bda:
                 logger.info(
@@ -791,15 +788,27 @@ class ConfigOperation:
 
                     bda_classes_synced = len(sync_succeeded)
                     bda_classes_failed = len(sync_failed)
+                    bda_orphaned_arns = list(bda_service.orphaned_blueprint_arns)
+                    if bda_orphaned_arns:
+                        logger.error(
+                            "BDA sync left %d orphaned blueprint(s) in the account; "
+                            "run the orphaned-blueprint cleanup to remove them: %s",
+                            len(bda_orphaned_arns),
+                            bda_orphaned_arns,
+                        )
 
                     if bda_classes_synced == 0 and bda_classes_failed > 0:
-                        # Total failure — abort activation
+                        # Total failure — abort activation. The orphan list is carried
+                        # here too: the deletes run whatever happened to the classes,
+                        # so this is the outcome most likely to have left one, and it
+                        # is also the one where nothing else in the result mentions it.
                         return ConfigActivateResult(
                             success=False,
                             activated_version=config_version,
                             bda_synced=False,
                             bda_classes_synced=0,
                             bda_classes_failed=bda_classes_failed,
+                            bda_orphaned_blueprint_arns=bda_orphaned_arns,
                             error="BDA sync failed for all classes — activation aborted",
                         )
                     elif bda_classes_failed > 0:
@@ -822,12 +831,19 @@ class ConfigOperation:
 
                 except Exception as bda_exc:
                     logger.error("BDA blueprint sync raised an exception: %s", bda_exc)
+                    # Read the orphans off the service rather than trusting the local:
+                    # the deletes happen before the last two steps of a sync, both of
+                    # which can raise, so a sync that never returned may still have
+                    # left one — and in that case the local is untouched.
+                    if bda_service is not None:
+                        bda_orphaned_arns = list(bda_service.orphaned_blueprint_arns)
                     return ConfigActivateResult(
                         success=False,
                         activated_version=config_version,
                         bda_synced=False,
                         bda_classes_synced=bda_classes_synced,
                         bda_classes_failed=bda_classes_failed,
+                        bda_orphaned_blueprint_arns=bda_orphaned_arns,
                         error=f"BDA sync error: {bda_exc}",
                     )
 
@@ -840,6 +856,7 @@ class ConfigOperation:
                 bda_synced=bda_synced,
                 bda_classes_synced=bda_classes_synced,
                 bda_classes_failed=bda_classes_failed,
+                bda_orphaned_blueprint_arns=bda_orphaned_arns,
             )
 
         except IDPResourceNotFoundError:
@@ -847,9 +864,20 @@ class ConfigOperation:
         except IDPProcessingError:
             raise
         except Exception as e:
+            # `manager.activate_version()` is outside the inner BDA handler, so a
+            # throttle or a denial on that write lands here — after a sync that may
+            # already have left a blueprint orphaned. Read the orphans off the service
+            # for the same reason the inner handler does, and carry the class counts
+            # too: a result that reports 0 synced and 0 failed after a sync that ran is
+            # a third wrong answer.
+            if bda_service is not None:
+                bda_orphaned_arns = list(bda_service.orphaned_blueprint_arns)
             return ConfigActivateResult(
                 success=False,
                 activated_version=config_version,
+                bda_classes_synced=bda_classes_synced,
+                bda_classes_failed=bda_classes_failed,
+                bda_orphaned_blueprint_arns=bda_orphaned_arns,
                 error=str(e),
             )
 
@@ -930,6 +958,8 @@ class ConfigOperation:
         name = self._client._require_stack(stack_name)
         self._configure_config_env(name)
 
+        bda_service = None
+
         try:
             os.environ["STACK_NAME"] = name
             from idp_common.bda.bda_blueprint_service import BdaBlueprintService
@@ -978,6 +1008,18 @@ class ConfigOperation:
 
             classes_synced = len(sync_succeeded)
             classes_failed = len(sync_failed)
+            # Blueprints removed from the project that could not then be deleted. Not
+            # a class failure — they belong to no class and every class may have
+            # synced — so they are reported alongside the result rather than folded
+            # into `classes_failed`, which would misreport a class as unsynced.
+            orphaned_arns = list(bda_service.orphaned_blueprint_arns)
+            if orphaned_arns:
+                logger.error(
+                    "BDA sync left %d orphaned blueprint(s) in the account; run the "
+                    "orphaned-blueprint cleanup to remove them: %s",
+                    len(orphaned_arns),
+                    orphaned_arns,
+                )
 
             # Update BDA project ARN status
             if classes_synced > 0 and classes_failed == 0:
@@ -992,6 +1034,7 @@ class ConfigOperation:
                 classes_synced=classes_synced,
                 classes_failed=classes_failed,
                 processed_classes=processed_names,
+                orphaned_blueprint_arns=orphaned_arns,
                 error=f"{classes_failed} class(es) failed to sync"
                 if classes_failed > 0
                 else None,
@@ -999,9 +1042,26 @@ class ConfigOperation:
 
         except Exception as e:
             logger.error(f"BDA sync failed: {e}")
+            # A sync that raised may still have deleted — or failed to delete —
+            # blueprints: the deletes happen before the last two steps, both of which
+            # can raise. So the orphans are read here as well, off the service, since
+            # a raise means the normal return path did not run.
+            failed_orphans = (
+                list(bda_service.orphaned_blueprint_arns)
+                if bda_service is not None
+                else []
+            )
+            if failed_orphans:
+                logger.error(
+                    "The failed BDA sync left %d orphaned blueprint(s) in the "
+                    "account; run the orphaned-blueprint cleanup to remove them: %s",
+                    len(failed_orphans),
+                    failed_orphans,
+                )
             return ConfigSyncBdaResult(
                 success=False,
                 direction=direction,
                 mode=mode,
+                orphaned_blueprint_arns=failed_orphans,
                 error=str(e),
             )

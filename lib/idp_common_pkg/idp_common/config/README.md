@@ -64,6 +64,102 @@ if not result["valid"]:
         print("ERROR:", err)
 ```
 
+### A key no field matches is reported, at every depth
+
+⚠️ **Of the models reachable from `IDPConfig`, three take `extra="allow"`, none
+takes `extra="forbid"`, and every other one takes Pydantic's default
+`extra="ignore"`.** So a key no field matches is **dropped during validation**, and
+the setting the author believes they changed simply is not set — which is
+indistinguishable from a working configuration, because the shipped default is in
+force and the run completes.
+
+That scope is exactly `IDPConfig`'s tree. This module holds three other root
+models: `PricingConfig` and `ModelConfigLimitsConfig` take `extra="forbid"` (they
+raise, which is better than reporting) and `SchemaConfig` takes `extra="allow"`.
+But `ModelLimitEntry`, nested inside `ModelConfigLimitsConfig`, takes the default,
+so a mistyped key in a per-model limit row is still dropped in silence —
+[#1211](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/1211).
+The walk below takes any root model, so covering that is a call site.
+
+`IDPConfig.log_deprecated_fields` reports those keys. It walks the whole model
+tree, so a key at any depth is named with its **dotted path**:
+
+```
+IDPConfig: Ignoring unknown nested fields (not defined in model, so the shipped
+default stays in force): extraction.validation.enabld (did you mean
+extraction.validation.enabled?), ocr.dpi (did you mean ocr.image.dpi?)
+```
+
+`validate_config()` puts the same findings in `result["warnings"]`, which is where
+`idp-cli config-validate` shows them — the moment a typo is cheap to fix — and in
+`result["ignored_keys"]` as `{path, kind, suggestion}` for a caller that needs to act
+rather than print. `idp-cli` and `idp_sdk` both consume those, so **this is the only
+reporter at any depth**. Each used to compute its own top-level extras as
+`set(config) - set(IDPConfig.model_fields)`, which said two keys the loader honours
+would be ignored — `description`, which `update_configuration` pops and stores, and
+`rule_classes`, which is renamed to `policy_classes` — and, once the library began
+reporting too, said everything else twice.
+
+`config-validate --strict` keeps its contract of failing on a **top-level** extra
+only. Extending it downwards would fail configurations that pass today, in the one
+flag built for a pipeline; the nested finding is reported either way.
+
+**It reports; it does not reject.** `extra` is unchanged on every model, so a
+stored configuration that loads today still loads. Rejecting would refuse
+configurations that work, and would need a migration story for every key a later
+version removes.
+
+The walk is `models.collect_ignored_config_keys(data, model)`, and it is public
+because two gates ask the same question of shipped files —
+`scripts/tests/test_preset_keys_are_read.py` over `config_library/`, and
+`tests/unit/config/test_unknown_nested_keys.py` over the merged defaults. Both
+call it rather than reimplementing the resolution, so neither can drift from what
+a load actually drops.
+
+Three things to know before using it:
+
+- **Migrate first.** A legacy key is *relocated* on load, not dropped —
+  `extraction.agentic.validation` becomes `extraction.validation` — so against a
+  pre-migration dict the walk reports a key that works. The model validator runs
+  after `migrations.migrate_config` for that reason; `validate_config` migrates a
+  copy before asking.
+- **Two things are deliberately not unknown**, and both are read off the models
+  rather than listed. A field whose annotation names no model is a free-form
+  document whose keys are the author's (`classes`, `policy_classes`, a hook's
+  `args`), so the walk does not enter it. A model with `extra="allow"` *keeps* an
+  undeclared key, so nothing is dropped and there is nothing to report.
+- ⚠️ **One thing is a gap rather than a decision:** a field whose annotation names
+  *more than one* model — a discriminated union — is not entered, because nothing
+  in the annotation says which member a value is, and keys in there **are** dropped.
+  No field in the tree is shaped that way today, and
+  `test_no_field_in_the_tree_holds_a_model_the_walk_declines_to_enter` fails when one
+  appears, because otherwise the guarantee narrows silently: the models the walk
+  reaches would stop including that subtree and every derived parametrisation would
+  shrink with it.
+- **One path is suppressed**, `discovery.output_format`, a dead knob this repository
+  ships in its own system defaults. The reasoning, the ratchets and why it is not in
+  `scripts/tests/gate_exemptions.json` are written at
+  `SUPPRESSED_IGNORED_KEY_PATHS`.
+- **The mis-nested case is the sharp one.** `dpi` is a real field of
+  `ImageConfig`; written as `ocr.dpi` it is dropped, and `ImageConfig`'s
+  validator never runs — so `ocr.dpi: "abc"` is accepted in silence while
+  `ocr.image.dpi: "abc"` raises. When you probe this config tree, assert the
+  value **arrived** (`cfg.ocr.image.dpi == expected`), never that construction
+  succeeded.
+- **A suggestion is offered only when it is the only answer.** First the wrong-depth
+  question, read outwards from where the key was written — the written prefix, then
+  its parent, stopping at the first level with any candidate — which answers both
+  directions: `ocr.dpi` → `ocr.image.dpi` and `ocr.image.backend` → `ocr.backend`.
+  Within that level the shallowest candidate wins if it is alone there, and a tie
+  declines: `enabled` is declared at eight places one level under `extraction`, so
+  `extraction.enabled` gets no hint, and `hitl.model` reaches the root to find eleven
+  and declines rather than answering with `classification.model`. Failing that, a
+  close name among the **siblings** (`enabld` → `enabled`). A wrong path is worse
+  than none: it sends the author to edit something correct. A list step is spelled
+  `ocr.postHook[].arn` — notation, since the dotted form is not a path — and a
+  mapping subtree gets findings but no suggestions, because a suggestion there would
+  have to invent a key name.
+
 ## Files
 
 | File | Purpose |
