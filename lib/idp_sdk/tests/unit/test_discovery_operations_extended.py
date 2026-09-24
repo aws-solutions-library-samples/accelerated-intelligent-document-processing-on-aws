@@ -51,12 +51,6 @@ from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import boto3
-
-# pypdfium2, not pypdf: the production code under test (`ClassesDiscovery`) reads
-# PDFs with pypdfium2, so it is a declared dependency of `idp_common_pkg[all]` and
-# is present wherever this suite runs. `pypdf` is in no first-party requirement,
-# so importing it here passed on a developer machine that happened to have it and
-# failed collection in CI, taking the whole idp_sdk suite with it.
 import pypdfium2 as pdfium
 import pytest
 from moto import mock_aws
@@ -128,6 +122,16 @@ def discovery_env(monkeypatch):
 
 
 def _pdf(pages: int) -> bytes:
+    """A blank multi-page PDF, built with the library production already uses.
+
+    `pypdfium2` rather than `pypdf`: it is a declared dependency of
+    `lib/idp_common_pkg` and is what `discovery.py` itself slices pages with, so
+    this fixture needs nothing installed that the code under test does not. `pypdf`
+    happens to be importable on a developer machine as somebody else's transitive
+    dependency and is declared nowhere, which is green locally and
+    `ModuleNotFoundError` in CI. Choosing the declared one also keeps the licence
+    decision that moved this repo off AGPL-licensed PyMuPDF intact.
+    """
     document = pdfium.PdfDocument.new()
     for _ in range(pages):
         document.new_page(200, 200)
@@ -136,16 +140,22 @@ def _pdf(pages: int) -> bytes:
     return buffer.getvalue()
 
 
-def _page_count(data: bytes) -> int:
-    return len(pdfium.PdfDocument(io.BytesIO(data)))
+#: A minimal valid 1x1 PNG, written out byte for byte.
+#:
+#: Literal rather than generated with Pillow: these tests only need "a file that is
+#: not a PDF", and Pillow is declared in `lib/idp_common_pkg`'s extras rather than in
+#: `idp_sdk`'s, so whether it is importable depends on which extras the installing CI
+#: chose. A fixture that needs a dependency the tree does not guarantee is a test that
+#: passes on one machine and errors on another, for reasons unrelated to what it asserts.
+_PNG_1X1 = bytes.fromhex(
+    "89504e470d0a1a0a0000000d4948445200000001000000010802000000907753"
+    "de0000000c49444154789c63f8ffff3f0005fe02fe0def46b80000000049454e"
+    "44ae426082"
+)
 
 
 def _png() -> bytes:
-    from PIL import Image
-
-    buffer = io.BytesIO()
-    Image.new("RGB", (4, 4), "white").save(buffer, format="PNG")
-    return buffer.getvalue()
+    return _PNG_1X1
 
 
 def _converse_response(text: str) -> dict:
@@ -731,7 +741,7 @@ class TestRunLocal:
         sent = client.invoke_model.call_args.kwargs["content"][0]["document"]["source"][
             "bytes"
         ]
-        assert _page_count(sent) == 2
+        assert len(pdfium.PdfDocument(io.BytesIO(sent))) == 2
         assert sent != document.read_bytes()
 
     def test_a_page_range_on_a_non_pdf_is_ignored_rather_than_refused(self, tmp_path):
