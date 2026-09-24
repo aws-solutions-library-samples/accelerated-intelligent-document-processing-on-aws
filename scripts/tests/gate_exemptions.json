@@ -100,6 +100,21 @@
     "            'nobody is working on it', which is itself information."
   ],
   "exemptions": {
+    "lib/idp_common_pkg/tests/unit/config/test_record_root_unknown_keys.py::REACHED": {
+      "kind": "enforced-universe",
+      "memberKind": "a (record root, nested model) pair, with the field-name/shape route from the root to it",
+      "turnsOff": "nothing. It is the universe the parametrised tests in that file are driven over -- every configuration record root ConfigurationManager.save_configuration accepts, and every model reachable from each by annotation -- so a member being in it is what makes that member asserted about, not what excuses it.",
+      "premise": [
+        "JUDGEMENT"
+      ],
+      "ratchet": "universe-closure",
+      "ratchetEvidence": "lib/idp_common_pkg/tests/unit/config/test_record_root_unknown_keys.py",
+      "issues": [
+        1211
+      ],
+      "reason": "Discovered through the prose route, on a comment saying IDPConfig is 'deliberately not excluded' from this list -- which reads as an exclusion decision and is the opposite one: IDPConfig is kept in so the property is asserted for every record root rather than only the ones that lacked it. There is no member the list omits by choice, because membership is not authored at all: roots come from typing.get_type_hints on save_configuration's `config` parameter and nested models from walking the annotations, so a record type or a nested model added later joins the universe without anyone editing this file. That derivation is why no predicate applies -- there is no per-member fact to compute when nothing is carved out -- and it is what a reviewer should check instead, by adding a root and watching the parametrisation grow. Registered rather than reworded because rewording the comment to slip past discovery is the failure mode this registry exists to prevent, and 'not an exemption at all' is a decision the registry is built to record.",
+      "ratchetGap": "The universe is closed over the field shapes _target resolves, which are the shapes the production walk resolves: a field whose annotation names more than one model (an Optional union of two models) resolves to no model in both, so such a subtree joins neither the enforced nor any exempt set and a key dropped inside it is reported by nothing. No field of that shape exists in any of the four root trees today; the equivalent gap in the IDPConfig tree is guarded by test_no_field_in_the_tree_holds_a_model_the_walk_declines_to_enter in test_unknown_nested_keys.py, and no such guard exists yet for the other three roots."
+    },
     ".ash/.ash.yaml::suppressions": {
       "kind": "exemption",
       "memberKind": "advisory id",

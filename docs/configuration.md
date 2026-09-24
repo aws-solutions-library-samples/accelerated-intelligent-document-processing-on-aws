@@ -261,6 +261,37 @@ free-form content whose names are yours to choose — your document `classes`, a
 pipeline hook's `args` — and the pipeline-hook blocks, which keep whatever they are
 given.
 
+#### Pricing and Model Limits are separate records, and they report the same way
+
+The **Pricing** and **View / Edit Model Limits** panels edit their own records
+rather than part of the configuration document, so the paragraphs above describe
+them too but the message names the record instead of the configuration:
+
+```
+ModelConfigLimitsConfig: Ignoring unknown nested fields (not defined in model, so
+the shipped default stays in force): model_limits[0].max_input_tokenz (did you mean
+model_limits[0].max_input_tokens?)
+```
+
+The list index is part of the path, so the line tells you which row to fix. Two
+things worth knowing about these two records specifically:
+
+- **A stray key at the top of the record is refused outright**, with a validation
+  error rather than a warning, because these records recognise only their own small
+  set of top-level keys. The warning above is for a key *inside* a row, which is
+  where the silent drop was: a row's own settings were accepted permissively, so a
+  misspelled `max_input_tokens` left the shipped context window for that model
+  family in force while the save reported success.
+- **A price belongs to a unit, not to the entry.** Writing `price` alongside `name`
+  and `units` on a pricing entry is the mis-nesting equivalent of `ocr.dpi`: it is
+  ignored, the shipped rate stays in force, and the cost figures carry on looking
+  plausible. The warning names `pricing[<n>].price` and points at
+  `pricing[].units[].price`.
+
+As with the configuration document, the finding appears at `WARNING` in the log
+group of whichever function loaded or saved the record — so search for `Ignoring`
+after editing either panel.
+
 ### Benefits
 
 - **Simpler configs** - Only specify what makes your use case unique
