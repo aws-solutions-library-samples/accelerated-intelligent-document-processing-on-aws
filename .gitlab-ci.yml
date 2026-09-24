@@ -558,14 +558,26 @@ dep_audit:
 # GitLab-only because the AWS credentials are here; the GitHub side would need
 # its own OIDC role).
 #
-# ⚠️ ONE TRIGGER, AND IT IS A BUTTON. `when: manual` on a non-Draft MR targeting
-# develop — nothing here runs automatically, and that is a cost decision made
-# against a measurement rather than a guess. Reviews are idempotent per HEAD SHA
-# (see ai_mr_review.py), so an automatic trigger re-reviews on every push: a
-# measured 5,400-line MR cost $6.12, and an MR pushed ten times during review
-# would have cost $10-60 for reviews of intermediate states nobody reads. A click
-# also puts a person at the start of every run, which matters because the review
-# reads author-controlled text.
+# ⚠️ AUTOMATIC on every push to a non-Draft MR targeting develop, and the thing to
+# understand about that is the cost. A review is a real Bedrock spend — $3.42
+# measured in CI on a 5,400-line MR, $6.12 for the same MR locally — and reviews
+# are idempotent per HEAD SHA, so a NEW push means a NEW paid review. Three
+# properties bound it, and all three have to stay:
+#   - `interruptible: true` — a push while a review is running cancels it, so a
+#     burst of pushes costs roughly one review rather than one per push. This is
+#     the main protection and it is easy to delete by accident.
+#   - idempotent per HEAD SHA — a re-run of the same pipeline posts nothing.
+#   - Draft MRs are excluded, so the WIP phase (where pushes are frequent) is free.
+# What is NOT bounded: pushes spaced further apart than a review takes (~9 min in
+# CI, of which ~3.5 is installing Node and the CLI). An MR revised over a week
+# pays per revision. If that becomes the dominant cost, the cheapest fix is a
+# cooldown in ai_mr_review.py (skip if the last review note is younger than N
+# hours) rather than going back to a manual button.
+#
+# The other consequence of automatic: no human is in the loop before a model reads
+# author-controlled text. That is why the tool sandbox is enforced by
+# --permission-mode in the argv rather than by a settings file — see the comment on
+# PERMISSION_MODE in ai_mr_review.py.
 #
 # NO SCHEDULED SWEEP, deliberately. The script supports one (`--all-open`, which
 # is what `make ai-mr-review` runs locally) and the script: block below still
@@ -597,14 +609,12 @@ ai_mr_review:
     - size:large
 
   rules:
-    # Non-Draft MRs targeting develop, as a MANUAL button on the MR page. Ordered
-    # before the catch-all so a Draft falls through to `never` rather than
-    # offering the button — a review posted on somebody's WIP is noise they did
-    # not ask for. `allow_failure: true` above is what keeps this manual job from
-    # blocking the pipeline while it sits un-clicked, which is the default for
-    # manual jobs.
+    # Non-Draft MRs targeting develop, automatically. Ordered before the catch-all
+    # so a Draft falls through to `never` — a review posted on somebody's WIP is
+    # noise they did not ask for, and the Draft phase is where pushes are
+    # frequent, so excluding it is a cost control as well as a courtesy.
     - if: $CI_MERGE_REQUEST_TARGET_BRANCH_NAME == "develop" && $CI_MERGE_REQUEST_TITLE !~ /^Draft:/
-      when: manual
+      when: on_success
     - when: never
 
   # Nothing to wait for: it reads the MR, not another job's artifacts. In

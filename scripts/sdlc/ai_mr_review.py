@@ -26,9 +26,10 @@ Three properties it is built around
    needs — see ``--help`` for the note on scoping that down.
 2. **It is idempotent per head SHA.** Every posted note carries a
    ``<!-- ai-review: ... -->`` marker naming the SHA and prompt revision it
-   reviewed. A re-run over the same head is a no-op. Note the converse, which is
-   why the CI job is a manual button: a new head means a new paid review, so an
-   automatic trigger charges for every push (a measured 5,400-line MR: $6.12).
+   reviewed. A re-run over the same head is a no-op. Note the converse: a new
+   head means a new PAID review, and the CI job triggers automatically, so what
+   bounds the cost of a push burst is `interruptible: true` on that job rather
+   than anything here. Measured on a 5,400-line MR: $3.42 in CI, $6.12 locally.
 3. **A skip is loud.** With no token, no ``claude`` binary or no Bedrock access
    it prints ``SKIPPED:`` and why, rather than exiting 0 with a clean-looking
    log. ``--fail-on-skip`` turns that into an error, which is how to run it once

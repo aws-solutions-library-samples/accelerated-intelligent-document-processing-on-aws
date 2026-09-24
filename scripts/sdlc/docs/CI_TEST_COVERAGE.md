@@ -194,7 +194,7 @@ GitHub's own Merge button runs no code from this tree.
 |-------|:---:|:---:|:---:|:---:|
 | Push to any branch, **no MR** | ✅ | — | — | — |
 | Push to branch with a **Draft** MR → `develop` | ✅ | — | ✅¹ | ▶️ **manual** (button on MR) |
-| Push to branch with a **non-Draft** MR → `develop` | ✅ | ▶️ **manual** (button on MR) | ✅¹ | ✅ auto¹ |
+| Push to branch with a **non-Draft** MR → `develop` | ✅ | ✅ auto | ✅¹ | ✅ auto¹ |
 | Push to **`develop`** | ✅ | — | ✅¹ | ✅ auto¹ |
 
 ¹ **Doc-only commits skip the deploy stages.** `deployment_validation` and the
@@ -217,14 +217,21 @@ model's opinion must not decide whether code merges, and a Bedrock throttle must
 not red-line an MR. It is **GitLab-only** because the AWS credentials are here; a
 GitHub equivalent would need its own OIDC role.
 
-⚠️ **It is a manual button, and the reason is measured cost.** Reviews are
-idempotent per head SHA, so an automatic trigger means a fresh paid review on
-every push: a 5,400-line MR measured **$6.12**, and an MR pushed ten times during
-review would cost $10–60 for intermediate states nobody reads. There is
-**no scheduled sweep** for the same reason, though the script supports one
-(`--all-open`); enabling it is a rule addition plus a schedule, and the cost note
-above the job in `.gitlab-ci.yml` is the thing to read first. The click is also
-the only human in the loop on a run that reads author-controlled text.
+⚠️ **It runs automatically, and it costs real money per run.** A 5,400-line MR
+measured **$3.42** in CI ($6.12 locally), and reviews are idempotent per head SHA,
+so a new push means a new paid review. Three things bound that and all three must
+stay: `interruptible: true` (a push mid-review cancels it, so a burst costs about
+one review rather than one per push — this is the main protection and it is one
+line), Draft MRs excluded (the WIP phase, where pushes are frequent, is free), and
+exactly one triggering rule with **no scheduled sweep** — the script supports one
+(`--all-open`) but enabling it applies the per-push multiplier to the whole open
+queue. The unbounded residual is pushes spaced further apart than a review takes
+(~9 min in CI); if that dominates, add a cooldown in `ai_mr_review.py` rather than
+reverting to a manual button. Pinned by
+`test_the_automatic_trigger_keeps_its_cost_bounds`.
+
+Automatic also means no human is in the loop before a model reads
+author-controlled text, which is why the sandbox note below matters.
 
 ⚠️ **The tool sandbox is enforced by `--permission-mode manual` in the argv, not
 by a settings file.** `--allowedTools` is *additive*, so a machine whose

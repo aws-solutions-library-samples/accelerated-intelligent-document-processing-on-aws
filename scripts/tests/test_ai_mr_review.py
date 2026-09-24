@@ -435,32 +435,43 @@ def test_the_ci_job_cannot_block_a_merge(ci_config: dict) -> None:
 
 
 @pytest.mark.unit
-def test_the_trigger_is_a_button_and_there_is_no_scheduled_sweep(
-    ci_config: dict,
-) -> None:
-    """Both halves of a cost decision taken against a measurement.
+def test_the_automatic_trigger_keeps_its_cost_bounds(ci_config: dict) -> None:
+    """Automatic review is affordable only because of three specific properties.
 
-    Reviews are idempotent per head SHA, so an **automatic** trigger reviews
-    again on every push. A measured 5,400-line MR cost $6.12; an MR pushed ten
-    times during review would have cost $10-60, nearly all of it for
-    intermediate states nobody reads. A scheduled sweep compounds the same
-    problem across every open MR.
+    A review is real Bedrock spend — $3.42 measured in CI on a 5,400-line MR —
+    and reviews are idempotent per head SHA, so a new push means a new paid
+    review. What keeps that from multiplying is:
 
-    So the trigger is `when: manual` and no schedule rule exists. Either drifting
-    back turns a per-click cost into a continuous one with nothing to notice it,
-    which is why this is pinned rather than left to the comment above the job.
-    The manual click is also the only human in the loop on a run that reads
-    author-controlled text.
+    1. ``interruptible: true`` — a push mid-review cancels the running job, so a
+       burst of pushes costs about one review instead of one per push. This is the
+       main protection, it is one line, and deleting it changes nothing visible
+       until the bill arrives.
+    2. Drafts excluded — the WIP phase, where pushes are frequent, is free.
+    3. Exactly one triggering rule, and no scheduled sweep. A sweep re-reviews
+       every open MR on every tick, which is the same multiplier applied to the
+       whole queue.
+
+    So all three are pinned here rather than left to the comment above the job.
+    The residual this cannot cover is stated in that comment: pushes spaced
+    further apart than a review takes.
     """
-    rules = ci_config["ai_mr_review"]["rules"]
+    job = ci_config["ai_mr_review"]
+    rules = job["rules"]
+
+    assert job.get("interruptible") is True, (
+        "ai_mr_review is no longer interruptible. With an automatic trigger that "
+        "means every push in a burst pays for its own full review instead of the "
+        "newer pipeline cancelling the older one."
+    )
+
     triggering = [r for r in rules if r.get("when") not in (None, "never")]
     assert len(triggering) == 1, (
-        f"ai_mr_review has {len(triggering)} triggering rules, not 1: {triggering}. "
-        f"A second trigger is how the per-push cost multiplier comes back."
+        f"ai_mr_review has {len(triggering)} triggering rules, not 1: {triggering}."
     )
-    assert triggering[0]["when"] == "manual", (
-        f"the trigger is {triggering[0]['when']!r}, not 'manual'. Automatic means a "
-        f"fresh paid review on every push to every open MR."
+    condition = triggering[0]["if"]
+    assert "!~ /^Draft:/" in condition, (
+        "the trigger no longer excludes Draft MRs, so the WIP phase — the part of "
+        "an MR's life with the most pushes — now pays for a review each time."
     )
     assert not any("schedule" in str(r.get("if", "")) for r in rules), (
         "a scheduled-sweep rule is back. It reviews every open MR on every tick; "
