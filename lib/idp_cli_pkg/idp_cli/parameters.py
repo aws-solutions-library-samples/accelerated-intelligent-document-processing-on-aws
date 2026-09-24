@@ -24,11 +24,20 @@ What the grammar has to do
 
 A value may legitimately contain a comma (a subnet or security-group list is the
 motivating case), so the string cannot simply be split on every comma. A new
-pair therefore starts only at a comma that is followed by ``<key> =``, and
-everything between two such boundaries is one value — commas, ``=`` signs and
-all. The three shapes below are the ones a naive reading gets wrong, and each was
-silently mis-parsed rather than rejected, which is worse: the deploy proceeded and
-the stack kept its publish-time defaults (issue #1220).
+pair therefore starts only at a comma **or whitespace** that is followed by
+``<key> =``, and everything between two such boundaries is one value — commas,
+``=`` signs and all. The three shapes below are the ones a naive reading gets
+wrong, and each was silently mis-parsed rather than rejected, which is worse: the
+deploy proceeded and the stack kept its publish-time defaults (issue #1220).
+
+Whitespace is a boundary as well as a comma because that is what the previous
+pattern did, by accident and usefully: it looked for the next ``key=`` at *any*
+offset, so ``LogLevel=DEBUG MaxConcurrentWorkflows=200`` parsed as two pairs.
+``aws cloudformation deploy --parameter-overrides`` and ``sam deploy`` separate
+pairs with spaces, so an operator or script carrying that habit here got the right
+answer, and a comma-only boundary would have swallowed every pair after the first
+into the first one's value — silently, which is the defect class this module
+exists to remove rather than to relocate.
 
 * ``LogLevel = DEBUG`` — whitespace around the ``=`` is tolerated. It is a
   shell-quoting slip, not an instruction, so it is read as the pair the operator
@@ -44,19 +53,26 @@ the stack kept its publish-time defaults (issue #1220).
 Ambiguity
 ---------
 
-"Values may contain commas" and "whitespace may surround the ``=``" cannot both
-be unconditional: in ``Note=hello, world = wide`` the text after the comma can be
-read either as more of the value or as a second pair, and this parser reads it as
-a second pair. That is the same trade the tight ``key=`` boundary already made
-for ``Note=hello,world=wide``, so the shape is not new — but it is the reason a
-pair written with whitespace around its ``=`` is reported through ``on_warning``
-rather than accepted in silence.
+"Values may contain commas and spaces" and "whitespace may surround the ``=``"
+cannot both be unconditional: in ``Note=hello, world = wide`` the text after the
+comma can be read either as more of the value or as a second pair, and this parser
+reads it as a second pair. That is the same trade the previous pattern already
+made for ``Note=hello,world=wide`` and ``Note=hello world=wide``, so the shape is
+not new — but it is the reason a pair written with whitespace around its ``=`` is
+reported through ``on_warning`` rather than accepted in silence.
 
-Anything that is not part of a pair (``JustAKey``, ``=value``, a key with a
-character CloudFormation does not allow in a parameter name, such as
-``Log-Level=DEBUG``) is reported through ``on_warning`` and left out of the
-result. Nothing here raises: refusing an invocation the previous parser accepted
-would break scripts, and every call site prints what it was told.
+Text that forms no pair is reported through ``on_warning`` rather than dropped in
+silence, in the two places it can appear. Before the first pair (``JustAKey``,
+``=value``, ``Log-Level=DEBUG``) it is left out of the result. *Inside* a value it
+cannot be — a value may contain commas, so there is no way to tell a swallowed
+pair from the value the operator meant — and what is reported there is a
+separator followed by something ending in ``=``, which is how a key
+CloudFormation would not accept (``,Log-Level=TRACE``) and a pair separated with
+``;``, ``|`` or a stray backslash both look from inside a value.
+
+Nothing here raises. Refusing an invocation the previous parser accepted would
+break scripts that run today, so every one of these is a printed warning and
+every call site prints what it was told.
 """
 
 from __future__ import annotations
@@ -66,11 +82,19 @@ from collections.abc import Callable
 
 __all__ = ["PARAMETERS_SYNTAX_HINT", "parse_parameters"]
 
-#: Where a pair begins: the start of the string, or a comma, followed by a key
-#: and its ``=``. The key is anchored to the boundary — it may not begin in the
-#: middle of a token, which is what truncated ``Log_Level`` to ``Level`` — and
-#: the character class is CloudFormation's parameter-name alphabet plus ``_``.
-_PAIR_START = re.compile(r"(?:\A|,)\s*(?P<key>[A-Za-z_][A-Za-z0-9_]*)\s*=")
+#: Where a pair begins: the start of the string, a comma, or whitespace, followed
+#: by a key and its ``=``. The key is anchored to the boundary — it may not begin
+#: in the middle of a token, which is what truncated ``Log_Level`` to ``Level`` —
+#: and the character class is CloudFormation's parameter-name alphabet plus ``_``.
+_PAIR_START = re.compile(r"(?:\A|[,\s])\s*(?P<key>[A-Za-z_][A-Za-z0-9_]*)\s*=")
+
+#: A separator and an ``=`` left *inside* a parsed value. Reaching here means the
+#: text was not a pair — its key holds a character CloudFormation does not allow,
+#: or the pairs were separated with something that is neither a comma nor
+#: whitespace. Deliberately narrow: ``?`` and ``&`` are absent, so a query string
+#: (``?id=a&v=2``) is a value rather than a warning, which is the shape #1220's
+#: third defect was about.
+_SWALLOWED_PAIR = re.compile(r"[,;|\\][^,;|]*=")
 
 #: Quoted back to the operator whenever something was not understood.
 PARAMETERS_SYNTAX_HINT = "expected key=value,key2=value2"
@@ -85,12 +109,13 @@ def parse_parameters(
 
     ``None`` and ``""`` both mean "no overrides" and give ``{}``. A repeated key
     takes its last value, so a scripted base set can be overridden by appending.
-    A single trailing separator is a paste artefact and is not kept in the value.
+    A trailing separator is a paste artefact and is not kept in the value.
 
     ``on_warning``, when given, is called once per thing worth telling the
-    operator: text that formed no pair at all, and pairs whose ``=`` was written
-    with whitespace around it. It is never called for input that parsed cleanly,
-    and nothing is raised in either case.
+    operator: text before the first pair that formed no pair at all, a value that
+    looks like it swallowed one, and pairs whose ``=`` was written with whitespace
+    around it. It is never called for input that parsed cleanly, and nothing is
+    raised in any of those cases.
     """
     if not parameters:
         return {}
@@ -110,9 +135,7 @@ def parse_parameters(
             spaced.append(key)
 
     if on_warning is not None:
-        # Text before the first pair belongs to no pair. Text *after* one is part
-        # of that pair's value by construction, because a value may contain
-        # commas, so there is nothing to report there.
+        # Text before the first pair belongs to no pair at all.
         unparsed = (parameters[: starts[0].start()] if starts else parameters).strip()
         unparsed = unparsed.strip(",").strip()
         if unparsed:
@@ -120,12 +143,24 @@ def parse_parameters(
                 f"ignoring {unparsed!r} in --parameters: "
                 f"{PARAMETERS_SYNTAX_HINT}. Nothing was submitted for it."
             )
+        # Text after the first pair is part of a value by construction. It cannot
+        # be taken out of one — a value may contain commas — so a value that looks
+        # like it swallowed a pair is named instead, with the key it landed in.
+        for key, value in parsed.items():
+            swallowed = _SWALLOWED_PAIR.search(value)
+            if swallowed:
+                on_warning(
+                    f"--parameters: {swallowed.group(0)!r} was read as part of the "
+                    f"value for {key}, not as another parameter. Separate pairs "
+                    "with a comma, and use only letters, digits and underscores "
+                    "in a key."
+                )
         if spaced:
             on_warning(
                 "--parameters: whitespace around '=' was ignored for "
                 + ", ".join(spaced)
-                + ". Note that a value containing ', <word> = ' is read as the "
-                "start of a new parameter rather than as part of the value."
+                + ". Note that a separator followed by '<word> =' is read as the "
+                "start of a new parameter rather than as part of a value."
             )
 
     return parsed

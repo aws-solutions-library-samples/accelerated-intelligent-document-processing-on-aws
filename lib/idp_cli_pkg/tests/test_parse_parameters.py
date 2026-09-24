@@ -123,6 +123,24 @@ CASES: list[tuple[str, str | None, dict[str, str]]] = [
         {"A": "1", "B": "2"},
     ),
     (
+        "SPACE-separated pairs, which is what `aws cloudformation deploy "
+        "--parameter-overrides` takes and what the previous pattern accepted here "
+        "by accident: a comma-only boundary swallows the second pair into the "
+        "first value, silently, which is this issue's own defect class",
+        "LogLevel=DEBUG MaxConcurrentWorkflows=200",
+        {"LogLevel": "DEBUG", "MaxConcurrentWorkflows": "200"},
+    ),
+    ("three space-separated pairs", "A=1 B=2 C=3", {"A": "1", "B": "2", "C": "3"}),
+    ("a tab separates pairs too", "A=1\tB=2", {"A": "1", "B": "2"}),
+    ("and a newline", "A=1\nB=2", {"A": "1", "B": "2"}),
+    (
+        "a backslash the shell passed through literally corrupts the value it ends "
+        "— which docs/idp-deployment-ai-guide.md documents as the symptom to look "
+        "for — and must not also cost the pairs after it",
+        "LogLevel=DEBUG,\\\nMaxConcurrentWorkflows=200",
+        {"LogLevel": "DEBUG,\\", "MaxConcurrentWorkflows": "200"},
+    ),
+    (
         "a repeated key takes its last value, so a scripted base set can be appended to",
         "LogLevel=INFO,LogLevel=DEBUG",
         {"LogLevel": "DEBUG"},
@@ -210,9 +228,20 @@ class TestWhatTheOperatorIsTold:
         assert "whitespace" in warnings[0]
 
     def test_every_spaced_key_is_named_in_one_message(self) -> None:
+        """One line for all of them, not one line per pair.
+
+        The parse is asserted alongside the message on purpose. A parser that
+        tolerated no whitespace at all also emits exactly one warning here — the
+        "formed no pair" one, which echoes the whole input and so contains the
+        letters ``A`` and ``B`` — so a message-only assertion would pass against
+        it.
+        """
+        assert parse_parameters("A = 1,B = 2,C=3") == {"A": "1", "B": "2", "C": "3"}
         warnings = self._warnings("A = 1,B = 2,C=3")
         assert len(warnings) == 1, warnings
-        assert "A" in warnings[0] and "B" in warnings[0]
+        assert "whitespace" in warnings[0]
+        assert "A, B" in warnings[0], "both spaced keys, and not the one that was not"
+        assert "C" not in warnings[0]
 
     @pytest.mark.parametrize(
         "parameters",
@@ -226,6 +255,14 @@ class TestWhatTheOperatorIsTold:
             "A=1,,B=2",
             " LogLevel=DEBUG ",
             "Log_Level=DEBUG",
+            "LogLevel=DEBUG MaxConcurrentWorkflows=200",
+            # The false-positive set for the swallowed-pair check: each of these
+            # values legitimately carries a separator, an `=`, or both.
+            "Url=https://idp.example.invalid/md?id=a1&v=2",
+            "Secret=YW+j/ZA==",
+            'Policy={"Version":"2012-10-17","Statement":[{"Effect":"Allow"}]}',
+            "Attr=http://schemas.xmlsoap.org/claims/Group",
+            "SubnetIds=subnet-a,subnet-b,subnet-c",
         ],
     )
     def test_input_that_parsed_cleanly_says_nothing(
@@ -233,6 +270,43 @@ class TestWhatTheOperatorIsTold:
     ) -> None:
         """A warning on every ordinary invocation is a warning nobody reads."""
         assert self._warnings(parameters) == []
+
+    @pytest.mark.parametrize(
+        ("parameters", "expected", "named"),
+        [
+            # A key with a character CloudFormation does not allow, after a pair
+            # that parsed. The comma cannot end the value — a value may contain
+            # commas — so the text stays in it and is named instead.
+            (
+                "LogLevel=DEBUG,Log-Level=TRACE",
+                {"LogLevel": "DEBUG,Log-Level=TRACE"},
+                ",Log-Level=",
+            ),
+            ("A=1,1Level=x", {"A": "1,1Level=x"}, ",1Level="),
+            # A separator that is neither a comma nor whitespace.
+            ("A=1;B=2", {"A": "1;B=2"}, ";B="),
+            ("A=1|B=2", {"A": "1|B=2"}, "|B="),
+            ("A=1,\\B=2", {"A": "1,\\B=2"}, ",\\B="),
+        ],
+    )
+    def test_a_value_that_looks_like_it_swallowed_a_pair_is_named(
+        self, parameters: str, expected: dict[str, str], named: str
+    ) -> None:
+        """The other half of "nothing is discarded in silence".
+
+        Each of these parsed as two pairs before the fix — with the first value
+        corrupted — and each is a shape the comma-or-whitespace boundary reads as
+        one value. It cannot be split back apart without breaking a value that
+        genuinely contains a comma, so the warning names the text *and* the
+        parameter it landed in, which is what an operator needs to act on it.
+        """
+        collected: list[str] = []
+        assert parse_parameters(parameters, on_warning=collected.append) == expected
+        assert len(collected) == 1, collected
+        # The message quotes the text with `!r`, so a literal backslash appears
+        # doubled — compare against the same rendering rather than the raw string.
+        assert repr(named)[1:-1] in collected[0]
+        assert next(iter(expected)) in collected[0], "the key it landed in"
 
     def test_a_value_that_reads_as_a_second_pair_is_not_silent_about_it(self) -> None:
         """The one ambiguity the whitespace tolerance introduces, pinned.

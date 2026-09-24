@@ -97,8 +97,13 @@ def test_the_vendored_copy_reads_the_three_shapes_correctly() -> None:
     assert vendored.parse_parameters("LogLevel = DEBUG") == {"LogLevel": "DEBUG"}
     assert vendored.parse_parameters("Log_Level=DEBUG") == {"Log_Level": "DEBUG"}
     assert vendored.parse_parameters("Query=a=b=c") == {"Query": "a=b=c"}
-    # And the property those three must not cost: a value may contain commas.
+    # And the two properties those three must not cost: a value may contain
+    # commas, and whitespace separates pairs as well as a comma does.
     assert vendored.parse_parameters("Ids=a,b,c,Vpc=v1") == {
         "Ids": "a,b,c",
         "Vpc": "v1",
+    }
+    assert vendored.parse_parameters("Log=DEBUG Max=10") == {
+        "Log": "DEBUG",
+        "Max": "10",
     }

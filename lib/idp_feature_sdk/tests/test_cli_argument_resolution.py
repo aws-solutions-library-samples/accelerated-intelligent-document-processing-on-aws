@@ -109,6 +109,30 @@ def test_an_equals_inside_a_value_stays_in_the_value() -> None:
     assert parse_parameters("Query=a=b=c") == {"Query": "a=b=c"}
 
 
+def test_pairs_may_be_separated_by_whitespace_as_well_as_a_comma() -> None:
+    """`aws cloudformation deploy --parameter-overrides` is space-separated, and
+    the pattern this replaced accepted that here too (it looked for the next
+    `key=` at any offset). A comma-only boundary would swallow every pair after
+    the first into the first one's value, silently — the same defect class #1220
+    is about, so the boundary is a comma *or* whitespace."""
+    assert parse_parameters("LogLevel=DEBUG MaxConcurrent=10") == {
+        "LogLevel": "DEBUG",
+        "MaxConcurrent": "10",
+    }
+    assert parse_parameters("A=1\tB=2") == {"A": "1", "B": "2"}
+
+
+def test_a_value_that_looks_like_it_swallowed_a_pair_is_named() -> None:
+    """A separator that is neither a comma nor whitespace, or a key with a
+    character CloudFormation does not allow, leaves text inside the preceding
+    value. It cannot be taken back out — a value may contain commas — so it is
+    named, with the parameter it landed in."""
+    collected: list[str] = []
+    assert parse_parameters("A=1;B=2", on_warning=collected.append) == {"A": "1;B=2"}
+    assert len(collected) == 1, collected
+    assert ";B=" in collected[0] and "A" in collected[0]
+
+
 def test_text_that_forms_no_pair_is_reported_rather_than_dropped() -> None:
     """Nothing is refused, because refusing a shape the previous parser accepted
     would break a script that runs today. What changed is that the operator is

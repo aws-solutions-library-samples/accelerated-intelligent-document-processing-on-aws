@@ -506,6 +506,39 @@ class TestParametersReachCloudFormationAsTyped:
             "ExternalIdPMetadataURL": url,
         }
 
+    def test_space_separated_pairs_all_reach_cloudformation(
+        self, api_calls, cfn_template_file
+    ):
+        """The separator `aws cloudformation deploy --parameter-overrides` uses.
+
+        The pattern this replaced looked for the next `key=` at any offset, so a
+        space-separated list worked here too, and a comma-only pair boundary would
+        have swallowed the second pair into the first one's value and submitted
+        one wrong parameter instead of two right ones — silently, which is the
+        defect class of #1220 rather than a new one. Both of these parameters are
+        unconstrained strings in the real template, so CloudFormation would have
+        accepted that.
+        """
+        with mock_aws():
+            result = _deploy(
+                "--stack-name",
+                STACK,
+                "--admin-email",
+                EMAIL,
+                "--parameters",
+                "LogLevel=DEBUG MaxConcurrentWorkflows=200",
+                "--template-file",
+                cfn_template_file(),
+                "--region",
+                REGION,
+            )
+        assert result.exit_code == 0, result.output
+        assert _explicit(api_calls.only("CreateStack")) == {
+            "AdminEmail": EMAIL,
+            "LogLevel": "DEBUG",
+            "MaxConcurrentWorkflows": "200",
+        }
+
     def test_text_that_forms_no_pair_is_reported_rather_than_dropped(
         self, api_calls, cfn_template_file
     ):
