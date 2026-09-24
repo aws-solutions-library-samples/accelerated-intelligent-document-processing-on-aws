@@ -53,13 +53,17 @@ running the battery on the merge result, reading a red check) is exactly the
 diff-reading and log-reading that drains coordinator context, so it is delegated.
 See section 6.
 
-**Never wait for CI.** The `Lint, Type Check, and Test` job takes 25–35 minutes
-and a PR's green marks go stale the moment `develop` moves, which it does
-constantly under this loop. Correctness comes from the local battery run on the
-**merge result** plus the adversarial review. See "Merging" below.
-**One exception, and it is the gate:** the promotion PR from `backlog/staging` into
-`develop` happens once per batch, so you *do* wait for its checks — including SRT.
-That is what makes those gates blocking instead of advisory. See section 4.
+**Never wait for CI — including for the promotion.** The `Lint, Type Check, and
+Test` job takes 25–35 minutes *once it starts*, and starting is not under your
+control: measured on one run, the promotion's checks sat `QUEUED` at zero elapsed for
+25 minutes behind the loop's own fixer runs, and later sat `pending` for 57 minutes
+with the queue empty. A PR's green marks also go stale the moment its base moves,
+which it does constantly under this loop. So correctness comes from the **battery run
+locally on the merge commit** plus the adversarial review, everywhere — for fixer PRs
+(see "Merging") and for the promotion (see section 4, which lists the full set and the
+two flags without which a local run is weaker than the CI it replaces). The PR's
+checks are left running and read afterwards as corroboration; **SRT and the dependency
+audit must still actually run somewhere, and SRT failing is a hard stop.**
 
 **Never end a turn with nothing tracked.** A turn that ends with no live subagent,
 no `run_in_background` Bash command and no scheduled wakeup **is the end of the
@@ -972,12 +976,13 @@ decision written into it (see the triage section).
 
 **Fixer PRs target `backlog/staging`, never `develop`.** The loop does not write to
 `develop` at all; the only thing that reaches `develop` is a **promotion PR** from
-`backlog/staging`, merged after the integration agent's full battery — including
-CI and SRT — has passed on it.
+`backlog/staging`, merged after the **full gate set — every gate both CI workflows
+run, including SRT — has passed locally on the merge commit.** See "Promotion" below
+for the list and for the two flags a local run needs to be as strong as CI.
 
 ```
 fix/<slug>  ──PR──▶  backlog/staging  ──promotion PR──▶  develop  ──release──▶  main
-              (fast, no CI wait)        (full CI + SRT, waited for)
+           (targeted + cheap gates)    (full set incl. SRT, run locally on the merge)
 ```
 
 Create it once per run, from `develop`, and record it in `stagingBranch`:
@@ -1015,29 +1020,76 @@ the ones in section 0b.
 ### Promotion
 
 When the integration agent reports the batch green, open **one** PR from
-`backlog/staging` to `develop` and **wait for its checks** — this is the single
-place in the loop where waiting for CI is correct, because it is once per batch and
-it is the gate.
+`backlog/staging` to `develop`. **The gate is the full battery run locally on the
+merge commit, not the PR's checks.** Run every gate the `Developer Tests` and
+`Security Checks` workflows run, on that commit, record each one's numbers against
+the merge SHA, and merge on that evidence. Leave the PR's checks running and read
+them within the hour; they are corroboration, not the gate.
 
-- **SRT failing is a hard stop on promotion.** No override, no `ALLOW_RED_MERGE`,
-  no "it is develop's finding" — if it is develop's finding, fix it on `develop`
-  first as its own PR, then promote.
+The list is the workflows' own, and it is longer than the battery a merge agent runs:
+
+```bash
+make lint-cicd            # cfn-lint, validate-buildspec, check-arn-partitions, scans
+make typecheck            # whole tree
+make test-cicd -C lib/idp_common_pkg
+make test-packages-cicd
+make api-test-static
+make check-coverage-debt
+( cd src/ui && npm ci && npm run build )
+CI=1 make srt-scan        # SRT; CI=1 or it can hang headlessly with no timeout
+python3 scripts/security/dep_audit.py
+```
+
+⚠️ **Two of those are weaker locally than in CI unless you force them.** `make
+ui-lint` skips **both** eslint and `tsc` when `src/ui` matches the stored checksum,
+and CI never has a stored hash because `.checksum` is gitignored — so pass
+`UI_LINT_NO_SKIP=1` or the UI gate silently no-ops locally where it cannot in CI. And
+`make srt-setup`/`srt-scan` has no timeout outside CI, so `CI=1` is required rather
+than advisory. A local battery missing these two covers less than the CI it replaces
+while reporting the same green.
+
+- **SRT and the dependency audit must actually run somewhere** before a batch lands,
+  and **SRT failing is a hard stop.** No override, no `ALLOW_RED_MERGE`, no "it is
+  develop's finding" — if it is develop's finding, fix it on `develop` first as its own
+  PR, then promote. Local `CI=1 make srt-scan` satisfies this; nothing else does.
+- A **red PR check on something the local run could not see** — a clean-checkout
+  resolution, the UI build, an environment difference — is a fix-forward on `develop`,
+  not evidence that waiting would have been better.
 - After promoting, `backlog/staging` is re-cut from the new `develop` tip so the
   next batch starts clean. Record the promotion SHA in `merged`.
 
-⚠️ **Waiting for the promotion PR's checks does not mean idling the loop, and
-conflating the two is the easiest way to stall a run that is working.** Those checks
-take around half an hour; keep dispatching fixers and keep re-ranking throughout.
-Branches cut from `backlog/staging` stay valid across the promotion, because the two
-refs converge at it — a fixer that branched before the promotion is branched from a
-commit that is now `develop`'s tip. So the only thing that waits is the promotion
-merge itself.
+**Why local rather than the PR's checks, measured rather than asserted.** Three things
+went wrong with waiting, in one run:
 
-This is worth stating because it is *not* symmetric with the rest of the loop: every
-other instruction here is "do not wait for CI", and the one place where waiting is
-correct reads, if you are not careful, as a general instruction to stop. It is not.
-A coordinator with nothing in flight while a promotion runs has mistaken a gate for
-a barrier, and this has happened.
+- **The queue, not the tests.** The promotion's three checks sat at status `QUEUED`
+  with **zero seconds elapsed for 25 minutes**, behind fourteen queued runs from the
+  loop's own fixer branches — whose CI the loop never reads, since fixer PRs merge on
+  the local battery. The loop was starving its one hard gate of runners to produce
+  marks nobody consults.
+- **A job that never scheduled.** With the queue **empty**, `Lint, Type Check, and
+  Test` on that same PR was still `pending` at zero elapsed **57 minutes** after
+  trigger. Waiting on CI means waiting on something with no deadline.
+- **Every merge into staging invalidates the promotion PR's marks.** Four fixer PRs
+  landing on `backlog/staging` reset all three checks to pending and added a fourth, and
+  took the PR from 36 commits ahead to 55. So under a wait-for-CI policy the promotion
+  can only land during a lull in merging — which serialises the two lanes the staging
+  tier exists to keep separate.
+
+⚠️ **This does not weaken the gate, and the distinction matters.** The batch is still
+gated on the full set including SRT; what changed is *where* the set runs and that the
+answer is not subject to somebody else's scheduler. What it does give up is
+**environment fidelity**: a CI runner is a clean checkout with `npm ci` and a fresh
+`basedpyright`, while this host carries editable installs that have pointed at sibling
+worktrees, an auto-activating venv, and a `/tmp` on the default `sys.path` of anything
+run from there. That class of defect is exactly what the PR's checks are still there to
+catch, which is why they are left running and read afterwards rather than skipped.
+
+⚠️ **Promotion never idles the loop, under either policy.** Keep dispatching fixers and
+keep re-ranking throughout. Branches cut from `backlog/staging` stay valid across the
+promotion, because the two refs converge at it — a fixer that branched before the
+promotion is branched from a commit that is now `develop`'s tip. A coordinator with
+nothing in flight while a promotion runs has mistaken a gate for a barrier, and that has
+happened here twice: once for 5 h 32 m, once for 101 minutes.
 
 ### When a batch fails
 
@@ -1277,15 +1329,32 @@ brief:
 >    keep-both that duplicates an entry is worse than a conflict, because it
 >    ships. If the conflict is anything other than `CHANGELOG.md`, stop and
 >    report; do not resolve it.
-> 3. **Run the battery on the merge result, not the branch.** `make test-cicd -C
+> 3. **Push the merge commit to the PR branch — before the battery, not after.**
+>    Remote CI then runs while your local battery does, and the state is visible to
+>    anyone looking. Nothing is given up: the PR is not merged until the battery
+>    passes and the local battery stays the authority.
+> 4. **Run the battery on the merge result, not the branch.** `make test-cicd -C
 >    lib/idp_common_pkg`, `scripts/check_coverage_debt.py`, `ruff check`,
 >    `ruff format --check`; add `make test-packages-cicd` if the PR touches
 >    `scripts/` or a gate. Report exact counts. A log with no `N passed` summary
 >    line did not run. ⚠️ **Do not edit anything in that worktree while the
 >    battery runs** — an interrupted run still writes a `coverage.xml`, and the
 >    ratchet will then report fabricated losses.
-> 4. Push the merge commit to the PR branch.
-> 5. Report back: the conflict shapes you resolved, the bullet count, the gate
+> 5. **Never `make coverage-all`.** It measures all nine trees from scratch, is in
+>    **neither** CI configuration and in no tier of this skill, and it is not the
+>    coverage gate — `scripts/check_coverage_debt.py` is, it takes seconds, and it
+>    reads the report `make test-cicd` has already written. Measured: one merge agent
+>    reached for it on a batch that touched `coverage_debt.json`, chose a 5400-second
+>    timeout itself, and was still running after eight minutes having produced nothing
+>    the ratchet needed. Re-measuring a baseline is not the same act as checking a
+>    ratchet, and only the second one gates anything.
+> 6. **Before any wait longer than two minutes, say what you are waiting on, how long
+>    it should take, and the log path — then sleep.** A `sleep`-poll writes nothing to
+>    your transcript and leaves the host quiet, so from outside it is indistinguishable
+>    from a dead agent. That has now been misread in both directions in one hour: a
+>    reviewer read working fixers as stalled, and a coordinator read a working merge
+>    agent as idle and redid its work.
+> 7. Report back: the conflict shapes you resolved, the bullet count, the gate
 >    numbers, **every path the PR touches**, and whether any check is red. Flag any
 >    path unrelated to the issue's subject — see the diff-scope rule in section 0b. **Do not run `gh pr merge`.**
 
