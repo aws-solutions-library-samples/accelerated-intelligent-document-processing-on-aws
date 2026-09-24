@@ -44,6 +44,7 @@ and the download-by-revision path (`test_config_revisions_api.py`), the
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -1084,6 +1085,76 @@ def _bda_service(
     return service
 
 
+def _real_sync_entries(*class_ids: str) -> list[dict]:
+    """The per-class status entries the **real** sync emits, for `class_ids`.
+
+    `sync_bda` reads the classes it processed out of these entries, so their keys
+    are the contract under test — and a hand-written fixture can only show that
+    this file and `operations/config.py` agree with each other. That is the state
+    the fixtures here were in: they supplied `class_name`, a key no producer in
+    the tree writes, which kept a read that could never succeed looking correct.
+
+    So the entries are read off the producer instead, by driving the real
+    `BdaBlueprintService.create_blueprints_from_custom_configuration` over its two
+    AWS-touching collaborators doubled — `moto` implements no Bedrock Data
+    Automation, which is why this is doubled rather than faked. `idp_to_bda` with
+    an empty project is the shortest path through it that produces a `success`
+    entry per class, and `max_workers` is pinned to 1 so the entries come back in
+    the order the classes were given rather than in thread-completion order.
+    """
+    from idp_common.bda.bda_blueprint_service import BdaBlueprintService
+
+    module = "idp_common.bda.bda_blueprint_service"
+    with (
+        patch(f"{module}.BDABlueprintCreator"),
+        patch(f"{module}.ConfigurationManager"),
+        patch.dict(
+            os.environ,
+            {"CONFIGURATION_TABLE_NAME": "config-table", "STACK_NAME": "idp"},
+        ),
+    ):
+        service = BdaBlueprintService(
+            dataAutomationProjectArn="arn:aws:bedrock:us-east-1:1:data-automation-project/p",
+            region="us-east-1",
+        )
+    service.max_workers = 1
+
+    creator = MagicMock()
+    creator.list_blueprints.return_value = {"blueprints": []}
+    creator.create_blueprint.side_effect = (
+        lambda document_type, blueprint_name, schema: {
+            "status": "success",
+            "blueprint": {
+                "blueprintArn": f"arn:aws:bedrock:::blueprint/{blueprint_name}",
+                "blueprintName": blueprint_name,
+            },
+        }
+    )
+    creator.create_blueprint_version_without_project_update.return_value = {
+        "blueprint": {"blueprintVersion": "1"}
+    }
+    service.blueprint_creator = creator
+
+    config = MagicMock()
+    config.classes = [
+        {
+            "$schema": "https://json-schema.org/draft/2020-12/schema",
+            "$id": class_id,
+            "x-aws-idp-document-type": class_id,
+            "description": f"A {class_id}",
+            "type": "object",
+            "properties": {"total": {"type": "string", "description": "Total"}},
+        }
+        for class_id in class_ids
+    ]
+    service.config_manager = MagicMock()
+    service.config_manager.get_configuration.return_value = config
+
+    return service.create_blueprints_from_custom_configuration(
+        version="derived", sync_direction="idp_to_bda", sync_mode="merge"
+    )
+
+
 @pytest.mark.unit
 @pytest.mark.config
 class TestActivateSyncsBdaBlueprints:
@@ -1104,7 +1175,7 @@ class TestActivateSyncsBdaBlueprints:
             config_profile="bda",
             validate=False,
         )
-        service = _bda_service([{"status": "success", "class_name": "Invoice"}])
+        service = _bda_service([{"status": "success", "class": "Invoice"}])
 
         with patch(
             "idp_common.bda.bda_blueprint_service.BdaBlueprintService",
@@ -1144,8 +1215,8 @@ class TestActivateSyncsBdaBlueprints:
         )
         service = _bda_service(
             [
-                {"status": "success", "class_name": "Invoice"},
-                {"status": "error", "class_name": "Weird"},
+                {"status": "success", "class": "Invoice"},
+                {"status": "error", "class": "Weird"},
             ]
         )
 
@@ -1180,7 +1251,7 @@ class TestActivateSyncsBdaBlueprints:
             config_profile="bda",
             validate=False,
         )
-        service = _bda_service([{"status": "error", "class_name": "Invoice"}])
+        service = _bda_service([{"status": "error", "class": "Invoice"}])
 
         with patch(
             "idp_common.bda.bda_blueprint_service.BdaBlueprintService",
@@ -1244,7 +1315,7 @@ class TestActivateSyncsBdaBlueprints:
         ConfigurationManager(region=aws_credentials).set_bda_project_arn(
             "bda", existing, "synced"
         )
-        service = _bda_service([{"status": "success", "class_name": "Invoice"}])
+        service = _bda_service([{"status": "success", "class": "Invoice"}])
 
         with patch(
             "idp_common.bda.bda_blueprint_service.BdaBlueprintService",
@@ -1403,10 +1474,34 @@ class TestRevisions:
 @pytest.mark.unit
 @pytest.mark.config
 class TestSyncBda:
+    def test_the_sync_names_each_class_under_the_key_the_result_reads(self):
+        """The key `processed_classes` is built from, read off the producer.
+
+        This is the assertion the rest of this class's fixtures rest on. The two
+        keys `sync_bda` used to look for, `class_name` and `name`, are asserted
+        absent as well as `class` present: while both were merely *missing*, the
+        read fell through to a literal for every class, the counts beside it
+        stayed right, and the field reported a list of placeholders that looked
+        like a list of answers.
+        """
+        entries = _real_sync_entries("Invoice", "W2")
+
+        assert [entry["class"] for entry in entries] == ["Invoice", "W2"]
+        assert all(
+            "class_name" not in entry and "name" not in entry for entry in entries
+        )
+
     @mock_aws
     def test_a_full_sync_reports_every_class_and_records_synced(
         self, aws_credentials, config_env, tmp_path
     ):
+        """The classes are reported by name, not just counted.
+
+        Asserting `len(processed_classes) == 2` would pass against a read that
+        named neither of them, which is how this went unnoticed; the names are
+        what the CLI prints under "Classes synced" and the only part of the result
+        that says *which* classes reached BDA.
+        """
         _create_stack(aws_credentials)
         operation = _client(aws_credentials).config
         operation.upload(
@@ -1414,12 +1509,7 @@ class TestSyncBda:
             config_profile="bda",
             validate=False,
         )
-        service = _bda_service(
-            [
-                {"status": "success", "class_name": "Invoice"},
-                {"status": "success", "class_name": "W2"},
-            ]
-        )
+        service = _bda_service(_real_sync_entries("Invoice", "W2"))
 
         with patch(
             "idp_common.bda.bda_blueprint_service.BdaBlueprintService",
@@ -1452,7 +1542,7 @@ class TestSyncBda:
             config_profile="bda",
             validate=False,
         )
-        service = _bda_service([{"status": "success", "class_name": "Invoice"}])
+        service = _bda_service([{"status": "success", "class": "Invoice"}])
 
         with patch(
             "idp_common.bda.bda_blueprint_service.BdaBlueprintService",
@@ -1481,7 +1571,7 @@ class TestSyncBda:
                 config_profile=name,
                 validate=False,
             )
-        service = _bda_service([{"status": "success", "class_name": "Invoice"}])
+        service = _bda_service([{"status": "success", "class": "Invoice"}])
 
         # The activation is inside the patch too: these are BDA configs, so
         # activate() runs its own blueprint sync and would otherwise reach the
@@ -1514,8 +1604,8 @@ class TestSyncBda:
         )
         service = _bda_service(
             [
-                {"status": "success", "class_name": "Invoice"},
-                {"status": "error", "class_name": "Broken"},
+                {"status": "success", "class": "Invoice"},
+                {"status": "error", "class": "Broken"},
             ]
         )
 
@@ -1545,7 +1635,7 @@ class TestSyncBda:
             config_profile="bda",
             validate=False,
         )
-        service = _bda_service([{"status": "error", "class_name": "Invoice"}])
+        service = _bda_service([{"status": "error", "class": "Invoice"}])
 
         with patch(
             "idp_common.bda.bda_blueprint_service.BdaBlueprintService",
@@ -1558,14 +1648,18 @@ class TestSyncBda:
         assert "BdaSyncStatus" not in _item(aws_credentials, "Config#bda")
 
     @mock_aws
-    def test_an_unnamed_class_falls_back_to_a_placeholder(
+    def test_an_entry_that_names_no_class_fails_the_sync_rather_than_inventing_one(
         self, aws_credentials, config_env, tmp_path
     ):
-        """A sync entry with neither `class_name` nor `name` still lists.
+        """An unreadable entry is reported as such, not filled in.
 
-        Dropping it would make `processed_classes` shorter than
-        `classes_synced + classes_failed`, which is the sort of quiet
-        inconsistency that makes a report untrustworthy.
+        Every entry the sync emits carries `class`, so the only way to reach this
+        is a rename inside the producer — and the answer to that has to be
+        distinguishable from a real class name. A placeholder is not: it is a
+        plausible string in a list of plausible strings, which is why the field
+        spent its whole life reporting one. The sync's own error path carries the
+        failure out, naming the key, and `BdaSyncStatus` is deliberately left
+        unwritten: a result nobody could build is not evidence the profile synced.
         """
         _create_stack(aws_credentials)
         operation = _client(aws_credentials).config
@@ -1574,12 +1668,9 @@ class TestSyncBda:
             config_profile="bda",
             validate=False,
         )
-        service = _bda_service(
-            [
-                {"status": "success", "name": "FromNameKey"},
-                {"status": "success"},
-            ]
-        )
+        renamed = _real_sync_entries("Invoice")
+        renamed[0]["klass"] = renamed[0].pop("class")
+        service = _bda_service(renamed)
 
         with patch(
             "idp_common.bda.bda_blueprint_service.BdaBlueprintService",
@@ -1587,7 +1678,11 @@ class TestSyncBda:
         ):
             result = operation.sync_bda(config_profile="bda")
 
-        assert result.processed_classes == ["FromNameKey", "unknown"]
+        assert result.success is False
+        assert result.processed_classes == []
+        assert result.error is not None
+        assert "'class'" in result.error
+        assert "BdaSyncStatus" not in _item(aws_credentials, "Config#bda")
 
     @mock_aws
     def test_a_sync_exception_is_returned_with_the_direction_preserved(

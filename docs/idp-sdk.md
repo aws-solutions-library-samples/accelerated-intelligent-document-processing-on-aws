@@ -1730,6 +1730,14 @@ Synchronize IDP document class schemas with BDA (Bedrock Data Automation) bluepr
 
 **Returns:** `ConfigSyncBdaResult` with `success`, `direction`, `mode`, `classes_synced`, `classes_failed`, `processed_classes`, `orphaned_blueprint_arns`, and `error`
 
+`processed_classes` names every document class the sync processed — the ones that
+succeeded and the ones that failed alike, so its length is `classes_synced +
+classes_failed` — in the order the sync reported them. It is the only part of the result
+that says *which* classes reached BDA rather than how many, and it is what
+`idp-cli config-sync-bda` prints under "Classes synced". Every name in it is a real
+class id: there is no placeholder entry, so a sync that reports `success` and lists a
+name has synced a class by that name.
+
 `orphaned_blueprint_arns` names blueprints a `replace`-mode sync removed from the BDA
 project but could not then delete. The order is forced — BDA refuses to delete a
 blueprint a project still associates, so the project's list is rewritten first and the

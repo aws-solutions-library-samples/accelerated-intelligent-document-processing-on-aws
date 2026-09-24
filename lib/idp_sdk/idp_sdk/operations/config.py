@@ -1001,10 +1001,26 @@ class ConfigOperation:
             sync_failed = [
                 item for item in sync_result if item.get("status") != "success"
             ]
-            processed_names = [
-                item.get("class_name", item.get("name", "unknown"))
-                for item in sync_result
-            ]
+            # `class` is read by subscript rather than through a chain of
+            # defaults ending in a literal. Every entry the sync appends carries
+            # it, on all seven paths that build one, and the two aggregators
+            # inside the service subscript that same key to assemble them — so a
+            # default here could only ever fire on a future rename, and a default
+            # is precisely what let this field report a placeholder for every
+            # class indefinitely: a list of plausible-looking names reads as an
+            # answer, so nothing ever went looking. A rename is now a sync that
+            # reports failure and names the key it could not read, which no
+            # caller can mistake for the name of a document class.
+            try:
+                processed_names = [item["class"] for item in sync_result]
+            except KeyError as missing_key:
+                raise KeyError(
+                    f"A BDA sync status entry carries no {missing_key} key, so "
+                    "the classes the sync processed cannot be named. Those "
+                    "entries are produced by "
+                    "BdaBlueprintService.create_blueprints_from_custom_configuration; "
+                    "a rename of that key has to be made here too."
+                ) from missing_key
 
             classes_synced = len(sync_succeeded)
             classes_failed = len(sync_failed)
