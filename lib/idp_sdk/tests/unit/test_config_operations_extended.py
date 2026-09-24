@@ -255,8 +255,21 @@ class TestValidate:
 
         assert result.deprecated_fields == ["output_bucket"]
         assert result.unknown_fields == ["clasification"]
-        assert any("Deprecated field 'output_bucket'" in w for w in result.warnings)
-        assert any("Unknown field 'clasification'" in w for w in result.warnings)
+        # The prose comes from `idp_common`'s `_validate_ignored_keys`, the single
+        # reporter both this method and `idp_cli`'s `config-validate` now consume.
+        # Asserting on it here is what pins that the SDK forwards the warnings
+        # rather than re-deriving its own set, which is what it used to do — a raw
+        # `set(config) - set(IDPConfig.model_fields)` that named two keys the
+        # loader honours.
+        assert any(
+            "Deprecated configuration key 'output_bucket'" in w
+            for w in result.warnings
+        )
+        assert any(
+            "Unknown configuration key 'clasification'" in w for w in result.warnings
+        )
+        # The nearest declared field, which only the central reporter knows.
+        assert any("Did you mean 'classification'?" in w for w in result.warnings)
 
     def test_a_clean_config_reports_neither(self, tmp_path):
         config = tmp_path / "c.yaml"
@@ -280,35 +293,16 @@ class TestValidate:
         assert merged["notes"] == "mine"
         assert "ocr" in merged, "the merge filled in the system defaults"
 
-    def test_validation_still_answers_when_the_models_module_is_unavailable(
-        self, tmp_path
-    ):
-        """A trimmed `idp_common` install must not turn validation into a crash.
-
-        `idp_common.config.models` is imported inside `validate()` purely for the
-        deprecated/unknown-field report, behind an `ImportError` guard. With the
-        module unavailable the guard is what keeps the method returning a result
-        at all: the two lists come back empty and the caller still gets a verdict
-        rather than an ImportError traceback from inside the SDK.
-
-        The verdict itself is `False` here, and that is not the guard failing —
-        `validate_config`, one frame up, needs the same module and reports its own
-        inability to load it as a validation error. So this test pins two things:
-        the guard prevents a second, different crash, and it does not paper over
-        the upstream failure by claiming the config is fine.
-        """
-        config = tmp_path / "c.yaml"
-        config.write_text(
-            yaml.dump({"classes": [], "output_bucket": "b"}), encoding="utf-8"
-        )
-
-        with patch.dict(sys.modules, {"idp_common.config.models": None}):
-            result = IDPClient().config.validate(str(config))
-
-        assert result.deprecated_fields == []
-        assert result.unknown_fields == []
-        assert result.valid is False
-        assert any("idp_common.config.models" in error for error in result.errors)
+    # There is no test here for `idp_common.config.models` being unavailable.
+    # `validate()` used to import it itself, behind an `ImportError` guard, to
+    # compute its own deprecated/unknown-field lists, and a test pinned that the
+    # guard kept the method returning a verdict on a trimmed `idp_common` install.
+    # Both the import and the guard are gone: the lists now come from
+    # `ignored_keys` on `validate_config`'s result, and `_validate_ignored_keys`
+    # imports the module unguarded one frame up. A trimmed install therefore
+    # raises `ModuleNotFoundError` out of `validate()`, and pinning *that* would
+    # record a gap as the intended contract. The behaviour worth having belongs to
+    # `idp_common`, not to this method.
 
 
 # --------------------------------------------------------------------------

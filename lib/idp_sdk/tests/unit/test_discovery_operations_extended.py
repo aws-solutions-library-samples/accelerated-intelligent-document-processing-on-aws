@@ -20,7 +20,7 @@ it is a schema for the wrong pages, or a model that silently drops the document
 and hallucinates. So the `BedrockClient` is replaced with a stand-in that records
 the call, and the assertions are on **what was sent**: the model id, the
 prompts, the sampling parameters, and — for the page-range case — the actual PDF
-bytes in the document block, reopened with `pypdf` and counted. Building that
+bytes in the document block, reopened with `pypdfium2` and counted. Building that
 input with a real four-page PDF and letting the real
 `ClassesDiscovery.extract_pdf_pages` do the slicing is what makes "pages 2-3
 were extracted" a measurement rather than a mock assertion.
@@ -53,7 +53,13 @@ from unittest.mock import MagicMock, patch
 import boto3
 import pytest
 from moto import mock_aws
-from pypdf import PdfReader, PdfWriter
+
+# pypdfium2, not pypdf: the production code under test (`ClassesDiscovery`) reads
+# PDFs with pypdfium2, so it is a declared dependency of `idp_common_pkg[all]` and
+# is present wherever this suite runs. `pypdf` is in no first-party requirement,
+# so importing it here passed on a developer machine that happened to have it and
+# failed collection in CI, taking the whole idp_sdk suite with it.
+import pypdfium2 as pdfium
 
 from idp_sdk import IDPClient
 from idp_sdk.models import (
@@ -122,12 +128,16 @@ def discovery_env(monkeypatch):
 
 
 def _pdf(pages: int) -> bytes:
-    writer = PdfWriter()
+    document = pdfium.PdfDocument.new()
     for _ in range(pages):
-        writer.add_blank_page(width=200, height=200)
+        document.new_page(200, 200)
     buffer = io.BytesIO()
-    writer.write(buffer)
+    document.save(buffer)
     return buffer.getvalue()
+
+
+def _page_count(data: bytes) -> int:
+    return len(pdfium.PdfDocument(io.BytesIO(data)))
 
 
 def _png() -> bytes:
@@ -705,7 +715,7 @@ class TestRunLocal:
         """Pages 2-3 of a four-page packet, counted in the bytes that were sent.
 
         The slicing is done by the real `ClassesDiscovery.extract_pdf_pages`, so
-        reopening the document block with `pypdf` and finding two pages is a
+        reopening the document block with `pypdfium2` and finding two pages is a
         measurement of the extraction rather than a record that a helper was
         called. An off-by-one here produces a schema for the wrong document and
         nothing anywhere reports an error.
@@ -721,7 +731,7 @@ class TestRunLocal:
         sent = client.invoke_model.call_args.kwargs["content"][0]["document"]["source"][
             "bytes"
         ]
-        assert len(PdfReader(io.BytesIO(sent)).pages) == 2
+        assert _page_count(sent) == 2
         assert sent != document.read_bytes()
 
     def test_a_page_range_on_a_non_pdf_is_ignored_rather_than_refused(self, tmp_path):
