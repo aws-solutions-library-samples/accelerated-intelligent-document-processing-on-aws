@@ -433,19 +433,34 @@ def test_validate_refuses_malformed_yaml():
 def test_validate_refuses_a_config_that_is_not_a_mapping_but_says_so_badly():
     """
     A YAML document whose top level is a list is refused, which is right, but the
-    diagnostic is the raw exception text.
+    diagnostic is still the raw exception text.
 
-    DEFECT (`idp_cli/cli.py:4430`): `set(user_config.keys())` runs on whatever
-    `yaml.safe_load` returned, so a list — or a bare scalar — raises
-    `AttributeError` and the generic handler prints
-    `✗ Error: 'list' object has no attribute 'keys'`. Consequence: the exit code is
-    right and the message tells the user nothing about their file. Pinned rather
-    than fixed.
+    Two separate things are asserted, and only the first is a guarantee. The
+    guarantee: the refusal arrives on the **validation** path, not as an unhandled
+    exception in the command's own bookkeeping. `config-validate` hands the loaded
+    document straight to `validate_config` and reports what comes back, so a
+    top-level list is refused by the merge with a bulleted error under
+    `✗ Validation failed` — the same shape as every other refusal in this section.
+    It used to compute `set(user_config.keys())` itself before validating, which
+    raised `AttributeError` on anything that was not a dict and fell out of the
+    generic `except Exception` handler as a bare `✗ Error:` line.
+
+    The residual, pinned rather than fixed: whichever path it takes, the text the
+    user sees is a Python attribute error about the type rather than a sentence
+    about their file. If someone teaches the command to say "top level must be a
+    mapping", the last assertion here is the one that will fail — update this test,
+    it is not defending that wording.
     """
     with write_config("- first\n- second\n") as runner:
         result = runner.invoke(cli, ["config-validate", "--config-file", "config.yaml"])
     assert result.exit_code == 1
-    assert "'list' object has no attribute 'keys'" in result.output
+    # The document parses, so the refusal must not be filed under syntax, and it
+    # must come from the validator rather than from an unhandled AttributeError.
+    assert "YAML syntax valid" in result.output
+    assert "YAML syntax error" not in result.output
+    assert "Validation failed" in result.output
+    assert "Config is valid!" not in result.output
+    # RESIDUAL: the diagnostic still does not describe the file. See the docstring.
     assert "not a mapping" not in result.output
 
 
@@ -522,11 +537,18 @@ def test_validate_warns_about_an_unknown_top_level_field_but_still_passes():
     """
     with write_config("banana: 1\nclasses: []\n") as runner:
         result = runner.invoke(cli, ["config-validate", "--config-file", "config.yaml"])
+    flat = " ".join(result.output.split())
     assert result.exit_code == 0, result.output
-    assert "Unknown fields found (will be ignored): ['banana']" in " ".join(
-        result.output.split()
-    )
+    # Asserted on substance, not on the sentence: the field is named, the reader is
+    # told it will be ignored, it is reported as a WARNING rather than an error, and
+    # the run still passes. A copy-edit to the wording leaves all four true.
+    assert "banana" in flat
+    assert "ignored" in flat
+    assert "Warnings:" in result.output
     assert "Config is valid!" in result.output
+    # A key the models do not declare is still classified as unknown rather than as
+    # deprecated — the two kinds carry different advice.
+    assert "Deprecated" not in flat
 
 
 @pytest.mark.unit
@@ -555,43 +577,73 @@ def test_validate_strict_refuses_a_deprecated_field_too():
         strict = runner.invoke(
             cli, ["config-validate", "--config-file", "config.yaml", "--strict"]
         )
+    plain_flat = " ".join(plain.output.split())
+    strict_flat = " ".join(strict.output.split())
+    # Without --strict: a warning that names the field and classifies it as
+    # deprecated, and the run passes. The classification is the substance — a
+    # deprecated field is one to delete, an unknown one is probably a typo to fix.
     assert plain.exit_code == 0, plain.output
-    assert f"Deprecated fields found (will be ignored): ['{deprecated}']" in " ".join(
-        plain.output.split()
-    )
+    assert deprecated in plain_flat
+    assert "eprecated" in plain_flat
+    assert "ignored" in plain_flat
+    assert "Config is valid!" in plain.output
+    # With --strict: refused, and the refusal NAMES the field. Reporting only that
+    # "config contains extra fields" left the user to find it in a large document.
     assert strict.exit_code == 1
     assert "Strict mode" in strict.output
+    assert deprecated in strict_flat
 
 
 @pytest.mark.unit
-def test_validate_does_not_notice_a_mistyped_key_inside_a_section():
+def test_validate_reports_a_mistyped_key_inside_a_section_by_its_dotted_path():
     """
-    DEFECT (`idp_cli/cli.py:4429-4452`): the extra-field check compares
-    `user_config.keys()` against `IDPConfig.model_fields`, so it sees the TOP level
-    only. Every section model is pydantic-default `extra="ignore"`, so a key one
-    level down is dropped without a word — and `--strict`, whose whole purpose is
-    to fail on unknown fields, passes it.
+    A key one level down that no model declares is REPORTED, and reported by its
+    dotted path.
 
-    Consequence: `classification.maxPagesForClassifcation` (one missing 'i') is
-    reported as a valid config, the setting is not applied, and there is no way to
-    tell from the command's output. Nested keys are where nearly every real
-    configuration typo lives.
+    This is the guarantee #1134 exists to provide, and nested keys are where nearly
+    every real configuration typo lives. Every section model takes pydantic's
+    default `extra="ignore"`, so `classification.maxPagesForClassifcation` (one
+    missing 'i') used to be dropped in silence: the setting did not apply, the
+    config validated, and the output said nothing. `validate_config` now walks the
+    whole model tree and names each unread key by its path, so the author is told
+    where to look.
 
-    This test pins the current behaviour: no mention of the key, and exit 0 even
-    under `--strict`.
+    The path, not just the leaf, is what is asserted. A mis-nested key is the more
+    damaging half of this class — the value is routed around the validator that
+    would have rejected it, so `ocr.dpi: "abc"` is accepted while `ocr.image.dpi:
+    "abc"` raises — and naming only `dpi` would not tell the author which of the two
+    they wrote.
+
+    It reports rather than rejects, by design and in both directions:
+
+    * Without `--strict` the run still passes. `extra` is unchanged on every model,
+      so a configuration that loads today still loads and a key a later release
+      removes needs no migration story.
+    * `--strict` **also** still passes, and that is deliberate rather than a
+      leftover: its documented contract is top-level fields only, and widening it
+      downwards would start failing configurations that pass today — a decision for
+      a release, not for a fix. The key is reported either way, which is the part
+      that matters. If that contract is deliberately widened later, change the
+      `strict.exit_code` expectation here and say so in the CHANGELOG; do not
+      delete the test.
     """
     with write_config("classification:\n  notARealSetting: 3\nclasses: []\n") as runner:
         plain = runner.invoke(cli, ["config-validate", "--config-file", "config.yaml"])
         strict = runner.invoke(
             cli, ["config-validate", "--config-file", "config.yaml", "--strict"]
         )
-    assert plain.exit_code == 0
-    assert strict.exit_code == 0, (
-        "if --strict has learned to look inside sections, this defect is fixed: "
-        "delete this test rather than loosening it"
-    )
-    assert "notARealSetting" not in plain.output
-    assert "Unknown fields" not in plain.output
+    plain_flat = " ".join(plain.output.split())
+    strict_flat = " ".join(strict.output.split())
+    # The guarantee: the key is reported, by its full dotted path, as something that
+    # will be ignored — so the author learns the default is still in force.
+    assert "classification.notARealSetting" in plain_flat, plain.output
+    assert "ignored" in plain_flat
+    assert "Warnings:" in plain.output
+    # Reported, not rejected.
+    assert plain.exit_code == 0, plain.output
+    # --strict's contract is top-level only; the nested key is still reported there.
+    assert strict.exit_code == 0, strict.output
+    assert "classification.notARealSetting" in strict_flat, strict.output
 
 
 @pytest.mark.unit
