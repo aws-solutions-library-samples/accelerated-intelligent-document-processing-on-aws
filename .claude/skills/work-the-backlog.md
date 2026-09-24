@@ -1277,15 +1277,32 @@ brief:
 >    keep-both that duplicates an entry is worse than a conflict, because it
 >    ships. If the conflict is anything other than `CHANGELOG.md`, stop and
 >    report; do not resolve it.
-> 3. **Run the battery on the merge result, not the branch.** `make test-cicd -C
+> 3. **Push the merge commit to the PR branch — before the battery, not after.**
+>    Remote CI then runs while your local battery does, and the state is visible to
+>    anyone looking. Nothing is given up: the PR is not merged until the battery
+>    passes and the local battery stays the authority.
+> 4. **Run the battery on the merge result, not the branch.** `make test-cicd -C
 >    lib/idp_common_pkg`, `scripts/check_coverage_debt.py`, `ruff check`,
 >    `ruff format --check`; add `make test-packages-cicd` if the PR touches
 >    `scripts/` or a gate. Report exact counts. A log with no `N passed` summary
 >    line did not run. ⚠️ **Do not edit anything in that worktree while the
 >    battery runs** — an interrupted run still writes a `coverage.xml`, and the
 >    ratchet will then report fabricated losses.
-> 4. Push the merge commit to the PR branch.
-> 5. Report back: the conflict shapes you resolved, the bullet count, the gate
+> 5. **Never `make coverage-all`.** It measures all nine trees from scratch, is in
+>    **neither** CI configuration and in no tier of this skill, and it is not the
+>    coverage gate — `scripts/check_coverage_debt.py` is, it takes seconds, and it
+>    reads the report `make test-cicd` has already written. Measured: one merge agent
+>    reached for it on a batch that touched `coverage_debt.json`, chose a 5400-second
+>    timeout itself, and was still running after eight minutes having produced nothing
+>    the ratchet needed. Re-measuring a baseline is not the same act as checking a
+>    ratchet, and only the second one gates anything.
+> 6. **Before any wait longer than two minutes, say what you are waiting on, how long
+>    it should take, and the log path — then sleep.** A `sleep`-poll writes nothing to
+>    your transcript and leaves the host quiet, so from outside it is indistinguishable
+>    from a dead agent. That has now been misread in both directions in one hour: a
+>    reviewer read working fixers as stalled, and a coordinator read a working merge
+>    agent as idle and redid its work.
+> 7. Report back: the conflict shapes you resolved, the bullet count, the gate
 >    numbers, **every path the PR touches**, and whether any check is red. Flag any
 >    path unrelated to the issue's subject — see the diff-scope rule in section 0b. **Do not run `gh pr merge`.**
 
