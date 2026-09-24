@@ -1480,11 +1480,52 @@ def open_test_set_annotation_draft(args, event=None):
     # Written after the snapshot: a failure part-way leaves no draft pointer, so the
     # next call retries the copy rather than annotating against a version whose content
     # was never captured.
-    db_client.update_item(
-        key={"PK": f"testset#{test_set_id}", "SK": "metadata"},
-        update_expression="SET draftVersion = :d",
-        expression_attribute_values={":d": draft_version},
-    )
+    #
+    # Conditional because the `existing_draft` check above is a read and this is the
+    # write, and between the two the annotate view -- which calls this on entry --
+    # can have been opened by a second annotator. Both then read no draft, both
+    # publish a base version, both compute a `draft_version`, and the later write
+    # replaces the earlier one: the pointer names one transition while two were
+    # opened, and the queue links handed to the first annotator belong to a
+    # transition the metadata row no longer mentions. The condition is the same
+    # statement the early return makes, evaluated where it can be relied on --
+    # `draftVersion` is only ever SET here and REMOVEd by publishing, never stored
+    # as zero, so `attribute_not_exists` and "no draft open" are the same fact.
+    try:
+        db_client.update_item(
+            key={"PK": f"testset#{test_set_id}", "SK": "metadata"},
+            update_expression="SET draftVersion = :d",
+            expression_attribute_values={":d": draft_version},
+            condition_expression="attribute_not_exists(draftVersion)",
+        )
+    except DynamoDBError as e:
+        if e.error_code != "ConditionalCheckFailedException":
+            raise
+        # Somebody opened the transition first. Returning theirs is what the early
+        # return above would have done had the read seen it, so this is the same
+        # answer rather than a new failure. The snapshot this call took is wasted
+        # and harmless -- it copied a published version's labels to where they
+        # already were.
+        fresh = db_client.get_item({"PK": f"testset#{test_set_id}", "SK": "metadata"})
+        winner = _as_int((fresh or {}).get("draftVersion"))
+        if not winner:
+            # No draft to return: a publish committed the transition in the same
+            # window, which is the one thing that removes the attribute. The state
+            # this call computed no longer describes the set, and the annotate
+            # view's next on-entry call opens the right transition against the new
+            # base, so raising is the honest answer rather than writing anyway.
+            raise
+        logger.info(
+            f"Test set '{test_set_id}': another caller opened draft version "
+            f"{winner} first; returning it instead of version {draft_version}"
+        )
+        return {
+            "testSetId": test_set_id,
+            "baseVersion": winner - 1,
+            "draftVersion": winner,
+            "snapshotObjectCount": 0,
+            "alreadyOpen": True,
+        }
 
     logger.info(
         f"Opened annotation draft {draft_version} for test set '{test_set_id}' "
@@ -2177,18 +2218,38 @@ def get_draft_label_job(args):
     test_set_id = args["testSetId"]
     job_id = args["jobId"]
 
-    job = db_client.get_item(
-        {"PK": f"testset#{test_set_id}", "SK": _label_job_sk(job_id)}
-    )
+    key = {"PK": f"testset#{test_set_id}", "SK": _label_job_sk(job_id)}
+    job = db_client.get_item(key)
     if not job:
         raise Exception(f"Labeling job '{job_id}' not found")
 
     if job.get("status") in ("COMPLETED", "FAILED"):
         return _label_job_to_result(job)
 
-    return _label_job_to_result(
-        _harvest_label_job(job, deadline=time.monotonic() + HARVEST_TIME_BUDGET_SECONDS)
-    )
+    try:
+        harvested = _harvest_label_job(
+            job, deadline=time.monotonic() + HARVEST_TIME_BUDGET_SECONDS
+        )
+    except DynamoDBError as e:
+        if e.error_code != "ConditionalCheckFailedException":
+            raise
+        # The harvest refused to write blind after losing its merge budget, which
+        # is the right call there and the wrong answer here. This is the progress
+        # poll the UI drives on a timer, so propagating would turn a condition
+        # that heals itself into a visible error on a read: the writer that won
+        # every round has its progress in the row, this pass's S3 work is
+        # idempotent, and the next poll is five seconds away. Report what is
+        # stored instead. The queue-side caller already treats a failed harvest
+        # this way; this makes the read side match it, narrowly -- any other
+        # failure still propagates.
+        logger.info(
+            f"Draft labeling job {job_id}: another harvest held the write for "
+            "every attempt; reporting the stored state and leaving the rest to "
+            "the next poll"
+        )
+        harvested = db_client.get_item(key) or job
+
+    return _label_job_to_result(harvested)
 
 
 def _walk_confidence(explainability_info):
