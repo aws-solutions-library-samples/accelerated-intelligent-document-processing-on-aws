@@ -435,7 +435,15 @@ def run_trust(report: Path) -> RunTrust:
 
 
 class Unchecked(NamedTuple):
-    """A tree this run could not compare, and why. Never a pass."""
+    """A tree this run could not compare, and why. Never a pass.
+
+    Not a carve-out, and the distinction matters because the list looks like one: the
+    scope decision about what is measured lives in :data:`TREES`, which is the enforced
+    universe, and membership here is a property of one invocation rather than of a tree.
+    What makes it safe is that every member is **printed with its reason** and under no
+    success marker, and that a run where every tree lands here has measured nothing and
+    refuses — so a run that checked one tree cannot be read as one that checked nine.
+    """
 
     tree: str
     reason: str
@@ -569,12 +577,12 @@ def write_baseline() -> int:
     refusals: list[str] = []
     for tree in TREES:
         report = _resolve_report(tree)
-        untrustworthy = None if report is None else run_trust(report)
-        if untrustworthy is not None and untrustworthy.state == "errored":
-            refusals.append(f"  ✗ {tree.name}: {untrustworthy.detail}")
+        trust = None if report is None else run_trust(report)
+        if trust is not None and trust.state == "errored":
+            refusals.append(f"  ✗ {tree.name}: {trust.detail}")
             continue
-        if report is None or untrustworthy is None or untrustworthy.state != "clean":
-            why = "no report" if report is None else untrustworthy.detail
+        if report is None or trust is None or trust.state != "clean":
+            why = "no report" if report is None else trust.detail
             print(f"  … {tree.name}: {why}, leaving its baseline untouched")
             existing = load_baseline().get("trees", {}).get(tree.name)
             if existing:
