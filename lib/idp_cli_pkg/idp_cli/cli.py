@@ -3774,6 +3774,45 @@ def _clear_s3_prefix(s3_client, bucket: str, prefix: str) -> int:
     return deleted
 
 
+def _copy_s3_baseline(
+    s3_client, source_uri: str, dest_bucket: str, dest_prefix: str
+) -> int:
+    """Copy the baseline objects at `source_uri` under `dest_prefix`; return the count.
+
+    A manifest's `baseline_source` is an `s3://` URI whenever it came from
+    `generate-manifest --test-set`, which rewrites every baseline to point into the test
+    set bucket. A local `glob` over such a value matches nothing, so feeding that
+    manifest back produced a test set with a complete `input/` and an empty `baseline/`
+    — an evaluation with nothing to score against, reported as created.
+
+    The URI may name a prefix (what `generate-manifest` writes) or a single object, so
+    the destination key is the remainder of the source key below the prefix, falling
+    back to the object's basename when the URI names the object exactly. Paginated for
+    the same reason the clear is: a baseline directory can hold more than 1000 files.
+    """
+    source_bucket, _, source_key = source_uri[len("s3://") :].partition("/")
+    if not source_bucket or not source_key:
+        return 0
+
+    paginator = s3_client.get_paginator("list_objects_v2")
+    copied = 0
+
+    for page in paginator.paginate(Bucket=source_bucket, Prefix=source_key):
+        for obj in page.get("Contents", []):
+            key = obj["Key"]
+            if key.endswith("/"):
+                continue  # a directory marker carries no baseline content
+            relative = key[len(source_key) :].lstrip("/") or os.path.basename(key)
+            s3_client.copy_object(
+                CopySource={"Bucket": source_bucket, "Key": key},
+                Bucket=dest_bucket,
+                Key=f"{dest_prefix}{relative}",
+            )
+            copied += 1
+
+    return copied
+
+
 def _get_test_set_document_ids(
     stack_name: str,
     test_set: str,
@@ -3882,6 +3921,8 @@ def _create_test_set_from_manifest(
     )
 
     # Copy input files
+    baseline_sources = 0
+    baseline_objects = 0
     for _, row in df.iterrows():
         source_path = str(row["document_path"])
         filename = os.path.basename(source_path)
@@ -3904,19 +3945,42 @@ def _create_test_set_from_manifest(
         # Copy baseline if exists
         if "baseline_source" in row and pd.notna(row["baseline_source"]):
             baseline_path = str(row["baseline_source"])
+            baseline_sources += 1
+            copied = 0
 
-            # Upload all files in the baseline directory recursively
-            import glob as glob_module
+            if baseline_path.startswith("s3://"):
+                # An `s3://` baseline is what `generate-manifest --test-set` writes, so
+                # this is the ordinary shape of a manifest fed back in, not an exotic
+                # one. It is copied within S3 rather than globbed on the local disk.
+                copied = _copy_s3_baseline(
+                    s3_client,
+                    baseline_path,
+                    test_set_bucket,
+                    f"{test_set_name}/baseline/{filename}/",
+                )
+            else:
+                # Upload all files in the baseline directory recursively
+                import glob as glob_module
 
-            baseline_files = glob_module.glob(
-                os.path.join(baseline_path, "**", "*"), recursive=True
-            )
-            for baseline_file in baseline_files:
-                if os.path.isfile(baseline_file):
-                    # Preserve directory structure relative to baseline_path
-                    rel_path = os.path.relpath(baseline_file, baseline_path)
-                    s3_key = f"{test_set_name}/baseline/{filename}/{rel_path}"
-                    s3_client.upload_file(baseline_file, test_set_bucket, s3_key)
+                baseline_files = glob_module.glob(
+                    os.path.join(baseline_path, "**", "*"), recursive=True
+                )
+                for baseline_file in baseline_files:
+                    if os.path.isfile(baseline_file):
+                        # Preserve directory structure relative to baseline_path
+                        rel_path = os.path.relpath(baseline_file, baseline_path)
+                        s3_key = f"{test_set_name}/baseline/{filename}/{rel_path}"
+                        s3_client.upload_file(baseline_file, test_set_bucket, s3_key)
+                        copied += 1
+
+            baseline_objects += copied
+            if copied == 0:
+                # A test set whose baselines are missing cannot score anything, and the
+                # row count printed at the end cannot show it, so say so per row.
+                console.print(
+                    f"[yellow]Warning: no baseline files found for {filename} at "
+                    f"{baseline_path} - nothing was uploaded for it[/yellow]"
+                )
 
     # Remove .uploading marker now that all files are uploaded (issue #193)
     try:
@@ -3927,6 +3991,13 @@ def _create_test_set_from_manifest(
     console.print(
         f"[green]✓ Test set '{test_set_name}' created with {len(df)} files[/green]"
     )
+    if baseline_sources:
+        # Objects uploaded, not manifest rows: the row count above cannot distinguish a
+        # test set with baselines from one whose baseline step copied nothing.
+        console.print(
+            f"  Baseline objects uploaded: {baseline_objects} "
+            f"(from {baseline_sources} baseline sources)"
+        )
 
 
 @cli.command(name="stop-workflows")

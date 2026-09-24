@@ -1286,22 +1286,22 @@ def test_create_test_set_leaves_the_marker_behind_when_an_upload_fails(
 
 
 @pytest.mark.unit
-def test_create_test_set_silently_uploads_no_baselines_for_an_s3_baseline_source(
-    tmp_path, capsys
-):
-    """DEFECT (pinned, not fixed): an `s3://` baseline_source uploads zero baseline files.
+def test_create_test_set_copies_baselines_from_an_s3_baseline_source(tmp_path, capsys):
+    """An `s3://` baseline_source is copied into the test set, directory shape kept.
 
-    The baseline step is a local `glob.glob(os.path.join(baseline_source, "**", "*"))`,
-    which matches nothing when `baseline_source` is an S3 URI. That is exactly what
-    `generate-manifest --dir ... --test-set ...` writes into its manifest: it rewrites
-    every `baseline_source` to `s3://<test set bucket>/<set>/baseline/<file>/`. So
-    feeding a manifest produced by that command back into this function creates a test
-    set whose `input/` is complete and whose `baseline/` is empty, with no warning and
-    no error — and an evaluation over it has nothing to compare against.
+    That URI is not an exotic input: `generate-manifest --dir ... --test-set ...`
+    rewrites every `baseline_source` it emits to
+    `s3://<test set bucket>/<set>/baseline/<file>/`, so it is what a manifest produced by
+    this CLI and fed back in contains. The baseline step was a local
+    `glob.glob(os.path.join(baseline_source, "**", "*"))`, which matches nothing against
+    such a value, so the result was a test set with a complete `input/` and an empty
+    `baseline/` — nothing for an evaluation to score against — reported as "created with
+    1 files", because that count is manifest rows and not uploaded objects.
 
-    The document itself still copies fine, which is why the failure is invisible: the
-    file count printed at the end counts manifest rows, not uploaded objects, so it
-    reports "created with 1 files" either way.
+    The assertion is therefore that **the baseline objects exist at the destination**,
+    with the nested path below the source prefix preserved, and that their bodies came
+    across. Asserting on the printed output could not tell the two versions apart:
+    printing success is exactly what the broken code did.
     """
     from idp_cli.cli import _create_test_set_from_manifest
 
@@ -1323,22 +1323,105 @@ def test_create_test_set_silently_uploads_no_baselines_for_an_s3_baseline_source
         s3.put_object(
             Bucket=TEST_SET_BUCKET,
             Key="other/baseline/invoice.pdf/result.json",
-            Body=b"{}",
+            Body=b'{"a": 1}',
+        )
+        s3.put_object(
+            Bucket=TEST_SET_BUCKET,
+            Key="other/baseline/invoice.pdf/sections/1/result.json",
+            Body=b'{"b": 2}',
         )
 
         _create_test_set_from_manifest(str(manifest), "set1", "IDP", None, resources())
 
-        keys = {
-            obj["Key"]
-            for obj in s3.list_objects_v2(Bucket=TEST_SET_BUCKET, Prefix="set1/").get(
-                "Contents", []
-            )
-        }
+        keys = all_keys(s3, TEST_SET_BUCKET, prefix="set1/")
+        copied_body = s3.get_object(
+            Bucket=TEST_SET_BUCKET, Key="set1/baseline/invoice.pdf/result.json"
+        )["Body"].read()
+
+    assert keys == {
+        "set1/input/invoice.pdf",
+        "set1/baseline/invoice.pdf/result.json",
+        "set1/baseline/invoice.pdf/sections/1/result.json",
+    }
+    assert copied_body == b'{"a": 1}'
+    output = capsys.readouterr().out
+    assert "Baseline objects uploaded: 2" in output
+    assert "Warning" not in output
+
+
+@pytest.mark.unit
+def test_create_test_set_warns_when_a_baseline_source_yields_no_objects(
+    tmp_path, capsys
+):
+    """A baseline source that resolves to nothing is named, rather than passed over.
+
+    Reported per row because the count printed at the end is manifest rows: a test set
+    whose `baseline/` came out empty is indistinguishable there from one whose baselines
+    all copied, and the consequence — an evaluation with nothing to compare against —
+    does not surface until the run is scored. A misspelled prefix and a baseline source
+    pointing into the very prefix that was just cleared both land here.
+    """
+    from idp_cli.cli import _create_test_set_from_manifest
+
+    manifest = _manifest_with(
+        tmp_path,
+        [("s3://source-bucket/docs/invoice.pdf", f"s3://{TEST_SET_BUCKET}/typo/")],
+    )
+
+    with mock_aws():
+        s3 = boto3.client("s3", region_name="us-east-1")
+        s3.create_bucket(Bucket="source-bucket")
+        s3.create_bucket(Bucket=TEST_SET_BUCKET)
+        s3.put_object(Bucket="source-bucket", Key="docs/invoice.pdf", Body=b"pdf")
+
+        _create_test_set_from_manifest(str(manifest), "set1", "IDP", None, resources())
+
+        keys = all_keys(s3, TEST_SET_BUCKET, prefix="set1/")
 
     assert keys == {"set1/input/invoice.pdf"}
     output = capsys.readouterr().out
-    assert "created with 1 files" in output
-    assert "Warning" not in output, "nothing tells the user the baselines were skipped"
+    assert "Warning: no baseline files found for invoice.pdf" in output
+    assert "Baseline objects uploaded: 0" in output
+
+
+@pytest.mark.unit
+def test_create_test_set_copies_a_baseline_source_naming_a_single_object(
+    tmp_path, capsys
+):
+    """A `baseline_source` naming one object copies that object under its own name.
+
+    The URI may name a prefix or a single key — an operator editing a manifest by hand
+    writes either — and taking the remainder of the key below the prefix gives the empty
+    string in the second case. The basename is used instead, so the baseline lands as
+    `baseline/<document>/<object name>` rather than at a key ending in a slash.
+    """
+    from idp_cli.cli import _create_test_set_from_manifest
+
+    manifest = _manifest_with(
+        tmp_path,
+        [
+            (
+                "s3://source-bucket/docs/invoice.pdf",
+                "s3://source-bucket/gt/invoice.json",
+            )
+        ],
+    )
+
+    with mock_aws():
+        s3 = boto3.client("s3", region_name="us-east-1")
+        s3.create_bucket(Bucket="source-bucket")
+        s3.create_bucket(Bucket=TEST_SET_BUCKET)
+        s3.put_object(Bucket="source-bucket", Key="docs/invoice.pdf", Body=b"pdf")
+        s3.put_object(Bucket="source-bucket", Key="gt/invoice.json", Body=b"{}")
+
+        _create_test_set_from_manifest(str(manifest), "set1", "IDP", None, resources())
+
+        keys = all_keys(s3, TEST_SET_BUCKET, prefix="set1/")
+
+    assert keys == {
+        "set1/input/invoice.pdf",
+        "set1/baseline/invoice.pdf/invoice.json",
+    }
 
 
 @pytest.mark.unit
