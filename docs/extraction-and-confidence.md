@@ -200,7 +200,7 @@ Agentic extraction requires models with tool-use support:
 > |---|---|---|
 > | Nova Lite / Pro / 2 Lite | `additionalModelRequestFields.inferenceConfig.topK` | 1–128 |
 > | Claude ≤ 4.6 (Haiku 4.5, Sonnet 4.5, Sonnet 4.6, Opus 4.5) | `additionalModelRequestFields.top_k` | −1 – 100,000,000 |
-> | Claude 4.7+ (Opus 4.7, Opus 5, Sonnet 5) | none — `` `top_k` is deprecated for this model `` | — |
+> | Claude 4.7+ (Opus 4.7, Opus 4.8, Opus 5, Opus 5.5, Sonnet 5) | none — `` `top_k` is deprecated for this model `` | — |
 > | OpenAI GPT-6 Astra | none — `Unknown parameter: 'top_k'` | — |
 > | xAI Grok 4.6 | unverifiable — returns 200 for any unknown key, including a deliberately bogus control | — |
 >
@@ -806,8 +806,9 @@ number of shards as well as the parallelism, *raising* it makes each request sma
 and the threshold higher. Holistic classification, which sends a whole packet in one
 request, is affected on the same >20-image rule.
 
-Whether the clamp costs accuracy depends on the model — on Claude 4.7+, Opus 5 and
-Sonnet 5 it is about 20% below the resolution they would otherwise use, on older
+Whether the clamp costs accuracy depends on the model — on Claude 4.7+, Opus 5,
+Opus 5.5 and Sonnet 5 it is about 20% below the resolution they would otherwise use,
+on older
 Claude models it costs nothing, and it has not been measured against extraction
 accuracy either way. See
 [A request with more than 20 page images](./configuration.md#a-request-with-more-than-20-page-images-caps-every-image-at-2000-px)
@@ -2138,8 +2139,10 @@ particularly easy to miss:
 - **A truncated run is *cheaper*.** Cost fell from $1.78 to $1.04 when a run
   truncated, so cost monitoring will not flag it either.
 
-So it must be detected structurally. Four signals are raised as
-[processing issues](#surfaced-in-the-ui), on **both** Simple and Advanced modes:
+So it must be detected structurally. Four signals are raised as processing
+issues — reaching the document list's **Processing Issues** column, the
+**Processing Report** tab and the tracking table's sparse
+`HasProcessingIssues` attribute — on **both** Simple and Advanced modes:
 
 | Code | Severity | Fires when |
 |---|---|---|
@@ -2371,20 +2374,31 @@ the Advanced extraction settings the Configuration editor renders — so choosin
 Advanced mode is the whole of the opt-in. Sharding then engages whenever the
 section exceeds one shard's budget, which at the shipped `max_pages_per_shard: 5`
 means any section over **five** pages of ordinary text, and fewer pages when they
-are dense enough to fill the shard token budget. Each shard agent gets **the whole
-section's** Pydantic model as its extraction tool, so the floor is enforced *per
-shard*, not at the merge. A shard sees only its page range, so a `minItems: 100`
-floor on a 17-page section — four shards at the shipped defaults — rejects every
-shard that holds fewer than 100 rows, and a shard over a cover page holds none at
-all. The document fails even though it genuinely contains 800 rows.
+are dense enough to fill the shard token budget. Each shard agent's extraction tool
+is built from a model that carries **the whole section's row-count bounds**, so the
+floor is enforced *per shard*, not at the merge. A shard sees only its page range, so
+a `minItems: 100` floor on a 17-page section — four shards at the shipped defaults —
+rejects every shard that holds fewer than 100 rows, and a shard over a cover page
+holds none at all. The document fails even though it genuinely contains 800 rows.
 
 There is no floor that is both useful and safe here: the only value every shard can
-satisfy is no floor. The relaxed per-shard *feedback* validator — which drops
-`required` and `minItems` precisely because a shard legitimately holds neither —
-governs the agent's self-correction round, not the tool boundary that rejects the
-call, so it does not rescue this. So **if the section shards, do not put `minItems`
-on its lists**; use `extraction.row_shortfall_action`, which is evaluated once on
-the merged section and is the only completeness lever here that is shard-aware.
+satisfy is no floor. The relaxed per-shard *feedback* validator, which drops
+`required` and `minItems` precisely because a shard legitimately holds neither,
+governs the agent's self-correction round rather than the tool boundary that rejects
+the call, so it does not rescue this. So **if the section shards, do not put
+`minItems` on its lists**; use `extraction.row_shortfall_action`, which is evaluated
+once on the merged section and is the only completeness lever here that is
+shard-aware.
+
+**`required` behaves differently, and needs no such warning.** A shard's tool does
+accept `null` for a required list or nested object, so a shard covering pages that
+contain none of a required table answers `null` — the answer its instruction asks for
+— and is not sent back to correct it. Presence is judged once on the *merged* section,
+against the real class schema, where a null property reads as absent and is reported
+by `extraction.validation` like any other required-property violation. That split is
+why a `required` list is safe on a section that shards and a section-sized `minItems`
+is not: a shard holding none of the rows can satisfy `required` (with `null`, or with
+`[]`), and can satisfy no row-count floor at all.
 
 Without `minItems`, the OCR-row estimate
 (`extraction_rows_below_ocr_estimate`) is what catches a partial Simple-mode list — it

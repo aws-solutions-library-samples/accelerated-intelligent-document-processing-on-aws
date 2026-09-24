@@ -459,10 +459,10 @@ def _field_diffs(previous, saved):
     if not previous:
         return {}
     try:
-        from idp_common.evaluation.curve_store import _flatten_values
+        from idp_common.evaluation.curve_store import flatten_values
 
-        before = _flatten_values(previous.get("inference_result") or {})
-        after = _flatten_values(saved.get("inference_result") or {})
+        before = flatten_values(previous.get("inference_result") or {})
+        after = flatten_values(saved.get("inference_result") or {})
     except Exception as e:  # noqa: BLE001 — provenance must not fail the save
         logger.warning(f"Could not diff review changes: {e}")
         return {}

@@ -19,6 +19,7 @@ The IDP Common library provides these main modules:
 - **[Summarization](summarization/README.md)**: Document summarization services
 - **[BDA](bda/README.md)**: Bedrock Data Automation integration
 - **[Document Service Factory](docs_service_README.md)**: The `create_document_service()` entry point Lambdas use to record document state (always DynamoDB-backed)
+- **Document Failure** (`document_failure.py`): recording *why* a document failed before the handler re-raises — see [Recording a document-level failure](#-recording-a-document-level-failure) below
 - **[Reporting](reporting/README.md)**: Analytics data storage
 - **[Assessment](assessment/README.md)**: Confidence scoring and bounding boxes
 - **[Discovery](discovery/README.md)**: Document class and schema discovery
@@ -33,6 +34,7 @@ The IDP Common library provides these main modules:
 - **[Config](config/README.md)**: Configuration loading, merging, validation, and typed models
 - **[Hooks](hooks/README.md)**: Helpers for authoring pipeline-hook Lambdas (load / mutate / return a Document)
 - **[Monitoring](monitoring/README.md)**: Shared monitoring foundation (logs, X-Ray, Step Functions, stack discovery)
+- **Step Functions history** (`stepfunctions_history.py`): the one rule for reading an execution history and naming the state that failed — see [Naming the state that failed](#-naming-the-state-that-failed) below
 
 ## 🗃️ Key Classes
 
@@ -379,6 +381,200 @@ schema = result["schema"]  # JSON Schema dict
 document_service = create_document_service()
 document = document_service.update_document(document)
 ```
+
+## 🧯 Recording a document-level failure
+
+`document_failure.py` is what a Lambda handler calls in the `except` block it is
+about to re-raise from, so the document's own record carries the explanation. It
+exists because a raise is invisible to a reader: none of the pipeline's task states
+has a `Catch`, and `workflow_tracker` writes only a bare `Document` of status plus
+completion time for a FAILED execution, so the pre-raise write is the only
+opportunity there is.
+
+```python
+from idp_common.document_failure import (
+    RULE_VALIDATION_FAILED_CODE, RULE_VALIDATION_FAILED_MESSAGE,
+    RULE_VALIDATION_STAGE, SectionDiagnosis,
+    persist_failed_section, persist_failed_document, summarize_errors,
+)
+
+try:
+    document = service.do_work(document)
+except Exception as error:
+    persist_failed_section(            # one section, atomic — use inside a Map
+        document_service=document_service,
+        document=document,
+        error=error,
+        diagnosis=SectionDiagnosis(
+            section_id=section_id,
+            stage=RULE_VALIDATION_STAGE,
+            code=RULE_VALIDATION_FAILED_CODE,
+            message=RULE_VALIDATION_FAILED_MESSAGE,        # fixed template
+            root_cause=summarize_errors(document.errors,   # variable text
+                                        fallback=f"{type(error).__name__}: {error}"),
+        ),
+        section_index=section_index,
+    )
+    raise                              # unchanged: same type, message, traceback
+```
+
+Pick the writer by what the handler owns. `persist_failed_section` issues
+`SET Sections[i] = :section`, which is what a handler running inside a `Map` needs
+— concurrent iterations do not read-modify-write over each other.
+`persist_failed_document` issues one whole-document `update_document`, for a handler
+that already owns that write and holds every section.
+
+### The rules it holds, and why they are here rather than at each call site
+
+1. **The original exception propagates unchanged.** Every failure inside the persist
+   is logged and swallowed, and neither function ever raises. A DynamoDB write that
+   fails while trying to make an exception more visible must not surface in its
+   place, or the Step Functions cause reports an unavailable table instead of the
+   actual failure.
+2. **Only an issue with the same `code` is replaced.** A retried document does not
+   collect one issue per attempt, and a diagnosis another stage wrote — the thing a
+   reader most needs alongside this one — is not deleted.
+3. **A transient failure records nothing**, because the state machine is about to
+   retry it and a marked section would show red for the length of the ladder (eight
+   attempts at 2.5x backoff from ten seconds) and then clear. `failure_is_transient`
+   is the same predicate the extraction and assessment handlers use. Of the three
+   call sites this is load-bearing at exactly one — the rule-validation orchestrator,
+   which re-raises the caught exception unchanged; the other two raise an exception
+   they synthesise from a status check, which carries no transient verdict. The
+   residual is that an exhausted ladder leaves the sections unmarked.
+4. **Variable-length text goes in `root_cause`.** `ProcessingIssue.__post_init__`
+   bounds that field (and every string leaf of `details`) because they share one
+   DynamoDB item with a 400 KB ceiling. `message` is written to DynamoDB and is
+   **not** bounded, so every `*_MESSAGE` constant here is a fixed template with no
+   interpolation — a test asserts that.
+
+### Why the diagnosis goes on a section, never on the document
+
+The obvious alternative is to persist `document.errors`, which is what these stages
+actually write. It is the wrong answer twice: `_document_to_update_expressions` has
+never persisted `errors`, and `errors` is the scattered free-text signal
+`ProcessingIssue` was introduced to replace.
+
+A new document-level `ProcessingIssues` attribute is also declined, for the reason
+already recorded where classification faced the same choice
+(`ClassificationService._record_unclassified_page_issues`): `ProcessingIssues` is
+a **Section** field in the API schema, so a document-level issue bumps
+`ProcessingIssueCount` — which the document list does read — and then has no text to
+show behind the badge. Giving it text means a new DynamoDB attribute, a resolver
+shaping it, a schema type and a UI surface.
+
+So each call site names the section or sections the failure belongs to, and travels
+the path that is already persisted and already rendered. Where a diagnosis is
+genuinely document-scope and no section can be named, it is left in the exception
+and the log rather than attributed to a section by guess — `processresults_function`
+does exactly that with `document.errors`, and a test pins it.
+
+⚠️ **Which write you pick decides whether the document list's badge moves.**
+`ProcessingIssueCount` is written by `update_document` and **not** by
+`update_document_section`, so a failure recorded through `persist_failed_section`
+shows on the Sections panel but can leave the list badge at its previous value.
+Neither list resolver recovers it — the range resolver returns the stored value, and
+the counter is absent from the fast GSI's INCLUDE projection, which also returns no
+`Sections` to derive from. This is not an oversight to patch at that writer: it does
+not read the item, the per-section handler has already narrowed `document.sections`
+to its own section (so a local count would be 1 and would clobber a larger correct
+one), and ten sections are being written concurrently. Correcting it needs an atomic
+increment, which is not idempotent across an eight-attempt retry ladder, and it would
+have to cover `extraction_failed` too.
+
+### Adding a new failure code
+
+The codes meaning "the stage raised" are declared in `FAILURE_CODES` here and in
+`EXTRACTION_FAILED_CODE` in `extraction/failure.py`. The UI renders those as
+**Failed** and every other error-severity code as **Incomplete**, from a hand-written
+literal in `src/ui/src/components/common/processing-issues-utils.ts`. That is a
+different language, so nothing about adding a code here would make it appear there —
+`scripts/tests/test_failure_code_ui_parity.py` fails when the two disagree in either
+direction. Add the code to the `ProcessingIssue` docstring's inventory too.
+
+## 🐢 Lazy submodule loading, and where `mock.patch` goes wrong
+
+`idp_common/__init__.py` loads every submodule through `__getattr__`, so `import
+idp_common` costs the standard library and nothing else. That is what lets a Lambda
+install `idp_common[core]` without dragging in the `[all]` dependency set — nothing
+imports Strands, pypdfium2 or the Textract parser until something asks for it.
+`tests/unit/test_lazy_submodule_loading.py` measures that in a fresh interpreter, which
+is the only place it can be measured: by the time a test suite is running, half the
+library is imported.
+
+The loader defers to `importlib`, which means to `sys.modules`. It deliberately keeps no
+cache of its own: a second cache beside `sys.modules` can hold a **different object for
+the same name**, and `unittest.mock.patch` resolves its target through `sys.modules`, so
+a patch applied to one copy is invisible to code holding the other (#1159).
+
+⚠️ **Removing that cache does not make patching safe, and the difference is worth
+understanding before writing a test.** The duplication that prompted #1159 is created
+outside this package: `coverage` imports each `--cov=<module>` target inside a
+`sys_modules_saved()` block and then deletes every `sys.modules` entry that import
+added, while the module objects survive as attributes of their parent packages. Any
+later import of such a name re-executes the file and yields a second object. Nothing in
+`__init__.py` can prevent that.
+
+**So patch at the point of use, and check how the consumer reached the name** — the two
+cases need different targets and the wrong one fails silently, as a mock that records
+zero calls:
+
+| How the consumer imports it | Patch target |
+|---|---|
+| Module-level `from idp_common import s3`, then `s3.write_content(...)` | `idp_common.<consumer module>.s3.write_content` — the consumer's own captured object |
+| Function-local `from idp_common.image import f` inside the method | `idp_common.image.f` — the name is resolved from `sys.modules` at call time |
+
+## 🧭 Naming the state that failed
+
+`stepfunctions_history.py` answers one question about a Step Functions execution
+history — which state the terminal failure is attributable to — and it exists because
+two callers answered it separately and both got it wrong the same way.
+
+```python
+from idp_common.stepfunctions_history import failing_state, failing_state_is_resolvable
+
+state = failing_state(events)          # events in either direction; None if unknowable
+```
+
+**Why "the last state entered before the failure" is the wrong answer.** A `Catch` that
+routes to a `Fail` state enters that handler *before* the terminal `ExecutionFailed`
+arrives, and `FailStateEntered` is a real `HistoryEventType` that matches a
+`StateEntered` suffix like any other transition. So the history reads:
+
+```
+TaskStateEntered:  Extraction      <- the state that actually failed
+TaskFailed
+FailStateEntered:  <handler>
+ExecutionFailed
+```
+
+Both the chronological spelling ("the last state entered") and the reverse-order one
+("the first state entered we see") name the handler, and both read as obviously right.
+The rule that works keeps the two sources apart: the **state** comes from the last
+task-level failure, the **error text** from the terminal event. Nine of this workflow's
+states route a caught failure to a `Fail` state, so this is the ordinary case, not an
+edge one.
+
+Two things to know before relying on the answer:
+
+- It returns `None` rather than a placeholder when the window holds no state transition
+  older than the failure. Callers render their own "unknown", because a confident wrong
+  state name costs more than an admitted gap — it sends a reader to the wrong log group.
+  `failing_state_is_resolvable(events, more_pages=...)` is the matching stop condition
+  for a caller paging backwards from the failure, and it deliberately refuses to call an
+  execution-level failure resolved while pages remain: the handler's own transition
+  would otherwise satisfy it.
+- Attribution infers causality from **adjacency**, so inside a concurrent `Map` — whose
+  iterations share one history and therefore interleave — it can name a sibling
+  iteration's state. Walking `previousEventId` is the exact fix and has not been made.
+  Such a walk has to start from an **outcome** event: a `TaskStateEntered` precedes its
+  own `TaskScheduled`, so walking back from a state transition reaches the *previous*
+  state's events.
+
+The module imports nothing outside the standard library, deliberately — the CodeBuild
+deployment harness (`scripts/sdlc/codebuild_deployment.py`) is one of its two callers
+and cannot afford `strands`, which the other one (the error-analyzer agent tool) pulls
+in.
 
 ## 📝 Best Practices
 

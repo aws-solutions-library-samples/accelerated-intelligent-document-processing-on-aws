@@ -413,12 +413,12 @@ def observations_from_baseline_review(
         return []
 
     explainability = before.get("explainability_info")
-    confidences = _flatten_confidences(explainability)
+    confidences = flatten_confidences(explainability)
     if not confidences:
         return []
 
-    before_values = _flatten_values(before.get("inference_result") or {})
-    after_values = _flatten_values(after.get("inference_result") or {})
+    before_values = flatten_values(before.get("inference_result") or {})
+    after_values = flatten_values(after.get("inference_result") or {})
 
     observations: List[Tuple[float, bool]] = []
     for path, confidence in confidences.items():
@@ -433,7 +433,7 @@ def observations_from_baseline_review(
 _MISSING = object()
 
 
-def _flatten_confidences(node: Any, prefix: str = "") -> Dict[str, float]:
+def flatten_confidences(node: Any, prefix: str = "") -> Dict[str, float]:
     """Map field path → confidence from an ``explainability_info`` payload."""
     found: Dict[str, float] = {}
     if isinstance(node, dict):
@@ -443,50 +443,63 @@ def _flatten_confidences(node: Any, prefix: str = "") -> Dict[str, float]:
         for key, child in node.items():
             if key in ("confidence", "confidence_threshold", "geometry"):
                 continue
-            path = f"{prefix}.{key}" if prefix else key
-            found.update(_flatten_confidences(child, path))
+            found.update(flatten_confidences(child, field_child_path(prefix, key)))
     elif isinstance(node, list):
         for index, child in enumerate(node):
-            found.update(_flatten_confidences(child, _list_child_path(prefix, index)))
+            found.update(flatten_confidences(child, list_child_path(prefix, index)))
     return found
 
 
-def _list_child_path(prefix: str, index: int) -> str:
+def field_child_path(prefix: str, key: str) -> str:
+    """Path for the property ``key`` of an object found at ``prefix``.
+
+    The trivial half of the field-path rule, public for the same reason
+    :func:`list_child_path` is: a caller that needs one needs both, and keeping
+    them together is what stops a second walker reproducing one and not the other.
+    """
+    return f"{prefix}.{key}" if prefix else key
+
+
+def list_child_path(prefix: str, index: int) -> str:
     """Path for element ``index`` of a list found at ``prefix``.
 
-    The un-indexed case is ONLY the outermost list: ``explainability_info``
-    arrives wrapped in a single-element list, which must not add a path level.
+    **The index is keyed off DEPTH, not off the list's length.** The un-indexed
+    case is ONLY the outermost list: ``explainability_info`` arrives wrapped in a
+    single-element list, which must not add a path level. Every list below that
+    contributes ``[i]`` however many elements it holds.
 
-    This used to be ``prefix if len(node) == 1 else f"{prefix}[{index}]"`` — keyed
-    on list LENGTH rather than on depth, so any single-element list lost its
-    index. That made the key depend on the data: a one-row table produced
-    ``Transactions.date`` while a two-row table produced ``Transactions[0].date``,
-    and confidence-curve keys therefore did not join across documents. Multi-
-    instance sections (#715) make it acute — every field of a one-instance section
-    keys as ``instances.Field`` and of a two-instance section as
-    ``instances[0].Field``.
+    Keying on length instead makes the key depend on the data — a one-row table
+    produces ``Transactions.date`` and a two-row table ``Transactions[0].date``, so
+    confidence-curve keys do not join across documents. Multi-instance sections
+    (#715) make that acute: every field of a one-instance section keys as
+    ``instances.Field`` and of a two-instance section as ``instances[0].Field``.
 
-    ⚠ Consequence: keys for single-element lists change shape (``F.x`` ->
-    ``F[0].x``). Curve points already stored under the old key for a
-    single-element list will not join with new ones; they were already failing to
-    join with the multi-element form, so this makes one consistent shape out of
-    two inconsistent ones rather than breaking a working join.
+    This is the single implementation of the rule. It is public, and exported from
+    :mod:`idp_common.evaluation`, because a caller building field paths outside
+    this package (the test-set resolver's confidence walkers, the benchmark
+    harness) must key them the same way or its paths silently fail to join with a
+    stored curve on exactly the single-element lists that are hardest to notice
+    (#1066).
     """
     if not prefix:
         return prefix
     return f"{prefix}[{index}]"
 
 
-def _flatten_values(node: Any, prefix: str = "") -> Dict[str, Any]:
-    """Map field path → scalar value, matching ``_flatten_confidences`` paths."""
+def flatten_values(node: Any, prefix: str = "") -> Dict[str, Any]:
+    """Map field path → scalar value, matching ``flatten_confidences`` paths.
+
+    Scalar leaves only: an empty list or empty object contributes no entry, since
+    it has no value to record. A caller that needs to know a container was empty
+    has to observe that itself — see the test-set resolver's ``_absent_field_paths``.
+    """
     found: Dict[str, Any] = {}
     if isinstance(node, dict):
         for key, child in node.items():
-            path = f"{prefix}.{key}" if prefix else key
-            found.update(_flatten_values(child, path))
+            found.update(flatten_values(child, field_child_path(prefix, key)))
     elif isinstance(node, list):
         for index, child in enumerate(node):
-            found.update(_flatten_values(child, _list_child_path(prefix, index)))
+            found.update(flatten_values(child, list_child_path(prefix, index)))
     elif prefix:
         found[prefix] = node
     return found

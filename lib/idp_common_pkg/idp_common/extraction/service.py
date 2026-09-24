@@ -84,6 +84,7 @@ try:
     from idp_common.schema import (
         create_pydantic_model_from_json_schema,
         nullable_leaves_for_transport,
+        nullable_required_containers_for_shard,
     )
 
     AGENTIC_AVAILABLE = True
@@ -4626,6 +4627,43 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
             clean_schema=False,
         )
 
+    def _shard_transport_model(self, schema: dict[str, Any], class_label: str) -> Any:
+        """The Pydantic model handed to ONE SHARD's extraction agent for ``schema``.
+
+        :meth:`_transport_model`, plus: a **required array or nested object also
+        accepts null** (``schema.nullable_required_containers_for_shard``). That is
+        what makes the shard instruction — "if a field does not appear in your pages,
+        leave it null — another shard will provide it" — satisfiable for a declared
+        list or group. Without it the instruction names the one answer the shard's
+        own ``extraction_tool`` rejects, and a shard covering pages that genuinely
+        contain none of a required list spends a correction round discovering it must
+        emit ``[]`` rather than ``null``, with the in-loop feedback validator
+        reporting the payload as satisfying every constraint (#1078).
+
+        This is the tool-boundary half of the shard relaxation;
+        :meth:`_shard_schema_validator` is the feedback half. Both are shard-scoped
+        and they now agree about presence. ``required`` is still KEPT in both, so an
+        omitted key, an empty tool call and a misspelled key set still fail per shard
+        — the structural guard #782 deliberately preserved — and ``minItems`` still
+        reaches the tool boundary unchanged.
+
+        Presence is enforced once on the MERGED section: ``extraction.validation``
+        validates the merged result against the real schema, treats a null property
+        as absent, and reports ``'X' is a required property``. A required list or
+        group that no shard saw is therefore reported rather than forced, which is
+        the treatment a null required scalar already gets. Note the merge itself
+        normalises a list field to ``[]`` whatever the shards returned
+        (``runtime._merge_shard_results``), so for a list the merged value is
+        unchanged by this; it is the per-shard round that is saved.
+        """
+        return create_pydantic_model_from_json_schema(
+            schema=nullable_required_containers_for_shard(
+                nullable_leaves_for_transport(schema)
+            ),
+            class_label=class_label,
+            clean_schema=False,
+        )
+
     def _shard_schema_validator(self):
         """The in-loop validator for ONE shard: types/formats/enums only.
 
@@ -4637,12 +4675,13 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
         ⚠️ This relaxation reaches the agent's **self-correction feedback** only. It
         is passed as ``schema_validator``, which ``structured_output_async`` consults
         after a tool call; the ``extraction_tool`` itself is built from
-        ``data_format``, the whole-section transport model, so a ``minItems`` floor
-        IS enforced per shard at the tool boundary and a section-sized floor is
-        unsatisfiable by any shard. Relaxing that too would mean generating a
-        per-shard transport model; until then, ``row_shortfall_action`` is the
-        shard-aware completeness lever. See the ``extraction_list_truncated`` entry
-        in this package's README.
+        ``data_format``, which is the **shard** transport model
+        (:meth:`_shard_transport_model`). That model relaxes *presence* for a required
+        container and carries every **row-count bound** unchanged, so a ``minItems``
+        floor IS enforced per shard at the tool boundary and a section-sized floor is
+        unsatisfiable by any shard. ``row_shortfall_action`` is the shard-aware
+        completeness lever. See the ``extraction_list_truncated`` entry in this
+        package's README.
         """
         return self._build_schema_validator(shard_scoped=True)
 
@@ -5792,10 +5831,19 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
                     preflight_parse_result,
                     scope_note=self._SHARD_SCOPE_NOTE,
                 )
+                # SHARD transport model: as `dynamic_model`, plus a required array or
+                # nested object may be null, because a shard covering none of its
+                # pages has no other representable answer and `_run_shard_agent`
+                # explicitly asks for null (#1078). Used for the shard tools and for
+                # the merge; `dynamic_model` stays the whole-section model and is what
+                # escalation and the completeness check below read.
+                shard_model = self._shard_transport_model(
+                    self._class_schema, section_info.class_label
+                )
                 structured_data, response_with_metering = _asyncio.run(
                     concurrent_structured_output_async(
                         model_id=model_id,
-                        data_format=dynamic_model,
+                        data_format=shard_model,
                         shard_payloads=shard_payloads,
                         max_parallelism=num_batches,
                         config=self.config,
@@ -7830,11 +7878,18 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
     ) -> tuple[str, type, list[dict[str, Any]], str | None]:
         """Build the agentic shard plan for the SFN runtime.
 
-        Returns ``(model_id, dynamic_model, shard_payloads, custom_instruction)``
+        Returns ``(model_id, shard_model, shard_payloads, custom_instruction)``
         mirroring the construction in ``_invoke_extraction_model``'s agentic
         branch, but standalone so the per-shard SFN Lambda (and the merge step)
         can each rebuild the identical plan deterministically. Requires
         ``_prepare_section_context`` to have populated the per-section state.
+
+        The model is the SHARD transport model (``_shard_transport_model``), which is
+        what both consumers of this plan need: it is the shard Lambda's
+        ``extraction_tool``, and it is what the merge step re-hydrates each shard's
+        persisted fields with. The whole-section model is a different object — the
+        merge step builds it separately for the validation/escalation and
+        completeness passes, which must see the real presence and row-count rules.
 
         The returned ``custom_instruction`` is ONE instruction for **all** of the
         section's shards (the in-process runtime shares it the same way), so it
@@ -7845,9 +7900,11 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
         class_model_override = self._class_schema.get(X_AWS_IDP_EXTRACTION_MODEL)
         model_id = class_model_override or self.config.extraction.model
 
-        # TRANSPORT model — scalar leaves nullable so the agent can abstain on a
-        # cell; `required` is KEPT so structure is still enforced (#782).
-        dynamic_model = self._transport_model(
+        # SHARD transport model — scalar leaves nullable so the agent can abstain on
+        # a cell (#782), and a required array or nested object nullable too because a
+        # shard is told to leave an out-of-shard field null (#1078). `required` is
+        # KEPT in both, so an omitted key or an empty tool call still fails.
+        shard_model = self._shard_transport_model(
             self._class_schema, section_info.class_label
         )
 
@@ -7915,7 +7972,7 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
             send_images=send_images,
             max_shards=self.config.extraction.agentic.max_concurrent_batches,
         )
-        return model_id, dynamic_model, shard_payloads, custom_instruction
+        return model_id, shard_model, shard_payloads, custom_instruction
 
     def _persist_section_id(self, section_info: SectionInfo) -> str:
         """Deterministic per-section id used for shard persistence keys.
@@ -7968,7 +8025,7 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
         if self._prepare_section_context(document, section, section_info) is None:
             return {"status": "empty_schema", "shard_index": shard_index}
 
-        model_id, dynamic_model, shard_payloads, custom_instruction = (
+        model_id, shard_model, shard_payloads, custom_instruction = (
             self._build_agentic_shard_plan(section_info)
         )
         if not shard_payloads or shard_index >= len(shard_payloads):
@@ -7985,7 +8042,7 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
                 total_shards=len(shard_payloads),
                 payload=payload,
                 model_id=model_id,
-                data_format=dynamic_model,
+                data_format=shard_model,
                 config=self.config,
                 section_id=self._persist_section_id(section_info),
                 custom_instruction=custom_instruction,
@@ -8131,8 +8188,15 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
                 document, section, section_info, section_id, t0
             )
 
-        model_id, dynamic_model, shard_payloads, _ci = self._build_agentic_shard_plan(
+        model_id, shard_model, shard_payloads, _ci = self._build_agentic_shard_plan(
             section_info
+        )
+        # The merge re-hydrates each shard with the model that produced it, then hands
+        # the validation/escalation and completeness passes the WHOLE-SECTION model,
+        # whose presence and row-count rules are the ones that apply to the merged
+        # result (#1078).
+        dynamic_model = self._transport_model(
+            self._class_schema, section_info.class_label
         )
         persist_section_id = self._persist_section_id(section_info)
 
@@ -8154,9 +8218,9 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
             )
 
         merged_dict, merged_metering, conflicts = merge_shard_dicts(
-            shard_dicts, dynamic_model
+            shard_dicts, shard_model
         )
-        structured_data = dynamic_model(**merged_dict)
+        structured_data = shard_model(**merged_dict)
         extracted_fields = structured_data.model_dump(mode="json")
         if conflicts:
             merged_metering["_shard_scalar_conflicts"] = conflicts

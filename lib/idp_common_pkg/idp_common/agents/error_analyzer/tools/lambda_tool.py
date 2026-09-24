@@ -8,6 +8,7 @@ Lambda tools for document context extraction.
 import json
 import logging
 import os
+from collections.abc import Hashable
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 
@@ -156,6 +157,169 @@ def get_lookup_function_name() -> str:
     raise ValueError("LOOKUP_FUNCTION_NAME environment variable not set")
 
 
+#: Event types whose detail carries a ``resource`` naming what was invoked, and the
+#: detail key each uses. Measured against the Step Functions API model in the
+#: installed botocore, not assumed: ``LambdaFunctionFailedEventDetails`` and
+#: ``LambdaFunctionTimedOutEventDetails`` hold only ``cause`` and ``error``, and
+#: ``StateEnteredEventDetails`` only ``input``, ``inputDetails`` and ``name``. The
+#: failing function's identity simply is not in the failure event.
+_RESOURCE_BEARING_EVENTS = {
+    "LambdaFunctionScheduled": "lambdaFunctionScheduledEventDetails",
+    "TaskScheduled": "taskScheduledEventDetails",
+}
+
+#: The events this parser reads, and the detail key each one carries its payload in.
+#: One mapping rather than a membership list plus an `or` chain, so "absent key" and
+#: "present but empty" stay distinguishable — see the note at the lookup.
+_OUTCOME_DETAIL_KEYS = {
+    "LambdaFunctionSucceeded": "lambdaFunctionSucceededEventDetails",
+    "LambdaFunctionFailed": "lambdaFunctionFailedEventDetails",
+    "LambdaFunctionTimedOut": "lambdaFunctionTimedOutEventDetails",
+    # ⚠️ The *Failed-to-even-start family, which is what a THROTTLE or a permission
+    # failure at invoke time produces -- precisely the errors the workflow's retry
+    # ladders enumerate. Omitting these left `failed_functions` empty for that whole
+    # class of failure, which is the one an operator is most likely to be looking at.
+    # Their scheduling predecessor exists, so the causal walk resolves them.
+    "LambdaFunctionScheduleFailed": "lambdaFunctionScheduleFailedEventDetails",
+    "LambdaFunctionStartFailed": "lambdaFunctionStartFailedEventDetails",
+    "TaskSucceeded": "taskSucceededEventDetails",
+    "TaskFailed": "taskFailedEventDetails",
+    "TaskTimedOut": "taskTimedOutEventDetails",
+    "TaskStartFailed": "taskStartFailedEventDetails",
+    "TaskSubmitFailed": "taskSubmitFailedEventDetails",
+    "TaskStateEntered": "stateEnteredEventDetails",
+    "TaskStateExited": "stateExitedEventDetails",
+}
+
+#: Events that carry a STATE's identity rather than an invocation's, and so must
+#: never be resolved causally. See the note at the resolution site: such an event
+#: precedes its own scheduling event, so a backwards walk can only find another
+#: task's.
+_STATE_TRANSITION_EVENTS = frozenset({"TaskStateEntered", "TaskStateExited"})
+
+#: Failure events that should contribute a failed function name. Both families are
+#: needed because this workflow uses **both** Lambda integration styles: 15 task
+#: states name a function ARN directly (giving ``LambdaFunction*`` events) and 9 go
+#: through ``arn:<partition>:states:::lambda:invoke`` (giving ``Task*`` events), so
+#: reading either family alone leaves a third of the pipeline unattributable.
+_FAILURE_EVENTS_WITH_A_FUNCTION = (
+    "LambdaFunctionFailed",
+    "LambdaFunctionTimedOut",
+    "LambdaFunctionScheduleFailed",
+    "LambdaFunctionStartFailed",
+    "TaskFailed",
+    "TaskTimedOut",
+    "TaskStartFailed",
+    "TaskSubmitFailed",
+)
+
+#: How far back along ``previousEventId`` to look for the scheduling event.
+#:
+#: The real chains are short: ``LambdaFunctionFailed -> LambdaFunctionStarted ->
+#: LambdaFunctionScheduled`` is two hops, and ``TaskFailed -> TaskStarted ->
+#: TaskScheduled`` is two. A retry re-schedules, so the walk lands on that attempt's
+#: own scheduling rather than the first one. The bound exists so a failure whose
+#: chain is broken stops at "unknown" instead of walking back through the whole
+#: history and attributing itself to some unrelated earlier invocation — a wrong
+#: function name is worse here than none, because it selects the log group the agent
+#: goes on to search.
+_MAX_CAUSAL_HOPS = 6
+
+
+def _function_name_from_arn(resource: Optional[str]) -> Optional[str]:
+    """The function name in a Lambda **function** ARN, or None.
+
+    Requires the ``:function:`` marker rather than splitting positionally. A Lambda
+    ARN that is not a function ARN — a layer version, an event-source mapping, a
+    code-signing config — has a layer name or a uuid in that position, and for an
+    optimized integration ``resource`` is the integration verb (``invoke``) rather
+    than any ARN at all.
+    """
+    if resource and ":function:" in resource:
+        return resource.split(":function:")[-1] or None
+    return None
+
+
+def _function_name_from_task_parameters(parameters: Any) -> Optional[str]:
+    """The function an optimized ``lambda:invoke`` task was pointed at.
+
+    For that integration the scheduling event's ``resource`` is ``invoke`` and the
+    target is in the task's ``parameters`` under ``FunctionName``, which the caller
+    may have given as a full ARN or as a bare name.
+    """
+    if isinstance(parameters, str):
+        try:
+            parameters = json.loads(parameters)
+        except (json.JSONDecodeError, TypeError):
+            return None
+    if not isinstance(parameters, dict):
+        return None
+    target = parameters.get("FunctionName")
+    if not isinstance(target, str) or not target:
+        return None
+    # A bare name is accepted; anything containing a colon that is not a function
+    # ARN is refused rather than guessed at. That refuses a QUALIFIED bare name —
+    # `MyFunction:PROD` or `MyFunction:3`, a real function plus an alias or
+    # version. Unreachable from this workflow, whose nine optimized states all pass
+    # full ARNs, and refusing is the safe direction: the alternative is splitting on
+    # a colon and hoping, which is the positional read #1128 removed.
+    return _function_name_from_arn(target) or (target if ":" not in target else None)
+
+
+def _index_invoked_functions(
+    execution_events: List[Dict[str, Any]],
+) -> Dict[Any, str]:
+    """Map each scheduling event's ``id`` to the function name it names."""
+    invoked: Dict[Any, str] = {}
+    for event in execution_events:
+        detail_key = _RESOURCE_BEARING_EVENTS.get(event.get("type", ""))
+        if not detail_key:
+            continue
+        detail = event.get(detail_key) or {}
+        if not isinstance(detail, dict):
+            continue
+        name = _function_name_from_arn(detail.get("resource"))
+        if name is None:
+            name = _function_name_from_task_parameters(detail.get("parameters"))
+        if name is not None and event.get("id") is not None:
+            invoked[event["id"]] = name
+    return invoked
+
+
+def _resolve_invoked_function(
+    event: Dict[str, Any],
+    events_by_id: Dict[Any, Dict[str, Any]],
+    invoked_by_id: Dict[Any, str],
+) -> Optional[str]:
+    """Follow ``previousEventId`` back to this event's own scheduling event.
+
+    Causal, not positional. Taking "the nearest preceding scheduling event" instead
+    would misattribute inside a concurrent ``Map``: ``ProcessSections`` runs at
+    ``MaxConcurrency`` 10 and the shard ``Map`` at 5, iterations share one history,
+    so the event physically before a failure routinely belongs to a different
+    iteration and a different function.
+    """
+    # No visited-set. The `for` bounds the walk by construction, so a cycle in
+    # `previousEventId` terminates at the bound and returns None — which is the same
+    # answer a visited-set gives, a few iterations later. A visited-set was here, and
+    # removing it changed no test result in either direction: with the bound present
+    # there is no input that distinguishes the two. Defensive code no test can tell
+    # apart from its own absence is code nobody can maintain or safely change, so it
+    # is gone rather than kept with a test that only appears to cover it.
+    current: Optional[Dict[str, Any]] = event
+    for _ in range(_MAX_CAUSAL_HOPS + 1):
+        if current is None:
+            return None
+        current_id = current.get("id")
+        if current_id in invoked_by_id:
+            return invoked_by_id[current_id]
+        previous_id = current.get("previousEventId")
+        if previous_id in (None, 0):
+            return None
+        current = events_by_id.get(previous_id)
+    return None
+
+
 def extract_lambda_request_ids(
     execution_events: List[Dict[str, Any]],
 ) -> Dict[str, Any]:
@@ -173,50 +337,66 @@ def extract_lambda_request_ids(
     failed_functions = []
     all_request_ids = []
 
-    for i, event in enumerate(execution_events):
+    # Built once. The function's identity lives in the SCHEDULING event, and a
+    # failure reaches it by following `previousEventId` -- see
+    # `_resolve_invoked_function`. Reading `resource` off the failure event itself,
+    # which is what this did, could never work: no Lambda failure detail carries
+    # that field, so `failed_functions` was always empty and
+    # `primary_failed_function` always None in production (#1171).
+    invoked_by_id = _index_invoked_functions(execution_events)
+    # `Hashable` rather than only `is not None`: an unhashable `id` would raise while
+    # building this dict, and the caller's broad `except` turns any raise here into
+    # `document_found: False`, discarding every request id and failed-function name
+    # already gathered. Unreachable from a real history, where `id` is an integer — but
+    # the cost of being wrong is total, and the guard is one predicate.
+    events_by_id = {
+        event["id"]: event
+        for event in execution_events
+        if event.get("id") is not None and isinstance(event.get("id"), Hashable)
+    }
+
+    for event in execution_events:
         event_type = event.get("type", "")
 
         # Extract function name from various event types
         function_name = None
         request_id = None
 
-        if event_type in [
-            "LambdaFunctionSucceeded",
-            "LambdaFunctionFailed",
-            "LambdaFunctionTimedOut",
-            "TaskStateEntered",
-            "TaskStateExited",
-        ]:
-            # Get function name from resource ARN or state name
-            if "LambdaFunction" in event_type:
-                event_detail = (
-                    event.get("lambdaFunctionSucceededEventDetails")
-                    or event.get("lambdaFunctionFailedEventDetails")
-                    or event.get("lambdaFunctionTimedOutEventDetails")
-                )
-            elif "TaskState" in event_type:
-                event_detail = event.get("stateEnteredEventDetails") or event.get(
-                    "stateExitedEventDetails"
-                )
-            else:
-                event_detail = None
+        if event_type in _OUTCOME_DETAIL_KEYS:
+            # Looked up by the event's own type rather than selected by an `or`
+            # chain over every possible key. The chain could not distinguish "this
+            # key is absent" from "this key is present and empty", because both are
+            # falsy: an event whose detail is `{}` fell through every branch to the
+            # final `.get` and arrived as None, so the event was discarded and its
+            # failure lost. A `LambdaFunctionFailed` detail holds only `cause` and
+            # `error`, either of which a service can omit.
+            event_detail = event.get(_OUTCOME_DETAIL_KEYS[event_type])
 
-            if event_detail:
-                # Extract function name
-                resource = event_detail.get("resource", "")
-                name = event_detail.get("name", "")
-
-                if resource and ":function:" in resource:
-                    function_name = resource.split(":function:")[-1]
-                elif name:
-                    function_name = name
-
-                # Also check for function name in resource ARN without :function: prefix
-                if not function_name and resource:
-                    # Handle cases like arn:aws:lambda:region:account:function:FunctionName
-                    arn_parts = resource.split(":")
-                    if len(arn_parts) >= 6 and arn_parts[2] == "lambda":
-                        function_name = arn_parts[6]
+            if event_detail is not None:
+                if event_type in _STATE_TRANSITION_EVENTS:
+                    # ⚠️ A state-transition event is NEVER resolved causally, and the
+                    # reason is structural rather than a tuning choice: a
+                    # `TaskStateEntered` event *precedes* its own scheduling event, so
+                    # walking backwards from it can only ever find somebody else's.
+                    # In a linear history the service points a state's
+                    # `TaskStateEntered` at the previous state's `TaskStateExited`, so
+                    # the walk leaves the state entirely and lands on the PREVIOUS
+                    # task's `LambdaFunctionScheduled`. Measured: a request id carried
+                    # in `ClassificationStep`'s `stateEnteredEventDetails.input` was
+                    # keyed under `OCRFunction`, overwriting OCRFunction's own correct
+                    # id — worse than keying it under the state name, which is what
+                    # this did before.
+                    #
+                    # The state name is the only identity such an event carries, and
+                    # it is the right key for a request id found in the state's input
+                    # or output.
+                    function_name = event_detail.get("name") or None
+                else:
+                    # An outcome event follows its own scheduling event, so the walk
+                    # runs in the direction where the answer exists.
+                    function_name = _resolve_invoked_function(
+                        event, events_by_id, invoked_by_id
+                    )
 
                 # Extract request ID from multiple fields
                 for field_name, field_value in event_detail.items():
@@ -230,9 +410,8 @@ def extract_lambda_request_ids(
                             break
 
                 # Track failed functions
-                if event_type in ["LambdaFunctionFailed", "LambdaFunctionTimedOut"]:
-                    if function_name:
-                        failed_functions.append(function_name)
+                if event_type in _FAILURE_EVENTS_WITH_A_FUNCTION and function_name:
+                    failed_functions.append(function_name)
 
                 # Map function to request ID
                 if function_name and request_id:

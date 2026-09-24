@@ -41,8 +41,11 @@ configPreset:
   path: config-preset/claims-config.yaml
 # Pipeline hook: the host's Step Functions workflow invokes this feature's
 # ClaimStatusHookFunction (template.yaml logical ID) after rule validation
-# completes for each document. Registered via the host's registerFeatureHooks
-# mutation by the ui-deployer custom resource.
+# completes for each document. The ui-deployer custom resource injects the ARN
+# into the config preset it applies rather than calling the host's
+# registerFeatureHooks mutation, so the hook travels with the profile an admin
+# activates instead of being written into whichever profile happens to be active
+# at install time.
 pipelineHooks:
   postRuleValidation: ClaimStatusHookFunction
 defaultParameters:

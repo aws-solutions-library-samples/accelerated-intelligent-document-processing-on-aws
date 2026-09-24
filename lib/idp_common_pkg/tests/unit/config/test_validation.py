@@ -1035,3 +1035,136 @@ class TestValidateDiscoveryOpenAI:
         _validate_discovery_openai(config, result)
         assert result["valid"] is True
         assert result["errors"] == []
+
+
+class TestValidateMultiDocDiscoveryForcedTool:
+    """Cluster analysis is the one path that forces a tool call, indirectly.
+
+    ``discovery_agent`` asks Strands for structured output. Strands sends
+    ``toolChoice: auto`` first and, when the model answers in prose rather than
+    calling the tool, retries with ``toolChoice: {"any": {}}`` — which Claude Opus 5.5
+    rejects with a 400.
+
+    That is a config-time error rather than a runtime fallback for two reasons, and
+    both are the point of this class. It is **intermittent by construction**: whether
+    a cluster needs the forced retry depends on how the model chose to answer, so the
+    model appears to work and then loses one cluster. And there is **nothing to fall
+    back to** — unlike extraction's forced tool, which has a prose schema behind it,
+    structured output *is* the interface here.
+    """
+
+    @staticmethod
+    def _check(model_id):
+        from idp_common.config.merge_utils import (
+            _validate_multi_doc_discovery_forced_tool,
+        )
+
+        config = {"discovery": {"multi_document": {"analysis_model_id": model_id}}}
+        result = {"valid": True, "errors": [], "warnings": []}
+        _validate_multi_doc_discovery_forced_tool(config, result)
+        return result
+
+    @pytest.mark.parametrize(
+        "model_id",
+        [
+            "us.anthropic.claude-opus-5-5",
+            "us.anthropic.claude-opus-5-5:1m",
+            "eu.anthropic.claude-opus-5-5",
+            "global.anthropic.claude-opus-5-5",
+            "us-gov.anthropic.claude-opus-5-5",
+            "arn:aws:bedrock:us-west-2:123456789012:inference-profile/"
+            "us.anthropic.claude-opus-5-5",
+        ],
+    )
+    def test_a_model_that_rejects_forcing_is_refused(self, model_id):
+        result = self._check(model_id)
+        assert result["valid"] is False
+        assert len(result["errors"]) == 1
+        message = result["errors"][0]
+        # The message must name the key, the model and what to do — a bare "not
+        # supported" leaves the operator to guess which of several model settings
+        # is at fault.
+        assert "discovery.multi_document.analysis_model_id" in message
+        assert model_id in message
+        assert "forced" in message.lower()
+
+    @pytest.mark.parametrize(
+        "model_id",
+        [
+            "us.anthropic.claude-sonnet-4-6",  # the shipped default
+            "us.anthropic.claude-opus-5",
+            "us.anthropic.claude-opus-5:1m",
+            "us.anthropic.claude-sonnet-5",
+            "us.amazon.nova-pro-v1:0",
+            "us-gov.anthropic.claude-opus-5",
+        ],
+    )
+    def test_every_other_offered_model_is_accepted(self, model_id):
+        """Non-vacuity. A validator that refused everything would pass the test
+        above while making multi-document discovery unusable."""
+        result = self._check(model_id)
+        assert result["valid"] is True
+        assert result["errors"] == []
+
+    @pytest.mark.parametrize(
+        "config",
+        [
+            {},
+            {"discovery": {}},
+            {"discovery": {"multi_document": {}}},
+            {"discovery": None},
+            {"discovery": {"multi_document": None}},
+            {"discovery": {"multi_document": {"analysis_model_id": None}}},
+        ],
+    )
+    def test_a_config_that_names_no_model_is_not_an_error(self, config):
+        """The key is optional and the section may be absent entirely; refusing an
+        absent value would fail every config that does not use multi-doc discovery."""
+        from idp_common.config.merge_utils import (
+            _validate_multi_doc_discovery_forced_tool,
+        )
+
+        result = {"valid": True, "errors": [], "warnings": []}
+        _validate_multi_doc_discovery_forced_tool(config, result)
+        assert result["valid"] is True
+        assert result["errors"] == []
+
+    def test_it_runs_from_validate_config(self):
+        """A validator nothing calls is the failure this whole class is about — the
+        model reaches the agent regardless and fails at inference."""
+        from idp_common.config.merge_utils import validate_config
+
+        result = validate_config(
+            {
+                "discovery": {
+                    "multi_document": {
+                        "analysis_model_id": "us.anthropic.claude-opus-5-5"
+                    }
+                }
+            }
+        )
+        assert result["valid"] is False
+        assert any(
+            "analysis_model_id" in e and "forced" in e.lower() for e in result["errors"]
+        ), result["errors"]
+
+    def test_the_picklist_does_not_offer_it_either(self):
+        """Belt and braces, in the other direction: the config-time refusal above is
+        for a hand-written config, and the enum is what a UI user sees. Both have to
+        agree, or the UI offers a model the backend then refuses."""
+        import pathlib
+
+        root = pathlib.Path(__file__).resolve().parents[5]
+        text = (root / "patterns" / "unified" / "template.yaml").read_text()
+        # Read the enum out of the template rather than restating it: the point is
+        # what the deployed ConfigSchema offers. The `in text` assertion first, so a
+        # template that stopped mentioning the model at all fails here rather than
+        # passing the real check vacuously.
+        assert "claude-opus-5-5" in text, "the model is not in this template at all"
+        block = text[text.index("analysis_model_id:") :]
+        enum_block = block[: block.index("order: 1")]
+        assert "claude-opus-5-5" not in enum_block, (
+            "Claude Opus 5.5 is offered in the multi-document discovery "
+            "analysis_model_id picklist, but the validator refuses it — the UI would "
+            "offer a model the backend rejects."
+        )

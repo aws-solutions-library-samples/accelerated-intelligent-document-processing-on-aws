@@ -232,9 +232,39 @@ rule_validation:
 
 **Common Parameters** (top level):
 - `enabled`: Turns rule validation on or off
-- `semaphore`: Maximum number of concurrent API calls (default: 5)
-- `max_chunk_size`: Maximum characters per chunk (default: 8000)
-- `overlap_percentage`: Percentage of overlap between chunks to preserve context (default: 10%)
+- `semaphore`: Maximum number of concurrent Bedrock calls **per document**, in both
+  the section-level fact-extraction step and the consolidation step (default: 5).
+  It is a per-invocation bound, and the account-level call rate is this value times
+  the number of documents in flight — so with `MaxConcurrentWorkflows` at its
+  default of 100, a `semaphore` of 5 permits up to 500 concurrent calls from the
+  consolidation step alone. That multiplier is the reason to be careful raising it.
+
+  ⚠️ **The consolidation step now honours it and previously did not**, so a
+  deployment that left the default at 5 will see that step issue fewer concurrent
+  calls and take longer. What bounded it before was the event loop's default thread
+  pool — `os.cpu_count() + 4` threads, capped at 32 — rather than this setting, so
+  the width it actually ran at depended on the container rather than on the
+  configuration. For the deployed 4,096 MB `RuleValidationOrchestrationFunction`
+  that is roughly 6 to 7, so a 14-rule document previously ran in about two waves
+  and now runs in three (`ceil(14 / 5)`). Raising the value is how to take that
+  throughput back deliberately, bearing the multiplier above in mind. The
+  end-to-end figures available are an **upper bound** on the change rather than the
+  deployed one: measured against Claude Sonnet 4.5 on a 16-CPU machine, where the
+  default pool is 20 threads wide and all 14 rules therefore ran at once,
+  consolidation took 16.9 s at `semaphore: 5` against 5.7 s unbounded.
+- `max_chunk_size`: Maximum **tokens** per chunk (default: 8000). Multiplied by
+  `token_size`, the assumed characters per token (default: 4), to get the character
+  budget a chunk is measured against — 32,000 characters with the defaults
+- `overlap_percentage`: How much of the previous chunk is repeated at the start of the
+  next, to keep a fact that spans the boundary readable (0-100, default: 10).
+  ⚠️ **It does not govern every chunk boundary.** Chunking is page-aware, and when the
+  previous chunk held **more than one** complete page the whole of its last page is
+  repeated regardless of this setting — which is the usual case for a multi-page
+  document. The percentage applies where the previous chunk held a **single** page,
+  i.e. on documents whose pages are large relative to `max_chunk_size`, and to the
+  character-based fallback. In both of those, `0` repeats nothing. Values above 50 are
+  reduced to 50 by the character fallback, which logs that it did, because a smaller
+  stride multiplies the number of model calls rather than improving context
 - `recommendation_options`: Custom recommendation categories for your use case
 
 **Fact Extraction Parameters**:
@@ -410,6 +440,25 @@ Located at `s3://{bucket}/{document_id}/rule_validation/consolidated/consolidate
 }
 ```
 
+Two things to know if you read this file programmatically.
+
+**`supporting_pages` is always a list of strings.** Page references reach the summary
+from two engines and from model output, so they arrive as strings and as numbers; the
+document-level list canonicalises them to strings, drops duplicates, and orders
+numeric references by value followed by anything non-numeric by codepoint (so `'Zebra'`
+precedes `'apple'`). The per-rule lists under `rule_details` are **not** canonicalised
+— they hold exactly what each rule's response returned, which is the record of the
+evidence cited, and their order is whichever engine produced them.
+
+**`overall_status` is `"ERROR"` with an `error` field when consolidation did not
+complete.** The statistics alongside it are real and consistent with each other — a
+rule is counted once it has been read, and `pass_percentage` is computed over the rules
+counted — but they cover only what was reached before the failure, so read the counts
+as a floor on what was evaluated rather than as the document's total. The Markdown
+report states this above the statistics table. A document whose per-section validation
+failed is a different case and is reported per section — see
+[Where a failed rule validation shows up](#where-a-failed-rule-validation-shows-up).
+
 ### Markdown Output
 
 Located at `s3://{bucket}/{document_id}/rule_validation/consolidated/consolidated_summary.md`:
@@ -516,6 +565,107 @@ Check CloudWatch logs for:
 - `rule-validation-function`: Section-level evaluation logs
 - `rule-validation-orchestration-function`: Orchestration logs
 
+### Where a failed rule validation shows up
+
+When rule validation fails, the failure is recorded **on the sections it affects**,
+so the document's Sections panel names them instead of leaving the explanation only
+in the Step Functions cause and the CloudWatch log. The Status column reads
+**Failed**, and hovering the status shows the issue with the technical cause behind
+it.
+
+Three codes are written, all at error severity, because they describe different
+situations:
+
+| Code | Written by | Meaning |
+|---|---|---|
+| `rule_validation_failed` | the per-section rule validation step | This section's own rule validation did not complete, so it has no compliance verdict. The cause is whatever the rule-validation service recorded — a missing page, a solver timeout, a model error. |
+| `rule_validation_not_consolidated` | the orchestration step | Every section was validated, but the step that turns those results into the document's single compliance decision failed. No section has a verdict, so every section carries this issue. |
+| `section_processing_failed` | the collate step | That step found this section's earlier processing had failed. |
+
+⚠️ **Look on the document's own page, not the document list.** The Sections panel
+always shows these, because it reads the section's issues directly. The document
+list's **Processing Issues** badge is only refreshed by the two steps that write the
+whole document — the orchestration and collate steps — so a `rule_validation_failed`
+recorded by the per-section step can leave that badge showing its previous value,
+commonly zero. The per-section write updates one section atomically and cannot know
+the document-wide total: it does not read the stored item, and ten sections are being
+written concurrently. `extraction_failed` reaches the badge the same way.
+
+The exception is unchanged by this: the Step Functions cause still carries the same
+message it always did. What changed is that the document's own record now carries it
+too.
+
+**A transient failure is not marked, and it is retried.** A throttle, a read
+timeout, a dropped connection or a model that is not ready is retried by the state
+machine — eight attempts at 2.5× backoff from ten seconds, about 2.8 hours of
+backoff, on both the per-section and orchestration steps — so flagging the sections
+would show them failed for as long as that ladder runs and then clear itself.
+
+The two decisions come from the same place, which is what makes the suppression
+trustworthy. Step Functions decides whether to retry from the Python exception's
+**class name**, while transience is a property of the error **code** and the
+exception's cause chain — a question no retry list can ask. So rule validation
+classifies the failure once, in `idp_common.utils.transient_errors`, and re-raises
+every transient cause under one class name that all three rule-validation states
+list. A record is withheld exactly when a retry is genuinely coming.
+
+If a ladder exhausts every attempt, the document fails with the explanation in the
+Step Functions cause and the sections are **not** flagged. A step cannot tell its
+last attempt from its first — Step Functions does not tell it which attempt it is
+on — so the final one suppresses the record for the same reason the first did. The
+failure is still counted by the failure alarms and the dead-letter queue; what is
+missing is the per-section diagnosis. Extraction and assessment behave identically.
+
+### A transient fault is never answered with a verdict
+
+`Information Not Found` is a **verdict**: it is one of the configured
+`recommendation_options`, it is counted in the document's rule-validation summary,
+and downstream consumers act on it — the sample health-insurance review feature reads
+a document made mostly of them as *insufficient documentation*. So it has to mean
+"the document does not evidence this rule", and not "we could not reach the model".
+
+Rule validation therefore separates the two everywhere it could previously conflate
+them. A deterministic failure for one rule still yields `Information Not Found` with
+the reason in its `reasoning` field, which is what keeps one unparseable rule from
+discarding every other rule's answer. A transient failure raises instead, so the step
+is retried and the rule gets a real answer. The same split applies to the Z3 engine's
+value-extraction call, to the summarisation step that turns per-section facts into the
+document's decision, and to the consolidation step — which previously returned an
+empty result rather than failing, so a throttle could finish a document with **no**
+verdicts, no failed status and nothing recorded anywhere.
+
+A related fault is handled the same way, because it silently changed a result rather
+than reporting a failure: a page whose text could not be read is a page whose
+policy-matching regexes never ran, so a policy type evidenced only on that page went
+unmatched and none of its rules were validated. It is now retried rather than absorbed.
+
+**The cleanup that removes the previous run's per-section results is best-effort, and
+consolidation does not depend on it.** Consolidation reads the explicit list of
+per-section outputs *this* run produced, passed to it by the orchestration step, so an
+object the cleanup failed to delete is not in that list and is not read. A surviving
+object costs storage and makes the prefix confusing to read by hand; it cannot reach a
+verdict. A transient failure of the cleanup is still retried, because a retry is the
+right answer to a throttle on its own terms.
+
+⚠️ **If you call the consolidation service directly, pass `section_uris`.** Omitting it
+falls back to listing the prefix, which is the right behaviour for re-consolidating an
+existing prefix by hand and the wrong behaviour for a run of your own: on a reprocessed
+document that prefix can still hold the previous run's verdicts for the same document,
+which are plausible enough to be consolidated and acted on. See the module README for
+the parameter's three values.
+
+**A document-scope explanation has no section to attach to, and is not invented
+one.** The collate step also collects free-text errors that belong to the document
+as a whole rather than to any one section — page-level OCR problems, for example.
+Those are not attributed to a section, because picking one would be a claim the
+pipeline cannot support; they remain in the Step Functions cause and the step's log.
+Per-page classification failures behind them are separately recorded on their own
+sections by the classification stage.
+
+**A very long explanation is abridged in the middle**, on the same 4 KB bound every
+processing issue's technical cause carries, with the error count written at the front
+so it survives the abridgement. The unabridged text is in the step's CloudWatch log.
+
 ### Common Issues
 
 **High Token Usage**: 
@@ -524,7 +674,10 @@ Check CloudWatch logs for:
 - Use prompt caching effectively
 
 **Slow Processing**:
-- Increase `semaphore` value
+- Increase `semaphore` value — it bounds both the fact-extraction and the
+  consolidation step, so raising it shortens both. Watch for Bedrock throttling
+  as you do: the account-level call rate is this value times the number of
+  documents in flight.
 - Reduce number of rules
 - Use faster model (e.g., Claude Haiku)
 

@@ -29,8 +29,8 @@ this table before citing a figure.
 | §2.1 integrated + simple hazard | ✅ re-measured | `intconf` (8 runs) |
 | §3 scaling | ✅ re-measured | `scaling__extraction-model-sonnet5`, `scalingsimple__extraction-model-sonnet5`, `scaling` (control) |
 | §4 cost level and variance | ✅ re-measured | `cost__extraction-model-sonnet5`, `cost` (control), n=5 each |
-| §5.1 extraction-model sweep | ⚠️ **3 of 7 models** | Sonnet 4.6, Sonnet 5, GPT-6 Astra re-measured. `nova_lite`, `nova_pro`, `sonnet5_1m` and `opus5` are **not measured on this release** — see §5.1 |
-| §5.2 premium head-to-head | ✅ re-measured | `astravalue` (100 runs), `astracap` (12) |
+| §5.1 extraction-model sweep | ⚠️ **3 of 8 models** | Sonnet 4.6, Sonnet 5, GPT-6 Astra re-measured. `nova_lite`, `nova_pro`, `sonnet5_1m`, `opus5` and `opus55` are **not measured on this release** — see §5.1 |
+| §5.2 premium head-to-head | ⚠️ **Astra pair only** | `astravalue` (100 runs), `astracap` (12). The `opus55value` pair (Opus 5.5 vs Opus 5) is declared and **has not run** — see §5.2 |
 | §5.3 classification model | ⚠️ **2 of 3** | Nova 2 Lite (default) and Sonnet 5. `haiku45` not measured |
 | §5.4 confidence model | ⚠️ **2 of 3** | Nova Lite (default) and Nova 2 Lite. Sonnet 5 not measured |
 | §6 standing hazards | ✅ re-measured | `intconf`, `advverify__extraction-model-sonnet5` |
@@ -154,7 +154,7 @@ See `benchmarks/matrices/METHODOLOGY.md` for the full protocol. In brief:
 | Forcing | off (shipped default) · on |
 | Schema restatement | on (shipped default) · off |
 | Section splitting | `llm_determined` (shipped default) · `disabled` |
-| **Extraction model** (§5) | Nova Lite · Nova Pro · **Sonnet 5** (default) · Sonnet 5 `:1m` · Opus 5 · GPT-6 Astra (`us.` and `global.`) · Sonnet 4.6 (control) |
+| **Extraction model** (§5) | Nova Lite · Nova Pro · **Sonnet 5** (default) · Sonnet 5 `:1m` · Opus 5 · Opus 5.5 (declared, not yet measured) · GPT-6 Astra (`us.` and `global.`) · Sonnet 4.6 (control) |
 | **Classification model** (§5) | **Nova 2 Lite** (default) · Sonnet 5 · Haiku 4.5 |
 | **Confidence model** (§5) | **Nova Lite** (default) · Nova 2 Lite · Sonnet 5 |
 | Confidence batch size | shipped (ceiling 12 since #861) · pinned 8 · pinned 13 |
@@ -679,12 +679,14 @@ computed by the same scorer on the same documents; rows are directly comparable.
 Models: Amazon Nova Lite and Nova Pro (the cheap end), Claude Sonnet 4.6 (the study's
 cross-version control), **Claude Sonnet 5 (the shipped default)**, Sonnet 5 `:1m` (the
 1M-token-context variant), Claude Opus 5, and OpenAI GPT-6 Astra (`us.` and `global.`).
+Claude Opus 5.5 is in the sweep as well but carries no run yet, so it appears in no table
+below; see §5.2 for what its comparison is built to answer.
 Nova 2 Lite classification and Nova Lite confidence are held at their defaults except where
 they are the axis.
 
 ### 5.1 Extraction model — the full grid
 
-**Three of the seven selectable models were re-measured on v0.6.9**, on the same 19-cell ×
+**Three of the eight selectable models were re-measured on v0.6.9**, on the same 19-cell ×
 7-document grid. Note the grid's documents run to **400 rows**; the 800-row and larger sizes
 where models diverge most are §3's territory, not this table's:
 
@@ -713,10 +715,13 @@ leaf below 0.9 anywhere in the grid. Its raw accuracy is within noise of Sonnet 
 **The control model is the cheapest way to be nearly right**, at $0.537/doc — 21% below
 Sonnet 5 — but it is the only one of the three that failed runs outright.
 
-> ⚠️ **`nova_lite`, `nova_pro`, `sonnet5_1m` and `opus5` were not measured on v0.6.9.** The
-> seven-model table below is from **v0.6.8** and is retained because it is the only measured
-> comparison of those four. Its Sonnet 4.6 / Sonnet 5 / Astra columns are superseded by the
-> table above; do not mix rows across the two.
+> ⚠️ **`nova_lite`, `nova_pro`, `sonnet5_1m` and `opus5` were not measured on v0.6.9, and
+> `opus55` has never been measured.** The seven-model table below is from **v0.6.8** and is
+> retained because it is the only measured comparison of the first four. Its Sonnet 4.6 /
+> Sonnet 5 / Astra columns are superseded by the table above; do not mix rows across the two.
+> Claude Opus 5.5 has no row in either table — its rate card is cheaper than Opus 5 in every
+> category and its launch claim adds "fewer tokens for the same task", which is three
+> compounding factors, so quote no figure for it before `opus55value` has run.
 
 #### Carried over from v0.6.8 — the full seven-model grid
 
@@ -826,7 +831,24 @@ The two core cells, which are what a customer actually chooses between:
    8 cells here and 5 of 5 repeats in §5.2. Its larger window is exactly what lets that
    request be *accepted*; Sonnet 5 refuses it or truncates it.
 
-### 5.2 Is a premium model worth it? (`astravalue`, `astracap`)
+### 5.2 Is a premium model worth it? (`astravalue`, `astracap`, `opus55value`)
+
+Two premium questions, one method. The Astra pair below is measured; the
+**`opus55value`** pair — Claude Opus 5.5 against Claude Opus 5, simple and advanced, on
+`small_narrow` and `med_narrow` at 5 repeats (40 runs) — is declared in the matrix and
+has not been run, so it has no table here yet. Its comparator is Opus 5 rather than the
+default because the claim under test names Opus 5: cheaper input and output ($4/$20 per
+1M against $5/$25), a cache read at 0.05× input where every other model here is 0.1×,
+and "fewer tokens for the same task". Those three compound, so the rate card predicts
+about −20% and the run has to supply the rest.
+
+Two things about that pair before it is run or read. Its documents are deliberately the
+two small entries: Opus 5 and Opus 5.5 share one window and one sizing budget, so on
+`large_narrow` and `dense_250` both simple-mode arms would be refused and the A/B would
+measure nothing while still being billed. And ⚠️ neither arm sets `reasoning_effort`,
+while Opus 5.5 defaults to `medium` and Opus 5 to `high` — so as declared it measures
+the **switch** a user actually makes, not the model; re-run with `--set
+reasoning_effort=high` on both arms to separate the two.
 
 A price question is a *ratio*, so this suite is built to be able to say "no": Sonnet 5
 against GPT-6 Astra (about 4× the input price) with only `extraction.model` differing, on

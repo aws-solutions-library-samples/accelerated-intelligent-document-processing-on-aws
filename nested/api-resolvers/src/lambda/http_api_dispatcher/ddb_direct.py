@@ -141,10 +141,13 @@ _IAM_ONLY = object()
 _ANY_AUTHENTICATED = object()
 _ANY_GROUP = object()
 _REQUIRED_GROUPS: Dict[str, Any] = {
-    # document content: an assigned group is required (expectations: ANY_GROUP)
+    # document content, and the means of obtaining it, requires an assigned group
+    # (expectations: ANY_GROUP). The two date-partition lists are in that set
+    # because they return raw TrackingTable index rows carrying ObjectKey with no
+    # filtering, which is where a caller gets the keys the rest of the chain needs.
     "getDocument": _ANY_GROUP,
-    "listDocumentsDateHour": _ANY_AUTHENTICATED,
-    "listDocumentsDateShard": _ANY_AUTHENTICATED,
+    "listDocumentsDateHour": _ANY_GROUP,
+    "listDocumentsDateShard": _ANY_GROUP,
     "listDiscoveryJobs": {"Admin", "Author"},
     "deleteDiscoveryJob": {"Admin", "Author"},
     "updateDiscoveryJobStatus": _IAM_ONLY,
@@ -153,7 +156,8 @@ _REQUIRED_GROUPS: Dict[str, Any] = {
     "updateAgentJobStatus": _IAM_ONLY,
     # a mutation; further scoped to the caller's own PK inside the handler
     "deleteAgentJob": _ANY_GROUP,
-    "getCircuitBreakerStatus": _ANY_AUTHENTICATED,
+    # `lastError` carries the pausing administrator's email after a manual pause
+    "getCircuitBreakerStatus": _ANY_GROUP,
 }
 
 

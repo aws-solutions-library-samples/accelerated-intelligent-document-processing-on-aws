@@ -242,7 +242,17 @@ def _assert_count_phrase(
     forms = [template_str.format(n=str(n))]
     if n in NUMBER_WORDS:
         forms.append(template_str.format(n=NUMBER_WORDS[n]))
-    if not any(f.lower() in flat.lower() for f in forms):
+    # Same word-boundary guard as the strict pattern below, and for the same
+    # reason: a plain substring test finds "one of those 9" inside "**None** of
+    # those 9", so a page asserting the opposite of the measured value would
+    # satisfy the presence check. It is reachable whenever a measured count is 1.
+    present = any(
+        re.search(
+            r"(?<![\w-])" + re.escape(f), flat, re.IGNORECASE
+        )
+        for f in forms
+    )
+    if not present:
         pytest.fail(
             "docs/well-architected.md does not state the measured value "
             f"{n} where it should.\nExpected one of: "
@@ -678,9 +688,13 @@ def test_api_authorization_counts_match_the_expectations_file() -> None:
         "remaining {n} are declared `groups: ANY`",
         f"{len(any_auth)} operations are reachable by any authenticated user.",
     )
+    # The template carries no verb, so it reads correctly whatever the measured
+    # value is. "{n} ... are narrowed" would force ungrammatical prose the moment
+    # the count reaches one, and the page must not be pushed into bad English to
+    # satisfy a check about numbers.
     _assert_count_phrase(
         len(any_auth) - len(unnarrowed),
-        "{n} of those " + str(len(any_auth)) + " are narrowed further",
+        "{n} of those " + str(len(any_auth)) + " narrowed further",
         "Ownership- or scope-narrowed ANY operations.",
     )
     _assert_count_phrase(

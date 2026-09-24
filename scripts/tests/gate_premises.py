@@ -390,6 +390,123 @@ def file_absent_or_untracked(member: str) -> Verdict:
     return (True, f"git does not track {member}")
 
 
+def vcs_ignored_build_output(member: str) -> Verdict:
+    """An ignore rule covers this path and git tracks nothing under it.
+
+    The premise for an exemption covering a tree that only exists after a local
+    build: a gate that walks the filesystem reaches it, a gate that asks git never
+    does, and nothing shipped from this repository lives there. Two things are
+    measured, and the exemption is only sound with both:
+
+    * **An ignore rule covers the path**, reported with the file and line that
+      states it. That is the durable half — while the rule stands, a file under
+      this path cannot become tracked without the rule being edited, so the
+      exclusion cannot silently grow to hide real code.
+    * **Git tracks no file under it**, which is what makes the exclusion cost
+      nothing today. This is a prefix question, not a question about one path, and
+      that is why :func:`file_absent_or_untracked` does not answer it: that
+      predicate asks whether git tracks *exactly* the named path, so for any
+      directory it returns True whatever the directory contains.
+
+    ⚠️ The ignore query is made with a **trailing slash**. An ignore pattern
+    written ``build/`` matches directories only, and ``git check-ignore`` cannot
+    tell that a path is a directory when the path is not on disk — so probing the
+    bare path answers "not ignored" on a clean checkout and "ignored" on a machine
+    that has run the build. A premise whose verdict depends on whether you have
+    built locally is the shape of gate this module exists to stop.
+    """
+    target = _normalise(member)
+    tracked = tracked_files(target, prune_local_work=False)
+    if tracked:
+        return (
+            False,
+            f"git tracks {len(tracked)} file(s) under {member} (e.g. {tracked[0]}), "
+            "so this exclusion hides code that ships from this repository",
+        )
+    probed = subprocess.run(
+        ["git", "-C", str(REPO_ROOT), "check-ignore", "-v", "--no-index", target + "/"],
+        capture_output=True,
+        text=True,
+    )
+    if probed.returncode != 0:
+        return (
+            False,
+            f"no ignore rule covers {member}, so a tracked file can appear under it "
+            "without any edit to an ignore file and this exclusion would hide it",
+        )
+    rule = probed.stdout.split("\t", 1)[0].strip()
+    return (
+        True,
+        f"{rule} ignores {member} and git tracks no file under it",
+    )
+
+
+def vcs_ignored_generated_filename(member: str) -> Verdict:
+    """An ignore rule covers every file this *filename glob* can match, and none is tracked.
+
+    The premise for excluding a **generated artifact named by its filename** rather
+    than by the directory it lands in — a tool that writes ``<something>-converted.py``
+    beside the notebook it converted, and removes it when it finishes. Such a file has
+    no fixed home, so :func:`vcs_ignored_build_output` cannot answer for it: that
+    predicate probes one path with a trailing slash because it is asking about a
+    directory, and a filename glob is not one.
+
+    Three things are measured, and the exclusion is only sound with all three:
+
+    * **An ignore rule covers the shape**, reported with the file and line that
+      states it. While that rule stands, a file of this shape cannot become tracked
+      without the rule being edited, so the exclusion cannot silently grow to cover
+      code that ships.
+    * **Git tracks nothing matching it**, which is what makes the exclusion cost
+      nothing. Unlike the directory case this is asked of the glob itself, so a
+      committed ``foo-converted.py`` fails here rather than being absorbed.
+    * **The final component is a wildcard over filenames, not a bare directory
+      name.** ``notebooks`` and ``**/build`` exclude a tree and would keep excluding
+      it as the tree grew; ``**/*-converted.py`` cannot widen beyond the suffix
+      without the pattern being rewritten. A predicate that accepted either spelling
+      would let the narrow claim be made about the broad one.
+
+    The probe path is derived from the glob rather than from any file on disk,
+    because the whole point of this class of artifact is that it is usually absent —
+    a premise whose verdict depended on whether a scan happened to be running would
+    be the shape of gate this module exists to stop.
+    """
+    pattern = member.strip()
+    final = pattern.rsplit("/", 1)[-1]
+    if "*" not in final:
+        return (
+            False,
+            f"{member} names no wildcard in its final component, so it excludes a "
+            "tree rather than a generated filename shape and can widen as that tree "
+            "grows without the pattern being edited",
+        )
+    tracked = tracked_files(pattern, prune_local_work=False)
+    if tracked:
+        return (
+            False,
+            f"git tracks {len(tracked)} file(s) matching {member} (e.g. {tracked[0]}), "
+            "so this exclusion hides code that ships from this repository",
+        )
+    probe = pattern.replace("**/", "").replace("*", "_gate_premise_probe_")
+    probed = subprocess.run(
+        ["git", "-C", str(REPO_ROOT), "check-ignore", "-v", "--no-index", probe],
+        capture_output=True,
+        text=True,
+    )
+    if probed.returncode != 0:
+        return (
+            False,
+            f"no ignore rule covers {probe} (derived from {member}), so a file of "
+            "this shape can be committed without any edit to an ignore file and this "
+            "exclusion would hide it",
+        )
+    rule = probed.stdout.split("\t", 1)[0].strip()
+    return (
+        True,
+        f"{rule} ignores {probe} and git tracks no file matching {member}",
+    )
+
+
 def installer_manifest_pins_parameter(
     member: str, parameter: str, allowed: Collection[object] | None = None
 ) -> Verdict:
@@ -536,6 +653,8 @@ PREDICATES = {
     "not_a_nested_stack_of_parent": not_a_nested_stack_of_parent,
     "built_separately_from_main_stack": built_separately_from_main_stack,
     "file_absent_or_untracked": file_absent_or_untracked,
+    "vcs_ignored_build_output": vcs_ignored_build_output,
+    "vcs_ignored_generated_filename": vcs_ignored_generated_filename,
     "installer_manifest_pins_parameter": installer_manifest_pins_parameter,
     "collects_zero_tests": collects_zero_tests,
 }

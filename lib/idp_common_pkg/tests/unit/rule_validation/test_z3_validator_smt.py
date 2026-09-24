@@ -524,24 +524,15 @@ class TestBindValues:
         model, z3_vars = self._bound_model([Parameter(name="n", type="Int")], {"n": 42})
         assert model[z3_vars["n"]].as_long() == 42
 
-    @pytest.mark.xfail(
-        strict=True,
-        reason="A fractional reading for an Int parameter is truncated rather than "
-        "refused, which flips a threshold rule's verdict from FAIL to PASS. The "
-        "path-based extractor rejects the same input; the LLM route does not check "
-        "at all. See "
-        "https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/1057",
-    )
     def test_a_fractional_reading_for_an_int_parameter_is_not_silently_truncated(self):
         # Asserted on the OBSERVABLE VERDICT rather than on solver satisfiability,
         # and over two thresholds, because the shape of the assertion decides which
-        # remedies this marker can detect.
+        # wrong remedies this test can detect.
         #
-        # Asserting `solver.check() == z3.unsat` after _bind_values would make the
-        # recommended fix -- refuse the lossy reading, as the path-based extractor
-        # already does -- error before reaching the assertion, so the test would
-        # stay xfail and give no signal at all. Refusing is therefore treated as a
-        # correct outcome here.
+        # Asserting `solver.check() == z3.unsat` after _bind_values would not work:
+        # refusing the lossy reading, which is what the code does and what the
+        # path-based extractor already did, raises before the assertion is reached.
+        # Refusing is therefore treated as a correct outcome here.
         #
         # The other three cases each exclude a remedy that looks right on the first,
         # because a single `<=` case constrains the reading in one direction only:
@@ -566,8 +557,9 @@ class TestBindValues:
                 # Refusing to evaluate a lossy reading is an honest answer.
                 return "refused"
 
-        # 30.9 <= 30 is false, so a PASS here is a wrong verdict. Today int(30.9)
-        # is 30 and this returns "sat", which is what holds the marker.
+        # 30.9 <= 30 is false, so a PASS here is a wrong verdict. Truncating the
+        # reading to int(30.9) == 30 produces exactly that, which is the defect
+        # this case exists for (#1057).
         assert _outcome("<=", 30) != "sat"
         # 30.9 <= 40 is true, so a FAIL here would also be a wrong verdict.
         assert _outcome("<=", 40) != "unsat"
@@ -853,14 +845,26 @@ class TestValidateFacade:
     def test_an_undeclared_parameter_in_a_constraint_surfaces_as_a_validation_error(
         self,
     ):
-        # RuleJSON construction does not catch this (see
-        # test_rule_json_models.py::TestConstraintParameterReferences), so the
-        # solver layer is where a translation typo is first detected.
+        # RuleJSON construction now rejects this outright (see
+        # test_z3_rule_models.py::TestConstraintParameterReferences), which is why
+        # the constraint is assigned after construction here: the solver layer is
+        # the backstop for the token shapes the construction-time check leaves to
+        # it, and that backstop has to keep working.
+        rule = _rule_json()
+        rule.constraints = ["(> incom 0)"]
         with pytest.raises(ValidationError):
-            _validator().validate(
-                _rule_json(constraints=["(> incom 0)"]),
-                {"coverage": 1.0, "income": 1.0},
-            )
+            _validator().validate(rule, {"coverage": 1.0, "income": 1.0})
+
+    def test_a_token_the_construction_check_passes_is_still_rejected_by_the_solver(
+        self,
+    ):
+        # `3x` is neither identifier-shaped nor a numeral, so RuleJSON accepts it
+        # -- smt_grammar deliberately says nothing about that shape -- and
+        # _parse_smt_atom is what refuses it. Constructing the rule here rather
+        # than mutating it is the point of the test.
+        rule = _rule_json(constraints=["(> 3x 0)"])
+        with pytest.raises(ValidationError):
+            _validator().validate(rule, {"coverage": 1.0, "income": 1.0})
 
     def test_the_declared_timeout_is_applied_to_the_solver(self):
         # The timeout is what bounds a pathological constraint set inside a Lambda

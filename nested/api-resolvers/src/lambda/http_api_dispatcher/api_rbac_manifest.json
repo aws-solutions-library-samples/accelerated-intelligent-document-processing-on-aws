@@ -147,8 +147,20 @@
       "Annotator",
       "Author"
     ],
-    "getChatMessages": "ANY",
-    "getCircuitBreakerStatus": "ANY",
+    "getChatMessages": [
+      "Admin",
+      "Annotator",
+      "Author",
+      "Reviewer",
+      "Viewer"
+    ],
+    "getCircuitBreakerStatus": [
+      "Admin",
+      "Annotator",
+      "Author",
+      "Reviewer",
+      "Viewer"
+    ],
     "getConfigProfileRevision": [
       "Admin",
       "Author",
@@ -177,7 +189,13 @@
       "Reviewer",
       "Viewer"
     ],
-    "getDocumentCount": "ANY",
+    "getDocumentCount": [
+      "Admin",
+      "Annotator",
+      "Author",
+      "Reviewer",
+      "Viewer"
+    ],
     "getDocumentVersion": [
       "Admin",
       "Annotator",
@@ -225,7 +243,13 @@
       "Author",
       "Viewer"
     ],
-    "getStepFunctionExecution": "ANY",
+    "getStepFunctionExecution": [
+      "Admin",
+      "Annotator",
+      "Author",
+      "Reviewer",
+      "Viewer"
+    ],
     "getTestRun": [
       "Admin",
       "Author"
@@ -284,7 +308,13 @@
       "Admin",
       "Author"
     ],
-    "listDocumentVersions": "ANY",
+    "listDocumentVersions": [
+      "Admin",
+      "Annotator",
+      "Author",
+      "Reviewer",
+      "Viewer"
+    ],
     "listDocuments": [
       "Admin",
       "Annotator",
@@ -299,8 +329,20 @@
       "Reviewer",
       "Viewer"
     ],
-    "listDocumentsDateHour": "ANY",
-    "listDocumentsDateShard": "ANY",
+    "listDocumentsDateHour": [
+      "Admin",
+      "Annotator",
+      "Author",
+      "Reviewer",
+      "Viewer"
+    ],
+    "listDocumentsDateShard": [
+      "Admin",
+      "Annotator",
+      "Author",
+      "Reviewer",
+      "Viewer"
+    ],
     "listFinetuningJobs": "ANY",
     "listInstalledFeatures": "ANY",
     "listSampleDocuments": [

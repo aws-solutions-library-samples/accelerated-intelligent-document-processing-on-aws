@@ -1416,11 +1416,19 @@ type CircuitBreakerStatus @aws_cognito_user_pools @aws_iam {
 # =============================================================================
 # RBAC: Role-Based Access Control via @aws_cognito_user_pools(cognito_groups: [...])
 #
-# Roles (Cognito Groups):
+# Roles (Cognito Groups) — five, and the five `AWS::Cognito::UserPoolGroup`
+# resources in template.yaml are the vocabulary of record:
 #   - Admin: Full access to all operations
 #   - Author: Can create/modify configurations, upload documents, run tests
 #   - Reviewer: Can review documents and perform HITL operations
-#   - Viewer: Read-only access (default for authenticated users)
+#   - Annotator: Annotates ground truth for its assigned test sets only, and
+#     nothing else — the one role scoped per object (allowedTestSets)
+#   - Viewer: Read-only access to documents, configuration and agent chat
+#
+# A caller in NO group is not a Viewer. Self-service sign-up (when
+# AllowedSignUpEmailDomain is set) produces a valid token with an empty
+# cognito:groups claim, and the operations that must refuse that caller name all
+# five groups here.
 #
 # Note: @aws_cognito_user_pools (no args) allows any authenticated user
 #       @aws_cognito_user_pools(cognito_groups: [...]) restricts to specific groups
@@ -1907,16 +1915,30 @@ type Query @aws_cognito_user_pools @aws_iam {
     @aws_cognito_user_pools(
       cognito_groups: ["Admin", "Annotator", "Author", "Reviewer", "Viewer"]
     )
-  # No directive: a bare count of the rows listDocuments filters, with no keys,
-  # names or content — deliberately readable by any authenticated caller.
+  # The header figure for listDocuments, so it takes the same access model. The two
+  # filters it shares with that list (config-version scope, reviewer-only) narrow
+  # nothing for a caller in no group, so the count such a caller would receive is
+  # the deployment's whole tally.
   getDocumentCount(
     startDateTime: AWSDateTime
     endDateTime: AWSDateTime
     # Must match the listDocuments view or the header count contradicts the rows.
     view: DocumentView = PRODUCTION
   ): DocumentCount
+    @aws_cognito_user_pools(
+      cognito_groups: ["Admin", "Annotator", "Author", "Reviewer", "Viewer"]
+    )
+  # Raw TrackingTable index rows for one date partition, each carrying ObjectKey
+  # and no filtering — a source of document keys, so an assigned group is required.
+  # Neither is called by the web UI; the timeline pages through listDocuments.
   listDocumentsDateHour(date: AWSDate, hour: Int): DocumentList
+    @aws_cognito_user_pools(
+      cognito_groups: ["Admin", "Annotator", "Author", "Reviewer", "Viewer"]
+    )
   listDocumentsDateShard(date: AWSDate, shard: Int): DocumentList
+    @aws_cognito_user_pools(
+      cognito_groups: ["Admin", "Annotator", "Author", "Reviewer", "Viewer"]
+    )
   listDocumentsByDateRange(
     startDateTime: AWSDateTime!
     endDateTime: AWSDateTime!
@@ -1942,12 +1964,27 @@ type Query @aws_cognito_user_pools @aws_iam {
     @aws_cognito_user_pools(
       cognito_groups: ["Admin", "Annotator", "Author", "Reviewer", "Viewer"]
     )
+  # The execution input and step history name the document and the S3 location of
+  # its full state, so an assigned group is required. The resolver's two per-object
+  # checks (the ARN must name this deployment's state machine; the caller's
+  # allowedConfigVersions must cover the execution's config version) stay on top of
+  # it — the second one is inert for a caller no UsersTable row matches, who is
+  # deliberately unrestricted on that axis.
   getStepFunctionExecution(executionArn: String!): StepFunctionExecutionResponse
+    @aws_cognito_user_pools(
+      cognito_groups: ["Admin", "Annotator", "Author", "Reviewer", "Viewer"]
+    )
 
-  # Document version history (processing runs). Reading a run's CONTENT requires
-  # an assigned group; listing the run ids for a key the caller already has does
-  # not. deleteDocumentVersion (a Mutation) is Admin-only.
+  # Document version history (processing runs). All three require an assigned
+  # group: listDocumentVersions shapes every run through the same helper as
+  # getDocumentVersion, so it returns the same section and page URIs, the same
+  # confidence-alert list naming every extracted attribute, and the same
+  # model-written page classification reasons — for all runs rather than one.
+  # deleteDocumentVersion (a Mutation) is Admin-only.
   listDocumentVersions(objectKey: ID!): [DocumentVersion]
+    @aws_cognito_user_pools(
+      cognito_groups: ["Admin", "Annotator", "Author", "Reviewer", "Viewer"]
+    )
   getDocumentVersion(objectKey: ID!, runId: String!): DocumentVersion
     @aws_cognito_user_pools(
       cognito_groups: ["Admin", "Annotator", "Author", "Reviewer", "Viewer"]
@@ -2006,8 +2043,17 @@ type Query @aws_cognito_user_pools @aws_iam {
     @aws_cognito_user_pools(cognito_groups: ["Admin", "Author", "Viewer"])
     @aws_iam
   getAgentChatMessages(sessionId: ID!): [AgentChatMessage] @aws_cognito_user_pools @aws_iam
+  # listChatSessions reads the caller's own partition by key condition, so a caller
+  # in no group can only ever address an empty one. getChatMessages reads by
+  # sessionId and relies on a separate ownership verification that an operator can
+  # stand down, so it takes an assigned group as well — the messages can quote
+  # document content.
   listChatSessions(limit: Int, nextToken: String, surface: String): ChatSessionConnection @aws_cognito_user_pools @aws_iam
-  getChatMessages(sessionId: ID!): [AgentChatMessage] @aws_cognito_user_pools @aws_iam
+  getChatMessages(sessionId: ID!): [AgentChatMessage]
+    @aws_cognito_user_pools(
+      cognito_groups: ["Admin", "Annotator", "Author", "Reviewer", "Viewer"]
+    )
+    @aws_iam
 
   # Knowledge base query. An assigned group is required: the knowledge base is
   # built from processed document content, so an answer returns that content in
@@ -2096,8 +2142,16 @@ type Query @aws_cognito_user_pools @aws_iam {
   validateTestSetForFinetuning(testSetId: ID!): TestSetValidationResult @aws_cognito_user_pools
   listAvailableModels: AvailableModelsResult @aws_cognito_user_pools
 
-  # Circuit Breaker status — any authenticated user can read.
+  # Circuit Breaker status. An assigned group is required: `lastError` carries
+  # `Manual pause by <administrator email>: <reason>` after a manual pause. The floor
+  # costs nothing because the badge's only render site is the documents table header,
+  # which a groupless session never reaches — AuthRoutes returns the no-role notice
+  # in place of the router, so no route mounts at all. Such a session can still sign
+  # in; it just cannot get to the badge.
   getCircuitBreakerStatus: CircuitBreakerStatus
+    @aws_cognito_user_pools(
+      cognito_groups: ["Admin", "Annotator", "Author", "Reviewer", "Viewer"]
+    )
 
   # === Feature Platform (optional) — queries =============================
   # These fields are only wired up server-side when EnableFeaturePlatform=true

@@ -33,6 +33,8 @@ const num = (v: unknown): number => {
 // Published per-model minimum cacheable prefix; mirrors _MIN_PREFIX_TIERS in
 // idp_common/bedrock/prompt_cache.py (first match wins; Nova needs no entry).
 const MIN_PREFIX_TIERS: Array<[RegExp, number]> = [
+  // 'opus-5' also matches 'opus-5-5', which is the published answer for Opus 5.5
+  // too (512-token minimum, 4 checkpoints) rather than a coincidence.
   [/claude-(opus-5|fable-5)/, 512],
   [/claude-opus-4-7/, 2048],
   [/claude-(opus-4-6|opus-4-5|haiku-4-5)/, 4096],

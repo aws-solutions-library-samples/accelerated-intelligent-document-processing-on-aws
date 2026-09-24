@@ -13,7 +13,15 @@ import time
 from idp_common import get_config, rule_validation
 from idp_common.models import Document, Status
 from idp_common.docs_service import create_document_service
+from idp_common.document_failure import (
+    RULE_VALIDATION_NOT_CONSOLIDATED_CODE,
+    RULE_VALIDATION_NOT_CONSOLIDATED_MESSAGE,
+    RULE_VALIDATION_STAGE,
+    SectionDiagnosis,
+    persist_failed_document,
+)
 from idp_common.utils import calculate_lambda_metering, merge_metering_data
+from idp_common.utils.transient_errors import raise_if_transient
 
 # X-Ray tracing
 from aws_xray_sdk.core import xray_recorder
@@ -130,15 +138,36 @@ def handler(event, context):
         )
         
         # Call consolidate_and_save - it handles:
-        # 1. Loading section results from S3 (using URIs from rule_validation_result)
+        # 1. Loading this run's section results from the URIs collected above
         # 2. Performing LLM orchestration (fact extraction → compliance decision)
         # 3. Consolidating results into final files
         # 4. Updating document.rule_validation_result with consolidated URIs
+        #
+        # #1143: the URIs are passed explicitly because consolidation used to GLOB
+        # `<input_key>/rule_validation/sections/section_*_responses.json` instead,
+        # and a reprocessed document reaches that prefix with the previous run's
+        # objects still in it whenever the cleanup step did not manage to delete
+        # them. Those verdicts are for the same document, so they consolidate
+        # plausibly rather than visibly wrong: a rule whose verdict changed between
+        # runs is reported at the stale value and the compliance decision follows
+        # it. The list below is what THIS run wrote, so the cleanup stops being
+        # load-bearing. `RuleValidationOrchestration` is reachable only from the
+        # section Map, whose `ResultPath` is `$.RuleValidationResults`, so the list
+        # is always available here; an empty one means this run produced no section
+        # output, which is a reason to consolidate nothing rather than to fall back
+        # to reading the prefix.
+        #
+        # An empty list is reachable as a Map over ZERO sections. It is not reachable
+        # as a run whose sections all failed: the Map carries no `Catch` and no
+        # tolerated-failure setting, and neither does the task inside it, so one
+        # failed iteration fails the Map and this state never runs.
+        section_uris = [r["section_uri"] for r in section_results]
         logger.info(f"Consolidating rule validation results for {len(document.sections)} section(s)")
         updated_document = summarization_service.consolidate_and_save(
             document=document,
             config=config,
-            multiple_sections=True  # Always run orchestrator for fact extraction
+            multiple_sections=True,  # Always run orchestrator for fact extraction
+            section_uris=section_uris,
         )
         
         # Add section results to the consolidated rule_validation_result
@@ -198,19 +227,55 @@ def handler(event, context):
         
         return response
         
-    except Exception as e:
-        logger.error(f"Error in rule validation orchestration: {str(e)}")
-        
-        # Update document status to error if possible
-        try:
-            if 'document' in locals():
-                docs_service = create_document_service()
-                docs_service.update_document_status(
-                    document_id=document.id,
-                    status=Status.ERROR,
-                    error_message=str(e)
-                )
-        except Exception as status_error:
-            logger.error(f"Failed to update document status: {str(status_error)}")
-        
-        raise e
+    except Exception as error:
+        logger.error(f"Error in rule validation orchestration: {str(error)}")
+
+        # #1064: this recorder had never recorded anything. It referenced
+        # `Status.ERROR`, which is not a member of `Status` (the member is
+        # `FAILED`), so evaluating the argument raised AttributeError before the
+        # call was made; it also passed an `error_message=` keyword
+        # `update_document_status` does not accept, and a `document_id` taken from
+        # `document.id` where every other call site in this pattern passes
+        # `input_key` — which is the attribute the tracking table is keyed on.
+        # All three faults landed in the surrounding `except`, which logged
+        # "Failed to update document status" and swallowed them, so the only
+        # symptom was a line that reads like a transient DynamoDB problem.
+        #
+        # The consolidation step is what turns every section's validated facts
+        # into the document's single compliance decision, so when it fails no
+        # section has a verdict — which is why the issue goes on all of them.
+        # A document whose load failed before `document` was bound, or that
+        # carries no sections, records nothing and takes its terminal status from
+        # `workflow_tracker` as before.
+        if "document" in locals():
+            document.status = Status.FAILED
+            persist_failed_document(
+                document_service=create_document_service(),
+                document=document,
+                error=error,
+                diagnoses=[
+                    SectionDiagnosis(
+                        section_id=section.section_id,
+                        stage=RULE_VALIDATION_STAGE,
+                        code=RULE_VALIDATION_NOT_CONSOLIDATED_CODE,
+                        message=RULE_VALIDATION_NOT_CONSOLIDATED_MESSAGE,
+                        root_cause=f"{type(error).__name__}: {error}",
+                    )
+                    for section in document.sections or []
+                ],
+            )
+
+        # #1101: surface a transient cause under the one name
+        # RuleValidationOrchestration retries. This runs AFTER the recorder above,
+        # and the two agree by construction because both ask
+        # `idp_common.utils.transient_errors.is_transient_error`: whatever the
+        # recorder declined to mark as failed is exactly what this re-raises as
+        # retryable, so a section is never left showing red through a ladder that is
+        # about to clear it, and a transient fault is never recorded as terminal.
+        # Before this, the bare `raise` below reported the cause's own class name —
+        # `ClientError` for a throttle botocore did not model, `ReadTimeoutError` for
+        # a dropped read — neither of which this state lists, so the document failed
+        # on the first attempt with nothing on its record.
+        raise_if_transient(error, where="rule validation orchestration")
+
+        raise

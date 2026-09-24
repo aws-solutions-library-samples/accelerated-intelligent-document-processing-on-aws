@@ -585,7 +585,8 @@ point reaches Bedrock. A cache write is 1.25× input price and pays back only on
 second same-prefix request inside the 5-minute TTL, so a low-volume deployment is
 better off with `off`.
 
-Each model has a **minimum cacheable prefix** (512 tokens on Opus 5 / Fable 5, 1,024
+Each model has a **minimum cacheable prefix** (512 tokens on Opus 5 / Opus 5.5 /
+Fable 5, 1,024
 on Sonnet 5 / 4.6 / Opus 4.8, 2,048 on Opus 4.7, 4,096 on Opus 4.6 / 4.5 / Haiku 4.5;
 `idp_common.bedrock.prompt_cache.min_cacheable_prefix_tokens`). Below it a cache
 point silently does nothing. `merge_utils._validate_prompt_cache_prefix` estimates
@@ -2297,20 +2298,23 @@ signals make both loud without changing what is extracted:
     `extraction.row_shortfall_action`, which persists the partial rows, the error-severity
     issue and the processing report *first*.
   - ⚠️ **Sharded: the floor is enforced PER SHARD, so a whole-section floor is
-    unsatisfiable.** Both fan-out sites pass the whole-section transport model as
-    `data_format` — `concurrent_structured_output_async(data_format=dynamic_model, ...)`
-    in-process and `run_section_shard`'s `extract_one_shard(data_format=dynamic_model)`
-    for the Step Functions route — `_run_shard_agent` forwards it unmodified, and
+    unsatisfiable.** Both fan-out sites pass the **shard** transport model
+    (`_shard_transport_model`) as `data_format` —
+    `concurrent_structured_output_async(data_format=shard_model, ...)` in-process and
+    `run_section_shard`'s `extract_one_shard(data_format=shard_model)` for the Step
+    Functions route — `_run_shard_agent` forwards it unmodified, and
     `structured_output_async` builds the agent's tools with
-    `create_dynamic_extraction_tool_and_patch_tool(data_format)`. So each shard's
-    `extraction_tool` carries the section's `minItems`, while the shard sees only its page
-    range. `minItems: 100` over a 17-page section (`max_pages_per_shard` 5) rejects every
-    shard holding under 100 rows, and a cover-page shard holds none — the document fails
-    though it holds 800 rows. `shard_validation_schema` (no `required`, no `minItems`) is
-    the in-loop **feedback** validator passed as `schema_validator` and consulted for the
-    self-correction round; it is NOT the tool boundary, so it does not relax this. Verified
-    by driving `_run_shard_agent` with a spy on the tool builder: the tool is built from
-    the same object the shard plan returned, a 17-row shard is rejected `too_short` at that
+    `create_dynamic_extraction_tool_and_patch_tool(data_format)`. That model relaxes
+    *presence* for a required container (see the next bullet) and keeps every **row-count
+    bound**, so each shard's `extraction_tool` carries the section's `minItems` while the
+    shard sees only its page range. `minItems: 100` over a 17-page section
+    (`max_pages_per_shard` 5) rejects every shard holding under 100 rows, and a
+    cover-page shard holds none — the document fails though it holds 800 rows.
+    `shard_validation_schema` (no `required`, no `minItems`) is the in-loop **feedback**
+    validator passed as `schema_validator` and consulted for the self-correction round; it
+    is NOT the tool boundary, so it does not relax this. Verified by driving
+    `_run_shard_agent` with a spy on the tool builder: the tool is built from the same
+    object the shard plan returned, a 17-row shard is rejected `too_short` at that
     boundary, and the shard feedback validator reports the same 17 rows as satisfying every
     constraint. **This is the default Advanced-mode configuration, not a tuned one:**
     `max_concurrent_batches` ships at `10` in `base-extraction.yaml` and in the UI schema
@@ -2321,6 +2325,28 @@ signals make both loud without changing what is extracted:
     dense enough to fill the shard token budget — so a 17-page section plans four shards at
     the shipped defaults. The only floor every shard can satisfy is none, so use
     `extraction.row_shortfall_action`, which is evaluated once on the merged section.
+  - **`required` is shard-scoped at the tool boundary, and needs no equivalent warning.**
+    `nullable_leaves_for_transport` widens scalar *leaves*, which is what lets a shard
+    abstain on a cell, and it adds no null branch to an array or a nested object — so a
+    required list or group was the one shape for which `_run_shard_agent`'s instruction
+    ("if a field does not appear in your pages, leave it null — another shard will provide
+    it") named the answer the tool rejected, at `list_type` / `model_type`, costing the
+    shard a correction round whose feedback pointed nowhere because
+    `shard_validation_schema` reported the same payload as valid.
+    `_shard_transport_model` layers `nullable_required_containers_for_shard` on top, so a
+    **required array or nested object also accepts `null`** in the shard's tool and the two
+    shard-scoped boundaries now agree about presence. What does not relax is the structural
+    half: `required` is still present, so an omitted key, an empty tool call (`{}`) and a
+    misspelled key set still fail per shard — the #666 guard `nullable_leaves_for_transport`
+    deliberately kept — and row-count bounds are untouched. Presence is judged once on the
+    merged section by `extraction.validation` against the real schema, where a null property
+    reads as absent; the merge itself normalises a list field to `[]` regardless
+    (`runtime._merge_shard_results`), so for a list only the per-shard round is saved.
+    ⚠️ One residual: a required property that is a **bare `$ref`** (no `type`, no
+    `properties`, no `items` of its own) is not widened — there is no keyword to widen
+    without resolving the reference, and the `anyOf` alternative renders an array field as a
+    wrapper model, which breaks the shard merge's list detection. Such a property still
+    costs one correction round per shard. No shipped configuration uses that shape.
   - ⚠️ **Reachability: treat this as a Simple-mode signal.** A short non-empty list does not
     survive the tool boundary in Advanced mode, so the section fails instead of reporting
     this. The string form the Web UI stores (`minItems: "100"`) is enforced there too — the

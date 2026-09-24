@@ -482,9 +482,44 @@ export const simpleIntegratedDowngraded = (
  *   flagged one, which is why it comes from the config rather than the class.
  * - `forcedTool` is Simple-only: the forced toolConfig is built in the non-agentic
  *   branch of `_invoke_extraction_model`, and Advanced already sends the schema as
- *   the Strands tool. Assessment never sends a forced tool at all.
+ *   the Strands tool. Assessment never sends a forced tool at all. It is ALSO
+ *   model-dependent — see `modelCanBeForced`.
  * - `restatesSchema` is Advanced-only and DEFAULTS TRUE — see `boolish`.
  */
+
+// Whether a forced `toolChoice` actually reaches this model. Mirrors the backend
+// gate pair (idp_common/bedrock/client.py::supports_tool_config +
+// supports_forced_tool_choice, and forced_tool.should_force_tool, which skips for
+// all three cases below and records the reason in the section metadata).
+//
+// This matters to a PREVIEW specifically. When the backend skips forcing, it falls
+// back to the prose schema silently and correctly — but the preview would still
+// render a "Tool Schema" tab asserting a `toolChoice` will be sent, and fold the
+// toolSpec's tokens into the displayed input-token estimate. Both are then wrong for
+// that model, and a token estimate that is wrong in the optimistic direction is the
+// kind a user only discovers from a bill.
+//
+// Three reasons a model is excluded, and they are not the same reason:
+//   * LambdaHook  — posts a Converse-shaped payload to a customer-owned Lambda,
+//                   which need not implement tool use at all.
+//   * GPT-5.x     — served by the bedrock-mantle Responses API, which has its own
+//                   tools schema and takes no Converse toolConfig.
+//   * Opus 5.5    — takes a toolConfig and answers `toolChoice: auto` normally, but
+//                   rejects `any`/`tool` with a 400. The only one of the three that
+//                   fails on FORCING rather than on tool use.
+const modelCanBeForced = (modelId: unknown): boolean => {
+  if (typeof modelId !== 'string' || !modelId) {
+    // Unknown model: assume the common case rather than hiding a tab the user
+    // configured. The backend is what decides; this only affects the preview.
+    return true;
+  }
+  const id = modelId.toLowerCase();
+  if (id === 'lambdahook') return false;
+  if (id.includes('openai.gpt-5')) return false;
+  if (id.includes('claude-opus-5-5')) return false;
+  return true;
+};
+
 export const schemaDivergenceFor = (
   formValues: Record<string, unknown> | null | undefined,
   selectedClass: Record<string, unknown> | null | undefined,
@@ -499,7 +534,7 @@ export const schemaDivergenceFor = (
   return {
     wrapped: Boolean(selectedClass?.[X_AWS_IDP_MULTI_INSTANCE]),
     probe: boolish(detection.enabled, false) && mode === 'simple' && isExtraction,
-    forcedTool: boolish(forcedTool.enabled, false) && mode === 'simple' && isExtraction,
+    forcedTool: boolish(forcedTool.enabled, false) && mode === 'simple' && isExtraction && modelCanBeForced(extraction.model),
     restatesSchema: boolish(agentic.restate_schema_in_system_prompt, true) && mode === 'advanced' && isExtraction,
   };
 };

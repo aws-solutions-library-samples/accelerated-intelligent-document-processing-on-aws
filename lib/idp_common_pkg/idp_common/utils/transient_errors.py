@@ -36,11 +36,19 @@ Classification rules, in order:
    and a deterministic error raised after a swallowed transient one would inherit
    its transience. Both were reproduced against the Bedrock client.
 3. Transient vocabulary: the pipeline's Bedrock retry codes
-   (``DEFAULT_RETRYABLE_ERRORS``) minus the entries that are deterministic at the
-   task level, plus the S3 spellings (``SlowDown``, ``ServiceUnavailable``,
+   (``DEFAULT_RETRYABLE_ERRORS``) **and the retryable codes botocore's own standard
+   retry mode recognises**, minus the entries that are deterministic at the task
+   level, plus the S3 spellings (``SlowDown``, ``ServiceUnavailable``,
    ``InternalError``), the streaming error, and the standard-library / botocore /
    urllib3 network and timeout exception TYPES. Message markers are limited to
    network-transport text that carries no error code of its own.
+
+   The botocore half is **read from botocore** rather than transcribed, because a
+   hand-kept list of throttling spellings is a list that goes stale one service at a
+   time: ``Throttling``, ``ThrottledException``, ``RequestThrottled`` and
+   ``RequestThrottledException`` all mean throttling and all were missing, so a
+   service answering with one of them had its failure recorded as permanent *and* not
+   retried (#1132). See :func:`_botocore_retry_codes`.
 4. A deterministic OUTCOME inside a transient CODE overrides the code. Rule 1
    judges a node by its code because a code is more reliable than prose — but a
    few Bedrock codes cover both a transport fault and a reproducible model/protocol
@@ -75,18 +83,93 @@ try:  # urllib3 is a botocore dependency, but keep the import defensive
 except Exception:  # pragma: no cover - environment without urllib3
     _URLLIB3_TYPES = ()
 
-#: Entries of the Bedrock retry vocabulary that are NOT transient at the task level.
+#: Retry vocabulary entries that are NOT transient at the task level.
+#:
 #: ``ValidationException`` is a malformed or oversized request (deterministic — the
 #: in-call decorator retries it only for the content-filter special case, which a
 #: re-run of the whole task would not change either). ``ModelErrorException`` is
 #: Bedrock's generic model-side failure and is usually deterministic for an input.
-_NOT_TRANSIENT_AT_TASK_LEVEL = frozenset({"ValidationException", "ModelErrorException"})
+#:
+#: ``LimitExceededException`` is the one botocore calls a throttle that this does not
+#: (#1132). On some services it is a rate limit a retry clears; on others it reports a
+#: quota that is genuinely full, where eight attempts at 2.5x backoff cannot help and
+#: the reasoning above applies instead. Since the two readings cannot be told apart from
+#: the code, and every service this solution calls that rate-limits also answers with a
+#: spelling that *is* listed, it stays out. Adding it is a per-service decision, not a
+#: vocabulary gap.
+_NOT_TRANSIENT_AT_TASK_LEVEL = frozenset(
+    {"ValidationException", "ModelErrorException", "LimitExceededException"}
+)
+
+#: The retryable codes botocore's standard retry mode recognised when this vocabulary
+#: was last audited — its throttling set plus its transient set. It is both the record
+#: of what was reviewed and the fallback if the attributes it is read from move.
+#: ``test_transient_errors.py`` fails when botocore's live sets differ from this, which
+#: is the signal to look at the new spelling rather than inherit it unexamined.
+_PINNED_BOTOCORE_RETRY_CODES: frozenset[str] = frozenset(
+    {
+        # Throttling, in every spelling AWS services use for it.
+        "Throttling",
+        "ThrottlingException",
+        "ThrottledException",
+        "RequestThrottled",
+        "RequestThrottledException",
+        "TooManyRequestsException",
+        "ProvisionedThroughputExceededException",
+        "TransactionInProgressException",
+        "RequestLimitExceeded",
+        "BandwidthLimitExceeded",
+        "LimitExceededException",
+        "SlowDown",
+        "PriorRequestNotComplete",
+        "EC2ThrottledException",
+        # Transient at the transport level.
+        "RequestTimeout",
+        "RequestTimeoutException",
+    }
+)
+
+
+def _botocore_retry_codes() -> frozenset[str]:
+    """The retryable codes botocore itself recognises, read rather than transcribed.
+
+    Why this is read from botocore and not listed here (#1132): the vocabulary used to
+    carry ``ThrottlingException`` and nothing else meaning throttling, so the legacy
+    spelling ``Throttling`` — which CloudFormation and several other services still
+    answer with, measured as 345 of 345 throttles under concurrent CloudFormation reads
+    — was judged deterministic. The document then failed on its first attempt for a
+    condition that would have cleared on its own, and it failed in both directions at
+    once: the persistence carve-out withholds a diagnosis only for a failure it judges
+    transient, and the state machine retries only the name this predicate produces.
+
+    Adding one string at a time is how five spellings came to be missing. botocore
+    maintains the union of the codes AWS services actually answer with, so deriving the
+    set means a new spelling arrives with a dependency bump rather than with an incident.
+    The attributes are private, hence the fallback to the audited pin above; the failure
+    mode of a rename is then a stale vocabulary rather than an import error at Lambda
+    cold start.
+    """
+    try:
+        from botocore.retries.standard import (
+            ThrottledRetryableChecker,
+            TransientRetryableChecker,
+        )
+
+        codes = frozenset(ThrottledRetryableChecker._THROTTLED_ERROR_CODES) | frozenset(
+            TransientRetryableChecker._TRANSIENT_ERROR_CODES
+        )
+        if codes:
+            return codes
+    except Exception:  # pragma: no cover - botocore moved or renamed the checkers
+        pass
+    return _PINNED_BOTOCORE_RETRY_CODES
+
 
 #: Error codes / exception class names treated as transient (case-insensitive).
 TRANSIENT_ERROR_NAMES: frozenset[str] = frozenset(
     {
         n.lower()
-        for n in DEFAULT_RETRYABLE_ERRORS
+        for n in DEFAULT_RETRYABLE_ERRORS | _botocore_retry_codes()
         if n not in _NOT_TRANSIENT_AT_TASK_LEVEL
     }
     | {
@@ -274,3 +357,31 @@ def raise_if_transient(exc: BaseException, where: str = "") -> None:
         return  # already surfaced under the name; the caller's bare `raise` keeps it
     if is_transient_error(exc):
         raise TransientError(exc, where) from exc
+
+
+def reraise_if_transient(exc: BaseException, where: str = "") -> None:
+    """Surface ``exc`` as :class:`TransientError` — for an ``except`` that does NOT
+    end in a bare ``raise``.
+
+    :func:`raise_if_transient` returns silently when ``exc`` already IS a
+    ``TransientError``, because it is written for the pattern ::
+
+        except Exception as e:
+            raise_if_transient(e, where="...")
+            raise               # keeps the name in the already-surfaced case
+
+    An ``except`` that instead RETURNS — a fallback result, a document marked
+    failed, an empty consolidation — has no such ``raise``, so with
+    :func:`raise_if_transient` alone an exception that was already classified
+    further in gets swallowed there and the inner classification is undone. That is
+    not hypothetical: rule validation composes exactly that way, a transient
+    re-raised for one rule travelling up through ``asyncio.gather`` into a
+    document-level ``except`` that returns a FAILED document (#1101).
+
+    So: use this wherever the ``except`` swallows, and :func:`raise_if_transient`
+    where a bare ``raise`` follows. Neither ever wraps a ``TransientError`` in
+    another one, so a chain of nested handlers reports one name and one cause.
+    """
+    if isinstance(exc, TransientError):
+        raise exc
+    raise_if_transient(exc, where)

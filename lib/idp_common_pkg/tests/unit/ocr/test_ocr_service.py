@@ -9,6 +9,7 @@ Unit tests for the OCR Service class.
 # The above line disables E402 (module level import not at top of file) and I001 (import block sorting) for this file
 
 import pytest
+from pydantic import ValidationError
 
 # Import standard library modules first
 import sys
@@ -317,8 +318,19 @@ class TestOcrService:
             }
             assert service.dpi == 150
 
-    def test_init_config_pattern_invalid_sizing_fallback(self):
-        """Test initialization with invalid sizing values falls back to defaults."""
+    def test_init_config_pattern_rejects_an_unreadable_sizing_value(self):
+        """An unreadable dimension fails config validation rather than defaulting.
+
+        This asserted the silent fallback, and that fallback is what made the defect
+        invisible: `parse_dimensions` turned `"invalid"` into `None`, which is the same
+        value "not configured" produces, so the service applied the default ceiling and
+        logged *"No image sizing configured, applying default ceiling"* — the opposite
+        of what had happened. The warning written for this case could never fire,
+        because by then the value was already `int | None` (#1158).
+
+        `dpi` in the same config block has always raised for an unreadable value, so
+        this also removes an asymmetry rather than inventing a rule.
+        """
         config = {
             "ocr": {
                 "image": {
@@ -329,15 +341,39 @@ class TestOcrService:
             }
         }
 
+        with patch("boto3.client"), pytest.raises(ValidationError) as caught:
+            OcrService(config=config)
+
+        message = str(caught.value)
+        assert "target_width" in message and "target_height" in message
+        assert "invalid" in message, "the rejected value should be named"
+
+    def test_an_empty_sizing_value_is_still_unset_rather_than_rejected(self):
+        """Empty is how the UI and a YAML preset express "not configured", so it must
+        keep meaning that — only an unreadable value is an error."""
+        config = {"ocr": {"image": {"target_width": "", "target_height": None}}}
+
         with patch("boto3.client"):
             service = OcrService(config=config)
 
-            # Verify fallback to defaults on invalid values
-            assert service.resize_config == {
-                "target_width": DEFAULT_TARGET_WIDTH,
-                "target_height": DEFAULT_TARGET_HEIGHT,
-            }
-            assert service.dpi == 150
+        assert service.resize_config == {
+            "target_width": DEFAULT_TARGET_WIDTH,
+            "target_height": DEFAULT_TARGET_HEIGHT,
+        }
+
+    def test_one_configured_dimension_leaves_the_other_unset(self):
+        """A single dimension is meaningful: the resize keeps the aspect ratio. The
+        removed branch would have coerced the missing one, so this pins that it stays
+        None."""
+        config = {"ocr": {"image": {"target_width": 1500}}}
+
+        with patch("boto3.client"):
+            service = OcrService(config=config)
+
+        assert service.resize_config == {
+            "target_width": 1500,
+            "target_height": None,
+        }
 
     def test_init_with_preprocessing_config(self):
         """Test initialization with preprocessing configuration."""
@@ -564,7 +600,7 @@ class TestOcrService:
                 assert service._feature_combo() == expected, features
 
     @patch("boto3.client")
-    @patch("idp_common.s3.write_content")
+    @patch("idp_common.ocr.service.s3.write_content")
     def test_process_single_page_textract(
         self, mock_write_content, mock_boto_client, mock_textract_response
     ):
@@ -611,10 +647,10 @@ class TestOcrService:
         )  # image, raw, confidence, parsed, pageData
 
     @patch("boto3.client")
-    @patch("idp_common.s3.write_content")
-    @patch("idp_common.bedrock.invoke_model")
-    @patch("idp_common.bedrock.extract_text_from_response")
-    @patch("idp_common.image.prepare_bedrock_image_attachment")
+    @patch("idp_common.ocr.service.s3.write_content")
+    @patch("idp_common.ocr.service.bedrock.invoke_model")
+    @patch("idp_common.ocr.service.bedrock.extract_text_from_response")
+    @patch("idp_common.ocr.service.image.prepare_bedrock_image_attachment")
     def test_process_single_page_bedrock(
         self,
         mock_prepare_image,
@@ -775,7 +811,7 @@ class TestOcrService:
         assert "No confidence data available from LLM OCR" in confidence["text"]
 
     @patch("boto3.client")
-    @patch("idp_common.s3.write_content")
+    @patch("idp_common.ocr.service.s3.write_content")
     def test_process_single_page_none(self, mock_write_content, mock_boto_client):
         """Test single page processing with 'none' backend."""
         # Mock PDF document with pypdfium2 API
@@ -1018,7 +1054,7 @@ class TestOcrService:
                     assert "Error extracting text" in result["text"]
 
     @patch("boto3.client")
-    @patch("idp_common.s3.write_content")
+    @patch("idp_common.ocr.service.s3.write_content")
     @patch("idp_common.ocr.service.pdfium")
     def test_process_single_page_with_resize_config(
         self, mock_pdfium, mock_write_content, mock_boto_client, mock_textract_response
@@ -1065,6 +1101,12 @@ class TestOcrService:
         assert "image_uri" in result
 
     @patch("boto3.client")
+    # NOT patched at `idp_common.ocr.service.image.…` like the four targets above:
+    # `_process_single_page_textract` imports this one with a FUNCTION-LOCAL
+    # `from idp_common.image import apply_adaptive_binarization`, so the name is
+    # resolved from `sys.modules` at call time rather than from the module-level
+    # `image` global. Patching the service module's captured `image` object would
+    # not be seen (measured: called 0 times).
     @patch("idp_common.image.apply_adaptive_binarization")
     def test_process_single_page_with_preprocessing(
         self,
@@ -1099,7 +1141,7 @@ class TestOcrService:
         preprocessing_config = {"enabled": True}
         service = OcrService(preprocessing_config=preprocessing_config)
 
-        with patch("idp_common.s3.write_content"):
+        with patch("idp_common.ocr.service.s3.write_content"):
             result, metering = service._process_single_page_textract(
                 0, mock_pdf_doc, "output-bucket", "test-prefix"
             )

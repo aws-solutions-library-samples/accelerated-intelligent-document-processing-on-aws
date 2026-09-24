@@ -27,6 +27,7 @@ those two cells and the browser; these tests assert what the formatter does, not
 that the rendered page is safe.
 """
 
+import threading
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -121,17 +122,13 @@ class TestOrchestratorConstruction:
         second = asyncio.run(second_loop())
         assert second is not first
 
-    @pytest.mark.xfail(
-        strict=True,
-        reason="The stale-loop guard fires on every access, because a Semaphore's "
-        "_loop is None until first awaited, so the cache is cleared and the "
-        "configured concurrency limit never applies. See "
-        "https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/1053",
-    )
     def test_repeated_access_within_one_loop_returns_the_same_semaphore(self):
         # Both call sites write `async with self.semaphore:`, so the property is
         # re-evaluated per task. If it hands back a fresh Semaphore each time,
         # every task acquires its own and nothing is rate limited.
+        #
+        # Identity is necessary but not sufficient: TestSemaphoreActuallyBounds
+        # below counts how many model calls overlap.
         import asyncio
 
         async def probe():
@@ -139,6 +136,259 @@ class TestOrchestratorConstruction:
             return service.semaphore is service.semaphore
 
         assert asyncio.run(probe()) is True
+
+    def test_an_instance_built_without_init_still_resolves_the_semaphore(self):
+        # Several property suites build a service with `__new__` to skip config
+        # loading and then assign `_semaphore` themselves, so the property must
+        # not depend on an attribute only __init__ sets.
+        import asyncio
+
+        service = RuleValidationOrchestratorService.__new__(
+            RuleValidationOrchestratorService
+        )
+        assigned = asyncio.Semaphore(4)
+        service._semaphore = assigned
+
+        async def probe():
+            return service.semaphore
+
+        assert asyncio.run(probe()) is assigned
+
+    def test_a_semaphore_assigned_by_a_caller_is_not_replaced(self):
+        # Several existing suites set `service._semaphore` directly to control the
+        # limit, so an assigned semaphore has to survive the property.
+        import asyncio
+
+        async def probe():
+            service = _service({"rule_validation": {"semaphore": 5}})
+            assigned = asyncio.Semaphore(2)
+            service._semaphore = assigned
+            return service.semaphore is assigned and service.semaphore is assigned
+
+        assert asyncio.run(probe()) is True
+
+
+_MODEL_RESPONSE = {
+    "output": {
+        "message": {
+            "content": [
+                {
+                    "text": '<response>{"policy_type": "Lending", "rule": "r", '
+                    '"recommendation": "Pass", "reasoning": "because", '
+                    '"supporting_pages": ["1"]}</response>'
+                }
+            ]
+        }
+    },
+    "metering": {},
+}
+
+
+class _OverlapProbe:
+    """
+    A stand-in for ``bedrock.invoke_model`` that measures how many calls overlap.
+
+    It runs on the executor thread, like the real client, and reports the *peak*
+    number of simultaneous calls rather than the total. Total call count cannot
+    distinguish a working bound from a broken one — every rule is summarised
+    either way — which is why issue #1053 was invisible to the suite that
+    covered this method.
+
+    The rendezvous is what makes the peak a measurement rather than a hope. Each
+    call waits at a ``Barrier`` of width ``expected_peak``, so the call only
+    returns once that many calls are inside simultaneously; a sleep long enough
+    to *probably* overlap would let a real bound of 1 pass as a bound of 3 on an
+    unlucky schedule. A bound *below* ``expected_peak`` breaks the barrier and
+    the waiting calls raise, which the test reports.
+    """
+
+    def __init__(self, expected_peak: int) -> None:
+        self._lock = threading.Lock()
+        self._barrier = threading.Barrier(expected_peak)
+        self.in_flight = 0
+        self.peak = 0
+        self.calls = 0
+
+    def __call__(self, *_args, **_kwargs):
+        with self._lock:
+            self.calls += 1
+            self.in_flight += 1
+            self.peak = max(self.peak, self.in_flight)
+        try:
+            self._barrier.wait(timeout=30)
+        finally:
+            with self._lock:
+                self.in_flight -= 1
+        return _MODEL_RESPONSE
+
+
+@pytest.mark.unit
+class TestSemaphoreActuallyBoundsConcurrency:
+    """
+    The configured `rule_validation.semaphore` bounds concurrent Bedrock calls.
+
+    Both call sites spell it `async with self.semaphore:`, so what has to hold is
+    a property of the whole path — the property, the `asyncio.gather` over tasks,
+    and the executor the blocking client call is handed to — not of the property
+    alone. These tests measure the path.
+
+    Nothing here replaces the executor with an inline stand-in. Running the
+    submitted callable on the calling thread would make the observed peak 1
+    whatever the semaphore does, so the test would pass against the broken code;
+    the executor is a real `ThreadPoolExecutor`, its type is asserted, and each
+    test first measures the peak the executor admits **without** the semaphore in
+    the path. That control is the reason `peak == limit` is a statement about the
+    semaphore: it shows the same executor, on this machine, admits more.
+    """
+
+    def test_concurrent_summaries_are_bounded_by_the_configured_limit(self):
+        import asyncio
+        import concurrent.futures
+
+        limit = 3
+        workers = 9  # deliberately wider than `limit`; see the control below
+        rules = 12  # a whole number of `limit`-sized waves
+        assert workers > limit
+
+        service = _service({"rule_validation": {"semaphore": limit}})
+        control = _OverlapProbe(expected_peak=workers)
+        measured = _OverlapProbe(expected_peak=limit)
+
+        async def main():
+            loop = asyncio.get_running_loop()
+            executor = concurrent.futures.ThreadPoolExecutor(max_workers=workers)
+            loop.set_default_executor(executor)
+            assert isinstance(executor, concurrent.futures.ThreadPoolExecutor), (
+                "the calls must be handed to a real thread pool; an inline "
+                "stand-in serialises them and the measurement below means nothing"
+            )
+
+            # Control: the same executor, reached the same way the service
+            # reaches it (`run_in_executor(None, ...)`), with no semaphore in the
+            # path. Its peak is what bounds these calls when the semaphore does
+            # not. Exceptions are collected rather than raised for the same reason
+            # they are in the measured run below: a control that cannot reach
+            # `workers` overlapping calls breaks its barrier, and a bare
+            # `BrokenBarrierError` says nothing about why, where the assertion
+            # after `asyncio.run` names the reason.
+            control_results = await asyncio.gather(
+                *[loop.run_in_executor(None, control) for _ in range(workers)],
+                return_exceptions=True,
+            )
+
+            with patch("idp_common.bedrock.invoke_model", measured):
+                measured_results = await asyncio.gather(
+                    *[
+                        service._summarize_single_rule(
+                            model_id="model",
+                            system_prompt="s",
+                            prompt=f"rule {i}",
+                            temperature=0.0,
+                        )
+                        for i in range(rules)
+                    ],
+                    return_exceptions=True,
+                )
+            return control_results, measured_results
+
+        control_results, results = asyncio.run(main())
+
+        control_failed = [r for r in control_results if isinstance(r, BaseException)]
+        assert not control_failed, (
+            f"the control run raised: {control_failed[0]!r}. It submits {workers} "
+            f"callables straight to a {workers}-wide pool, so this means the "
+            f"executor is not admitting its declared width — the measured run's "
+            f"peak below would then be a statement about the executor, not the "
+            f"semaphore."
+        )
+        assert control.peak == workers, (
+            "the control did not reach the executor's full width, so this machine "
+            "cannot show that the executor is not what bounds the measured run"
+        )
+        assert control.peak > limit
+
+        failed = [r for r in results if isinstance(r, BaseException)]
+        assert not failed, (
+            f"a summarisation raised: {failed[0]!r}. A BrokenBarrierError here "
+            f"means fewer than {limit} calls were ever in flight at once, i.e. the "
+            f"bound is tighter than configured."
+        )
+        assert measured.calls == rules, "every rule must still be summarised"
+        assert measured.peak == limit, (
+            f"peak concurrent model calls was {measured.peak}, not the configured "
+            f"{limit}; the executor admitted {control.peak}"
+        )
+
+    def test_both_call_sites_share_one_bound(self):
+        # _summarize_single_rule and _extract_z3_values_from_facts each acquire
+        # `self.semaphore` independently. A per-call semaphore would let the two
+        # steps run `limit` calls *each*, so the bound has to be measured across
+        # a mixture of them.
+        import asyncio
+        import concurrent.futures
+
+        limit = 2
+        workers = 6
+        per_site = 3  # 3 + 3 calls, a whole number of `limit`-sized waves
+        assert workers > limit
+
+        service = _service(
+            {
+                "rule_validation": {
+                    "semaphore": limit,
+                    "fact_extraction": {"model": "model"},
+                }
+            }
+        )
+        control = _OverlapProbe(expected_peak=workers)
+        measured = _OverlapProbe(expected_peak=limit)
+        rule_json = {"parameters": [{"name": "income", "type": "Real"}]}
+
+        async def main():
+            loop = asyncio.get_running_loop()
+            executor = concurrent.futures.ThreadPoolExecutor(max_workers=workers)
+            loop.set_default_executor(executor)
+            assert isinstance(executor, concurrent.futures.ThreadPoolExecutor)
+
+            control_results = await asyncio.gather(
+                *[loop.run_in_executor(None, control) for _ in range(workers)],
+                return_exceptions=True,
+            )
+            assert not [r for r in control_results if isinstance(r, BaseException)], (
+                "the control run raised, so the executor is not admitting its "
+                "declared width and the peak below would be about the executor"
+            )
+
+            with patch("idp_common.bedrock.invoke_model", measured):
+                summaries = [
+                    service._summarize_single_rule(
+                        model_id="model",
+                        system_prompt="s",
+                        prompt=f"rule {i}",
+                        temperature=0.0,
+                    )
+                    for i in range(per_site)
+                ]
+                extractions = [
+                    service._extract_z3_values_from_facts(
+                        rule_json, {"facts": []}, f"rule {i}"
+                    )
+                    for i in range(per_site)
+                ]
+                return await asyncio.gather(
+                    *summaries, *extractions, return_exceptions=True
+                )
+
+        results = asyncio.run(main())
+
+        assert control.peak == workers
+        failed = [r for r in results if isinstance(r, BaseException)]
+        assert not failed, f"a call raised: {failed[0]!r}"
+        assert measured.calls == 2 * per_site
+        assert measured.peak == limit, (
+            f"peak concurrent model calls across both call sites was "
+            f"{measured.peak}, not the configured {limit}"
+        )
 
 
 @pytest.mark.unit
@@ -284,12 +534,6 @@ class TestGenerateConsolidatedSummary:
         assert "error" in summary
         assert summary["generated_at"]
 
-    @pytest.mark.xfail(
-        strict=True,
-        reason="Integer supporting_pages collapse the whole summary to ERROR: the "
-        "sort key calls x.isdigit(), which int does not have. See "
-        "https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/1052",
-    )
     def test_integer_supporting_pages_do_not_discard_the_summary(self):
         # An LLM returning "supporting_pages": [1, 2] rather than ["1", "2"] is
         # enough to lose every statistic in the report, because the AttributeError
@@ -299,6 +543,340 @@ class TestGenerateConsolidatedSummary:
         )
         assert summary["overall_status"] == "COMPLETE"
         assert summary["overall_statistics"]["pass_count"] == 1
+
+
+@pytest.mark.unit
+class TestConsolidatedPageReferences:
+    """The `supporting_pages` aggregate: its element type, dedup and order.
+
+    Page references arrive from two engines. The solver path builds them with
+    `str(citation).split(",")` and so always yields `str`; the model path passes a
+    JSON array through unchanged and can yield `int`. A document routing some rules
+    to each mixes the two by construction, which is why these are asserted on both
+    shapes rather than on the `str` one the rest of the suite uses.
+
+    The aggregate's elements are `str` and that is a compatibility decision, not an
+    incidental one: this list is published in `consolidated_summary.json`, which
+    consumers outside this repository read. `str` is what
+    `LLMResponse.supporting_pages` already declares and coerces to, and what the
+    reporting layer serialises, so this makes the aggregate agree with the per-rule
+    lists instead of carrying whichever type a given model response happened to use.
+    """
+
+    def test_mixed_int_and_str_pages_are_one_page_each(self):
+        # int 1 and "1" are the same page. Held in a set unnormalised they are two
+        # members, and the published list shows page 1 and page 2 twice each.
+        summary = _service()._generate_consolidated_summary(
+            {
+                "Lending": [_response("r1", "Pass", pages=[1, 2])],
+                "Fraud": [_response("r2", "Pass", pages=["1", "2"])],
+            }
+        )
+        assert summary["supporting_pages"] == ["1", "2"]
+
+    def test_every_page_is_a_string(self):
+        summary = _service()._generate_consolidated_summary(
+            {"Lending": [_response("r1", "Pass", pages=[3, "1", 2])]}
+        )
+        assert summary["supporting_pages"] == ["1", "2", "3"]
+        assert all(isinstance(page, str) for page in summary["supporting_pages"])
+
+    def test_the_per_rule_list_keeps_whatever_the_model_returned(self):
+        # Only the aggregate is canonicalised. The per-rule list is the record of
+        # what came back, and the markdown table formats that one.
+        summary = _service()._generate_consolidated_summary(
+            {"Lending": [_response("r1", "Pass", pages=[2, 1])]}
+        )
+        assert summary["rule_details"]["Lending"]["rules"][0]["supporting_pages"] == [
+            2,
+            1,
+        ]
+
+    def test_non_numeric_references_have_a_stable_total_order(self):
+        # Every non-numeric reference used to map to sort key 0, leaving their
+        # relative order to set iteration -- which differs between interpreters
+        # because string hashing is randomised. Ordering them by their own text
+        # makes the published list reproducible.
+        pages = ["cover", "appendix", "schedule A", "exhibit", "notes"]
+        summary = _service()._generate_consolidated_summary(
+            {"Lending": [_response("r1", "Pass", pages=list(pages))]}
+        )
+        assert summary["supporting_pages"] == sorted(pages)
+
+    def test_numeric_references_sort_before_non_numeric_ones(self):
+        summary = _service()._generate_consolidated_summary(
+            {"Lending": [_response("r1", "Pass", pages=["appendix", "10", "2"])]}
+        )
+        assert summary["supporting_pages"] == ["2", "10", "appendix"]
+
+    @pytest.mark.parametrize(
+        "page",
+        [
+            pytest.param("²", id="superscript-two"),
+            pytest.param("₂", id="subscript-two"),
+            pytest.param("②", id="circled-two"),
+        ],
+    )
+    def test_a_digit_character_int_refuses_keeps_the_report(self, page):
+        # str.isdigit() is True for all three and int() raises ValueError on all
+        # three; str.isdecimal() is the predicate that matches what int() accepts.
+        # Guarding the parse is what keeps one odd character in one model response
+        # from discarding the whole document's statistics.
+        assert page.isdigit() and not page.isdecimal()
+        summary = _service()._generate_consolidated_summary(
+            {"Lending": [_response("r1", "Pass", pages=[page])]}
+        )
+        assert summary["overall_status"] == "COMPLETE"
+        assert summary["overall_statistics"]["pass_count"] == 1
+        assert summary["supporting_pages"] == [page]
+
+    def test_a_digit_string_past_the_int_conversion_limit_is_kept_as_text(self):
+        # int() refuses a decimal string longer than sys.get_int_max_str_digits()
+        # (4300 by default), so isdecimal() alone is not enough of a guard.
+        long_page = "1" * 5000
+        summary = _service()._generate_consolidated_summary(
+            {"Lending": [_response("r1", "Pass", pages=[long_page, "2"])]}
+        )
+        assert summary["overall_status"] == "COMPLETE"
+        assert summary["supporting_pages"] == ["2", long_page]
+
+    @pytest.mark.parametrize(
+        "page",
+        [pytest.param(["1"], id="list"), pytest.param({"page": 1}, id="dict")],
+    )
+    def test_an_unhashable_page_is_dropped_from_the_aggregate_not_raised_on(self, page):
+        # An unhashable element failed at `set.add`, before the sort was reached,
+        # so this shape lost the report without ever touching the sort key. It is
+        # dropped here rather than stringified: "{'page': 1}" in a page list is
+        # indistinguishable from a real reference, and the rule's own list below
+        # still records what arrived.
+        summary = _service()._generate_consolidated_summary(
+            {
+                "Lending": [
+                    _response("r1", "Pass", pages=[page, "4"]),
+                    _response("r2", "Fail", pages=["2"]),
+                ]
+            }
+        )
+        assert summary["overall_status"] == "COMPLETE"
+        assert summary["overall_statistics"]["total_rules"] == 2
+        assert summary["supporting_pages"] == ["2", "4"]
+        assert summary["rule_details"]["Lending"]["rules"][0]["supporting_pages"] == [
+            page,
+            "4",
+        ]
+
+    def test_a_boolean_is_not_treated_as_a_page_number(self):
+        # bool is an int subclass, so True would otherwise be collected as "True".
+        summary = _service()._generate_consolidated_summary(
+            {"Lending": [_response("r1", "Pass", pages=[True, "1"])]}
+        )
+        assert summary["supporting_pages"] == ["1"]
+
+    @pytest.mark.parametrize(
+        "pages",
+        [
+            pytest.param(None, id="null"),
+            pytest.param([], id="empty-list"),
+            pytest.param([None], id="null-element"),
+            pytest.param(["", "  "], id="blank-elements"),
+        ],
+    )
+    def test_empty_and_null_references_contribute_nothing(self, pages):
+        # Built directly rather than through `_response`, whose `pages=None` means
+        # "use the default" and would substitute ["1"].
+        summary = _service()._generate_consolidated_summary(
+            {
+                "Lending": [
+                    {
+                        "rule": "r1",
+                        "recommendation": "Pass",
+                        "supporting_pages": pages,
+                        "reasoning": "because",
+                    }
+                ]
+            }
+        )
+        assert summary["overall_status"] == "COMPLETE"
+        assert summary["overall_statistics"]["total_rules"] == 1
+        assert summary["supporting_pages"] == []
+
+    def test_surrounding_whitespace_does_not_create_a_second_page(self):
+        summary = _service()._generate_consolidated_summary(
+            {"Lending": [_response("r1", "Pass", pages=[" 1 ", "1"])]}
+        )
+        assert summary["supporting_pages"] == ["1"]
+
+    @pytest.mark.parametrize(
+        "pages",
+        [pytest.param(7, id="bare-int"), pytest.param("1,2", id="bare-string")],
+    )
+    def test_supporting_pages_that_is_not_a_list_does_not_decide_the_report(
+        self, pages
+    ):
+        # The field itself is model output too: a bare int is not iterable and a
+        # bare string iterates into characters, and neither should reach the
+        # aggregate or discard the statistics.
+        summary = _service()._generate_consolidated_summary(
+            {
+                "Lending": [
+                    _response("r1", "Pass", pages=pages),
+                    _response("r2", "Fail", pages=["3"]),
+                ]
+            }
+        )
+        assert summary["overall_status"] == "COMPLETE"
+        assert summary["overall_statistics"]["total_rules"] == 2
+        assert summary["supporting_pages"] == ["3"]
+
+
+@pytest.mark.unit
+class TestConsolidationFailureKeepsItsStatistics:
+    """What the broad `except` returns when something inside the method fails.
+
+    The method deliberately does not raise -- the caller writes whatever it returns
+    to S3 as the document's compliance report. What it returns on failure is the
+    thing that matters: a five-key stub reads exactly like a document on which no
+    rule was ever evaluated, which is what made the page-sort crash of #1052
+    expensive to diagnose. Nothing re-raises, so no `ProcessingIssue` is recorded
+    either (`rule_validation_not_consolidated` is attached by the orchestration
+    Lambda, and only when the handler itself raises) -- so the surviving statistics,
+    the `error` field and the banner the markdown formatter renders from it are what
+    make an instance visible at all.
+    """
+
+    @staticmethod
+    def _summary_failing_after_one_policy_type():
+        # "Fraud" is a str, so `.values()` raises AttributeError -- the same shape
+        # as the original report -- after "Lending" has been fully counted.
+        return _service()._generate_consolidated_summary(
+            {
+                "Lending": [
+                    _response("r1", "Pass", pages=["3"]),
+                    _response("r2", "Fail", pages=["1"]),
+                ],
+                "Fraud": "not-a-list",
+            }
+        )
+
+    def test_the_error_is_reported(self):
+        summary = self._summary_failing_after_one_policy_type()
+        assert summary["overall_status"] == "ERROR"
+        assert "values" in summary["error"]
+
+    def test_the_statistics_counted_before_the_failure_survive(self):
+        summary = self._summary_failing_after_one_policy_type()
+        statistics = summary["overall_statistics"]
+        assert statistics["total_rules"] == 2
+        assert statistics["pass_count"] == 1
+        assert statistics["fail_count"] == 1
+        assert statistics["pass_percentage"] == 50.0
+
+    def test_the_policy_types_processed_before_the_failure_survive(self):
+        summary = self._summary_failing_after_one_policy_type()
+        assert list(summary["rule_details"]) == ["Lending"]
+        assert len(summary["rule_details"]["Lending"]["rules"]) == 2
+        assert summary["rule_summary"]["Lending"]["total_rules"] == 2
+
+    def test_the_pages_collected_before_the_failure_survive_and_are_ordered(self):
+        summary = self._summary_failing_after_one_policy_type()
+        assert summary["supporting_pages"] == ["1", "3"]
+
+    def test_every_field_the_formatter_reads_is_present(self):
+        # The failure path used to drop the keys the markdown formatter reads, so
+        # the report it produced showed zeroes with no indication why.
+        summary = self._summary_failing_after_one_policy_type()
+        for key in (
+            "document_id",
+            "overall_status",
+            "total_policy_types",
+            "rule_summary",
+            "overall_statistics",
+            "supporting_pages",
+            "rule_details",
+            "generated_at",
+        ):
+            assert key in summary, key
+
+    def test_a_failure_before_anything_is_counted_still_reports_zeroes(self):
+        summary = _service()._generate_consolidated_summary({"Lending": "not-a-list"})
+        assert summary["overall_status"] == "ERROR"
+        assert summary["overall_statistics"]["total_rules"] == 0
+        assert summary["overall_statistics"]["pass_percentage"] == 0.0
+        assert summary["rule_details"] == {}
+
+    @staticmethod
+    def _summary_failing_inside_a_response():
+        # A response that is not a dict, after two good ones in the same policy
+        # type: `.get` raises, so the failure lands mid-way through one policy
+        # type's responses rather than between two policy types.
+        return _service()._generate_consolidated_summary(
+            {
+                "Lending": [
+                    _response("r1", "Pass", pages=["3"]),
+                    _response("r2", "Fail", pages=["1"]),
+                    "not-a-dict",
+                ]
+            }
+        )
+
+    def test_a_rule_is_counted_only_once_it_has_been_read(self):
+        # Counting before reading the response inflated total_rules by the failing
+        # one, so the report claimed three rules while its recommendation counts
+        # summed to two -- and pass_percentage was computed against the inflated
+        # denominator, understating it (33.33 rather than 50.0).
+        summary = self._summary_failing_inside_a_response()
+        statistics = summary["overall_statistics"]
+        assert statistics["total_rules"] == 2
+        assert sum(statistics["recommendation_counts"].values()) == 2
+        assert statistics["pass_percentage"] == 50.0
+
+    def test_the_rules_read_before_the_failure_are_still_detailed(self):
+        # The per-policy-type entry used to be attached only after the whole
+        # response list had been processed, so a failure inside it dropped every
+        # rule of that policy type from the report while still counting them.
+        summary = self._summary_failing_inside_a_response()
+        detail = summary["rule_details"]["Lending"]
+        assert [rule["rule"] for rule in detail["rules"]] == ["r1", "r2"]
+        assert detail["total_rules"] == 2
+        assert detail["pass_count"] == 1
+        assert detail["pass_percentage"] == 50.0
+
+    def test_the_rendered_report_shows_counts_that_agree_with_each_other(self):
+        # The one line an operator reads first. "3 (1 / 1 / 0)" is internally
+        # inconsistent and gives a reader reason to distrust the whole partial
+        # report, which is the opposite of what keeping the statistics is for.
+        summary = self._summary_failing_inside_a_response()
+        summary["document_id"] = "lending_package.pdf"
+        markdown = _service()._format_summary_as_markdown(summary)
+        line = next(line for line in markdown.splitlines() if "Rules Evaluated" in line)
+        assert ">2</span>" not in line
+        assert "| 2 (" in line
+        assert ">1</span> / <span" in line
+
+    def test_a_policy_type_whose_responses_could_not_be_read_at_all_is_not_claimed(
+        self,
+    ):
+        # The flatten step raises before any response is read, so there is nothing
+        # partial to report for that policy type and no entry is invented for it.
+        summary = self._summary_failing_after_one_policy_type()
+        assert "Fraud" not in summary["rule_details"]
+        assert "Fraud" not in summary["rule_summary"]
+
+    @pytest.mark.parametrize(
+        "responses",
+        [pytest.param(None, id="none"), pytest.param(7, id="not-a-mapping")],
+    )
+    def test_a_responses_argument_that_cannot_even_be_measured_does_not_raise(
+        self, responses
+    ):
+        # `len(all_responses)` is caller input like any other, so it is measured
+        # inside the guarded region: this method's contract is that it returns
+        # something writable to S3 whatever it is handed.
+        summary = _service()._generate_consolidated_summary(responses)
+        assert summary["overall_status"] == "ERROR"
+        assert summary["total_policy_types"] == 0
+        assert summary["generated_at"]
 
 
 def _summary_for_markdown(**overrides):
@@ -533,6 +1111,44 @@ class TestFormatSummaryAsMarkdown:
         assert "✅ Pass" in markdown
         assert "100.0%" in markdown
 
+    def test_a_consolidation_failure_is_stated_above_the_statistics(self):
+        # Statistics from a failed consolidation cover only the rules counted
+        # before the failure. Without this banner they render identically to
+        # complete ones, which is the report #1052 produced.
+        markdown = _service()._format_summary_as_markdown(
+            _summary_for_markdown(
+                overall_status="ERROR", error="'str' object has no attribute 'values'"
+            )
+        )
+        assert "Consolidation did not complete" in markdown
+        assert "'str' object has no attribute 'values'" in markdown
+        assert markdown.index("Consolidation did not complete") < markdown.index(
+            "## Overall Statistics"
+        )
+
+    def test_no_banner_appears_on_a_summary_that_completed(self):
+        markdown = _service()._format_summary_as_markdown(_summary_for_markdown())
+        assert "Consolidation did not complete" not in markdown
+
+    def test_html_in_the_error_text_is_escaped(self):
+        # The error string carries an exception message, which can contain
+        # document-derived text; this cell is interpolated into markdown the UI
+        # renders with rehypeRaw.
+        markdown = _service()._format_summary_as_markdown(
+            _summary_for_markdown(error='<script>alert("x")</script>')
+        )
+        assert "<script>" not in markdown
+        assert "&lt;script&gt;alert(&quot;x&quot;)&lt;/script&gt;" in markdown
+
+    def test_a_multiline_error_stays_inside_the_blockquote(self):
+        markdown = _service()._format_summary_as_markdown(
+            _summary_for_markdown(error="first line\nsecond line")
+        )
+        banner = next(
+            line for line in markdown.splitlines() if line.startswith("> Reason:")
+        )
+        assert "first line second line" in banner
+
 
 @pytest.mark.unit
 class TestSectionResultPersistence:
@@ -687,10 +1303,12 @@ class TestConsolidateAndSave:
 
     def _service_with_stubbed_workflow(self, returned):
         service = _service()
-        seen: list[tuple[object, object, object]] = []
+        seen: list[tuple[object, object, object, object]] = []
 
-        async def _workflow(document, config, multiple_sections=None):
-            seen.append((document, config, multiple_sections))
+        async def _workflow(
+            document, config, multiple_sections=None, section_uris=None
+        ):
+            seen.append((document, config, multiple_sections, section_uris))
             return returned
 
         service.consolidate_and_save_all = _workflow
@@ -701,14 +1319,48 @@ class TestConsolidateAndSave:
         service, seen = self._service_with_stubbed_workflow(sentinel)
         document = MagicMock(name="document")
         config = {"rule_validation": {"semaphore": 1}}
+        uris = ["s3://bucket/doc/rule_validation/sections/section_1_responses.json"]
 
-        assert service.consolidate_and_save(document, config, True) is sentinel
-        assert seen == [(document, config, True)]
+        assert service.consolidate_and_save(document, config, True, uris) is sentinel
+        assert seen == [(document, config, True, uris)]
 
     def test_multiple_sections_defaults_to_none_when_not_given(self):
         service, seen = self._service_with_stubbed_workflow(MagicMock())
         service.consolidate_and_save(MagicMock(), {})
         assert seen[0][2] is None
+
+    def test_the_section_uri_list_is_forwarded_through_every_loop_branch(self):
+        """The wrapper has three call sites, one per event-loop environment.
+
+        Forwarding the list from only the branch a test happens to take would leave
+        the other two globbing the prefix -- and the notebook branch is the one that
+        looks least like production, so it is the one that would be missed (#1143).
+        """
+        import asyncio
+
+        uris = ["s3://bucket/doc/rule_validation/sections/section_1_responses.json"]
+
+        # No running loop: asyncio.run / run_until_complete path.
+        service, seen = self._service_with_stubbed_workflow(MagicMock())
+        service.consolidate_and_save(MagicMock(), {}, True, uris)
+        assert seen[0][3] == uris
+
+        # A loop already running: the coroutine is offloaded to a worker thread.
+        service, seen = self._service_with_stubbed_workflow(MagicMock())
+
+        async def probe():
+            return service.consolidate_and_save(MagicMock(), {}, True, uris)
+
+        asyncio.run(probe())
+        assert seen[0][3] == uris
+
+    def test_no_list_reaches_the_workflow_as_none_not_as_an_empty_list(self):
+        """``None`` and ``[]`` are different instructions downstream, so the wrapper
+        must not normalise one into the other: ``None`` means "list the prefix" and
+        ``[]`` means "this run wrote nothing"."""
+        service, seen = self._service_with_stubbed_workflow(MagicMock())
+        service.consolidate_and_save(MagicMock(), {})
+        assert seen[0][3] is None
 
     def test_it_works_from_inside_a_running_event_loop(self):
         # The notebook case: asyncio.run would raise here, so the wrapper offloads
@@ -726,9 +1378,282 @@ class TestConsolidateAndSave:
     def test_a_failure_inside_the_workflow_propagates_to_the_caller(self):
         service = _service()
 
-        async def _workflow(document, config, multiple_sections=None):
+        async def _workflow(
+            document, config, multiple_sections=None, section_uris=None
+        ):
             raise RuntimeError("consolidation failed")
 
         service.consolidate_and_save_all = _workflow
         with pytest.raises(RuntimeError, match="consolidation failed"):
             service.consolidate_and_save(MagicMock(), {})
+
+
+@pytest.mark.unit
+class TestConsolidationReadsWhatThisRunWrote:
+    """#1143: the section list comes from the run, not from listing the prefix.
+
+    ``_cleanup_rule_validation_files`` deletes the previous run's objects under
+    ``<input_key>/rule_validation/``. Consolidation used to glob
+    ``<input_key>/rule_validation/sections/section_*_responses.json``, and the cleanup
+    prefix strictly contains that one, so an object the cleanup failed to delete was
+    consolidated as though this run had produced it. The verdicts are for the *same
+    document*, which is what makes the result plausible rather than obviously wrong:
+    a rule whose verdict moved from ``Fail`` to ``Pass`` between runs is reported at
+    the stale value and the compliance decision follows it.
+
+    #1101 made a **transient** cleanup failure raise, so it is retried. A
+    deterministic one — ``AccessDenied`` from a missing ``s3:ListBucket`` or
+    ``s3:DeleteObject``, a bucket policy denial — is still caught and logged at
+    WARNING, so the window stayed open for the most likely cause. Reading the explicit
+    list closes it regardless of why the cleanup did not happen.
+    """
+
+    THIS_RUN = "doc/rule_validation/sections/section_1_responses.json"
+    LAST_RUN = "doc/rule_validation/sections/section_9_responses.json"
+
+    def _both_objects_present(self, s3_mock):
+        """S3 holds this run's object and a survivor from the previous run."""
+        s3_mock.find_matching_files.return_value = [self.THIS_RUN, self.LAST_RUN]
+        s3_mock.get_json_content.side_effect = lambda uri: {
+            f"s3://bucket/{self.THIS_RUN}": {
+                "responses": {"Lending": [_response("r1", "Pass")]}
+            },
+            f"s3://bucket/{self.LAST_RUN}": {
+                "responses": {"Lending": [_response("r1", "Fail")]}
+            },
+        }[uri]
+
+    def test_a_surviving_object_is_not_consolidated(self):
+        with patch("idp_common.rule_validation.orchestrator.s3") as s3_mock:
+            self._both_objects_present(s3_mock)
+            responses, _ = _service().load_section_results(
+                "doc", "bucket", [f"s3://bucket/{self.THIS_RUN}"]
+            )
+
+        verdicts = [r["recommendation"] for r in responses["Lending"]]
+        assert verdicts == ["Pass"], (
+            "the previous run's Fail for the same rule was consolidated alongside "
+            "this run's Pass"
+        )
+        s3_mock.find_matching_files.assert_not_called()
+
+    def test_without_the_list_the_prefix_is_still_read(self):
+        """The discriminator. Same S3 state, no list — both verdicts arrive.
+
+        This is the behaviour every caller had before, and it is deliberately kept
+        for callers that genuinely have no list (a notebook re-consolidating an
+        existing prefix). It is also exactly the defect, which is why the workflow's
+        consolidation Lambda now always passes one.
+        """
+        with patch("idp_common.rule_validation.orchestrator.s3") as s3_mock:
+            self._both_objects_present(s3_mock)
+            responses, _ = _service().load_section_results("doc", "bucket")
+
+        assert sorted(r["recommendation"] for r in responses["Lending"]) == [
+            "Fail",
+            "Pass",
+        ]
+
+    def test_an_empty_list_consolidates_nothing_rather_than_falling_back(self):
+        """``[]`` and ``None`` must not collapse.
+
+        An empty list means this run wrote no section output, which is reachable as a
+        Map over zero sections. Falling back to the prefix there would consolidate the
+        previous run's verdicts *in their entirety*, which is the worst case of the
+        defect rather than an edge of it.
+        """
+        with patch("idp_common.rule_validation.orchestrator.s3") as s3_mock:
+            self._both_objects_present(s3_mock)
+            responses, chunked = _service().load_section_results("doc", "bucket", [])
+
+        assert responses == {}
+        assert chunked is False
+        s3_mock.find_matching_files.assert_not_called()
+
+    def test_a_uri_naming_another_bucket_is_dropped_not_mangled(self):
+        """Blind prefix-stripping would build ``s3://bucket/s3://other/key``.
+
+        That reads as a section this run never wrote, which is the failure this
+        change exists to remove — so the mismatch is reported instead.
+        """
+        with patch("idp_common.rule_validation.orchestrator.s3") as s3_mock:
+            keys = _service()._section_keys_from_uris(
+                [f"s3://bucket/{self.THIS_RUN}", "s3://other-bucket/some/key.json"],
+                "bucket",
+            )
+        assert keys == [self.THIS_RUN]
+        assert s3_mock.get_json_content.call_count == 0
+
+    def test_a_bare_key_is_accepted_unchanged(self):
+        assert _service()._section_keys_from_uris([self.THIS_RUN], "bucket") == [
+            self.THIS_RUN
+        ]
+
+    def test_the_section_count_agrees_with_what_the_loader_read(self):
+        """The count and the load must apply the SAME rule to a key.
+
+        The loader required `_responses.json` **and** `section_` while the count checked
+        only the suffix, so a key the loader skipped was still counted. Measured with
+        two keys under the right prefix where one lacks `section_`: one object read,
+        count 2, LLM summarization branch taken for a single-section document — the same
+        wrong-branch cost as the defect this change is about, arriving through a
+        different dropped key.
+
+        Not reachable from the pipeline, which always writes
+        `section_<id>_responses.json`, but reachable through `section_uris`, which is a
+        documented parameter. Both call sites now share one predicate, and this asserts
+        the consequence rather than the sharing, so an inlined copy that drifts fails
+        here too.
+        """
+        service = _service()
+        uris = [
+            "s3://bucket/doc/rule_validation/sections/section_1_responses.json",
+            # Right bucket, right prefix, right suffix -- but not a section result.
+            "s3://bucket/doc/rule_validation/sections/aggregate_responses.json",
+        ]
+
+        with patch("idp_common.rule_validation.orchestrator.s3") as s3_mock:
+            s3_mock.get_json_content.return_value = {
+                "responses": {"Lending": [_response("r1", "Pass")]}
+            }
+            document = MagicMock()
+            document.input_key = "doc"
+            document.output_bucket = "bucket"
+            document.id = "doc-1"
+            document.metering = {}
+
+            service.save_policy_type_responses = MagicMock(return_value=[])
+            service._generate_consolidated_summary = MagicMock(return_value={})
+            service.save_consolidated_summary = MagicMock(return_value="s3://b/k")
+            service._process_z3_cross_section_rules = _async_identity
+
+            summarized = {"called": False}
+
+            async def _never(*args, **kwargs):
+                summarized["called"] = True
+                return {}
+
+            service._summarize_responses_with_llm = _never
+
+            import asyncio
+
+            asyncio.run(
+                service.consolidate_and_save_all(
+                    document, {}, multiple_sections=None, section_uris=uris
+                )
+            )
+
+        assert s3_mock.get_json_content.call_count == 1, (
+            "the loader read a key it should have skipped"
+        )
+        assert not summarized["called"], (
+            "a single-section document was routed through LLM summarization because a "
+            "key the loader skipped was still counted"
+        )
+
+    def test_a_dropped_uri_does_not_count_towards_the_section_total(self):
+        """The count must come from the keys that were READ, not from the raw list.
+
+        One real URI plus one naming another bucket reads **one** object. Counting the
+        raw list reports two, which crosses `num_sections > 1` and routes a
+        single-section document through LLM summarization — a Bedrock call and its
+        latency, bought by a URI that was discarded. That is the same defect this
+        change exists to remove, reintroduced on the defensive path.
+
+        The key resolution also happens once rather than twice, so the warning for a
+        dropped URI is logged once: two identical warnings read as two bad objects.
+        """
+        service = _service()
+        uris = [
+            "s3://bucket/doc/rule_validation/sections/section_1_responses.json",
+            "s3://other-bucket/doc/rule_validation/sections/section_9_responses.json",
+        ]
+
+        with patch("idp_common.rule_validation.orchestrator.s3") as s3_mock:
+            s3_mock.get_json_content.return_value = {
+                "responses": {"Lending": [_response("r1", "Pass")]}
+            }
+            document = MagicMock()
+            document.input_key = "doc"
+            document.output_bucket = "bucket"
+            document.id = "doc-1"
+            document.metering = {}
+
+            service.save_policy_type_responses = MagicMock(return_value=[])
+            service._generate_consolidated_summary = MagicMock(return_value={})
+            service.save_consolidated_summary = MagicMock(return_value="s3://b/k")
+            service._process_z3_cross_section_rules = _async_identity
+
+            summarized = {"called": False}
+
+            async def _never(*args, **kwargs):
+                summarized["called"] = True
+                return {}
+
+            service._summarize_responses_with_llm = _never
+
+            import asyncio
+
+            asyncio.run(
+                service.consolidate_and_save_all(
+                    document, {}, multiple_sections=None, section_uris=uris
+                )
+            )
+
+        assert s3_mock.get_json_content.call_count == 1, "read more than the one key"
+        assert not summarized["called"], (
+            "a single-section document was routed through LLM summarization because "
+            "the dropped URI was counted"
+        )
+        service._generate_consolidated_summary.assert_called_once()
+        assert s3_mock.find_matching_files.call_count == 0, (
+            "the prefix was listed even though a list was supplied"
+        )
+
+    def test_the_section_count_comes_from_the_list_too(self):
+        """The prefix was listed twice, and the second one chooses the code path.
+
+        ``num_sections`` drives ``needs_summarization``: a stale object pushes the
+        count past 1, so a single-section document is routed through LLM
+        summarization. That is a cost and latency difference layered on top of the
+        wrong verdicts, and it is a second reader of the same prefix, so fixing only
+        the first would have left it.
+        """
+        service = _service()
+        one_uri = [f"s3://bucket/{self.THIS_RUN}"]
+
+        with patch("idp_common.rule_validation.orchestrator.s3") as s3_mock:
+            self._both_objects_present(s3_mock)
+            document = MagicMock()
+            document.input_key = "doc"
+            document.output_bucket = "bucket"
+            document.id = "doc-1"
+            document.metering = {}
+
+            captured = {}
+
+            def _record(all_responses, *args, **kwargs):
+                captured["count"] = len(all_responses)
+                return {}
+
+            service.save_policy_type_responses = MagicMock(return_value=[])
+            service._generate_consolidated_summary = MagicMock(side_effect=_record)
+            service.save_consolidated_summary = MagicMock(return_value="s3://b/k")
+            service._process_z3_cross_section_rules = _async_identity
+
+            import asyncio
+
+            asyncio.run(
+                service.consolidate_and_save_all(
+                    document, {}, multiple_sections=None, section_uris=one_uri
+                )
+            )
+
+        # One section and no chunking, so the no-LLM branch ran: it is the only path
+        # that reaches _generate_consolidated_summary directly.
+        service._generate_consolidated_summary.assert_called_once()
+        assert captured["count"] == 1
+
+
+async def _async_identity(all_responses, config):
+    return all_responses

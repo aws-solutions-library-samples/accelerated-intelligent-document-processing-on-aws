@@ -708,9 +708,10 @@ def resolve_execution_arn(ctx, tokens):
     getStepFunctionExecution now requires the caller-supplied ARN to name this
     deployment's state machine, so the placeholder ARN in the expectations file is
     refused for every role. That refusal is correct behaviour, but it is
-    indistinguishable from an RBAC denial, and would read as "unexpected denial"
-    for an ANY-auth op. Driving the op with a real ARN keeps the matrix cell
-    meaningful: an authenticated caller of any role should be able to read an
+    indistinguishable from an RBAC denial, and every role this matrix drives is an
+    allowed role for the op (it is ANY_GROUP), so the cell would read as an
+    "unexpected denial". Driving the op with a real ARN keeps the matrix cell
+    meaningful: a caller holding any assigned group should be able to read an
     execution of this stack.
 
     Two hops, because `listDocuments` is served from a GSI whose projection does

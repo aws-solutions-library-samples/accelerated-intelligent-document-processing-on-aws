@@ -163,32 +163,16 @@ class TestDynamoDBServiceDataFormats:
             else:
                 raise
 
-    def test_identify_all_json_parsing_fields(self):
-        """Identify all fields in the code that might have similar JSON parsing issues."""
-        mock_item = self.create_base_dynamodb_item()
-
-        # Test with various field types that might use json.loads()
-        test_cases = [
-            ("Metering", {"key": "value"}),
-            # Add other fields that might have similar issues
-            # Note: Review the _dynamodb_item_to_document method for other json.loads() calls
-        ]
-
-        for field_name, test_value in test_cases:
-            mock_item_copy = mock_item.copy()
-            mock_item_copy[field_name] = test_value
-
-            # Document which fields cause similar errors
-            try:
-                _ = self.service._dynamodb_item_to_document(mock_item_copy)
-                print(f"Field {field_name}: No error with native dict format")
-            except TypeError as e:
-                if "JSON object must be str, bytes or bytearray, not dict" in str(e):
-                    print(f"Field {field_name}: HAS THE SAME JSON PARSING ISSUE")
-                else:
-                    print(f"Field {field_name}: Different error - {str(e)}")
-            except Exception as e:
-                print(f"Field {field_name}: Other error - {str(e)}")
+    # A `test_identify_all_json_parsing_fields` used to sit here: a one-row
+    # table of (field, value) pairs, looped over, with a `print` in every arm
+    # and no assertion anywhere, plus a comment inviting the next reader to add
+    # rows. It could not fail, and it was not the cover for its own subject
+    # either -- removing the native-dict branch from
+    # `_dynamodb_item_to_document` reddens five tests in this file, including
+    # `test_metering_as_native_dict_works` and the `{"tokens": 100}` id of
+    # `test_metering_format_variations`, which assert exactly the case its one
+    # row exercised. It was deleted rather than repaired because repairing it
+    # would have produced a sixth copy of an already-asserted case (#1129).
 
     def test_decimal_handling_in_native_objects(self):
         """Test that Decimal values in native objects are handled correctly."""

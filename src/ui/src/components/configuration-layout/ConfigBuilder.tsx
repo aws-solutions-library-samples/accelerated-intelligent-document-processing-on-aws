@@ -66,9 +66,9 @@ function getFieldLabel(key: string, property: { title?: unknown }): string {
 // Whether a model ID exposes a reasoning-effort control. Mirrors the backend
 // gate (idp_common/bedrock/client.py::is_claude_effort_model + is_grok_model +
 // is_astra_model + the OpenAI Responses path): OpenAI GPT-5.x, OpenAI GPT-6
-// Astra, xAI Grok, and Claude Sonnet 5 / Sonnet 4.6 / Opus 4.5-4.8 / Fable 5
-// (NOT Sonnet 4.5 or Haiku 4.5). Handles us./eu./global. prefixes, the :1m
-// suffix, and dated/versioned foundation IDs via substring.
+// Astra, xAI Grok, and Claude Sonnet 5 / Sonnet 4.6 / Opus 4.5-4.8 / Opus 5 /
+// Opus 5.5 / Fable 5 (NOT Sonnet 4.5 or Haiku 4.5). Handles us./eu./global.
+// prefixes, the :1m suffix, and dated/versioned foundation IDs via substring.
 //
 // The effort picklist is a superset across families and each backend drops the
 // values its model rejects: Claude has no 'minimal', GPT-5.x has no
@@ -82,6 +82,13 @@ const _CLAUDE_EFFORT_TOKENS = [
   'claude-opus-4-7',
   'claude-opus-4-8',
   'claude-opus-5',
+  // Redundant by substring ('claude-opus-5' already matches 'claude-opus-5-5')
+  // and listed anyway, so that a future Opus 5.x which does NOT take effort has to
+  // be decided here rather than inheriting a match. On Opus 5.5 effort is the only
+  // thinking control — thinking cannot be disabled — and its default is 'medium'
+  // per the Bedrock model card (a default is not observable from a response),
+  // not the 'high' every other model here defaults to.
+  'claude-opus-5-5',
   'claude-fable-5',
 ];
 function modelSupportsReasoningEffort(modelId: unknown): boolean {

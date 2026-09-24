@@ -143,8 +143,8 @@ setup-venv: ## Create .venv and install all packages into it
 	@echo -e "$(YELLOW)   'basedpyright' is separate again: npm install -g basedpyright$(NC)"
 
 ##@ Code Quality
-lint: ruff-lint format check-lint-debt check-arn-partitions check-filtered-scans check-data-plane-tags check-retired-services check-threat-model-currency validate-buildspec cfn-lint ui-lint codegen-check ## Run all linting (ruff, format, ARN checks, filtered scans, retired-service docs, threat-model currency, buildspec, UI, codegen). Use FORCE=1 to force UI lint re-run despite checksum match.
-fastlint: ruff-lint format check-lint-debt check-arn-partitions check-filtered-scans check-data-plane-tags check-retired-services check-threat-model-currency validate-buildspec ## Quick lint without UI checks
+lint: ruff-lint format check-lint-debt check-arn-partitions check-account-ids check-filtered-scans check-data-plane-tags check-retired-services check-threat-model-currency check-markdown-links validate-buildspec cfn-lint ui-lint codegen-check ## Run all linting (ruff, format, ARN checks, account-id scan, filtered scans, retired-service docs, threat-model currency, Markdown links, buildspec, UI, codegen). Use FORCE=1 to force UI lint re-run despite checksum match.
+fastlint: ruff-lint format check-lint-debt check-arn-partitions check-account-ids check-filtered-scans check-data-plane-tags check-retired-services check-threat-model-currency check-markdown-links validate-buildspec ## Quick lint without UI checks
 
 ruff-lint: ## Run ruff linting with auto-fix
 	ruff check --fix
@@ -174,7 +174,15 @@ lint-cicd: ## CI/CD lint — checks only, no modifications
 		exit 1; \
 	fi
 	@echo "Frontend checks"
-	@if ! make ui-lint; then \
+	@# UI_LINT_NO_SKIP=1 is load-bearing here. `ui-lint` caches on a checksum of
+	@# src/ui, and this target reported overall success on a warm local tree
+	@# without having run eslint or tsc at all (issue #1152). CI never hits the
+	@# skip — `.checksum` is gitignored, so a fresh checkout has no stored hash —
+	@# which is precisely why the CI-equivalent target must not be able to either:
+	@# the one gate in this set whose green mark could mean nothing is the one
+	@# people read when the Actions queue is slow. `lint` and `fastlint` keep the
+	@# cache, since iteration latency is what it was added for.
+	@if ! make ui-lint UI_LINT_NO_SKIP=1; then \
 		echo -e "$(RED)ERROR: UI lint failed$(NC)"; \
 		exit 1; \
 	fi
@@ -207,6 +215,12 @@ lint-cicd: ## CI/CD lint — checks only, no modifications
 		exit 1; \
 	fi
 
+	@echo "Committed AWS account id check"
+	@if ! make check-account-ids; then \
+		echo -e "$(RED)ERROR: a private AWS account id is committed in a tracked file (see issue #1067)$(NC)"; \
+		exit 1; \
+	fi
+
 	@echo "DynamoDB filtered-scan pagination check"
 	@if ! make check-filtered-scans; then \
 		echo -e "$(RED)ERROR: Filtered DynamoDB scan(s) cannot see all their matches (see issue #599)$(NC)"; \
@@ -231,7 +245,28 @@ lint-cicd: ## CI/CD lint — checks only, no modifications
 		exit 1; \
 	fi
 
+	@echo "Markdown link check"
+	@if ! make check-markdown-links; then \
+		echo -e "$(RED)ERROR: A Markdown link does not resolve (see issue #1068)$(NC)"; \
+		exit 1; \
+	fi
+
 	@echo -e "$(GREEN)All code quality checks passed!$(NC)"
+
+coverage: ## Measure idp_common coverage and print a table, worst-covered first
+	@$(MAKE) --no-print-directory -C lib/idp_common_pkg test-cicd SKIP_INSTALL=1 COV_FLOOR= >/dev/null 2>&1 || true
+	@python3 scripts/coverage_table.py $(COVERAGE_ARGS)
+
+coverage-table: ## Print the coverage table from the last run, without re-measuring
+	@python3 scripts/coverage_table.py $(COVERAGE_ARGS)
+
+# Deliberately NOT a prerequisite of `lint` or `fastlint`: it reads the coverage
+# report that `make test-cicd -C lib/idp_common_pkg` writes, and the lint targets
+# never build one. Wired there it would find no report, exit 0, and pass vacuously --
+# a gate that cannot fail is worse than an absent one, because it reads as coverage.
+# Both CI configurations invoke it immediately after the test step instead.
+check-coverage-debt: ## Ratchet idp_common per-file coverage: fail if a file loses coverage, or a new module arrives unratcheted
+	@python3 scripts/check_coverage_debt.py
 
 check-lint-debt: ## Ratchet ruff's per-file exclusions: fail if an excluded file gains a finding, or is now clean (issue #975)
 	@# ruff.toml used to exclude five BARE directory names, which match at any
@@ -241,6 +276,14 @@ check-lint-debt: ## Ratchet ruff's per-file exclusions: fail if an excluded file
 	@# quietly accumulate more. Regenerate with --write after fixing findings.
 	@$(PYTHON) scripts/check_lint_debt.py || \
 		(echo -e "$(RED)ERROR: ruff exclusion baseline is out of date (see issue #975)$(NC)" && exit 1)
+
+check-account-ids: ## Fail if a private AWS account id is committed in a tracked file's contents (issue #1067)
+	@# The PreToolUse hook scripts/hooks/check_commit_text.py inspects the COMMAND
+	@# text of a commit or a PR creation. A 12-digit id inside a file never appears
+	@# there, so no pattern could have caught the 175 occurrences this gate was
+	@# written for. This one reads the files instead.
+	@$(PYTHON) scripts/check_account_ids.py || \
+		(echo -e "$(RED)ERROR: an unaccounted AWS account id is committed in a tracked file!$(NC)" && exit 1)
 
 check-filtered-scans: ## Check for DynamoDB filtered Scans that can't see all matches (issue #599)
 	@$(PYTHON) scripts/check_filtered_scans.py || \
@@ -267,6 +310,15 @@ check-threat-model-currency: ## Fail if security/threat-modeling/ is >1 release 
 		(echo -e "$(RED)ERROR: threat-model.tc.json is stale, or a document's counts disagree with it$(NC)" && \
 		 echo -e "$(YELLOW)  regenerate: python3 security/threat-modeling/scripts/build_threat_model.py$(NC)" && \
 		 echo -e "$(YELLOW)  a count mismatch is fixed in the DOCUMENT, not the export$(NC)" && exit 1)
+
+check-markdown-links: ## Resolve every relative Markdown link, anchor, and published-page target offline (issue #1068)
+	@# Discovery is `git ls-files '*.md'` at run time, not a glob list: the glob
+	@# list in the template gates missed five directories, and a docs gate that
+	@# reads only docs/ misses the CHANGELOG, every README under nested/ and
+	@# feature-platform/, and the skill files. External http(s) URLs are never
+	@# fetched -- a blocking gate must not depend on egress.
+	@$(PYTHON) scripts/check_markdown_links.py || \
+		(echo -e "$(RED)ERROR: broken Markdown link(s) found!$(NC)" && exit 1)
 
 check-retired-services: ## Fail if documentation presents a retired service (AppSync) as current (issue #929)
 	@$(PYTHON) scripts/sdlc/check_retired_services.py || \
@@ -518,9 +570,16 @@ check-retired-models: ## Ask Bedrock whether any model this repo offers has been
 # pyrightconfig.json's 12-entry `include`, whose closure over every tracked .py
 # file scripts/tests/test_pyright_config.py derives from `git ls-files` — so the
 # set it covers cannot silently shrink. A full run is ~1 minute through make
-# (48-60s measured; the bare binary is ~47s) over 1273 files, which is why there
-# is no cheaper CI variant: the PR-scoped form below narrows the file set and
+# (48-60s measured; the bare binary is ~47s) over every tracked .py file, which is
+# why there is no cheaper CI variant: the PR-scoped form below narrows the file set and
 # therefore cannot see a break your change caused in a file it did not select.
+#
+# It needs NO environment: pyrightconfig.json's `extraPaths` puts the five
+# first-party package roots on the import path, so `idp_common` resolves whatever
+# PYTHONPATH says. Do NOT "fix" resolution by exporting PYTHONPATH here — this
+# machine carries editable installs pointing at a sibling worktree and another
+# project (#1094), so an environment-level answer can type-check somebody else's
+# copy of the library. See #1109 and scripts/tests/test_pyright_config.py.
 typecheck: ## Run type checks with basedpyright over the whole tree (the CI gate)
 	@echo "Running type checks..."
 	basedpyright
@@ -660,8 +719,11 @@ test-packages-cicd: ## CI-safe: run the package/Lambda suites NOT covered by idp
 	cd src/lambda/chat_stream_processor && $(PYTEST_HERMETIC) tests -q -p no:cacheprovider
 	@echo "Running BDA OCR project custom-resource tests (incl. library drift guard)..."
 	cd src/lambda/bda_ocr_project && $(PYTEST_HERMETIC) tests -q -p no:cacheprovider
-	@echo "Running S3 Vectors custom-resource tests (IAM scope vs sanitized bucket name)..."
-	cd nested/bedrockkb/src/s3_vectors_manager && $(PYTEST_HERMETIC) tests -q -p no:cacheprovider
+	@echo "Running S3 Vectors custom-resource tests (handler behaviour + IAM scope)..."
+	@# The directory, not just its `tests` subdirectory: test_handler.py sits beside
+	@# handler.py and covers the custom resource's own behaviour, so naming `tests`
+	@# ran the IAM-scope suite and skipped the handler's.
+	cd nested/bedrockkb/src/s3_vectors_manager && $(PYTEST_HERMETIC) . -q -p no:cacheprovider
 	@echo "Running fine-tuning job creator tests (ARN partition passthrough)..."
 	cd src/lambda/finetuning_job_creator && $(PYTEST_HERMETIC) tests -q -p no:cacheprovider
 	@echo "Running the remaining API resolver suites (download allow-list, upload target, filtered scans)..."
@@ -741,9 +803,10 @@ test-config-library: ## Run only config library validation tests
 	@echo "Validating config library YAML/JSON files..."
 	$(PYTEST_HERMETIC) config_library/test_config_library.py -v
 
-test-hooks: ## Run only the Claude PreToolUse hook tests (commit/PR text guard)
+test-hooks: ## Run only the hook tests (commit/PR text guard, shared-branch guard)
 	@echo "Running Claude hook tests..."
-	$(PYTEST_HERMETIC) scripts/tests/test_check_commit_text.py -v
+	$(PYTEST_HERMETIC) scripts/tests/test_check_commit_text.py \
+		scripts/tests/test_check_shared_branch.py -v
 
 test-capacity: ## Run only capacity planning tests
 	@echo "Running capacity planning Lambda tests..."
@@ -985,13 +1048,26 @@ NPM_CI := $(if $(SKIP_NPM_CI),true,npm ci --prefer-offline --no-audit)
 #
 # `npm run lint` now spells out `--max-warnings 0` and does not fix. Use
 # `make ui-lint-fix` to apply what is auto-fixable.
-ui-lint: ## Run UI linting with checksum caching (skips if unchanged). Use FORCE=1 to force re-run.
+# UI_LINT_NO_SKIP disables the checksum cache for callers that cannot afford a
+# skip, and it is deliberately a second variable rather than a reuse of FORCE.
+# FORCE is the operator saying "run it anyway"; UI_LINT_NO_SKIP is a property of
+# the calling target — `lint-cicd` sets it because its whole purpose is to mirror
+# CI, where `.checksum` is gitignored, no stored hash exists and the lint always
+# runs. Keeping them apart is what lets the log say WHY the lint ran.
+#
+# The skip branch reports a SKIP, not a pass. It used to print a green ✅, so a
+# warm tree produced a success line for work that did not happen — `npm run
+# lint` AND `npm run typecheck`, the second of which the target's name does not
+# even imply. Issue #1152.
+ui-lint: ## Run UI linting with checksum caching (skips if unchanged). Use FORCE=1 to force re-run; UI_LINT_NO_SKIP=1 forbids the skip.
 	@echo "Checking if UI lint is needed..."
 	@CURRENT_HASH=$$($(PYTHON) -c "from publish import IDPPublisher; p = IDPPublisher(); print(p.get_directory_checksum('src/ui'))"); \
 	STORED_HASH=$$(test -f src/ui/.checksum && cat src/ui/.checksum || echo ""); \
-	if [ -n "$(FORCE)" ] || [ "$$CURRENT_HASH" != "$$STORED_HASH" ]; then \
+	if [ -n "$(FORCE)" ] || [ -n "$(UI_LINT_NO_SKIP)" ] || [ "$$CURRENT_HASH" != "$$STORED_HASH" ]; then \
 		if [ -n "$(FORCE)" ]; then \
 			echo "FORCE=1 set - running lint..."; \
+		elif [ -n "$(UI_LINT_NO_SKIP)" ]; then \
+			echo "UI_LINT_NO_SKIP=1 set by the calling gate - running lint..."; \
 		else \
 			echo "UI code checksum changed - running lint..."; \
 		fi; \
@@ -999,7 +1075,8 @@ ui-lint: ## Run UI linting with checksum caching (skips if unchanged). Use FORCE
 		echo "$$CURRENT_HASH" > .checksum; \
 		echo -e "$(GREEN)✅ UI lint and typecheck completed and checksum updated$(NC)"; \
 	else \
-		echo -e "$(GREEN)✅ UI code checksum unchanged - skipping lint (use FORCE=1 to force re-run)$(NC)"; \
+		echo -e "$(YELLOW)⏭️  UI lint SKIPPED - src/ui matches src/ui/.checksum, so eslint and tsc did NOT run.$(NC)"; \
+		echo -e "$(YELLOW)   This is a cache hit, not a pass. Run 'make ui-lint FORCE=1' to check the tree.$(NC)"; \
 	fi
 
 ui-lint-fix: ## Auto-fix what eslint can fix in src/ui, then re-run the strict gate
@@ -1055,6 +1132,57 @@ classes-from-bda: ## Generate standard class catalog from BDA blueprints
 	@echo -e "$(GREEN)✅ Standard class catalog updated! Review changes in src/ui/src/data/standard-classes.json$(NC)"
 
 ##@ Git Workflow
+# `install-git-hooks` installs scripts/hooks/pre-push, which refuses a push whose
+# destination is develop or main (override: ALLOW_SHARED_BRANCH=1). git does not
+# clone hooks, so this is a per-checkout step; the tracked script is the shared
+# copy. The assistant-side half of the same guard needs no install — it is a
+# PreToolUse hook in .claude/settings.json. Neither is a substitute for branch
+# protection, which is a repository setting and needs admin (issue #933).
+#
+# The destination is $(git rev-parse --git-common-dir)/hooks, NOT `git rev-parse
+# --git-path hooks`: the latter honours core.hooksPath, and a managed developer
+# machine may set that system-wide (in /etc/gitconfig) to a root-owned directory
+# of hook runners belonging to a security tool, so it resolves to a path this
+# must never write to. The common dir is also the right answer inside a worktree,
+# where hooks are shared with the main checkout.
+#
+# When core.hooksPath does point elsewhere, the repository's own hook is reached
+# only if that runner chains to it. The runners seen here do chain, and forward
+# the hook's arguments, but not its stdin — so the pre-push hook gets no ref list
+# and falls back to judging by HEAD. This target says so rather than printing an
+# unqualified success, because "installed" and "effective" are different claims.
+#
+# Note the redirect is not the only way the hook sees no ref list: git supplies
+# none for an up-to-date push either, on any machine. That is why the warning below
+# is about what the fallback costs and the hook's own refusal names both causes.
+.PHONY: install-git-hooks
+install-git-hooks: ## Install the shared-branch pre-push guard into this checkout
+	@set -e; \
+	COMMON_DIR=$$(git rev-parse --git-common-dir); \
+	HOOK_DIR="$$COMMON_DIR/hooks"; \
+	mkdir -p "$$HOOK_DIR"; \
+	if [ -e "$$HOOK_DIR/pre-push" ] && ! cmp -s scripts/hooks/pre-push "$$HOOK_DIR/pre-push"; then \
+		BACKUP="$$HOOK_DIR/pre-push.bak"; N=1; \
+		while [ -e "$$BACKUP" ]; do BACKUP="$$HOOK_DIR/pre-push.bak.$$N"; N=$$((N+1)); done; \
+		echo -e "$(YELLOW)$$HOOK_DIR/pre-push exists and differs — copying it to $$BACKUP$(NC)"; \
+		echo -e "$(YELLOW)   The guard REPLACES that hook rather than chaining to it, so whatever it did stops happening.$(NC)"; \
+		cp "$$HOOK_DIR/pre-push" "$$BACKUP"; \
+	fi; \
+	cp scripts/hooks/pre-push "$$HOOK_DIR/pre-push"; \
+	chmod +x "$$HOOK_DIR/pre-push"; \
+	HOOKS_PATH=$$(git config --get core.hooksPath || true); \
+	if [ -n "$$HOOKS_PATH" ] && [ "$$(cd "$$HOOKS_PATH" 2>/dev/null && pwd -P)" != "$$(cd "$$HOOK_DIR" && pwd -P)" ]; then \
+		echo -e "$(GREEN)✅ Installed $$HOOK_DIR/pre-push$(NC)"; \
+		echo -e "$(YELLOW)⚠️  core.hooksPath is set to $$HOOKS_PATH, outside this repository.$(NC)"; \
+		echo -e "$(YELLOW)   git runs that directory's hooks, so this one is reached only if they chain to it.$(NC)"; \
+		echo -e "$(YELLOW)   A chaining runner may not forward the ref list; the hook then judges by HEAD,$(NC)"; \
+		echo -e "$(YELLOW)   which refuses any push made while HEAD is on develop or main AND allows one$(NC)"; \
+		echo -e "$(YELLOW)   whose destination IS develop or main while HEAD is not. Treat it as a reminder$(NC)"; \
+		echo -e "$(YELLOW)   rather than a guard here. Override a refusal: ALLOW_SHARED_BRANCH=1$(NC)"; \
+	else \
+		echo -e "$(GREEN)✅ Installed $$HOOK_DIR/pre-push (override a refusal with ALLOW_SHARED_BRANCH=1)$(NC)"; \
+	fi
+
 commit: lint test ## Lint, test, auto-generate commit message, commit, and push
 	@echo "Generating commit message via Bedrock..."
 	@git add . && \
@@ -1294,7 +1422,7 @@ endif
 
 # Usage:
 #   make seller-entitlement-service PRODUCT_REGISTRY='{"prod-xxx":{"productCode":"yyy","allowFreeTier":true}}'
-#   make seller-entitlement-service PRODUCT_REGISTRY='{...}' SELLER_ACCOUNT_ID=145026617366 YES=1
+#   make seller-entitlement-service PRODUCT_REGISTRY='{...}' SELLER_ACCOUNT_ID=123456789012 YES=1
 seller-entitlement-service: ## Preflight + deploy the Seller Entitlement Service into the SELLER account (Usage: make seller-entitlement-service PRODUCT_REGISTRY='{...}' [STACK_NAME=...] [SELLER_ACCOUNT_ID=...] [REGION=...] [YES=1])
 ifndef PRODUCT_REGISTRY
 	$(error PRODUCT_REGISTRY is not set. Usage: make seller-entitlement-service PRODUCT_REGISTRY='{"prod-xxx":{"productCode":"yyy","allowFreeTier":true}}')

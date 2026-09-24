@@ -74,7 +74,8 @@ The six **Open** items are CHAT.T03 and CHAT.T06 (chat streaming Function URL
 enforces neither RBAC group nor session ownership, and the agent route trusts a
 client-supplied caller identity), UI.T06 (object reads are not scoped
 per document, so any authenticated user holding a group can read any document's
-bytes by key),
+bytes by key — and the document buckets are readable directly by every
+authenticated user irrespective of group),
 JOB.T02 (the Jobs API sits outside the automated authorization harness),
 HOOK.T07 (`onError: fail` halts the workflow at one of the seven hook points, not
 all seven) and SDK.T05 (the shipped CloudFormation deployment service role is
@@ -91,7 +92,7 @@ so both threats stay Open after it merges; HOOK.T07 is addressed by **issue
 **issue #928** (a default-deny gate at the API dispatcher, AUTH.T16) and **issue
 #921** (consistent log redaction, AUTH.T15). Read every one of those as
 *pending*, and read #920 as *partial even once merged* — see
-[companion-chat CHAT.T06](../feature-threats/companion-chat.md#chatt06-caller-identity-on-the-streaming-transport-is-not-a-verified-subject)
+[companion-chat CHAT.T06](../feature-threats/companion-chat.md#chatt06-client-supplied-caller-identity-on-the-agent-streaming-route)
 for the accounting. The
 status columns in this model deliberately do not credit an unmerged fix, because a
 threat model that counts intentions as controls is worse than one that is merely
@@ -153,7 +154,9 @@ in issue #928** (AUTH.T16).
 5. **Scope object reads to the document's owner (UI.T06)** — the two per-user
    scope axes are enforced on the key, but documents have no owner to scope
    against, so any authenticated user holding a group can read any document by
-   key (**issue #1033**, pending)
+   key — and on the document buckets they can do it with the Identity Pool
+   credentials the browser already holds, with no API call in the path
+   (**issue #1033**, pending)
 6. **Add bundle integrity verification (SRI) to the Feature Platform (FEAT.T01)** —
    installed extension UI code runs unsandboxed in the host origin with the user's session
 7. **Implement VPC egress controls** for MCP Lambda functions to prevent unauthorized data exfiltration

@@ -116,6 +116,60 @@ a synthetic document with no `<id>.pdf.truth.json` beside its PDF is recorded in
 evaluation rather than exact local ground truth, which is a different scorer and
 not comparable.
 
+## Read failures do not silently become measurements either
+
+The scoring half has the same property as the launch half above, and for the same
+reason: **the harness may continue past a failure, but it may not record the failure
+as a value.** An artifact that cannot tell the two apart is not checkable afterwards,
+and these artifacts are published and long-lived.
+
+The concrete shape this takes is that every read distinguishes **three** states, not
+two. "Nothing there", "could not read it" and "read it, and the answer is zero" are all
+real and all different, and zero cannot be the sentinel for either of the first two
+because it is a legitimate answer for most of these metrics — no cost for a cached call,
+no corrections, no missing rows. `lib.Reading` carries the state, and it is built so the
+distinction cannot be dropped by accident: truth-testing one raises, `.value` raises
+unless the read happened, and `.value_or(default)` substitutes for an absence but
+refuses for a failure. `lib.SectionRead` does the same for a document's section objects,
+separating "this document has no sections" from "some of its sections would not read".
+
+What the callers do with that:
+
+- **`analyze.score_doc` refuses to price a metering row it did not read.** `cost` is
+  null and `cost_unread` names the state and the reason. An empty metering map still
+  prices to $0.00, because that is a real reading of a run that metered nothing — the
+  distinction is between that and a DynamoDB failure, which used to produce the same
+  `$0.00`. A null drops out of every mean; a zero would drag each of them down and make
+  the configuration look cheaper than it is.
+- **A document whose section objects did not all read contributes no metric at all.**
+  Not a set of nulls: `calibration_curve: null` already means "measured, and there was
+  nothing to join". The row carries `sections_unreadable` and `sections_unread` and
+  nothing else, so it falls out of every average instead of biasing one.
+- **`aggregate.cell_stats` counts the exclusions** (`n_cost_unread`,
+  `n_sections_unread`), so a mean taken over a thinned sample says that it was thinned.
+  `compare_cells` prints the same under `MEASURED OVER FEWER RUNS THAN IT LOOKS`.
+- **`aggregate.calibration_study` has an `unreadable` bucket** next to `no_confidence`
+  and `no_joinable_cell`, so an undecryptable grid is visibly different from an
+  unassessed one.
+- **`aggregate.augment_summary` asks every row** rather than probing the first empty
+  prefix, and leaves an unreadable row un-augmented.
+
+The failure that motivated all of this cost nothing only by luck. A release stack's KMS
+key entered pending deletion, so every object in its output bucket was present, listable
+and undecryptable; `GetObject` answered `KMS.KMSInvalidStateException`, the reader turned
+that into `None`, and the grid read as one that had recorded no confidence at all — which
+would have been written into a committed artifact and published as a fact about that
+release.
+
+**Expect that state, rather than treating it as exotic.** It is the ordinary end of a
+torn-down benchmark stack: ten of the twelve stacks named in the committed summaries'
+`meta.stack` no longer exist, and in the deployment region a large fraction of the
+customer-managed KMS keys are in `PendingDeletion` at any time — 57 of 125 when this was
+last measured. A stack deleted last month leaves a bucket that still lists and no longer
+decrypts, so **re-reading an old grid from S3 is the case to design for, not the
+exception.** This is also why `--calibration` prefers the sufficient statistic committed
+in the summary and only reads S3 when a row has none.
+
 ## 2. Test-set + config registration
 - Each synthetic doc is uploaded to `s3://<stack>-testsetbucket-*/bench-<id>/input/` and
   registered as a test set (a `testset#bench-<id>` metadata row with `filePattern`).
@@ -124,7 +178,16 @@ not comparable.
   strips `managed`, and uploads as `Config#bench-<cell>-<class>` via `idp-cli config-upload`.
 - NEVER mutate `Config#default`. Always run against a named `--config-profile`.
 - PYTHONPATH is pinned to the repo's `idp_common` to avoid a stale sibling checkout
-  silently stripping v0.6 fields on upload.
+  silently stripping v0.6 fields on upload. ⚠️ `PYTHONPATH` puts the source tree on the
+  path but **not** its dependencies, so `pip install -e "lib/idp_common_pkg[core]"` is a
+  prerequisite for scoring as well as for upload: `analyze.py` imports
+  `idp_common.assessment.batching` for the coverage figure and
+  `idp_common.evaluation` for the calibration figures, and a missing dependency there
+  surfaces part-way through a grid rather than at the start. Neither import needs the
+  `[evaluation]` extra — `confidence_curve` and `curve_store` are standard-library-only
+  by design, and the unbinned AUROC and Brier score are derived from the stored value
+  tally and squared-error sum rather than by calling Stickler. `matplotlib` is needed
+  only for figures and is skipped with a message when absent.
 
 ## 3. Execution
 - `run_matrix.py` launches each (config-cell × doc) via the stack TestRunner
@@ -143,7 +206,8 @@ Every run is scored on SEVEN dimensions:
 | **success/fail** | ObjectStatus COMPLETED vs FAILED; failure phase + Bedrock error class captured (e.g. `ValidationException: Input too long`). |
 | **completeness** | Synthetic: distinct `SEQ` recovered ÷ GT count (recall); truncation point = longest contiguous prefix; dup/gap counts. Reference: parse-failure rate. |
 | **accuracy** | Synthetic: field-exact match rate on scalar fields + per-row cell match on list fields (keyed by SEQ). Reference: stack `evaluation/results.json` `weighted_overall_score`. |
-| **confidence calibration** | From `explainability_info` leaves: mean confidence; %below-threshold (alert rate); and, where a match flag exists, separation = mean(conf\|correct) − mean(conf\|incorrect). Over-confidence on wrong values is a calibration regression even if accuracy holds. |
+| **confidence calibration** | Two instruments, and the second answers the question the first cannot. Distributional: mean confidence, %below-threshold (alert rate), and — where a match flag exists — separation = mean(conf\|correct) − mean(conf\|incorrect). Per-cell, on the synthetic corpus only: each confidence leaf is joined to the cell it scores through `flatten_confidences`' field path and the row's `SEQ` tag, giving true `(confidence, correct)` pairs from which `idp_common.evaluation.ConfidenceCurve` computes **ECE** (calibration) and **AUROC** (discrimination), alongside an unbinned AUROC and a Brier score computed locally from the stored value tally and squared-error sum (asserted equal to Stickler's `AUROCMetric` / `BrierScoreMetric` in `benchmarks/tests/`, but not computed by them — that is what keeps the `[evaluation]` extra off the scoring path). Over-confidence on wrong values is a calibration regression even if accuracy holds — and a score that is well calibrated can still rank at chance, which only AUROC sees. |
+| **confidence coverage** | `scored_rows / expected_rows` per document and per field, computed by the same `audit_explainability` rule the `assessment_coverage_incomplete` guard fires on. Distinct from the row above: it counts rows with NO confidence, where the row above describes the scores that exist. Undefined (`None`), not 1.0, for a document with no list attribute. |
 | **latency** | Wall-clock from doc WorkflowStartTime→CompletionTime; also per-phase where available. |
 | **token use** | Per-phase, per-model, per-unit (input/output/cacheRead/cacheWrite/requests) from the doc `Metering` map. |
 | **cost** | Metering priced with `config_library/pricing.yaml` (longest-suffix key match), broken out by phase (OCR/Extraction/Assessment/Summarization/Lambda). |
@@ -178,7 +242,33 @@ blind spot before it was closed.
 - Cross-release comparison: diff a release's `summary.json` against `baseline.json`
   on matched (cell, doc) keys; flag deltas beyond thresholds (accuracy −>2%, cost
   +>15%, any new failure, calibration separation drop) as **regressions**.
-- Emits the paper's tables + figures (matplotlib) into `paper/figures/`.
+- Per-cell calibration is compared on the **pooled** curve rather than on a mean of
+  per-document figures, because a 5-row form and a 400-row statement must not carry
+  equal weight and a single document's AUROC is usually undefined outright. Flagged:
+  pooled `ece_mean_conf` +0.01, pooled **unbinned** AUROC −0.05, or — at any size of
+  step — a cell crossing `ECE_UNRELIABLE_THRESHOLD` or `AUROC_UNRELIABLE_THRESHOLD`,
+  past which the shipped review-effort estimator stops recommending a review subset at
+  all. For BOTH metrics the magnitude and crossing checks deliberately read **different**
+  estimators, and in the same direction: magnitude reads the one that can move, crossing
+  reads the one the product thresholds. The gate's own estimators barely move here —
+  midpoint `ece` spans 0.0013 against 0.0239 for `ece_mean_conf`, and binned `auroc` is
+  *exactly* 0.5000 on 29 of the 33 committed cells where it is defined at all, against an
+  unbinned drift of up to 0.0461 on the same data. ⚠️ Neither magnitude threshold has a
+  stability-of-`n` guard: at cell granularity the largest observed worsening, +0.0088,
+  came from a cell whose sample collapsed 4,410 → 410, which clears
+  `MIN_OBSERVATIONS_FOR_MEASURED` (30) and is gated on as if it were the larger sample.
+- `--calibration` pools the same figures per **configuration arm** across a whole
+  grid, prints each arm's own run / document / excluded-run counts (the arms are not
+  equally powered), and prints the count of WRONG cells beside the AUROC columns,
+  because ranking power is estimated over wrong × correct pairs — an arm with 70,000
+  cells and 55 errors is a 55-observation measurement of discrimination.
+- The `calibration_curve` stored per row is an **exact sufficient statistic** for every
+  pooled figure, so `--calibration` reads the committed artifact and needs no AWS;
+  `--calibration-from-s3` forces the re-read that verifies it, and `--augment`
+  backfills it into a grid scored before it existed. This is what keeps a published
+  measurement checkable after its stack is deleted.
+- Emits the paper's tables + figures (matplotlib) into `paper/figures/`, including a
+  per-arm reliability diagram plotted against each bin's mean confidence.
 
 ## 6. Reproducibility & honesty rules
 - Record the exact commit, stack, model IDs, pricing.yaml hash, and date in each
@@ -187,6 +277,10 @@ blind spot before it was closed.
   NEVER average accuracy over only the docs that completed without saying so.
 - Any cell that is capped/sampled/skipped for cost is logged in `meta.json`, not
   silently dropped.
+- A figure that could not be READ is null and carries a reason, never zero. Before
+  quoting a cost or an accuracy, check the row's `cost_unread` / `sections_unread` and
+  the cell's `n_cost_unread` / `n_sections_unread` — see "Read failures do not silently
+  become measurements either" above.
 - Costs are ESTIMATES from pricing.yaml (intro pricing may apply); state the rate date.
 
 ## 7. Cost/time budgeting

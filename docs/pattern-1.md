@@ -27,7 +27,6 @@ For the current architecture diagram, see the unified architecture in [architect
 - [Monitoring and Metrics](#monitoring-and-metrics)
   - [CloudWatch Metrics](#cloudwatch-metrics)
   - [Dashboard Components](#dashboard-components)
-  - [Error Tracking](#error-tracking)
 - [Concurrency and Throttling](#concurrency-and-throttling)
   - [BDA API Throttling](#bda-api-throttling)
   - [Error Handling](#error-handling)

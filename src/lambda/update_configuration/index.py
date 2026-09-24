@@ -114,6 +114,8 @@ MODEL_MAPPINGS = {
     "us.anthropic.claude-opus-4-8:1m": "eu.anthropic.claude-opus-4-8:1m",
     "us.anthropic.claude-opus-5": "eu.anthropic.claude-opus-5",
     "us.anthropic.claude-opus-5:1m": "eu.anthropic.claude-opus-5:1m",
+    "us.anthropic.claude-opus-5-5": "eu.anthropic.claude-opus-5-5",
+    "us.anthropic.claude-opus-5-5:1m": "eu.anthropic.claude-opus-5-5:1m",
     # Third-party models (US-only, no EU equivalent - fall back to themselves)
     "us.meta.llama4-maverick-17b-instruct-v1:0": "eu.anthropic.claude-sonnet-4-5-20250929-v1:0",
     "us.meta.llama4-scout-17b-instruct-v1:0": "eu.anthropic.claude-sonnet-4-5-20250929-v1:0",
@@ -919,11 +921,13 @@ def handler(event: Dict[str, Any], context: Any) -> None:
                                     logger.info(
                                         f"Set use_bda=true on config version '{ver_name}'"
                                     )
-                                # Also set bdaSyncStatus to needs-sync
+                                # Also set bdaSyncStatus to needs-sync.
+                                # `set_bda_sync_status` is the method that writes
+                                # only that attribute; `set_bda_project_arn` also
+                                # requires the ARN, which this path does not have
+                                # and must not overwrite.
                                 try:
-                                    manager.set_bda_project_arn(
-                                        ver_name, sync_status="needs-sync"
-                                    )
+                                    manager.set_bda_sync_status(ver_name, "needs-sync")
                                     logger.info(
                                         f"Set bdaSyncStatus=needs-sync on config version '{ver_name}'"
                                     )

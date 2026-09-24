@@ -94,13 +94,14 @@ the optional knowledge base (`nested/bedrockkb/`), and multi-document discovery
 (`nested/multi-doc-discovery/`). Deployment is reproducible from source through
 `publish.py` or the `idp-cli deploy` command.
 
-Monitoring is concrete rather than aspirational. Fifteen `AWS::CloudWatch::Alarm`
+Monitoring is concrete rather than aspirational. 19 `AWS::CloudWatch::Alarm`
 resources are declared in `template.yaml`, and all alerting for the whole solution runs
-through them — the nested stacks declare none. Fourteen publish to the `AlertsTopic` SNS
-topic; the fifteenth, `BedrockServiceOutageAlarm`, publishes to `CircuitBreakerTopic`
+through them — the nested stacks declare none. Eighteen of the nineteen alarms publish to
+the `AlertsTopic` SNS topic; the nineteenth, `BedrockServiceOutageAlarm`, publishes to
+`CircuitBreakerTopic`
 and is the only conditional one, so it exists only when you enable the circuit breaker.
-The other fourteen are unconditional, which is why a default deployment has exactly
-fourteen. They fall into five groups:
+The other eighteen are unconditional, which is why a default deployment has exactly
+eighteen. They fall into seven groups:
 
 | Alarm | What it detects |
 |---|---|
@@ -109,14 +110,16 @@ fourteen. They fall into five groups:
 | `DocumentQueueStalledAlarm` | A metric-math expression that fires only when the oldest message exceeds `QueueStalledAgeThresholdSeconds` (default 1800) *and* zero messages left the queue over six consecutive five-minute periods — a queue that is not draining, as distinct from one that is merely deep |
 | `QueueProcessorErrorsAlarm`, `ConcurrencyCounterDriftAlarm`, `ConcurrencyCounterUnderflowAlarm`, `ConcurrencyCounterNegativeAlarm`, `StaleOutputPurgeFailedAlarm` | Lambda errors on the queue processor; a concurrency counter that has drifted from the true running-execution count across three periods; the counter being asked to release a slot it did not hold, which means the same terminal execution was processed twice; the counter actually going negative, which raises the effective concurrency ceiling by that much and costs money silently; and a failed stale-output purge, after which a document can carry text from a previous document of the same name |
 | `AssessmentConfidenceUnavailableAlarm` | `ConfidenceUnavailableThreshold` (default ten) or more document sections degraded to "no confidence scores" in fifteen minutes. This is the one alarm here that watches a *successful* outcome: a deterministic confidence-model failure keeps the extraction and degrades the section rather than failing the document, so a systemic confidence failure produces no failed executions and nothing else on this list moves. It alarms on volume rather than on the first occurrence because one degraded section is an expected, self-limiting outcome |
+| `AgentTranscriptMessageDroppedAlarm`, `AgentTranscriptDrainIncompleteAlarm` | Ten or more agent conversation messages, in fifteen minutes, either dropped from the stored transcript or left behind by the bounded drain at an agent's close. Like the row above, both watch an outcome the agent itself reports as success — the user gets their answer and the workflow completes; what is at risk is an entry in the transcript the analytics UI replays. They are two alarms because they license different conclusions: a dropped message is gone (contention beyond what the bounded retry absorbs, or reads that keep failing), whereas an unfinished drain leaves a write that was never cancelled and often commits when the execution environment is next thawed |
+| `DataMartMigrationStateMachineFailureAlarm`, `DataMartRollupAbsenceAlarm` | A data-mart migration state-machine execution ended in `FAILED`/`TIMED_OUT`/`ABORTED` — the migration did not complete cleanly and the SSM marker will not have advanced to `state=completed`, so scheduled rollups defer until an operator investigates; and, separately, four consecutive one-hour windows with zero rollup Lambda invocations — the class of failure where a redeploy dropped the EventBridge schedule from the stack, which the DLQ alarm cannot see because that fires on failures, not absences |
 
 Two `AWS::CloudWatch::Dashboard` resources are created: one in `template.yaml` covering
 ingestion, queue depth, the concurrency counter and workflow outcomes, and one in
 `patterns/unified/template.yaml` covering the per-service processing steps. See
 [Monitoring](./monitoring.md).
 
-Distributed tracing is instrumented, not merely recommended: twenty-two Lambda functions
-across the two main templates — seven in `template.yaml` and fifteen in
+Distributed tracing is instrumented, not merely recommended: 23 Lambda functions
+across the two main templates — 8 in `template.yaml` and 15 in
 `patterns/unified/template.yaml` — plus both state machines trace, and seven of the eight
 optional `feature-platform/` extension templates set `Tracing: Active` in their `Globals`
 section (`seller-entitlement-service` is the exception). In the two main templates the
@@ -238,25 +241,36 @@ token until the app has loaded. Those routes serve static files only; see
 Authorization on the `/op` route is not uniform, and the difference matters when you
 classify your data. `scripts/api_rbac_expectations.yaml` is the declared source of truth
 for it and `make api-test-static` fails if the code and that file drift apart. It covers
-118 operations. 101 of them require Cognito group membership and 2
+118 operations. 108 of them require Cognito group membership and 2
 (`updateDiscoveryJobStatus`, `updateAgentJobStatus`) are reachable only by IAM
-principals, rejecting every Cognito caller. 11 of those accept any assigned group
+principals, rejecting every Cognito caller. 18 of those accept any assigned group
 rather than a named subset — they are declared `ANY_GROUP`, which the build resolves into
 the full list of groups `template.yaml` creates, so what they refuse is a caller an
-administrator has not placed in any group. That set is the document-content reads
-(`getDocument`, `listDocuments`, `listDocumentsByDateRange`, `getDocumentVersion`,
-`compareDocumentVersions`, `getFileContents`, `getFilePresignedUrl`, `queryKnowledgeBase`)
-plus three mutations (`deleteAgentJob`, `deleteChatSession`, `sendChatDocumentMessage`).
+administrator has not placed in any group. That set is every document read
+(`getDocument`, `listDocuments`, `listDocumentsByDateRange`, `getDocumentCount`,
+`listDocumentsDateHour`, `listDocumentsDateShard`, `listDocumentVersions`,
+`getDocumentVersion`, `compareDocumentVersions`, `getStepFunctionExecution`,
+`getFileContents`, `getFilePresignedUrl`, `queryKnowledgeBase`), the chat transcript read
+`getChatMessages`, the processing-breaker badge `getCircuitBreakerStatus` (whose
+`lastError` carries the pausing administrator's email address after a manual pause), and
+three mutations (`deleteAgentJob`, `deleteChatSession`, `sendChatDocumentMessage`). The
+document reads include the ones that return no extracted
+value themselves, because an object key, a section's `s3://` URI, a state machine execution
+ARN and a model-written description of a page's contents are each a step of one chain that
+ends in extracted data, and that chain was measured composing end to end for a caller in no
+group.
 
-The remaining 15 are declared `groups: ANY`, which that file defines as any authenticated
+The remaining 8 are declared `groups: ANY`, which that file defines as any authenticated
 Cognito user — including one in no group, which self-service sign-up produces when you set
-`AllowedSignUpEmailDomain`. Four of those 15 are narrowed further, by record ownership or
-by the caller's allowed configuration versions; the other 11 are not, so a valid session is
-the whole check. They are enumeration, platform and profile reads —
-`listDocumentsDateHour`, `listDocumentsDateShard`, `listDocumentVersions`, `getMyProfile`,
-`getLatestPublishedVersion`, `getCircuitBreakerStatus`, the two fine-tuning job reads and
-the three feature-catalog reads — so they disclose the existence, volume and timing of
-processed documents, and what this deployment has installed, rather than document content.
+`AllowedSignUpEmailDomain`. Two of those 8 narrowed further, by record ownership —
+`getMyProfile` returns only the caller's own row, resolved from their token claims with no
+argument, and `listChatSessions` can only address the caller's own DynamoDB partition. The
+other 6 are not, so a valid session is the whole check: `getLatestPublishedVersion` (the
+published release number, which is public), the two fine-tuning job reads and the three
+feature-platform reads (`listInstalledFeatures`, `listCatalogFeatures`,
+`checkFeatureEntitlement`) — so they disclose a public version number, what models this
+deployment has trained and what optional features it has installed or is entitled to,
+rather than anything derived from a document.
 
 Three caveats on what the group floor does and does not buy you, and the third is the one
 that bounds the other two. It is a check on *who may ask*, not on *which document they may
@@ -277,11 +291,13 @@ and that role — `CognitoAuthorizedRole` — grants `s3:GetObject`, `s3:GetObje
 customer-managed key to every authenticated user, group or no group. The web UI uses that
 path deliberately: the file viewer defaults to signing in the browser, as do the page
 thumbnails, the page-image viewer and the document export. So a caller who is refused
-`getFileContents` can still read a **document** object, and the pair that remain
-`groups: ANY` — `listDocumentsDateHour` and `listDocumentsDateShard` — return the object
-keys needed to do it. Narrowing this is a change to the document-viewing data path —
-group-scoped identity pool role mappings, or a resolver-only read path — and it has not
-been made ([issue #1033](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/1033)).
+`getFileContents` can still read a **document** object. No `ANY` operation hands over an
+object key any more, but that is not what bounds the role: `s3:ListBucket` on it enumerates
+the buckets directly, with no API call at all. Narrowing this is a change to the
+document-viewing data path — group-scoped identity pool role mappings, or a resolver-only
+read path — and it has not been made; the two candidate shapes and their obstacles are set
+out in
+[Identity Pool group scoping](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/blob/develop/docs/planning/identity-pool-group-scoping-plan.md).
 The buckets the per-user scope axes partition — Configuration and Test Set — are
 deliberately **not** on that role, so `allowedConfigVersions` and `allowedTestSets` are not
 reachable around; those objects are served only by resolvers that check the key against the
@@ -309,12 +325,12 @@ runtime role surface against privilege-escalation regressions.
 
 Resource scoping is a separate question from boundaries, and it is the weaker of the two
 here. Counting across the eleven templates that make up the solution and its optional
-extensions, 125 IAM policy statements are written against `Resource: "*"` — 51 in
+extensions, 127 IAM policy statements are written against `Resource: "*"` — 53 in
 `template.yaml`, 40 in `patterns/unified/template.yaml`, 8 in
 `nested/multi-doc-discovery/template.yaml`, and the remainder in the other nested stacks,
 `iam-roles/` and `feature-platform/`. A large share of them are unavoidable, because the
 API being called accepts no resource ARN: `cloudwatch:PutMetricData` alone accounts for 28
-of the 125, and the X-Ray read actions, `textract:DetectDocumentText` and
+of the 127, and the X-Ray read actions, `textract:DetectDocumentText` and
 `textract:AnalyzeDocument` are account-scoped in the same way. The rest have not been
 audited statement by statement, so treat the number as a surface to review rather than as a
 count of findings. A permissions boundary is the practical lever for narrowing whatever you
@@ -348,7 +364,7 @@ justification in `scripts/security/dep_audit_allowlist.json`.
 |---|---|---|---|
 | Who is allowed to create an account? Is `AllowedSignUpEmailDomain` still empty, keeping sign-up administrator-only, and if you have set it, do you control every domain listed? A self-registered user is in no group, so the API refuses them the document-content operations — but `CognitoAuthorizedRole` still grants them `s3:GetObject`/`ListBucket` on the document buckets directly | | | |
 | Is MFA enabled on the Cognito user pool? The pool sets no `MfaConfiguration`, so a default deployment has it off | | | |
-| Do you accept that the 11 `groups: ANY` operations carrying no ownership or scope check are reachable by any authenticated user, including one in no group? They are enumeration, platform and profile reads rather than document content — but two of them (`listDocumentsDateHour`, `listDocumentsDateShard`) return object keys, and `CognitoAuthorizedRole` grants every authenticated user `s3:GetObject`/`ListBucket` on the document buckets, so key enumeration plus a direct S3 read reaches document bytes without an API call. Does that meet your data classification? | | | |
+| Do you accept that the 6 `groups: ANY` operations carrying no ownership or scope check are reachable by any authenticated user, including one in no group? They are a public version number, the two fine-tuning job reads and the three feature-platform reads — nothing derived from a document. Separately, and not fixed by any of these declarations: `CognitoAuthorizedRole` grants every authenticated user `s3:GetObject`/`ListBucket` on the document buckets, so a direct S3 read reaches document bytes with no API call and no key from an API. Does that meet your data classification? | | | |
 | Have you restricted `WAFAllowedIPv4Ranges`, and if the API is reachable from the internet, have you added AWS Managed Rules and a rate-based rule beyond the IP allow-list? | | | |
 | Have you supplied a `PermissionsBoundaryArn`, and does your organization require one? | | | |
 | Is the 123-statement `Resource: "*"` surface acceptable under your service control policies, and have you reviewed the statements that are not forced by an account-scoped API? | | | |
@@ -418,7 +434,7 @@ clears on its own — expected behavior, not a second fault. See
 **Decoupling and fault isolation.** SQS queues buffer ingestion from processing, so a
 downstream failure or a Bedrock throttle backs up in a queue rather than dropping work.
 The nested-stack split keeps a pipeline change from touching the ingestion, tracking and
-UI resources. It is also what buys room to grow: `template.yaml` declares 314 top-level
+UI resources. It is also what buys room to grow: `template.yaml` declares 326 top-level
 resources against CloudFormation's hard limit of 500 per stack, so if you plan to extend
 the solution through the `feature-platform/` mechanism, that remaining budget is the number
 to watch, and a new extension is better added as its own nested stack than as more

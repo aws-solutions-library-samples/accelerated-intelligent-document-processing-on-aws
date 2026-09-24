@@ -49,9 +49,9 @@ combined = merge_metering_data(
 ### Transient-error classification (`transient_errors`)
 
 Step Functions retries a Lambda task by the reported error *name*. The extraction,
-shard-runtime and assessment handlers therefore classify a failure with
-`is_transient_error(exc)` and re-raise a transient cause as `TransientError`, the one
-name `workflow.asl.json` lists for those five tasks (#787). Rules: the exception's own
+shard-runtime, assessment and rule-validation handlers therefore classify a failure
+with `is_transient_error(exc)` and re-raise a transient cause as `TransientError`, the
+one name `workflow.asl.json` lists for those eight tasks (#787, #1101). Rules: the exception's own
 verdict first (a `ClientError` is judged by its code alone — `ValidationException`
 and `ModelErrorException` are deterministic at the task level, the Bedrock retry
 codes, S3's `SlowDown` / `ServiceUnavailable` / `InternalError` and the stream error
@@ -60,6 +60,26 @@ transient; only explicit `raise ... from` links are followed (`__context__` is n
 a retry loop's chained attempts or a swallowed transient error cannot make an
 unrelated deterministic failure look transient); message markers are limited to
 transport text (`Read timed out`, `Connection reset`, ...).
+
+⚠️ **The throttling half of the vocabulary is read from botocore, not listed here.**
+AWS has at least six spellings meaning "you are being rate limited" — `Throttling`,
+`ThrottlingException`, `ThrottledException`, `RequestThrottled`,
+`RequestThrottledException`, `TooManyRequestsException` — and different services answer
+with different ones. Knowing only `ThrottlingException` meant a service using the legacy
+`Throttling`, which CloudFormation does, had its throttle judged **deterministic**: the
+failure was recorded as a permanent diagnosis and the state machine did not retry it,
+so the document failed on its first attempt for a condition that would have cleared
+(#1132). `_botocore_retry_codes()` therefore reads botocore's own
+`ThrottledRetryableChecker._THROTTLED_ERROR_CODES` and
+`TransientRetryableChecker._TRANSIENT_ERROR_CODES`, so a spelling AWS adds arrives with
+a dependency bump rather than with an incident. Those attributes are private, so there
+is an audited pin (`_PINNED_BOTOCORE_RETRY_CODES`) as the fallback, and a test that
+fails when botocore's live sets differ from it — that failure is a prompt to decide
+about the new code, not an outage. `LimitExceededException` is the one code botocore
+calls a throttle that this does not: on some services it is a rate limit, on others a
+quota that is genuinely full, and the code alone cannot tell you which. Widening the
+vocabulary is a **per-service decision**, so add to `_NOT_TRANSIENT_AT_TASK_LEVEL` with
+a written reason rather than reaching for the message text.
 
 One exception cuts the other way. `DETERMINISTIC_MESSAGE_MARKERS` lists message text
 that marks a **reproducible** outcome even though the error *code* carrying it is
@@ -83,6 +103,29 @@ except Exception as e:
     raise_if_transient(e, where="extraction section 3")  # TransientError when transient
     raise  # hard errors keep their own name and are not retried
 ```
+
+**Two entry points, and picking the wrong one fails silently.** `raise_if_transient`
+returns without raising when the exception *already is* a `TransientError`, because it
+is written for the block above — the bare `raise` is what keeps the name. An `except`
+that instead **returns** a value has no such `raise`, so with `raise_if_transient`
+alone an exception another site had already classified gets swallowed there and the
+classification is undone. Use `reraise_if_transient` at any site that swallows:
+
+```python
+from idp_common.utils.transient_errors import reraise_if_transient
+
+try:
+    ...
+except Exception as e:
+    reraise_if_transient(e, where="rule validation rule 'must be employed'")
+    return fallback_result  # reached only for a DETERMINISTIC failure
+```
+
+Neither ever wraps a `TransientError` in another one, so a failure that passes through
+several nested handlers still reports one name and one cause. Rule validation is where
+this matters most, because its blocks nest: a transient re-raised for one rule travels
+up through `asyncio.gather` into a document-level `except` that returns a document
+marked failed (#1101).
 
 ### The shard invocation's time budget (`idp_common.timeout_budget`)
 

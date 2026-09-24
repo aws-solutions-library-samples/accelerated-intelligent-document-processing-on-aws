@@ -25,6 +25,12 @@ a `ValidationException` that loses the message.
 it, and `max_history_turns` truncates from the end. Truncating from the wrong end
 would hand the agent the oldest turns and drop the ones it needs.
 
+**Appending without losing a concurrent append.** Adding a message rewrites the
+whole newest item, so two writers serving one session — a resubmitted request, or a
+retried Lambda — would each drop the other's message. The write is conditional on a
+version attribute read alongside the item, and `TestConcurrentAppendGuard` drives
+that mechanism by injecting the conflict rather than racing for it.
+
 `boto3.resource` is stubbed throughout. Nothing here reaches AWS.
 """
 
@@ -161,14 +167,223 @@ class TestLatestConversationItem:
         table.query.return_value = {"Items": []}
         assert provider._get_latest_conversation_item() is None
 
-    def test_a_query_failure_yields_nothing_rather_than_propagating(self):
-        # The caller treats None as "no history yet" and creates a first item, so a
-        # transient query failure costs the earlier history rather than the message.
+    def test_a_query_failure_is_distinguishable_from_an_empty_session(self):
+        # The caller answers None by creating a first item, so None must mean "no
+        # history yet" and nothing else. Returning it for a failed query too made a
+        # transient failure fork the conversation into a second item, which is the
+        # same shape as the defect the message logger guards against next door.
+        from idp_common.agents.utils.memory_provider import _ConversationReadFailed
+
         provider, table = _provider()
         table.query.side_effect = _client_error(
             "ProvisionedThroughputExceededException"
         )
-        assert provider._get_latest_conversation_item() is None
+        with pytest.raises(_ConversationReadFailed):
+            provider._get_latest_conversation_item()
+
+
+@pytest.mark.unit
+class TestConcurrentAppendGuard:
+    """The version attribute that stops one append from overwriting another.
+
+    The conflict is injected, not raced for, so every assertion here is as
+    deterministic as the rest of the module: no threads, no sleeps, no dependence
+    on the scheduler.
+    """
+
+    def _put_kwargs(self, table: MagicMock) -> dict[str, Any]:
+        return table.put_item.call_args.kwargs
+
+    def test_an_append_is_conditional_on_the_version_it_read(self):
+        provider, table = _provider()
+        table.query.return_value = {
+            "Items": [_item("t1", [_message("user", "a")], conversation_version=4)]
+        }
+        provider._store_message_to_dynamodb({"text": "b"}, "assistant")
+        kwargs = self._put_kwargs(table)
+        assert (
+            "conversation_version = :expected_version" in kwargs["ConditionExpression"]
+        )
+        assert kwargs["ExpressionAttributeValues"][":expected_version"] == 4
+
+    def test_an_append_advances_the_stored_version(self):
+        provider, table = _provider()
+        table.query.return_value = {
+            "Items": [_item("t1", [_message("user", "a")], conversation_version=4)]
+        }
+        provider._store_message_to_dynamodb({"text": "b"}, "assistant")
+        assert _written_item(table)["conversation_version"] == 5
+
+    def test_an_item_written_before_the_guard_existed_is_still_appendable(self):
+        provider, table = _provider()
+        table.query.return_value = {"Items": [_item("t1", [_message("user", "a")])]}
+        provider._store_message_to_dynamodb({"text": "b"}, "assistant")
+        kwargs = self._put_kwargs(table)
+        assert (
+            "attribute_not_exists(conversation_version)"
+            in kwargs["ConditionExpression"]
+        )
+        assert len(_written_messages(table)) == 2
+
+    def test_a_newly_created_item_carries_the_guard_from_the_start(self):
+        provider, table = _provider()
+        table.query.return_value = {"Items": []}
+        provider._store_message_to_dynamodb({"text": "hello"}, "user")
+        assert _written_item(table)["conversation_version"] == 1
+
+    def test_a_rejected_append_is_retried_and_both_messages_survive(self):
+        # The point of the retry: the other writer's message has to be picked up
+        # by the re-read, not overwritten by the array the first attempt built.
+        provider, table = _provider()
+        table.query.side_effect = [
+            {"Items": [_item("t1", [_message("user", "a")])]},
+            {
+                "Items": [
+                    _item(
+                        "t1",
+                        [_message("user", "a"), _message("assistant", "other-writer")],
+                        conversation_version=1,
+                    )
+                ]
+            },
+        ]
+        table.put_item.side_effect = [
+            _client_error("ConditionalCheckFailedException"),
+            None,
+        ]
+        provider._store_message_to_dynamodb({"text": "mine"}, "assistant")
+        assert table.query.call_count == 2
+        stored = _written_messages(table)
+        assert len(stored) == 3
+        assert stored[-1]["content"] == {"text": "mine"}
+        assert any(m["content"] == {"text": "other-writer"} for m in stored)
+
+    def test_the_retry_is_bounded_rather_than_looping_forever(self):
+        provider, table = _provider()
+        table.query.return_value = {"Items": [_item("t1", [_message("user", "a")])]}
+        table.put_item.side_effect = _client_error("ConditionalCheckFailedException")
+        provider._store_message_to_dynamodb({"text": "b"}, "assistant")
+        assert table.put_item.call_count == 10
+
+    def test_exhausting_the_retries_is_reported(self, caplog):
+        # Dropping one message beats overwriting the conversation, but it must not
+        # be silent -- silence is what makes this class of defect invisible.
+        import logging
+
+        provider, table = _provider()
+        table.query.return_value = {"Items": [_item("t1", [_message("user", "a")])]}
+        table.put_item.side_effect = _client_error("ConditionalCheckFailedException")
+        with caplog.at_level(logging.ERROR):
+            provider._store_message_to_dynamodb({"text": "b"}, "assistant")
+        errors = [r.getMessage() for r in caplog.records if r.levelno >= logging.ERROR]
+        assert any("sess-1" in m and "not persisted" in m for m in errors)
+
+    def test_a_non_conflict_write_error_is_not_retried(self):
+        provider, table = _provider()
+        table.query.return_value = {"Items": [_item("t1", [_message("user", "a")])]}
+        table.put_item.side_effect = _client_error("ValidationException")
+        provider._store_message_to_dynamodb({"text": "b"}, "assistant")
+        assert table.put_item.call_count == 1
+
+    def test_rolling_over_to_a_new_item_is_not_guarded_by_the_version(self):
+        # The rollover write lands on a fresh sort key, so a stale version must not
+        # reject it -- it is not appending to the item it rolled over from. What it
+        # is conditional on is the key being free, which is a different question and
+        # is what stops a colliding timestamp replacing an item instead of appending
+        # to it.
+        provider, table = _provider(max_item_size_kb=0.1)
+        table.query.return_value = {
+            "Items": [_item("t1", [_message("user", "x" * 500)])]
+        }
+        provider._store_message_to_dynamodb({"text": "next"}, "assistant")
+        condition = self._put_kwargs(table)["ConditionExpression"]
+        assert condition == "attribute_not_exists(PK)"
+        assert "conversation_version" not in condition
+        assert len(_written_messages(table)) == 1
+
+    def test_a_first_item_whose_key_is_taken_appends_instead_of_replacing(self):
+        # Two writers that both find no history choose their own timestamp sort key,
+        # so they normally create two items and nothing is lost. If they choose the
+        # same key an unconditional put would replace the first writer's item
+        # outright; the condition turns that into a retry, and the retry's query
+        # finds the item and appends to it.
+        provider, table = _provider()
+        table.query.side_effect = [
+            {"Items": []},
+            {"Items": [_item("t1", [_message("user", "first")])]},
+        ]
+        table.put_item.side_effect = [
+            _client_error("ConditionalCheckFailedException"),
+            None,
+        ]
+        provider._store_message_to_dynamodb({"text": "second"}, "assistant")
+        stored = _written_messages(table)
+        assert len(stored) == 2
+        assert [m["role"] for m in stored] == ["user", "assistant"]
+
+
+@pytest.mark.unit
+class TestFailedQueryIsNotAnEmptySession:
+    """A query that failed must not be answered by starting a new item.
+
+    This is the shape PR #1105 fixed in the message logger, left in place here: the
+    append reads `None` as "no history yet" and creates a fresh item, so a transient
+    query failure forked the conversation rather than appending to the item that
+    already existed. Neither outcome lost a message -- history is read back across
+    items -- but the store ends up in a state it was never meant to reach, and the
+    same reasoning that made it wrong next door makes it wrong here.
+    """
+
+    def test_a_query_failure_does_not_start_a_new_item(self):
+        provider, table = _provider()
+        table.query.side_effect = _client_error(
+            "ProvisionedThroughputExceededException"
+        )
+        with patch(f"{MODULE}.time.sleep"):
+            provider._store_message_to_dynamodb({"text": "hi"}, "user")
+        table.put_item.assert_not_called()
+
+    def test_a_query_that_recovers_appends_to_the_history_it_then_sees(self):
+        provider, table = _provider()
+        table.query.side_effect = [
+            _client_error("ProvisionedThroughputExceededException"),
+            {"Items": [_item("t1", [_message("user", "first")])]},
+        ]
+        with patch(f"{MODULE}.time.sleep"):
+            provider._store_message_to_dynamodb({"text": "second"}, "assistant")
+        assert [m["role"] for m in _written_messages(table)] == ["user", "assistant"]
+
+    def test_the_query_budget_is_bounded_and_separate_from_the_conflicts(self):
+        # A query that never succeeds stops after its own few attempts rather than
+        # running the whole conflict budget of round trips against a failing read.
+        from idp_common.agents.utils.memory_provider import _MAX_READ_ATTEMPTS
+
+        provider, table = _provider()
+        table.query.side_effect = _client_error(
+            "ProvisionedThroughputExceededException"
+        )
+        with patch(f"{MODULE}.time.sleep"):
+            provider._store_message_to_dynamodb({"text": "hi"}, "user")
+        assert table.query.call_count == _MAX_READ_ATTEMPTS
+
+    def test_exhausting_the_query_budget_reports_the_message_it_dropped(self, caplog):
+        import logging
+
+        provider, table = _provider()
+        table.query.side_effect = _client_error(
+            "ProvisionedThroughputExceededException"
+        )
+        with caplog.at_level(logging.ERROR), patch(f"{MODULE}.time.sleep"):
+            provider._store_message_to_dynamodb({"text": "hi"}, "user")
+        errors = [r.getMessage() for r in caplog.records if r.levelno >= logging.ERROR]
+        assert any("not persisted" in m for m in errors)
+
+    def test_a_failure_to_store_does_not_propagate_out_of_the_hook(self):
+        # Memory is best-effort: losing a turn of history is acceptable, aborting
+        # the caller's turn is not.
+        provider, table = _provider()
+        table.query.side_effect = RuntimeError("boom")
+        provider._store_message_to_dynamodb({"text": "hi"}, "user")
 
 
 @pytest.mark.unit
@@ -365,6 +580,20 @@ class TestLoadConversationHistory:
         table.query.return_value = {"Items": [_item("t1", [_message("user", "q")])]}
         assert len(provider._load_conversation_history()) == 1
 
+    def test_a_limit_of_zero_turns_loads_no_history(self):
+        # Zero is the obvious way to turn conversation memory off, and it arrives
+        # unvalidated from the MAX_CONVERSATION_TURNS environment variable. The
+        # truncating slice cannot express it — turns[-0:] is turns[0:], i.e. every
+        # turn ever stored — so the setting has to be handled before the slice or it
+        # produces the maximum history rather than none.
+        provider, table = _provider(max_history_turns=0)
+        messages = []
+        for i in range(5):
+            messages.append(_message("user", f"q{i}"))
+            messages.append(_message("assistant", f"a{i}"))
+        table.query.return_value = {"Items": [_item("t1", messages)]}
+        assert provider._load_conversation_history() == []
+
     def test_one_malformed_item_is_skipped_and_the_others_read(self):
         provider, table = _provider()
         table.query.return_value = {
@@ -560,13 +789,43 @@ class TestOnMessageAdded:
             provider.on_message_added(self._event([{"role": "user"}]))
         assert store.call_args.args[0] == ""
 
-    def test_a_message_with_no_role_raises_before_the_size_check(self):
-        # The role is read by subscripting rather than .get, and that read is
-        # OUTSIDE the try. Pinned because it means a malformed message aborts the
-        # hook rather than being logged like every other failure here.
+    def test_a_message_with_no_role_is_dropped_rather_than_aborting_the_turn(self):
+        # Memory is best-effort: every other failure in this module is logged and
+        # swallowed, because losing a turn of history is acceptable and aborting
+        # the user's chat turn is not. A message with no role is unusable — the
+        # role is what turn grouping keys on when the history is read back — so it
+        # is dropped, not stored under a substituted role.
         provider, _ = _provider()
-        with pytest.raises(KeyError):
+        with patch.object(provider, "_store_message_to_dynamodb") as store:
             provider.on_message_added(self._event([{"content": [{"text": "hi"}]}]))
+        store.assert_not_called()
+
+    def test_an_empty_message_list_does_not_abort_the_turn(self):
+        # messages[-1] on an empty list raises IndexError by the same route as the
+        # missing role, so it is covered by the same guard.
+        provider, _ = _provider()
+        with patch.object(provider, "_store_message_to_dynamodb") as store:
+            provider.on_message_added(self._event([]))
+        store.assert_not_called()
+
+    def test_content_that_cannot_be_serialised_does_not_abort_the_turn(self):
+        # The size check serialises the content with json.dumps, which raises
+        # TypeError on anything json does not know. That read sits on the same
+        # lines as the two above and needs the same guard.
+        provider, _ = _provider()
+        unserialisable = [{"text": object()}]
+        with patch.object(provider, "_store_message_to_dynamodb") as store:
+            provider.on_message_added(
+                self._event([{"role": "user", "content": unserialisable}])
+            )
+        store.assert_not_called()
+
+    def test_a_malformed_message_is_logged_at_error_level(self):
+        # Dropping it silently would make a lost turn of history undiagnosable.
+        provider, _ = _provider()
+        with patch(f"{MODULE}.logger") as log:
+            provider.on_message_added(self._event([{"content": [{"text": "hi"}]}]))
+        assert log.error.called
 
 
 @pytest.mark.unit

@@ -10,6 +10,14 @@ import boto3
 from idp_common import s3, utils
 from idp_common.config import get_config
 from idp_common.docs_service import create_document_service
+from idp_common.document_failure import (
+    POSTPROCESSING_STAGE,
+    SECTION_PROCESSING_FAILED_CODE,
+    SECTION_PROCESSING_FAILED_MESSAGE,
+    SectionDiagnosis,
+    persist_failed_document,
+    summarize_errors,
+)
 from idp_common.models import Document, HitlMetadata, Status
 
 logger = logging.getLogger()
@@ -83,8 +91,10 @@ def handler(event, context):
     # Clear sections list to rebuild from extraction results
     document.sections = []
     validation_errors = []
-    validation_errors = []
     hitl_triggered = False
+    # #1064: which section failed, and why, so the raise below can persist it on
+    # the section rather than leaving it in the Step Functions cause alone.
+    section_diagnoses = []
 
     # Combine all section results
     for i, result in enumerate(extraction_results):
@@ -136,6 +146,23 @@ def handler(event, context):
                     )
                     validation_errors.append(error_message)
                     logger.error(f"Error: {error_message}")
+                    # Attribute the verdict to the section it is about. The
+                    # exception message below keeps the 1-based ordinal it has
+                    # always used; the issue is keyed by the real section id,
+                    # which is what the Sections panel reads.
+                    section_diagnoses.append(
+                        SectionDiagnosis(
+                            section_id=section.section_id,
+                            stage=POSTPROCESSING_STAGE,
+                            code=SECTION_PROCESSING_FAILED_CODE,
+                            message=SECTION_PROCESSING_FAILED_MESSAGE,
+                            root_cause=summarize_errors(
+                                section_document.errors,
+                                fallback="The section reported status FAILED "
+                                "without recording a reason.",
+                            ),
+                        )
+                    )
 
             # Add metering from section processing
             document.metering = utils.merge_metering_data(
@@ -209,7 +236,33 @@ def handler(event, context):
         combined_errors = "; ".join(validation_errors)
         full_error_message = f"{error_summary}: {combined_errors}"
         logger.error(f"Error: {full_error_message}")
-        raise Exception(full_error_message)
+        failure = Exception(full_error_message)
+        # #1064: persist before raising. This handler owns the whole-document
+        # write and already holds every section, so ONE `update_document` can carry
+        # both the FAILED status just assigned — which was previously computed and
+        # thrown away — and a per-section issue for each section that failed.
+        #
+        # It writes only when there is at least one section diagnosis, which means
+        # the reachable path below does NOT write: `document.errors` is
+        # document-scope, produces no diagnosis, and `persist_failed_document`
+        # returns before writing, so neither the issues nor the FAILED status are
+        # persisted there. The terminal status still comes from `workflow_tracker`
+        # as it always did.
+        #
+        # `document.errors` is deliberately NOT given a home here. Those entries
+        # are document-scope free text (OCR and classification append to it
+        # without failing the document), they are persisted by no writer, and the
+        # per-page failures behind them are already recorded as section-attributed
+        # issues by classification. A document-level issue would bump
+        # ProcessingIssueCount, which the document list reads, and then have no
+        # text behind the badge — see `idp_common.document_failure`.
+        persist_failed_document(
+            document_service=document_service,
+            document=document,
+            error=failure,
+            diagnoses=section_diagnoses,
+        )
+        raise failure
 
     return response
 

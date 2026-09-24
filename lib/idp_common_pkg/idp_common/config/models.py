@@ -93,18 +93,32 @@ class ImageConfig(BaseModel):
     @field_validator("target_width", "target_height", mode="before")
     @classmethod
     def parse_dimensions(cls, v: Any) -> Optional[int]:
-        """Parse dimensions from string or number, treating empty strings as None"""
+        """Parse a dimension from a string or number; empty means unset.
+
+        ⚠️ **An unreadable value raises rather than becoming ``None``.** It used to
+        return ``None``, which is the same value "not configured" produces — so
+        ``target_width: "abc"`` was discarded and ``OcrService`` then applied the
+        default ceiling and logged *"No image sizing configured, applying default
+        ceiling"*, which is the opposite of what happened. The warning written for
+        exactly this case sat behind an ``except`` that could never fire, because by
+        then the value was already ``int | None`` (#1158).
+
+        Raising also removes an asymmetry inside this one model: ``parse_dpi`` below
+        calls ``int(v)`` with no ``try``, so ``dpi: "abc"`` has always failed config
+        validation while ``target_width: "abc"`` was silently dropped. Same config
+        block, opposite behaviour, and the silent half is the one that misreports.
+        """
         if v is None or (isinstance(v, str) and not v.strip()):
             return None
-        if isinstance(v, str):
-            try:
-                return int(v) if v else None
-            except ValueError:
-                return None  # Invalid value, return None
         try:
             return int(v)
-        except (ValueError, TypeError):
-            return None
+        except (ValueError, TypeError) as exc:
+            raise ValueError(
+                f"expected a pixel count or an empty value, got {v!r}. An unreadable "
+                "dimension is rejected rather than ignored, because ignoring it "
+                "applies the default ceiling and reports it as 'no image sizing "
+                "configured'."
+            ) from exc
 
     @field_validator("dpi", mode="before")
     @classmethod
@@ -460,9 +474,10 @@ class ForcedToolConfig(BaseModel):
             "Send the document schema as a forced Converse tool instead of "
             "describing it in the prompt. OFF by default: forcing constrains the "
             "response SHAPE, not the values in it, so it is not self-evidently an "
-            "improvement and is gated on a measured win. Routes that cannot carry "
-            "a toolConfig (a custom Lambda hook, GPT-5.x) fall back to the prompt "
-            "automatically, and the reason is recorded in the section metadata. "
+            "improvement and is gated on a measured win. Models that cannot carry "
+            "a toolConfig (a custom Lambda hook, GPT-5.x) or that reject a forced "
+            "toolChoice (Claude Opus 5.5) fall back to the prompt automatically, "
+            "and the reason is recorded in the section metadata. "
             "Property names Bedrock rejects are sanitized on the way out and "
             "restored on the way back, so no extracted field is renamed."
         ),
@@ -1875,6 +1890,17 @@ class ErrorAnalyzerParameters(BaseModel):
     max_stepfunction_error_length: int = Field(
         default=400, gt=0, description="Maximum length for Step Function error messages"
     )
+    max_stepfunction_history_pages: int = Field(
+        default=10,
+        gt=0,
+        le=50,
+        description=(
+            "Maximum pages of Step Function execution history to walk back through "
+            "when looking for the transition into the failing state. Each page is 100 "
+            "events. Bounded above because the walk is one API call per page and an "
+            "unbounded value would make a misconfiguration expensive rather than slow."
+        ),
+    )
 
     # X-Ray analysis thresholds
     xray_slow_segment_threshold_ms: int = Field(
@@ -1908,6 +1934,7 @@ class ErrorAnalyzerParameters(BaseModel):
         "max_log_groups",
         "max_stepfunction_timeline_events",
         "max_stepfunction_error_length",
+        "max_stepfunction_history_pages",
         "xray_slow_segment_threshold_ms",
         "xray_response_time_threshold_ms",
         "xray_analysis_hours",

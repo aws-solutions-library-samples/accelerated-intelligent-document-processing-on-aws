@@ -86,7 +86,7 @@ pip install -e "lib/idp_common_pkg[extraction]"   # Extraction
 pip install -e "lib/idp_common_pkg[all]"          # Everything
 ```
 
-**Lazy loading**: `idp_common/__init__.py` uses `__getattr__` for lazy submodule imports. Don't import submodules eagerly at package level.
+**Lazy loading**: `idp_common/__init__.py` uses `__getattr__` for lazy submodule imports. Don't import submodules eagerly at package level. It defers to `importlib`/`sys.modules` and caches nothing itself — a second cache can hold a different object for the same name, which makes `mock.patch` unreliable (#1159). ⚠️ **Patch at the point of use, and check how the consumer imported the name**: a module-level `from idp_common import s3` is patched through the consumer (`idp_common.<consumer>.s3.write_content`), a function-local `from idp_common.image import f` through `sys.modules` (`idp_common.image.f`). The wrong target fails silently, as a mock with zero calls. See "Lazy submodule loading" in `lib/idp_common_pkg/idp_common/README.md`.
 
 ## Banned Imports
 - `from idp_sdk._core import ...` — BANNED. Use `from idp_sdk import IDPClient` instead.

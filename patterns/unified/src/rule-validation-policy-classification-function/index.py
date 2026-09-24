@@ -15,6 +15,7 @@ from idp_common import get_config, rule_validation, s3
 from idp_common.models import Document, RuleValidationResult, Status
 from idp_common.docs_service import create_document_service
 from idp_common.utils import calculate_lambda_metering, merge_metering_data
+from idp_common.utils.transient_errors import raise_if_transient, reraise_if_transient
 
 # X-Ray tracing
 from aws_xray_sdk.core import xray_recorder
@@ -25,6 +26,23 @@ logger.setLevel(os.environ.get("LOG_LEVEL", "INFO"))
 
 @xray_recorder.capture("policy_classification_handler")  # pyright: ignore[reportCallIssue] - aws-xray-sdk types capture() as the wrapped function, not the decorator factory
 def handler(event, context):
+    """Classify which policy classes apply. See ``_handle``.
+
+    #1101: this handler had no ``except`` at all, so every failure reached Step
+    Functions under its own class name and only the ones botocore happens to name
+    after a modeled error code matched ``PolicyClassificationStep``'s retrier. It
+    reads the document, the config and every page's parsed text from S3 and writes
+    the tracking table, so a throttle on any of those failed the document with no
+    retry. Transient causes are re-raised under the one name that state lists.
+    """
+    try:
+        return _handle(event, context)
+    except Exception as e:
+        raise_if_transient(e, where="policy classification")
+        raise
+
+
+def _handle(event, context):
     """
     Lambda handler for policy classification.
 
@@ -324,3 +342,23 @@ def _cleanup_rule_validation_files(bucket, input_key):
         logger.warning(
             f"Failed to clear rule validation files for {input_key}: {str(e)}"
         )
+        # This IS a best-effort tidy-up, and it only became one in #1143. The
+        # objects it removes are the previous run's
+        # `rule_validation/sections/*_responses.json`, and consolidation used to
+        # GLOB exactly that prefix — so a cleanup that silently did not happen meant
+        # last run's verdicts were consolidated as if they were this run's. #1101
+        # made a transient fault raise so it would be retried, which narrowed the
+        # window without closing it: a deterministic failure (`AccessDenied` from a
+        # missing `s3:ListBucket` or `s3:DeleteObject`, a bucket policy denial) was
+        # still caught here and the document still completed on mixed verdicts.
+        #
+        # Consolidation now reads the explicit per-section URIs this run produced
+        # (`rule-validation-orchestration-function`), so a surviving object is inert:
+        # it is not in the list, so it is not read. What remains is disk cost and a
+        # confusing prefix, which is what a warning is the right response to.
+        #
+        # The transient re-raise stays. It is no longer load-bearing for
+        # correctness, and it is kept because a retry is the right answer to a
+        # throttle or a reset connection on its own terms — not because the verdicts
+        # depend on it.
+        reraise_if_transient(e, where="rule validation cleanup")

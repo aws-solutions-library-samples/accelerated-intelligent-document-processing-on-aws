@@ -25,8 +25,8 @@ compared:
 7. the shipped configuration presets under ``config_library/``, which
    ``idp-cli deploy --custom-config`` installs verbatim. This surface can point a
    documented feature at a dead model with no enum, no UI entry and no code
-   default involved — ``criteria_validation.model`` has no ConfigSchema entry at
-   all, so a preset is the only way to reach it.
+   default involved: a preset can name a model on a field with no ConfigSchema
+   entry at all, and then a preset is the only way to reach it.
 
 Three failure modes follow, all of which had shipped:
 
@@ -83,6 +83,7 @@ import subprocess
 from pathlib import Path
 from typing import Any
 
+import first_party_provenance
 import pytest
 
 yaml = pytest.importorskip("yaml")
@@ -433,17 +434,15 @@ def code_defaults() -> dict[str, set[str]]:
     so both run and the results are unioned.
     """
     models = pytest.importorskip("idp_common.config.models")
-    # Same provenance guard as the SDK gate: idp_common is an editable install, so
-    # without PYTHONPATH pointing at this checkout the defaults could be read from
-    # a DIFFERENT tree than the file surfaces above — green for a fix that is not
-    # in the code under test.
-    module_path = Path(models.__file__).resolve()
-    assert module_path.is_relative_to(REPO_ROOT), (
-        f"idp_common.config.models resolved to {module_path}, outside the checkout "
-        f"under test ({REPO_ROOT}). Set PYTHONPATH to this checkout's "
-        "lib/idp_common_pkg — otherwise this fixture and the file-based fixtures "
-        "above describe two different trees."
-    )
+    # Provenance guard: idp_common is an editable install, so without PYTHONPATH
+    # pointing at this checkout the defaults could be read from a DIFFERENT tree than
+    # the file surfaces above — green for a fix that is not in the code under test.
+    #
+    # This was the tree's first copy of the check and is now routed through the shared
+    # helper, which answers the question more precisely: the hand-rolled version asked
+    # whether the module was UNDER `REPO_ROOT`, which accepts a git worktree nested at
+    # `.claude/worktrees/` even though that is a different revision.
+    first_party_provenance.assert_resolves_in("idp_common.config.models", __file__)
 
     acc: dict[str, set[str]] = {}
     _walk_model_values(models.IDPConfig().model_dump(mode="python"), "IDPConfig()", acc)
@@ -458,10 +457,10 @@ def preset_models() -> dict[str, set[str]]:
     A seventh surface, and one a customer reaches directly:
     ``idp-cli deploy --custom-config config_library/unified/<preset>/config.yaml``
     installs exactly this configuration. A preset can therefore point a documented
-    feature at a dead model with no enum, no UI list and no code default involved —
-    which is how five `ocr-benchmark` presets came to name an end-of-life model on
-    ``criteria_validation.model``, a field with no ConfigSchema entry at all and so
-    reachable ONLY through a preset.
+    feature at a dead model with no enum, no UI list and no code default involved.
+    A preset can name a model on a field that has no ConfigSchema entry at all, which
+    makes it reachable ONLY through this walk — five `ocr-benchmark` presets did
+    exactly that, on a block that no longer exists.
     """
     acc: dict[str, set[str]] = {}
     for rel in _tracked_files():
@@ -861,10 +860,9 @@ def test_no_eol_model_in_a_shipped_preset(preset_models):
     """`idp-cli deploy --custom-config <preset>` installs these verbatim.
 
     This surface has no enum and no UI list behind it, so nothing else in this file
-    would ever have looked at it. Five `ocr-benchmark` presets named an end-of-life
-    model on `criteria_validation.model` — a field with no ConfigSchema entry, so
-    reachable only through a preset, backing a documented feature
-    (docs/criteria-validation.md).
+    would ever have looked at it. The case that motivated it was five `ocr-benchmark`
+    presets naming an end-of-life model on a field with no ConfigSchema entry, which
+    made it reachable only through a preset.
     """
     offenders = {
         m: sorted(preset_models[m])
@@ -880,17 +878,24 @@ def test_no_eol_model_in_a_shipped_preset(preset_models):
 
 @pytest.mark.unit
 def test_preset_discovery_reaches_the_nested_config_files():
-    """Not vacuous: the preset walk must reach the deep `criteria_validation.model`
-    key, several levels down in a ~900-line config, or it proves nothing."""
+    """Not vacuous: the preset walk must reach a model key **nested inside another
+    block**, not merely the top-level ones, or it proves nothing about depth.
+
+    `evaluation.llm_method.model` is the deepest model key in this ~900-line preset,
+    and it is the anchor for that reason. A walk that stopped one level in would
+    still find `classification.model`, `extraction.model` and `summarization.model`
+    and look like it worked.
+    """
     rel = "config_library/unified/ocr-benchmark/config.yaml"
     assert (REPO_ROOT / rel).is_file(), f"{rel} moved; update this test"
     doc = yaml.safe_load((REPO_ROOT / rel).read_text(encoding="utf-8"))
     acc: dict[str, set[str]] = {}
     _walk_model_values(doc, rel, acc)
     paths = {p for ps in acc.values() for p in ps}
-    assert any(p.endswith("criteria_validation.model") for p in paths), (
-        "the preset walk no longer reaches criteria_validation.model, the key "
-        "whose end-of-life model this surface was added to catch"
+    assert any(p.endswith("evaluation.llm_method.model") for p in paths), (
+        "the preset walk no longer reaches evaluation.llm_method.model, the "
+        "deepest model key in this preset; a shallower walk would still find the "
+        "top-level ones and appear to work"
     )
 
 

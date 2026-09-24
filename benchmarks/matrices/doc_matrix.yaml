@@ -139,6 +139,19 @@ groups:
   # `scale_3200` (66pp, ~790K) is deliberately excluded — it exceeds ASTRA too, so
   # it belongs to `astracap`, where that ceiling is the finding.
   astra_docs:     [small_narrow, med_narrow, large_narrow, dense_250]
+  # opus_docs: the Opus 5.5 vs Opus 5 pair (see the `opus55value` suite). A SUBSET
+  # of astra_docs, and the two it drops are dropped for a reason that would
+  # otherwise waste the whole suite: `large_narrow` (17pp ~203K) and `dense_250`
+  # (26pp ~304K) are what they are in astra_docs because Astra's window reaches
+  # them and Sonnet 5's does not — that asymmetry IS the Astra finding. Opus 5 and
+  # Opus 5.5 share one window and one sizing budget, so in simple mode both arms
+  # would be refused on both documents, and an A/B whose two arms fail identically
+  # measures nothing while still being billed. The advanced arms would survive by
+  # sharding, but then only half the suite carries information.
+  #
+  # So the cost/quality ratio is measured where both arms actually run, and the
+  # ceiling question is left to `astracap`, which already owns it for every model.
+  opus_docs:      [small_narrow, med_narrow]
   all:            "*"
 
 # Notes:
