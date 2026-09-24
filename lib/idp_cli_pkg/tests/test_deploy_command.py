@@ -1536,6 +1536,98 @@ class TestFromCode:
         assert kwargs["headless"] is (flag == "--headless")
         assert kwargs["govcloud"] is (flag == "--govcloud")
 
+    @staticmethod
+    def _build_result(**overrides):
+        """A publish-build result whose variant fields are absent unless named.
+
+        A ``MagicMock`` will not do: every attribute of one is truthy, so
+        ``govcloud_template_path`` would be a path in both tests below and the
+        thing under test — what happens when the variant is *missing* — would be
+        unreachable.
+        """
+        fields = {
+            "success": True,
+            "error": None,
+            "template_path": "/built/idp-main.yaml",
+            "template_url": "https://s3/built.yaml",
+            "headless_template_path": None,
+            "headless_template_url": None,
+            "govcloud_template_path": None,
+            "govcloud_template_url": None,
+        }
+        fields.update(overrides)
+        return SimpleNamespace(**fields)
+
+    def test_govcloud_with_no_variant_built_exits_1_and_deploys_nothing(self, tmp_path):
+        """The refusal reaches the operator, and no stack operation is started.
+
+        The message itself is asserted where it is produced, in
+        ``test_cli_module_helpers.py``; what is added here is that ``deploy``
+        does not swallow it. The refusal is a ``sys.exit`` inside the build
+        helper, and the command body wraps everything in ``except Exception`` —
+        which does not catch ``SystemExit``, so the exit propagates. That is a
+        property of the exception hierarchy rather than of this code, and it is
+        cheap to pin. Issue #1233.
+        """
+        source = tmp_path / "project"
+        source.mkdir()
+        patcher, _client_cls, client = _patched_client()
+        client.publish.build.return_value = self._build_result()
+        try:
+            result = _deploy(
+                "--stack-name",
+                STACK,
+                "--admin-email",
+                EMAIL,
+                "--region",
+                REGION,
+                "--from-code",
+                str(source),
+                "--govcloud",
+            )
+        finally:
+            patcher.stop()
+        assert result.exit_code == 1, result.output
+        assert "--govcloud was requested but the build did not produce" in result.output
+        assert ".aws-sam/idp-govcloud.yaml" in result.output
+        client.stack.deploy.assert_not_called()
+
+    def test_govcloud_still_deploys_the_govcloud_template_when_it_was_built(
+        self, tmp_path
+    ):
+        """The working path, asserted because the refusal above could over-reach.
+
+        A refusal that fired whenever ``--govcloud`` was passed would satisfy the
+        test above and break every GovCloud deployment, so the variant being
+        present has to be shown to still deploy — and to deploy the *variant*,
+        not the commercial template the build also produced.
+        """
+        source = tmp_path / "project"
+        source.mkdir()
+        patcher, _client_cls, client = _patched_client()
+        client.publish.build.return_value = self._build_result(
+            govcloud_template_path="/built/idp-govcloud.yaml",
+            govcloud_template_url="https://s3/built-govcloud.yaml",
+        )
+        try:
+            result = _deploy(
+                "--stack-name",
+                STACK,
+                "--admin-email",
+                EMAIL,
+                "--region",
+                REGION,
+                "--from-code",
+                str(source),
+                "--govcloud",
+            )
+        finally:
+            patcher.stop()
+        assert result.exit_code == 0, result.output
+        deploy_kwargs = client.stack.deploy.call_args.kwargs
+        assert deploy_kwargs["template_path"] == "/built/idp-govcloud.yaml"
+        assert deploy_kwargs["template_url"] == "https://s3/built-govcloud.yaml"
+
 
 class TestPreBuiltVariantTemplates:
     """``--headless`` / ``--govcloud`` with no source: download, transform, upload.

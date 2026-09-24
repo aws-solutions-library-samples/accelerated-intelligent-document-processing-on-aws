@@ -335,6 +335,7 @@ idp-cli deploy [OPTIONS]
 - `--region`: AWS region (optional, auto-detected)
 - `--role-arn`: CloudFormation service role ARN (optional)
 - `--headless`: Deploy a **headless (no-UI) stack** — removes CloudFront, the UI REST API (the `APIRESOLVERSTACK` nested stack holding the API Gateway REST API, its dispatcher, and the UI-only resolver Lambdas), Cognito, WAF, agents, HITL, and Test Studio. Required for GovCloud; also valid in Commercial regions for API-only / pipeline integrations. See [Headless Deployment](./headless-deployment.md).
+- `--govcloud`: Deploy the **GovCloud template variant** — keeps the full Web UI but removes every `AWS::CloudFront::*` resource (CloudFront does not exist in GovCloud) and forces API Gateway UI hosting. Mutually exclusive with `--headless`. If the GovCloud template cannot be produced, the deploy is **refused** rather than falling back to the commercial template: that template's CloudFront resources cannot exist in a GovCloud partition, so deploying it fails part-way through CREATE on a resource that looks unrelated to the flag. The error names the template that is missing (`.aws-sam/idp-govcloud.yaml`) and the `idp-cli publish --govcloud` command that produces it. See [GovCloud Deployment](./govcloud-deployment.md).
 - `--bucket-basename`: S3 bucket basename for build artifacts (used with `--from-code`; region is appended automatically)
 - `--prefix`: S3 key prefix for build artifacts (default: `idp-cli`, used with `--from-code`)
 - `--public`: Make published S3 artifacts publicly readable (used with `--from-code`)
@@ -518,6 +519,7 @@ idp-cli publish [OPTIONS]
 - `--bucket-basename`: S3 bucket basename for artifacts (region is appended automatically; auto-generated if not provided)
 - `--prefix`: S3 key prefix for artifacts (default: `idp-cli`)
 - `--headless`: Also generate a **headless (no-UI) template variant**. For commercial regions this produces `idp-main.yaml` **and** `idp-headless.yaml`; for GovCloud (`us-gov-*`) the headless template is additionally updated with GovCloud configuration defaults (ARN partition, GovCloud Bedrock models, `lending-package-sample-govcloud` preset).
+- `--govcloud`: Also generate the **GovCloud template variant** — the full Web UI with every `AWS::CloudFront::*` resource removed and API Gateway UI hosting forced. Writes `.aws-sam/idp-govcloud.yaml` beside `idp-main.yaml` and uploads it as `idp-govcloud.yaml`. The transform is linted against a GovCloud region, so an unsupported resource type that survived it fails the publish with the `cfn-lint` finding rather than at deploy time. Deploy the result with `idp-cli deploy --template-file .aws-sam/idp-govcloud.yaml`, or build and deploy in one step with `idp-cli deploy --from-code . --govcloud`.
 - `--public`: Make S3 artifacts publicly readable (for shared deployments)
 - `--max-workers`: Maximum concurrent build workers (default: auto-detect)
 - `--clean-build`: Force full rebuild by deleting all checksum files
