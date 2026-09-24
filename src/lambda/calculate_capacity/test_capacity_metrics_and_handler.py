@@ -853,16 +853,25 @@ def test_step_times_are_rescaled_to_add_up_to_the_measured_document_time(trackin
 
 
 @pytest.mark.unit
-def test_documents_with_workflow_timestamps_but_no_step_metering_are_refused(tracking):
-    """A measured document time is not enough on its own, despite what it says.
+@pytest.mark.parametrize(
+    ("metering", "label"),
+    [
+        ({}, "an empty metering map"),
+        ({"Extraction/bedrock/nova": {"requests": 3}}, "token counts but no durations"),
+    ],
+)
+def test_a_measured_document_time_is_enough_on_its_own(tracking, metering, label):
+    """Either source of timing is sufficient, which is what the advice promises.
 
-    The error text offers two alternatives — `/lambda/duration` gb_seconds *or*
-    `WorkflowStartTime`/`CompletionTime` timestamps — but the zero-total check runs
-    against the per-step sum only, before the timestamp total is consulted. A
-    document with usable timestamps and an empty metering map therefore fails the
-    whole report with advice that does not apply, and capacity planning is
-    unavailable until some document records step durations. Pinned as the current
-    behaviour so a change to it is deliberate.
+    `/lambda/duration` gb_seconds *or* `WorkflowStartTime`/`CompletionTime`
+    timestamps: a document carrying only the second is a complete answer for the
+    total, so the zero-total check is made after the timestamp total is computed
+    rather than against the per-step sum before it. Both metering shapes that reach
+    this path are covered — genuinely empty, and carrying keys that are not
+    durations — because the per-step sum is zero either way.
+
+    The per-step breakdown stays at zero and is not back-filled from the total: no
+    estimate is substituted for a measurement that was never taken.
     """
     now = datetime.utcnow()
     timed_document(
@@ -870,8 +879,25 @@ def test_documents_with_workflow_timestamps_but_no_step_metering_are_refused(tra
         "doc-1",
         started=(now - timedelta(seconds=120)).strftime("%Y-%m-%dT%H:%M:%S"),
         completed=now.strftime("%Y-%m-%dT%H:%M:%S"),
-        metering={"Extraction/bedrock/nova": {"requests": 3}},
+        metering=metering,
     )
+    result = index.get_real_latency_metrics("p")
+
+    assert result["total_processing_time"] == pytest.approx(120.0)
+    assert result["data_source"] == "document_timestamps"
+    assert result["processing_time_percentiles"]["p50"] == pytest.approx(120.0)
+    assert set(result["base_times"].values()) == {0}
+
+
+@pytest.mark.unit
+def test_a_document_with_neither_a_duration_nor_a_timestamp_pair_is_refused(tracking):
+    """With both sources missing there is nothing to plan from, and the report fails.
+
+    This is the check the per-step-sum one above it used to make unreachable: it is
+    the only zero-total raise now, and it is the one that runs after both sources
+    have been consulted, so it can name both alternatives truthfully.
+    """
+    put_metered(tracking, "doc-1", {"Extraction/bedrock/nova": {"requests": 3}})
     with pytest.raises(ValueError, match="No processing time data found"):
         index.get_real_latency_metrics("p")
 

@@ -348,16 +348,15 @@ def get_real_latency_metrics(pattern):
         # Validate we have meaningful processing times
         total_time = sum(base_times.values())
         data_source = "real_lambda_durations"  # Track data source
-        
-        # NO ESTIMATION FALLBACK - require real timing data
-        if total_time == 0:
-            raise ValueError(
-                "No processing time data found in documents. "
-                "Documents must have either /lambda/duration gb_seconds data in Metering, "
-                "or WorkflowStartTime/CompletionTime timestamps. "
-                "Process documents through the full workflow to generate timing data."
-            )
-        
+
+        # NO ESTIMATION FALLBACK - require real timing data. The check is below,
+        # after the timestamp-derived total has been computed, because either
+        # source is sufficient on its own: a document carrying usable
+        # WorkflowStartTime/CompletionTime timestamps and no per-step gb_seconds
+        # is a complete answer for the total, and testing the per-step sum here
+        # would refuse it while advising the operator to supply the timestamps it
+        # already has.
+
         # Use total document times if available (most accurate), otherwise use sum of step times
         processing_time_percentiles = {}
         if total_document_times:
@@ -378,10 +377,17 @@ def get_real_latency_metrics(pattern):
             }
             print(f"✅ Using document processing times from timestamps: P50={total_time:.1f}s, P99={processing_time_percentiles['p99']:.1f}s (from {n} documents)")
         else:
-            # Final validation
+            # Final validation: neither source produced a time, so there is
+            # nothing to plan from. Both alternatives are named because either one
+            # would have been accepted.
             total_time = sum(base_times.values())
             if total_time == 0:
-                raise ValueError("No valid processing times found in metering data. Ensure documents are being processed with timing information.")
+                raise ValueError(
+                    "No processing time data found in documents. "
+                    "Documents must have either /lambda/duration gb_seconds data in Metering, "
+                    "or WorkflowStartTime/CompletionTime timestamps. "
+                    "Process documents through the full workflow to generate timing data."
+                )
             print(f"✅ Total estimated processing time per document (sum of steps): {total_time:.1f}s")
         
         # If we have total_document_times, scale base_times proportionally

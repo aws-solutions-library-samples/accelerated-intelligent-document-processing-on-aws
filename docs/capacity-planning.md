@@ -415,6 +415,15 @@ The capacity planning system requires **real processed documents** with metering
 - Request counts (requires metering data with requests field)
 - Page counts (requires metering or document-level page data)
 
+The two processing-time sources are genuine alternatives: either one on its own
+produces a report, and the timestamp pair is preferred where both are present
+because it measures the document end to end. A history carrying only the
+timestamps therefore plans normally. The per-step figures the planner derives
+from `gb_seconds` stay at zero in that case rather than being back-filled from
+the document total, so no estimate is substituted for a measurement that was
+never taken; those per-step figures feed the calculation and are not themselves
+part of the report.
+
 **Error Messages When Data is Missing**:
 - "No processed documents found with metering data"
 - "No processing time data found in documents"
@@ -460,7 +469,7 @@ The capacity planning system requires **real processed documents** with metering
 
 **No Processing Time Data**:
 - **Symptom**: "No processing time data found in documents"
-- **Solution**: Ensure documents have `/lambda/duration` gb_seconds or WorkflowStartTime/CompletionTime timestamps
+- **Solution**: Ensure documents have `/lambda/duration` gb_seconds or WorkflowStartTime/CompletionTime timestamps. Either is sufficient, so this message means **neither** was found in the sampled documents.
 
 **OCR Quota Error When Not Using Bedrock OCR**:
 - **Symptom**: Error about missing OCR metering data
