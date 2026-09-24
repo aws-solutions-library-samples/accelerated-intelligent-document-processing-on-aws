@@ -372,8 +372,8 @@ classifications:
    identical invalid answer. The correction changes the input and steers the
    model back to the allowed set.)
 
-   > **`temperature=0` is not universal.** Claude Opus 4.7/4.8, Opus 5 and
-   > Sonnet 5 **reject** `temperature`/`top_p`/`top_k` (HTTP 400), so
+   > **`temperature=0` is not universal.** Claude Opus 4.7/4.8, Opus 5, Opus 5.5
+   > and Sonnet 5 **reject** `temperature`/`top_p`/`top_k` (HTTP 400), so
    > `idp_common` strips them before the request (`_CLAUDE_4_7_BASE_NAMES` in
    > `idp_common/bedrock/client.py`). On those models classification **samples**,
    > and identical inputs can return different answers run to run. Assuming the

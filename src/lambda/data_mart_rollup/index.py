@@ -37,6 +37,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional, Tuple
 
 import boto3
+from botocore.exceptions import ClientError
 
 logger = logging.getLogger()
 logger.setLevel(os.environ.get("LOG_LEVEL", "INFO"))
@@ -47,6 +48,46 @@ WORKGROUP = os.environ.get("ATHENA_WORKGROUP", "primary")
 QUERY_OUTPUT_LOCATION = os.environ.get("ATHENA_QUERY_OUTPUT_LOCATION", "")
 REPORTING_BUCKET = os.environ.get("REPORTING_BUCKET", "")
 STACK_NAME = os.environ.get("STACK_NAME", "")
+
+# The STACK_NAME guard runs on first USE of the marker path
+# (``_require_stack_name`` below), NOT at import time. An import-time
+# raise broke unit tests that load this module via
+# ``importlib.util.exec_module`` without setting STACK_NAME first
+# (``scripts/tests/test_data_plane_component_labels.py`` and the
+# rollup-Lambda test module both do this so CI can exercise pure-
+# Python helpers on a machine with no default region and no
+# stack env vars). Deferring to first-use preserves the same
+# fail-fast in production — every marker-touching mode calls
+# ``_require_stack_name`` before computing the path — without
+# holding module import hostage to the env var. Same protection
+# against ``/idp//data-mart-rollup/…`` cross-stack marker collision;
+# just enforced at the callsite where it matters instead of at the
+# top of the file.
+
+
+def _require_stack_name() -> str:
+    """Return ``STACK_NAME`` or raise if empty.
+
+    Called from every code path that computes the SSM marker parameter
+    path — an empty ``STACK_NAME`` would collapse the path to
+    ``/idp//data-mart-rollup/…`` which every stack in the account then
+    shares, and one stack's ``state=completed`` marker would short-
+    circuit every other stack's migration into destroying its rollup
+    tables. Raising here surfaces the misconfiguration on the first
+    marker-touching invocation of a cold-start Lambda rather than at
+    import time, which lets test tooling load the module without a
+    live environment.
+    """
+    if not STACK_NAME:
+        raise RuntimeError(
+            "STACK_NAME environment variable is empty; refusing to compute "
+            "the SSM migration marker path because "
+            "'/idp//data-mart-rollup/migration-complete' would collide "
+            "across every stack in the account. Ensure the Lambda's "
+            "Environment sets STACK_NAME to !Ref AWS::StackName."
+        )
+    return STACK_NAME
+
 
 # Pricing constants — US-East-1 defaults. Sub-cent precision doesn't
 # matter; these are best-effort estimates surfaced on the dashboard's
@@ -91,7 +132,16 @@ CONFIGURATION_TABLE_NAME = os.environ.get("CONFIGURATION_TABLE_NAME", "")
 athena_client = boto3.client("athena")
 cloudwatch_client = boto3.client("cloudwatch")
 tagging_client = boto3.client("resourcegroupstaggingapi")
-s3_client = boto3.client("s3")
+# S3 client with adaptive retry so bulk DeleteObjects calls in the
+# migration's InitialPurge phase can outwait S3 SlowDown (503) bursts.
+# Standard mode only retries 4 times with limited backoff, which the
+# migration hit on 2026-09-22 when purging the 94-partition legacy
+# metering_hourly prefix — a burst delete against a single S3 prefix
+# blew past the standard retry budget. Adaptive mode adjusts its retry
+# rate based on service responses and comfortably clears typical
+# SlowDown windows.
+_s3_config = boto3.session.Config(retries={"mode": "adaptive", "max_attempts": 10})
+s3_client = boto3.client("s3", config=_s3_config)
 lambda_client = boto3.client("lambda")
 
 # Cache Lambda config lookups within a single rollup invocation to avoid
@@ -115,6 +165,25 @@ _lambda_memory_cache: Dict[str, Tuple[int, str]] = {}
 _stack_tree_cache: Optional[List[str]] = None
 _data_plane_arn_cache: Optional[List[str]] = None
 
+# Per-invocation cache of the ``document_sections_*`` table list. Both
+# ``_rollup_metering_hourly`` and ``_rollup_metering_docs_hourly`` need it to
+# derive ``document_class`` for historical rows whose raw-metering column is
+# NULL. Discovered once per invocation via Glue's ``GetTables`` API (see
+# ``_discover_document_sections_tables``) and cleared alongside the other
+# caches in ``handler`` so a Glue-crawler-added new class shows up on the
+# next fire.
+_document_sections_tables_cache: Optional[List[str]] = None
+
+# Safe character set for double-quoting ``document_sections_*`` table names in
+# the CTE UNION. Matches the read-side widget's guard applied to
+# ``analytics_cost_service.get_cost_by_document_type`` — hyphens (e.g.
+# ``document_sections_1099-int``) and spaces are legal Glue table names but
+# would parse as arithmetic without quoting; anything outside this set is
+# skipped as a defense against SQL injection via Glue table names.
+_SAFE_TABLE_CHARS = set(
+    "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_-. "
+)
+
 
 def handler(event: Dict[str, Any], _context: Any) -> Dict[str, Any]:
     """Route between hourly and daily rollup modes.
@@ -132,11 +201,43 @@ def handler(event: Dict[str, Any], _context: Any) -> Dict[str, Any]:
     # after the container recycles.
     global _bedrock_pricing_map, _bedrock_pricing_unavailable
     global _stack_tree_cache, _data_plane_arn_cache
+    global _document_sections_tables_cache
+    global _MIGRATION_NONCE
     _lambda_memory_cache.clear()
+    # Migration nonce: every state-machine task mode passes an ``anchor``
+    # (set by the state machine's AdoptMarkerAnchor Pass state and
+    # threaded through Map ItemSelector), and that anchor becomes this
+    # invocation's nonce, folded into every ``_idempotency_key`` for the
+    # invocation's duration.
+    #
+    # Two migration state-machine executions produce DIFFERENT anchors,
+    # so their post-purge re-INSERTs generate different ClientRequestTokens
+    # and Athena treats them as fresh submissions instead of returning
+    # the prior execution's cached (now-stale, since the parquet was
+    # purged) success. Within a single execution's per-task retries the
+    # anchor is stable, so intra-execution retries still dedup correctly.
+    #
+    # Applies to EVERY state-machine task mode, not just ``backfill``:
+    # ``backfill_daily_range`` calls ``_run_daily`` which builds
+    # ``_idempotency_key("metering_daily", date)``, and without the
+    # nonce a second full-flow execution within Athena's 24 h token
+    # window would collide on that key — InitialPurge would delete the
+    # daily parquet, the re-INSERT would reuse the cached SUCCEEDED
+    # QueryExecutionId (which wrote no parquet at the moment the source
+    # rows were empty), ``_partition_produced_rows`` would return False,
+    # the empty-sentinel would suppress re-check for 12 h, and both
+    # daily rollup tables would end up empty with a completed marker.
+    #
+    # Every non-migration mode — routine hourly cron, reconciler, daily
+    # cron, manual invokes — passes no ``anchor``, so ``_MIGRATION_NONCE``
+    # stays None and their idempotency tokens remain deterministic on
+    # (table, date, hour) alone.
+    _MIGRATION_NONCE = event.get("anchor") or None
     _bedrock_pricing_map = None
     _bedrock_pricing_unavailable = False
     _stack_tree_cache = None
     _data_plane_arn_cache = None
+    _document_sections_tables_cache = None
 
     mode = event.get("mode", "hourly")
     # Anchor the target hour/day to the EventBridge trigger time (`time`
@@ -148,27 +249,190 @@ def handler(event: Dict[str, Any], _context: Any) -> Dict[str, Any]:
     anchor = _parse_anchor_time(event)
     logger.info(f"Rollup Lambda invoked with mode={mode!r} anchor={anchor.isoformat()}")
 
+    # F4 fix: scheduled cron modes defer to the migration state machine.
+    # ``hourly`` / ``daily`` / ``reconcile`` all touch rollup partitions
+    # that the migration's own tasks are actively repopulating; without
+    # this gate the two would race, each probe the empty post-purge
+    # partition, each INSERT, and duplicate every affected row's
+    # ``sum_cost`` / ``n_docs`` / ``sum_pages``. State-machine task modes
+    # (``backfill``, ``backfill_daily_range``, ``purge_rollup_prefixes``,
+    # etc.) bypass the gate — they ARE the migration.
+    if mode in ("hourly", "daily", "reconcile") and _migration_in_progress():
+        logger.info(
+            "mode=%s: migration marker=in_progress → skipping fire. "
+            "The next scheduled fire after WriteCompletedMarker picks it up.",
+            mode,
+        )
+        return {"mode": mode, "skipped": "migration_in_progress"}
     if mode == "hourly":
         return _run_hourly(anchor)
     if mode == "daily":
         return _run_daily(anchor)
-    raise ValueError(f"Unknown rollup mode: {mode!r} (expected 'hourly' or 'daily')")
+    if mode == "backfill":
+        # Iterate a caller-supplied hour range and re-run the per-document
+        # hourly rollups for each hour. Used by the reconciler Lambda to
+        # fill in gaps left by missed schedules (all 4 arms — no ``arms``
+        # in payload), and by DataMartMigrationStateMachine's BackfillChunk
+        # task (which passes ``arms=["metering_hourly",
+        # "metering_docs_hourly"]`` to skip the arms the migration doesn't
+        # own — see the arms-restriction note in _run_backfill's docstring). See
+        # docs/reporting-sql-layer.md §10 Track D.
+        #
+        # The migration nonce that folds this invocation's re-INSERTs
+        # into a fresh ClientRequestToken (post-purge) is set above the
+        # mode dispatch — see the block-comment there. Applies to
+        # ``backfill_daily_range`` as well.
+        start_raw = event.get("start")
+        end_raw = event.get("end")
+        if not (start_raw and end_raw):
+            raise ValueError(
+                "backfill mode requires 'start' and 'end' ISO 8601 UTC timestamps"
+            )
+        arms = event.get("arms")
+        if arms is not None and not isinstance(arms, list):
+            raise ValueError(
+                f"backfill 'arms' must be a list of arm-label strings; got {arms!r}"
+            )
+        return _run_backfill(start_raw, end_raw, arms=arms)
+    if mode == "backfill_migrate":
+        # DEPRECATED — migration now runs via the DataMartMigrationStateMachine
+        # (AWS::StepFunctions::StateMachine in template.yaml). Kept here as
+        # a no-op so any queued async retries from the pre-SFN Lambda-only
+        # design succeed cleanly (rather than DLQ-firing an alarm the
+        # operator has to interpret). The state machine is invoked by the
+        # DataMartMigrationDispatcherFunction on CFN CustomResource fire.
+        logger.warning(
+            "mode='backfill_migrate' is deprecated — migration now runs via "
+            "DataMartMigrationStateMachine. This event is a no-op. If you "
+            "meant to run a migration, invoke the state machine directly "
+            "(or bump ForceFresh on the CustomResource)."
+        )
+        return {
+            "mode": "backfill_migrate",
+            "deprecated": True,
+            "action": "no-op (migration moved to Step Functions)",
+        }
+    if mode == "reconcile":
+        # Fill in gaps left by missed schedules over the trailing 24 h.
+        # Same idempotency as any other rollup — already-written partitions
+        # are no-ops via the ``HeadObject``-skip guard, so this is
+        # cheap when nothing is missing and self-heals when something is.
+        # Wired to a separate EventBridge rule that fires at :35 each
+        # hour (30 min after the :05 scheduled hourly) so the reconciler
+        # doesn't chase a rollup that is still in flight.
+        return _run_reconcile(anchor)
+    # ── DataMartMigrationStateMachine task modes ──────────────────────
+    # These modes are invoked by the state machine's Task states. Each
+    # is a small, focused unit — the state machine orchestrates them.
+    # See template.yaml::DataMartMigrationStateMachine for the ASL.
+    if mode == "check_marker_state":
+        # Read the SSM migration marker, parse its state, and return a
+        # routing decision the state machine's Choice state consumes.
+        days = int(event.get("days", 30))
+        version = event.get("version")  # e.g. "v1" — see _check_marker_state
+        return _check_marker_state(days, version=version)
+    if mode == "write_marker":
+        # Write the SSM migration marker to a specified state.
+        # State must be either 'in_progress' or 'completed'.
+        state = event.get("state")
+        days = int(event.get("days", 30))
+        version = event.get("version")  # e.g. "v1" — see _write_marker
+        # Persist the dispatcher-stamped anchor into the marker so the
+        # resume path (marker=in_progress) can read it back and re-use
+        # the ORIGINAL anchor's window on retry — see F1's shared-anchor
+        # note and F6's resume-drift note in the ASL Comment on
+        # RouteOnMarkerState.
+        anchor = event.get("anchor")
+        if state not in ("in_progress", "completed"):
+            raise ValueError(
+                f"write_marker state must be 'in_progress' or 'completed'; got {state!r}"
+            )
+        return _write_marker(state, days, version=version, anchor=anchor)
+    if mode == "check_lake_state":
+        # Cheap emptiness probe used by the state machine on the
+        # full-flow branch (marker absent / mismatched version). On a
+        # fresh install with no documents yet processed, raw
+        # ``metering/`` is empty; running the full migration then does
+        # roughly 720+ chunk Athena queries plus the daily backfill,
+        # all against zero rows, taking ~20 min of workgroup time and
+        # producing no useful state. The state machine reads
+        # ``is_empty`` and, when true, routes directly to
+        # WriteCompletedMarker so subsequent invocations short-circuit.
+        # The check itself is one S3 ListObjectsV2 with MaxKeys=1 —
+        # sub-second, ~0 IAM added (rollup Lambda already has
+        # s3:ListBucket on the reporting bucket).
+        return _check_lake_state()
+    if mode == "purge_rollup_prefixes":
+        # Delete parquet under the four per-document rollup prefixes so
+        # the state machine can repopulate at the widened
+        # (document_class) grain. Scoped to date= partitions inside
+        # ``[anchor - days, anchor)`` — the same window the migration
+        # is about to repopulate — so a stack that has been running
+        # longer than the migration window (default 30 d, retention
+        # default 365 d) keeps its older rollup data intact. Before
+        # this scope, the purge deleted every object under the four
+        # prefixes and only the last ``days`` were rebuilt, silently
+        # destroying up to 335 days of aggregates on a year-old stack.
+        days = int(event.get("days", 30))
+        return _purge_rollup_prefixes_task(anchor, days)
+    if mode == "plan_migration_chunks":
+        # Compute the list of (start, end) time ranges the state
+        # machine's Map state iterates. Each chunk covers ``chunk_hours``
+        # of the retention window.
+        days = int(event.get("days", 30))
+        chunk_hours = int(event.get("chunk_hours", 24))
+        return _plan_migration_chunks(anchor, days, chunk_hours)
+    if mode == "check_hours_failed":
+        # Aggregate the Map state's chunk results AND (optionally) the
+        # daily-backfill result to decide whether the migration finished
+        # cleanly. Returns {all_hours_clean: bool, total_failed: int,
+        # total_partial: int, total_succeeded: int}. Daily result is
+        # optional so this mode can be invoked in either the hourly-only
+        # aggregation shape (legacy tests) or the full aggregation shape
+        # from the state machine.
+        chunk_results = event.get("chunk_results") or []
+        daily_result = event.get("daily_result")
+        return _check_hours_failed(chunk_results, daily_result)
+    if mode == "backfill_daily_range":
+        # Iterate each day in the retention window and invoke the
+        # daily-rollup INSERTs (metering_daily + metering_docs_daily).
+        # State-machine invokes this AFTER MigrateChunks (hourly) so
+        # metering_hourly / metering_docs_hourly are fully populated;
+        # the daily rollups read from those.
+        days = int(event.get("days", 30))
+        return _run_backfill_daily_range(anchor, days)
+    raise ValueError(
+        f"Unknown rollup mode: {mode!r} "
+        "(expected 'hourly' | 'daily' | 'backfill' | 'reconcile' | "
+        "'check_marker_state' | 'write_marker' | 'purge_rollup_prefixes' | "
+        "'plan_migration_chunks' | 'check_hours_failed' | 'backfill_daily_range')"
+    )
 
 
 def _parse_anchor_time(event: Dict[str, Any]) -> datetime:
     """Return the UTC anchor time for ``previous_hour``/``previous_day``.
 
-    Prefers ``event["time"]`` (EventBridge sets this to ISO 8601 UTC on
-    scheduled events) so async retries pin to the ORIGINAL trigger time,
-    not wall-clock — a retry that crossed a boundary would otherwise
-    silently target the wrong partition. Falls back to
-    ``datetime.now(UTC)`` for manual invokes that don't include a time.
+    Preference order:
+      1. ``event["anchor"]`` — stamped ONCE by the migration state
+         machine's dispatcher at execution-start time and threaded
+         through every Task's Payload (``anchor.$: $.anchor``) so
+         ``InitialPurge``, ``PlanChunks`` and ``BackfillDailyRange``
+         all share the same reference time. This closes the
+         cross-midnight anchor-drift race where each task otherwise
+         resolved its own ``now()`` and the resulting purge and rebuild
+         windows disagreed by one day.
+      2. ``event["time"]`` — EventBridge sets this to ISO 8601 UTC on
+         scheduled events, so async retries of the hourly / reconciler
+         / daily crons pin to the ORIGINAL trigger time (not wall-clock).
+      3. ``datetime.now(UTC)`` — fallback for manual invokes that don't
+         include either field.
     """
-    raw = event.get("time")
+    raw = event.get("anchor") or event.get("time")
     if raw:
         try:
-            # EventBridge uses ISO 8601 with a trailing "Z"; normalize
-            # to "+00:00" so fromisoformat handles it on all Python 3.11+.
+            # EventBridge / dispatcher use ISO 8601 with a trailing "Z";
+            # normalize to "+00:00" so fromisoformat handles it on
+            # Python 3.11+.
             normalized = raw.replace("Z", "+00:00") if isinstance(raw, str) else raw
             parsed = datetime.fromisoformat(normalized)
             if parsed.tzinfo is None:
@@ -176,7 +440,9 @@ def _parse_anchor_time(event: Dict[str, Any]) -> datetime:
             return parsed.astimezone(timezone.utc)
         except (ValueError, TypeError) as e:
             logger.warning(
-                f"Failed to parse event['time']={raw!r} ({e}); falling back to now()"
+                "Failed to parse anchor/time=%r (%s); falling back to now()",
+                raw,
+                e,
             )
     return datetime.now(timezone.utc)
 
@@ -198,6 +464,9 @@ def _run_hourly(anchor: Optional[datetime] = None) -> Dict[str, Any]:
     by any metering-side raise. If ANY rollup raises, this function
     re-raises AFTER all three have been attempted, so async retry can
     replay whichever ones failed — the successful writes are idempotent.
+
+    Deferral while a migration is running is enforced by the mode
+    dispatch in ``handler`` — see ``_migration_in_progress``.
     """
     target_date, target_hour = _previous_hour(anchor)
     logger.info(f"Hourly rollup targeting date={target_date} hour={target_hour}")
@@ -267,7 +536,19 @@ def _run_hourly(anchor: Optional[datetime] = None) -> Dict[str, Any]:
 # and any async-retry attempts must produce the exact same token for
 # Athena to dedupe them) so it is derived from the stack name only —
 # NOT invocation-scoped state like time or random.
-_IDEMPOTENCY_KEY_PREFIX = f"idp-rollup-{STACK_NAME or 'unknown'}"
+_IDEMPOTENCY_KEY_PREFIX = f"idp-rollup-{STACK_NAME}"
+
+# Per-invocation migration nonce, set by the backfill dispatch when the
+# caller passes ``anchor`` (state-machine BackfillChunk does). Folded
+# into every ``_idempotency_key`` so cross-execution migration re-INSERTs
+# get FRESH ClientRequestTokens even when the (table, date, hour) tuple
+# is the same. Athena's 24 h ClientRequestToken cache would otherwise
+# return the prior execution's cached success — but that prior success
+# wrote parquet that has since been PURGED by the second execution's
+# InitialPurge, so the "cached success" is a lie about current state
+# and the sentinel-detection then locks the (still-empty) partition
+# as ``_empty``. See F2 in the review batch that introduced this.
+_MIGRATION_NONCE: Optional[str] = None
 
 
 # Round-18 review fix (finding #1985): single source of truth for
@@ -376,6 +657,20 @@ def _idempotency_key(table: str, date: str, hour: Optional[str] = None) -> str:
     core = f"{table}-{date}"
     if hour:
         core = f"{core}-{hour}"
+    # Fold in the per-invocation migration nonce so cross-execution
+    # post-purge re-INSERTs get a fresh ClientRequestToken — see the
+    # ``_MIGRATION_NONCE`` block-comment near the top of this module.
+    # Nonce is a full ISO 8601 timestamp; hash-truncate to 12 chars
+    # so it discriminates cross-execution without pushing the token
+    # over the 128-char cap. When the caller didn't pass anchor
+    # (routine hourly / reconciler / daily cron), _MIGRATION_NONCE is
+    # None and the token stays deterministic on (table, date, hour) —
+    # same behaviour as before the fix, so scheduled crons' Athena
+    # dedup is unchanged.
+    if _MIGRATION_NONCE:
+        import hashlib  # noqa: PLC0415
+
+        core = f"{core}-m{hashlib.sha1(_MIGRATION_NONCE.encode()).hexdigest()[:12]}"  # nosec B324
     # Round-18 fix: put the DISCRIMINATOR FIRST, then the stack-scoped
     # prefix. If the total exceeds 128 chars, truncation lops off the
     # stack-name suffix (bloat), not the (table, date, hour) tuple that
@@ -393,6 +688,234 @@ def _idempotency_key(table: str, date: str, hour: Optional[str] = None) -> str:
     if len(key) < 32:
         key = (key + "-idempotency-pad-idempotency-pad")[:64]
     return key
+
+
+def _discover_document_sections_tables() -> List[str]:
+    """Discover ``document_sections_*`` tables in the reporting database.
+
+    Uses the Glue ``GetTables`` API rather than an Athena
+    ``information_schema.columns`` query. Direct Glue is sub-second
+    (vs ~5-10 s cold for the Athena path) and needs no additional
+    IAM. Permission failures are re-raised (see below) — under the
+    previous Athena path, a missing ``glue:GetTables`` grant made
+    ``information_schema`` return zero rows silently, which looked
+    identical to "no ``document_sections_*`` tables exist" until an
+    operator ran ``glue:GetTables`` directly.
+
+    Only tables that carry the FULL set of columns
+    ``_build_doc_class_cte`` reads — ``document_id``,
+    ``document_class.type``, and the ``date`` partition — are
+    returned. The Glue crawler sometimes emits malformed variants
+    (e.g. ``document_sections_date_2026_03_19``, ``..._parquet``)
+    that lack one of these; a subsequent query filtering on any
+    missing column fails with COLUMN_NOT_FOUND and blanks the whole
+    rollup for the hour.
+
+    Two error classes distinguished:
+
+    * ``AccessDeniedException`` / ``EntityNotFoundException`` — the
+      failure mode the earlier switch away from ``information_schema``
+      was justified by making loud. Re-raised so it surfaces as a
+      Lambda error, fires the DLQ alarm, and does NOT silently
+      degrade every historical row to ``'unknown'``. A permissions
+      regression here is exactly the case an operator must see.
+
+    * Any other exception (transient Glue error, throttle, service
+      hiccup) — logged and treated as "no tables found" for this
+      invocation. The rollup fires with the CTE evaluating to no
+      rows, LEFT JOIN produces NULL for dc.document_class, and
+      COALESCE picks metering.document_class (populated for
+      post-widening writers) or ``'unknown'``. The next fire retries
+      discovery from scratch.
+
+    Cached per-invocation via ``_document_sections_tables_cache`` —
+    cleared in ``handler`` so a new class the Glue crawler added since
+    the previous fire is picked up on the next hourly.
+    """
+    global _document_sections_tables_cache
+    if _document_sections_tables_cache is not None:
+        return _document_sections_tables_cache
+
+    glue_client = boto3.client("glue")
+    names: List[str] = []
+    try:
+        paginator = glue_client.get_paginator("get_tables")
+        for page in paginator.paginate(
+            DatabaseName=DATABASE, Expression="document_sections_*"
+        ):
+            for table in page.get("TableList", []) or []:
+                name = table.get("Name") or ""
+                if not name.startswith("document_sections_"):
+                    continue
+                if not all(c in _SAFE_TABLE_CHARS for c in name):
+                    logger.warning(
+                        "Skipping document_sections table with unsafe characters: %r",
+                        name,
+                    )
+                    continue
+                # Confirm every column ``_build_doc_class_cte`` will
+                # read is present — ``date`` (partition or column),
+                # ``document_id`` (regular column), and the nested
+                # ``document_class.type`` (regular column with a dotted
+                # name, so match by prefix ``document_class`` since Glue
+                # stores struct fields under the parent column name).
+                # A malformed crawler variant lacking any of the three
+                # would fail with COLUMN_NOT_FOUND at Athena time and
+                # blank the whole rollup for the hour.
+                partition_keys = {
+                    (p.get("Name") or "") for p in table.get("PartitionKeys") or []
+                }
+                storage_columns = {
+                    (c.get("Name") or "")
+                    for c in (table.get("StorageDescriptor") or {}).get("Columns") or []
+                }
+                all_names = partition_keys | storage_columns
+                if "date" not in all_names:
+                    logger.debug("Skipping %s: no 'date' column/partition", name)
+                    continue
+                if "document_id" not in storage_columns:
+                    logger.debug("Skipping %s: no 'document_id' column", name)
+                    continue
+                if "document_class" not in storage_columns:
+                    logger.debug("Skipping %s: no 'document_class' column", name)
+                    continue
+                names.append(name)
+    except ClientError as exc:
+        # Permission / not-found errors are the failure mode this
+        # discovery path was written to make loud. Re-raise so the
+        # invocation errors, the DLQ alarm fires, and a permissions
+        # regression cannot silently bucket every historical row as
+        # 'unknown' — the exact regression class the switch away from
+        # information_schema was meant to eliminate.
+        code = exc.response.get("Error", {}).get("Code", "")
+        if code in ("AccessDeniedException", "EntityNotFoundException"):
+            logger.error(
+                "Glue:GetTables discovery failed with %s — this looks "
+                "identical to 'no document_sections_* tables exist' but "
+                "is a permissions or catalog regression that MUST be "
+                "fixed. Re-raising so the DLQ alarm fires.",
+                code,
+            )
+            raise
+        # Every other ClientError (throttle, transient service error)
+        # falls through to the open-fallback path below.
+        logger.warning(
+            "Failed to discover document_sections_* tables via "
+            "glue:GetTables (%s: %s); falling back to empty list. "
+            "Historical rows without raw metering.document_class will "
+            "bucket as 'unknown' for this rollup fire.",
+            code or "ClientError",
+            exc,
+        )
+        _document_sections_tables_cache = []
+        return _document_sections_tables_cache
+    except Exception as exc:  # noqa: BLE001
+        # Non-ClientError exception (networking, dependency, code
+        # bug). Same open-fallback shape — the next fire retries.
+        logger.warning(
+            "Failed to discover document_sections_* tables via "
+            "glue:GetTables (%s); falling back to empty list. Historical "
+            "rows without raw metering.document_class will bucket as "
+            "'unknown' for this rollup fire.",
+            exc,
+        )
+        _document_sections_tables_cache = []
+        return _document_sections_tables_cache
+
+    names.sort()
+    logger.info("Discovered %d document_sections_* tables for rollup", len(names))
+    _document_sections_tables_cache = names
+    return _document_sections_tables_cache
+
+
+def _build_doc_class_cte(target_date: Optional[str] = None) -> str:
+    """Build the ``doc_class`` CTE that derives ``document_class`` per
+    document from ``document_sections_*``.
+
+    Mirrors the read-side 0/1/N rule (see
+    ``analytics_cost_service.get_cost_by_document_type``): 0 distinct
+    classes → 'unknown', 1 → that class, >1 → 'mixed'. Excluded
+    sections are NOT filtered here — ``Section.excluded`` is not
+    persisted to ``document_sections_*`` tables, so this CTE is a
+    *fallback* for historical rows only, whose
+    ``metering.document_class`` (which does apply the filter) is NULL.
+    Post-widening writers write ``metering.document_class`` directly and
+    the ``COALESCE(m.document_class, dc.document_class, 'unknown')`` in
+    each rollup query prefers that over this CTE's output.
+
+    ``target_date`` — partition-pruning knob. When provided, each UNION arm gets
+    ``WHERE date BETWEEN <target-1d> AND <target+1d>`` so Athena
+    partition-prunes ``document_sections_*`` scans down to the ~3 date
+    partitions per table that could actually contain rows for the
+    metering hour being rolled up. Without this, the CTE scanned every
+    partition of every table (20 tables × 30-day retention = 600
+    partitions per rollup INSERT), which crushed S3 with
+    ``HIVE_S3_THROTTLING`` on any real-volume stack — the CTE fanned
+    out ~600 parallel S3 GETs per query and Athena's worker fleet blew
+    past the per-prefix 5500 GET/s cap. The ±1 day slop covers the
+    UTC-day-boundary case: a document processed near midnight can land
+    its metering rows in ``date=X`` while the ``document_sections_*``
+    write for the same document lands in ``date=X+1`` (metering is
+    written once at workflow completion, but the section-tables write
+    is a separate Glue-crawler-driven pass that runs on its own
+    cadence), so pruning to a single day would miss the join for those
+    documents. Callers that don't know the target date (none today;
+    here for defensive symmetry) get the old unfiltered CTE.
+
+    Returns a CTE fragment ready to be embedded in a ``WITH ... INSERT``
+    query. If no ``document_sections_*`` tables exist (fresh stack, no
+    docs processed yet), returns a CTE that yields no rows — the LEFT
+    JOIN in each rollup query then produces NULL for ``dc.document_class``
+    and the outer COALESCE falls through correctly.
+    """
+    tables = _discover_document_sections_tables()
+    if not tables:
+        return (
+            "doc_class AS (\n"
+            "    SELECT CAST(NULL AS varchar) AS document_id,\n"
+            "           CAST(NULL AS varchar) AS document_class\n"
+            "    WHERE 1 = 0\n"
+            ")"
+        )
+    date_filter = ""
+    if target_date:
+        # ISO YYYY-MM-DD strings sort lexicographically = chronologically,
+        # and the ``date`` partition column on ``document_sections_*`` is
+        # ``string`` (confirmed via Glue schema), so a string BETWEEN is
+        # both correct and partition-prunable.
+        target = datetime.strptime(target_date, "%Y-%m-%d")
+        prev_day = (target - timedelta(days=1)).strftime("%Y-%m-%d")
+        next_day = (target + timedelta(days=1)).strftime("%Y-%m-%d")
+        date_filter = f" WHERE date BETWEEN '{prev_day}' AND '{next_day}'"
+    union_arms = "\n            UNION ALL\n".join(
+        f'            SELECT document_id, "document_class.type" AS doc_type FROM "{t}"{date_filter}'
+        for t in tables
+    )
+    # The dead ``WHEN COUNT(DISTINCT doc_type) = 0 THEN 'unknown'``
+    # branch that lived here was unreachable — the inner subquery
+    # filters ``WHERE doc_type IS NOT NULL`` BEFORE ``GROUP BY
+    # document_id``, so every remaining group has at least one non-null
+    # doc_type and COUNT(DISTINCT doc_type) is always ≥ 1. Removed;
+    # the 0/1/N rule collapses to a 1/N rule against the pre-filtered
+    # rows. A doc that appears in no ``document_sections_*`` row at
+    # all doesn't reach the GROUP BY at all (LEFT JOIN falls through
+    # to NULL in the outer rollup, then COALESCE picks metering.document_class
+    # or ``'unknown'``) — the fallback is already covered by the outer
+    # COALESCE.
+    return (
+        "doc_class AS (\n"
+        "    SELECT document_id,\n"
+        "           CASE\n"
+        "               WHEN COUNT(DISTINCT doc_type) = 1 THEN MIN(doc_type)\n"
+        "               ELSE 'mixed'\n"
+        "           END AS document_class\n"
+        "      FROM (\n"
+        f"{union_arms}\n"
+        "      )\n"
+        "     WHERE doc_type IS NOT NULL\n"
+        "     GROUP BY document_id\n"
+        ")"
+    )
 
 
 def _rollup_metering_hourly(target_date: str, target_hour: str) -> Dict[str, Any]:
@@ -430,20 +953,31 @@ def _rollup_metering_hourly(target_date: str, target_hour: str) -> Dict[str, Any
         return {"skipped": True, "reason": "partition_exists"}
 
     # nosec B608 — target_date/target_hour are derived from datetime, not user input.
+    # Grain widened with ``document_class`` — see docs/reporting-sql-layer.md §10.
+    # ``doc_class`` CTE derives per-doc classification from ``document_sections_*``
+    # UNION with the 0/1/N rule (fallback for historical rows). Post-widening
+    # writers populate ``metering.document_class`` directly and the COALESCE
+    # prefers that; the CTE only fills in for rows where m.document_class IS NULL.
+    # Pass target_date so the CTE partition-prunes doc_sections scans
+    # to ±1 day — prevents HIVE_S3_THROTTLING on the migration.
+    doc_class_cte = _build_doc_class_cte(target_date=target_date)
     sql = f"""
         INSERT INTO "{DATABASE}"."metering_hourly"
+        WITH {doc_class_cte}
         SELECT
-            date_trunc('hour', "timestamp") AS hour_ts,
-            config_version,
-            service_api,
-            unit,
-            SUM(value) AS sum_value,
-            SUM(estimated_cost) AS sum_cost,
+            date_trunc('hour', m."timestamp") AS hour_ts,
+            m.config_version,
+            COALESCE(m.document_class, dc.document_class, 'unknown') AS document_class,
+            m.service_api,
+            m.unit,
+            SUM(m.value) AS sum_value,
+            SUM(m.estimated_cost) AS sum_cost,
             '{target_date}' AS date,
             '{target_hour}' AS hour
-        FROM "{DATABASE}"."metering"
-        WHERE date = '{target_date}' AND hour = '{target_hour}'
-        GROUP BY 1, 2, 3, 4
+        FROM "{DATABASE}"."metering" m
+        LEFT JOIN doc_class dc ON m.document_id = dc.document_id
+        WHERE m.date = '{target_date}' AND m.hour = '{target_hour}'
+        GROUP BY 1, 2, 3, 4, 5
     """  # nosec B608
     # Round-16 review fix: stable idempotency key per (table, date, hour).
     # An async retry that fires while the first INSERT is still in flight
@@ -454,6 +988,12 @@ def _rollup_metering_hourly(target_date: str, target_hour: str) -> Dict[str, Any
         sql,
         idempotency_key=_idempotency_key("metering_hourly", target_date, target_hour),
     )
+    # Empty-hour sentinel — if the INSERT produced no parquet, mark
+    # this partition as "known empty" so a subsequent reconciler pass
+    # over the same hour doesn't re-run the same empty INSERT for the
+    # next 24 h. See _partition_marked_empty for the TTL rationale.
+    if not _partition_produced_rows("metering_hourly", target_date, target_hour):
+        _mark_partition_empty("metering_hourly", target_date, target_hour)
     return {"query_execution_id": query_id, "skipped": False}
 
 
@@ -480,37 +1020,45 @@ def _rollup_metering_docs_hourly(target_date: str, target_hour: str) -> Dict[str
         return {"skipped": True, "reason": "partition_exists"}
 
     # nosec B608 — target_date/target_hour are derived from datetime, not user input.
-    # Inner subquery: one row per (hour_ts, config_version, document_id)
-    # with MAX(number_of_pages). Round-8 note: the invariant assumes
-    # number_of_pages is stamped identically across every metering row
-    # for the same doc — true in practice because OCR sets it once,
-    # and a same-hour reprocess re-runs OCR on the same PDF (same page
-    # count). If a doc were somehow reprocessed within the same hour
-    # against a materially different file (different page count), MAX
-    # picks the LARGER value — a slight over-count but bounded to that
-    # doc, not systematic. MIN/AVG/ANY_VALUE have equally-defensible
-    # semantics; MAX chosen so the count is not silently rounded down.
-    # Outer aggregate: COUNT(*) of docs, SUM of the MAX-per-doc pages.
+    # Grain widened with ``document_class`` — see docs/reporting-sql-layer.md §10.
+    # Inner subquery: one row per (hour_ts, config_version, document_class,
+    # document_id) with MAX(number_of_pages). Round-8 note: the invariant
+    # assumes number_of_pages is stamped identically across every metering row
+    # for the same doc — true in practice because OCR sets it once, and a
+    # same-hour reprocess re-runs OCR on the same PDF (same page count). If a
+    # doc were somehow reprocessed within the same hour against a materially
+    # different file (different page count), MAX picks the LARGER value — a
+    # slight over-count but bounded to that doc, not systematic.
+    # MIN/AVG/ANY_VALUE have equally-defensible semantics; MAX chosen so the
+    # count is not silently rounded down. Outer aggregate: COUNT(*) of docs,
+    # SUM of the MAX-per-doc pages.
+    # Pass target_date so the CTE partition-prunes doc_sections scans
+    # to ±1 day — prevents HIVE_S3_THROTTLING on the migration.
+    doc_class_cte = _build_doc_class_cte(target_date=target_date)
     sql = f"""
         INSERT INTO "{DATABASE}"."metering_docs_hourly"
+        WITH {doc_class_cte}
         SELECT
             hour_ts,
             config_version,
+            document_class,
             COUNT(*) AS n_docs,
             SUM(max_pages) AS sum_pages,
             '{target_date}' AS date,
             '{target_hour}' AS hour
         FROM (
             SELECT
-                date_trunc('hour', "timestamp") AS hour_ts,
-                config_version,
-                document_id,
-                MAX(number_of_pages) AS max_pages
-            FROM "{DATABASE}"."metering"
-            WHERE date = '{target_date}' AND hour = '{target_hour}'
-            GROUP BY 1, 2, 3
+                date_trunc('hour', m."timestamp") AS hour_ts,
+                m.config_version,
+                COALESCE(m.document_class, dc.document_class, 'unknown') AS document_class,
+                m.document_id,
+                MAX(m.number_of_pages) AS max_pages
+            FROM "{DATABASE}"."metering" m
+            LEFT JOIN doc_class dc ON m.document_id = dc.document_id
+            WHERE m.date = '{target_date}' AND m.hour = '{target_hour}'
+            GROUP BY 1, 2, 3, 4
         )
-        GROUP BY 1, 2
+        GROUP BY 1, 2, 3
     """  # nosec B608
     # Round-16 review fix: idempotency key — see metering_hourly above.
     query_id = _run_athena(
@@ -519,6 +1067,9 @@ def _rollup_metering_docs_hourly(target_date: str, target_hour: str) -> Dict[str
             "metering_docs_hourly", target_date, target_hour
         ),
     )
+    # Empty-hour sentinel — see _rollup_metering_hourly's comment above.
+    if not _partition_produced_rows("metering_docs_hourly", target_date, target_hour):
+        _mark_partition_empty("metering_docs_hourly", target_date, target_hour)
     return {"query_execution_id": query_id, "skipped": False}
 
 
@@ -910,11 +1461,14 @@ def _run_daily(anchor: Optional[datetime] = None) -> Dict[str, Any]:
         result["metering_daily"] = {"skipped": True}
     else:
         # nosec B608 — target_date is derived from datetime, not user input.
+        # Grain widened with ``document_class`` — reads the (already widened)
+        # metering_hourly rollup, so no CTE needed here. See §10.
         sql = f"""
             INSERT INTO "{DATABASE}"."metering_daily"
             SELECT
                 date '{target_date}' AS day,
                 config_version,
+                document_class,
                 service_api,
                 unit,
                 SUM(sum_value) AS sum_value,
@@ -922,7 +1476,7 @@ def _run_daily(anchor: Optional[datetime] = None) -> Dict[str, Any]:
                 '{target_date}' AS date
             FROM "{DATABASE}"."metering_hourly"
             WHERE date = '{target_date}'
-            GROUP BY 1, 2, 3, 4
+            GROUP BY 1, 2, 3, 4, 5
         """  # nosec B608
         try:
             # Round-16 idempotency key — same pattern as the hourly INSERTs.
@@ -933,6 +1487,11 @@ def _run_daily(anchor: Optional[datetime] = None) -> Dict[str, Any]:
                 ),
                 "skipped": False,
             }
+            # Empty-day sentinel — see _rollup_metering_hourly for the
+            # rationale. Prevents the reconciler / manual re-run from
+            # firing an empty daily INSERT every day on idle stacks.
+            if not _partition_produced_rows("metering_daily", target_date):
+                _mark_partition_empty("metering_daily", target_date)
         except ValueError as e:
             logger.exception("metering_daily PERMANENT INSERT failure")
             errors.append(f"metering_daily(permanent): {type(e).__name__}: {e}")
@@ -955,18 +1514,21 @@ def _run_daily(anchor: Optional[datetime] = None) -> Dict[str, Any]:
         # multiple hours is counted once per hour (a "doc-hour"), same
         # for its pages. For strict cross-day unique-doc counts, query
         # raw metering with COUNT(DISTINCT document_id). See §2 in the doc.
+        # Grain widened with ``document_class`` — reads the (already widened)
+        # metering_docs_hourly rollup, so no CTE needed here.
         # nosec B608 — target_date is derived from datetime, not user input.
         sql = f"""
             INSERT INTO "{DATABASE}"."metering_docs_daily"
             SELECT
                 date '{target_date}' AS day,
                 config_version,
+                document_class,
                 SUM(n_docs) AS n_docs,
                 SUM(sum_pages) AS sum_pages,
                 '{target_date}' AS date
             FROM "{DATABASE}"."metering_docs_hourly"
             WHERE date = '{target_date}'
-            GROUP BY 1, 2
+            GROUP BY 1, 2, 3
         """  # nosec B608
         try:
             # Round-16 idempotency key.
@@ -979,6 +1541,10 @@ def _run_daily(anchor: Optional[datetime] = None) -> Dict[str, Any]:
                 ),
                 "skipped": False,
             }
+            # Empty-day sentinel — see _rollup_metering_hourly for the
+            # rationale.
+            if not _partition_produced_rows("metering_docs_daily", target_date):
+                _mark_partition_empty("metering_docs_daily", target_date)
         except ValueError as e:
             logger.exception("metering_docs_daily PERMANENT INSERT failure")
             errors.append(f"metering_docs_daily(permanent): {type(e).__name__}: {e}")
@@ -1017,6 +1583,1253 @@ def _run_daily(anchor: Optional[datetime] = None) -> Dict[str, Any]:
         )
         raise (ValueError if any_permanent else RuntimeError)(msg)
     return result
+
+
+# ---------------------------------------------------------------------------
+# Backfill mode — repopulate rollup partitions for a caller-supplied window
+# ---------------------------------------------------------------------------
+
+
+def _parse_backfill_bound(raw: Any, field: str) -> datetime:
+    """Parse a ``start``/``end`` field on a backfill event to a UTC-aware
+    ``datetime``. Accepts ISO 8601 with a trailing ``Z`` (EventBridge shape)
+    or an explicit offset. Naive datetimes are treated as UTC to match the
+    rest of the pipeline. Raises ValueError with the field name so a
+    malformed payload is diagnosable.
+    """
+    if not isinstance(raw, str) or not raw.strip():
+        raise ValueError(
+            f"backfill event {field!r} must be a non-empty ISO 8601 UTC string; got {raw!r}"
+        )
+    try:
+        parsed = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+    except (ValueError, TypeError) as e:
+        raise ValueError(
+            f"backfill event {field!r} is not parseable as ISO 8601 UTC: {raw!r} ({e})"
+        ) from e
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
+
+
+def _run_backfill(
+    start_raw: str,
+    end_raw: str,
+    arms: Optional[List[str]] = None,
+) -> Dict[str, Any]:
+    """Iterate ``[start, end)`` at hourly granularity and re-run the
+    per-document hourly rollups for each hour.
+
+    Idempotent — the existing partition-write-skip guard in each rollup
+    fn means already-written partitions are no-ops. So a caller can:
+
+    - Fill in gaps left by missed schedules (reconciler use case).
+    - Repopulate freshly-emptied tables after a schema widening
+      (backfill_migrate use case).
+
+    ``arms`` — optional list of arm labels to run this pass
+    (out of ``metering_hourly``, ``metering_docs_hourly``,
+    ``control_plane_hourly``, ``data_plane_lambda_hourly``). When
+    None (default), runs all 4 — matches the reconciler's contract of
+    replaying every gap. When set, restricts the pass to those arms —
+    this is what the DataMartMigrationStateMachine uses so it only
+    replays the two tables that had their schema widened with
+    ``document_class`` (metering_hourly + metering_docs_hourly). The
+    control-plane / data-plane arms don't have that column, are never
+    purged, and are already populated by the routine :05 hourly cron —
+    including them in the migration is scope creep that (a) doubles
+    per-chunk time, and (b) surfaces empty-CloudWatch-hour "no rows"
+    failures from control_plane_hourly's defensive refuse-to-write-
+    empty-parquet path, which then get counted as ``hours_partial`` and
+    block WriteCompletedMarker. Root cause of the 2026-09-22 execution
+    partial-hour blockers observed on a development stack.
+
+    Runs the arms PER-HOUR (not all hours of one arm, then all hours of
+    the next) so a transient partition failure doesn't leave one table
+    months ahead of another. Sequential rather than parallel — the two
+    metering arms within one hour share the ``doc_class`` CTE's
+    ``document_sections_*`` scan, and Athena's per-workgroup concurrency
+    cap on the ``primary`` workgroup is 5 by default; parallelising
+    hours would need explicit throttling that adds complexity for a
+    one-shot job.
+
+    Reports per-hour status in a compact accumulator so a partial
+    failure can be diagnosed from the return value or CloudWatch log
+    tail; does not raise on individual-hour failures because a
+    reconciler re-run picks them up.
+    """
+    start_dt = _parse_backfill_bound(start_raw, "start")
+    end_dt = _parse_backfill_bound(end_raw, "end")
+    if not (start_dt < end_dt):
+        raise ValueError(
+            f"backfill start ({start_dt.isoformat()}) must be strictly before "
+            f"end ({end_dt.isoformat()})"
+        )
+    # Round each bound to the top of its hour so the iteration is
+    # partition-aligned. Metering rows are partitioned by (date, hour) so
+    # a start of 14:30 would otherwise silently include only 14:30-14:59
+    # of that hour on the first rollup, matching the same partition as a
+    # start of 14:00 — better to be explicit.
+    start_hour = start_dt.replace(minute=0, second=0, microsecond=0)
+    end_hour = end_dt.replace(minute=0, second=0, microsecond=0)
+    # Post-truncation validation: a sub-hour input range (e.g.
+    # T00:00Z → T00:30Z) passes the raw ``start_dt < end_dt`` check but
+    # truncates to ``start_hour == end_hour``, so the while-loop below
+    # iterates zero times, ``hours_attempted`` stays at 0, and
+    # ``_check_hours_failed`` reports ``all_hours_clean=True`` — the
+    # state machine's WriteCompletedMarker task then writes a marker
+    # over rollup tables that received zero data. Reject the range
+    # explicitly so the state machine surfaces the caller's mistake
+    # instead of silently completing.
+    if not (start_hour < end_hour):
+        raise ValueError(
+            f"backfill hour-aligned range ({start_hour.isoformat()} → "
+            f"{end_hour.isoformat()}) covers less than one full hour after "
+            "truncation; supply a range spanning at least one whole hour."
+        )
+
+    results: Dict[str, Any] = {
+        "mode": "backfill",
+        "start": start_hour.isoformat(),
+        "end": end_hour.isoformat(),
+        "hours_attempted": 0,
+        "hours_succeeded": 0,
+        "hours_partial": 0,
+        "hours_failed": 0,
+        "failures": [],  # list of {date, hour, table, error}
+    }
+
+    all_arms = (
+        ("metering_hourly", _rollup_metering_hourly),
+        ("metering_docs_hourly", _rollup_metering_docs_hourly),
+        ("control_plane_hourly", _rollup_control_plane_hourly),
+        ("data_plane_lambda_hourly", _rollup_data_plane_lambda_hourly),
+    )
+    if arms is None:
+        selected_arms = all_arms
+    else:
+        arms_set = set(arms)
+        # An explicit empty list is a programming error, not "run no
+        # work quietly". The inner arm-loop would iterate zero times
+        # per hour, hour_ok/hour_fail would both stay 0, and the
+        # ``if hour_fail == 0`` branch would tick ``hours_succeeded``
+        # for every hour — leading to a false ``all_hours_clean=True``
+        # and a state=completed marker over rollup tables that
+        # received zero writes. Reject explicitly.
+        if not arms_set:
+            raise ValueError(
+                "backfill arms=[] is invalid — pass None to run every arm, "
+                "or a non-empty list of arm labels."
+            )
+        unknown = arms_set - {label for label, _ in all_arms}
+        if unknown:
+            raise ValueError(
+                f"backfill arms={sorted(arms_set)} contains unknown labels "
+                f"{sorted(unknown)}; valid: {[label for label, _ in all_arms]}"
+            )
+        selected_arms = tuple(
+            (label, fn) for label, fn in all_arms if label in arms_set
+        )
+    results["arms"] = [label for label, _ in selected_arms]
+
+    cursor = start_hour
+    one_hour = timedelta(hours=1)
+    while cursor < end_hour:
+        target_date = cursor.strftime("%Y-%m-%d")
+        target_hour = cursor.strftime("%H")
+        results["hours_attempted"] += 1
+        hour_ok = 0
+        hour_fail = 0
+        for label, fn in selected_arms:
+            try:
+                fn(target_date, target_hour)
+                hour_ok += 1
+            except Exception as e:  # noqa: BLE001
+                hour_fail += 1
+                logger.warning(
+                    "backfill %s %s/%s FAILED: %s",
+                    label,
+                    target_date,
+                    target_hour,
+                    e,
+                )
+                results["failures"].append(
+                    {
+                        "date": target_date,
+                        "hour": target_hour,
+                        "table": label,
+                        "error": f"{type(e).__name__}: {e}",
+                    }
+                )
+        if hour_fail == 0:
+            results["hours_succeeded"] += 1
+        elif hour_ok == 0:
+            results["hours_failed"] += 1
+        else:
+            results["hours_partial"] += 1
+        cursor += one_hour
+
+    logger.info(
+        "Backfill %s → %s: attempted=%d succeeded=%d partial=%d failed=%d",
+        results["start"],
+        results["end"],
+        results["hours_attempted"],
+        results["hours_succeeded"],
+        results["hours_partial"],
+        results["hours_failed"],
+    )
+    return results
+
+
+# ---------------------------------------------------------------------------
+# DataMartMigrationStateMachine task-mode helpers
+# ---------------------------------------------------------------------------
+# The migration is orchestrated by an AWS::StepFunctions::StateMachine
+# (see template.yaml::DataMartMigrationStateMachine). The state machine
+# invokes THIS Lambda as a Task for each unit of work below. Each helper
+# is small, focused, and returns structured JSON the state machine's
+# Choice / Map / Task states consume.
+#
+# Why a state machine (not Lambda-only): a real-volume customer stack
+# has 720 hours × 4 rollup arms at ~5-10 s each = 1-2 h of serialized
+# work, well past Lambda's 900 s timeout. Async-retry-on-Lambda gave us
+# only ~45 min budget across 3 attempts. The state machine's Map state
+# chunks the range into fine-grained slices (production default:
+# ``ChunkHours=1`` from the CFN CustomResource, so 720 one-hour chunks
+# on a 30 d migration — a tight per-chunk retry blast radius), each
+# fitting in one 900 s Lambda invocation, with SFN-native per-chunk
+# retry replacing async retries. ``plan_migration_chunks`` accepts
+# ``chunk_hours`` up to 168 as its own default fallback of 24 h, but
+# that fallback only applies when the caller omits the field — which
+# the dispatcher does not do. See the CHANGELOG entry for the retry-safe
+# purge that this design supersedes.
+
+
+def _migration_marker_name() -> str:
+    """Compose the SSM migration-marker parameter path.
+
+    Called from every marker touchpoint (``_check_marker_state``,
+    ``_write_marker``) so the ``STACK_NAME`` presence check fires
+    ONCE per invocation, on the code path that actually needs it,
+    instead of at module import (which broke test tooling that
+    loaded this module via importlib without setting STACK_NAME).
+    """
+    return f"/idp/{_require_stack_name()}/data-mart-rollup/migration-complete"
+
+
+def _check_marker_state(days: int, version: Optional[str] = None) -> Dict[str, Any]:
+    """Read the SSM migration marker and return a routing decision the
+    state machine's ``Choice`` state consumes.
+
+    Compares the marker against BOTH ``days`` and ``version``:
+      * ``state=completed`` matching ``days`` AND ``version`` → short-circuit.
+      * ``state=in_progress`` matching ``days`` AND ``version`` → skip purge, resume.
+      * Any mismatch on ``days`` or ``version`` → full flow.
+
+    ``version`` is the ``MigrationVersion`` CFN property (e.g. ``"v1"``)
+    passed through from the CustomResource. Without it in the marker, a
+    future MigrationVersion bump that keeps ``Days`` the same would
+    short-circuit here even though the schema demands a fresh
+    migration.
+
+    A marker that PRE-DATES version support (has no ``version=`` segment)
+    is treated as MISMATCH — routes to full flow. This is deliberate:
+    silently accepting a legacy marker would reintroduce the original
+    footgun (a future MigrationVersion bump for a new schema change
+    short-circuiting against a pre-versioning ``state=completed``). The
+    one-time cost is a single re-migration on any stack that has an
+    unversioned marker — for customer prod, this class is limited to
+    stacks that ran an intermediate build of the migration on develop
+    (none in the wild at ship time). New markers written from this
+    build onward always include ``version=``.
+
+    Returns:
+        {
+          "state": "completed" | "in_progress" | "absent" | "unrecognised",
+          "days": <int|None>,
+          "version": <str|None>,
+          "value": <raw marker string|None>,
+          "should_short_circuit": <bool>,
+          "should_skip_purge": <bool>,
+        }
+    """
+    marker_name = _migration_marker_name()
+    ssm_client = boto3.client("ssm")
+    try:
+        response = ssm_client.get_parameter(Name=marker_name)
+        value = response.get("Parameter", {}).get("Value", "")
+    except ssm_client.exceptions.ParameterNotFound:
+        return {
+            "state": "absent",
+            "days": None,
+            "version": None,
+            "anchor": None,
+            "value": None,
+            "should_short_circuit": False,
+            "should_skip_purge": False,
+        }
+    # Non-``ParameterNotFound`` errors (SSM throttling, IAM denial,
+    # transient service errors) MUST propagate. Previously this handler
+    # coerced any read failure to ``state="absent"`` and returned it —
+    # ``absent`` routes the state machine's ``RouteOnMarkerState`` Choice
+    # to the DEFAULT branch (``InitialPurge``), which deletes every S3
+    # object under the four rollup prefixes. On a stack whose migration
+    # was already completed, a transient SSM 5xx or a bad-window
+    # ``ssm:GetParameter`` throttle would silently destroy the customer's
+    # populated rollup data on a routine CustomResource re-fire. The
+    # state machine has ``Retry`` configured for Lambda.* errors so a
+    # bubbled exception is retried up to 6 times with 30 s / backoff — a
+    # persistent read failure fails the whole execution visibly instead
+    # of masquerading as "no marker → clean slate".
+
+    # Parse the marker as ``;``-delimited ``key=value`` segments rather
+    # than doing substring matches against the whole payload. Substring
+    # matches are delimiter-unsafe:
+    #   * ``f"days={days}" in value`` treats ``days=3`` as a match
+    #     against a marker written with ``days=30`` or ``300`` — a
+    #     shorter-window migration would then short-circuit against a
+    #     longer-window completed marker even though the operator asked
+    #     for a fresh smaller window.
+    #   * ``"state=completed" in value`` would match a future state
+    #     name that has ``completed`` as a prefix (e.g. a hypothetical
+    #     ``state=completed_pending`` intermediate state). Safe today,
+    #     unsafe as soon as any future state name shares a prefix.
+    # Structured segment parsing eliminates both.
+    marker_segments: Dict[str, str] = {}
+    for segment in value.split(";"):
+        if "=" in segment:
+            key, _, val = segment.partition("=")
+            marker_segments[key.strip()] = val.strip()
+    marker_days = marker_segments.get("days")
+    marker_state = marker_segments.get("state")
+    marker_version: Optional[str] = marker_segments.get("version")
+    marker_anchor: Optional[str] = marker_segments.get("anchor")
+
+    days_match = marker_days == str(days)
+    if version is None:
+        # Caller didn't supply a version — no comparison to do. Preserves
+        # the pre-versioning invocation shape (any direct SFN start_execution
+        # invocation that doesn't set input.version still routes correctly on
+        # days alone).
+        version_match = True
+    else:
+        # Strict: a marker with no version= segment (pre-versioning) or a
+        # different version string is a mismatch → full flow. See docstring
+        # for why silent-accept was rejected.
+        #
+        # ``.strip()`` on the CALLER side too — the parsed marker side
+        # has already been stripped (see the ``val.strip()`` in the
+        # segment loop above). Without symmetric normalisation, a
+        # ``MigrationVersion="v1 "`` (trailing whitespace, easy to
+        # introduce via a CFN parameter default or a template edit)
+        # would never match a marker written from the same string
+        # (which stored it as ``"v1 "`` but parses it back as ``"v1"``)
+        # and force a full destructive re-migration on every deploy.
+        version_match = marker_version == (version or "").strip()
+
+    if days_match and version_match and marker_state == "completed":
+        return {
+            "state": "completed",
+            "days": days,
+            "version": marker_version,
+            "anchor": marker_anchor,
+            "value": value,
+            "should_short_circuit": True,
+            "should_skip_purge": False,
+        }
+    if days_match and version_match and marker_state == "in_progress":
+        return {
+            "state": "in_progress",
+            "days": days,
+            "version": marker_version,
+            "anchor": marker_anchor,
+            "value": value,
+            "should_short_circuit": False,
+            "should_skip_purge": True,
+        }
+    return {
+        "state": "unrecognised",
+        "days": None,
+        "version": marker_version,
+        "anchor": marker_anchor,
+        "value": value,
+        "should_short_circuit": False,
+        "should_skip_purge": False,
+    }
+
+
+def _write_marker(
+    state: str,
+    days: int,
+    version: Optional[str] = None,
+    anchor: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Write the SSM migration marker to the given state.
+
+    Two-phase design (see class-level comment):
+      * ``state='in_progress'`` — written after purge, before backfill.
+        Retries resuming after Lambda timeout read this and skip purge.
+      * ``state='completed'`` — written by the state machine's terminal
+        WriteCompletedMarker task, only if ``check_hours_failed`` reported
+        ``all_hours_clean=True``.
+
+    ``version`` is the ``MigrationVersion`` CFN property (e.g. ``"v1"``).
+    When present, it's included in the payload so a future
+    ``_check_marker_state`` invocation with a different version routes
+    to full flow instead of short-circuiting.
+
+    Returns the value written so the state machine can log / return it.
+    """
+    ssm_client = boto3.client("ssm")
+    now_iso = datetime.now(timezone.utc).isoformat()
+    # ``is not None`` intentionally — an empty string means "the caller
+    # is using versioning but the version identifier itself is blank",
+    # which _check_marker_state's ``if version is None`` branch treats
+    # differently from a missing segment. Using ``if version`` (falsy)
+    # here caused every deploy with ``MigrationVersion=""`` to write a
+    # marker without a ``version=`` segment; the next _check_marker_state
+    # would parse ``marker_version = None`` and compare it against the
+    # caller's ``version = ""``, evaluate them unequal, and route to
+    # full InitialPurge every time — destructive on every deploy.
+    version_segment = f"version={version};" if version is not None else ""
+    # ``anchor`` persisted in the marker so a resume path (marker=in_progress
+    # after a failed run) can read back the ORIGINAL anchor from the
+    # marker and plan chunks against the same window the failed first
+    # run purged — not against a fresh dispatcher-stamped anchor that
+    # has drifted (e.g., across UTC midnight or over the intervening
+    # hours). Without persisting it, the resume path would plan against
+    # a NEW anchor whose start is later than the ORIGINAL anchor's
+    # start, and any dates that got purged by the first run and fall
+    # before the new window's start would never be rebuilt. The marker
+    # is then written ``completed`` over rollup tables missing those
+    # oldest days silently.
+    anchor_segment = f"anchor={anchor};" if anchor else ""
+    if state == "in_progress":
+        value = (
+            f"days={days};{version_segment}{anchor_segment}"
+            f"state=in_progress;started_at={now_iso}"
+        )
+        description = (
+            "Data-mart rollup migration marker. state=in_progress means the "
+            "state machine has completed the S3 purge but not confirmed all "
+            "chunks; a restart of the state machine must SKIP the purge and "
+            "REUSE the persisted anchor to preserve prior chunk writes."
+        )
+    elif state == "completed":
+        value = (
+            f"days={days};{version_segment}{anchor_segment}"
+            f"state=completed;completed_at={now_iso}"
+        )
+        description = (
+            "Data-mart rollup migration marker — state=completed. Delete "
+            "this parameter (or bump ForceFresh on the CustomResource) to "
+            "force a fresh migration."
+        )
+    else:
+        raise ValueError(
+            f"_write_marker: state must be 'in_progress' or 'completed'; got {state!r}"
+        )
+    marker_name = _migration_marker_name()
+    ssm_client.put_parameter(
+        Name=marker_name,
+        Value=value,
+        Type="String",
+        Overwrite=True,
+        Description=description,
+    )
+    logger.info("Wrote migration marker: %s = %s", marker_name, value)
+    return {"marker": value, "state": state, "days": days}
+
+
+def _check_lake_state() -> Dict[str, Any]:
+    """Return ``{"is_empty": bool}`` describing whether the raw
+    ``metering/`` prefix has any objects at all.
+
+    Used by the state machine to short-circuit a full migration on a
+    fresh install (no metering data yet) — the full-flow branch
+    otherwise runs ~720+ empty Athena queries in ~20 min against a
+    zero-row lake, and every one produces no useful state.
+    ``ListObjectsV2 MaxKeys=1`` is the cheapest possible check; it
+    returns as soon as the first key is found (empty stacks respond
+    with an empty ``Contents``).
+    """
+    if not REPORTING_BUCKET:
+        # No bucket configured — treat as non-empty so the caller
+        # takes the full-flow path and fails visibly at the first
+        # Athena query rather than silently short-circuiting.
+        return {"is_empty": False, "reason": "REPORTING_BUCKET not configured"}
+    try:
+        resp = s3_client.list_objects_v2(
+            Bucket=REPORTING_BUCKET, Prefix="metering/", MaxKeys=1
+        )
+        contents = resp.get("Contents") or []
+        return {"is_empty": not contents}
+    except Exception as exc:  # noqa: BLE001
+        # Fail open with respect to the empty-lake short-circuit — i.e.
+        # on any list error report the lake as not-empty so the state
+        # machine takes the full flow rather than accidentally
+        # short-circuiting past data the operator was expecting to see
+        # rolled up. "Full flow on doubt" is the conservative outcome
+        # for this decision, even though it is also the slower path.
+        logger.warning(
+            "check_lake_state: ListObjectsV2 failed (%s); reporting as "
+            "not-empty so the migration proceeds",
+            exc,
+        )
+        return {"is_empty": False, "reason": f"list_objects_v2 failed: {exc}"}
+
+
+def _purge_rollup_prefixes_task(anchor: datetime, days: int) -> Dict[str, Any]:
+    """Delete parquet under the four rollup prefixes, scoped to the
+    date= partitions inside ``[anchor - days, anchor)``.
+
+    Task-mode wrapper around ``_purge_rollup_window`` so the state
+    machine can invoke a single Lambda action for the whole purge
+    (rather than four separate SDK integrations). Returns per-prefix
+    delete counts for the state machine's logs.
+
+    Window semantics match ``_plan_migration_chunks``: ``anchor`` is
+    truncated to top-of-hour for the upper bound, and the lower bound
+    is that minus ``days`` truncated further to top-of-day so every
+    day in the migration range gets 24 hours of coverage before the
+    daily backfill aggregates.
+
+    Why not delete every object under the four prefixes: the four
+    rollup tables' data is derived from raw ``metering`` +
+    ``document_sections_*`` and can be regenerated in principle, BUT
+    the migration only repopulates ``days`` at a time (bounded to 90
+    by ``_plan_migration_chunks``). A stack running on the default
+    365-day retention has up to 365 days of rollup parquet; an
+    unbounded purge followed by a 30-day repopulate silently destroys
+    up to 335 days of aggregates that nothing in the state machine
+    then rebuilds. Bounding the purge to the migrated window keeps the
+    older aggregates intact — they remain queryable from the widened
+    tables even though they were written at the old grain (the older
+    partitions simply predate the ``document_class`` column and behave
+    as NULL when the column is projected).
+    """
+    if days < 1 or days > 90:
+        raise ValueError(f"purge_rollup_prefixes: days={days} out of range (1..90)")
+    end_dt = anchor.replace(minute=0, second=0, microsecond=0)
+    start_dt = (end_dt - timedelta(days=days)).replace(
+        hour=0, minute=0, second=0, microsecond=0
+    )
+    prefixes = [
+        "metering_hourly/",
+        "metering_daily/",
+        "metering_docs_hourly/",
+        "metering_docs_daily/",
+    ]
+    summary: Dict[str, int] = {}
+    for prefix in prefixes:
+        deleted = _purge_rollup_window(REPORTING_BUCKET, prefix, start_dt, end_dt)
+        summary[prefix] = deleted
+        logger.info(
+            "purge_rollup_prefixes: deleted %d object(s) under s3://%s/%s "
+            "[date=%s .. %s)",
+            deleted,
+            REPORTING_BUCKET,
+            prefix,
+            start_dt.strftime("%Y-%m-%d"),
+            end_dt.strftime("%Y-%m-%d"),
+        )
+    return {
+        "purged": summary,
+        "total": sum(summary.values()),
+        "window_start": start_dt.isoformat(),
+        "window_end": end_dt.isoformat(),
+    }
+
+
+def _purge_rollup_window(
+    bucket: str, prefix: str, start_dt: datetime, end_dt: datetime
+) -> int:
+    """Delete every object under ``s3://<bucket>/<prefix>date=YYYY-MM-DD/``
+    for each date in ``[start_dt, end_dt)``, where the daily bound is
+    the ``date=`` value on the parquet-partition key.
+
+    Rollup tables are date-partitioned under prefixes like
+    ``metering_hourly/date=2026-09-22/hour=13/data.parquet``. Listing
+    with ``Delimiter="/"`` under the table prefix returns the set of
+    ``date=`` partition sub-prefixes; each partition matching the
+    window is deleted with the existing ``_purge_s3_prefix`` helper
+    (which itself surfaces DeleteObjects Errors — see its comment).
+
+    Partitions that don't parse as ``date=YYYY-MM-DD/`` are ignored —
+    the crawler occasionally creates auxiliary metadata under the
+    table prefix (Glue symlinks, etc.) that we must not delete.
+    """
+    start_date = start_dt.strftime("%Y-%m-%d")
+    # ``end_dt`` is the top-of-hour of the anchor time. The purge date
+    # bound must be INCLUSIVE of the anchor date — deleting only
+    # ``[start_date, end_date_inclusive)`` (exclusive upper bound) as
+    # a prior version did left ``date=<anchor-day>/`` partitions in
+    # place at the pre-widening grain, and the migration chunks that
+    # follow write hours 00..anchor-hour of the anchor date. The
+    # ``_partition_already_written`` probe sees pre-existing old-grain
+    # rows on those hours and short-circuits the chunk, so up to 23
+    # hours of the anchor day silently stay NULL for ``document_class``
+    # inside a window the SSM marker reports as ``completed``. Deleting
+    # the whole anchor-date prefix is safe: the migration rewrites
+    # hours 00..anchor-hour at the widened grain, and the :35 reconciler
+    # rebuilds any anchor-date hours after anchor-hour on its next fire.
+    end_date_inclusive = end_dt.strftime("%Y-%m-%d")
+    total = 0
+    paginator = s3_client.get_paginator("list_objects_v2")
+    date_pattern = re.compile(rf"^{re.escape(prefix)}date=(\d{{4}}-\d{{2}}-\d{{2}})/$")
+    for page in paginator.paginate(Bucket=bucket, Prefix=prefix, Delimiter="/"):
+        for cp in page.get("CommonPrefixes", []) or []:
+            date_prefix = cp.get("Prefix", "")
+            m = date_pattern.match(date_prefix)
+            if not m:
+                continue
+            partition_date = m.group(1)
+            # Closed [start_date, end_date_inclusive] — includes the
+            # anchor date. Older partitions outside this window stay
+            # preserved (the customer-history-preserving guard the
+            # earlier bounded-purge fix introduced).
+            if start_date <= partition_date <= end_date_inclusive:
+                total += _purge_s3_prefix(bucket, date_prefix)
+    return total
+
+
+def _plan_migration_chunks(
+    anchor: datetime, days: int, chunk_hours: int
+) -> Dict[str, Any]:
+    """Return the list of ``(start, end)`` ISO 8601 time ranges the state
+    machine's Map state iterates. Each chunk covers ``chunk_hours`` of
+    the retention window, sized so one Lambda invocation of
+    ``mode: backfill`` fits comfortably in 900 s (SFN Lambda-task budget).
+
+    Anchor is the CFN CustomResource fire time (via EventBridge event
+    ``time`` field, or now() fallback). ``end`` is anchor truncated to
+    top-of-hour (an exclusive upper bound — the current in-flight hour
+    is not part of the migration). ``start`` is ``end - days`` truncated
+    to top-of-DAY.
+
+    Why top-of-day on the low end and top-of-hour on the high end:
+    ``_run_backfill_daily_range`` (which runs AFTER MigrateChunks
+    finishes) aggregates ``metering_daily`` from ``metering_hourly`` on
+    a whole-day basis. If MigrateChunks' start were mid-day — as it
+    would be for any off-midnight CustomResource fire — the earliest
+    day's ``metering_hourly`` rows would cover only a tail slice (e.g.
+    hours 14-23 for a 14:35 UTC fire), and the earliest ``metering_daily``
+    row would then be short 14 hours of data. Extending ``start`` down
+    to top-of-day gives every day in the range full 24-hour coverage
+    in ``metering_hourly`` before the daily aggregation runs. Overshoot
+    is at most 24 hours of extra work; on chunk_hours=1 that's 24
+    additional chunks that HeadObject-skip fast if already rolled up.
+    """
+    if days < 1 or days > 90:
+        raise ValueError(f"plan_migration_chunks: days={days} out of range (1..90)")
+    if chunk_hours < 1 or chunk_hours > 168:  # 1 hour to 1 week
+        raise ValueError(
+            f"plan_migration_chunks: chunk_hours={chunk_hours} out of range (1..168)"
+        )
+
+    # Cap the total chunk count. Step Functions has a hard 256 KB
+    # limit on the accumulated state document (``$.chunk_results`` +
+    # ``$.plan.chunks`` + everything else), and even with the narrow
+    # ResultSelector that projects only counters + range from each
+    # BackfillChunk (~155 B per chunk_result) and the ~66 B per
+    # plan.chunks entry, Days=60 (1440 chunks) exceeds ~300 KB and
+    # Days=90 (2160 chunks) reaches ~470 KB — the Map's Catch then
+    # fires on States.DataLimitExceeded and operators lose the
+    # aggregated failing_chunks output. Cap chunk count at 720 (the
+    # shipped Days=30 default at chunk_hours=1) by auto-scaling
+    # chunk_hours upward when the caller's request would blow that
+    # ceiling. For Days=60 the effective chunk_hours becomes 2 (720
+    # chunks); for Days=90 it becomes 3 (720 chunks). Retry blast
+    # radius grows linearly with chunk_hours; still small enough that
+    # a single-chunk retry fits comfortably in the 900 s Lambda
+    # budget on real-volume workloads.
+    _MAX_CHUNKS = 720
+    total_hours = days * 24
+    requested_chunk_count = math.ceil(total_hours / chunk_hours)
+    if requested_chunk_count > _MAX_CHUNKS:
+        original_chunk_hours = chunk_hours
+        chunk_hours = math.ceil(total_hours / _MAX_CHUNKS)
+        logger.warning(
+            "plan_migration_chunks: requested chunk_hours=%d would produce "
+            "%d chunks over %d days, exceeding the %d-chunk state-quota "
+            "cap. Auto-scaling chunk_hours to %d (%d chunks). Retry blast "
+            "radius grows linearly; state stays under Step Functions' "
+            "256 KB limit.",
+            original_chunk_hours,
+            requested_chunk_count,
+            days,
+            _MAX_CHUNKS,
+            chunk_hours,
+            math.ceil(total_hours / chunk_hours),
+        )
+
+    end = anchor.replace(minute=0, second=0, microsecond=0)
+    start = (end - timedelta(days=days)).replace(
+        hour=0, minute=0, second=0, microsecond=0
+    )
+    chunks: List[Dict[str, str]] = []
+    cursor = start
+    delta = timedelta(hours=chunk_hours)
+    while cursor < end:
+        chunk_end = min(cursor + delta, end)
+        chunks.append({"start": cursor.isoformat(), "end": chunk_end.isoformat()})
+        cursor = chunk_end
+    logger.info(
+        "plan_migration_chunks: %d chunk(s) of %d h across %d d, %s → %s",
+        len(chunks),
+        chunk_hours,
+        days,
+        start.isoformat(),
+        end.isoformat(),
+    )
+    return {"chunks": chunks, "count": len(chunks)}
+
+
+def _check_hours_failed(
+    chunk_results: List[Dict[str, Any]],
+    daily_result: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    """Aggregate the state machine's Map-state chunk results AND
+    (optionally) the daily-backfill result to decide whether the
+    migration is done cleanly.
+
+    Each chunk result is the return value of one ``mode: backfill``
+    invocation, containing ``hours_failed``, ``hours_succeeded``,
+    ``hours_partial``, ``hours_attempted``. The daily result has the
+    same shape (per-day accounting via ``_run_backfill_daily_range``).
+
+    Returns ``{"all_hours_clean": bool, "total_failed": int, ...}`` for
+    the state machine's Choice state to route on. Emits a warning log
+    listing failed chunks so an operator investigating a marker stuck
+    at state=in_progress has a starting point.
+    """
+    total_attempted = 0
+    total_succeeded = 0
+    total_partial = 0
+    total_failed = 0
+    failing_chunks: List[Dict[str, Any]] = []
+    # Include the daily result in the aggregation if provided. Treated
+    # as one additional "chunk" for accounting; per-day granularity is
+    # inside the payload already.
+    # Track chunk-hour and daily-unit contributions separately so an
+    # operator can see whether a failure came from an hour chunk or
+    # from a day of the daily backfill. Historically these were summed
+    # into ``total_*`` fields whose name implied "hours" but actually
+    # counted (chunk_hours + backfill_days) — an operator reading
+    # ``total_attempted=750`` on a 30 d migration would see the answer
+    # 720 + 30 without knowing why. Fields ``total_*`` remain for
+    # backward compatibility with the state machine's Choice state; new
+    # per-unit-type ``chunk_hours_*`` and ``daily_units_*`` fields make
+    # the composition explicit.
+    chunk_hours_attempted = chunk_hours_succeeded = 0
+    chunk_hours_partial = chunk_hours_failed = 0
+    daily_units_attempted = daily_units_succeeded = 0
+    daily_units_partial = daily_units_failed = 0
+
+    def _extract(chunk: Dict[str, Any]) -> Dict[str, Any]:
+        payload = chunk.get("backfill") if isinstance(chunk, dict) else None
+        if payload is None:
+            payload = chunk if isinstance(chunk, dict) else {}
+        return {
+            "attempted": int(payload.get("hours_attempted", 0) or 0),
+            "succeeded": int(payload.get("hours_succeeded", 0) or 0),
+            "partial": int(payload.get("hours_partial", 0) or 0),
+            "failed": int(payload.get("hours_failed", 0) or 0),
+            "start": payload.get("start"),
+            "end": payload.get("end"),
+            "failures": payload.get("failures", []),
+        }
+
+    for chunk in chunk_results:
+        c = _extract(chunk)
+        chunk_hours_attempted += c["attempted"]
+        chunk_hours_succeeded += c["succeeded"]
+        chunk_hours_partial += c["partial"]
+        chunk_hours_failed += c["failed"]
+        total_attempted += c["attempted"]
+        total_succeeded += c["succeeded"]
+        total_partial += c["partial"]
+        total_failed += c["failed"]
+        if c["failed"] > 0 or c["partial"] > 0:
+            failing_chunks.append(
+                {
+                    "start": c["start"],
+                    "end": c["end"],
+                    "hours_failed": c["failed"],
+                    "hours_partial": c["partial"],
+                    "failures": c["failures"],
+                }
+            )
+
+    # Semantic note: a "partial" hour means one or more (but not all)
+    # rollup arms failed. In routine hourly ops that's tolerated
+    # because the reconciler fills the gap, but in the migration
+    # context we MUST NOT declare success while any arm is missing
+    # data — the migration is the reconciler for these tables and
+    # a "partial" chunk maps to a customer table with rows silently
+    # missing (2026-09-22 incident: 38 chunks reported partial and
+    # zero rows landed in metering_hourly). Treat partial as needing
+    # replay so the state machine surfaces the failure instead of
+    # writing a WriteCompletedMarker over an empty table — see the
+    # ``all_hours_clean`` guard in the return dict below.
+    if daily_result is not None:
+        d = _extract(daily_result)
+        daily_units_attempted += d["attempted"]
+        daily_units_succeeded += d["succeeded"]
+        daily_units_partial += d["partial"]
+        daily_units_failed += d["failed"]
+        total_attempted += d["attempted"]
+        total_succeeded += d["succeeded"]
+        total_partial += d["partial"]
+        total_failed += d["failed"]
+        if d["failed"] > 0 or d["partial"] > 0:
+            failing_chunks.append(
+                {
+                    "start": d["start"],
+                    "end": d["end"],
+                    "hours_failed": d["failed"],
+                    "hours_partial": d["partial"],
+                    "failures": d["failures"],
+                }
+            )
+    if failing_chunks:
+        # Compact WARNING summary (safely under CloudWatch's 256 KB
+        # per-event cap even on a 720-chunk migration where every chunk
+        # partial-fails). Full detail follows at INFO, one event per
+        # chunk, so a postmortem always has the per-chunk failures
+        # regardless of how many chunks failed.
+        logger.warning(
+            "check_hours_failed: %d chunk(s) had failing/partial hours "
+            "(first %d ranges: %s); full detail below at INFO",
+            len(failing_chunks),
+            min(len(failing_chunks), 5),
+            [(fc.get("start"), fc.get("end")) for fc in failing_chunks[:5]],
+        )
+        for i, fc in enumerate(failing_chunks):
+            logger.info(
+                "failing_chunk %d/%d: %s → %s hours_failed=%s hours_partial=%s failures=%s",
+                i + 1,
+                len(failing_chunks),
+                fc.get("start"),
+                fc.get("end"),
+                fc.get("hours_failed"),
+                fc.get("hours_partial"),
+                fc.get("failures"),
+            )
+    return {
+        # Floor on total_attempted > 0: a zero-work aggregation (empty
+        # chunk_results AND daily_result=None, or PlanChunks having
+        # produced 0 chunks) would otherwise satisfy the two ``==0``
+        # conditions and route the state machine to WriteCompletedMarker
+        # with nothing actually populated. That is never the intended
+        # signal — if the state machine reached the aggregator with no
+        # work observed, treat it as unclean so the operator sees the
+        # anomaly instead of a false-success marker.
+        "all_hours_clean": (
+            total_attempted > 0 and total_failed == 0 and total_partial == 0
+        ),
+        # ``total_*`` are unit-agnostic sums (chunk hours + daily
+        # units) preserved for the state machine's Choice state and
+        # for backward compatibility with any operator consuming this
+        # shape. Prefer the per-unit-type fields below when reasoning
+        # about what actually failed.
+        "total_attempted": total_attempted,
+        "total_succeeded": total_succeeded,
+        "total_partial": total_partial,
+        "total_failed": total_failed,
+        "chunk_hours_attempted": chunk_hours_attempted,
+        "chunk_hours_succeeded": chunk_hours_succeeded,
+        "chunk_hours_partial": chunk_hours_partial,
+        "chunk_hours_failed": chunk_hours_failed,
+        "daily_units_attempted": daily_units_attempted,
+        "daily_units_succeeded": daily_units_succeeded,
+        "daily_units_partial": daily_units_partial,
+        "daily_units_failed": daily_units_failed,
+        "failing_chunks": failing_chunks,
+    }
+
+
+def _run_backfill_daily_range(anchor: datetime, days: int) -> Dict[str, Any]:
+    """Iterate each day in ``[anchor - days, anchor)`` and invoke
+    ``_run_daily`` so the daily rollup tables (``metering_daily`` and
+    ``metering_docs_daily``) get populated for the whole retention
+    window.
+
+    Called by the state machine's ``BackfillDailyRange`` Task AFTER
+    ``MigrateChunks`` has populated the hourly rollups. ``_run_daily``
+    reads from ``metering_hourly`` and ``metering_docs_hourly`` to
+    aggregate into ``metering_daily`` and ``metering_docs_daily`` — so
+    the hourly tables MUST be complete when this fires (guaranteed by
+    the state machine's Map → Task ordering).
+
+    Idempotent: ``_run_daily``'s ``_partition_already_written`` guard
+    on each daily table means re-invocation skips already-completed
+    days.
+
+    Returns a per-day success/failure summary the state machine's
+    ``CheckMigrationSuccess`` aggregator consumes alongside the chunk
+    results — same shape (``hours_attempted/succeeded/partial/failed``,
+    treating each day as one "hour" for aggregation purposes). Each
+    counter increments once per DAY iterated, not per hour; the field
+    names are ``hours_*`` because that is what ``_check_hours_failed``'s
+    ``_extract`` shape expects (the aggregator sums this alongside the
+    chunk_hours_* contributions into ``daily_units_*`` and ``total_*``
+    fields, where the ``daily_units_*`` breakdown is the truthful
+    per-day view — see the state machine's CheckMigrationSuccess
+    ResultSelector). Renaming the return dict keys here would break
+    ``_extract`` without a coordinated aggregator change.
+
+    Budget behaviour: this function iterates days sequentially inside
+    one Lambda invocation. Per-day work is typically 5-10 s (small
+    Athena INSERTs), so 30 days finishes in 150-300 s — well within
+    the 900 s Lambda budget. At the upper bound of the accepted range
+    (days=90) with worst-case Athena warmups (~20 s per day = 1800 s
+    total) the invocation will hit Lambda's 900 s timeout mid-run;
+    the state machine's BackfillDailyRange Retry (MaxAttempts=5,
+    ErrorEquals includes States.Timeout) then re-fires. Because each
+    day's rollup is idempotent (HeadObject-skip in ``_run_daily``),
+    every retry HeadObject-skips the days already completed and picks
+    up from where the previous attempt left off. 5 × 900 s = 4500 s of
+    forward-progress budget covers the 90-day worst case; typical
+    ``Days: 30`` deployments complete on the first attempt.
+    """
+    if days < 1 or days > 90:
+        raise ValueError(f"backfill_daily_range: days={days} out of range (1..90)")
+
+    end = anchor.replace(hour=0, minute=0, second=0, microsecond=0)
+    start = end - timedelta(days=days)
+
+    results: Dict[str, Any] = {
+        "mode": "backfill_daily_range",
+        "start": start.isoformat(),
+        "end": end.isoformat(),
+        "hours_attempted": 0,
+        "hours_succeeded": 0,
+        "hours_partial": 0,
+        "hours_failed": 0,
+        "failures": [],
+    }
+
+    cursor = start
+    one_day = timedelta(days=1)
+    while cursor < end:
+        # ``_run_daily`` computes ``_previous_day(anchor)`` — so to
+        # process day X, we pass an anchor of X+1 (start of next day
+        # UTC). That's what ``cursor + one_day`` gives us.
+        daily_anchor = cursor + one_day
+        results["hours_attempted"] += 1
+        try:
+            _run_daily(daily_anchor)
+            # ``_run_daily`` raises on ANY sub-INSERT failure (see the
+            # ``if errors: raise`` guard at the end of _run_daily), so
+            # a successful return means BOTH sub-writes succeeded (or
+            # were already written = skipped-idempotent). No per-table
+            # inspection needed — any per-table failure surfaces via
+            # the outer ``except`` clause below.
+            results["hours_succeeded"] += 1
+        except Exception as e:  # noqa: BLE001
+            # Match ``_run_backfill``'s per-hour try/except so one bad
+            # day doesn't abort the range. State machine's
+            # ``check_hours_failed`` aggregator will surface any failures.
+            results["hours_failed"] += 1
+            logger.warning(
+                "backfill_daily_range day=%s FAILED: %s",
+                cursor.strftime("%Y-%m-%d"),
+                e,
+            )
+            results["failures"].append(
+                {
+                    "date": cursor.strftime("%Y-%m-%d"),
+                    "error": f"{type(e).__name__}: {e}",
+                }
+            )
+        cursor += one_day
+
+    logger.info(
+        "Daily backfill %s → %s: attempted=%d succeeded=%d partial=%d failed=%d",
+        results["start"],
+        results["end"],
+        results["hours_attempted"],
+        results["hours_succeeded"],
+        results["hours_partial"],
+        results["hours_failed"],
+    )
+    return results
+
+
+# Bound the ``state=in_progress`` gate by marker age. A hung /
+# aborted state-machine execution can leave the marker stuck
+# ``in_progress`` — that is by design (both MigrationHadFailures
+# and MigrationHadMapFailure keep the marker so resume works). Left
+# unbounded, the gate would then disable the scheduled hourly /
+# daily / reconciler rollups indefinitely with no signal any alarm
+# can see, and the reconciler's own 24 h scan window would slide
+# past the purged migration window before the operator noticed.
+# Bounding at ~2× the p95 migration wall-clock (30-45 min today)
+# means a hung migration goes UNGATED past this threshold: the
+# reconciler resumes and, because rollup writes remain idempotent,
+# rebuilds whatever the state machine's re-run would have written
+# — the migration is safe to resume against reconciler-populated
+# partitions.
+_MIGRATION_IN_PROGRESS_STALE_SECONDS = 2 * 60 * 60
+
+
+def _parse_marker_started_at(value: str) -> Optional[datetime]:
+    """Extract the ``started_at=<iso>`` segment from the marker payload,
+    returning a timezone-aware datetime or None if absent/malformed.
+    ``_write_marker`` writes ``started_at`` as an ISO-8601 UTC string
+    (``datetime.utcnow().isoformat() + "Z"`` shape or ``+00:00`` shape,
+    both accepted here). A marker missing the segment (pre-versioning
+    write, or ``state=completed`` which doesn't need it) reads as None.
+    """
+    for segment in value.split(";"):
+        segment = segment.strip()
+        if not segment.startswith("started_at="):
+            continue
+        ts = segment[len("started_at=") :].strip()
+        if not ts:
+            return None
+        # Accept both ``...Z`` and ``...+00:00`` — datetime.fromisoformat
+        # in 3.11+ handles ``Z``, but 3.10 doesn't, so normalise.
+        if ts.endswith("Z"):
+            ts = ts[:-1] + "+00:00"
+        try:
+            parsed = datetime.fromisoformat(ts)
+        except ValueError:
+            logger.warning(
+                "Migration marker started_at=%r is not a valid ISO-8601 "
+                "timestamp; treating as no start-time.",
+                ts,
+            )
+            return None
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=timezone.utc)
+        return parsed
+    return None
+
+
+def _migration_in_progress() -> bool:
+    """Return True iff the SSM migration marker records
+    ``state=in_progress`` **and** the marker's ``started_at`` is
+    younger than ``_MIGRATION_IN_PROGRESS_STALE_SECONDS``.
+
+    Reconciler + hourly cron consult this before touching any rollup
+    partition. Both scan the trailing 24 h window; the migration state
+    machine scans the retention window (default 30 d). Where those
+    overlap — and they always overlap the last 24 h — the reconciler's
+    nonce-free ``ClientRequestToken`` (``_MIGRATION_NONCE = None`` for
+    scheduled cron) differs from the migration chunks' nonce-bearing
+    tokens, so Athena's 24 h dedup cannot help. Both probe the empty
+    post-purge partition, both see missing parquet, both INSERT — the
+    result is duplicated ``sum_cost`` / ``n_docs`` / ``sum_pages`` for
+    every overlapping hour, propagated into the daily rollups, with no
+    detection surface.
+
+    The migration state machine's WriteInProgressMarker Task writes the
+    marker BEFORE MigrateChunks fires, and its WriteCompletedMarker
+    Task clears it, so gating on ``state=in_progress`` closes the race
+    at both ends without a distributed lock. The check is one
+    ``ssm:GetParameter`` (~10 ms, already in the rollup Lambda's IAM
+    policy) — cheap enough to run on every hourly / reconciler fire.
+
+    Age bound (``_MIGRATION_IN_PROGRESS_STALE_SECONDS``, default 2 h):
+    a hung / aborted state-machine execution leaves the marker stuck
+    ``in_progress`` (correct — both MigrationHadFailures and
+    MigrationHadMapFailure keep it so resume works), and without the
+    age bound this gate would then disable scheduled rollups
+    indefinitely with no alarm surface — the Lambda would still be
+    invoked and return ``{"skipped": "migration_in_progress"}``, so
+    ``DataMartRollupAbsenceAlarm`` (zero-invocations) cannot see it,
+    and past 24 h the reconciler's window slides past the purged
+    migration window and can no longer heal the gap on its own. Once
+    the marker crosses the age bound the gate opens; the reconciler
+    resumes writing and, because rollup writes remain idempotent, a
+    later state-machine resume against reconciler-populated
+    partitions is safe.
+
+    Fails OPEN on a read error: if SSM is unreachable, the scheduled
+    rollup runs. The alternative (fail closed) would silently disable
+    the reconciler for the duration of an SSM outage, which is worse
+    than the race the check exists to prevent — the migration itself
+    runs on the same SSM.
+    """
+    try:
+        marker_name = _migration_marker_name()
+    except (RuntimeError, ValueError):
+        # STACK_NAME env unset (bare unit-test invocation) or marker
+        # name derivation failed — no marker to consult, no gate.
+        return False
+    try:
+        ssm_client = boto3.client("ssm")
+        response = ssm_client.get_parameter(Name=marker_name)
+        value = response.get("Parameter", {}).get("Value", "") or ""
+    except Exception as exc:
+        logger.warning(
+            "Migration-marker probe failed (%s); proceeding without gate. "
+            "Underlying rollup remains idempotent, so a duplicated INSERT "
+            "requires BOTH this probe AND the migration state machine's "
+            "own marker writes to fail.",
+            exc,
+        )
+        return False
+    # Marker payload is ``;``-delimited ``key=value`` segments; match
+    # ``state=in_progress`` as a delimited token so ``state=in_progress_XYZ``
+    # is not treated as a match.
+    is_in_progress = False
+    for segment in value.split(";"):
+        segment = segment.strip()
+        if segment == "state=in_progress":
+            is_in_progress = True
+            break
+    if not is_in_progress:
+        return False
+    # Apply the age bound. A missing / malformed ``started_at`` is
+    # treated as "definitely older than the bound" so the gate opens
+    # rather than latching forever on a marker whose age we cannot
+    # read — the alternative (treat as fresh) would reproduce the
+    # exact indefinite-hold this bound exists to prevent.
+    started_at = _parse_marker_started_at(value)
+    if started_at is None:
+        logger.warning(
+            "Migration marker has state=in_progress but no readable "
+            "started_at — opening the gate. Marker payload: %r",
+            value,
+        )
+        return False
+    age_seconds = (datetime.now(timezone.utc) - started_at).total_seconds()
+    if age_seconds > _MIGRATION_IN_PROGRESS_STALE_SECONDS:
+        logger.warning(
+            "Migration marker has state=in_progress since %s "
+            "(age %.0fs > stale bound %ds) — opening the gate so "
+            "scheduled rollups resume. Investigate the last "
+            "DataMartMigrationStateMachine execution; a re-run against "
+            "reconciler-populated partitions is safe because rollup "
+            "writes are idempotent. See "
+            "docs/data-mart-migration-runbook.md § 'state=in_progress "
+            "stuck without alarm firing'.",
+            started_at.isoformat(),
+            age_seconds,
+            _MIGRATION_IN_PROGRESS_STALE_SECONDS,
+        )
+        return False
+    return True
+
+
+def _run_reconcile(anchor: datetime) -> Dict[str, Any]:
+    """Re-run the four per-document hourly rollups across the trailing
+    24 h to fill in gaps left by missed schedules, and also cover the
+    previous full UTC day's daily rollups so the migration-gate
+    deferral of the 00:25 daily cron has a self-heal path.
+
+    Idempotent — already-written partitions are no-ops via the
+    ``HeadObject``-skip guard in each rollup fn. Cheap when nothing is
+    missing (24 partition-existence checks per table × 4 tables per hour
+    = ~90 HeadObject probes total across the whole day, sub-second on
+    S3). Non-trivial only when a gap is present, in which case it does
+    exactly the work the scheduled rollup would have done.
+
+    Range end is the top-of-hour of ``anchor`` itself (an exclusive
+    upper bound). At :35 that resolves to :00 of the current hour, so
+    the last hour actually processed is the interval ``[prev-hour-top,
+    current-hour-top)`` — i.e. the previous fully-sealed hour. The
+    reconciler never chases the CURRENT hour — which is by definition
+    still in flight when this runs at :35 of the hour.
+
+    Daily self-heal: the migration-gate at the mode dispatcher defers
+    ``mode: "daily"`` while the SSM marker is ``state=in_progress``.
+    A migration whose anchor falls in the last minutes of a UTC day
+    and finishes just after 00:25 UTC therefore has its 00:25 daily
+    cron skipped for the anchor's own day, and that day is outside
+    ``_run_backfill_daily_range``'s window (which ends exclusive of
+    the anchor's day). Without reconciler coverage that would be a
+    permanent hole. Reconcile now attempts ``_run_daily`` for the
+    previous full UTC day too; it is idempotent (HeadObject-skip
+    inside ``_run_daily``), so on a normal day when the 00:25 daily
+    ran successfully the extra call is a fast no-op.
+
+    Deferral while a migration is running is enforced by the mode
+    dispatch in ``handler`` — see ``_migration_in_progress``.
+    """
+    # ``end`` is the exclusive upper bound of the half-open range passed
+    # to ``_run_backfill``: the last hour written is the one immediately
+    # before ``end``. Truncating ``anchor`` to top-of-hour gives the
+    # boundary at the start of the current in-flight hour, so the last
+    # hour processed is the previous fully-sealed one.
+    end = anchor.replace(minute=0, second=0, microsecond=0)
+    start = end - timedelta(hours=24)
+    logger.info(
+        "Reconcile: scanning [%s → %s) for missed hourly rollups",
+        start.isoformat(),
+        end.isoformat(),
+    )
+    result = _run_backfill(start.isoformat(), end.isoformat())
+    # Daily self-heal for the previous full UTC day. Isolated in its
+    # own try/except so a daily-only failure (e.g. the sub-hourly
+    # completeness check raising because the hourly cron itself
+    # failed on that day) doesn't propagate to the hourly reconciler
+    # result — the hourly's own async retries handle that class.
+    try:
+        daily_result = _run_daily(anchor)
+        result["daily"] = daily_result
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(
+            "Reconcile: daily self-heal for previous UTC day failed "
+            "(%s); the migration-gate coverage gap this pass is meant "
+            "to close therefore requires either the next :35 reconciler "
+            "fire (once hourly catches up) or a manual mode=daily "
+            "invoke. Hourly reconcile above is unaffected.",
+            exc,
+        )
+        result["daily_error"] = str(exc)
+    return result
+
+
+def _purge_s3_prefix(bucket: str, prefix: str) -> int:
+    """Delete every object under ``s3://<bucket>/<prefix>``. Returns the
+    total number of objects deleted.
+
+    Used by ``_purge_rollup_prefixes_task`` (the state machine's
+    ``InitialPurge`` Task) to empty the rollup S3 prefixes before
+    repopulation. Paginates + batches — S3 ``delete_objects`` caps at
+    1000 keys per call.
+    """
+    if not bucket or not prefix:
+        raise ValueError(
+            f"_purge_s3_prefix requires bucket and prefix; got {bucket!r}, {prefix!r}"
+        )
+    total = 0
+    paginator = s3_client.get_paginator("list_objects_v2")
+    for page in paginator.paginate(Bucket=bucket, Prefix=prefix):
+        contents = page.get("Contents", [])
+        if not contents:
+            continue
+        # Delete in batches of 1000 (S3 hard cap on DeleteObjects).
+        for start in range(0, len(contents), 1000):
+            batch = contents[start : start + 1000]
+            resp = s3_client.delete_objects(
+                Bucket=bucket,
+                Delete={
+                    "Objects": [{"Key": obj["Key"]} for obj in batch],
+                    "Quiet": True,
+                },
+            )
+            # ``Quiet=True`` suppresses the successful-Deleted list, NOT
+            # ``Errors``. A silent partial failure here (S3 5xx, IAM,
+            # transient throttling on a subset of keys) would leave
+            # pre-widening parquet in place and cause the widening rewrite
+            # to be skipped by ``_partition_already_written``. Surface
+            # the failure so SFN's InitialPurge Retry (MaxAttempts=2)
+            # fires — the second call HeadObject-skips the already-deleted
+            # keys and retries only the survivors.
+            errors = resp.get("Errors") or []
+            if errors:
+                sample = errors[:5]
+                raise RuntimeError(
+                    f"S3 DeleteObjects reported {len(errors)} error(s) under "
+                    f"s3://{bucket}/{prefix} — first {len(sample)}: {sample!r}"
+                )
+            total += len(batch)
+    return total
 
 
 def _hourly_ever_written(before_date: str) -> bool:
@@ -2269,11 +4082,180 @@ def _hour_window(date_str: str, hour_str: str) -> Tuple[datetime, datetime]:
     return start, start + timedelta(hours=1)
 
 
+def _empty_partition_sentinel_key(
+    table: str, date: str, hour: Optional[str] = None
+) -> str:
+    """S3 key used to record "this partition has been rolled up and
+    was empty" so a subsequent reconciler pass over the same hour
+    doesn't re-run an already-known-empty INSERT.
+
+    Placed under the partition prefix itself so the marker is
+    partition-scoped: ``metering_hourly/date=YYYY-MM-DD/hour=HH/_empty``
+    or, for daily rollups, ``metering_daily/date=YYYY-MM-DD/_empty``.
+    Lifecycle rule on the reporting bucket (``DeleteAfterNDays`` at the
+    customer-configured ``DataRetentionInDays``) applies to the sentinel
+    just like the parquet, so retention semantics are preserved.
+    """
+    if hour is not None:
+        return f"{table}/date={date}/hour={hour}/_empty"
+    return f"{table}/date={date}/_empty"
+
+
+# Empty-sentinel TTL — how long a partition stays "known empty" before
+# the reconciler is allowed to re-check it. Set to 12 h, deliberately
+# LESS than the reconciler's 24 h trailing scan window: the reconciler
+# must get a chance to re-check the sentinel WHILE the hour is still
+# in its trailing-24h scope, otherwise the hour rolls out of the
+# reconciler's window before the sentinel expires and the partition
+# is effectively permanently unrolled even if late data lands. A 12 h
+# TTL means every empty hour gets one guaranteed re-check pass
+# during its second half in the reconciler's window; scheduled
+# hourly at :05 also catches it during its own hour bucket. A prior
+# 24 h TTL matched the reconciler's window exactly, which meant the
+# expiration and the hour's exit from scope raced and the reconciler
+# lost that race for most alignments — see F3 in the review batch
+# that identified this.
+_EMPTY_SENTINEL_TTL_SECONDS = 12 * 60 * 60
+
+
+def _partition_marked_empty(table: str, date: str, hour: Optional[str] = None) -> bool:
+    """Returns True if a previous rollup wrote an ``_empty`` sentinel
+    for this partition AND the sentinel is still fresh (<
+    ``_EMPTY_SENTINEL_TTL_SECONDS``, currently 12 h).
+    Reconciler use case: an hour that produced 0 rows on its scheduled
+    write would otherwise be re-attempted on every :35 fire — the
+    SELECT-based ``_partition_already_written`` probe returns False on
+    any partition that never had data written, so nothing tells the
+    reconciler "we already tried and there was nothing here". The
+    sentinel closes that loop, and the TTL prevents a stale sentinel
+    from hiding late-arriving data — the TTL is deliberately less
+    than the reconciler's 24 h scan window (see the block comment
+    on ``_EMPTY_SENTINEL_TTL_SECONDS``) so every empty hour gets a
+    guaranteed re-check pass while it is still in scope.
+    """
+    if not REPORTING_BUCKET:
+        return False
+    key = _empty_partition_sentinel_key(table, date, hour)
+    try:
+        resp = s3_client.head_object(Bucket=REPORTING_BUCKET, Key=key)
+    except ClientError as e:
+        code = e.response.get("Error", {}).get("Code", "")
+        if code in ("404", "NoSuchKey", "NotFound"):
+            return False
+        # Any other error — throttle, permission blip — treat as
+        # not-marked so the caller proceeds normally. A false-negative
+        # here just means we run an extra empty INSERT once; a
+        # false-positive (marking as done when it wasn't) could hide
+        # real data, so err toward re-checking.
+        logger.warning(
+            "HeadObject for empty-sentinel s3://%s/%s failed with %s; "
+            "treating as not-marked",
+            REPORTING_BUCKET,
+            key,
+            code,
+        )
+        return False
+    last_modified = resp.get("LastModified")
+    if not isinstance(last_modified, datetime):
+        # Should not happen — HeadObject always returns a datetime for
+        # LastModified — but treat non-datetime (missing key, mocked
+        # test double, etc.) as expired so the reconciler re-checks
+        # rather than blocking on an unusable timestamp.
+        return False
+    age = (datetime.now(timezone.utc) - last_modified).total_seconds()
+    if age > _EMPTY_SENTINEL_TTL_SECONDS:
+        logger.info(
+            "Empty-sentinel for %s/date=%s%s is %.0f s old (> %.0f s TTL); "
+            "treating as expired so the rollup re-checks for late writes",
+            table,
+            date,
+            f"/hour={hour}" if hour is not None else "",
+            age,
+            _EMPTY_SENTINEL_TTL_SECONDS,
+        )
+        return False
+    return True
+
+
+def _mark_partition_empty(table: str, date: str, hour: Optional[str] = None) -> None:
+    """Write the ``_empty`` sentinel after an INSERT produced 0 rows.
+    Best-effort — a failure to write the marker means the next
+    reconciler run repeats the empty INSERT (annoying, not incorrect).
+    """
+    if not REPORTING_BUCKET:
+        return
+    key = _empty_partition_sentinel_key(table, date, hour)
+    try:
+        s3_client.put_object(Bucket=REPORTING_BUCKET, Key=key, Body=b"")
+        logger.info(
+            "Marked empty partition %s/date=%s%s — future reconciler passes "
+            "will short-circuit instead of re-running the 0-row INSERT",
+            table,
+            date,
+            f"/hour={hour}" if hour is not None else "",
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(
+            "Failed to write empty-sentinel for %s date=%s hour=%s: %s",
+            table,
+            date,
+            hour,
+            exc,
+        )
+
+
+def _partition_produced_rows(table: str, date: str, hour: Optional[str] = None) -> bool:
+    """Post-INSERT check: did the query land any parquet at the target
+    partition prefix? Uses ListObjectsV2 rather than a fresh Athena
+    SELECT — sub-millisecond vs a full query submit. Excludes the
+    ``_empty`` sentinel itself so a re-run against an already-marked
+    empty partition doesn't mistake the sentinel for data.
+    """
+    if not REPORTING_BUCKET:
+        return True  # can't check; assume data landed to be safe
+    prefix = (
+        f"{table}/date={date}/hour={hour}/"
+        if hour is not None
+        else f"{table}/date={date}/"
+    )
+    try:
+        resp = s3_client.list_objects_v2(
+            Bucket=REPORTING_BUCKET, Prefix=prefix, MaxKeys=10
+        )
+        for obj in resp.get("Contents") or []:
+            key = obj.get("Key") or ""
+            if key.endswith("/_empty"):
+                continue
+            # Any non-sentinel key under the partition prefix counts as
+            # data — Athena writes parquet with UUID names, no path to
+            # match exactly.
+            return True
+        return False
+    except Exception as exc:  # noqa: BLE001
+        # On list failure, assume rows landed so we don't false-mark
+        # a real partition as empty. A false negative here (assuming
+        # rows when there were none) just means the next reconciler
+        # re-runs the empty INSERT once.
+        logger.warning(
+            "ListObjectsV2 on %s failed (%s); assuming rows landed",
+            prefix,
+            exc,
+        )
+        return True
+
+
 def _partition_already_written(
     table: str, date: str, hour: Optional[str] = None
 ) -> bool:
     """Cheap idempotency check — does the target partition already have
-    at least one row?
+    at least one row, OR has a previous rollup pass marked it as empty?
+
+    Checks the empty-sentinel first (S3 HeadObject, sub-millisecond)
+    before falling through to the Athena LIMIT-1 SELECT. The sentinel
+    branch is what stops the reconciler from re-running an
+    already-known-empty INSERT on every :35 fire — the SELECT alone
+    returns False for any partition that never had data, and the arm
+    would then re-attempt indefinitely.
 
     Narrow fail-open policy: ONLY treats "table does not exist" as
     not-yet-written (the first-invocation-after-deploy case). Any other
@@ -2282,6 +4264,41 @@ def _partition_already_written(
     already-populated partition and permanently double-counts cost;
     re-raising lets the caller's DLQ + async retry recover.
     """
+    if _partition_marked_empty(table, date, hour):
+        return True
+    # Fast path: S3 List. Athena writes parquet under the target
+    # partition prefix; a single non-sentinel object there means data
+    # landed. 10-100× cheaper than the Athena SELECT-1 probe (~ms vs
+    # ~500 ms), doesn't spend workgroup DML slots, and doesn't emit
+    # AthenaBytesScanned noise on the rollup-lambda component metric.
+    # Reconciler on a healthy stack (48 arm-hour probes per :35 fire ×
+    # 24 fires = ~1150 probes/day) then costs 1150 S3 HEADs instead of
+    # 1150 Athena queries. Athena SELECT is retained ONLY as a fallback
+    # for the case where S3 List genuinely can't answer (bucket
+    # unconfigured, list error, permission blip).
+    if REPORTING_BUCKET:
+        prefix = (
+            f"{table}/date={date}/hour={hour}/"
+            if hour is not None
+            else f"{table}/date={date}/"
+        )
+        try:
+            resp = s3_client.list_objects_v2(
+                Bucket=REPORTING_BUCKET, Prefix=prefix, MaxKeys=2
+            )
+            for obj in resp.get("Contents") or []:
+                key = obj.get("Key") or ""
+                if not key.endswith("/_empty"):
+                    return True
+            return False
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "S3 List for idempotency probe on %s failed (%s); "
+                "falling back to Athena SELECT-1",
+                prefix,
+                exc,
+            )
+            # fall through
     where = f"date = '{date}'"
     if hour is not None:
         where += f" AND hour = '{hour}'"
@@ -2291,7 +4308,9 @@ def _partition_already_written(
         # LIMIT-1 partition-pruned SELECTs and would otherwise emit one
         # AthenaBytesScanned metric per rollup fire per table, drowning
         # the rollup-lambda component's real Athena cost signal in noise.
-        # Round-9 review fix.
+        # Round-9 review fix. Reached only when the S3 List above
+        # returned False AND we can't yet distinguish "genuinely empty"
+        # from "S3 lag / eventual consistency".
         rows = _run_athena_query_with_results(sql, emit_self_cost=False)
         return bool(rows)
     except Exception as e:
@@ -2392,7 +4411,55 @@ def _run_athena(
         # the salt being chopped off by the 128-char cap. Effective
         # user-controlled budget = 128 - 12 = 116 chars.
         kwargs["ClientRequestToken"] = idempotency_key[:116]
-    response = athena_client.start_query_execution(**kwargs)
+    # Guard: Athena rejects StartQueryExecution with
+    # ``InvalidRequestException: Idempotent parameters do not match`` when
+    # a ClientRequestToken from a prior (<24h) submission is reused with a
+    # different QueryString. That happens on migration re-runs where the
+    # SELECT text changes between deploys (e.g. 2.0 → 2.1 added the
+    # document_class CTE). The cached-failure restart branch below only
+    # fires AFTER a successful submit, so it can't help here — we have to
+    # catch the client-side reject BEFORE the query is submitted and
+    # resubmit with a salted token. Same salt semantics as round-20's
+    # fresh-salt (UTC-second, wide enough for concurrent retries of THIS
+    # invocation, distinct across sequential retries).
+    try:
+        response = athena_client.start_query_execution(**kwargs)
+    except ClientError as e:
+        # Match on BOTH the structured error code AND the free-form
+        # message text. Athena raises the specific idempotency-mismatch
+        # case as either ``IdempotentParameterMismatchException`` or
+        # (in some botocore versions) the broader
+        # ``InvalidRequestException`` code — but ``InvalidRequestException``
+        # on its own covers many unrelated Athena failure modes we must
+        # not treat as an idempotency mismatch (bad SQL, missing
+        # workgroup, malformed OutputLocation, etc.). The additional
+        # ``"Idempotent" in error_msg`` guard narrows the broad code
+        # class down to the specific case the fresh-salt branch is
+        # designed for. The AND is deliberate; a prior comment saying
+        # "either signal" was wrong — narrowing on either alone lets
+        # unrelated ``InvalidRequestException``s spuriously salt and
+        # retry.
+        error = e.response.get("Error", {}) or {}
+        error_code = error.get("Code", "")
+        error_msg = error.get("Message", "") or str(e)
+        is_idempotency_mismatch = (
+            error_code
+            in {"IdempotentParameterMismatchException", "InvalidRequestException"}
+            and "Idempotent" in error_msg
+        )
+        if idempotency_key and is_idempotency_mismatch:
+            fresh_salt = str(int(time.time()))
+            salted_key = f"{idempotency_key[:116]}-r{fresh_salt}"[:128]
+            logger.warning(
+                f"Athena rejected reuse of ClientRequestToken "
+                f"({idempotency_key[:40]}...) with different QueryString "
+                f"(likely a code deploy that changed the SELECT text). "
+                f"Resubmitting with fresh salt."
+            )
+            kwargs["ClientRequestToken"] = salted_key
+            response = athena_client.start_query_execution(**kwargs)
+        else:
+            raise
     query_id = response["QueryExecutionId"]
     # Round-19 review fix (#1948): Athena's ClientRequestToken idempotency
     # caches ALL prior QueryExecutionIds for a given token — including
@@ -2411,13 +4478,10 @@ def _run_athena(
         # re-execute than to trust an unknown state and hit the cached-
         # failure loop the round-19 fix was meant to break).
         initial_state: Optional[str] = None
-        _AthenaBotoCoreError: Any
-        _AthenaClientError: Any
+        # ``ClientError`` is module-scoped (import at top of file); the
+        # BotoCoreError parent class is not, so it needs the local import.
         from botocore.exceptions import (  # noqa: PLC0415
             BotoCoreError as _AthenaBotoCoreError,
-        )
-        from botocore.exceptions import (
-            ClientError as _AthenaClientError,
         )
 
         for probe_attempt in range(3):
@@ -2425,7 +4489,7 @@ def _run_athena(
                 initial = athena_client.get_query_execution(QueryExecutionId=query_id)
                 initial_state = initial["QueryExecution"]["Status"]["State"]
                 break
-            except (_AthenaClientError, _AthenaBotoCoreError) as e:
+            except (ClientError, _AthenaBotoCoreError) as e:
                 logger.warning(
                     f"Cached-failure probe for {query_id} attempt "
                     f"{probe_attempt + 1}/3 failed ({e})"
@@ -2498,12 +4562,18 @@ def _run_athena(
             # (dedup wins), but every subsequent async-retry gets a
             # different one (breaks lock).
             #
-            # This is the ONE window ``ClientRequestToken`` can't close, and
-            # it's why ``DataMartRollupFunction`` sets
-            # ``ReservedConcurrentExecutions: 1`` in template.yaml — do not
-            # remove that property. Two concurrent restarts of the same
-            # partition landing in DIFFERENT wall-clock seconds get different
-            # tokens and would both INSERT.
+            # This is the ONE window ``ClientRequestToken`` can't close.
+            # Historically ``DataMartRollupFunction`` set
+            # ``ReservedConcurrentExecutions: 1`` in template.yaml to make
+            # this window unreachable; that value was later raised to 12 so the migration
+            # state machine's Map (MaxConcurrency=8) can run in parallel.
+            # The residual race is closed by the ``_partition_already_written``
+            # HeadObject-skip firing BEFORE the Athena INSERT in each rollup
+            # arm — see the ReservedConcurrentExecutions block comment in
+            # template.yaml for the full argument. Do not drop the reserved
+            # concurrency below the state machine's MaxConcurrency=8; also
+            # do not remove the HeadObject-skip, which is now what makes
+            # the concurrent-restart case idempotent.
             #
             # The salt can't be derived from the event anchor time instead:
             # the anchor is identical across async retries by design (that's
@@ -2512,7 +4582,7 @@ def _run_athena(
             # reinstate exactly the cached-failure lock this branch exists to
             # break. The two requirements — differ across sequential retries,
             # match across concurrent duplicates — have no single-token
-            # solution, hence the concurrency pin.
+            # solution, hence the HeadObject-skip as the outer guard.
             fresh_salt = str(int(time.time()))
             # Round-23 (#2208): input token was truncated to 116 chars
             # above so the "-r<10-digit-timestamp>" suffix (12 chars)
@@ -2545,12 +4615,22 @@ def _run_athena_query_with_results(
     while always stripping ``Rows[0]`` would drop the first data row of
     every page ≥2 (round-6 review fix — silent truncation + naive
     pagination retrofit hazard).
+
+    Bounded by ``_MAX_RESULT_PAGES`` (~10M rows) — defense in depth. A
+    real Athena query with >10 k pages would be a misconfiguration
+    (rollups are aggregations with tiny outputs); ALSO catches the case
+    where a test's mocked ``athena_client.get_query_results`` returns a
+    ``MagicMock`` whose ``.get("NextToken")`` is truthy on every iteration,
+    which would otherwise busy-loop and burn CPU + memory (past incident
+    on the test host). Raises ``RuntimeError`` on overshoot so the
+    misuse is surfaced instead of hanging.
     """
+    _MAX_RESULT_PAGES = 10_000
     query_id = _run_athena(sql, emit_self_cost=emit_self_cost)
     all_rows: List[List[str]] = []
     next_token: Optional[str] = None
     first_page = True
-    while True:
+    for _page in range(_MAX_RESULT_PAGES):
         kwargs: Dict[str, Any] = {"QueryExecutionId": query_id}
         if next_token:
             kwargs["NextToken"] = next_token
@@ -2564,8 +4644,14 @@ def _run_athena_query_with_results(
         )
         next_token = result.get("NextToken")
         if not next_token:
-            break
-    return all_rows
+            return all_rows
+    raise RuntimeError(
+        f"Athena get_query_results paginator exceeded {_MAX_RESULT_PAGES} pages for "
+        f"query {query_id}. This is either a legitimately huge result set (in which "
+        f"case rethink the query — rollups should aggregate to a small output) or a "
+        f"mocked athena_client whose NextToken is truthy on every iteration (in "
+        f"which case the caller should stub _run_athena_query_with_results itself)."
+    )
 
 
 def _wait_for_athena(

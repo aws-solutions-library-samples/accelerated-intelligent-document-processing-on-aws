@@ -161,6 +161,7 @@ def _db_client_on(table):
         expression_attribute_names=None,
         expression_attribute_values=None,
         return_values="ALL_NEW",
+        condition_expression=None,
     ):
         kwargs = {
             "Key": key,
@@ -171,7 +172,22 @@ def _db_client_on(table):
             kwargs["ExpressionAttributeNames"] = expression_attribute_names
         if expression_attribute_values:
             kwargs["ExpressionAttributeValues"] = expression_attribute_values
-        return table.update_item(**kwargs)
+        # Passed straight through to moto, which evaluates it, rather than
+        # recorded and ignored. A double that accepted the keyword and dropped it
+        # would let every test here pass against an unguarded write, which is the
+        # failure mode `_put_item` below already carries a comment about.
+        if condition_expression:
+            kwargs["ConditionExpression"] = condition_expression
+        try:
+            return table.update_item(**kwargs)
+        except ClientError as exc:
+            # Same translation as `_put_item`: the real client raises
+            # DynamoDBError carrying `.error_code`, and a caller that retries on a
+            # conditional rejection reads exactly that attribute.
+            raise DynamoDBError(
+                f"Update item failed: {exc.response['Error']['Message']}",
+                exc.response["Error"]["Code"],
+            ) from exc
 
     def _delete_item(key):
         return table.delete_item(Key=key)
@@ -1928,6 +1944,346 @@ class TestTestSetResolver:
             "Item"
         ]
         assert sorted(job["harvestedFiles"]) == ["a.pdf", "b.pdf"]
+
+    def _two_document_labeling_job(self, table, s3, seed_job=None):
+        """Seed a two-document job and return the stored job row.
+
+        The row is returned as it is stored, so a test can hold it as a snapshot,
+        let another writer move the row, and then hand the snapshot to the harvest
+        -- which is how the caller reaches it in production: `get_draft_label_job`
+        and `_harvest_active_label_job` both read the row and pass it in.
+        """
+        _seed_test_set(table, "ts1", fileCount=2)
+        uris = {
+            name: _seed_pipeline_result(
+                s3, f"ts1-run/{name}/sections/1/result.json", {"vendor": name}
+            )
+            for name in ("a.pdf", "b.pdf")
+        }
+        _seed_completed_run(
+            table,
+            "ts1-run",
+            "ts1",
+            ["a.pdf", "b.pdf"],
+            {name: [{"Id": "1", "OutputJSONUri": uri}] for name, uri in uris.items()},
+        )
+        item = {
+            "PK": "testset#ts1",
+            "SK": "labeljob#ts1-run",
+            "testSetId": "ts1",
+            "jobId": "ts1-run",
+            "status": "RUNNING",
+            "total": 2,
+            "labeled": 0,
+        }
+        item.update(seed_job or {})
+        table.put_item(Item=item)
+        return table.get_item(Key={"PK": "testset#ts1", "SK": "labeljob#ts1-run"})[
+            "Item"
+        ]
+
+    def _stored_job(self, table):
+        return table.get_item(Key={"PK": "testset#ts1", "SK": "labeljob#ts1-run"})[
+            "Item"
+        ]
+
+    def test_an_overlapping_harvest_does_not_lose_the_files_it_recorded(
+        self, labeling_env
+    ):
+        """Two harvests of one job must not discard each other's progress.
+
+        `harvestedFiles` accumulates and used to be written back whole with no
+        condition, so the second writer erased the first's entries. This is the
+        ordinary case rather than an edge: three UI components poll a running job
+        on a five-second timer, so a job shown in two places is harvested twice.
+
+        The interleaving is exact rather than raced, and needs no interception to
+        be so. The snapshot the harvest is given is read *before* the competing
+        write lands, which is precisely the window the defect lives in -- the
+        caller reads the row and passes it in, so a stale snapshot is the thing the
+        production code actually holds.
+
+        The losing pass is out of time, which is what makes the loss observable at
+        all and is a measured rather than a decorative detail. A pass that still
+        has budget simply re-copies the document the winner already did -- the copy
+        is idempotent -- so the merged set comes out right either way and the
+        assertion passes against the defect. Exhausting the budget is the realistic
+        version of the same overlap: the harvest is bounded at
+        HARVEST_TIME_BUDGET_SECONDS precisely because a large set cannot finish in
+        one pass, so one poller timing out while another completes is the case the
+        budget exists for.
+        """
+        table, s3 = labeling_env
+        stale_job = self._two_document_labeling_job(table, s3)
+
+        # Another harvest of the same job finishes b.pdf and records it.
+        table.update_item(
+            Key={"PK": "testset#ts1", "SK": "labeljob#ts1-run"},
+            UpdateExpression="SET harvestedFiles = :h, labeled = :n",
+            ExpressionAttributeValues={":h": ["b.pdf"], ":n": 1},
+        )
+
+        test_set_index._harvest_label_job(stale_job, deadline=time.monotonic() - 1)
+
+        job = self._stored_job(table)
+        assert sorted(job["harvestedFiles"]) == ["b.pdf"], (
+            "the overlapping harvest's progress was discarded"
+        )
+        # `labeled` is derived from the merged set, so it has to follow it.
+        assert job["labeled"] == 1
+        # a.pdf is still outstanding, so the job is correctly still running.
+        assert job["status"] == "RUNNING"
+
+    def test_a_merged_harvest_still_completes_the_job(self, labeling_env):
+        """The merge must settle the derived status, not only the lists.
+
+        Stated honestly about its own reach: measured against the unguarded write
+        this one still passes, because a pass with budget left re-copies the
+        document the winner already did -- the copy is idempotent -- so the stored
+        set comes out right either way. It is a check that the merge path produces
+        a coherent row, not a discriminator for the guard.
+        `test_a_document_the_winner_resolved_stops_counting_as_pending` is the
+        status assertion that does fail without the fix, and the two sit together
+        for that reason.
+        """
+        table, s3 = labeling_env
+        stale_job = self._two_document_labeling_job(table, s3)
+        table.update_item(
+            Key={"PK": "testset#ts1", "SK": "labeljob#ts1-run"},
+            UpdateExpression="SET harvestedFiles = :h",
+            ExpressionAttributeValues={":h": ["b.pdf"]},
+        )
+
+        test_set_index._harvest_label_job(stale_job)
+
+        job = self._stored_job(table)
+        assert sorted(job["harvestedFiles"]) == ["a.pdf", "b.pdf"]
+        assert job["labeled"] == 2
+        assert job["status"] == "COMPLETED"
+
+    def test_a_document_the_winner_resolved_stops_counting_as_pending(
+        self, labeling_env
+    ):
+        """The one assertion that `pending_files` exists for.
+
+        Pending documents are tracked by name rather than counted so the winner's
+        lists can be subtracted from them exactly. The case that needs it is a pass
+        that is *still waiting* on a document the winner has already resolved: with
+        a bare count, the subtraction cannot be expressed, the pass reports RUNNING
+        on a job that is finished, and the row's own status contradicts its lists
+        until the next poll rewrites it.
+
+        `b.pdf` is deliberately left un-processed in the tracking table, so this
+        pass counts it pending rather than harvesting it -- which is what the other
+        merge tests cannot reproduce, because in those the pass resolves every
+        document itself and the subtraction is a no-op.
+        """
+        table, s3 = labeling_env
+        _seed_test_set(table, "ts1", fileCount=2)
+        uri = _seed_pipeline_result(
+            s3, "ts1-run/a.pdf/sections/1/result.json", {"vendor": "a.pdf"}
+        )
+        _seed_completed_run(
+            table,
+            "ts1-run",
+            "ts1",
+            ["a.pdf", "b.pdf"],
+            {"a.pdf": [{"Id": "1", "OutputJSONUri": uri}]},
+        )
+        # b.pdf has no COMPLETED tracking record, so this pass waits on it.
+        table.put_item(
+            Item={
+                "PK": "doc#ts1-run/b.pdf",
+                "SK": "none",
+                "ObjectStatus": "RUNNING",
+            }
+        )
+        table.put_item(
+            Item={
+                "PK": "testset#ts1",
+                "SK": "labeljob#ts1-run",
+                "testSetId": "ts1",
+                "jobId": "ts1-run",
+                "status": "RUNNING",
+                "total": 2,
+                "labeled": 0,
+            }
+        )
+        stale_job = self._stored_job(table)
+
+        # Another harvest got b.pdf, which this pass cannot.
+        table.update_item(
+            Key={"PK": "testset#ts1", "SK": "labeljob#ts1-run"},
+            UpdateExpression="SET harvestedFiles = :h",
+            ExpressionAttributeValues={":h": ["b.pdf"]},
+        )
+
+        test_set_index._harvest_label_job(stale_job)
+
+        job = self._stored_job(table)
+        assert sorted(job["harvestedFiles"]) == ["a.pdf", "b.pdf"]
+        assert job["labeled"] == 2
+        assert job["status"] == "COMPLETED", (
+            "the document the other harvest resolved was still counted as pending"
+        )
+
+    def test_an_overlapping_harvest_does_not_lose_a_recorded_failure(
+        self, labeling_env
+    ):
+        """The sharper edge of the same loss.
+
+        A dropped `failedFiles` entry does not merely cost a redundant S3 read:
+        the next pass counts an already-failed document as pending, which is the
+        state that leaves a job RUNNING forever with every poll re-reading the set.
+        """
+        table, s3 = labeling_env
+        stale_job = self._two_document_labeling_job(table, s3)
+
+        # Another harvest gave up on b.pdf.
+        table.update_item(
+            Key={"PK": "testset#ts1", "SK": "labeljob#ts1-run"},
+            UpdateExpression="SET failedFiles = :f",
+            ExpressionAttributeValues={":f": ["b.pdf"]},
+        )
+
+        test_set_index._harvest_label_job(stale_job)
+
+        job = self._stored_job(table)
+        assert sorted(job["failedFiles"]) == ["b.pdf"]
+        assert sorted(job["harvestedFiles"]) == ["a.pdf", "b.pdf"]
+        assert job["status"] == "COMPLETED"
+
+    def test_an_uncontended_harvest_writes_once(self, labeling_env):
+        """The guard must not cost a retry when nothing is competing.
+
+        Asserted by counting writes, because a condition that never holds would
+        otherwise be invisible here -- every content assertion in this class would
+        still pass after a merge-and-retry.
+        """
+        table, s3 = labeling_env
+        job = self._two_document_labeling_job(table, s3)
+        real_update = test_set_index.db_client.update_item
+        calls = []
+
+        def spy(**kwargs):
+            calls.append(kwargs.get("key"))
+            return real_update(**kwargs)
+
+        test_set_index.db_client.update_item = spy
+        try:
+            test_set_index._harvest_label_job(job)
+        finally:
+            test_set_index.db_client.update_item = real_update
+
+        job_writes = [k for k in calls if k and k.get("SK") == "labeljob#ts1-run"]
+        assert len(job_writes) == 1, calls
+        assert sorted(self._stored_job(table)["harvestedFiles"]) == ["a.pdf", "b.pdf"]
+
+    def test_a_row_that_keeps_moving_raises_rather_than_writing_blind(
+        self, labeling_env
+    ):
+        """Exhausting the merge budget must not fall back to an unguarded write.
+
+        A blind fallback would be the defect the guard exists to prevent, and the
+        next poll five seconds later retries the whole pass harmlessly.
+        """
+        table, s3 = labeling_env
+        stale_job = self._two_document_labeling_job(table, s3)
+        real_get = test_set_index.db_client.get_item
+        moves = iter(range(1, 100))
+
+        def moving_get(key):
+            item = real_get(key)
+            if key.get("SK") == "labeljob#ts1-run":
+                # Move the row again after every re-read, so no attempt can settle.
+                table.update_item(
+                    Key=key,
+                    UpdateExpression="SET failedFiles = :f",
+                    ExpressionAttributeValues={":f": [f"moved-{next(moves)}.pdf"]},
+                )
+            return item
+
+        table.update_item(
+            Key={"PK": "testset#ts1", "SK": "labeljob#ts1-run"},
+            UpdateExpression="SET failedFiles = :f",
+            ExpressionAttributeValues={":f": ["moved-0.pdf"]},
+        )
+        test_set_index.db_client.get_item = moving_get
+        try:
+            with pytest.raises(DynamoDBError) as excinfo:
+                test_set_index._harvest_label_job(stale_job)
+        finally:
+            test_set_index.db_client.get_item = real_get
+        assert excinfo.value.error_code == "ConditionalCheckFailedException"
+
+    def test_the_progress_poll_reports_stored_state_rather_than_failing(
+        self, labeling_env
+    ):
+        """The read path must not inherit the write path's refusal.
+
+        Refusing to write blind is right inside the harvest and wrong at the
+        resolver the UI polls on a timer: a condition that heals itself on the next
+        poll would otherwise surface as an error on a read that works today, which
+        is a behaviour change for a deployment nobody has touched. Measured through
+        `get_draft_label_job` rather than asserted about it, because the harvest
+        raising and the resolver propagating are two separate facts and only the
+        second one is user-visible.
+
+        Only the conditional rejection is absorbed. The sibling test below holds
+        the other direction: any other DynamoDB failure still propagates.
+        """
+        table, s3 = labeling_env
+        self._two_document_labeling_job(table, s3)
+        real_get = test_set_index.db_client.get_item
+        moves = iter(range(1, 100))
+
+        def moving_get(key):
+            item = real_get(key)
+            if key.get("SK") == "labeljob#ts1-run":
+                table.update_item(
+                    Key=key,
+                    UpdateExpression="SET failedFiles = :f",
+                    ExpressionAttributeValues={":f": [f"moved-{next(moves)}.pdf"]},
+                )
+            return item
+
+        test_set_index.db_client.get_item = moving_get
+        try:
+            result = test_set_index.get_draft_label_job(
+                {"testSetId": "ts1", "jobId": "ts1-run"}
+            )
+        finally:
+            test_set_index.db_client.get_item = real_get
+
+        # The poll answers, and it answers about the row as stored rather than
+        # about the view this pass could not commit.
+        assert result["jobId"] == "ts1-run"
+        assert result["status"] == "RUNNING"
+        assert result["failedDocuments"] == 1
+
+    def test_the_progress_poll_still_propagates_any_other_failure(self, labeling_env):
+        """The absorbing `except` must be narrow, or it hides a real outage.
+
+        Asserted by raising a *different* DynamoDB error from the same call: a bare
+        `except DynamoDBError` here would swallow a throttle or a missing table and
+        report a stale job as live progress.
+        """
+        table, s3 = labeling_env
+        self._two_document_labeling_job(table, s3)
+        real_harvest = test_set_index._harvest_label_job
+
+        def failing_harvest(job, deadline=None):
+            raise DynamoDBError("Update item failed: throttled", "ThrottlingException")
+
+        test_set_index._harvest_label_job = failing_harvest
+        try:
+            with pytest.raises(DynamoDBError) as excinfo:
+                test_set_index.get_draft_label_job(
+                    {"testSetId": "ts1", "jobId": "ts1-run"}
+                )
+        finally:
+            test_set_index._harvest_label_job = real_harvest
+        assert excinfo.value.error_code == "ThrottlingException"
 
     def test_harvest_stops_at_its_deadline_and_stays_resumable(self, labeling_env):
         """A set too large for one pass must make partial progress, not time out.
@@ -4159,6 +4515,136 @@ class TestTestSetResolver:
         assert second["baseVersion"] == first["baseVersion"]
         assert second["alreadyOpen"] is True
         assert second["snapshotObjectCount"] == 0
+
+    def test_a_second_annotator_opening_at_the_same_moment_gets_the_same_draft(
+        self, labeling_env
+    ):
+        """The idempotency above is a read; this is the write it has to survive.
+
+        Two annotators pressing Start annotating on one set both read no draft, both
+        compute a version and both write it. Unconditional, the later write replaced
+        the earlier: the metadata row named one transition while two had been opened,
+        and the queue links the first annotator was given belonged to a transition the
+        row no longer mentioned. (The window is two deliberate presses, not every page
+        load -- the workspace does not open a transition on arrival, and a UI test
+        pins that it is never reached from a `useEffect`.)
+
+        The interleaving is forced rather than raced -- the competing open is
+        committed inside the metadata read this call goes on to compute from, so
+        there is no thread, no sleep and no dependence on the scheduler. Only the
+        first read is intercepted, so the conflict path's own re-read sees the
+        settled row.
+
+        The set is published first on purpose. On the never-published path this
+        call publishes a base version itself, and publishing *removes*
+        ``draftVersion`` as part of committing a transition, so a competitor seeded
+        before that point is erased by the call under test and the overlap being
+        modelled never exists. The already-published path is both the common one
+        and the only one where the window is real.
+        """
+        table, s3 = labeling_env
+        self._seed_labelled_set(table, s3)
+        test_set_index.publish_test_set_version({"input": {"testSetId": "ts1"}})
+        real_get = test_set_index.db_client.get_item
+        reads = {"n": 0}
+
+        def competing_get(key):
+            item = real_get(key)
+            if key.get("SK") == "metadata":
+                reads["n"] += 1
+                if reads["n"] == 1:
+                    # The other annotator's open lands here, after this call has
+                    # taken its snapshot and before it writes.
+                    table.update_item(
+                        Key={"PK": "testset#ts1", "SK": "metadata"},
+                        UpdateExpression="SET draftVersion = :d",
+                        ExpressionAttributeValues={":d": 2},
+                    )
+            return item
+
+        test_set_index.db_client.get_item = competing_get
+        try:
+            result = test_set_index.open_test_set_annotation_draft(
+                {"input": {"testSetId": "ts1"}}
+            )
+        finally:
+            test_set_index.db_client.get_item = real_get
+
+        # The winner's transition is reported, not a second one, and the row still
+        # names exactly that transition.
+        assert result["draftVersion"] == 2
+        assert result["alreadyOpen"] is True
+        meta = table.get_item(Key={"PK": "testset#ts1", "SK": "metadata"})["Item"]
+        assert int(meta["draftVersion"]) == 2
+        # The overlap is asserted rather than assumed: with no competing write this
+        # test would pass against the unguarded version too.
+        assert reads["n"] >= 1
+
+    def test_a_never_published_set_still_loses_one_of_two_simultaneous_opens(
+        self, labeling_env
+    ):
+        """Records the residual the condition above does **not** cover.
+
+        This asserts the defective outcome on purpose, because the alternative is a
+        reader concluding from the guarded test alone that every overlap is closed.
+
+        On a set with no published version the call publishes one first, and
+        publishing *removes* ``draftVersion`` as part of committing its own
+        transition. So when the other caller's whole open lands before this one's
+        publish, this call clears the winner's pointer itself and then finds
+        ``attribute_not_exists(draftVersion)`` true. Both callers report
+        ``alreadyOpen: False``, two transitions exist, and the row names only the
+        later one -- which is the loss the condition closes on every other path.
+
+        No condition fixes this: nothing a predicate can read distinguishes "nobody
+        has claimed" from "I removed the claim a moment ago". It needs the publish and
+        the claim to become one atomic step, which is a restructure of the resolver
+        and is deliberately not in this change. The exposure is the first annotation
+        session of a set and no other.
+
+        Change the outcome and this test should be rewritten to assert the fix, not
+        deleted -- the assertions below are the measurement, not the goal.
+        """
+        table, s3 = labeling_env
+        self._seed_labelled_set(table, s3)
+        real_get = test_set_index.db_client.get_item
+        state = {"reads": 0, "winner": None}
+
+        def competing_get(key):
+            item = real_get(key)
+            if key.get("SK") == "metadata":
+                state["reads"] += 1
+                if state["reads"] == 1:
+                    # The other annotator's *entire* open, publish included, between
+                    # this call's read and its own publish. Un-patched for the
+                    # duration so the competitor is an ordinary correct caller.
+                    test_set_index.db_client.get_item = real_get
+                    state["winner"] = test_set_index.open_test_set_annotation_draft(
+                        {"input": {"testSetId": "ts1"}}
+                    )
+                    test_set_index.db_client.get_item = competing_get
+            return item
+
+        test_set_index.db_client.get_item = competing_get
+        try:
+            mine = test_set_index.open_test_set_annotation_draft(
+                {"input": {"testSetId": "ts1"}}
+            )
+        finally:
+            test_set_index.db_client.get_item = real_get
+
+        # The competitor really did open a transition and really did publish, so the
+        # overlap under test exists rather than being asserted into being.
+        assert state["winner"]["draftVersion"] == 2
+        assert state["winner"]["alreadyOpen"] is False
+        # And this call opened a second one instead of being refused.
+        assert mine["draftVersion"] == 3
+        assert mine["alreadyOpen"] is False
+        meta = table.get_item(Key={"PK": "testset#ts1", "SK": "metadata"})["Item"]
+        assert int(meta["draftVersion"]) == 3, (
+            "the row names only the later transition; the winner's queue links point "
+            "at a transition it no longer mentions"
+        )
 
     def test_the_draft_is_recorded_on_the_set(self, labeling_env):
         # The queue link is built from this, so it has to be readable afterwards.

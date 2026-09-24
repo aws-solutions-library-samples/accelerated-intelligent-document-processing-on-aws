@@ -585,7 +585,8 @@ point reaches Bedrock. A cache write is 1.25× input price and pays back only on
 second same-prefix request inside the 5-minute TTL, so a low-volume deployment is
 better off with `off`.
 
-Each model has a **minimum cacheable prefix** (512 tokens on Opus 5 / Fable 5, 1,024
+Each model has a **minimum cacheable prefix** (512 tokens on Opus 5 / Opus 5.5 /
+Fable 5, 1,024
 on Sonnet 5 / 4.6 / Opus 4.8, 2,048 on Opus 4.7, 4,096 on Opus 4.6 / 4.5 / Haiku 4.5;
 `idp_common.bedrock.prompt_cache.min_cacheable_prefix_tokens`). Below it a cache
 point silently does nothing. `merge_utils._validate_prompt_cache_prefix` estimates
@@ -1240,7 +1241,7 @@ The extraction service is designed to be thread-safe, supporting concurrent proc
 > opt-outs keep 1S-TopK: `x-aws-idp-extraction-task-prompt` (a user-controlled prompt is
 > never half-applied) and `x-aws-idp-allow-integrated-lists: true` (the author has
 > verified list completeness). `config.merge_utils._validate_simple_integrated_lists`
-> warns at `idp-cli config validate` / SDK validate time — the web UI does not validate
+> warns at `idp-cli config-validate` / SDK validate time — the web UI does not validate
 > on save; its Prompt Preview shows the decision per class. Runtime per-section decision,
 > not a config rejection: a stored config must keep loading, and the new key is a
 > free-form class key that older releases ignore.

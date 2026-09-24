@@ -587,9 +587,17 @@ Permanently delete documents and their associated data from InputBucket, OutputB
 - `dry_run` (bool, optional): If True, simulate deletion without actually deleting (default: False)
 - `continue_on_error` (bool, optional): Continue deleting if one document fails (default: True)
 
-**Note:** Must specify either `batch_id` or `pattern` (not both).
+**Note:** Must specify either `batch_id` or `pattern` (not both). A missing or empty
+selector raises `IDPConfigurationError` before anything is read.
 
 **Returns:** `BatchDeletionResult` with `success`, `deleted_count`, `failed_count`, `total_count`, `dry_run`, and `results` (list of DocumentDeletionResult)
+
+⚠️ **A failure while selecting the documents raises `IDPProcessingError`; it is not
+reported as a success with nothing deleted.** `success=True, deleted_count=0` means the
+selector matched no documents — an empty batch, or a status filter nothing satisfied —
+and nothing else. A throttled or rejected table scan, or a table that does not exist,
+reaches you as an exception naming the cause, so a retry is your decision to make rather
+than something the result hides.
 
 ```python
 # Delete entire batch
@@ -1666,7 +1674,13 @@ Activate a configuration version. If the configuration uses BDA (`use_bda=True`)
 - `config_profile` (alias: `config_version`) (str, required): Configuration profile to activate
 - `stack_name` (str, optional): Stack name override
 
-**Returns:** `ConfigActivateResult` with `success`, `activated_version`, `bda_synced`, `bda_classes_synced`, `bda_classes_failed`, and `error`
+**Returns:** `ConfigActivateResult` with `success`, `activated_version`, `bda_synced`, `bda_classes_synced`, `bda_classes_failed`, `bda_orphaned_blueprint_arns`, and `error`
+
+`bda_orphaned_blueprint_arns` is the same report `sync_bda()` returns as
+`orphaned_blueprint_arns` — see [`config.sync_bda()`](#configsync_bda) below for what
+leaves a blueprint orphaned. Read it on failure as well as on success: the deletes run
+whatever happened to the classes, so an aborted activation is the outcome most likely to
+have left one, and `bda_synced` is `False` on every failing path.
 
 ```python
 result = client.config.activate("v2")
@@ -1677,6 +1691,10 @@ if result.success:
         print(f"BDA synced: {result.bda_classes_synced} classes")
 else:
     print(f"Failed to activate: {result.error}")
+
+# Independent of success: blueprints left behind in the account.
+for arn in result.bda_orphaned_blueprint_arns:
+    print(f"  ⚠ orphaned, run the cleanup to remove: {arn}")
 ```
 
 ### config.delete()
@@ -1710,7 +1728,28 @@ Synchronize IDP document class schemas with BDA (Bedrock Data Automation) bluepr
 - `config_profile` (alias: `config_version`) (str, optional): Configuration profile to sync (default: active version)
 - `stack_name` (str, optional): Stack name override
 
-**Returns:** `ConfigSyncBdaResult` with `success`, `direction`, `mode`, `classes_synced`, `classes_failed`, `processed_classes`, and `error`
+**Returns:** `ConfigSyncBdaResult` with `success`, `direction`, `mode`, `classes_synced`, `classes_failed`, `processed_classes`, `orphaned_blueprint_arns`, and `error`
+
+`orphaned_blueprint_arns` names blueprints a `replace`-mode sync removed from the BDA
+project but could not then delete. The order is forced — BDA refuses to delete a
+blueprint a project still associates, so the project's list is rewritten first and the
+deletes follow — so a failed delete leaves a blueprint that is already out of the
+project: invisible to everything that reads the project, still counted against the
+account's blueprint limit, and still matchable by name prefix. It is reported alongside
+`success` rather than instead of it, and it is **not** counted into `classes_failed`,
+because the classes may all have synced and the outstanding work is a cleanup rather
+than a re-sync. It is populated on the failure and exception paths too, since the
+deletes run before the last steps of a sync. `config.activate()` reports the same thing
+as `bda_orphaned_blueprint_arns`.
+
+⚠️ The remedy is the **`syncBdaIdp` API operation with `direction: "cleanup_orphaned"`**,
+which deletes account-wide blueprints carrying the stack's name prefix that the active
+configuration no longer describes. Do **not** reach for
+[`stack.cleanup_orphaned()`](#stackcleanup_orphaned): despite the name it is a different
+operation entirely — it removes CloudFront distributions, log groups, IAM policies and S3
+buckets left behind by deleted stacks, and never touches a blueprint. There is no SDK
+method and no CLI subcommand for the blueprint cleanup yet
+([#1207](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/1207)).
 
 ```python
 # Bidirectional sync (default)
@@ -1734,6 +1773,10 @@ if result.success:
         print(f"  • {cls}")
 else:
     print(f"Sync failed: {result.error}")
+
+# Independent of success/failure: blueprints left behind in the account.
+for arn in result.orphaned_blueprint_arns:
+    print(f"  ⚠ orphaned, run the cleanup to remove: {arn}")
 ```
 
 ---

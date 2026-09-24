@@ -200,15 +200,38 @@ its response. The recorded `type` values are `nested_object`, `nested_array` and
 or a bare string — which cannot be described to BDA at all and used to fail the whole
 class with a raw `TypeError`).
 
-Two known imprecisions in that report. The harmless one: on the **update** path each
-dropped property is recorded **twice**, because `_check_for_updates` runs the transform to
-diff against the existing blueprint and the update itself runs it again;
-`_skipped_properties` is a per-instance list and nothing de-duplicates it. The one that
-can still lose a warning: `_current_class` is a single instance attribute while `_process_classes_parallel` runs
-`_process_single_class` on up to `BDA_SYNC_MAX_WORKERS` threads, so a drop can in
-principle be filed against a sibling class — and because the collection filters on that
-label, it is then omitted from its real class's warnings rather than merely misfiled. It
-does not reproduce under natural scheduling ([#1193](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/1193)).
+One known imprecision remains in that report: on the **update** path each dropped
+property is recorded **twice**, because `_check_for_updates` runs the transform to diff
+against the existing blueprint and the update itself runs it again, and nothing
+de-duplicates.
+
+**The class a drop is filed under is ambient, per thread, and per invocation.** The
+recorder sits at the bottom of the transform's call tree, several frames below the method
+that knows which class is being processed, so the label cannot practically be a
+parameter — `_transform_json_schema_to_bedrock_blueprint` and the six helpers below it
+are called from dozens of sites outside this module, all but one of them in tests, and a
+*defaulted* parameter would reintroduce the silent path the label exists to close.
+`_process_single_class` therefore opens a
+`_recording_drops_for()` block around its whole body and `_record_skipped_property`
+reads the recording in force, from a module-level `contextvars.ContextVar`.
+
+⚠️ The reason it is a `ContextVar` and not an instance attribute is the shape of the
+defect it replaced. A label on the instance is shared by every worker
+`_process_classes_parallel` starts, and the collection *filtered* a shared list on that
+label — so a drop labelled with a sibling's name did not arrive misfiled, it arrived
+nowhere, and the class came back `success` with no warnings while a whole section had
+left its extraction contract. A new thread starts with an empty context, so a worker
+cannot see or overwrite a sibling's label; resetting the token on exit is what stops one
+worker's second class inheriting its first class's drops, which is the part a
+`threading.local()` list would get wrong, because an executor reuses its threads. Both
+properties are pinned in `TestDropsAreAttributedPerWorkerThread`, whose interleaving is
+forced with a `threading.Barrier` rather than hoped for — the original defect did not
+reproduce under natural scheduling.
+
+`_skipped_properties` is still on the instance and still receives every drop, in order,
+as a diagnostic record. Nothing reads it to decide what a class's warnings are. Outside
+a recording — `BlueprintOptimizer`, or a direct call to one of the transform helpers —
+a drop is logged and recorded there with a `class` of `None`.
 
 ### Failing to associate a blueprint fails its class
 
@@ -258,9 +281,42 @@ retrieval can no longer see; `cleanup_orphaned_blueprints` lists account-wide an
 still find them. Note that `BDABlueprintCreator.delete_blueprint` reports failure by
 returning `False` rather than raising, so its return value is the signal to read.
 
-⚠️ That returned list is **discarded by the only production caller**, so today a failed
-delete reaches CloudWatch and nothing the user sees, while the sync still reports success
-([#1194](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/1194)).
+`create_blueprints_from_custom_configuration` puts that list on
+`self.orphaned_blueprint_arns`, clearing it at the start of every sync so a caller cannot
+read a previous sync's orphans as this one's. Each of its three callers surfaces it: the
+`syncBdaIdp` resolver appends it to the response `message` (with the literal `WARNING`,
+which is what stops the UI auto-dismissing the message), and the SDK returns it as
+`ConfigSyncBdaResult.orphaned_blueprint_arns` and
+`ConfigActivateResult.bda_orphaned_blueprint_arns`, which `idp-cli config-sync-bda` and
+`config-activate` print.
+
+⚠️ **The failure paths are the ones to get right, and they are the ones that are easy to
+miss.** The deletes run *before* the last two steps of a sync — the AWS-standard-blueprint
+disassociation and the write-back of sanitized classes, both of which can raise — so a
+sync that failed, aborted an activation, or threw can all have left a blueprint behind,
+and each is more likely to have done so than a clean run. Three consequences, each
+pinned by a test:
+
+- every result-building branch reachable after a sync carries the list, including the
+  ones that report failure — in `ConfigOperation.activate` that means four returns, and
+  the one that legitimately omits it is the pre-sync "version does not exist" answer;
+- the three exception handlers read it **off the service** rather than from a local,
+  because the local is assigned after the sync call returns and on those paths it never
+  was. `activate`'s outermost handler is the one to watch: `manager.activate_version()`
+  runs outside the BDA block, so a throttle on that write arrives there, after a sync
+  that completed. The locals it names are therefore bound before the `try`, since a
+  `NameError` raised inside an exception handler replaces the error the caller needs;
+- the resolver's total-failure branch puts the text on `error.message` as well as on
+  `message`, because the web UI's failure path renders `error.message` and falls back to
+  `message` only when it is absent — text placed only on `message` there is in the
+  response and invisible.
+
+⚠️ **Not an entry in the per-class status list**, which is what the "surface it like a
+skipped property" instinct suggests. Every consumer of that list *counts* it —
+`classes_synced` / `classes_failed` in the SDK, `processedClasses` in the resolver — so an
+entry for something that is not a document class would report a class as unsynced when
+every class synced. An orphan is outstanding *cleanup*, not a failed class, and saying
+otherwise sends the user to re-run a sync that will not remove it.
 
 ## Blueprint Optimization
 

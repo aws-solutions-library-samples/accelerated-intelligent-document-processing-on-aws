@@ -241,11 +241,20 @@ def complete_section_review(
         "reviewedByEmail": user_email or "",
         "reviewedAt": datetime.now(timezone.utc).isoformat(),
     }
-    review_history = doc.get("HITLReviewHistory", []) or []
-    review_history.append(review_record)
-
-    update_expr = "SET HITLReviewHistory = :history"
-    expr_values = {":history": review_history}
+    # Appended by DynamoDB rather than by this process, so a second annotator
+    # finishing another section in the same window cannot overwrite this record.
+    # Reading the array, appending in Python and writing the whole array back is
+    # a lost update: both writers succeed, and the loser's entry is gone with
+    # nothing reporting it. `list_append` is the right remedy here rather than a
+    # version check because the attribute is append-only and order-insensitive —
+    # no writer needs to see another's entry, so there is no conflict to detect
+    # and no retry to get wrong. `if_not_exists` covers the first entry on a
+    # document that has never been reviewed, where the attribute is absent.
+    update_expr = (
+        "SET HITLReviewHistory = "
+        "list_append(if_not_exists(HITLReviewHistory, :empty_history), :new_history)"
+    )
+    expr_values = {":empty_history": [], ":new_history": [review_record]}
 
     if all_completed:
         update_expr += ", HITLCompleted = :hitlCompleted"
@@ -622,17 +631,47 @@ def skip_all_sections_review(object_key, username="", user_email=""):
         "action": "skip_all",
         "skippedSections": list(sections_to_skip),
     }
-    review_history = doc.get("HITLReviewHistory", []) or []
-    review_history.append(review_record)
-
+    # Appended by DynamoDB, for the same reason as in complete_section_review
+    # above: a reviewer finishing a section while an admin skips the rest would
+    # otherwise have their entry overwritten by whichever of the two wrote last.
+    #
+    # `HITLSectionsSkipped` in the same statement is still a whole-list write, and
+    # it is **not** safe under the same overlap. Stating the residual precisely,
+    # because the shape invites a wrong reading: `all_skipped` unions
+    # `existing_skipped` in, so nothing another skip-all recorded is dropped, and
+    # two skip-alls that read the same `completed` do compute the same set. What
+    # diverges is `completed` itself. A reviewer finishing a section while this runs
+    # means one of the two callers computed `all_section_ids - completed` from a
+    # `completed` that did not yet name that section, so it lands in
+    # `HITLSectionsSkipped` as well as in `HITLSectionsCompleted` -- and because the
+    # union is monotonic, clicking Skip All again reproduces it rather than clearing
+    # it. Measured, not assumed. What an operator sees is a section recorded both
+    # reviewed and skipped, and a later `complete_section_review` reading
+    # `has_skipped` and reporting `Skipped` for a document whose sections were all
+    # actually reviewed.
+    #
+    # It is left here because the input that diverges is `completed`, which arrives
+    # from the document model rather than from the read above, and every writer of
+    # that attribute goes through `DocumentDynamoDBService.update_document` -- one
+    # unconditional whole-document write shared by the pipeline and several
+    # resolvers. Guarding one caller of it in isolation is the change that looks
+    # like a fix and is not. Reported in #1111 with the other sites on that path.
     table.update_item(
         Key={"PK": f"doc#{object_key}", "SK": "none"},
-        UpdateExpression="SET HITLStatus = :status, HITLSectionsPending = :pending, HITLSectionsSkipped = :skipped, HITLReviewHistory = :history, HITLCompleted = :hitlCompleted, HITLReviewedBy = :reviewedBy, HITLReviewedByEmail = :reviewedByEmail REMOVE HITLPendingReview",
+        UpdateExpression=(
+            "SET HITLStatus = :status, HITLSectionsPending = :pending, "
+            "HITLSectionsSkipped = :skipped, "
+            "HITLReviewHistory = list_append("
+            "if_not_exists(HITLReviewHistory, :empty_history), :new_history), "
+            "HITLCompleted = :hitlCompleted, HITLReviewedBy = :reviewedBy, "
+            "HITLReviewedByEmail = :reviewedByEmail REMOVE HITLPendingReview"
+        ),
         ExpressionAttributeValues={
             ":status": "Review Skipped",
             ":pending": [],
             ":skipped": all_skipped,
-            ":history": review_history,
+            ":empty_history": [],
+            ":new_history": [review_record],
             ":hitlCompleted": True,
             ":reviewedBy": username or "unknown",
             ":reviewedByEmail": user_email or "",

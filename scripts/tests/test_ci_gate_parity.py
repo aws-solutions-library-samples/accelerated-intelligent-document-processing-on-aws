@@ -227,14 +227,29 @@ GATES_DELIBERATELY_OUT_OF_CI = {
         "aggregate floor disabled (`COV_FLOOR=`), discards its output and ignores "
         "its exit status — so there is no verdict for a CI to carry. The ratchet it "
         "reports on does run in both CIs: the aggregate floor inside "
-        "`test-cicd -C lib/idp_common_pkg`, and the per-file baseline asserted by "
-        "`scripts/tests/test_coverage_debt.py` under `test-packages-cicd`."
+        "`test-cicd -C lib/idp_common_pkg`, and the per-file baseline via "
+        "`make check-coverage-debt`, which both configurations invoke immediately "
+        "after that test step because it reads the report the step writes."
     ),
     "coverage-table": (
         "Reprints the table from the last measurement without re-measuring. Reading "
         "a local report is not an assertion, and in CI there would be no report to "
         "read — the same vacuity the Makefile comment above the target records as "
         "the reason it is not wired into `lint` either."
+    ),
+    "coverage-all": (
+        "Measures every tree and prints each one's figure. Like `coverage` above it has "
+        "no threshold and no failure mode of its own -- it exits non-zero only if a "
+        "tree's own tests fail, which the test gates already report -- so there is no "
+        "verdict for CI to carry. Its output is the input to `check-coverage-debt`, "
+        "which IS reached by both CIs. Wiring it into CI would re-run nine suites to "
+        "print a table nobody reads there."
+    ),
+    "coverage-summary": (
+        "Prints the recorded per-tree figures out of scripts/coverage_debt.json without "
+        "measuring anything. Reading a committed file is not an assertion. Registered "
+        "separately from `coverage-all` because this registry is per-target by design: "
+        "one entry, one target's worth of reason."
     ),
     "test-circuit-breaker": (
         "Three circuit-breaker test paths under src/lambda, verbosely. Same "
