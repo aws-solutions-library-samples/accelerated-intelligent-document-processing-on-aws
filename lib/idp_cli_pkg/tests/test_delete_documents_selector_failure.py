@@ -12,10 +12,24 @@ something a caller can act on, while each turns `[]` into a reported success.
 This file pins the CLI half of that. The SDK half is pinned in
 `lib/idp_sdk/tests/unit/test_batch_delete_selector_failure.py`, and the argument is the
 same on both sides: the conversion is the justification for the library refusing rather
-than reporting, so it is asserted where it happens rather than read off the source. A
-narrower `except` added to `delete_documents_cmd` later would put the false success back
-— "No documents found for batch: …" and exit 0 for a throttled scan — with every test in
-`idp_common` and `idp_sdk` still green.
+than reporting, so it is asserted where it happens rather than read off the source.
+
+⚠️ **The change that would put the false success back is a swallow at the *call site*,
+not a narrower outer `except`, and the exit code alone does not separate them.** Both
+mutations were executed against a throttled scan:
+
+| Mutation | Exit | Cause in output | "No documents found" |
+|---|---|---|---|
+| none (as shipped) | 1 | yes | no |
+| swallow at the selector call site (`except Exception: doc_list = []`) | **0** | no | **yes** |
+| narrow this command's outer `except Exception` to `ValueError` | 1 | **no** | no |
+
+So the first is the one that restores the pre-change false success, and the second — the
+more obvious-looking mutation — does not: the `ClientError` escapes uncaught, which is
+still a non-zero exit. That is why each test here asserts the cause is *named* and not
+only that the exit code is non-zero. The assertion on the output is what catches both
+rows; the exit-code assertion catches only the first. Asserting the exit code alone would
+pass a command that fails with a bare traceback and tells the operator nothing.
 
 Three outcomes, which must stay distinguishable by exit code alone, since that is what a
 shell script wrapping the command reads:
@@ -60,8 +74,8 @@ def _scan_fault(code: str = "ThrottlingException") -> ClientError:
     client = botocore.session.get_session().create_client(
         "dynamodb",
         region_name="us-east-1",
-        aws_access_key_id="testing",  # nosec B106 - not a real credential
-        aws_secret_access_key="testing",  # nosec B106 - not a real credential
+        aws_access_key_id="testing",
+        aws_secret_access_key="testing",
     )
     declared = {
         shape.name
