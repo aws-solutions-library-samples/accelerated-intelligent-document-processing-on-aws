@@ -529,13 +529,27 @@ zero calls:
 
 `stepfunctions_history.py` answers one question about a Step Functions execution
 history — which state the terminal failure is attributable to — and it exists because
-two callers answered it separately and both got it wrong the same way.
+four callers answered it separately and each got it wrong in its own way.
 
 ```python
-from idp_common.stepfunctions_history import failing_state, failing_state_is_resolvable
+from idp_common.stepfunctions_history import failing_state, terminal_failure
 
 state = failing_state(events)          # events in either direction; None if unknowable
+failure = terminal_failure(events)     # + the error text; None if nothing failed
 ```
+
+The four are the error-analyzer agent tool, the CodeBuild deployment harness, the
+monitoring timeline (`idp_common.monitoring.stepfunctions_service`) and the web UI's
+execution viewer. Two of them reported a `Catch` handler instead of the state that failed
+(#1139, #1168); two reported the **first** failure in the history instead of the one the
+execution ended on (#1185).
+
+**Why the last failure and not the first.** The unified workflow retries throttles,
+service exceptions and timeouts in many places, so a failed execution routinely carries a
+`TaskFailed` it went on to survive. Taking the earliest one names a state that succeeded
+and an error nobody needs to act on. Note the shape of a `Retry`: it re-runs the **task**,
+not the state, so the history holds one `TaskStateEntered` for that state and the retried
+attempt appears as another schedule/start pair beneath it.
 
 **Why "the last state entered before the failure" is the wrong answer.** A `Catch` that
 routes to a `Fail` state enters that handler *before* the terminal `ExecutionFailed`
@@ -565,17 +579,43 @@ Two things to know before relying on the answer:
   for a caller paging backwards from the failure, and it deliberately refuses to call an
   execution-level failure resolved while pages remain: the handler's own transition
   would otherwise satisfy it.
-- Attribution infers causality from **adjacency**, so inside a concurrent `Map` — whose
-  iterations share one history and therefore interleave — it can name a sibling
-  iteration's state. Walking `previousEventId` is the exact fix and has not been made.
-  Such a walk has to start from an **outcome** event: a `TaskStateEntered` precedes its
-  own `TaskScheduled`, so walking back from a state transition reaches the *previous*
-  state's events.
+- Attribution here infers causality from **adjacency**, so inside a concurrent `Map` or
+  `Parallel` — whose branches share one history and therefore interleave — it can name a
+  sibling branch's state. Walking `previousEventId` is the exact fix, and the UI's
+  execution resolver now does it; this module still uses adjacency, because its callers
+  report one state name for the whole execution rather than per-instance status. Such a
+  walk has to start from an **outcome** event: a `TaskStateEntered` precedes its own
+  `TaskScheduled`, so walking back from a state transition reaches the *previous* state's
+  events — and it has to be a walk rather than one hop, since a failure event names
+  `TaskStarted`, which names `TaskScheduled`, which names the transition.
+- One failure event needs no inference at all: `EvaluationFailed` carries the state name
+  in its own detail, and `state` is a *required* member of that shape, so where the event
+  exists the name is always there. It is believed over adjacency.
+
+**The failure vocabulary is a rule about capability, not a list of spellings.** An event
+type can carry a failure exactly when its own detail shape declares both `error` and
+`cause`; sixteen of the `HistoryEventType` values do, and fifteen of those are treated as
+failures. The rule everyone writes first — "the name ends in `Failed`, `TimedOut` or
+`Aborted`" — additionally admits nine container and transition events that carry no error
+text whatsoever (`MapStateFailed`, `ParallelStateFailed`, `MapIterationFailed`,
+`TaskStateAborted` and five more). Each of those reports only that something inside it
+failed, and that something is itself in the vocabulary and arrives earlier, so admitting
+them would move attribution outward from the state that failed to the state containing it.
+`ExecutionAborted` is the one capable type deliberately held out: an abort is an
+externally requested stop that `describe_execution` reports as a status, so an execution
+cancelled while healthy reports no failure rather than one naming whichever state it
+happened to be in — a confident wrong answer, which costs more than an admitted gap. On an
+execution aborted *after* a genuine failure the exclusion changes the state named not at
+all; the task-level event is matched on its own account either way.
+The classification is asserted against the bundled service model for every member of the
+enum, so a type the service adds later has to be placed rather than defaulting into or out
+of the vocabulary.
 
 The module imports nothing outside the standard library, deliberately — the CodeBuild
-deployment harness (`scripts/sdlc/codebuild_deployment.py`) is one of its two callers
-and cannot afford `strands`, which the other one (the error-analyzer agent tool) pulls
-in.
+deployment harness (`scripts/sdlc/codebuild_deployment.py`) is one of its callers and
+cannot afford `strands`, which the error-analyzer agent tool pulls in. That is also why
+the vocabulary is spelled out as a literal here and the derivation from the model lives in
+the tests.
 
 ## 🧹 Selecting documents to delete
 
