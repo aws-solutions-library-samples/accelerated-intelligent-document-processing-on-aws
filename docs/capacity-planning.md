@@ -90,10 +90,11 @@ The capacity calculation system provides sophisticated analysis through GraphQL 
 - Performance warning alerts for quota exceedances
 
 **RPM (Requests Per Minute) Calculation**:
-- Calculates **average requests per document** from metering data samples
-- Multiplies by scheduled documents per hour to get total requests per hour
-- Applies SLA factor for peak demand calculation
-- Formula: `avg_requests_per_doc × scheduled_docs_per_hour / 60 × sla_factor`
+- Calculates **average requests per document** from metering data samples, summing
+  every Bedrock metering key a document recorded for that step
+- Multiplies by the **busiest** hour's scheduled documents to get requests per hour
+- Applies the 10% safety buffer
+- Formula: `avg_requests_per_doc × peak_scheduled_docs_per_hour / 60 × 1.1`
 
 ### 3. Document Token Usage Population
 
@@ -308,16 +309,21 @@ Navigate to the Web UI and select the "Capacity Planning" section:
 **RPM Calculation Method**:
 ```
 1. Sample up to 100 documents with metering data
-2. Calculate average requests per document for each processing step
-3. Multiply by scheduled documents per hour
+2. Calculate average requests per document for each processing step, adding up every
+   Bedrock metering key that document recorded for the step
+3. Multiply by the busiest hour's scheduled documents
 4. Apply 10% safety buffer for burst traffic
 5. Convert to per-minute rate
 
-Formula: peak_rpm = (avg_requests_per_doc × scheduled_docs_per_hour / 60) × 1.1
+Formula: peak_rpm = (avg_requests_per_doc × peak_scheduled_docs_per_hour / 60) × 1.1
 
 Where:
-- avg_requests_per_doc: Calculated from metering samples
-- scheduled_docs_per_hour: Sum across all hourly time slots
+- avg_requests_per_doc: Calculated from metering samples. A step can record several
+  keys for one document — the key is "{context}/bedrock/{model_id}", so a per-class
+  model override or an escalation adds a key rather than adding to one — and all of
+  them count towards the step's total
+- peak_scheduled_docs_per_hour: The largest docsPerHour across the hourly time slots,
+  not their sum. RPM is a per-minute limit, so it is scaled from one hour, as TPM is
 - 1.1 = 10% safety buffer (not SLA factor)
 ```
 

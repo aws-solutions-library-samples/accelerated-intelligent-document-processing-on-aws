@@ -1219,14 +1219,23 @@ def test_requests_per_document_is_averaged_across_the_sampled_documents(tracking
 
 
 @pytest.mark.unit
-def test_only_the_first_matching_metering_key_per_document_is_counted(tracking):
-    """A step that issues several Bedrock calls under distinct keys is undercounted.
+def test_every_matching_metering_key_in_a_document_is_counted(tracking):
+    """A step that issues several Bedrock calls under distinct keys counts them all.
 
-    Agentic extraction records one entry per model or tool invocation, so a document
-    can carry `Extraction/bedrock/<model-a>` and `Extraction/bedrock/<model-b>`. The
-    scan stops at the first match per document, so 3 + 5 calls are counted as 3 and
-    the RPM requirement comes out 62% low — the direction that reports a quota as
-    sufficient when it is not. Pinned as current behaviour.
+    The key format is `{context}/bedrock/{model_id}`, and `merge_metering_data` sums
+    repeats of one key rather than adding another, so several matching keys on one
+    document means the step invoked Bedrock under more than one context or model. Two
+    shapes in this repository produce exactly that for extraction: a per-class model
+    override, and an escalation, which records under `Extraction-Escalation` and
+    `ExtractionEscalation` — distinct keys that both satisfy the planner's
+    `"extraction" in key` filter. Here 3 and 5 calls are 8 requests for the document.
+    Stopping at the first match would count 3, understating the RPM requirement — the
+    direction that reports a quota as sufficient when it is not.
+
+    The document must still count once towards the per-document average, which is
+    the other half of the same code and the reason the two are asserted together:
+    counting each key as a document would divide 8 by 2 and land back near the
+    undercount by a different route.
     """
     metering = {}
     metering.update(bedrock("Extraction", 3, model="model-a"))
@@ -1234,17 +1243,20 @@ def test_only_the_first_matching_metering_key_per_document_is_counted(tracking):
     put_metered(tracking, "doc-1", metering)
     hourly = hours(**{"9": {"docsPerHour": 600, "extractionTokensPerHour": 60000}})
     requirement = by_type(build(hourly))[("Extraction", "RPM")]
-    # 3 req/doc x 600 docs / 60 x 1.1 = 33; all 8 would give 88.
-    assert requirement["requiredQuota"] == "33"
+    # 8 req/doc x 600 docs / 60 x 1.1 = 88; the first key alone would give 33, and
+    # treating each key as its own document would give 44.
+    assert requirement["requiredQuota"] == "88"
 
 
 @pytest.mark.unit
-def test_assessment_sums_every_matching_entry_unlike_the_other_steps(tracking):
+def test_assessment_sums_its_regular_and_granular_entries_together(tracking):
     """Assessment accumulates across keys, which is what granular assessment needs.
 
-    2 regular plus 8 granular calls is 10 per document. The contrast with the
-    extraction case above is deliberate: the two code paths count differently and
-    only one of them is right for a multi-call step.
+    2 regular plus 8 granular calls is 10 per document. Every step now accumulates
+    every matching key into one per-document total, so this asserts no contrast with
+    the extraction case above; what is still Assessment's own is how it *decides*
+    which keys match — the `assessment/` and `granularassessment/` prefixes, and the
+    granular flag honoured in the test below — and that is what this covers.
     """
     metering = {}
     metering.update(bedrock("Assessment", 2))
@@ -1296,23 +1308,36 @@ def test_turning_off_granular_assessment_on_an_all_granular_history_fails_the_re
 
 
 @pytest.mark.unit
-def test_the_request_rate_is_derived_from_the_whole_days_volume_not_the_peak_hour(
+def test_both_halves_of_a_row_are_scaled_from_one_peak_hour_not_the_whole_day(
     tracking,
 ):
-    """The TPM and RPM halves of one row are scaled from different windows.
+    """TPM and RPM are both per-minute limits, so each is scaled from a peak hour.
 
-    `requiredQuota` for TPM comes from the busiest hour; for RPM it comes from the
-    sum of all 24 hours divided by 60. Two schedules with the same 240-document day
-    therefore agree on RPM and differ 24-fold on TPM: concentrating the whole day
-    into one hour changes the token requirement and not the request requirement,
-    although both limits are per-minute limits.
+    Two schedules carrying the same 240-document day — one concentrated into hour 9,
+    one spread 10 documents an hour across all 24 — therefore differ 24-fold on
+    *both* halves of the extraction row, and the ratio is what is asserted rather
+    than the four literals, because that is the property: concentrating a day's work
+    raises the token requirement and the request requirement by the same factor.
 
-    For a load spread evenly across the day that makes the RPM figure 24 times the
-    rate the account will actually see, so the report asks for a request-quota
-    increase that the workload does not need. Asserted as the current behaviour of
-    both halves.
+    Deriving RPM from the 24-hour total instead would make the two schedules agree
+    on RPM while still differing 24-fold on TPM, and the evenly spread day — the
+    ordinary shape of a scheduled backlog — would be told to raise a request quota
+    to 24 times the rate the account will ever see.
+
+    ⚠️ "A" peak hour rather than "the" peak hour: the two maxima are taken over
+    different series — TPM over `<step>TokensPerHour`, RPM over `docsPerHour` — so
+    on a schedule whose busiest token hour is not its busiest document hour they
+    come from different hours. That is the conservative answer and not a defect,
+    since each quota has to cover its own worst hour, but it is why this test uses a
+    schedule where the two coincide and why the ratio, not a shared hour index, is
+    what is asserted.
+
+    60 Bedrock calls a document is used rather than 1 so that neither figure lands
+    below the resolution of the whole-number `requiredQuota`: at 1 call a document
+    the spread schedule needs under a fifth of a request a minute, which prints as
+    `0` and puts the ratio out of reach of the assertion.
     """
-    put_metered(tracking, "doc-1", bedrock("Extraction", 1))
+    put_metered(tracking, "doc-1", bedrock("Extraction", 60))
     concentrated = hours(
         **{"9": {"docsPerHour": 240, "extractionTokensPerHour": 240 * 6000}}
     )
@@ -1326,10 +1351,18 @@ def test_the_request_rate_is_derived_from_the_whole_days_volume_not_the_peak_hou
     peak = by_type(build(concentrated))
     flat = by_type(build(spread))
 
-    assert peak[("Extraction", "RPM")]["requiredQuota"] == "4"
-    assert flat[("Extraction", "RPM")]["requiredQuota"] == "4"
-    assert peak[("Extraction", "TPM")]["requiredQuota"] == "26,400"
-    assert flat[("Extraction", "TPM")]["requiredQuota"] == "1,100"
+    def quota(requirements, quota_type):
+        return int(
+            requirements[("Extraction", quota_type)]["requiredQuota"].replace(",", "")
+        )
+
+    assert quota(peak, "RPM") == 24 * quota(flat, "RPM")
+    assert quota(peak, "TPM") == 24 * quota(flat, "TPM")
+    # 60 req/doc x 240 docs / 60 x 1.1 = 264, and x 10 docs gives 11.
+    assert quota(peak, "RPM") == 264
+    assert quota(flat, "RPM") == 11
+    assert quota(peak, "TPM") == 26400
+    assert quota(flat, "TPM") == 1100
 
 
 @pytest.mark.unit
