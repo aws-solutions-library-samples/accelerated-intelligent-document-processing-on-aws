@@ -134,7 +134,6 @@ extraction:
   temperature: '0.0'
   top_p: '0.0'
   top_k: '5.0'
-  max_tokens: '64000'
   image:
     target_width: null
     target_height: null
