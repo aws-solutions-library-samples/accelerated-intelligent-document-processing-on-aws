@@ -229,6 +229,11 @@ def test_pattern_1_takes_only_the_confidence_and_geometry_parts_of_extraction():
     This is the assertion that would fail if the break were "fixed" by inheriting
     ``base-extraction.yaml``: that resolves, and it hands a BDA deployment an LLM
     extraction model and prompts it never runs.
+
+    Equality rather than a subset relation, which is what closes the set in both
+    directions: a sub-section under ``extraction`` that is in neither member of
+    ``PATTERN_1_EXTRACTION_SUBSECTIONS`` fails here, and so does one of those two
+    going missing. No inheritance drift under this key is left unaccounted for.
     """
     resolved = load_system_defaults("pattern-1")
     assert set(resolved["extraction"]) == PATTERN_1_EXTRACTION_SUBSECTIONS
