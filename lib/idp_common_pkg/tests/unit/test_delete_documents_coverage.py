@@ -1065,6 +1065,31 @@ class TestASelectorFailureIsNotReportedAsSuccess:
         assert result["success"] is True
         assert (result["deleted_count"], result["total_count"]) == (0, 0)
 
+    def test_the_derived_set_of_scan_faults_is_not_empty(self):
+        """The one premise the parametrisation below cannot assert about itself.
+
+        Deriving the codes from the service model is what keeps them from being a
+        hand-written belief about DynamoDB. But a derived set can also come back
+        **empty**, and `@pytest.mark.parametrize` over an empty list collects as one
+        *skip*, not a failure — measured here by replacing the derivation with `[]`:
+        `1 failed, 14 passed, 1 skipped`, where the one failure is this test and the
+        skip is the per-class check silently covering nothing. Without this, a
+        botocore whose model no longer answers for `Scan` — a renamed accessor, a
+        trimmed bundle — would take the whole propagation guarantee out and leave the
+        gate green.
+
+        What is deliberately **not** asserted here is that each code maps to a
+        `ClientError`, although that is the premise behind treating one
+        `except ClientError` as the plausible narrowing. `exceptions.from_code`
+        synthesises a `ClientError` subclass for *any* string, so an `issubclass`
+        check passes for a code the model does not declare at all and cannot fail:
+        measured, appending an invented code left the class at `21 passed`. That
+        premise is a property of how botocore generates its exception classes rather
+        than of this service model, so the case for the separate `BotoCoreError` test
+        beside the parametrised one has to stand on its own.
+        """
+        assert _scan_error_codes(), "no Scan fault came back from the service model"
+
     @pytest.mark.parametrize("code", _scan_error_codes())
     def test_every_fault_the_service_model_declares_for_scan_reaches_the_caller(
         self, code
