@@ -74,6 +74,17 @@ the run has measured nothing and refuses on the first rule above. Fail-closed is
 point — dropping `--junitxml` from a producer cannot quietly turn the trust check off,
 it turns the whole gate red.
 
+**What this does not answer is *when*.** The pairing check compares the report and its
+record against each other, never against the current invocation, so a report and record
+left behind **together** by an earlier run are accepted and a full verdict is printed
+about a stale measurement. Neither CI can reach that state — each job starts from a fresh
+checkout and neither restores `test-reports/` from a cache or an artifact — but a local
+tree keeps whatever the last run wrote. A blanket age limit is the wrong fix: after
+`make coverage-all`, one tree failing its suite makes `--write` refuse everything, and the
+correct recovery is to re-run that one tree and record again, which depends on the other
+eight reports still being accepted an hour later. Freshness therefore has to be something
+a caller asks for, not a deadline the gate imposes.
+
 Partial measurement is still a pass: one tree measured and eight unmeasured exits 0 and
 names the eight, which is the ordinary local case (`make test-cicd -C lib/idp_common_pkg`
 measures `idp_common` alone) and the CI case as well.
@@ -402,8 +413,11 @@ def run_trust(report: Path) -> RunTrust:
         )
     try:
         root = ET.parse(record).getroot()
-    except ET.ParseError as exc:
-        return RunTrust("unverified", f"{record.name} does not parse ({exc})")
+    except (ET.ParseError, OSError) as exc:
+        # Every failure to read the record lands on "unverified", never on "clean", so
+        # widening this clause can only make the gate more cautious. A record it cannot
+        # read is a record that vouches for nothing.
+        return RunTrust("unverified", f"{record.name} cannot be read ({exc})")
     suites = list(root.iter("testsuite"))
     if not suites:
         return RunTrust(
@@ -418,6 +432,13 @@ def run_trust(report: Path) -> RunTrust:
         return RunTrust(
             "unverified", f"{record.name} has an unreadable test count ({exc})"
         )
+    # The counts a `<testsuite>` attribute claims are the summary; the `<error>` and
+    # `<failure>` elements are the record itself. Taking the larger of the two reads a
+    # recorded error whichever way the producer wrote it, rather than trusting one
+    # spelling of it -- pytest writes both, and a record carrying an `<error>` under
+    # `errors="0"` would otherwise read as a clean run.
+    errors = max(errors, len(list(root.iter("error"))))
+    failures = max(failures, len(list(root.iter("failure"))))
     if errors or failures:
         return RunTrust(
             "errored",
@@ -495,15 +516,36 @@ def check_tree(
     return problems, report_total(report)
 
 
-def check(required: tuple[str, ...] = ()) -> tuple[int, list[str], list[Unchecked]]:
+class CheckResult(NamedTuple):
+    """One run's outcome. ``checked`` is why the caller can describe it accurately.
+
+    A refusal is per tree, so "this run measured nothing" is a claim about the whole run
+    that only :attr:`checked` can settle: one tree can be compared cleanly and produce a
+    genuine regression while another tree's report is refused. Reporting that combination
+    as "nothing was measured" tells a reader to dismiss a real finding as an artefact,
+    which is the same defect — a heading a log reader cannot tell apart from a different
+    outcome — that this gate exists to remove.
+    """
+
+    #: 2 when the run reached no verdict, 1 when the ratchet has findings, else 0.
+    code: int
+    #: Every line to print: findings first, then refusals.
+    problems: list[str]
+    #: Trees this run could not compare, each with its reason.
+    unchecked: list[Unchecked]
+    #: Trees actually compared against their baseline. A finding naming one of these is
+    #: a real regression whatever else the run refused.
+    checked: list[str]
+
+
+def check(required: tuple[str, ...] = ()) -> CheckResult:
     """Check every tree with a trustworthy report.
 
-    Returns ``(exit code, problems, unchecked)``. The exit code is **2** when the run
-    produced no verdict — nothing was measured, a report came from a run that did not
-    finish, or a tree named in ``required`` was not checked — **1** when the ratchet has
-    findings, and 0 otherwise. A refusal outranks a finding: the findings from the trees
-    that *were* measured are still printed, but the run as a whole did not establish what
-    it set out to.
+    The exit code is **2** when the run produced no verdict — nothing was measured, a
+    report came from a run that did not finish, or a tree named in ``required`` was not
+    checked — **1** when the ratchet has findings, and 0 otherwise. A refusal outranks a
+    finding: the findings from the trees that *were* measured are still printed, but the
+    run as a whole did not establish what it set out to.
     """
     baseline = load_baseline()
     trees = baseline.get("trees", {})
@@ -514,8 +556,12 @@ def check(required: tuple[str, ...] = ()) -> tuple[int, list[str], list[Unchecke
     for tree in TREES:
         report = _resolve_report(tree)
         if report is None:
+            # No claim about *when*: this gate compares mtimes of the report and its run
+            # record against each other, and nothing against the current invocation, so a
+            # report and record left behind together by an earlier run are accepted. Say
+            # only what was looked for.
             unchecked.append(
-                Unchecked(tree.name, "no coverage report from this run or any other")
+                Unchecked(tree.name, f"no coverage report at {report_path(tree)}")
             )
             continue
         trust = run_trust(report)
@@ -560,7 +606,7 @@ def check(required: tuple[str, ...] = ()) -> tuple[int, list[str], list[Unchecke
             "SKIP_INSTALL=1` for idp_common, or `make coverage-all` for every tree."
         )
     code = 2 if refusals else (1 if problems else 0)
-    return code, problems + refusals, unchecked
+    return CheckResult(code, problems + refusals, unchecked, checked)
 
 
 def write_baseline() -> int:
@@ -577,6 +623,7 @@ def write_baseline() -> int:
     trees: dict[str, dict] = {}
     measured_trees: list[str] = []
     refusals: list[str] = []
+    recorded_now = load_baseline().get("trees", {})
     for tree in TREES:
         report = _resolve_report(tree)
         trust = None if report is None else run_trust(report)
@@ -586,7 +633,7 @@ def write_baseline() -> int:
         if report is None or trust is None or trust.state != "clean":
             why = "no report" if report is None else trust.detail
             print(f"  … {tree.name}: {why}, leaving its baseline untouched")
-            existing = load_baseline().get("trees", {}).get(tree.name)
+            existing = recorded_now.get(tree.name)
             if existing:
                 trees[tree.name] = existing
             continue
@@ -707,6 +754,15 @@ def main() -> int:
             f"{', '.join(unknown)}. Known trees: {', '.join(t.name for t in TREES)}"
         )
         return 2
+    if args.require_tree and (args.summary or args.write):
+        # Refused rather than ignored. Neither of those modes compares anything, so a
+        # caller passing both has asserted a precondition that nothing will evaluate --
+        # and an ignored assertion is the exact shape of the defect this flag exists for.
+        print(
+            "🚫 --require-tree asserts that a tree was CHECKED, which neither --summary "
+            "nor --write does. Drop one of them."
+        )
+        return 2
 
     if args.summary:
         baseline = load_baseline()
@@ -725,15 +781,27 @@ def main() -> int:
     if args.write:
         return write_baseline()
 
-    code, problems, unchecked = check(tuple(args.require_tree))
+    result = check(tuple(args.require_tree))
+    code, problems, unchecked = result.code, result.problems, result.unchecked
     if code:
-        if code == 2:
+        if code == 2 and not result.checked:
             # Deliberately not the ❌ heading: this run reached no verdict, which is a
             # different thing from finding a regression, and a reader scanning a job log
             # has to be able to tell them apart. Issue #1190.
             print(
-                f"🚫 coverage ratchet: no verdict — {len(problems)} problem(s), at "
-                f"least one of which means nothing was measured\n"
+                f"🚫 coverage ratchet: no verdict — this run measured nothing. "
+                f"{len(problems)} problem(s):\n"
+            )
+        elif code == 2:
+            # Some trees WERE measured, so "nothing was measured" would be false here,
+            # and falsely reassuring in the worst direction: a reader would take the real
+            # regression printed below for another artefact of the unfinished run.
+            print(
+                f"🚫 coverage ratchet: no verdict for the whole tree set — "
+                f"{len(problems)} problem(s). "
+                f"{len(result.checked)} tree(s) WERE measured "
+                f"({', '.join(sorted(result.checked))}), so a finding naming one of them "
+                f"below is a real regression rather than an artefact:\n"
             )
         else:
             print(f"❌ coverage ratchet: {len(problems)} problem(s)\n")
@@ -747,14 +815,13 @@ def main() -> int:
         return code
 
     baseline = load_baseline()
-    unchecked_names = {u.tree for u in unchecked}
-    checked = [t.name for t in TREES if t.name not in unchecked_names]
     files = sum(
-        len(baseline.get("trees", {}).get(n, {}).get("files", {})) for n in checked
+        len(baseline.get("trees", {}).get(n, {}).get("files", {}))
+        for n in result.checked
     )
     print(
-        f"✅ coverage ratchet: {files} file(s) across {len(checked)} tree(s) at or above "
-        f"their recorded coverage"
+        f"✅ coverage ratchet: {files} file(s) across {len(result.checked)} tree(s) at or "
+        f"above their recorded coverage"
     )
     _print_unchecked(unchecked)
     return 0

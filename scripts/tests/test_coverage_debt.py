@@ -57,6 +57,7 @@ import xml.etree.ElementTree as ET
 from pathlib import Path
 
 import pytest
+import yaml
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
@@ -469,7 +470,7 @@ class TestCheckOrchestration:
         )
         _write_tree_report(measured, {"mod.py": 90.0})
         monkeypatch.setattr(ccd, "tracked_source_files", lambda t: ["pkg/mod.py"])
-        code, problems, unchecked = ccd.check()
+        code, problems, unchecked, checked = ccd.check()
         assert (code, problems) == (0, [])
         assert [(u.tree, bool(u.reason)) for u in unchecked] == [("gone", True)], (
             "an unmeasured tree must be reported as unchecked, with a reason; returning "
@@ -485,8 +486,8 @@ class TestCheckOrchestration:
         _install(monkeypatch, tmp_path, [tree], {"trees": {}})
         _write_tree_report(tree, {"mod.py": 90.0})
         monkeypatch.setattr(ccd, "tracked_source_files", lambda t: ["pkg/mod.py"])
-        code, problems, skipped = ccd.check()
-        assert code == 1 and skipped == []
+        code, problems, unchecked, checked = ccd.check()
+        assert code == 1 and unchecked == [] and checked == [tree.name]
         assert any("no recorded baseline" in p for p in problems), problems
 
     def test_problems_from_several_trees_are_all_reported_and_each_is_labelled(
@@ -509,7 +510,7 @@ class TestCheckOrchestration:
         _write_tree_report(a, {"mod.py": 50.0})
         _write_tree_report(b, {"mod.py": 40.0})
         monkeypatch.setattr(ccd, "tracked_source_files", lambda t: ["pkg/mod.py"])
-        code, problems, _ = ccd.check()
+        code, problems, _, _ = ccd.check()
         assert code == 1
         assert any(p.startswith("[alpha]") for p in problems), problems
         assert any(p.startswith("[beta]") for p in problems), problems
@@ -532,7 +533,7 @@ class TestCheckOrchestration:
         _write_tree_report(a, {"mod.py": 95.0})
         _write_tree_report(b, {"mod.py": 20.0})
         monkeypatch.setattr(ccd, "tracked_source_files", lambda t: ["pkg/mod.py"])
-        code, problems, _ = ccd.check()
+        code, problems, _, _ = ccd.check()
         assert code == 1
         assert all("[good]" not in p for p in problems), problems
 
@@ -731,9 +732,10 @@ class TestTheCommandLine:
         assert "recorded 1 file(s)" in capsys.readouterr().out
 
 
-#: A run record captured from a **real** xdist collection mismatch, verbatim apart from the
-#: `hostname` and `timestamp` attributes, which are replaced because a machine name and a
-#: wall clock belong to the machine that ran it and not to this repository.
+#: A run record captured from a **real** xdist collection mismatch, verbatim apart from
+#: the `hostname` attribute, which is replaced because a machine name belongs to the
+#: machine that ran it and not to this repository. Everything else is as pytest wrote it,
+#: the `timestamp` included.
 #:
 #: Reproduced deterministically rather than imagined: a test module whose collected set
 #: depends on a counter file it increments on import, so each worker collects a different
@@ -963,6 +965,43 @@ class TestRunTrust:
         assert trust.state == "unverified", trust
         assert "different run" in trust.detail
 
+    def test_an_error_element_under_a_zero_error_count_is_still_an_error(
+        self, tmp_path
+    ):
+        """The attribute is the summary; the elements are the record.
+
+        Reading only `errors="0"` would be trusting one spelling of "this run was clean".
+        pytest writes both, and the larger of the two is what the gate uses, so a record
+        carrying an `<error>` while claiming none is refused.
+        """
+        report = tmp_path / "coverage.xml"
+        report.write_text('<?xml version="1.0" ?><coverage line-rate="0.5"/>\n')
+        ccd.run_record_path(report).write_text(
+            '<?xml version="1.0" ?><testsuites><testsuite name="pytest" errors="0" '
+            'failures="0" tests="4"><testcase name="gw1"><error message="collection '
+            'failure">Different tests were collected between gw0 and gw1</error>'
+            "</testcase></testsuite></testsuites>\n",
+            encoding="utf-8",
+        )
+        trust = ccd.run_trust(report)
+        assert trust.state == "errored", trust
+
+    def test_a_failure_element_under_a_zero_failure_count_is_still_a_failure(
+        self, tmp_path
+    ):
+        """The same reading for `<failure>` as for `<error>`, and it needs its own test:
+        removing the failure floor while leaving the error one left every other test in
+        this file green."""
+        report = tmp_path / "coverage.xml"
+        report.write_text('<?xml version="1.0" ?><coverage line-rate="0.5"/>\n')
+        ccd.run_record_path(report).write_text(
+            '<?xml version="1.0" ?><testsuites><testsuite name="pytest" errors="0" '
+            'failures="0" tests="4"><testcase name="test_x"><failure message="assert">'
+            "AssertionError</failure></testcase></testsuite></testsuites>\n",
+            encoding="utf-8",
+        )
+        assert ccd.run_trust(report).state == "errored"
+
     def test_the_pairing_window_cannot_be_widened_into_uselessness(self):
         """A bound on the constant, because the test above derives its skew from it.
 
@@ -1084,6 +1123,46 @@ class TestNothingMeasured:
         )
         assert "✅" not in out
 
+    def test_a_refusal_beside_a_real_finding_does_not_claim_nothing_was_measured(
+        self, monkeypatch, tmp_path, capsys
+    ):
+        """One tree refused, another measured and genuinely regressed.
+
+        A refusal is per tree, so "this run measured nothing" is a claim only the set of
+        **checked** trees can settle. Printed over a real 50-point fall it is false in the
+        worst direction: a reader dismisses the regression as another artefact of the
+        unfinished run. So the heading names the trees that were measured, and says a
+        finding about one of them is real.
+        """
+        good, bad = _fake_tree(tmp_path, "good"), _fake_tree(tmp_path, "bad")
+        _install(
+            monkeypatch,
+            tmp_path,
+            [good, bad],
+            {
+                "trees": {
+                    "good": {"total": 90.0, "files": {"pkg/mod.py": 90.0}},
+                    "bad": {"total": 90.0, "files": {"pkg/mod.py": 90.0}},
+                }
+            },
+        )
+        _write_tree_report(good, {"mod.py": 40.0})
+        bad_report = _write_tree_report(bad, {"mod.py": 40.0}, run_record=False)
+        ccd.run_record_path(bad_report).write_text(ERRORED_RUN_RECORD, encoding="utf-8")
+        monkeypatch.setattr(ccd, "tracked_source_files", lambda t: ["pkg/mod.py"])
+        monkeypatch.setattr(sys, "argv", ["check_coverage_debt.py"])
+        assert ccd.main() == 2
+        out = capsys.readouterr().out
+        assert "fell from 90.00% to 40.00%" in out, out
+        assert "measured nothing" not in out, (
+            f"the heading says nothing was measured while reporting a real regression in "
+            f"a tree that WAS measured:\n{out}"
+        )
+        assert "good" in out.split("\n")[0], (
+            f"the heading does not name the measured tree, so a reader cannot tell the "
+            f"real finding from the refused one:\n{out}"
+        )
+
     def test_one_measured_tree_out_of_several_is_still_a_pass(
         self, monkeypatch, tmp_path, capsys
     ):
@@ -1152,6 +1231,32 @@ class TestNothingMeasured:
         )
         assert ccd.main() == 0
         assert "✅" in capsys.readouterr().out
+
+    @pytest.mark.parametrize("mode", ["--summary", "--write"])
+    def test_require_tree_is_refused_in_a_mode_that_checks_nothing(
+        self, monkeypatch, tmp_path, capsys, mode
+    ):
+        """Refused rather than ignored.
+
+        Neither `--summary` nor `--write` compares anything, so a caller passing
+        `--require-tree` alongside one of them has stated a precondition nothing will
+        evaluate — an assertion silently doing nothing, which is the shape of defect the
+        flag exists to prevent.
+        """
+        tree = _fake_tree(tmp_path, "measured")
+        _install(
+            monkeypatch,
+            tmp_path,
+            [tree],
+            {"trees": {"measured": {"total": 90.0, "files": {"pkg/mod.py": 90.0}}}},
+        )
+        _write_tree_report(tree, {"mod.py": 90.0})
+        monkeypatch.setattr(ccd, "tracked_source_files", lambda t: ["pkg/mod.py"])
+        monkeypatch.setattr(
+            sys, "argv", ["check_coverage_debt.py", mode, "--require-tree=measured"]
+        )
+        assert ccd.main() == 2
+        assert "--require-tree" in capsys.readouterr().out
 
     def test_require_tree_with_an_unknown_name_is_an_error_not_a_satisfied_check(
         self, monkeypatch, tmp_path, capsys
@@ -1322,20 +1427,55 @@ class TestTheCIPreconditionNeedsNoCIChange:
     @pytest.mark.parametrize(
         "config", [".gitlab-ci.yml", ".github/workflows/developer-tests.yml"]
     )
-    def test_each_config_invokes_the_ratchet_after_the_run_that_feeds_it(self, config):
-        text = (REPO_ROOT / config).read_text(encoding="utf-8")
-        line = next(
-            (
-                ln
-                for ln in text.splitlines()
-                if "make check-coverage-debt" in ln and not ln.lstrip().startswith("#")
-            ),
-            None,
+    def test_each_config_runs_the_ratchet_after_its_producer_in_the_SAME_job(
+        self, config
+    ):
+        """Same job, and in order — not merely further down the file.
+
+        File position is the cheap reading and it is not the guarantee: two GitLab jobs in
+        one stage run in **parallel**, so moving the ratchet into a job of its own would
+        leave a position-based assertion green with the ordering gone. So the YAML is
+        parsed and the two commands are located in one job's own command list.
+        """
+        # Imported at module scope, not behind `importorskip`: PyYAML is a hard
+        # dependency of `idp_common` and a dozen suites here import it outright, so a
+        # skip would only be a way for this assertion to stop running.
+        config_data = yaml.safe_load((REPO_ROOT / config).read_text(encoding="utf-8"))
+        producer, ratchet = (
+            "make test-cicd -C lib/idp_common_pkg",
+            ("make check-coverage-debt"),
         )
-        assert line, f"{config} no longer invokes the coverage ratchet at all"
-        assert text.index("make check-coverage-debt") > text.index(
-            "make test-cicd -C lib/idp_common_pkg"
-        ), f"{config} runs the ratchet before the run that writes its report"
+
+        def command_lists(node):
+            """Every ordered list of shell commands this config declares, as strings."""
+            if isinstance(node, dict):
+                steps = node.get("steps")
+                if isinstance(steps, list):  # a GitHub job
+                    yield [str(s.get("run", "")) for s in steps if isinstance(s, dict)]
+                script = node.get("script")
+                if isinstance(script, list):  # a GitLab job
+                    yield [str(line) for line in script]
+                for value in node.values():
+                    yield from command_lists(value)
+
+        holding_both = [
+            commands
+            for commands in command_lists(config_data)
+            if any(producer in c for c in commands)
+            and any(ratchet in c for c in commands)
+        ]
+        assert holding_both, (
+            f"{config} has no single job running both `{producer}` and `{ratchet}`. "
+            f"Either the ratchet is gone, or it now runs in a job of its own — where "
+            f"nothing orders it after the run that writes the report it reads."
+        )
+        for commands in holding_both:
+            first = next(i for i, c in enumerate(commands) if producer in c)
+            after = next(i for i, c in enumerate(commands) if ratchet in c)
+            assert after > first, (
+                f"{config} runs the ratchet at position {after}, before its producer at "
+                f"{first}, so it reads whatever report the workspace already had."
+            )
 
     def test_an_invocation_with_no_arguments_still_refuses_a_missing_report(
         self, monkeypatch, tmp_path, capsys
