@@ -2015,8 +2015,10 @@ def reprocess(
           --batch-id cli-batch-20251015-143000 \\
           --monitor
     """
-    # Call the existing rerun_inference implementation
-    return rerun_inference(
+    # Call the shared implementation directly. `rerun_inference` is the
+    # `click.Command` the decorator stack leaves behind, not a function, so
+    # calling that name here would invoke `Command.main()` instead.
+    return _rerun_inference_impl(
         stack_name,
         step,
         document_ids,
