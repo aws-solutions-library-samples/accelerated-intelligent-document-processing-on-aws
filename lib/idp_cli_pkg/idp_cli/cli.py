@@ -4518,6 +4518,19 @@ def config_validate(
             console.print()
             for error in result["errors"]:
                 console.print(f"  [red]• {error}[/red]")
+            # The unread-key findings belong on this branch too, not only on the
+            # passing one. They are the likely explanation for the error above rather
+            # than a separate observation: a key at the wrong depth is accepted in
+            # silence while its correctly-nested sibling raises, so `ocr.dpi: "abc"`
+            # validates and `ocr.image.dpi: "abc"` does not — and the finding names
+            # which of the two the author wrote. On this path `warnings` holds these
+            # findings and nothing else, since every other check runs only after the
+            # configuration validates, so there is no duplication with the block above.
+            if result["warnings"]:
+                console.print()
+                console.print("[bold yellow]Warnings:[/bold yellow]")
+                for warning in result["warnings"]:
+                    console.print(f"  ⚠ {warning}")
             sys.exit(1)
 
     except FileNotFoundError as e:

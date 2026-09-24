@@ -609,6 +609,28 @@ def validate_config(
         )
         return result
 
+    # Keys the models will drop, at every depth. Reported against the config as
+    # SUBMITTED rather than against `merged`, so every path named is one the author
+    # actually wrote and can go and fix — which is the whole value of catching it
+    # here, while they are still present, rather than in a Lambda log later.
+    #
+    # ⚠️ Above the two failure returns below, and that position is the point. This
+    # asks a question about the submitted document alone: it needs neither `merged`
+    # nor a successful `model_validate`, and it is the ONLY reporter of an unread key
+    # that `idp-cli config-validate` and `idp_sdk`'s `validate` have — both consume
+    # `ignored_keys` rather than computing a set difference of their own. Called after
+    # those returns, it produced nothing whenever validation failed, so neither of
+    # them said anything at all about an unread key for an invalid configuration.
+    # That is the reader who needs it most: a key at the wrong depth is accepted in
+    # silence while its correctly-nested sibling raises (`ocr.dpi: "abc"` versus
+    # `ocr.image.dpi: "abc"`), so "the models will not read `ocr.dpi`, did you mean
+    # `ocr.image.dpi`?" is frequently the explanation for the error printed beside it.
+    #
+    # The pattern check stays above this one: a bad pattern name is a fault in the
+    # call rather than in the document, and there is no document question worth
+    # answering until it names a real pattern.
+    _validate_ignored_keys(config, result)
+
     # Try to merge with defaults
     try:
         merged = merge_config_with_defaults(config, pattern, validate=False)
@@ -627,12 +649,6 @@ def validate_config(
         result["valid"] = False
         result["errors"].append(f"Pydantic validation failed: {str(e)}")
         return result
-
-    # Keys the models will drop below the top level. Reported against the config as
-    # SUBMITTED rather than against `merged`, so every path named is one the author
-    # actually wrote and can go and fix — which is the whole value of catching it
-    # here, while they are still present, rather than in a Lambda log later.
-    _validate_ignored_keys(config, result)
 
     # Check for common issues (warnings)
     if not config.get("classes"):
