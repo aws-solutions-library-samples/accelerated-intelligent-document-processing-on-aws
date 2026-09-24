@@ -74,7 +74,7 @@ _ALL_COMPONENTS = {
     "feature-platform/main-stack-extensions",
     "lib",
 }
-_COMPONENTS_DEPENDING_ON_LIB = {
+_COMPONENTS_THAT_USE_LIB = {
     "main",
     "nested/api-resolvers",
     "nested/multi-doc-discovery",
@@ -610,7 +610,7 @@ def test_the_dependency_map_covers_every_component_and_its_build_inputs():
         for name, paths in deps.items()
         if "./lib/idp_common_pkg/idp_common" in paths or "./lib/idp_common_pkg" in paths
     }
-    assert lib_dependents == _COMPONENTS_DEPENDING_ON_LIB
+    assert lib_dependents == _COMPONENTS_THAT_USE_LIB
 
 
 def test_every_component_needs_a_rebuild_when_no_checksum_file_exists(
@@ -724,7 +724,7 @@ def test_editing_the_shared_library_fans_out_to_every_dependent_component(
 
     pub = _publisher(capture=True)
     items = pub.get_components_needing_rebuild()
-    assert {i["component"] for i in items} == _COMPONENTS_DEPENDING_ON_LIB
+    assert {i["component"] for i in items} == _COMPONENTS_THAT_USE_LIB
     assert pub._is_lib_changed is True
 
     # The named dependency differs between the library component and its

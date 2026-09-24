@@ -58,7 +58,7 @@ _PREFIX = "idp"
 _VERSION = "0.6.9"
 _REGION = "us-east-1"
 
-_EXPECTED_LAYERS = ("base", "reporting", "agents", "multi_document_discovery")
+_LAYER_NAMES = ("base", "reporting", "agents", "multi_document_discovery")
 
 
 def _publisher(s3=None):
@@ -580,7 +580,7 @@ def test_build_all_lambda_layers_builds_the_four_layers_and_uploads_each(
 
     result = pub.build_all_lambda_layers()
 
-    assert [name for name, _ in calls] == list(_EXPECTED_LAYERS)
+    assert [name for name, _ in calls] == list(_LAYER_NAMES)
     assert dict(calls) == {
         "base": ["docs_service", "image"],
         "reporting": ["reporting"],
@@ -588,7 +588,7 @@ def test_build_all_lambda_layers_builds_the_four_layers_and_uploads_each(
         "multi_document_discovery": ["multi_document_discovery"],
     }
 
-    for layer in _EXPECTED_LAYERS:
+    for layer in _LAYER_NAMES:
         info = result[layer]
         assert info["zip_name"] == f"idp-common-{layer}-abcd1234.zip"
         assert info["hash"] == "abcd1234"
@@ -681,7 +681,7 @@ def test_verify_layer_zips_reports_a_rebuild_when_the_directory_or_a_layer_is_ab
     assert pub._verify_layer_zips_exist() is True
     assert "No layer zips found" in _text(pub)
 
-    for layer in _EXPECTED_LAYERS[:-1]:
+    for layer in _LAYER_NAMES[:-1]:
         _write(tmp_path, f".aws-sam/layers/idp-common-{layer}-abcd1234.zip", "zip\n")
     pub = _publisher()
     assert pub._verify_layer_zips_exist() is True
@@ -725,7 +725,7 @@ def test_verify_layer_zips_accepts_any_hash_because_staleness_is_checked_elsewhe
     discovery rejecting the same file.
     """
     monkeypatch.chdir(tmp_path)
-    for layer in _EXPECTED_LAYERS:
+    for layer in _LAYER_NAMES:
         _write(tmp_path, f".aws-sam/layers/idp-common-{layer}-deadbeef.zip", "zip\n")
 
     assert _publisher()._verify_layer_zips_exist() is False
@@ -736,7 +736,7 @@ def test_verify_layer_zips_accepts_any_hash_because_staleness_is_checked_elsewhe
 # ---------------------------------------------------------------------------
 
 
-def _seed_layer_zips(root, source_hash, layers=_EXPECTED_LAYERS):
+def _seed_layer_zips(root, source_hash, layers=_LAYER_NAMES):
     for layer in layers:
         _write(
             root,
@@ -782,7 +782,7 @@ def test_layer_discovery_matches_the_current_source_hash_and_ignores_decoys(
     ):
         _write(tmp_path, f".aws-sam/layers/{decoy}", "decoy\n")
 
-    for layer in _EXPECTED_LAYERS:
+    for layer in _LAYER_NAMES:
         s3.put_object(
             Bucket=_BUCKET,
             Key=f"{_PREFIX}/{_VERSION}/layers/idp-common-{layer}-{current}.zip",
@@ -792,7 +792,7 @@ def test_layer_discovery_matches_the_current_source_hash_and_ignores_decoys(
     pub = _publisher(s3)
     result = pub._discover_existing_layer_zips()
 
-    assert set(result) == set(_EXPECTED_LAYERS)
+    assert set(result) == set(_LAYER_NAMES)
     assert result["base"] == {
         "zip_path": os.path.join(
             ".aws-sam", "layers", f"idp-common-base-{current}.zip"
@@ -862,8 +862,8 @@ def test_layer_discovery_uploads_a_layer_that_is_present_locally_but_not_in_s3(
     pub = _publisher(s3)
     result = pub._discover_existing_layer_zips()
 
-    assert set(result) == set(_EXPECTED_LAYERS)
-    for layer in _EXPECTED_LAYERS:
+    assert set(result) == set(_LAYER_NAMES)
+    for layer in _LAYER_NAMES:
         key = f"{_PREFIX}/{_VERSION}/layers/idp-common-{layer}-{current}.zip"
         assert s3.get_object(Bucket=_BUCKET, Key=key)["Body"].read() == (
             f"zip-for-{layer}\n".encode()
