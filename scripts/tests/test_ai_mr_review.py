@@ -216,121 +216,140 @@ def test_the_deny_list_is_count_pinned(mod) -> None:
 
 
 @pytest.mark.unit
-def test_instruction_carrying_files_are_all_pinned(mod) -> None:
-    """Every file that reaches the model as *instructions* must be pinned.
+def test_the_instruction_file_set_is_derived_not_authored(mod, tmp_path) -> None:
+    """The set of instruction files must come from the trees, not from a list.
 
-    The skills were pinned and ``CLAUDE.md`` was not, although Claude Code
-    auto-loads it as project instructions — so an MR editing it spoke to its own
-    reviewer at instruction level and never appeared as suspicious diff text.
-    """
-    assert "CLAUDE.md" in mod.PINNED_FROM_TARGET, (
-        "CLAUDE.md is not pinned. It is loaded as project instructions, so the MR's "
-        "copy would instruct its own reviewer."
-    )
-    for skill in (".claude/skills/pr-review.md", ".claude/skills/pr-review-ci.md"):
-        assert skill in mod.PINNED_FROM_TARGET, f"{skill} is no longer pinned"
+    An authored list standing in for a derived universe is the defect class
+    ``gate_exemptions.json`` exists to stop, and it applies sharply here: the pinned
+    ``pr-review.md`` tells the reviewer to "reuse project coding-standards knowledge
+    from the other skill files in this directory", so every sibling under
+    ``.claude/skills/`` is an instruction file too — there are 29 — and nested
+    ``CLAUDE.md`` files are loaded for the directory they sit in.
 
-    # Count-pinned, which is the ratchet gate_exemptions.json claims for this list.
-    # Whether a file arrives as *instructions* is a property of how Claude Code
-    # loads it and cannot be derived from the tree, so membership is authored — and
-    # this list was already missing CLAUDE.md once.
-    audited = 3
-    assert len(mod.PINNED_FROM_TARGET) == audited, (
-        f"PINNED_FROM_TARGET now has {len(mod.PINNED_FROM_TARGET)} entries, not the "
-        f"{audited} audited when its registry entry was written: "
-        f"{mod.PINNED_FROM_TARGET}. Adding one is good; confirm it really is loaded "
-        f"as instructions, then update the count."
-    )
-
-
-@pytest.mark.unit
-def test_the_before_tree_is_supplied_since_there_is_no_git_tool(mod, tmp_path) -> None:
-    """History as data, and the specific question it has to answer.
-
-    Dropping Bash cost ``git log``/``show``/``blame``. What the two real reviews
-    actually used history for was neither: it was the target branch's **file
-    contents** — "``origin/develop`` has no ``_write_marker`` at all", "that mode
-    never shipped" — which is what supports the best finding class either produced,
-    a comment describing an earlier iteration of the branch as released behaviour.
-
-    So the merge-base tree is exported as plain files. Driven against a real
-    repository, because the whole point is what ``git archive`` produces.
+    So ``instruction_files`` derives the set from the union of both trees, and
+    :data:`REQUIRED_INSTRUCTION_FILES` is only the floor it must always contain.
+    Driven against a real repository, because the whole claim is about what
+    ``git ls-tree`` and a glob return.
     """
     import subprocess
 
     repo = tmp_path / "repo"
-    repo.mkdir()
+    (repo / ".claude" / "skills").mkdir(parents=True)
     run = lambda *a: subprocess.run(a, cwd=repo, check=True, capture_output=True)  # noqa: E731
     run("git", "init", "-q")
     run("git", "config", "user.email", "t@example.invalid")
     run("git", "config", "user.name", "t")
-    (repo / "kept.py").write_text("ORIGINAL = 1\n")
+    for relative in mod.REQUIRED_INSTRUCTION_FILES:
+        path = repo / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("target\n")
+    (repo / ".claude" / "skills" / "backend-lambda.md").write_text("target\n")
     run("git", "add", "-A")
-    run("git", "commit", "-qm", "base commit")
+    run("git", "commit", "-qm", "base")
     run("git", "update-ref", "refs/ai-review/target-develop", "HEAD")
-    base_sha = subprocess.run(
-        ("git", "rev-parse", "HEAD"), cwd=repo, capture_output=True, text=True
-    ).stdout.strip()
 
-    # A branch commit that rewrites the file and adds one.
-    (repo / "kept.py").write_text("CHANGED = 2\n")
-    (repo / "added.py").write_text("NEW = 3\n")
-    run("git", "add", "-A")
-    run("git", "commit", "-qm", "branch commit")
-    run("git", "update-ref", "refs/ai-review/7", "HEAD")
+    # The head carries two instruction files the target does not.
+    worktree = tmp_path / "head"
+    (worktree / ".claude" / "skills").mkdir(parents=True)
+    (worktree / "patterns" / "unified").mkdir(parents=True)
+    (worktree / "CLAUDE.md").write_text("head\n")
+    (worktree / "patterns" / "unified" / "CLAUDE.md").write_text("head-only nested\n")
+    (worktree / ".claude" / "skills" / "brand-new.md").write_text("head-only skill\n")
 
-    monkeypatch_target = tmp_path / "out"
-    original_root = mod.REPO_ROOT
+    original = mod.REPO_ROOT
     mod.REPO_ROOT = repo
     try:
-        returned = mod.export_base_tree(monkeypatch_target / "base", 7, "develop")
-        mod.write_commit_log(monkeypatch_target / "commits.log", 7, returned)
+        found = mod.instruction_files(worktree, "develop")
     finally:
-        mod.REPO_ROOT = original_root
+        mod.REPO_ROOT = original
 
-    assert returned == base_sha, "the merge-base SHA must be reported to the review"
-    # The BEFORE state, which is the whole point.
-    assert (monkeypatch_target / "base" / "kept.py").read_text() == "ORIGINAL = 1\n", (
-        "the exported tree is not the merge-base state, so a claim about what the "
-        "target branch contains cannot be checked against it"
+    for expected in (
+        ".claude/skills/backend-lambda.md",  # a sibling the criteria send it to
+        "patterns/unified/CLAUDE.md",  # nested, head-only
+        ".claude/skills/brand-new.md",  # a skill the MR adds
+    ):
+        assert expected in found, (
+            f"{expected} is not in the derived instruction set {found}. Every one of "
+            f"these is loaded as instructions, so leaving it out leaves an unpinned "
+            f"channel into a review of the MR that edits it."
+        )
+    for required in mod.REQUIRED_INSTRUCTION_FILES:
+        assert required in found, f"the floor {required} is missing from {found}"
+
+
+@pytest.mark.unit
+def test_the_required_instruction_floor_is_count_pinned(mod) -> None:
+    """The count pin guards the floor, not the universe.
+
+    Its registry entry says so explicitly, because a count over an authored list is
+    exactly what must not be mistaken for closure — the derivation above is what
+    closes the set.
+    """
+    audited = 3
+    assert len(mod.REQUIRED_INSTRUCTION_FILES) == audited, (
+        f"REQUIRED_INSTRUCTION_FILES now has {len(mod.REQUIRED_INSTRUCTION_FILES)} "
+        f"entries, not the {audited} audited when its registry entry was written: "
+        f"{mod.REQUIRED_INSTRUCTION_FILES}."
     )
-    assert not (monkeypatch_target / "base" / "added.py").exists(), (
-        "a file the branch ADDED is present in the before-tree, so the export is of "
-        "the wrong revision"
-    )
-    assert not (monkeypatch_target / "base" / "base.tar").exists(), (
-        "the intermediate tarball was left behind; the review would read it as a file"
-    )
-    log = (monkeypatch_target / "commits.log").read_text()
-    assert "branch commit" in log and "base commit" not in log, (
-        f"commits.log must carry the MR's own commits and no more: {log!r}"
+    assert "CLAUDE.md" in mod.REQUIRED_INSTRUCTION_FILES, (
+        "CLAUDE.md is loaded as project instructions, so it must be in the floor"
     )
 
 
 @pytest.mark.unit
-def test_the_prompt_points_at_the_history_files(mod) -> None:
-    """Supplying them is useless if the review is not told they exist.
+def test_a_review_line_cannot_become_a_gitlab_command(mod) -> None:
+    """The parent executes the child's output, and that is where this is closed.
 
-    It has no git tool, so it has no way to discover that a before-tree is sitting
-    next to the diff. Naming them, and naming what they are *for*, is the half of
-    this that produces findings.
+    GitLab runs quick actions in a note body created through the API: a line whose
+    first non-whitespace character is ``/`` is consumed as a command and acted on
+    with the posting token's permissions. Every other control here is about what the
+    *child* may do and none of them reach this.
+
+    It needs no malicious model. The prompt asks the review to quote suspicious text
+    when reporting an injection attempt, so an MR containing a line ``/merge`` gets
+    it quoted into a finding and submitted with an api-scoped token.
     """
+    dangerous = "\n".join(
+        [
+            "## PR/MR Review: x",
+            "/merge",
+            "  /approve now",
+            "```",
+            "/close",
+            "```",
+            "text / with a slash inside is fine",
+            "- a bullet",
+        ]
+    )
+    defused = mod.defuse_quick_actions(dangerous)
+
+    for line in defused.split("\n"):
+        assert not line.lstrip().startswith("/"), (
+            f"line {line!r} still begins with a slash, so GitLab will read it as a "
+            f"quick action and run it as the posting token"
+        )
+    # Inside a fence too: whether the parser respects fences is not worth depending on.
+    assert "\\/close" in defused
+    # Indentation preserved, so nothing about the rendering changes.
+    assert "  \\/approve now" in defused
+    # A slash that is not at line start is left alone.
+    assert "text / with a slash inside is fine" in defused
+
+    # And the note actually goes through it.
     merge_request = mod.MergeRequest(
         iid=1,
         title="t",
         author="a",
         source_branch="s",
         target_branch="develop",
-        head_sha="abc",
+        head_sha="abcdef12",
         web_url="u",
         draft=False,
     )
-    prompt = " ".join(mod.build_prompt(merge_request, "m", "d", False).split())
-    assert ".ai-review/base/" in prompt
-    assert ".ai-review/commits.log" in prompt
-    assert "NO git tool" in prompt
-    assert "EARLIER ITERATION OF THIS BRANCH" in prompt, (
-        "the prompt names the before-tree but not the finding class it exists for"
+    note = mod.compose_note(merge_request, "/merge\ntext", (1, 1, 1), False, "m")
+    assert "\n/merge" not in note, (
+        "compose_note does not defuse the review text, so the escaping helper is "
+        "dead code on the only path that matters"
     )
 
 
@@ -392,7 +411,6 @@ def test_the_ci_job_pins_the_harness_before_running_it(ci_config: dict) -> None:
     )
 
 
-@pytest.mark.unit
 @pytest.mark.unit
 def test_the_permission_mode_is_named_on_the_command_line(mod) -> None:
     """Without this, the two tool lists are decoration.
@@ -765,7 +783,7 @@ def test_the_reviewer_is_not_listed_as_a_shared_gate() -> None:
 
 @pytest.mark.unit
 def test_the_node_runtime_is_asserted_not_just_requested(ci_config: dict) -> None:
-    """Checking the installer's URL is not checking what got installed.
+    r"""Checking the installer's URL is not checking what got installed.
 
     Two failures stack here. ``@anthropic-ai/claude-code`` needs Node >=22, and on
     20 it installs, answers ``--version``, and then exits 1 with both streams empty
@@ -798,7 +816,6 @@ def test_the_node_runtime_is_asserted_not_just_requested(ci_config: dict) -> Non
     )
 
 
-@pytest.mark.unit
 @pytest.mark.unit
 def test_a_failed_review_reports_both_streams(mod) -> None:
     """A failure message must carry enough to diagnose without a second run.
@@ -923,8 +940,8 @@ def test_the_review_criteria_come_from_the_target_branch_not_the_mr(
     (worktree / ".claude" / "skills" / "pr-review-new.md").write_text("added here\n")
     monkeypatch.setattr(
         mod,
-        "PINNED_FROM_TARGET",
-        (*mod.PINNED_FROM_TARGET, ".claude/skills/pr-review-new.md"),
+        "REQUIRED_INSTRUCTION_FILES",
+        (*mod.REQUIRED_INSTRUCTION_FILES, ".claude/skills/pr-review-new.md"),
     )
 
     monkeypatch.setattr(mod, "REPO_ROOT", repo)

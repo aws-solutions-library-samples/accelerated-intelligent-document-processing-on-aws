@@ -637,10 +637,10 @@ ai_mr_review:
   before_script:
     - apt-get update -y
     - apt-get install curl git -y
-    # Node 22: @anthropic-ai/claude-code declares `engines: {node: ">=22.0.0"}`.
-    # This was 20, and npm's EBADENGINE warning was the only sign — `npm install`
-    # and `claude --version` both SUCCEED on 20, and the CLI then exits 1 with an
-    # empty stderr on the first real session.
+    # Node 22: @anthropic-ai/claude-code declares `engines: {node: ">=22.0.0"}`, and
+    # an older major fails in the quietest way available — npm's EBADENGINE is only a
+    # warning, `npm install` and `claude --version` both succeed on 20, and the CLI
+    # then exits 1 with an empty stderr on the first real session.
     #
     # ⚠️ `curl ... | bash -` exits with BASH's status, not curl's, which is why
     # .github/workflows/developer-tests.yml replaced this same pattern with
@@ -695,7 +695,12 @@ ai_mr_review:
       if [ -n "$CI_MERGE_REQUEST_IID" ]; then
         python3 scripts/sdlc/ai_mr_review.py --mr "$CI_MERGE_REQUEST_IID"
       else
-        python3 scripts/sdlc/ai_mr_review.py --all-open --max-mrs 10
+        # --max-mrs 3, not the script's default of 10: at --timeout 1200 a batch of
+        # ten has a 200-minute worst case against this job's 45m timeout, so the
+        # sweep's own bound would never be the one that fires and the job would
+        # truncate the batch silently. Three fits. (Unreachable today — no schedule
+        # rule exists, so CI always takes the --mr branch above.)
+        python3 scripts/sdlc/ai_mr_review.py --all-open --max-mrs 3
       fi
 
   artifacts:

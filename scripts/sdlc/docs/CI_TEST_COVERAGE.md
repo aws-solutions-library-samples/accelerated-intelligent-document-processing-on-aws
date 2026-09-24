@@ -242,6 +242,18 @@ pytest suite on the operator's machine — arbitrary code execution from an MR d
 beside an AWS credential. `scripts/tests/test_ai_mr_review.py` pins the flag, and
 `AI_REVIEW_LIVE_PROBE=1` runs an opt-in probe that measures the refusal.
 
+⚠️ **The model's output is escaped before it is posted, because GitLab executes
+quick actions in a note body.** A line whose first non-whitespace character is `/`
+— `/approve`, `/merge`, `/close` — is run as a command with the posting token's
+permissions, so every line of the review gets a leading backslash (`/` is ASCII
+punctuation, so CommonMark renders `\/merge` as `/merge` while the raw line no
+longer starts a command). This is the one control that is about the **parent**
+rather than the child: the reviewing process holds no credential, and that says
+nothing about the process which submits its output holding one. The path needs no
+malicious model — the prompt asks the review to quote suspicious text when
+reporting an injection attempt. Give the token the least role that can create a
+note, so a quick action that did get through could not merge or approve.
+
 It needs a `GITLAB_REVIEW_TOKEN` CI variable (project access token, `api` scope,
 **masked and NOT protected** — a protected variable is absent from the MR-branch
 pipelines this job runs in) — without it the job prints `SKIPPED:` and exits 0.

@@ -32,7 +32,7 @@ Three properties it is built around
    and the outer one is closed in ``.gitlab-ci.yml`` instead: the job replaces
    this script with the target branch's copy before running it. Two further
    channels live in the worktree and are closed here —
-   :data:`PINNED_FROM_TARGET` (``CLAUDE.md`` loads as project instructions) and
+   :func:`instruction_files` (``CLAUDE.md`` loads as project instructions) and
    :data:`NEUTRALISED_IN_WORKTREE` (``.claude/settings.json`` registers
    ``PreToolUse`` hooks that execute ``scripts/hooks/*.py`` from the checkout, so
    an MR editing those gets code execution on first tool use regardless of what
@@ -132,12 +132,11 @@ PERMISSION_MODE = "manual"
 #: an option — and ``--output=<path>`` is a diff option that ``git diff``,
 #: ``git log`` and ``git show`` all accept, each writing an arbitrary file.
 #: Measured, not theorised: ``git diff --output=/tmp/w.txt`` and
-#: ``git log --output=/tmp/w2.txt`` both wrote. So three of the five git verbs
-#: previously listed here were file-write primitives while the list was described
-#: as read-only, and the closure test classified them by verb and reported
-#: closure over a set containing a writer.
+#: ``git log --output=/tmp/w2.txt`` both wrote. A classifier that reads the *verb* —
+#: "``git diff`` only reads" — therefore cannot decide this question at all, which is
+#: why the closure test over this list is categorical rather than per-entry.
 #:
-#: Dropping Bash entirely is the only version of this claim that is true. It also
+#: Granting no Bash is the only version of "read-only tools" that is true. It also
 #: means the project's ``PreToolUse`` Bash hooks never have a Bash call to fire on,
 #: which matters because those hooks execute scripts from the checkout under review.
 #:
@@ -416,16 +415,60 @@ def fetch_head(iid: int, target_branch: str) -> str:
     return result.stdout.strip()
 
 
-#: Every file in the worktree that reaches the model as **instructions** rather
-#: than as data, pinned to the target branch by
-#: :func:`pin_instructions_to_target_branch`. ``CLAUDE.md`` is here because Claude
-#: Code auto-loads it as project instructions, so an MR editing it speaks to the
-#: reviewer at instruction level and never appears as suspicious text in a diff.
-PINNED_FROM_TARGET = (
+#: The instruction files that must exist on the target branch for pinning to mean
+#: anything. This is a floor, not the set: :func:`instruction_files` DERIVES the
+#: full set from both trees, because an authored list standing in for a derived
+#: universe is the defect class this repository documents most insistently — and
+#: naming two of the 29 files under ``.claude/skills/`` would not cover the channel,
+#: because the pinned ``pr-review.md`` tells the reviewer to "reuse project
+#: coding-standards knowledge from the other skill files in this directory" — so
+#: every sibling it sends the reviewer to is an instruction file too.
+REQUIRED_INSTRUCTION_FILES = (
     ".claude/skills/pr-review.md",
     ".claude/skills/pr-review-ci.md",
     "CLAUDE.md",
 )
+
+
+def instruction_files(worktree: Path, target_branch: str) -> list[str]:
+    """Every file either tree carries that Claude Code loads as instructions.
+
+    Derived rather than authored, from the union of the target branch and the head:
+
+    * every ``CLAUDE.md`` at any depth — nested ones are loaded for the directory
+      they sit in, so pinning only the root would leave a
+      ``patterns/unified/CLAUDE.md`` unpinned for any MR that adds one;
+    * every ``.claude/skills/*.md`` — the pinned criteria send the reviewer into its
+      siblings by name.
+
+    Deriving from **both** trees is what makes the head-only case reportable rather
+    than invisible: a file the MR adds has no target copy to pin to, and that is the
+    weaker state the review has to be told about.
+    """
+    found: set[str] = set(REQUIRED_INSTRUCTION_FILES)
+
+    listing = _run(
+        [
+            "git",
+            "ls-tree",
+            "-r",
+            "--name-only",
+            f"refs/ai-review/target-{target_branch}",
+        ],
+        cwd=REPO_ROOT,
+    )
+    candidates = listing.stdout.splitlines() if listing.returncode == 0 else []
+    candidates += [
+        str(path.relative_to(worktree))
+        for pattern in ("CLAUDE.md", "**/CLAUDE.md", ".claude/skills/*.md")
+        for path in worktree.glob(pattern)
+    ]
+    for relative in candidates:
+        name = relative.rsplit("/", 1)[-1]
+        if name == "CLAUDE.md" or relative.startswith(".claude/skills/"):
+            found.add(relative)
+    return sorted(found)
+
 
 #: Files removed from the worktree outright, because they make the checkout
 #: *execute* things and a review needs none of them.
@@ -460,15 +503,13 @@ def pin_instructions_to_target_branch(
       instead. Legitimate (it is how the criteria improve) and worth a reader's
       attention on the MR that does it.
     * ``unpinnable`` — **no target-branch copy exists**, so the MR's own version
-      is in force. This used to be a bare ``continue``, which made the one case
-      where the control cannot work also the case where nobody was told: the MR
-      introducing ``pr-review-ci.md`` reported ``modifies_review_skills: []`` and
-      its review silently applied criteria the MR itself supplied. Reported now,
-      and reported as the weaker thing it is.
+      is in force. This is reported, and reported as the weaker state it is: the
+      case where the control cannot work must not also be the case where nobody is
+      told, or a review silently applies criteria the MR itself supplied.
     """
     modified: list[str] = []
     unpinnable: list[str] = []
-    for relative in PINNED_FROM_TARGET:
+    for relative in instruction_files(worktree, target_branch):
         pinned = _run(
             ["git", "show", f"refs/ai-review/target-{target_branch}:{relative}"],
             cwd=REPO_ROOT,
@@ -624,8 +665,8 @@ def diff_stat(iid: int, target_branch: str) -> tuple[int, int, int]:
     head = f"refs/ai-review/{iid}"
     base = f"refs/ai-review/target-{target_branch}"
     merge_base = _run(["git", "merge-base", base, head], cwd=REPO_ROOT)
-    # Checked, unlike before: an unchecked failure leaves an empty left side, so
-    # the range silently becomes `..<head>` — a diff against local HEAD. build_diff
+    # Checked: an unchecked failure leaves an empty left side, so the range becomes
+    # `..<head>` — a diff against local HEAD. build_diff
     # then raises for the real reason, but these counts are what reach
     # metadata.json and the note footer, and a coincidental 0 short-circuits the
     # caller to "no changed files" and skips the MR.
@@ -635,6 +676,12 @@ def diff_stat(iid: int, target_branch: str) -> tuple[int, int, int]:
         ["git", "diff", "--numstat", f"{merge_base.stdout.strip()}..{head}"],
         cwd=REPO_ROOT,
     )
+    # Checked for the same reason as the merge-base call above: an unchecked failure
+    # yields empty stdout, which counts as zero files, which the caller reports as
+    # "no changed files" and skips. A skip that reads as a clean result is the exact
+    # failure mode the loud-skip machinery exists to prevent.
+    if result.returncode != 0:
+        raise Failure(f"git diff --numstat failed: {result.stderr.strip()}")
     files = additions = deletions = 0
     for line in result.stdout.splitlines():
         parts = line.split("\t")
@@ -757,17 +804,16 @@ def run_claude(
         prompt,
         "--output-format",
         "json",
-        # ⚠️ LOAD-BEARING, and its absence is silent. `--allowedTools` is
-        # ADDITIVE to whatever settings the machine already carries, and a
-        # user-level `~/.claude/settings.json` setting
-        # `"permissions": {"defaultMode": "bypassPermissions"}` therefore grants
-        # the review every tool no matter what the two lists below say. That is
-        # not hypothetical: the first live run of this script executed
-        # `make cfn-lint`, `make check-*` and the MR's own pytest suite on the
-        # operator's machine, which on an untrusted MR is arbitrary code
-        # execution beside an AWS credential. Naming the mode on the command line
-        # overrides the setting. `manual` means "ask", and in `-p` there is nobody
-        # to ask, so anything outside the allowlist is refused.
+        # ⚠️ LOAD-BEARING, and its absence is silent. `--allowedTools` is ADDITIVE
+        # to whatever settings the machine already carries, so a user-level
+        # `~/.claude/settings.json` setting
+        # `"permissions": {"defaultMode": "bypassPermissions"}` grants the review
+        # every tool regardless of the two lists below — measured on a machine with
+        # that setting, where the review ran `make cfn-lint`, several `make check-*`
+        # targets and the MR's own pytest suite. On an untrusted MR that is arbitrary
+        # code execution beside an AWS credential. Naming the mode here overrides the
+        # setting: `manual` means "ask", and under `-p` there is nobody to ask, so
+        # anything outside the allowlist is refused.
         # An MCP server definition is a command line, and the worktree is the MR's.
         # NEUTRALISED_IN_WORKTREE deletes any .mcp.json; this refuses to load one
         # from anywhere else too, so the claim does not rest on that deletion alone.
@@ -817,6 +863,38 @@ def run_claude(
     return review, float(cost) if isinstance(cost, (int, float)) else None
 
 
+def defuse_quick_actions(text: str) -> str:
+    """Stop GitLab reading a line of the review as a command.
+
+    ⚠️ **GitLab executes quick actions in a note body created through the API.** A
+    line whose first non-whitespace character is ``/`` — ``/approve``, ``/merge``,
+    ``/close``, ``/assign`` — is consumed as a command and run with the posting
+    token's permissions. Every other control here is about what the *child*
+    process may do, and none of them touch this, because it is the **parent** that
+    executes the child's output.
+
+    The path needs no malicious model and no model error. The prompt asks the
+    review to quote suspicious text when it reports an injection attempt, so an MR
+    containing a line ``/merge`` gets it quoted into a finding and submitted.
+
+    A single leading backslash is the fix. ``/`` is an ASCII punctuation character,
+    so CommonMark renders ``\\/merge`` as ``/merge`` — the reader sees what the
+    review wrote — while the raw line no longer begins with ``/``, so nothing is
+    parsed as a command. Applied to every line, inside code fences as well:
+    whether the quick-action parser respects fences is not something to depend on,
+    and escaping a line that was never going to execute costs nothing.
+    """
+    defused: list[str] = []
+    for line in text.split("\n"):
+        stripped = line.lstrip()
+        if stripped.startswith("/"):
+            indent = line[: len(line) - len(stripped)]
+            defused.append(f"{indent}\\{stripped}")
+        else:
+            defused.append(line)
+    return "\n".join(defused)
+
+
 def compose_note(
     merge_request: MergeRequest,
     review: str,
@@ -829,7 +907,11 @@ def compose_note(
     The footer exists so a reader can tell at a glance that a machine wrote this
     and what it did *not* do — a review comment that reads as a human approval
     is worse than no comment.
+
+    The review text goes through :func:`defuse_quick_actions` first, because this
+    is where model output becomes a request made with a credential.
     """
+    review = defuse_quick_actions(review)
     files, additions, deletions = stat
     marker = f"<!-- ai-review: sha={merge_request.head_sha} rev={PROMPT_REVISION} -->"
     scope = (
@@ -1149,7 +1231,7 @@ def main(argv: list[str] | None = None) -> int:
             # consequence rather than a surprise at the end of a paid run.
             args.dry_run = True
             args.force = True
-            if not args.mr:
+            if args.mr is None:
                 raise Skip("--no-api reviews one MR at a time: pass --mr <iid>")
             targets = [merge_request_from_git(args.mr, args.target_branch)]
             print(
@@ -1170,7 +1252,7 @@ def main(argv: list[str] | None = None) -> int:
             raise Skip("no project: pass --project or run inside GitLab CI")
 
         gitlab = Gitlab(args.api_url, args.project, token)
-        if args.mr:
+        if args.mr is not None:
             targets = [gitlab.merge_request(args.mr)]
             if targets[0].draft:
                 print(f"SKIPPED: !{args.mr} is a Draft; drafts are not reviewed.")
