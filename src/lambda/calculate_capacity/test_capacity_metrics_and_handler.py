@@ -19,12 +19,22 @@ document where several were made.
 
 Four things shape these tests.
 
-**DynamoDB is real (moto).** The timings are read back out of the tracking table, and
-DynamoDB returns every number as a `Decimal`. A hand-built dictionary of floats
-would never exercise the `convert_decimal_to_float` call that stands between the
-stored value and the `gb_seconds / memory_gb` division — and without that conversion
-the division raises, so the mocked version of this test would pass while the deployed
-function failed on its first document.
+**DynamoDB is real (moto), and the fixture stores a document the way the pipeline
+does.** `Metering` goes in as a **JSON string**, because that is what both writers of
+the tracking table produce — `DocumentDynamoDBService` calls
+`json.dumps(document.metering, default=str)` for the live item and again for the run
+snapshot — so `json.loads` on the way out yields ordinary floats. Numeric attributes
+*outside* that payload (`PageCount`, and any timestamp stored as a number) come back
+as `Decimal`, which is one of the things a hand-built dictionary of floats would not
+reproduce; the others are the paginated `scan`, the `attribute_exists(Metering)`
+filter and the string comparison the 24-hour recency window does against stored
+timestamps. The `convert_decimal_to_float` calls on the metering payload are
+therefore **defensive** rather than on the deployed path: they matter only for a
+payload stored as a DynamoDB map, which no writer in this repository produces, and
+`Decimal / float` raises rather than coercing. The tests that keep that shape use
+`as_decimal_map` and each say why — one per conversion site, plus the `meteringData`
+fallback, which has no writer to copy a shape from. Storing it everywhere would make
+most of this file a test of a branch production never takes.
 
 **Timestamps are laid out so that the wrong subtraction gives a different answer.**
 Queue delay is `WorkflowStartTime - QueuedTime` and processing time is
@@ -52,9 +62,11 @@ changes no result at any sample size.
 
 from __future__ import annotations
 
+import ast
 import json
 from datetime import datetime, timedelta
 from decimal import Decimal
+from pathlib import Path
 
 import index
 import pytest
@@ -126,13 +138,18 @@ def ancient(days_ago=30):
 def put_metered(table, key, metering, **attributes):
     """Store a document the way the tracking table really holds one.
 
-    Numbers go in as `Decimal`, because that is what DynamoDB returns and the
-    conversion on the way out is load-bearing.
+    `Metering` is a JSON **string**, which is what both writers of this table
+    produce: `DocumentDynamoDBService.update_document` sets
+    `json.dumps(document.metering, default=str)`, and the run-snapshot writer in the
+    same class does the same. Storing it as a DynamoDB map instead would be a more
+    generous fixture than production — every number would come back as a `Decimal`
+    and most of this file would be exercising the conversion that handles that,
+    rather than the arithmetic it is about.
+
+    Attributes passed through `**attributes` are stored as themselves, so a caller
+    that wants a real `Decimal` (a `PageCount`, a numeric timestamp) passes one.
     """
-    item = {
-        "PK": key,
-        "Metering": json.loads(json.dumps(metering), parse_float=Decimal),
-    }
+    item = {"PK": key, "Metering": json.dumps(metering, default=str)}
     item.update(attributes)
     table.put_item(Item=item)
 
@@ -292,12 +309,36 @@ def test_the_sample_is_paginated_rather_than_capped_at_one_page(tracking):
     assert result["processing_time_percentiles"]["count"] == 120
 
 
+def as_decimal_map(payload):
+    """The same payload as a DynamoDB map of `Decimal`s rather than a JSON string.
+
+    Nothing in this repository writes `Metering` in this shape — both writers call
+    `json.dumps` — so every use of this helper is a deliberately defensive fixture
+    and says so at the call site. The shape is kept at all because the failure it
+    guards against is not graceful: `Decimal` does not coerce against `float`, so
+    `gb_seconds / lambda_memory_gb` raises `TypeError` on the first document rather
+    than returning a wrong number.
+    """
+    return json.loads(json.dumps(payload), parse_float=Decimal)
+
+
 @pytest.mark.unit
-def test_a_metering_payload_stored_as_a_json_string_is_parsed(tracking):
-    """Older documents hold the payload as a string rather than a map."""
-    tracking.put_item(Item={"PK": "doc-1", "Metering": json.dumps(durations(OCR=12.0))})
+def test_a_metering_payload_stored_as_a_dynamodb_map_is_converted_before_division(
+    tracking,
+):
+    """The defensive conversion on the timing path, asserted once.
+
+    A map-shaped payload is not what either writer produces, so this stands in for
+    a hand-written item or a future writer that stops serializing. Storing every
+    document this way is what made 30 tests in this file fail when the conversion
+    was removed while the two that used the production shape stayed green — a count
+    that looked like coverage of the deployed path and was not.
+    """
+    tracking.put_item(
+        Item={"PK": "doc-1", "Metering": as_decimal_map(durations(OCR=61.6))}
+    )
     assert index.get_real_latency_metrics("p")["base_times"]["ocr"] == pytest.approx(
-        6.0
+        30.8
     )
 
 
@@ -313,18 +354,17 @@ def test_one_unparseable_payload_does_not_discard_the_rest_of_the_sample(trackin
 
 @pytest.mark.unit
 def test_documents_recorded_under_the_older_attribute_name_are_still_found(tracking):
-    """`meteringData` predates `Metering` and is scanned for as a fallback.
+    """A second scan on `meteringData` runs when the first finds no `Metering`.
 
-    Only when the first scan finds nothing, so a table holding both reports on the
-    new name alone.
+    Nothing in this repository writes that attribute, so the fallback exists for a
+    table populated by something outside this tree; it is reached only when the
+    first scan comes back empty, which means a table holding both reports on
+    `Metering` alone. The payload is stored as a map here because there is no writer
+    to take the shape from, and the map is the shape that also exercises the
+    conversion on the way out.
     """
     tracking.put_item(
-        Item={
-            "PK": "doc-1",
-            "meteringData": json.loads(
-                json.dumps(durations(OCR=30.0)), parse_float=Decimal
-            ),
-        }
+        Item={"PK": "doc-1", "meteringData": as_decimal_map(durations(OCR=30.0))}
     )
     assert index.get_real_latency_metrics("p")["base_times"]["ocr"] == pytest.approx(
         15.0
@@ -1317,11 +1357,20 @@ def test_a_configured_step_nobody_is_using_is_dropped_quietly(tracking):
 
 
 @pytest.mark.unit
-def test_a_step_with_neither_demand_nor_recorded_requests_is_skipped_quietly(tracking):
+def test_a_step_with_neither_demand_nor_recorded_requests_is_skipped_quietly(
+    tracking, capsys
+):
     """Zero configured tokens and nothing in metering means the step is not running.
 
     This is the path a Textract-based deployment takes for OCR: no Bedrock tokens
     are configured because OCR is not a Bedrock step, so no row is produced.
+
+    The absent row does not say *which* guard produced it. OCR is the one step with
+    two of them: the shared no-demand-and-no-metering skip, and an OCR-specific
+    escape a few lines below it. Delete the shared one and OCR still skips, via the
+    second — so the printed line, which differs between the two, is what identifies
+    the branch. (The sibling test above, where the step is `Summarization`, has only
+    the shared guard and so fails on the row alone.)
     """
     put_metered(tracking, "doc-1", bedrock("Extraction", 3))
     hourly = hours(**{"9": {"docsPerHour": 60, "extractionTokensPerHour": 60000}})
@@ -1329,6 +1378,9 @@ def test_a_step_with_neither_demand_nor_recorded_requests_is_skipped_quietly(tra
         build(hourly, config=model_config(extraction_model=MODEL, ocr_model=MODEL))
     )
     assert ("OCR", "TPM") not in requirements
+    printed = capsys.readouterr().out
+    assert "Skipping OCR - no demand and no metering data" in printed
+    assert "no OCR tokens configured" not in printed
 
 
 @pytest.mark.unit
@@ -1357,7 +1409,23 @@ def test_historical_metering_revives_a_step_that_has_no_configured_demand(tracki
 
 
 @pytest.mark.unit
-def test_a_whitespace_only_ocr_model_is_treated_as_unconfigured(tracking):
+@pytest.mark.parametrize("pattern", ["pattern-2", "pattern-3"])
+def test_a_whitespace_only_ocr_model_is_treated_as_unconfigured(
+    tracking, pattern, capsys
+):
+    """Unconfigured at demand assembly, not merely dropped a few lines later.
+
+    The absent row on its own proves neither. Weakening the guard to a bare
+    `if ocr_model:` admits OCR to the demand map with the model id `"   ".strip()`,
+    which is `""`, and the loop below then drops it on its own
+    no-model-configured check — the same absent row. The demand map is printed
+    before that loop runs, so it is what separates the two, and the loop's own
+    skip line is asserted absent for the same reason.
+
+    Parametrized over both patterns because the guard is written out twice, once in
+    the pipeline branch and once in the SageMaker one, so neither copy is evidence
+    about the other.
+    """
     put_metered(tracking, "doc-1", bedrock("Extraction", 3))
     hourly = hours(
         **{
@@ -1369,9 +1437,21 @@ def test_a_whitespace_only_ocr_model_is_treated_as_unconfigured(tracking):
         }
     )
     requirements = by_type(
-        build(hourly, config=model_config(extraction_model=MODEL, ocr_model="   "))
+        build(
+            hourly,
+            config=model_config(extraction_model=MODEL, ocr_model="   "),
+            pattern=pattern,
+        )
     )
     assert ("OCR", "TPM") not in requirements
+    printed = capsys.readouterr().out
+    demands = next(
+        line
+        for line in printed.splitlines()
+        if line.startswith("Processing inference demands:")
+    )
+    assert "OCR" not in demands, demands
+    assert "Skipping OCR - no model configured" not in printed
 
 
 @pytest.mark.unit
@@ -1422,10 +1502,19 @@ def test_a_step_below_one_request_a_minute_disappears_from_the_report(tracking):
 
 
 @pytest.mark.unit
-def test_metering_stored_as_a_json_string_is_parsed_for_the_request_count(tracking):
-    """The same two storage shapes the timing scan handles, on the request path."""
+def test_a_map_shaped_metering_payload_is_converted_before_the_rate_arithmetic(
+    tracking,
+):
+    """The second defensive conversion, which is a separate call site.
+
+    The request path has its own `convert_decimal_to_float`, and it fails
+    differently from the timing one: a `Decimal` request count survives the
+    averaging and only raises at `(requests_per_hour / 60) * BUFFER_FACTOR`, which
+    sits *outside* the scan's `try`, so the whole report fails rather than one step
+    losing its metering. This is the one place that shape is stored on this path.
+    """
     tracking.put_item(
-        Item={"PK": "doc-1", "Metering": json.dumps(bedrock("Extraction", 4))}
+        Item={"PK": "doc-1", "Metering": as_decimal_map(bedrock("Extraction", 4))}
     )
     hourly = hours(**{"9": {"docsPerHour": 60, "extractionTokensPerHour": 60000}})
     # 4 req/doc x 60 docs / 60 x 1.1 = 4.4 -> 4
@@ -1456,25 +1545,44 @@ def test_the_request_sample_is_paginated_and_capped_at_a_hundred_documents(
 
 @pytest.mark.unit
 def test_an_unconfigured_metering_table_leaves_the_report_without_request_data(
-    tracking, monkeypatch
+    tracking, monkeypatch, capsys
 ):
+    """The report fails, and the log says the scan was never attempted.
+
+    The failure alone does not distinguish the guard from its absence: with the
+    table name unset and the guard neutralised, the scan runs against an unnamed
+    table, raises into the `except` below it, and produces the same "No request
+    count data found". The `else` branch's own line is the only outcome the guard
+    can produce on its own, so both it and the absence of the `except`'s line are
+    checked.
+    """
     monkeypatch.delenv("METERING_TABLE_NAME")
     hourly = hours(**{"9": {"docsPerHour": 60, "extractionTokensPerHour": 60000}})
     with pytest.raises(ValueError, match="No request count data found"):
         build(hourly)
+    printed = capsys.readouterr().out
+    assert "METERING_TABLE_NAME not configured - using estimation" in printed
+    assert "Could not read metering data" not in printed
 
 
 @pytest.mark.unit
-def test_a_metering_table_that_cannot_be_read_does_not_crash_the_scan(aws, monkeypatch):
+def test_a_metering_table_that_cannot_be_read_does_not_crash_the_scan(
+    aws, monkeypatch, capsys
+):
     """The table is missing entirely; the read is caught and the step then fails.
 
     The distinction matters for diagnosis: the operator sees "no request count
-    data", which is the same message a genuinely empty history produces, so the
-    log line naming the underlying error is the only way to tell them apart.
+    data", which is the same message a genuinely empty history produces, so the log
+    line naming the underlying error is the only way to tell them apart — and it is
+    asserted here rather than described, since a swallow that logged nothing would
+    produce the same exception.
     """
     hourly = hours(**{"9": {"docsPerHour": 60, "extractionTokensPerHour": 60000}})
     with pytest.raises(ValueError, match="No request count data found"):
         build(hourly)
+    printed = capsys.readouterr().out
+    assert "Could not read metering data for Extraction" in printed
+    assert "ResourceNotFoundException" in printed
 
 
 @pytest.mark.unit
@@ -1482,9 +1590,16 @@ def test_the_reported_page_count_is_a_decaying_average_not_the_mean(tracking, ca
     """`(running + next) / 2` weights the last document far above the first.
 
     Page counts of 1, 10 and 100 give 52.8 rather than the true mean of 37, because
-    each step halves the weight of everything before it. The figure is only logged,
-    so the consequence is an operator reading a page count that does not match
-    their documents while diagnosing a plan.
+    each step halves the weight of everything before it.
+
+    The attribute read is `number_of_pages`, which is a column of the Athena
+    `metering` table and **not** something the tracking table carries — that table
+    stores a page count as `PageCount`, per the test below. So this arithmetic
+    describes a branch no deployed document reaches, and the fixture has to write
+    `number_of_pages` by hand to reach it at all. Pinned rather than deleted because
+    the branch is live code: anything that starts stamping that attribute, or a
+    change of source table, makes it reachable, and then this is the figure an
+    operator reads.
     """
     for i, pages in enumerate([1, 10, 100]):
         put_metered(
@@ -1498,6 +1613,26 @@ def test_the_reported_page_count_is_a_decaying_average_not_the_mean(tracking, ca
     printed = capsys.readouterr().out
     assert "Actual pages per document from metering: 52.8" in printed
     assert "37.0" not in printed
+
+
+@pytest.mark.unit
+def test_the_page_count_the_tracking_table_really_stores_is_not_read(tracking, capsys):
+    """`PageCount` is the attribute, and the scan does not look at it.
+
+    This is what a deployed document looks like — `DocumentDynamoDBService` writes
+    `PageCount` — so the measured page count is never available and the report falls
+    back to the configured page values on every stack. Asserted through both printed
+    lines, because the fallback is silent apart from them.
+    """
+    for i, pages in enumerate([1, 10, 100]):
+        put_metered(
+            tracking, f"doc-{i}", bedrock("Extraction", 3), PageCount=Decimal(pages)
+        )
+    hourly = hours(**{"9": {"docsPerHour": 60, "extractionTokensPerHour": 60000}})
+    build(hourly)
+    printed = capsys.readouterr().out
+    assert "Using configured page values (no metering data)" in printed
+    assert "Actual pages per document from metering" not in printed
 
 
 @pytest.mark.unit
@@ -1545,9 +1680,18 @@ def test_each_pattern_plans_for_only_the_bedrock_steps_it_runs(
 
 
 @pytest.mark.unit
-def test_a_pattern_with_no_models_configured_produces_no_requirements(tracking):
+def test_a_pattern_with_no_models_configured_produces_no_requirements(tracking, capsys):
+    """No demand is assembled at all, which is a stronger statement than no rows.
+
+    Two independent things produce the empty list here, and the list cannot tell
+    them apart: every step is filtered out while the demand map is built, and the
+    loop over that map has its own no-model-configured skip. The map is printed
+    between the two, so asserting it is empty is what pins the first — and the
+    second is then a backstop this input cannot reach at all.
+    """
     hourly = hours(**{"9": {"docsPerHour": 60, "extractionTokensPerHour": 60000}})
     assert build(hourly, config=model_config()) == []
+    assert "Processing inference demands: {}" in capsys.readouterr().out
 
 
 @pytest.mark.unit
@@ -1687,19 +1831,61 @@ def test_the_unified_pattern_is_planned_as_the_bedrock_pipeline(wired):
 
 
 @pytest.mark.unit
-def test_an_uppercase_pattern_name_is_rejected_before_it_can_be_normalized(wired):
-    """The lowercasing step is unreachable: validation runs first and refuses it.
+def test_an_uppercase_pattern_name_is_refused(wired):
+    """`validate_capacity_input` accepts only `pattern-2` and `unified`.
 
-    `validate_capacity_input` accepts only `pattern-2` and `unified`, so a caller
-    sending `PATTERN-2` — the spelling the normalization exists for — gets a
-    validation error rather than being normalized. Pinned so the dead branch is not
-    mistaken for working tolerance.
+    `PATTERN-2` is the spelling the handler's lowercasing step exists for, and it
+    does not get there: the refusal below is validation's, not the normalization's.
+    What that step *is* — unreachable — cannot be read from this outcome, and is
+    asserted from the source in the test that follows.
     """
     payload = json.loads(json.dumps(HAPPY_INPUT))
     payload["pattern"] = "PATTERN-2"
     result = index.lambda_handler(payload, None)
     assert result["success"] is False
     assert "Only pattern-2 and unified patterns are supported" in result["errorMessage"]
+
+
+@pytest.mark.unit
+def test_the_handlers_pattern_lowercasing_sits_after_validation_and_is_unreachable():
+    """Asserted on the source, because no input can tell the branch from its absence.
+
+    The behavioural form of this was measured vacuous: deleting
+    `if pattern.startswith("PATTERN-"): pattern = pattern.lower()` leaves every test
+    in this file green, because validation has already refused every string that
+    would enter it. Position is the only observable property, so position is what is
+    checked — the `startswith("PATTERN-")` test must come after the
+    `validate_capacity_input` call in `lambda_handler`. A refactor that moves
+    validation later makes the branch live, and this fails rather than the tolerance
+    silently starting to work.
+    """
+    source = (Path(__file__).parent / "index.py").read_text()
+    tree = ast.parse(source)
+    handler = next(
+        node
+        for node in tree.body
+        if isinstance(node, ast.FunctionDef) and node.name == "lambda_handler"
+    )
+    validations = [
+        node.lineno
+        for node in ast.walk(handler)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Name)
+        and node.func.id == "validate_capacity_input"
+    ]
+    normalizations = [
+        node.lineno
+        for node in ast.walk(handler)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and node.func.attr == "startswith"
+        and any(
+            isinstance(a, ast.Constant) and a.value == "PATTERN-" for a in node.args
+        )
+    ]
+    assert len(validations) == 1, validations
+    assert len(normalizations) == 1, normalizations
+    assert normalizations[0] > validations[0]
 
 
 @pytest.mark.unit
@@ -1829,16 +2015,23 @@ def test_a_user_config_supplied_as_a_mapping_is_used_directly(wired):
 def test_the_granular_assessment_flag_defaults_to_on_and_is_honoured_when_off(
     wired, tracking
 ):
-    """Absent means enabled, because granular assessment is the default deployment."""
+    """Absent means enabled, because granular assessment is the default deployment.
+
+    Both figures are asserted, not merely that they differ. The history holds one
+    document with 2 regular assessment calls and one with 8 granular ones: with the
+    flag on that averages 5 a document across two documents, 300 an hour over the
+    60-document schedule, 5.5 a minute with the buffer; with it off only the regular
+    document counts, so 2 a document and 2.2 a minute. A mutation that scales the
+    accumulated granular requests moves both numbers and leaves them unequal, so an
+    inequality is satisfied by an arithmetic error of any size.
+    """
     put_metered(tracking, "doc-granular", bedrock("GranularAssessment", 8))
     payload = json.loads(json.dumps(HAPPY_INPUT))
     on = by_type(index.lambda_handler(payload, None)["quotaRequirements"])
     payload["granularAssessmentEnabled"] = False
     off = by_type(index.lambda_handler(payload, None)["quotaRequirements"])
-    assert (
-        on[("Assessment", "RPM")]["requiredQuota"]
-        != off[("Assessment", "RPM")]["requiredQuota"]
-    )
+    assert on[("Assessment", "RPM")]["requiredQuota"] == "6"
+    assert off[("Assessment", "RPM")]["requiredQuota"] == "2"
 
 
 @pytest.mark.unit

@@ -137,10 +137,18 @@ def test_every_required_variable_is_named_individually_when_it_is_missing(env, n
 
     A generic "configuration error" would leave an operator comparing the stack's
     environment against the source, so each is asserted to appear in the text by
-    name.
+    name — anchored to the start of its own bullet, which is the part that makes the
+    assertion mean anything. Eleven of these names are a suffix of another possible
+    one (`TRACKING_TABLE` inside `RECOMMENDATION_TRACKING_TABLE`, and every
+    `..._THRESHOLD`), so a bare `name in text` passes for a message naming the wrong
+    variable: prefixing the interpolation with `RECOMMENDATION_` left all eighteen
+    rows green. The bullet prefix `\\n  - ` is what the collector writes, and one
+    error is expected because one variable was removed.
     """
     env.delenv(name)
-    assert name in message()
+    text = message()
+    assert f"\n  - {name} environment variable is required" in text
+    assert text.count("\n  - ") == 1
 
 
 @pytest.mark.unit
