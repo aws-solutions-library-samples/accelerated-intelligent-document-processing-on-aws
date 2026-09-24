@@ -51,10 +51,12 @@ rather than a pass:
   printed an informational line and exited 0, indistinguishable in a job log from a
   clean ratchet. In both CI configurations it runs as a separate step from the run that
   writes its input, so a reordering, a changed report path or a tolerated test failure
-  put a green tick on a run that measured no coverage. `--require-tree NAME` states that
-  precondition where the caller knows it: both CI configurations pass the tree their
-  preceding test step is supposed to have measured, so the report going missing fails
-  by name instead of by absence. Issue #1190.
+  put a green tick on a run that measured no coverage. The refusal is unconditional and
+  needs no flag, which is what makes it cover every caller — both CI steps included —
+  rather than the one place somebody remembered to assert it. `--require-tree NAME` goes
+  further for a caller that knows which tree it just measured: it fails **by name** if
+  that tree was not checked, which is stronger than "something was checked" once more
+  than one tree can have a report. Issue #1190.
 * **A report whose run did not finish cleanly.** A partially failed pytest still writes
   a `coverage.xml`, and a run where some xdist workers errored writes one showing large,
   uniform-looking falls across unrelated files — the tests that would have covered them
@@ -689,9 +691,9 @@ def main() -> int:
         metavar="NAME",
         default=[],
         help=(
-            "Fail unless this tree was actually checked (repeatable). Both CI "
-            "configurations pass the tree their preceding test step measures, so a "
-            "report that never appears fails by name instead of reading as a pass."
+            "Fail unless this tree was actually checked (repeatable). For a caller that "
+            "knows which tree it measured: the failure then names the tree, rather than "
+            "saying only that nothing was checked."
         ),
     )
     args = parser.parse_args()

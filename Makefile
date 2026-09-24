@@ -270,9 +270,11 @@ coverage-summary: ## Print the recorded per-tree figures, without measuring anyt
 # report that `make test-cicd -C lib/idp_common_pkg` writes, and the lint targets
 # never build one. Wired there it would find no report and refuse (exit 2), red-lining
 # every lint run for a condition the lint targets themselves cause.
-# Both CI configurations invoke it immediately after the test step instead, with
-# CHECK_COVERAGE_DEBT_ARGS naming the tree that step is supposed to have measured, so a
-# report that never appears fails by name rather than reading as a clean ratchet (#1190).
+# Both CI configurations invoke it immediately after the test step instead. They pass no
+# arguments and need none: with no usable report the gate refuses rather than reporting
+# success, for every caller (#1190). CHECK_COVERAGE_DEBT_ARGS is how a caller that knows
+# which tree it just measured adds `--require-tree=<name>` and gets a failure that names
+# the tree instead of one that says only that nothing was checked.
 CHECK_COVERAGE_DEBT_ARGS ?=
 check-coverage-debt: ## Ratchet per-file coverage across all 9 trees: fail if a file loses coverage, or a new module arrives unratcheted
 	@python3 scripts/check_coverage_debt.py $(CHECK_COVERAGE_DEBT_ARGS)

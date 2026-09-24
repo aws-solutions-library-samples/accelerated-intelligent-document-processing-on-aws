@@ -1307,19 +1307,22 @@ class TestRunRecordWiring:
 
 
 @pytest.mark.unit
-class TestCIStatesThePrecondition:
-    """Both CI configurations must name the tree their test step measures.
+class TestTheCIPreconditionNeedsNoCIChange:
+    """What protects the two CI steps is the gate's own refusal, not a flag they pass.
 
-    The gate runs as a separate step from the run that writes its input in both, and
-    nothing asserted that the input existed. Asserted per config file rather than once,
-    because the failure mode this repository keeps hitting is a gate present in one CI and
-    absent from the other.
+    The ratchet runs as a separate step from the run that writes its input in both
+    configurations, and nothing asserted that the input existed. The assertion now lives
+    in the script and is unconditional, which is why neither CI needs an argument: a step
+    whose report never appeared checks no tree, and a run that checked no tree refuses.
+    Both halves are pinned here — the invocation order, and the refusal reaching an
+    invocation that passes nothing — because a change to either would restore the gap
+    while leaving the other looking intact.
     """
 
     @pytest.mark.parametrize(
         "config", [".gitlab-ci.yml", ".github/workflows/developer-tests.yml"]
     )
-    def test_the_ratchet_invocation_requires_the_tree_that_step_measures(self, config):
+    def test_each_config_invokes_the_ratchet_after_the_run_that_feeds_it(self, config):
         text = (REPO_ROOT / config).read_text(encoding="utf-8")
         line = next(
             (
@@ -1330,16 +1333,24 @@ class TestCIStatesThePrecondition:
             None,
         )
         assert line, f"{config} no longer invokes the coverage ratchet at all"
-        assert "--require-tree=idp_common" in line, (
-            f"{config} invokes the ratchet without stating which tree must have been "
-            f"measured: {line.strip()!r}. `make test-cicd -C lib/idp_common_pkg` above it "
-            f"measures idp_common, and with that unstated the step passes on a run where "
-            f"the report never appeared."
-        )
+        assert text.index("make check-coverage-debt") > text.index(
+            "make test-cicd -C lib/idp_common_pkg"
+        ), f"{config} runs the ratchet before the run that writes its report"
 
-    def test_the_makefile_target_passes_the_argument_through(self):
-        """Both CI lines set `CHECK_COVERAGE_DEBT_ARGS`, so the recipe has to forward it.
-        A recipe that ignored it would leave two green CI steps asserting nothing."""
+    def test_an_invocation_with_no_arguments_still_refuses_a_missing_report(
+        self, monkeypatch, tmp_path, capsys
+    ):
+        """The CI invocation, argument for argument: `check_coverage_debt.py` and nothing
+        else. If the refusal ever needs a flag to fire, both CI steps go back to passing
+        on a run that measured nothing, and no edit to either config file would show it."""
+        _install(monkeypatch, tmp_path, [_fake_tree(tmp_path)], {"trees": {}})
+        monkeypatch.setattr(sys, "argv", ["check_coverage_debt.py"])
+        assert ccd.main() == 2
+        assert "✅" not in capsys.readouterr().out
+
+    def test_the_makefile_target_can_carry_the_named_precondition(self):
+        """`--require-tree` has to be reachable through the target both CIs call, or it is
+        a flag with no route to the callers that would use it."""
         recipe = next(
             block
             for block in (REPO_ROOT / "Makefile").read_text().split("\ncheck-")

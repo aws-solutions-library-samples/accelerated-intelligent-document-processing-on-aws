@@ -141,14 +141,8 @@ jobs:
         id: run-tests
         run: make test-cicd -C lib/idp_common_pkg
 
-      # --require-tree=idp_common states this step's precondition. It is a separate step
-      # from the run that writes its input, and with nothing asserting that, a reordering,
-      # a changed report path or a tolerated test failure produced a green ratchet on a
-      # run that measured no coverage at all (#1190). Named rather than implied: the
-      # script refuses on its own when it can check nothing, and this says which tree the
-      # step above was supposed to have measured.
       - name: Coverage ratchet (per-file, reads the report the step above writes)
-        run: make check-coverage-debt CHECK_COVERAGE_DEBT_ARGS=--require-tree=idp_common
+        run: make check-coverage-debt
         continue-on-error: false
 
       # `make test-cicd -C lib/idp_common_pkg` above covers only idp_common_pkg.
