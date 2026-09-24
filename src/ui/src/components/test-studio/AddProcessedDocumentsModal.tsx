@@ -50,9 +50,11 @@ export interface ProcessedDocument {
   objectKey: string;
   submitted: string;
   evaluationStatus: string;
+  configVersion: string;
 }
 
 interface TargetState {
+  name: string;
   fileCount: number;
   labelState: string;
 }
@@ -68,6 +70,11 @@ const plural = (count: number, one: string, many: string): string => (count === 
 
 export const hasGroundTruth = (doc: ProcessedDocument): boolean => isBaselineAvailable(doc);
 
+export const formatSubmitted = (value: string): string => {
+  const date = new Date(value);
+  return value && !Number.isNaN(date.getTime()) ? date.toLocaleString() : value || '-';
+};
+
 const COLUMNS: TableProps.ColumnDefinition<ProcessedDocument>[] = [
   { id: 'objectKey', header: 'Document', cell: (d) => d.objectKey, sortingField: 'objectKey', isRowHeader: true },
   {
@@ -80,7 +87,8 @@ const COLUMNS: TableProps.ColumnDefinition<ProcessedDocument>[] = [
         <StatusIndicator type="info">None yet</StatusIndicator>
       ),
   },
-  { id: 'submitted', header: 'Submitted', cell: (d) => d.submitted, sortingField: 'submitted' },
+  { id: 'configVersion', header: 'Configuration profile', cell: (d) => d.configVersion || '-', sortingField: 'configVersion' },
+  { id: 'submitted', header: 'Submitted', cell: (d) => formatSubmitted(d.submitted), sortingField: 'submitted' },
 ];
 
 const AddProcessedDocumentsModal = ({ visible, testSet, onDismiss, onSubmitted }: AddProcessedDocumentsModalProps): React.JSX.Element => {
@@ -106,6 +114,7 @@ const AddProcessedDocumentsModal = ({ visible, testSet, onDismiss, onSubmitted }
           objectKey: d.ObjectKey as string,
           submitted: d.InitialEventTime ?? '',
           evaluationStatus: d.EvaluationStatus ?? '',
+          configVersion: d.ConfigVersion ?? '',
         }));
       setDocuments((current) => {
         const seen = new Set(current.map((d) => d.objectKey));
@@ -131,7 +140,7 @@ const AddProcessedDocumentsModal = ({ visible, testSet, onDismiss, onSubmitted }
       .then((result) => {
         if (cancelled) return;
         const match = (result.data.getTestSets || []).find((t) => t?.id === testSetId);
-        if (match) setTarget({ fileCount: match.fileCount ?? 0, labelState: match.labelState ?? 'unlabeled' });
+        if (match) setTarget({ name: match.name, fileCount: match.fileCount ?? 0, labelState: match.labelState ?? 'unlabeled' });
       })
       .catch((err) => logger.warn('Could not read the test set label state', err));
     return () => {
@@ -145,7 +154,7 @@ const AddProcessedDocumentsModal = ({ visible, testSet, onDismiss, onSubmitted }
       noMatch: 'No documents match the filter',
     },
     pagination: { pageSize: PAGE_SIZE },
-    sorting: { defaultState: { sortingColumn: COLUMNS[2], isDescending: true } },
+    sorting: { defaultState: { sortingColumn: COLUMNS[3], isDescending: true } },
     selection: { keepSelection: true, trackBy: 'objectKey' },
   });
 
@@ -156,7 +165,7 @@ const AddProcessedDocumentsModal = ({ visible, testSet, onDismiss, onSubmitted }
   const listedUnlabeled = unlabeled.slice(0, MAX_LISTED);
   const unlistedUnlabeled = unlabeledCount - listedUnlabeled.length;
   const losesLabels = !!target && target.fileCount > 0 && target.labelState !== 'unlabeled' && unlabeledCount > 0;
-  const targetName = testSet?.name ?? '';
+  const targetName = target?.name ?? testSet?.name ?? '';
   const noun = plural(selectedCount, 'document', 'documents');
 
   const handleSubmit = async () => {
@@ -217,7 +226,8 @@ const AddProcessedDocumentsModal = ({ visible, testSet, onDismiss, onSubmitted }
         ) : null}
         <Box>
           Pick documents that have finished processing. Each one is copied into the set together with any ground truth already saved for it;
-          one without ground truth is added unlabeled so it can be draft-labeled here afterwards.
+          one without ground truth is added unlabeled so it can be draft-labeled here afterwards. Documents already in this set are skipped,
+          so labels reviewed here are kept.
         </Box>
         {loadError ? <Alert type="error">Could not load documents: {loadError}</Alert> : null}
         <Table
@@ -259,23 +269,35 @@ const AddProcessedDocumentsModal = ({ visible, testSet, onDismiss, onSubmitted }
           pagination={<Pagination {...paginationProps} />}
         />
         {unlabeledCount > 0 ? (
-          <Alert type="info" header={`${unlabeledCount} of ${selectedCount} ${plural(unlabeledCount, 'has', 'have')} no ground truth yet`}>
-            <SpaceBetween size="xs">
-              <Box>{plural(unlabeledCount, 'It is', 'They are')} added unlabeled. Generate draft labels for the set afterwards.</Box>
-              <ul aria-label="Documents without ground truth">
-                {listedUnlabeled.map((key) => (
-                  <li key={key}>{key}</li>
-                ))}
-                {unlistedUnlabeled > 0 ? <li>and {unlistedUnlabeled} more</li> : null}
-              </ul>
+          <Alert
+            type={losesLabels ? 'warning' : 'info'}
+            header={
+              losesLabels
+                ? `"${targetName}" will read as unlabeled`
+                : `${unlabeledCount} of ${selectedCount} ${plural(unlabeledCount, 'has', 'have')} no ground truth yet`
+            }
+          >
+            <SpaceBetween size="xxs">
+              {losesLabels && target ? (
+                <Box>
+                  This set is {LABEL_STATE_TEXT[target.labelState] ?? target.labelState}. {unlabeledCount} of {selectedCount} selected{' '}
+                  {plural(unlabeledCount, 'document has', 'documents have')} no ground truth, and adding{' '}
+                  {plural(unlabeledCount, 'it', 'them')} changes the set&apos;s label state to Unlabeled until{' '}
+                  {plural(unlabeledCount, 'it is', 'they are')} draft-labeled. Its existing labels are kept.
+                </Box>
+              ) : (
+                <Box>{plural(unlabeledCount, 'It is', 'They are')} added unlabeled. Generate draft labels for the set afterwards.</Box>
+              )}
+              <Box variant="small">Without ground truth:</Box>
+              <Box>
+                <ul aria-label="Documents without ground truth" style={{ margin: 0 }}>
+                  {listedUnlabeled.map((key) => (
+                    <li key={key}>{key}</li>
+                  ))}
+                  {unlistedUnlabeled > 0 ? <li>and {unlistedUnlabeled} more</li> : null}
+                </ul>
+              </Box>
             </SpaceBetween>
-          </Alert>
-        ) : null}
-        {losesLabels && target ? (
-          <Alert type="warning" header={`"${targetName}" will read as unlabeled`}>
-            This set is {LABEL_STATE_TEXT[target.labelState] ?? target.labelState}. Adding {unlabeledCount}{' '}
-            {plural(unlabeledCount, 'document', 'documents')} without ground truth changes its label state to Unlabeled until{' '}
-            {plural(unlabeledCount, 'it is', 'they are')} draft-labeled. Its existing labels are kept.
           </Alert>
         ) : null}
       </SpaceBetween>

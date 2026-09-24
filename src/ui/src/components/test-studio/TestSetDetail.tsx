@@ -1139,7 +1139,7 @@ const TestSetDetail = (): React.JSX.Element => {
                   <Box variant="p" color="inherit">
                     {filterText
                       ? 'This test set has no documents matching the filter.'
-                      : 'This test set has no documents. Use Add documents to bring some in: files in a bucket, a zip upload, or generated documents.'}
+                      : 'This test set has no documents. Use Add documents to bring some in: processed documents, files in a bucket, a zip upload, or generated documents.'}
                   </Box>
                 </Box>
               }

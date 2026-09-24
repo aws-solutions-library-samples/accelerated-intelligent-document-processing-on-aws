@@ -316,7 +316,7 @@ Configuration and Test Set — are deliberately not on that role, so the
 configuration-revision store and the test-set documents are reachable only through a
 resolver that applies the caller's scope to the key.
 
-Beyond the group check, **15** operations verify config-version scope, **4** filter
+Beyond the group check, **16** operations verify config-version scope, **4** filter
 their result rows by it, and **9** verify per-object ownership.
 [`scripts/api_rbac_expectations.yaml`](../../../scripts/api_rbac_expectations.yaml)
 is the manifest of record for all of this and is asserted by

@@ -29,6 +29,7 @@ const doc = (key: string, evaluation: string, status = 'COMPLETED', at = '2026-0
   ObjectStatus: status,
   InitialEventTime: at,
   EvaluationStatus: evaluation,
+  ConfigVersion: 'lending',
 });
 
 const documents = [
@@ -52,7 +53,7 @@ const answer = ({
       return { data: { listDocuments: { Documents: documents, nextToken } } };
     }
     if (query === 'getTestSets')
-      return { data: { getTestSets: [{ id: 'invoices', name: 'Invoices', status: 'COMPLETED', fileCount, labelState }] } };
+      return { data: { getTestSets: [{ id: 'invoices', name: 'Invoice Samples', status: 'COMPLETED', fileCount, labelState }] } };
     if (query === 'addDocumentsToTestSetByKey') {
       if (add) return add();
       return { data: { addDocumentsToTestSetByKey: { id: 'invoices', name: 'Invoices', fileCount, status: 'UPDATING' } } };
@@ -133,7 +134,7 @@ describe('AddProcessedDocumentsModal', () => {
     const result = onSubmitted.mock.calls[0][0];
     expect(result.kind).toBe('documents');
     expect(result.testSet).toEqual({ id: 'invoices', status: 'UPDATING', fileCount: 40 });
-    expect(result.message).toContain('Adding 2 documents to test set "Invoices".');
+    expect(result.message).toContain('Adding 2 documents to test set "Invoice Samples".');
     expect(result.message).toContain('1 has no ground truth');
   });
 
@@ -147,11 +148,11 @@ describe('AddProcessedDocumentsModal', () => {
     expect(screen.queryByText(/will read as unlabeled/)).toBeNull();
 
     select('fresh.pdf');
-    expect(await screen.findByText('1 of 2 has no ground truth yet')).toBeInTheDocument();
+    expect(await screen.findByText('"Invoice Samples" will read as unlabeled')).toBeInTheDocument();
+    expect(screen.queryByText(/no ground truth yet/)).toBeNull();
     const listed = screen.getByRole('list', { name: 'Documents without ground truth' });
     expect(listed).toHaveTextContent('fresh.pdf');
     expect(listed).not.toHaveTextContent('labeled.pdf');
-    expect(await screen.findByText('"Invoices" will read as unlabeled')).toBeInTheDocument();
   });
 
   it('does not warn for an empty set', async () => {
@@ -161,6 +162,18 @@ describe('AddProcessedDocumentsModal', () => {
     select('fresh.pdf');
     expect(await screen.findByText('1 of 1 has no ground truth yet')).toBeInTheDocument();
     expect(screen.queryByText(/will read as unlabeled/)).toBeNull();
+  });
+
+  it("shows each document's profile and a readable submitted time, titled by the set's name", async () => {
+    answer();
+    renderModal();
+    await waitFor(() => expect(rowTexts()).toHaveLength(2));
+
+    expect(rowTexts()[0]).toContain('lending');
+    expect(rowTexts()[0]).toContain(new Date('2026-09-22T10:00:00Z').toLocaleString());
+    expect(rowTexts()[0]).not.toContain('2026-09-22T10:00:00Z');
+    expect(await screen.findByText('Add processed documents to "Invoice Samples"')).toBeInTheDocument();
+    expect(screen.getByText(/Documents already in this set are skipped/)).toBeInTheDocument();
   });
 
   it('loads older documents on request', async () => {

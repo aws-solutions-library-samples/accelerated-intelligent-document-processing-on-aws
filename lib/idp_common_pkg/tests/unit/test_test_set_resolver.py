@@ -8413,14 +8413,32 @@ class TestAddDocumentsToTestSetByKey:
             "createdAt": "2026-09-01T00:00:00Z",
         }
 
-    def _run(self, args, item=None):
+    @staticmethod
+    def _rows(keys, status="COMPLETED", config_version="lending"):
+        return [
+            {
+                "PK": f"doc#{k}",
+                "SK": "none",
+                "ObjectKey": k,
+                "ObjectStatus": status,
+                "ConfigVersion": config_version,
+            }
+            for k in keys
+        ]
+
+    def _run(self, args, item=None, rows=None, event=None):
         table = Mock()
         sqs = Mock()
+        if rows is None:
+            rows = self._rows(args.get("objectKeys") or [])
         with (
             patch.object(
                 test_set_index.db_client,
                 "get_item",
                 return_value=item if item is not None else self._completed_set(),
+            ),
+            patch.object(
+                test_set_index.db_client, "batch_get_items", return_value=rows
             ),
             patch.object(test_set_index.boto3, "resource") as resource,
             patch.object(test_set_index.boto3, "client", return_value=sqs),
@@ -8433,7 +8451,7 @@ class TestAddDocumentsToTestSetByKey:
             ),
         ):
             resource.return_value.Table.return_value = table
-            result = test_set_index.add_documents_to_test_set_by_key(args)
+            result = test_set_index.add_documents_to_test_set_by_key(args, event)
         return result, table, sqs
 
     def test_queues_the_keys_and_marks_the_set_updating(self):
@@ -8460,7 +8478,8 @@ class TestAddDocumentsToTestSetByKey:
 
     def test_duplicate_and_padded_keys_collapse(self):
         _, _, sqs = self._run(
-            {"testSetId": "my-set", "objectKeys": [" a.pdf", "a.pdf", "b.pdf "]}
+            {"testSetId": "my-set", "objectKeys": [" a.pdf", "a.pdf", "b.pdf "]},
+            rows=self._rows(["a.pdf", "b.pdf"]),
         )
         body = json.loads(sqs.send_message.call_args.kwargs["MessageBody"])
         assert body["objectKeys"] == ["a.pdf", "b.pdf"]
@@ -8497,6 +8516,132 @@ class TestAddDocumentsToTestSetByKey:
     def test_refuses_a_missing_set(self):
         with pytest.raises(Exception, match="not found"):
             self._run({"testSetId": "nope", "objectKeys": ["a.pdf"]}, item={})
+
+    @staticmethod
+    def _event(groups, email="author@example.com"):
+        return {
+            "identity": {
+                "claims": {
+                    "cognito:groups": groups,
+                    "email": email,
+                    "sub": "sub-1",
+                }
+            }
+        }
+
+    def _scoped(self, scope):
+        return patch.object(
+            test_set_index, "resolve_allowed_config_versions", return_value=scope
+        )
+
+    def test_a_scoped_author_can_add_documents_inside_their_scope(self):
+        with self._scoped(["lending*"]):
+            result, _, sqs = self._run(
+                {"testSetId": "my-set", "objectKeys": ["a.pdf"]},
+                rows=self._rows(["a.pdf"], config_version="lending-v2"),
+                event=self._event(["Author"]),
+            )
+        assert result["status"] == "UPDATING"
+        sqs.send_message.assert_called_once()
+
+    @pytest.mark.parametrize(
+        "rows",
+        [
+            pytest.param(
+                lambda s: s._rows(["a.pdf"], config_version="payroll"),
+                id="outside-scope",
+            ),
+            pytest.param(
+                lambda s: [
+                    {**s._rows(["a.pdf"])[0], "ConfigVersion": None},
+                ],
+                id="no-profile-name",
+            ),
+            pytest.param(lambda s: [], id="no-tracking-row"),
+            pytest.param(
+                lambda s: s._rows(["a.pdf"], status="RUNNING"), id="not-completed"
+            ),
+        ],
+    )
+    def test_a_scoped_author_is_refused_with_one_message_that_names_nothing(self, rows):
+        with self._scoped(["lending"]):
+            with pytest.raises(PermissionError) as excinfo:
+                self._run(
+                    {"testSetId": "my-set", "objectKeys": ["a.pdf"]},
+                    rows=rows(self),
+                    event=self._event(["Author"]),
+                )
+        assert str(excinfo.value) == test_set_index._SELECTION_REFUSED
+        assert "a.pdf" not in str(excinfo.value)
+
+    def test_the_refusal_happens_before_the_set_is_touched(self):
+        with (
+            self._scoped(["lending"]),
+            patch.object(
+                test_set_index.db_client,
+                "batch_get_items",
+                return_value=self._rows(["a.pdf"], config_version="payroll"),
+            ),
+            patch.object(test_set_index.db_client, "get_item") as get,
+            patch.object(test_set_index.boto3, "client") as client,
+        ):
+            with pytest.raises(PermissionError):
+                test_set_index.add_documents_to_test_set_by_key(
+                    {"testSetId": "my-set", "objectKeys": ["a.pdf"]},
+                    self._event(["Author"]),
+                )
+        get.assert_not_called()
+        client.assert_not_called()
+
+    def test_an_unfinished_document_is_refused_even_for_an_admin(self):
+        with pytest.raises(PermissionError):
+            self._run(
+                {"testSetId": "my-set", "objectKeys": ["a.pdf"]},
+                rows=self._rows(["a.pdf"], status="RUNNING"),
+                event=self._event(["Admin"]),
+            )
+
+    def test_an_admin_is_never_looked_up(self):
+        with patch.object(test_set_index, "resolve_allowed_config_versions") as lookup:
+            self._run(
+                {"testSetId": "my-set", "objectKeys": ["a.pdf"]},
+                rows=self._rows(["a.pdf"], config_version="anything"),
+                event=self._event(["Admin"]),
+            )
+        lookup.assert_not_called()
+
+    def test_a_scope_that_cannot_be_resolved_is_refused(self):
+        with patch.object(
+            test_set_index,
+            "resolve_allowed_config_versions",
+            side_effect=test_set_index.ScopeLookupError("no table"),
+        ):
+            with pytest.raises(PermissionError, match="could not be verified"):
+                self._run(
+                    {"testSetId": "my-set", "objectKeys": ["a.pdf"]},
+                    event=self._event(["Author"]),
+                )
+
+    def test_an_unscoped_author_is_not_restricted(self):
+        with self._scoped(None):
+            result, _, _ = self._run(
+                {"testSetId": "my-set", "objectKeys": ["a.pdf"]},
+                rows=self._rows(["a.pdf"], config_version="anything"),
+                event=self._event(["Author"]),
+            )
+        assert result["status"] == "UPDATING"
+
+    def test_the_handler_passes_the_caller_identity_through(self):
+        event = {
+            "info": {"fieldName": "addDocumentsToTestSetByKey"},
+            "arguments": {"testSetId": "my-set", "objectKeys": ["a.pdf"]},
+            **self._event(["Author"]),
+        }
+        with patch.object(
+            test_set_index, "add_documents_to_test_set_by_key", return_value={}
+        ) as op:
+            test_set_index.handler(event, {})
+        assert op.call_args.args[1] is event
 
     def test_pattern_append_still_sends_the_pattern_message(self):
         table = Mock()

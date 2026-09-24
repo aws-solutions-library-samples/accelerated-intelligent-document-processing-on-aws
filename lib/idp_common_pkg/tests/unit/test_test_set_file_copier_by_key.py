@@ -14,6 +14,7 @@ import sys
 from pathlib import Path
 
 import pytest
+from botocore.exceptions import ClientError
 
 
 def _load_copier():
@@ -33,19 +34,33 @@ def _load_copier():
     return mod
 
 
-class FakeS3:
-    """Input bucket holds ``inputs``; baseline bucket holds ``baselines`` (key -> files)."""
+def _client_error(code, operation):
+    return ClientError({"Error": {"Code": code, "Message": code}}, operation)
 
-    def __init__(self, inputs, baselines):
+
+class FakeS3:
+    """Input bucket holds ``inputs``; baseline bucket holds ``baselines`` (key -> files).
+
+    ``fail_head`` / ``fail_list`` make the named call raise that error code instead
+    of answering, to stand in for throttling or a denied permission.
+    """
+
+    def __init__(self, inputs, baselines, members=(), fail_head=None, fail_list=None):
         self.inputs = set(inputs)
         self.baselines = baselines
         self.copied = []
-        self.test_set_objects = set()
+        self.test_set_objects = {f"my-set/input/{m}" for m in members}
+        self.fail_head = fail_head
+        self.fail_list = fail_list
 
     def head_object(self, Bucket, Key):
+        if self.fail_head:
+            raise _client_error(self.fail_head, "HeadObject")
         if Bucket == "input-bucket" and Key in self.inputs:
             return {}
-        raise Exception("404 Not Found")
+        if Bucket == "test-set-bucket" and Key in self.test_set_objects:
+            return {}
+        raise _client_error("404", "HeadObject")
 
     def _objects(self, Bucket, Prefix):
         if Bucket == "baseline-bucket":
@@ -60,6 +75,8 @@ class FakeS3:
                     yield key
 
     def list_objects_v2(self, Bucket, Prefix, MaxKeys=1000):
+        if self.fail_list:
+            raise _client_error(self.fail_list, "ListObjectsV2")
         contents = [{"Key": k} for k in self._objects(Bucket, Prefix)][:MaxKeys]
         return {"Contents": contents} if contents else {}
 
@@ -212,6 +229,78 @@ class TestByKeyMode:
 
 
 @pytest.mark.unit
+class TestByKeyRefusesToGuess:
+    """An S3 error is not an answer: it must fail the job, not change what is added."""
+
+    def test_a_denied_baseline_check_fails_the_job_instead_of_adding_unlabeled(
+        self, monkeypatch, copier
+    ):
+        s3 = FakeS3(
+            inputs={"labeled.pdf"},
+            baselines={"labeled.pdf": ["sections/1/result.json"]},
+            fail_list="AccessDenied",
+        )
+        table = _wire(monkeypatch, copier, s3)
+
+        copier.handler(_event(_by_key_message(["labeled.pdf"])), None)
+
+        assert s3.copied == []
+        final = _final_update(table)
+        assert final["ExpressionAttributeValues"][":status"] == "FAILED"
+
+    def test_a_throttled_existence_check_fails_the_job_instead_of_not_found(
+        self, monkeypatch, copier
+    ):
+        s3 = FakeS3(inputs={"a.pdf"}, baselines={}, fail_head="SlowDown")
+        table = _wire(monkeypatch, copier, s3)
+
+        copier.handler(_event(_by_key_message(["a.pdf"])), None)
+
+        assert s3.copied == []
+        final = _final_update(table)
+        assert final["ExpressionAttributeValues"][":status"] == "FAILED"
+        assert "None of the" not in final["ExpressionAttributeValues"][":error"]
+
+
+@pytest.mark.unit
+class TestByKeyNeverOverwritesAMember:
+    def test_a_document_already_in_the_set_is_skipped(self, monkeypatch, copier):
+        s3 = FakeS3(
+            inputs={"member.pdf", "new.pdf"},
+            baselines={
+                "member.pdf": ["sections/1/result.json"],
+                "new.pdf": ["sections/1/result.json"],
+            },
+            members={"member.pdf"},
+        )
+        table = _wire(monkeypatch, copier, s3)
+
+        copier.handler(_event(_by_key_message(["member.pdf", "new.pdf"])), None)
+
+        written = {c[3] for c in s3.copied}
+        assert written == {
+            "my-set/input/new.pdf",
+            "my-set/baseline/new.pdf/sections/1/result.json",
+        }
+        final = _final_update(table)
+        assert final["ExpressionAttributeValues"][":status"] == "COMPLETED"
+        assert final["ExpressionAttributeValues"][":count"] == 2
+
+    def test_a_selection_of_only_members_completes_and_copies_nothing(
+        self, monkeypatch, copier
+    ):
+        s3 = FakeS3(inputs={"member.pdf"}, baselines={}, members={"member.pdf"})
+        table = _wire(monkeypatch, copier, s3)
+
+        copier.handler(_event(_by_key_message(["member.pdf"])), None)
+
+        assert s3.copied == []
+        final = _final_update(table)
+        assert final["ExpressionAttributeValues"][":status"] == "COMPLETED"
+        assert final["ExpressionAttributeValues"][":count"] == 1
+
+
+@pytest.mark.unit
 class TestPatternModeIsUnchanged:
     def test_pattern_append_still_drops_unlabeled_documents(self, monkeypatch, copier):
         s3 = FakeS3(
@@ -251,4 +340,8 @@ def test_result_message_names_the_unlabeled_and_missing_counts(copier):
     assert (
         copier._selected_documents_result(2, 1, 1)
         == "Added 2 files (1 unlabeled, 1 not found)"
+    )
+    assert (
+        copier._selected_documents_result(1, 0, 0, 2)
+        == "Added 1 files (2 already in the set)"
     )
