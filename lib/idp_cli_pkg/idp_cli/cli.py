@@ -3180,6 +3180,7 @@ def generate_manifest(
                 console.print(f"  Uploaded input {i + 1}/{len(documents)}: {filename}")
 
             # Upload baseline files
+            baseline_objects = 0
             for filename, baseline_path in baseline_map.items():
                 # Upload all files in the baseline directory recursively
                 import glob as glob_module
@@ -3188,18 +3189,34 @@ def generate_manifest(
                 baseline_files = glob_module.glob(
                     os.path.join(baseline_path, "**", "*"), recursive=True
                 )
+                uploaded = 0
                 for baseline_file in baseline_files:
                     if os.path.isfile(baseline_file):
                         # Preserve directory structure relative to baseline_path
                         rel_path = os.path.relpath(baseline_file, baseline_path)
                         s3_key = f"{test_set}/baseline/{filename}/{rel_path}"
                         s3_client.upload_file(baseline_file, test_set_bucket, s3_key)
+                        uploaded += 1
 
                 # Update baseline_map to point to S3 location
                 baseline_map[filename] = (
                     f"s3://{test_set_bucket}/{test_set}/baseline/{filename}/"
                 )
-                console.print(f"  Uploaded baseline: {filename}")
+                baseline_objects += uploaded
+
+                # Report the count, not the attempt. A baseline directory holding no
+                # files at its top level — empty, or one level deeper than expected —
+                # left this line claiming an upload that moved nothing, while the
+                # manifest row still named the `baseline/<document>/` prefix. The
+                # result is a test set an evaluation cannot score, described as ready.
+                if uploaded:
+                    console.print(f"  Uploaded baseline: {filename} ({uploaded} files)")
+                else:
+                    console.print(
+                        f"[yellow]  Warning: no baseline files found for {filename} "
+                        f"in {baseline_path} - its baseline_source will name an empty "
+                        f"prefix[/yellow]"
+                    )
 
         # Write manifest (2 columns only)
         if output:
@@ -3241,9 +3258,13 @@ def generate_manifest(
             console.print(
                 f"[green]✓ Test set '{test_set}' created successfully[/green]"
             )
-            console.print(f"  Input files: s3://{test_set_bucket}/{test_set}/input/")
             console.print(
-                f"  Baseline files: s3://{test_set_bucket}/{test_set}/baseline/"
+                f"  Input files: s3://{test_set_bucket}/{test_set}/input/ "
+                f"({len(documents)} documents)"
+            )
+            console.print(
+                f"  Baseline files: s3://{test_set_bucket}/{test_set}/baseline/ "
+                f"({baseline_objects} objects)"
             )
             console.print()
             console.print("[bold]Next Steps: Run inference[/bold]")
@@ -3755,19 +3776,38 @@ def _clear_s3_prefix(s3_client, bucket: str, prefix: str) -> int:
     """
     paginator = s3_client.get_paginator("list_objects_v2")
     deleted = 0
+    failures: List[Dict[str, str]] = []
     batch: List[Dict[str, str]] = []
+
+    def _send(keys):
+        # Count what S3 says it deleted, not what was asked for. `DeleteObjects`
+        # answers 200 with a per-key `Errors` array — an object under a legal hold, or
+        # a key a policy denies — while deleting the rest, so a count of the request
+        # would report a prefix as emptied that still holds objects, which is the same
+        # harm as the unpaginated listing arriving by another route.
+        nonlocal deleted
+        response = s3_client.delete_objects(Bucket=bucket, Delete={"Objects": keys})
+        deleted += len(response.get("Deleted", []))
+        failures.extend(response.get("Errors", []))
 
     for page in paginator.paginate(Bucket=bucket, Prefix=prefix):
         for obj in page.get("Contents", []):
             batch.append({"Key": obj["Key"]})
             if len(batch) == _DELETE_OBJECTS_BATCH_SIZE:
-                s3_client.delete_objects(Bucket=bucket, Delete={"Objects": batch})
-                deleted += len(batch)
+                _send(batch)
                 batch = []
 
     if batch:
-        s3_client.delete_objects(Bucket=bucket, Delete={"Objects": batch})
-        deleted += len(batch)
+        _send(batch)
+
+    if failures:
+        first = failures[0]
+        console.print(
+            f"[yellow]Warning: {len(failures)} object(s) under {prefix} could not be "
+            f"deleted, so it is not empty (first: {first.get('Key')}: "
+            f"{first.get('Code')}). Files uploaded now will sit alongside them."
+            "[/yellow]"
+        )
 
     return deleted
 
@@ -3785,13 +3825,17 @@ def _copy_s3_baseline(
 
     The URI may name a prefix (what `generate-manifest` writes) or a single object, so
     the destination key is the remainder of the source key below the prefix, falling
-    back to the object's basename when the URI names the object exactly. Paginated for
-    the same reason the clear is: a baseline directory can hold more than 1000 files.
+    back to the object's basename when the URI names the object exactly. A key that
+    merely *starts* with the same characters is not a member and is skipped: listing
+    `gt/inv` would otherwise draw in `gt/inv2/other.json` and store it under a mangled
+    name. Paginated for the same reason the clear is: a baseline directory can hold
+    more than 1000 files.
     """
     source_bucket, _, source_key = source_uri[len("s3://") :].partition("/")
     if not source_bucket or not source_key:
         return 0
 
+    member_prefix = source_key if source_key.endswith("/") else source_key + "/"
     paginator = s3_client.get_paginator("list_objects_v2")
     copied = 0
 
@@ -3800,7 +3844,12 @@ def _copy_s3_baseline(
             key = obj["Key"]
             if key.endswith("/"):
                 continue  # a directory marker carries no baseline content
-            relative = key[len(source_key) :].lstrip("/") or os.path.basename(key)
+            if key == source_key:
+                relative = os.path.basename(key)  # the URI names this object exactly
+            elif key.startswith(member_prefix):
+                relative = key[len(member_prefix) :]
+            else:
+                continue  # shares the leading characters without being under it
             s3_client.copy_object(
                 CopySource={"Bucket": source_bucket, "Key": key},
                 Bucket=dest_bucket,

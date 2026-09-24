@@ -2007,19 +2007,16 @@ s3://docs/statement.pdf,s3://baselines/statement/
 - Subdirectories preserved: `W2s/john.pdf` → `W2s/john`
 
 **Baseline Source Type (Auto-detected):**
-- `s3://bucket/prefix/` → every object under the prefix is copied into the test set's
-  `baseline/<document>/`, keeping its directory shape. This is the form
-  `generate-manifest --test-set` writes, so a manifest produced by this CLI can be fed
-  back in
-- `s3://bucket/key` naming a single object → copied as `baseline/<document>/<object name>`
 - Local path → the directory is uploaded recursively
+- `s3://bucket/prefix/` → every object under the prefix is copied, keeping its
+  directory shape. This is the form `generate-manifest --test-set` writes
 
-A baseline source that resolves to no objects — a mistyped prefix, or one pointing at
-the test set being replaced, whose contents are cleared before the upload starts — is
-reported as a warning naming the document and the source, and the number of baseline
-objects uploaded is printed alongside the file count. **Check both**: the file count is
-manifest rows, so it looks the same whether the baselines arrived or not, and a test set
-with an empty `baseline/` has nothing for an evaluation to score against.
+⚠️ **A `baseline_source` naming a single S3 object copies nothing.** When
+`idp-cli process --manifest` consumes the manifest, an `s3://` value is treated as a
+**prefix** — a trailing `/` is appended if absent — so `s3://bucket/gt/invoice.json`
+becomes a prefix that matches no object and the document is processed with no baseline
+to score against. Point `baseline_source` at the directory holding the baseline files,
+not at one of them.
 
 **Important:**
 - ⚠️ Duplicate filenames not allowed

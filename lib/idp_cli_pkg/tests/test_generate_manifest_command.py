@@ -1265,6 +1265,115 @@ def test_force_overwrites_an_existing_test_set_with_no_prompt(runner, tmp_path):
 
 
 @pytest.mark.unit
+def test_a_baseline_directory_holding_no_files_is_reported_as_uploading_none(
+    runner, tmp_path
+):
+    """An empty baseline directory is a warning, not an "Uploaded baseline" line.
+
+    `--baseline-dir` matches by directory name, so a directory that exists but holds no
+    files at its top level — empty, or nested one level deeper than expected — matches a
+    document and contributes nothing. The upload loop's report sat after it
+    unconditionally, so the command printed `Uploaded baseline: invoice.pdf`, rewrote the
+    manifest row to name `baseline/invoice.pdf/`, and printed the baseline location, for
+    a prefix with nothing in it. The whole run then reads as a complete test set that an
+    evaluation cannot score.
+
+    Read off the bucket rather than the console for the objects, and off the console for
+    what the operator is told, since the defect was entirely in the second.
+    """
+    from idp_cli.cli import generate_manifest
+
+    docs = tmp_path / "docs"
+    _write(docs / "invoice.pdf")
+    baselines = tmp_path / "baselines"
+    (baselines / "invoice.pdf").mkdir(parents=True)  # matched, and empty
+
+    with mock_aws():
+        s3 = boto3.client("s3", region_name="us-east-1")
+        s3.create_bucket(Bucket=TEST_SET_BUCKET)
+
+        with _patched_stack_resources({"TestSetBucket": TEST_SET_BUCKET}):
+            result = runner.invoke(
+                generate_manifest,
+                [
+                    "--dir",
+                    str(docs),
+                    "--baseline-dir",
+                    str(baselines),
+                    "--test-set",
+                    "set1",
+                    "--stack-name",
+                    "IDP",
+                ],
+            )
+
+        keys = {
+            obj["Key"]
+            for obj in s3.list_objects_v2(Bucket=TEST_SET_BUCKET).get("Contents", [])
+        }
+
+    assert result.exit_code == 0, result.output
+    assert keys == {"set1/input/invoice.pdf"}
+    assert "Uploaded baseline: invoice.pdf" not in result.output, (
+        "nothing was uploaded, so nothing may claim it was"
+    )
+    assert "Warning: no baseline files found for invoice.pdf" in result.output
+    assert "(0 objects)" in result.output
+
+
+@pytest.mark.unit
+def test_the_baseline_upload_counts_the_files_it_uploaded(runner, tmp_path):
+    """The per-baseline line and the summary both carry counts read off the uploads.
+
+    The count is the only thing that distinguishes a test set whose baselines arrived
+    from one whose did not, since every other line of the output is identical either
+    way. Two files in one baseline directory, one of them nested, so the number cannot
+    come from counting matched directories or manifest rows.
+    """
+    from idp_cli.cli import generate_manifest
+
+    docs = tmp_path / "docs"
+    _write(docs / "invoice.pdf")
+    baselines = tmp_path / "baselines"
+    _write(baselines / "invoice.pdf" / "result.json", "{}")
+    _write(baselines / "invoice.pdf" / "sections" / "1.json", "{}")
+
+    with mock_aws():
+        s3 = boto3.client("s3", region_name="us-east-1")
+        s3.create_bucket(Bucket=TEST_SET_BUCKET)
+
+        with _patched_stack_resources({"TestSetBucket": TEST_SET_BUCKET}):
+            result = runner.invoke(
+                generate_manifest,
+                [
+                    "--dir",
+                    str(docs),
+                    "--baseline-dir",
+                    str(baselines),
+                    "--test-set",
+                    "set1",
+                    "--stack-name",
+                    "IDP",
+                ],
+            )
+
+        keys = {
+            obj["Key"]
+            for obj in s3.list_objects_v2(Bucket=TEST_SET_BUCKET).get("Contents", [])
+        }
+
+    assert result.exit_code == 0, result.output
+    assert keys == {
+        "set1/input/invoice.pdf",
+        "set1/baseline/invoice.pdf/result.json",
+        "set1/baseline/invoice.pdf/sections/1.json",
+    }
+    assert "Uploaded baseline: invoice.pdf (2 files)" in result.output
+    assert "(2 objects)" in result.output
+    assert "Warning: no baseline files found" not in result.output
+
+
+@pytest.mark.unit
 def test_the_uploading_marker_is_written_before_the_documents(
     runner, tmp_path, api_calls
 ):

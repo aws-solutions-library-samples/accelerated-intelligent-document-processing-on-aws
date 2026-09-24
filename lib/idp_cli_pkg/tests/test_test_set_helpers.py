@@ -910,6 +910,69 @@ def test_document_ids_covers_a_test_set_over_one_thousand_files(api_calls):
 
 
 # ================================================================================
+# _clear_s3_prefix
+# ================================================================================
+
+
+@pytest.mark.unit
+def test_clear_s3_prefix_counts_what_s3_says_it_deleted(capsys):
+    """A per-key failure inside a 200 response is counted honestly and named.
+
+    `DeleteObjects` answers 200 with a `Deleted` list *and* an `Errors` list: a key a
+    bucket policy denies, or one under a legal hold, fails while the rest of the batch
+    succeeds. Counting the request instead of the response would report a prefix as
+    emptied while objects remain under it — the same harm as the unpaginated listing,
+    reached by another route, and the caller's next act is to upload a new test set on
+    top of whatever survived.
+
+    `moto` deletes whatever it is asked for and never produces a partial failure, so the
+    response here is shaped by a wrapper around a real moto client: the first key is
+    deleted for real and the rest come back as `AccessDenied`, in the shape botocore
+    returns. Everything else, including the listing, is the real client's.
+    """
+    from idp_cli.cli import _clear_s3_prefix
+
+    class PartiallyDenyingS3:
+        def __init__(self, inner):
+            self._inner = inner
+
+        def __getattr__(self, name):
+            return getattr(self._inner, name)
+
+        def delete_objects(self, Bucket, Delete):
+            keys = [obj["Key"] for obj in Delete["Objects"]]
+            allowed, denied = keys[:1], keys[1:]
+            for key in allowed:
+                self._inner.delete_object(Bucket=Bucket, Key=key)
+            return {
+                "Deleted": [{"Key": key} for key in allowed],
+                "Errors": [
+                    {
+                        "Key": key,
+                        "Code": "AccessDenied",
+                        "Message": "Access Denied",
+                    }
+                    for key in denied
+                ],
+            }
+
+    with mock_aws():
+        s3 = boto3.client("s3", region_name="us-east-1")
+        s3.create_bucket(Bucket=TEST_SET_BUCKET)
+        for i in range(3):
+            s3.put_object(Bucket=TEST_SET_BUCKET, Key=f"set1/{i}.json", Body=b"{}")
+
+        cleared = _clear_s3_prefix(PartiallyDenyingS3(s3), TEST_SET_BUCKET, "set1/")
+        remaining = all_keys(s3, TEST_SET_BUCKET)
+
+    assert cleared == 1, "the count must come from the response, not from the request"
+    assert len(remaining) == 2
+    output = capsys.readouterr().out
+    assert "2 object(s) under set1/ could not be deleted" in output
+    assert "AccessDenied" in output
+
+
+# ================================================================================
 # _manifest_has_baselines
 # ================================================================================
 
@@ -1338,6 +1401,14 @@ def test_create_test_set_copies_baselines_from_an_s3_baseline_source(tmp_path, c
             Key="other/baseline/invoice.pdf/sections/1/result.json",
             Body=b'{"b": 2}',
         )
+        # A zero-byte key ending in a slash: what a console-created "folder" leaves
+        # behind. Copying it would put a key ending in a slash into the test set, so it
+        # is skipped, and the count below is what shows that it was.
+        s3.put_object(
+            Bucket=TEST_SET_BUCKET,
+            Key="other/baseline/invoice.pdf/sections/",
+            Body=b"",
+        )
 
         _create_test_set_from_manifest(str(manifest), "set1", "IDP", None, resources())
 
@@ -1430,6 +1501,43 @@ def test_create_test_set_copies_a_baseline_source_naming_a_single_object(
         "set1/input/invoice.pdf",
         "set1/baseline/invoice.pdf/invoice.json",
     }
+
+
+@pytest.mark.unit
+def test_create_test_set_does_not_draw_in_a_sibling_prefix(tmp_path, capsys):
+    """A key sharing the leading characters of the source prefix is not a member of it.
+
+    `s3://bucket/gt/inv` listed as a raw `Prefix` also returns `gt/inv2/other.json`,
+    which belongs to a different document — copying it would file another document's
+    baseline under this one and store it at the mangled key `.../inv/2/other.json`. The
+    source prefix is matched at a path boundary, so only the intended document's
+    baseline comes across; an exact object match is still honoured, which is what the
+    single-object case above relies on.
+    """
+    from idp_cli.cli import _create_test_set_from_manifest
+
+    manifest = _manifest_with(
+        tmp_path,
+        [("s3://source-bucket/docs/invoice.pdf", "s3://source-bucket/gt/inv")],
+    )
+
+    with mock_aws():
+        s3 = boto3.client("s3", region_name="us-east-1")
+        s3.create_bucket(Bucket="source-bucket")
+        s3.create_bucket(Bucket=TEST_SET_BUCKET)
+        s3.put_object(Bucket="source-bucket", Key="docs/invoice.pdf", Body=b"pdf")
+        s3.put_object(Bucket="source-bucket", Key="gt/inv/result.json", Body=b"{}")
+        s3.put_object(Bucket="source-bucket", Key="gt/inv2/other.json", Body=b"{}")
+
+        _create_test_set_from_manifest(str(manifest), "set1", "IDP", None, resources())
+
+        keys = all_keys(s3, TEST_SET_BUCKET, prefix="set1/")
+
+    assert keys == {
+        "set1/input/invoice.pdf",
+        "set1/baseline/invoice.pdf/result.json",
+    }
+    assert "Baseline objects uploaded: 1" in capsys.readouterr().out
 
 
 @pytest.mark.unit
