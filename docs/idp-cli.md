@@ -1393,6 +1393,11 @@ idp-cli delete-documents [OPTIONS]
 - DynamoDB tracking records
 - List entries in tracking table
 
+**Exit codes:** `No documents found for batch …` with exit 0 means the selector matched
+nothing, and that is all it means. A failure while finding the documents — a throttled or
+rejected table scan, a table that is not there — prints the cause and exits 1 instead of
+reporting that there was nothing to delete.
+
 **Examples:**
 
 ```bash
