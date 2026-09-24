@@ -57,7 +57,7 @@ EMAIL = "admin@example.invalid"
 #: template creates named IAM roles and uses SAM transforms in nested stacks, so a
 #: missing flag is not a lint nit — it is an ``InsufficientCapabilities`` failure at
 #: CreateStack with nothing deployed.
-EXPECTED_CAPABILITIES = [
+REQUIRED_CAPABILITIES = [
     "CAPABILITY_IAM",
     "CAPABILITY_NAMED_IAM",
     "CAPABILITY_AUTO_EXPAND",
@@ -945,7 +945,7 @@ def _create_stack_in_moto(template_path, stack_name=STACK):
     boto3.client("cloudformation", region_name=REGION).create_stack(
         StackName=stack_name,
         TemplateBody=body,
-        Capabilities=EXPECTED_CAPABILITIES,
+        Capabilities=REQUIRED_CAPABILITIES,
         Parameters=[
             {
                 "ParameterKey": name,
@@ -1206,7 +1206,7 @@ class TestTheRequestShapeAroundParameters:
             )
         assert result.exit_code == 0, result.output
         assert api_calls.only("CreateStack").params["Capabilities"] == (
-            EXPECTED_CAPABILITIES
+            REQUIRED_CAPABILITIES
         )
 
     def test_no_rollback_disables_rollback_on_the_create(
