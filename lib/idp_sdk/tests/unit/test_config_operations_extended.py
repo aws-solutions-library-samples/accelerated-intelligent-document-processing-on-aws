@@ -873,14 +873,56 @@ class TestDownload:
         assert len(minimal.config) < len(full.config)
 
     @mock_aws
+    def test_minimal_download_of_a_bda_config_resolves_pattern_1_defaults(
+        self, aws_credentials, config_env, tmp_path
+    ):
+        """The auto-detected BDA branch of `download(format="minimal")`.
+
+        With no `pattern=`, this is the one call site that reaches
+        `load_system_defaults("pattern-1")` — it sniffs
+        `classification.classificationMethod` and asks for the BDA pattern's
+        defaults. That raised `FileNotFoundError` for everyone while
+        `pattern-1.yaml` inherited a module the v0.6 confidence/geometry split had
+        deleted, so `config download --format minimal` was unusable on exactly the
+        deployments it auto-detects, and failed with a message about a missing YAML
+        file that named no profile and no stack
+        ([#1203](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/1203)).
+
+        Asserting the diff rather than merely the absence of the raise: the point of
+        `minimal` is that it subtracts the pattern's defaults, so a pattern whose
+        defaults resolved to something wrong would still return a document here.
+        """
+        from idp_common.config.merge_utils import get_diff_dict, load_system_defaults
+
+        _create_stack(aws_credentials)
+        operation = _client(aws_credentials).config
+        operation.upload(
+            config_file=_write_config(
+                tmp_path / "c.yaml",
+                classes=[],
+                use_bda=True,
+                classification={"classificationMethod": "bda"},
+            ),
+            config_profile="bda",
+            validate=False,
+        )
+
+        minimal = operation.download(config_profile="bda", format="minimal")
+
+        assert minimal.config == get_diff_dict(
+            load_system_defaults("pattern-1"),
+            operation.download(config_profile="bda").config,
+        )
+
+    @mock_aws
     def test_an_explicit_pattern_overrides_the_auto_detection(
         self, aws_credentials, config_env, tmp_path
     ):
         """`pattern=` short-circuits the `classificationMethod` sniff.
 
-        Passing the pattern explicitly is also the only way a BDA-flavoured
-        config can be downloaded as `minimal` today — see the defect pinned
-        below.
+        Asked with `pattern-2` against a BDA-flavoured config, which is a
+        combination the sniff would never pick — so the assertion below can only
+        hold if the explicit argument won.
         """
         from idp_common.config.merge_utils import get_diff_dict, load_system_defaults
 
@@ -1773,40 +1815,3 @@ class TestConfigDefectsPinnedAtCurrentBehaviour:
         assert "Configuration" in operation.validate(str(output)).unknown_fields, (
             "the tool's own output fails its own validation as an unknown field"
         )
-
-    @mock_aws
-    def test_minimal_download_of_a_bda_config_raises(
-        self, aws_credentials, config_env, tmp_path
-    ):
-        """DEFECT — reached from `operations/config.py:356-369`.
-
-        When no `pattern=` is given, `download(format="minimal")` sniffs
-        `classification.classificationMethod` and asks for `pattern-1`'s system
-        defaults for a BDA config. `pattern-1.yaml` still lists
-        `base-assessment.yaml` in its `_inherits`, and that file was deleted in
-        commit `e3d23471` (the v0.6 change that folded confidence and geometry
-        into extraction), so `load_system_defaults("pattern-1")` raises
-        `FileNotFoundError` for everyone.
-
-        The fix belongs in `idp_common`'s system defaults, not here. The effect at
-        this boundary is that `config-download --format minimal` is unusable on
-        exactly the deployments it auto-detects — BDA ones — and fails with a
-        message about a missing YAML file that names no profile and no stack. The
-        workaround is an explicit `pattern=`, asserted in
-        `test_an_explicit_pattern_overrides_the_auto_detection` above.
-        """
-        _create_stack(aws_credentials)
-        operation = _client(aws_credentials).config
-        operation.upload(
-            config_file=_write_config(
-                tmp_path / "c.yaml",
-                classes=[],
-                use_bda=True,
-                classification={"classificationMethod": "bda"},
-            ),
-            config_profile="bda",
-            validate=False,
-        )
-
-        with pytest.raises(FileNotFoundError, match="base-assessment.yaml"):
-            operation.download(config_profile="bda", format="minimal")
