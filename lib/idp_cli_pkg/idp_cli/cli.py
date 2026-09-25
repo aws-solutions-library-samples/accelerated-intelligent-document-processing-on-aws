@@ -1761,6 +1761,47 @@ def _process_impl(
             console.print("[red]✗ Error: Cannot specify multiple input sources[/red]")
             sys.exit(1)
 
+        # `--config` cannot be honoured on a batch submission, so refuse rather
+        # than submit the batch under a configuration the caller did not ask for.
+        #
+        # Forwarding the value would not honour it either. `batch.process` takes a
+        # `config_path`, hands it to `BatchProcessor(config_path=...)`, which assigns
+        # `self.config_path` and never reads it again — there is no read of that
+        # attribute anywhere in `idp_sdk`. A wiring fix would therefore leave the
+        # batch running under the stack's existing configuration exactly as before,
+        # while making the option look plumbed to the next reader. Applying a local
+        # YAML for real means writing it into the stack's configuration table, which
+        # re-configures the stack for every later run rather than for this batch, and
+        # is not something an unqualified `--config` should do.
+        #
+        # A batch is paid work whose results the caller will compare and act on, so
+        # the wrong configuration is not a degraded outcome. The two-step form below
+        # is the supported way to process under a file, and it is the one the run is
+        # then recorded against.
+        if config:
+            console.print(
+                "[red]✗ Error: --config is not applied to a batch submission.[/red]"
+            )
+            console.print(
+                f"  Nothing in the submission path reads [cyan]{escape(str(config))}"
+                "[/cyan], so the batch would run under the stack's existing "
+                "configuration at full cost."
+            )
+            console.print(
+                "[yellow]Upload the file as a configuration profile, then process "
+                "under that profile:[/yellow]"
+            )
+            console.print(
+                f"   [cyan]idp-cli config-upload --stack-name {escape(stack_name)}"
+                f" --config-file {escape(str(config))}"
+                " --config-profile <name>[/cyan]"
+            )
+            console.print(
+                f"   [cyan]idp-cli process --stack-name {escape(stack_name)} ..."
+                " --config-profile <name>[/cyan]"
+            )
+            sys.exit(1)
+
         from idp_sdk import IDPClient
 
         client = IDPClient(stack_name=stack_name, region=region)
@@ -1885,7 +1926,10 @@ def _process_impl(
 @click.option(
     "--config",
     type=click.Path(exists=True),
-    help="Path to configuration YAML file (optional)",
+    help=(
+        "Not applied to a batch, and refused rather than ignored. Upload the file "
+        "with 'config-upload' and process under it with --config-profile."
+    ),
 )
 @click.option(
     "--batch-prefix",
@@ -2122,7 +2166,10 @@ def reprocess(
 @click.option(
     "--config",
     type=click.Path(exists=True),
-    help="Path to configuration YAML file (optional)",
+    help=(
+        "Not applied to a batch, and refused rather than ignored. Upload the file "
+        "with 'config-upload' and process under it with --config-profile."
+    ),
 )
 @click.option(
     "--batch-prefix",

@@ -885,7 +885,7 @@ idp-cli run-inference [OPTIONS]
 - `--file-pattern`: File pattern for directory/S3 scanning (default: `*.pdf`)
 - `--recursive/--no-recursive`: Include subdirectories (default: recursive)
 - `--number-of-files`: Limit number of files to process
-- `--config`: Path to configuration YAML file (optional)
+- `--config`: **Refused.** A configuration file is not applied to a batch submission, so passing one exits non-zero rather than running under the stack's existing configuration. Upload the file as a profile with [`config-upload`](#config-upload), then pass `--config-profile`.
 - `--config-profile` (alias: `--config-version`): Configuration profile to use for processing (e.g., v1, v2)
 - `--context`: Context description for test run (used with --test-set, e.g., "Model v2.1", "Production validation")
 - `--monitor`: Monitor progress until completion

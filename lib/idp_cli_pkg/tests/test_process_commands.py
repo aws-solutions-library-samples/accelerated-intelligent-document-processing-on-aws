@@ -31,8 +31,10 @@ not by calling the implementation: the wiring between the command and the body i
 itself something that has been wrong here, and a test that calls the body cannot see
 it.
 
-One command is pinned here as defective rather than working: `--config` is accepted by
-`process` and then never used, written up on the test that pins it.
+`--config` is the one option here that is refused rather than honoured: no layer below
+the CLI applies a configuration file to a batch, so submitting one under a file the
+caller supplied would run at full cost under the stack's existing configuration. Those
+tests assert what was *not* submitted, not only what was printed.
 """
 
 from __future__ import annotations
@@ -421,23 +423,71 @@ class TestInputSourceDispatch:
         assert "DEPRECATED" in result.output
         assert "idp-cli process" in result.output
 
-    def test_the_config_option_is_accepted_and_then_ignored(self, runner, tmp_path):
-        """DEFECT, pinned as it behaves today (`cli.py:1659`, `1707-1738`).
+    @pytest.mark.parametrize("command", PROCESS_COMMANDS)
+    def test_the_config_option_is_refused_rather_than_silently_dropped(
+        self, runner, tmp_path, command, api_calls
+    ):
+        """`--config` cannot be applied to a batch, so the batch is not submitted.
 
-        `--config` is declared on both `process` and `run-inference`, typed as an
-        existing path, and documented as "Path to configuration YAML file". The
-        parameter arrives in `_process_impl` and is never read again: it is not
-        passed to `client.batch.process`, which does accept a `config_path`, and
-        `BatchProcessor` does act on it. So a caller who submits a batch with
-        `--config ./bank-statement.yaml` gets a silent, full-price run under the
-        stack's existing configuration, with nothing in the output to say the file
-        was disregarded. Compare `--config-profile`, which does reach the SDK.
+        Nothing in the submission path applies a configuration file. `batch.process`
+        takes a `config_path` and hands it to `BatchProcessor`, which assigns
+        `self.config_path` and never reads it — so forwarding the value would leave
+        the run under the stack's existing configuration exactly as before while
+        looking wired. The refusal is asserted on the client and on `api_calls`
+        rather than only on the message: "printed an error" and "submitted nothing"
+        are different claims, and the second is the one that matters when the
+        alternative was a paid run under the wrong configuration.
+
+        Both spellings are covered because the option is declared separately on each
+        command and both route to the same body.
         """
         directory = tmp_path / "documents"
         directory.mkdir()
         config = tmp_path / "config.yaml"
-        # Deliberately not valid YAML: the command succeeds anyway, which is the
-        # sharpest available evidence that nothing ever opens the file.
+        config.write_text("classes: []\n", encoding="utf-8")
+        patcher, mock_cls, client = patched_client()
+        try:
+            result = runner.invoke(
+                cli,
+                [
+                    command,
+                    "--stack-name",
+                    "my-stack",
+                    "--dir",
+                    str(directory),
+                    "--config",
+                    str(config),
+                ],
+            )
+        finally:
+            patcher.stop()
+
+        assert result.exit_code == 1, result.output
+        assert "--config is not applied to a batch submission" in result.output
+        # The remedy has to be actionable, so both halves of it are named.
+        assert "idp-cli config-upload" in result.output
+        assert "--config-profile" in result.output
+        # Nothing was submitted and nothing was built, so nothing was paid for.
+        assert client.batch.process.called is False
+        assert mock_cls.called is False
+        assert api_calls.operations() == []
+
+    def test_the_config_refusal_is_about_the_option_not_the_file(
+        self, runner, tmp_path
+    ):
+        """The file is never opened, so its contents cannot be what triggers the exit.
+
+        This is the discriminator against passing for the wrong reason. The refusal
+        runs ahead of `from idp_sdk import IDPClient`, so a YAML parse error from the
+        SDK's own loader is not a possible explanation for the non-zero exit — and to
+        make that unmistakable the file written here is *not valid YAML*, while the
+        message is the option refusal rather than anything about parsing. A future
+        change that started honouring `--config` by opening the file would fail here
+        with a parse error instead, which is the signal wanted.
+        """
+        directory = tmp_path / "documents"
+        directory.mkdir()
+        config = tmp_path / "config.yaml"
         config.write_text("this: is: not: yaml: [", encoding="utf-8")
         patcher, mock_cls, client = patched_client()
         try:
@@ -456,13 +506,32 @@ class TestInputSourceDispatch:
         finally:
             patcher.stop()
 
+        assert result.exit_code == 1, result.output
+        assert "--config is not applied to a batch submission" in result.output
+        for parser_noise in ("yaml", "YAML", "mapping values", "ScannerError"):
+            assert parser_noise not in result.output.replace("config.yaml", "")
+
+    def test_a_batch_without_the_config_option_still_submits(self, runner, tmp_path):
+        """The refusal is conditional: the ordinary submission is untouched.
+
+        Without this, a refusal written unconditionally — or one whose guard is
+        inverted — would pass every assertion in the test above.
+        """
+        directory = tmp_path / "documents"
+        directory.mkdir()
+        patcher, mock_cls, client = patched_client()
+        try:
+            result = runner.invoke(
+                cli,
+                ["process", "--stack-name", "my-stack", "--dir", str(directory)],
+            )
+        finally:
+            patcher.stop()
+
         assert result.exit_code == 0, result.output
-        kwargs = client.batch.process.call_args.kwargs
-        assert "config" not in kwargs
-        assert "config_path" not in kwargs
-        assert str(config) not in str(kwargs)
-        # No warning either: the output is the ordinary submission summary.
         assert "Batch ID:" in result.output
+        assert client.batch.process.called is True
+        assert "--config is not applied" not in result.output
 
 
 class TestSubmissionOutput:
