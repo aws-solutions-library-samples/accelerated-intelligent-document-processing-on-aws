@@ -303,6 +303,20 @@ For evaluation workflows with accuracy metrics, see the [Complete Evaluation Wor
 > `--config-profile`. `--config-revision` is unrelated: it selects a *revision
 > within* a profile. See [configuration-profiles.md](configuration-profiles.md#terminology-which-word-means-what).
 
+> **Comma-separated options:** every option documented below as comma-separated
+> (`--document-ids`, `--test-run-ids`, `--file-types`, `--check-stack-regions`,
+> `--features`, `--tags`) parses through one shared helper that **drops blank
+> segments**, so a trailing or doubled comma is
+> harmless — `--document-ids "a,b,"` names two documents, not three.
+>
+> For all of them **except `--tags`**, a value containing **no** non-blank segment is
+> **refused** with exit 1 rather than treated as one value that is the empty string.
+> That matters most for a list a script built from a variable that turned out to be
+> empty: `--document-ids ""` used to ask about a document whose S3 object key was `""`,
+> and `--document-ids ","` used to announce "Selected 2 document(s) for deletion".
+> `--tags ","` is **not** refused — it sets no tags and proceeds, which is exactly what
+> omitting `--tags` does, so there is no wrong action for a refusal to prevent.
+
 ### `deploy`
 
 Deploy or update an IDP CloudFormation stack.
@@ -1506,6 +1520,7 @@ idp-cli generate-manifest [OPTIONS]
 - `--baseline-dir`: Baseline directory for automatic matching (only with --dir)
 - `--output`: Output manifest file path (CSV) - optional when using --test-set
 - `--file-pattern`: File pattern (default: `*.pdf`)
+- `--case-sensitive/--no-case-sensitive`: Match `--file-pattern` exactly as written (default: `--no-case-sensitive`)
 - `--recursive/--no-recursive`: Include subdirectories (default: recursive)
 - `--region`: AWS region (optional)
 - **Test Set Creation:**
@@ -1551,6 +1566,38 @@ idp-cli generate-manifest \
     --force
 ```
 
+**How `--file-pattern` selects documents:** the pattern is matched against each
+file's **base name**, on both the `--dir` and the `--s3-uri` path, and the match
+**ignores case**. So the default `*.pdf` selects `statement.PDF` and `Statement.Pdf`
+as well, which is the point — a corpus exported from a system that uppercases
+extensions used to produce a valid-looking manifest with no rows in it, at exit 0.
+Case folding covers the whole pattern rather than an extension picked out of it, so
+`Invoice*.pdf` also selects `INVOICE01.PDF`. Pass `--case-sensitive` for a pattern
+whose case is deliberate — distinguishing an `Invoice-*.pdf` family from an
+`invoice-*.pdf` one, say. A pattern containing a directory component
+(`--file-pattern "sub/*.pdf"`) is **refused**: point `--dir` or `--s3-uri` at the
+directory and use `--recursive` / `--no-recursive` to choose the depth.
+
+On the `--dir` path, hidden files follow the usual shell rule and are excluded unless
+the pattern itself starts with a dot. The `--s3-uri` path has **no** such rule — it
+filters keys by base name only — so `--file-pattern "*"` against a test-set prefix
+selects the `.uploading` marker object as though it were a document. Name the extension
+you want rather than relying on `*` when scanning a bucket.
+
+⚠️ `--file-pattern` on `process` and `run-inference` is a **different** scan, in
+`idp_sdk`, and it is still case-sensitive. Pass the extension's actual case there, or
+generate a manifest with this command and process that.
+
+**How `--baseline-dir` is matched:** a baseline sub-directory must be named after the
+document file it labels, **extension included** (`invoice.pdf/`, not `invoice/`). The
+match uses the same rule as `--file-pattern`, so it ignores case unless
+`--case-sensitive` is given, and `W2-A.PDF` is therefore labelled by `w2-a.pdf/`. Two
+baseline directories differing only in case are **refused** as ambiguous. A baseline
+directory matching no document is named and skipped rather than uploaded; if **no**
+document matched a baseline, `--test-set` refuses before anything is cleared or
+uploaded, and a manifest-only run warns and leaves `baseline_source` empty for you to
+fill in.
+
 **Test Set Creation:**
 When using `--test-set`, the command:
 1. Requires `--stack-name`, `--baseline-dir`, and `--dir`
@@ -1558,6 +1605,25 @@ When using `--test-set`, the command:
 3. Uploads baseline files to `s3://test-set-bucket/{test-set-id}/baseline/`
 4. Creates proper test set structure for evaluation workflows
 5. Test set will be auto-detected by the Test Studio UI
+
+**If the upload fails partway through,** the `.uploading` marker object the command
+places under the test set's prefix is removed before it exits. That marker is what
+stops the Test Studio resolver registering a folder that is still being filled, so a
+marker left behind makes a folder invisible to the backend — and re-running the upload
+does not clear it, because the new run writes it again. The command exits non-zero and
+names what went wrong.
+
+Be precise about what that leaves behind, because it is not nothing: the objects
+uploaded before the failure **stay**, and with the marker gone the resolver may
+register them as a partial, unlabeled set (a set with documents and no baselines is a
+legitimate shape, so the backend cannot tell the two apart). That is deliberate —
+re-running clears the prefix first, so the state is recoverable, whereas a surviving
+marker made the folder invisible *permanently*. If you do not want the partial set
+visible, delete the prefix before retrying.
+
+In the one case where the marker itself cannot be deleted (an IAM policy with
+`s3:PutObject` but not `s3:DeleteObject` on the test set bucket) the command **fails**
+rather than reporting success, and the error names the S3 object to delete by hand.
 
 **Overwriting an existing test set:** if the test set name already exists, everything
 under its prefix — including the baselines a previous evaluation was scored against —

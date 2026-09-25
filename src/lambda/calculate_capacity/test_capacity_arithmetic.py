@@ -691,7 +691,9 @@ def distribution(
     if tokens is None:
         tokens = docs_per_hour * 6000
     monkeypatch.setattr(
-        index, "get_real_latency_metrics", lambda _p: metrics or latency_data()
+        index,
+        "get_real_latency_metrics",
+        lambda _p, _hours=None: metrics or latency_data(),
     )
     return index.calculate_latency_distribution(
         docs_per_hour,
@@ -754,7 +756,7 @@ def test_a_plan_with_no_documents_reports_no_demand_without_measuring_anything(
     function is made to raise here, so reaching it fails the test.
     """
 
-    def must_not_be_called(_pattern):
+    def must_not_be_called(_pattern, _hours=None):
         raise AssertionError("measured timings were fetched for an empty plan")
 
     monkeypatch.setattr(index, "get_real_latency_metrics", must_not_be_called)
@@ -984,7 +986,7 @@ def test_a_missing_token_floor_stops_the_estimate(monkeypatch):
 def test_unavailable_timings_are_reported_as_such_rather_than_estimated(monkeypatch):
     """No synthetic fallback: a made-up processing time is the failure to avoid."""
 
-    def no_documents(_pattern):
+    def no_documents(_pattern, _hours=None):
         raise ValueError("No processed documents found with metering data")
 
     monkeypatch.setattr(index, "get_real_latency_metrics", no_documents)
@@ -1172,17 +1174,31 @@ def test_the_document_advice_counts_how_many_types_are_affected(monkeypatch):
 
 @pytest.mark.unit
 @pytest.mark.parametrize("factor", ["3.00x", "3.01x"])
-def test_the_variance_advice_uses_a_literal_three_not_a_configured_threshold(
-    monkeypatch, factor
-):
-    """Unlike every other band here, this threshold is hardcoded in the function.
+def test_the_variance_advice_fires_just_past_a_threefold_spread(monkeypatch, factor):
+    """The boundary is strictly above 3.0, asserted from both sides of it.
 
-    Pinned so the inconsistency is visible: an operator who tunes the
-    `RECOMMENDATION_*` variables cannot move this one, and the value is asserted at
-    and past 3.0 rather than at any configured value.
+    `3.00x` is at the threshold and not over it, so it must stay quiet; `3.01x` is
+    over and must speak. Those two strings are written here rather than derived
+    from `index.HIGH_LATENCY_VARIANCE_FACTOR`, so retuning the constant reddens
+    this test instead of moving its expectation along with the code. Unlike the
+    `RECOMMENDATION_*` bands this one is a fixed constant on purpose — it gates a
+    sentence of advice and no reported figure, and the reasoning is recorded where
+    it is defined.
     """
     text = " ".join(recommend(monkeypatch, {"varianceFactor": factor}))
     assert ("High latency variance" in text) is (factor == "3.01x")
+
+
+@pytest.mark.unit
+def test_the_variance_threshold_is_a_named_constant_at_three():
+    """Names the value independently of the behaviour asserted above.
+
+    The pair is what makes either useful: this one fails if the constant is
+    retuned, the boundary test fails if the comparison stops honouring it, and a
+    rename that left a stray literal `3.0` behind in the comparison would fail the
+    boundary test while this one still passed.
+    """
+    assert index.HIGH_LATENCY_VARIANCE_FACTOR == 3.0
 
 
 @pytest.mark.unit

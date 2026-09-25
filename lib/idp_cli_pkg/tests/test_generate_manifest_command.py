@@ -23,11 +23,13 @@ because a validation that is skipped or reordered turns a clear refusal into a
 confusing failure much further into the run — after files have already been uploaded,
 in the `--test-set` case.
 
-Local scanning goes through `glob.glob` and S3 scanning through `fnmatch.fnmatch`,
-both of which are case-sensitive on Linux. `test_an_uppercase_extension_is_silently_skipped`
-and its S3 counterpart pin that a `.PDF` file is dropped with no warning and no
-non-zero exit; see the module docstring note there for why that is recorded as a
-defect rather than fixed.
+Local scanning and S3 scanning now apply the same predicate, `cli._file_pattern_matches`,
+which matches the whole pattern against a file's base name and ignores case unless
+`--case-sensitive` is given. Both directions are pinned on both paths --
+`test_an_uppercase_extension_is_selected_by_a_lowercase_pattern` and its S3 twin for
+the default, `test_case_sensitive_restores_exact_matching_locally` and its twin for
+the opt-out -- because the case that produced the defect (a corpus of `.PDF` against
+the default `*.pdf`) exits 0 either way, so only the row set distinguishes them.
 
 AWS is either `moto` or absent. The `--test-set` path needs a stack lookup, and that
 one call (`IDPClient._get_stack_resources`) is patched because it reads a real
@@ -374,24 +376,25 @@ def test_no_recursive_excludes_subdirectories(runner, tmp_path):
 
 
 @pytest.mark.unit
-def test_an_uppercase_extension_is_silently_skipped(runner, tmp_path):
-    """DEFECT (pinned, not fixed): `--file-pattern` is case-sensitive on Linux.
+def test_an_uppercase_extension_is_selected_by_a_lowercase_pattern(runner, tmp_path):
+    """The default `*.pdf` selects `.PDF` too, on the local scan (issue #1231 item 4).
 
-    The local scan is `glob.glob(os.path.join(dir, "**", file_pattern))`, and glob is
-    case-sensitive on a case-sensitive filesystem. A directory of documents scanned
-    with the default `*.pdf` therefore drops every `.PDF` file with no warning. Here
-    only the lowercase file reaches the manifest and the command still exits 0, so a
-    user who exported documents from a system that uppercases extensions gets a
-    silently short test set and an evaluation over fewer documents than they supplied.
+    This is the case that produced the defect: a corpus exported from a system that
+    uppercases extensions, scanned with the default pattern, produced a manifest
+    missing every document at exit 0 and with no warning. The exit code cannot tell
+    the two behaviours apart, so the row set is what is asserted, in both directions
+    -- the lowercase file is still selected and the uppercase one now is as well.
 
-    The test pins the current behaviour. `--file-pattern "*.PDF"` is the workaround,
-    and `--file-pattern "*"` picks up both at the cost of also matching non-documents.
+    `*.PDF` is asserted as well, because the fix has to be symmetric: folding case on
+    only one side of the comparison would make an uppercase pattern the new silent
+    filter.
     """
     from idp_cli.cli import generate_manifest
 
     docs = tmp_path / "docs"
     lower = _write(docs / "lower.pdf")
     upper = _write(docs / "UPPER.PDF")
+    mixed = _write(docs / "Mixed.Pdf")
     output = tmp_path / "manifest.csv"
 
     result = runner.invoke(
@@ -400,22 +403,485 @@ def test_an_uppercase_extension_is_silently_skipped(runner, tmp_path):
 
     assert result.exit_code == 0, result.output
     rows = _read_manifest_rows(output)
-    assert [row["document_path"] for row in rows] == [str(lower)]
-    assert str(upper) not in output.read_text()
-    assert "UPPER" not in result.output, (
-        "the dropped file is not mentioned anywhere in the output"
-    )
+    assert {row["document_path"] for row in rows} == {
+        str(lower),
+        str(upper),
+        str(mixed),
+    }
+    assert "Found 3 documents" in result.output
 
-    # The workaround, asserted so the claim above is not just prose.
+    # An uppercase pattern has to select the same three, or the fold is one-sided.
     upper_output = tmp_path / "upper.csv"
     upper_result = runner.invoke(
         generate_manifest,
         ["--dir", str(docs), "--output", str(upper_output), "--file-pattern", "*.PDF"],
     )
     assert upper_result.exit_code == 0, upper_result.output
-    assert [row["document_path"] for row in _read_manifest_rows(upper_output)] == [
-        str(upper)
+    assert {row["document_path"] for row in _read_manifest_rows(upper_output)} == {
+        str(lower),
+        str(upper),
+        str(mixed),
+    }
+
+
+@pytest.mark.unit
+def test_an_uppercase_corpus_still_gets_its_lowercase_baselines_attached(
+    runner, tmp_path
+):
+    """Selecting documents case-insensitively is useless if baselines still match exactly.
+
+    This is the corpus the case-folding fix exists for -- documents exported from a
+    system that uppercases extensions -- and folding only the *selection* moved the
+    silent loss one layer down instead of removing it. `.PDF` documents beside
+    lowercase baseline directories were selected, matched nothing, and produced a test
+    set with a full `input/`, baselines under keys nothing referenced, and every
+    manifest row's `baseline_source` empty, at exit 0 with `Matched 0/2` mid-output as
+    the only sign. Before folding, that combination exited 1 with "No documents found",
+    so the fix replaced a refusal the user cannot miss with a success report over a test
+    set an evaluation cannot score.
+
+    The S3 keys are asserted, not just the match count, because the backend pairs a
+    baseline to its document by the exact prefix `baseline/<input file name>/`
+    (`src/lambda/test_file_copier`). A baseline uploaded under the *directory's*
+    spelling would satisfy a count-based check and still score nothing, so the upload
+    has to land under the document's name.
+    """
+    from idp_cli.cli import generate_manifest
+
+    docs = tmp_path / "docs"
+    _write(docs / "W2-A.PDF")
+    _write(docs / "W2-B.PDF")
+    baselines = tmp_path / "baselines"
+    _write(baselines / "w2-a.pdf" / "expected.json", '{"a": 1}')
+    _write(baselines / "w2-b.pdf" / "expected.json", '{"b": 2}')
+    output = tmp_path / "m.csv"
+
+    with mock_aws():
+        boto3.client("s3", region_name="us-east-1").create_bucket(
+            Bucket=TEST_SET_BUCKET
+        )
+        with _patched_stack_resources({"TestSetBucket": TEST_SET_BUCKET}):
+            result = runner.invoke(
+                generate_manifest,
+                [
+                    "--dir",
+                    str(docs),
+                    "--baseline-dir",
+                    str(baselines),
+                    "--test-set",
+                    "set1",
+                    "--stack-name",
+                    "IDP",
+                    "--output",
+                    str(output),
+                ],
+            )
+
+        keys = {
+            obj["Key"]
+            for obj in boto3.client("s3", region_name="us-east-1")
+            .list_objects_v2(Bucket=TEST_SET_BUCKET)
+            .get("Contents", [])
+        }
+
+    assert result.exit_code == 0, result.output
+    assert "Matched 2/2 documents to baselines" in result.output
+    assert "none matched a document" not in result.output
+
+    # The baseline objects sit under the *document's* name, which is the prefix the
+    # backend pairs on -- not under `w2-a.pdf/`, the directory's spelling.
+    assert keys == {
+        "set1/input/W2-A.PDF",
+        "set1/input/W2-B.PDF",
+        "set1/baseline/W2-A.PDF/expected.json",
+        "set1/baseline/W2-B.PDF/expected.json",
+    }, keys
+
+    rows = {
+        row["document_path"]: row["baseline_source"]
+        for row in _read_manifest_rows(output)
+    }
+    assert rows == {
+        f"s3://{TEST_SET_BUCKET}/set1/input/W2-A.PDF": f"s3://{TEST_SET_BUCKET}/set1/baseline/W2-A.PDF/",
+        f"s3://{TEST_SET_BUCKET}/set1/input/W2-B.PDF": f"s3://{TEST_SET_BUCKET}/set1/baseline/W2-B.PDF/",
+    }, rows
+    assert "" not in rows.values(), "every row must name a baseline prefix"
+
+
+@pytest.mark.unit
+def test_case_sensitive_governs_baseline_matching_too(runner, tmp_path):
+    """One flag, one rule: `--case-sensitive` narrows selection and matching together.
+
+    A flag that folded the selection but not the matching, or the reverse, would give an
+    invocation that selects a document and then cannot label it -- which is the defect
+    this pair of assertions exists to prevent. With the flag the uppercase document is
+    not selected at all, so the run refuses; without it both selection and matching
+    fold and the run succeeds.
+    """
+    from idp_cli.cli import generate_manifest
+
+    docs = tmp_path / "docs"
+    _write(docs / "W2-A.PDF")
+    baselines = tmp_path / "baselines"
+    _write(baselines / "w2-a.pdf" / "expected.json", '{"a": 1}')
+    output = tmp_path / "m.csv"
+
+    exact = runner.invoke(
+        generate_manifest,
+        [
+            "--dir",
+            str(docs),
+            "--baseline-dir",
+            str(baselines),
+            "--output",
+            str(output),
+            "--case-sensitive",
+        ],
+    )
+    assert exact.exit_code == 1, exact.output
+    assert "No documents found" in exact.output
+
+    folded = runner.invoke(
+        generate_manifest,
+        ["--dir", str(docs), "--baseline-dir", str(baselines), "--output", str(output)],
+    )
+    assert folded.exit_code == 0, folded.output
+    assert "Matched 1/1 documents to baselines" in folded.output
+    assert [row["baseline_source"] for row in _read_manifest_rows(output)] == [
+        str(baselines / "w2-a.pdf")
     ]
+
+
+@pytest.mark.unit
+def test_two_baseline_directories_differing_only_in_case_are_refused(runner, tmp_path):
+    """Two candidate ground truths for one document is ambiguous, so it is refused.
+
+    Folding the baseline index makes `gt.pdf/` and `GT.PDF/` collide, and either choice
+    would be arbitrary -- the document would be scored against labels nobody chose. The
+    refusal lands before any upload or clear, and it names both directories and the flag
+    that matches them exactly.
+    """
+    from idp_cli.cli import generate_manifest
+
+    docs = tmp_path / "docs"
+    _write(docs / "gt.pdf")
+    baselines = tmp_path / "baselines"
+    _write(baselines / "gt.pdf" / "a.json", "{}")
+    _write(baselines / "GT.PDF" / "b.json", "{}")
+    output = tmp_path / "m.csv"
+
+    result = runner.invoke(
+        generate_manifest,
+        ["--dir", str(docs), "--baseline-dir", str(baselines), "--output", str(output)],
+    )
+
+    assert result.exit_code == 1, result.output
+    assert "differ only in case" in result.output
+    assert "GT.PDF" in result.output and "gt.pdf" in result.output
+    assert "--case-sensitive" in result.output
+    assert not output.exists(), "nothing is written when the baselines are ambiguous"
+
+    # `--case-sensitive` is the stated route out, so it must actually work.
+    exact = runner.invoke(
+        generate_manifest,
+        [
+            "--dir",
+            str(docs),
+            "--baseline-dir",
+            str(baselines),
+            "--output",
+            str(output),
+            "--case-sensitive",
+        ],
+    )
+    assert exact.exit_code == 0, exact.output
+    assert [row["baseline_source"] for row in _read_manifest_rows(output)] == [
+        str(baselines / "gt.pdf")
+    ]
+
+
+@pytest.mark.unit
+def test_a_test_set_whose_baselines_all_miss_is_refused_before_anything_is_cleared(
+    runner, tmp_path, api_calls
+):
+    """`--test-set` with baselines that match nothing refuses, and writes nothing at all.
+
+    `--baseline-dir` is mandatory with `--test-set`, so baselines that match no document
+    are unambiguously a mistake rather than a deliberately unlabeled set. Continuing
+    would **clear the existing test set** and then upload one whose every
+    `baseline_source` is empty, so the refusal has to come before the clear -- which is
+    asserted from the recorded API calls, not from the exit code, because an exit 1
+    after the clear destroys the previous test set's baselines just the same.
+    """
+    from idp_cli.cli import generate_manifest
+
+    docs = tmp_path / "docs"
+    _write(docs / "invoice.pdf")
+    baselines = tmp_path / "baselines"
+    _write(baselines / "unrelated.pdf" / "expected.json", "{}")
+
+    with mock_aws():
+        s3 = boto3.client("s3", region_name="us-east-1")
+        s3.create_bucket(Bucket=TEST_SET_BUCKET)
+        s3.put_object(Bucket=TEST_SET_BUCKET, Key="set1/input/old.pdf", Body=b"old")
+
+        with _patched_stack_resources({"TestSetBucket": TEST_SET_BUCKET}):
+            result = runner.invoke(
+                generate_manifest,
+                [
+                    "--dir",
+                    str(docs),
+                    "--baseline-dir",
+                    str(baselines),
+                    "--test-set",
+                    "set1",
+                    "--stack-name",
+                    "IDP",
+                    "--force",
+                ],
+            )
+
+        keys = {
+            obj["Key"]
+            for obj in s3.list_objects_v2(Bucket=TEST_SET_BUCKET).get("Contents", [])
+        }
+
+    assert result.exit_code == 1, result.output
+    assert "none matched a document" in result.output
+    assert "invoice.pdf" in result.output, (
+        "the message shows the naming that is expected"
+    )
+
+    assert api_calls.of("DeleteObjects") == [], (
+        "the existing test set must not be cleared"
+    )
+    # The only recorded PutObject is this test's own seeding of the previous test set,
+    # so the command wrote nothing -- not the marker, not an input, not a baseline.
+    assert {call.params["Key"] for call in api_calls.of("PutObject")} == {
+        "set1/input/old.pdf"
+    }, [call.params["Key"] for call in api_calls.of("PutObject")]
+    assert keys == {"set1/input/old.pdf"}, "the previous test set survives untouched"
+
+
+@pytest.mark.unit
+def test_case_sensitive_restores_exact_matching_locally(runner, tmp_path):
+    """`--case-sensitive` is the route for a pattern whose case is deliberate.
+
+    Folding case by default is the safe direction for the reported defect, but it
+    takes a capability away from a user who cased a pattern on purpose -- a corpus
+    holding both `Invoice-*.pdf` and `invoice-*.pdf` as different document families
+    is the shape. The flag gives that back, and it is asserted here on a *prefix*
+    rather than an extension, since the prefix is the part a user is most likely to
+    have meant literally.
+    """
+    from idp_cli.cli import generate_manifest
+
+    docs = tmp_path / "docs"
+    capitalised = _write(docs / "Invoice-01.pdf")
+    _write(docs / "invoice-02.pdf")
+    output = tmp_path / "manifest.csv"
+
+    result = runner.invoke(
+        generate_manifest,
+        [
+            "--dir",
+            str(docs),
+            "--output",
+            str(output),
+            "--file-pattern",
+            "Invoice-*.pdf",
+            "--case-sensitive",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert [row["document_path"] for row in _read_manifest_rows(output)] == [
+        str(capitalised)
+    ]
+
+    # Without the flag the same pattern takes both, which is the behaviour the flag
+    # exists to opt out of. Asserted here so the contrast is one test's worth of fact.
+    both_output = tmp_path / "both.csv"
+    both = runner.invoke(
+        generate_manifest,
+        [
+            "--dir",
+            str(docs),
+            "--output",
+            str(both_output),
+            "--file-pattern",
+            "Invoice-*.pdf",
+        ],
+    )
+    assert both.exit_code == 0, both.output
+    assert len(_read_manifest_rows(both_output)) == 2
+
+
+@pytest.mark.unit
+def test_a_file_pattern_naming_a_directory_is_refused(runner, tmp_path):
+    """`--file-pattern "sub/*.pdf"` is refused, on both scan paths.
+
+    The pattern applies to a base name, which is what the S3 scan always did: a
+    pattern with a directory component matched nothing there and the only report was
+    "No documents found", which is true and explains nothing. The local scan used to
+    honour it, by joining the pattern onto the directory before globbing. Unifying the
+    two on base-name matching costs that spelling, so the loss is a message naming the
+    option that does the job rather than an empty scan the user has to diagnose.
+    """
+    from idp_cli.cli import generate_manifest
+
+    docs = tmp_path / "docs"
+    _write(docs / "sub" / "nested.pdf")
+    output = tmp_path / "manifest.csv"
+
+    result = runner.invoke(
+        generate_manifest,
+        ["--dir", str(docs), "--output", str(output), "--file-pattern", "sub/*.pdf"],
+    )
+
+    assert result.exit_code == 1, result.output
+    assert "--file-pattern matches a file name, not a path" in result.output
+    assert "--recursive" in result.output
+    assert not output.exists(), "nothing is written when the options are refused"
+
+    # Same refusal on the S3 path, where no client should even be built.
+    s3_result = runner.invoke(
+        generate_manifest,
+        [
+            "--s3-uri",
+            "s3://docs-bucket/prefix/",
+            "--output",
+            str(output),
+            "--file-pattern",
+            "sub/*.pdf",
+        ],
+    )
+    assert s3_result.exit_code == 1, s3_result.output
+    assert "--file-pattern matches a file name, not a path" in s3_result.output
+
+    # Where the new check sits in the validation order is observable, and this file
+    # pins that order elsewhere, so pin this one too: with no `--output` the message
+    # must still be about `--output`, not about the pattern.
+    ordered = runner.invoke(
+        generate_manifest, ["--dir", str(docs), "--file-pattern", "sub/*.pdf"]
+    )
+    assert ordered.exit_code == 1, ordered.output
+    assert "--output is required" in ordered.output
+    assert "--file-pattern matches a file name" not in ordered.output
+
+
+@pytest.mark.unit
+def test_a_hidden_file_is_still_excluded_unless_the_pattern_asks_for_one(
+    runner, tmp_path
+):
+    """The dotfile rule survives the change from globbing the pattern to filtering.
+
+    `glob` never matches a leading-dot name unless the pattern's own base name starts
+    with one, and the scan now enumerates with `*` and filters afterwards, which would
+    have thrown that rule away in both directions: `*.pdf` would start selecting
+    editor droppings and lock files, and a pattern that deliberately names hidden
+    files would stop finding them. Both halves are asserted, because each is a
+    different line of the fix.
+    """
+    from idp_cli.cli import generate_manifest
+
+    docs = tmp_path / "docs"
+    visible = _write(docs / "visible.pdf")
+    hidden = _write(docs / ".hidden.pdf")
+    output = tmp_path / "manifest.csv"
+
+    result = runner.invoke(
+        generate_manifest, ["--dir", str(docs), "--output", str(output)]
+    )
+    assert result.exit_code == 0, result.output
+    assert [row["document_path"] for row in _read_manifest_rows(output)] == [
+        str(visible)
+    ]
+
+    hidden_output = tmp_path / "hidden.csv"
+    hidden_result = runner.invoke(
+        generate_manifest,
+        [
+            "--dir",
+            str(docs),
+            "--output",
+            str(hidden_output),
+            "--file-pattern",
+            ".hidden*",
+        ],
+    )
+    assert hidden_result.exit_code == 0, hidden_result.output
+    assert [row["document_path"] for row in _read_manifest_rows(hidden_output)] == [
+        str(hidden)
+    ]
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("filename", "pattern", "folded", "exact"),
+    [
+        # (name, pattern, result with the default, result with --case-sensitive).
+        # Both columns are written out rather than derived from `fnmatch`, because a
+        # test that computes its expectation with the same library call as the code
+        # under test agrees with that code however wrong both are.
+        ("lower.pdf", "*.pdf", True, True),
+        ("UPPER.PDF", "*.pdf", True, False),
+        ("Mixed.Pdf", "*.pdf", True, False),
+        ("lower.pdf", "*.PDF", True, False),
+        ("notes.txt", "*.pdf", False, False),
+        ("INVOICE01.PDF", "Invoice*.pdf", True, False),
+        ("Invoice01.pdf", "Invoice*.pdf", True, True),
+        ("W2-2024.pdf", "W2*.pdf", True, True),
+        ("invoice-2024.pdf", "W2*.pdf", False, False),
+        # A bracket class keeps working, because both sides are folded rather than the
+        # pattern being rewritten into classes.
+        ("doc.PDF", "*.[pP]df", True, False),
+        ("doc.Pdf", "*.[pP]df", True, True),
+        ("lending_package.pdf", "lending_package.pdf", True, True),
+    ],
+)
+def test_the_file_pattern_predicate_folds_case_on_both_sides(
+    filename, pattern, folded, exact
+):
+    """The rule, stated as cases: whole pattern against base name, case ignored."""
+    from idp_cli.cli import _file_pattern_matches
+
+    assert _file_pattern_matches(filename, pattern) is folded
+    assert _file_pattern_matches(filename, pattern, case_sensitive=True) is exact
+
+
+@pytest.mark.unit
+def test_the_predicate_calls_fnmatchcase_and_not_fnmatch():
+    """`fnmatch.fnmatch` and `fnmatch.fnmatchcase` are the same function on Linux.
+
+    `fnmatch.fnmatch` routes through `os.path.normcase`, which is the identity on
+    POSIX and lowercases on Windows. So on the host these tests run on, no input at
+    all distinguishes the two calls, and a behavioural test of the difference is one
+    that cannot fail here -- it would go green against either spelling and quietly
+    make the predicate's result depend on the operating system that generated the
+    manifest.
+
+    The call site is therefore asserted directly, by reading the predicate's own
+    source: `fnmatchcase` must be the attribute called, and `fnmatch.fnmatch` must
+    not appear. That is the only shape of this assertion that discriminates.
+    """
+    import ast
+    import inspect
+
+    from idp_cli.cli import _file_pattern_matches
+
+    tree = ast.parse(inspect.cleandoc(inspect.getsource(_file_pattern_matches)))
+    called = {
+        node.func.attr
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+    }
+
+    assert called, "no attribute call found at all, so this assertion proves nothing"
+    assert "fnmatchcase" in called, called
+    assert "fnmatch" not in called, (
+        "fnmatch.fnmatch is normcase-dependent, so the result would differ by host"
+    )
 
 
 @pytest.mark.unit
@@ -752,13 +1218,48 @@ def test_s3_no_recursive_keeps_only_keys_directly_under_the_prefix(runner, tmp_p
 
 
 @pytest.mark.unit
-def test_an_uppercase_extension_is_silently_skipped_in_s3_too(runner, tmp_path):
-    """DEFECT (pinned, not fixed): the S3 scan drops `.PDF` keys as well.
+def test_an_uppercase_extension_is_selected_in_s3_too(runner, tmp_path):
+    """The S3 scan takes `.PDF` keys as well, through the same predicate.
 
-    The S3 filter is `fnmatch.fnmatch(filename, file_pattern)`, which case-folds via
-    `os.path.normcase` — a no-op on POSIX. So the same silent omission as the local
-    scan applies to a bucket, and with the same consequence: no warning, exit 0, and a
-    manifest shorter than the bucket.
+    The two scans are the reason `_file_pattern_matches` exists rather than two
+    parallel filters: the S3 filter was `fnmatch.fnmatch`, which case-folds via
+    `os.path.normcase` and so is a no-op on POSIX, giving a bucket the same silent
+    omission as a directory. Both paths are asserted separately because they select
+    from different sources and a fix to one says nothing about the other.
+    """
+    from idp_cli.cli import generate_manifest
+
+    output = tmp_path / "manifest.csv"
+
+    with mock_aws():
+        s3 = boto3.client("s3", region_name="us-east-1")
+        s3.create_bucket(Bucket="docs-bucket")
+        s3.put_object(Bucket="docs-bucket", Key="prefix/lower.pdf", Body=b"pdf")
+        s3.put_object(Bucket="docs-bucket", Key="prefix/UPPER.PDF", Body=b"pdf")
+        s3.put_object(Bucket="docs-bucket", Key="prefix/Mixed.Pdf", Body=b"pdf")
+
+        result = runner.invoke(
+            generate_manifest,
+            ["--s3-uri", "s3://docs-bucket/prefix/", "--output", str(output)],
+        )
+
+    assert result.exit_code == 0, result.output
+    rows = _read_manifest_rows(output)
+    assert {row["document_path"] for row in rows} == {
+        "s3://docs-bucket/prefix/lower.pdf",
+        "s3://docs-bucket/prefix/UPPER.PDF",
+        "s3://docs-bucket/prefix/Mixed.Pdf",
+    }
+
+
+@pytest.mark.unit
+def test_case_sensitive_restores_exact_matching_in_s3_too(runner, tmp_path):
+    """`--case-sensitive` has to reach the S3 scan, not only the local one.
+
+    The flag is one option feeding one predicate, but it is threaded through two call
+    sites, and a flag honoured on one path and dropped on the other is worse than no
+    flag at all -- it would mean the same invocation selects different documents from
+    a bucket and from a directory.
     """
     from idp_cli.cli import generate_manifest
 
@@ -772,15 +1273,19 @@ def test_an_uppercase_extension_is_silently_skipped_in_s3_too(runner, tmp_path):
 
         result = runner.invoke(
             generate_manifest,
-            ["--s3-uri", "s3://docs-bucket/prefix/", "--output", str(output)],
+            [
+                "--s3-uri",
+                "s3://docs-bucket/prefix/",
+                "--output",
+                str(output),
+                "--case-sensitive",
+            ],
         )
 
     assert result.exit_code == 0, result.output
-    rows = _read_manifest_rows(output)
-    assert [row["document_path"] for row in rows] == [
+    assert [row["document_path"] for row in _read_manifest_rows(output)] == [
         "s3://docs-bucket/prefix/lower.pdf"
     ]
-    assert "UPPER" not in result.output
 
 
 @pytest.mark.unit
@@ -1473,17 +1978,21 @@ def test_an_unreachable_test_set_bucket_warns_twice_and_then_fails(runner, tmp_p
 
 
 @pytest.mark.unit
-def test_a_marker_that_cannot_be_deleted_only_warns(runner, tmp_path):
-    """DEFECT (pinned, not fixed): a failed marker removal warns and still reports success.
+def test_a_marker_that_cannot_be_deleted_fails_the_command(runner, tmp_path):
+    """A marker that cannot be removed is exit 1, not a warning above a success line.
 
-    The `.uploading` marker is removed inside its own `except Exception`, so if the
-    delete fails — an IAM policy granting `s3:PutObject` but not `s3:DeleteObject` on
-    the test set bucket is the realistic shape — the command prints a yellow warning and
-    then goes on to print "✓ Test set created successfully" and exit 0. The test set
-    resolver skips any folder carrying that marker, so the test set is complete in S3
-    and permanently invisible to the backend, and the exit code says everything worked.
-    The warning is the only evidence, and it is above the success message rather than
-    below it.
+    The `.uploading` marker used to be removed inside its own `except Exception`, so a
+    failed delete — an IAM policy granting `s3:PutObject` but not `s3:DeleteObject` on
+    the test set bucket is the realistic shape — printed a yellow warning and then
+    "✓ Test set created successfully" at exit 0. The test set resolver skips any folder
+    carrying that marker, so what the user was told had worked was a test set complete
+    in S3 and permanently invisible to the backend, recoverable only by deleting that
+    object by hand.
+
+    The command now exits 1 and the message names the object, which is the recovery.
+    Three separate claims are asserted, because the first two are each satisfiable
+    without the others: the exit code, the object's name in the message, and that no
+    success line was printed.
     """
     from idp_cli.cli import generate_manifest
 
@@ -1538,10 +2047,193 @@ def test_a_marker_that_cannot_be_deleted_only_warns(runner, tmp_path):
             .get("Contents", [])
         }
 
-    assert result.exit_code == 0, result.output
-    assert "Warning: Could not remove upload marker:" in result.output
-    assert "created successfully" in result.output
-    assert "set1/.uploading" in keys, "the marker survives and hides the test set"
+    assert result.exit_code == 1, result.output
+    assert f"s3://{TEST_SET_BUCKET}/set1/.uploading" in result.output, result.output
+    assert "invisible to the backend" in result.output, result.output
+    assert "created successfully" not in result.output, (
+        "success must not be reported for a test set the backend cannot see"
+    )
+    # The delete really did fail, so the marker is genuinely still there and the input
+    # genuinely did arrive: the failure is about visibility, not about a broken upload.
+    assert "set1/.uploading" in keys
+    assert "set1/input/invoice.pdf" in keys
+
+
+class _FailingS3:
+    """A real S3 client with named operations denied, as an IAM policy would deny them.
+
+    `allow_first` exists so a test can say *which* call of an operation fails. Denying
+    every `upload_file` cannot distinguish the input upload from the baseline upload --
+    both raise, so a test asserting only "exit 1" passes even if one of the two call
+    sites has stopped reporting its errors at all. That is not hypothetical: it was
+    measured, as a mutation swallowing the input upload's exception that left the suite
+    green because the baseline upload then failed in its place.
+    """
+
+    def __init__(self, inner, denied, allow_first=None):
+        self._inner = inner
+        self._denied = denied
+        self._allow_first = allow_first or {}
+        self._calls = {}
+
+    def __getattr__(self, name):
+        if name in self._denied:
+
+            def _maybe_deny(*args, **kwargs):
+                seen = self._calls.get(name, 0)
+                self._calls[name] = seen + 1
+                if seen < self._allow_first.get(name, 0):
+                    return getattr(self._inner, name)(*args, **kwargs)
+                raise RuntimeError(f"AccessDenied: {self._denied[name]}")
+
+            return _maybe_deny
+        return getattr(self._inner, name)
+
+
+def _run_generate_manifest_with_denied(
+    runner, tmp_path, denied, allow_first=None, baseline_files=True, set_name="set1"
+):
+    """Invoke `generate-manifest --test-set` against a client with `denied` operations.
+
+    Returns `(result, keys)` -- the click result and the keys actually in the bucket,
+    read back with an unrestricted client after the command has finished.
+    """
+    from idp_cli.cli import generate_manifest
+
+    docs = tmp_path / "docs"
+    _write(docs / "invoice.pdf")
+    baselines = tmp_path / "baselines"
+    (baselines / "invoice.pdf").mkdir(parents=True)
+    if baseline_files:
+        _write(baselines / "invoice.pdf" / "expected.json", '{"a": 1}')
+
+    real_client = boto3.client
+
+    with mock_aws():
+        real_client("s3", region_name="us-east-1").create_bucket(Bucket=TEST_SET_BUCKET)
+
+        def _client(service_name, **kwargs):
+            built = real_client(service_name, **kwargs)
+            if service_name != "s3":
+                return built
+            return _FailingS3(built, denied, allow_first)
+
+        with (
+            patch("idp_cli.cli.boto3.client", side_effect=_client),
+            _patched_stack_resources({"TestSetBucket": TEST_SET_BUCKET}),
+        ):
+            result = runner.invoke(
+                generate_manifest,
+                [
+                    "--dir",
+                    str(docs),
+                    "--baseline-dir",
+                    str(baselines),
+                    "--test-set",
+                    set_name,
+                    "--stack-name",
+                    "IDP",
+                ],
+            )
+
+        keys = {
+            obj["Key"]
+            for obj in real_client("s3", region_name="us-east-1")
+            .list_objects_v2(Bucket=TEST_SET_BUCKET)
+            .get("Contents", [])
+        }
+
+    return result, keys
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("which", "allow_first", "baseline_files", "expected_input_key"),
+    [
+        # The two upload call sites inside the marker's window, reached one at a time.
+        # Denying every `upload_file` reaches only the first of them, so a fix applied
+        # to one and not the other would go unnoticed -- which is exactly what a
+        # mutation of the input-upload call site demonstrated before this was split.
+        ("the input upload", {}, False, None),
+        ("the baseline upload", {"upload_file": 1}, True, "set1/input/invoice.pdf"),
+    ],
+)
+def test_an_upload_failure_removes_the_marker_and_still_exits_1(
+    runner, tmp_path, which, allow_first, baseline_files, expected_input_key
+):
+    """A denied `PutObject` partway through leaves no `.uploading` marker behind.
+
+    This path had no test at all, and it is the one a user is most likely to hit: an
+    IAM policy short of `s3:PutObject` on the test set bucket, or a file that moved
+    between the scan and the upload. The marker used to be removed by a plain statement
+    after the loops, so the exception went past it and the half-filled folder stayed
+    hidden from the resolver — including after the policy was fixed and the upload
+    re-run, because the new run wrote the marker again.
+
+    Both halves are asserted and neither implies the other. The failure has to have
+    happened (exit 1 with the command's error line), because the marker is removed on
+    the success path too and the marker assertion alone would pass on a clean run; and
+    the marker has to be gone, because exit 1 was already the behaviour before the fix.
+
+    The two call sites are reached separately. `expected_input_key` is what pins that:
+    in the baseline case the input object must be present, which is the evidence that
+    the first upload really did go through and the failure really is the second one.
+    """
+    result, keys = _run_generate_manifest_with_denied(
+        runner,
+        tmp_path,
+        {"upload_file": "s3:PutObject"},
+        allow_first=allow_first,
+        baseline_files=baseline_files,
+    )
+
+    assert result.exit_code == 1, result.output
+    assert "✗ Error:" in result.output
+    assert "AccessDenied: s3:PutObject" in result.output
+
+    if expected_input_key is None:
+        assert keys == set(), (
+            f"{which}: nothing should have landed, and the marker must be gone"
+        )
+    else:
+        assert keys == {expected_input_key}, (
+            f"{which}: the earlier upload went through and only the marker is gone"
+        )
+
+    assert "set1/.uploading" not in keys, (
+        f"the marker outlived the failure at {which} and would hide the test set"
+    )
+    assert "created successfully" not in result.output
+
+
+@pytest.mark.unit
+def test_an_upload_failure_whose_cleanup_also_fails_says_so_and_keeps_the_real_error(
+    runner, tmp_path
+):
+    """When the upload fails *and* the marker cannot be removed, both are reported.
+
+    The cleanup runs on the way out of a failure, so it must not be able to replace the
+    exception that caused the failure -- a `delete_object` error surfacing instead of
+    the `PutObject` one would send the user after the wrong problem. It is reported as
+    a warning naming the object to delete, and the original error is what the command
+    exits on.
+    """
+    result, keys = _run_generate_manifest_with_denied(
+        runner,
+        tmp_path,
+        {"upload_file": "s3:PutObject", "delete_object": "s3:DeleteObject"},
+    )
+
+    assert result.exit_code == 1, result.output
+    # The original cause, not the cleanup's.
+    assert "AccessDenied: s3:PutObject" in result.output, result.output
+    # And the cleanup failure as a warning that names the object to delete by hand.
+    assert f"s3://{TEST_SET_BUCKET}/set1/.uploading" in result.output, result.output
+    assert "delete that object before retrying" in result.output, result.output
+
+    # Nothing removed it, so it is genuinely still there -- which is what makes the
+    # warning the only route to recovery and therefore load-bearing.
+    assert "set1/.uploading" in keys
 
 
 @pytest.mark.unit
@@ -1954,16 +2646,22 @@ def test_next_steps_guidance_differs_by_what_was_produced(runner, tmp_path):
 
 
 @pytest.mark.unit
-def test_an_unmatched_baseline_dir_still_takes_the_baseline_branch(runner, tmp_path):
-    """`baseline_map` is non-empty even when nothing matched, so the guidance misleads.
+def test_an_unmatched_baseline_dir_does_not_claim_the_manifest_is_ready_to_evaluate(
+    runner, tmp_path
+):
+    """A baseline directory that matched nothing warns, and the closing guidance is right.
 
-    The closing branch is chosen on `elif baseline_map:` — whether any baseline
-    *directory was found*, not whether any document *matched one*. With a baseline
-    directory present but named so that nothing matches, every row's `baseline_source`
-    is empty and yet the command still prints "Ready to process with evaluations!".
-    Recorded as a wrong-guidance defect rather than a functional one: the manifest is
-    correct, the advice about it is not, and the `Matched 0/1` line just above is the
-    only contradicting evidence on screen.
+    The closing branch is `elif baseline_map:`, and `baseline_map` is now keyed on the
+    documents that *matched* rather than on the directories that were *found*, so a
+    baseline directory named so that nothing matches no longer reaches it. It used to:
+    every row's `baseline_source` was empty and the command still printed "Ready to
+    process with evaluations!", with the `Matched 0/1` line above as the only
+    contradicting evidence on screen.
+
+    Both warnings are asserted, because they say different things — one names the
+    directory that will not be uploaded, the other says no document got a baseline at
+    all — and a user who supplied baselines needs the second to know the manifest is
+    unlabeled.
     """
     from idp_cli.cli import generate_manifest
 
@@ -1980,8 +2678,15 @@ def test_an_unmatched_baseline_dir_still_takes_the_baseline_branch(runner, tmp_p
 
     assert result.exit_code == 0, result.output
     assert "Matched 0/1 documents to baselines" in result.output
-    assert "Ready to process with evaluations!" in result.output
+    assert "matched no document and will not be uploaded: unrelated" in result.output
+    assert "none matched a document" in result.output
+    assert "Ready to process with evaluations!" not in result.output, (
+        "nothing is ready to evaluate: every baseline_source is empty"
+    )
     assert [row["baseline_source"] for row in _read_manifest_rows(output)] == [""]
+    # Without --test-set the manifest is still written, because the user can edit it --
+    # which is what the guidance that does print tells them to do.
+    assert "Edit manifest to add baseline_source" in result.output
 
 
 @pytest.mark.unit
