@@ -1041,9 +1041,45 @@ class TestTheMeasuredSuitesRunHermetically:
         # The expansion is memoised per path, so a fresh path is enough; clearing it anyway
         # keeps this independent of whether an earlier test in the file warmed the cache.
         cov_all._hermetic_expansion.cache_clear()
-        with pytest.raises(AssertionError, match="changed nothing"):
+        cov_all.wrapper_is_not_a_no_op.cache_clear()
+        with pytest.raises(AssertionError, match="removes nothing"):
             cov_all.hermetic_env({})
         cov_all._hermetic_expansion.cache_clear()
+        cov_all.wrapper_is_not_a_no_op.cache_clear()
+
+    def test_the_real_wrapper_is_not_a_no_op_regardless_of_the_callers_environment(
+        self,
+    ):
+        """Asked of the wrapper, against a seeded environment.
+
+        Asking it of the caller's environment was wrong and the real gate is what showed it:
+        `make test-packages-cicd` runs every suite inside `$(HERMETIC_AWS)` already, so a
+        second application changes nothing and 29 tests failed on an environment that was
+        correct. Seeding is what makes the question answerable in both conditions.
+        """
+        removed = cov_all.wrapper_is_not_a_no_op(
+            cov_all._hermetic_expansion(cov_all.HERMETIC_MK)
+        )
+        assert len(removed) >= 8, sorted(removed)
+        assert any(name.startswith("AWS_") for name in removed), sorted(removed)
+
+    def test_it_still_strips_when_the_caller_is_already_inside_the_wrapper(self):
+        """The condition the gate runs in, which is the one that broke.
+
+        Under `make test-packages-cicd` the ambient environment has already been through
+        `$(HERMETIC_AWS)`: the AWS names are gone and the credential files already point at
+        /dev/null. Applying it again must be a well-formed no-op, not a refusal.
+        """
+        already = {
+            "AWS_CONFIG_FILE": "/dev/null",
+            "AWS_SHARED_CREDENTIALS_FILE": "/dev/null",
+            "AWS_EC2_METADATA_DISABLED": "true",
+            "KEEP": "1",
+        }
+        out = cov_all.hermetic_env(already)
+        assert out["AWS_CONFIG_FILE"] == "/dev/null"
+        assert out["KEEP"] == "1"
+        assert "AWS_PROFILE" not in out
 
     def test_every_invocation_carries_the_hermetic_environment_and_the_pythonpath_pin(
         self, monkeypatch, tmp_path, capsys

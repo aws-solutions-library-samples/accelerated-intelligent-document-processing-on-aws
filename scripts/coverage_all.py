@@ -168,11 +168,13 @@ def hermetic_env(env: dict[str, str] | None = None) -> dict[str, str]:
         f"the probe did not come back through $(HERMETIC_AWS), so what it reports is not "
         f"this environment. Expansion was: {expansion!r}"
     )
-    assert wrapped != direct, (
-        f"running $(HERMETIC_AWS) changed nothing — it removed no variable and set none — so "
-        f"it would strip nothing while every assertion about the result still passed on a "
-        f"machine that happened to carry no AWS configuration. Expansion was: {expansion!r}"
-    )
+    # Non-vacuity is a property of the WRAPPER, not of this call, and asking it of this call
+    # was wrong in a way only the real gate showed: `make test-packages-cicd` runs everything
+    # through `$(HERMETIC_AWS)` already, so a second application legitimately changes nothing
+    # and 29 tests failed on an environment that was correct. `wrapper_is_not_a_no_op` asks
+    # the question where it belongs, against a seeded environment, and `run` calls it once so
+    # a neutered wrapper still refuses rather than measuring nine trees with live credentials.
+    wrapper_is_not_a_no_op(expansion)
     # Keys the child adds identically in both runs are the child's, not the wrapper's.
     out = {
         key: value
@@ -183,6 +185,48 @@ def hermetic_env(env: dict[str, str] | None = None) -> dict[str, str]:
     if borrowed_path:
         out.pop("PATH", None)
     return out
+
+
+@functools.lru_cache(maxsize=4)
+def wrapper_is_not_a_no_op(expansion: str) -> frozenset[str]:
+    """Refuse a `$(HERMETIC_AWS)` that strips nothing. Returns what it was seen to remove.
+
+    Asked of the **wrapper**, against an environment seeded on purpose, because asking it of
+    an arbitrary call is unanswerable: an environment carrying no AWS configuration has
+    nothing to lose, and one already inside the wrapper (which is every suite `make
+    test-packages-cicd` runs) legitimately loses nothing on a second application.
+
+    The seed is a **superset** of the names the expansion mentions, assembled by stripping
+    leading dashes and any ``unset=`` prefix from every token. That is a heuristic, and being
+    a superset is what makes it a safe one: a name seeded that the wrapper does not touch
+    hides nothing, and a name missed only costs this check one observation — it cannot let a
+    variable through in real use, because :func:`hermetic_env` passes the actual environment
+    through `env` itself and never consults this list.
+    """
+    candidates = set()
+    for token in shlex.split(expansion):
+        name = token.lstrip("-")
+        for prefix in ("unset=", "u"):
+            if name.startswith(prefix):
+                name = name[len(prefix) :]
+                break
+        name = name.split("=", 1)[0]
+        if name.isidentifier() and name.isupper():
+            candidates.add(name)
+    seeded = {name: "__seeded__" for name in candidates}
+    seeded["PATH"] = os.environ.get("PATH", "/usr/bin:/bin")
+    seeded["__HERMETIC_CONTROL__"] = "1"
+    removed = frozenset(seeded) - frozenset(
+        _probe_environment(shlex.split(expansion), seeded)
+    )
+    assert removed, (
+        f"$(HERMETIC_AWS) removes nothing. It is what keeps a measured suite from reaching a "
+        f"real AWS endpoint with the developer's own credentials, and a wrapper reduced to a "
+        f"bare `env` would leave every assertion about its output passing on a machine that "
+        f"happened to carry no AWS configuration. Expansion was: {expansion!r}; names probed: "
+        f"{sorted(candidates)}"
+    )
+    return removed
 
 
 def _probe_environment(prefix: list[str], env: dict[str, str]) -> dict[str, str]:
