@@ -71,12 +71,15 @@ except ImportError as exc:
 # real cause.
 try:
     from idp_sdk import IDPClient
+    from idp_sdk.models import DocumentBucket, classify_document_state
 
     from . import display
 except ImportError as exc:
     _IMPORT_ERROR = exc
     if not TYPE_CHECKING:
         IDPClient = None
+        DocumentBucket = None
+        classify_document_state = None
         display = None
 
 # Configure logging
@@ -3362,25 +3365,23 @@ def _batch_status_to_display_dicts(batch_status):
             "num_sections": doc.num_sections,
             "error": doc.error or "",
         }
-        status_upper = (doc.status or "").upper()
-        if status_upper == "COMPLETED":
+        # Bucketed through `idp_sdk.models.classify_document_state`, which is total
+        # over `DocumentState` -- the same authority the SDK's own progress monitor
+        # uses, so the CLI's counts and the SDK's `all_complete` cannot disagree
+        # about whether a state is terminal. The chain this replaced named eleven
+        # members and sent the other twelve to `queued` by falling off the end,
+        # which put `PREPROCESSING` (set for every document whenever a
+        # preprocessing hook is registered) under "Queued" and left the terminal
+        # `ABORTED` reporting "IN PROGRESS" forever.
+        bucket = classify_document_state(doc.status)
+        if bucket is DocumentBucket.COMPLETED:
             completed_docs.append(doc_dict)
             if doc.duration_seconds:
                 total_duration += doc.duration_seconds
                 duration_count += 1
-        elif status_upper == "FAILED":
+        elif bucket is DocumentBucket.FAILED:
             failed_docs.append(doc_dict)
-        elif status_upper in (
-            "RUNNING",
-            "CLASSIFYING",
-            "EXTRACTING",
-            "ASSESSING",
-            "RULE_VALIDATION",
-            "RULE_VALIDATION_ORCHESTRATOR",
-            "SUMMARIZING",
-            "HITL_IN_PROGRESS",
-            "EVALUATING",
-        ):
+        elif bucket is DocumentBucket.RUNNING:
             running_docs.append(doc_dict)
         else:
             queued_docs.append(doc_dict)

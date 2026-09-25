@@ -47,38 +47,18 @@ from rich.console import Console
 from idp_cli import cli as cli_module
 from idp_cli import display as display_module
 from idp_sdk import IDPClient
-from idp_sdk.models import BatchStatus
+from idp_sdk.models import BatchStatus, DocumentBucket, classify_document_state
+from idp_sdk.models.base import IN_FLIGHT_DOCUMENT_STATES, DocumentState
 from idp_sdk.models.document import DocumentStatus
 
-#: Every state `_batch_status_to_display_dicts` explicitly treats as in flight.
-RUNNING_STATES = (
-    "RUNNING",
-    "CLASSIFYING",
-    "EXTRACTING",
-    "ASSESSING",
-    "RULE_VALIDATION",
-    "RULE_VALIDATION_ORCHESTRATOR",
-    "SUMMARIZING",
-    "HITL_IN_PROGRESS",
-    "EVALUATING",
-)
+#: Every state in flight, derived from the shared authority in
+#: `idp_sdk.models.base` rather than listed here. A list here is what let the
+#: mapper's own list omit `OCR`, `PREPROCESSING`, `POSTPROCESSING` and
+#: `RULE_VALIDATION_POLICY_CLASSIFICATION` while looking complete.
+RUNNING_STATES = tuple(sorted(s.value for s in IN_FLIGHT_DOCUMENT_STATES))
 
-#: States `DocumentState` defines that the mapper does not name at all. Some are in
-#: flight, two are terminal, and all of them land in the `queued` bucket — see
-#: `test_states_the_mapper_does_not_name_are_all_reported_as_queued`.
-UNNAMED_STATES = (
-    "PENDING_UPLOAD",
-    "STARTED",
-    "PREPROCESSING",
-    "OCR",
-    "RULE_VALIDATION_POLICY_CLASSIFICATION",
-    "POSTPROCESSING",
-    "IN_PROGRESS",
-    "ABORTED",
-    "REDACTED_SUPERSEDED",
-    "NOT_FOUND",
-    "UNKNOWN",
-)
+#: Every member of the enum, so the coverage test below cannot fall behind it.
+ALL_STATES = tuple(sorted(s.value for s in DocumentState))
 
 
 @pytest.fixture(autouse=True)
@@ -308,34 +288,99 @@ class TestDisplayDictMapping:
             "batch-1/b.pdf",
         ]
 
-    @pytest.mark.parametrize("state", UNNAMED_STATES)
-    def test_states_the_mapper_does_not_name_are_all_reported_as_queued(self, state):
-        """DEFECT, pinned as it behaves today (`cli.py:3311-3324`).
+    def test_the_state_list_this_file_derives_is_not_empty(self):
+        """Guards the two parametrisations above and below from collecting nothing.
 
-        The bucketing is an `if COMPLETED / elif FAILED / elif <nine in-flight names>
-        / else queued` chain, so the eleven `DocumentState` members it does not name
-        fall through to `queued`. Three consequences, in rising order of severity:
-
-        * `OCR`, `PREPROCESSING`, `STARTED`, `IN_PROGRESS`, `POSTPROCESSING` and
-          `RULE_VALIDATION_POLICY_CLASSIFICATION` are documents actively being worked
-          on, and they are displayed under "Queued". `PREPROCESSING` is set for every
-          document whenever a preprocessing hook is registered, so on a stack with
-          PII anonymization enabled the running count reads 0 for the whole run.
-        * `ABORTED` and `REDACTED_SUPERSEDED` are **terminal**. Reported as queued
-          they never appear in the failed count, so `status` prints
-          "IN PROGRESS (0/1 finished)" and exits 2 for a batch that has stopped.
-        * `NOT_FOUND` — the state for a document id that does not exist — also reads
-          as queued, so a typo in `--document-id` looks like work in progress.
+        Both are derived from `DocumentState`, and a derived list that comes out
+        empty makes a `parametrize`d test report as zero cases — which reads as a
+        green run over an unasserted rule rather than as a failure.
         """
+        assert len(ALL_STATES) >= 20
+        assert len(RUNNING_STATES) >= 10
+
+    @pytest.mark.parametrize("state", ALL_STATES)
+    def test_every_state_lands_in_the_bucket_the_shared_authority_names(self, state):
+        """No `DocumentState` reaches a fallback, and none is lost or duplicated.
+
+        The mapper used to be an `if COMPLETED / elif FAILED / elif <nine in-flight
+        names> / else queued` chain, so the twelve members it did not name fell
+        through to `queued`: `PREPROCESSING`, `OCR`, `STARTED`, `IN_PROGRESS`,
+        `POSTPROCESSING` and `RULE_VALIDATION_POLICY_CLASSIFICATION` were shown under
+        "Queued" while being actively worked on, and the terminal `ABORTED`,
+        `REDACTED_SUPERSEDED` and `NOT_FOUND` were shown there too so a stopped batch
+        reported "IN PROGRESS" and exited 2 forever.
+
+        This is parametrised over the enum rather than over a list of the states that
+        were wrong at the time, so a state added later is covered without an edit
+        here. The bucket *contents* are pinned in
+        `lib/idp_sdk/tests/unit/test_document_state_buckets.py`; what this asserts is
+        that the mapper routes to them and puts each document in exactly one.
+        """
+        expected = classify_document_state(state)
+
         status_data, stats = cli_module._batch_status_to_display_dicts(
             batch([doc("batch-1/d.pdf", state)], all_complete=False)
         )
 
-        assert [d["document_id"] for d in status_data["queued"]] == ["batch-1/d.pdf"]
-        assert stats["queued"] == 1
-        assert stats["running"] == 0
-        assert stats["failed"] == 0
-        assert stats["completed"] == 0
+        assert [d["document_id"] for d in status_data[expected.value]] == [
+            "batch-1/d.pdf"
+        ]
+        assert stats[expected.value] == 1
+        # Exactly one bucket, so nothing is counted twice or dropped.
+        assert sum(stats[b.value] for b in DocumentBucket) == 1
+
+    def test_a_document_being_preprocessed_is_running_not_queued(self):
+        """`PREPROCESSING` is set for *every* document when a hook is registered.
+
+        On a PII-anonymization stack that made the running count read 0 for the whole
+        run while every document was in fact being processed — the progress display
+        inverted, not merely imprecise.
+        """
+        _, stats = cli_module._batch_status_to_display_dicts(
+            batch([doc("batch-1/d.pdf", "PREPROCESSING")], all_complete=False)
+        )
+
+        assert stats["running"] == 1
+        assert stats["queued"] == 0
+
+    def test_an_aborted_document_makes_a_finished_batch_report_its_failure(
+        self, pinned_console
+    ):
+        """The headline defect: ALL COMPLETED and exit 0 for a batch that aborted.
+
+        The SDK treats `ABORTED` as terminal, so `all_complete` is True; the mapper
+        put it in `queued`, so `stats["failed"]` was 0 and
+        `display.show_final_status_summary` printed "ALL COMPLETED" and returned 0
+        for a batch that had aborted half its work. Asserted through the real display
+        function, so the exit code a caller acts on is what is pinned.
+        """
+        status_data, stats = cli_module._batch_status_to_display_dicts(
+            batch(
+                [
+                    doc("batch-1/ok.pdf", "COMPLETED", duration_seconds=5.0),
+                    doc("batch-1/gone.pdf", "ABORTED"),
+                ],
+                all_complete=True,
+                success_rate=0.5,
+            )
+        )
+
+        assert stats["failed"] == 1
+        assert stats["queued"] == 0
+
+        with pinned_console.capture() as captured:
+            exit_code = display_module.show_final_status_summary(status_data, stats)
+
+        assert exit_code == 1
+        assert "COMPLETED WITH FAILURES (1 failed)" in captured.get()
+
+    def test_a_single_aborted_document_stops_a_wait_instead_of_exiting_2_forever(self):
+        """`status --wait` on an aborted document used to never terminate."""
+        status_data, stats = cli_module._batch_status_to_display_dicts(
+            batch([doc("batch-1/gone.pdf", "ABORTED")], all_complete=True)
+        )
+
+        assert display_module.show_final_status_summary(status_data, stats) == 1
 
     def test_end_time_is_a_datetime_when_present_and_a_string_when_not(self):
         """DEFECT, pinned as it behaves today (`cli.py:3297`).
