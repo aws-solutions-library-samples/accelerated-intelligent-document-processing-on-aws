@@ -691,7 +691,9 @@ def distribution(
     if tokens is None:
         tokens = docs_per_hour * 6000
     monkeypatch.setattr(
-        index, "get_real_latency_metrics", lambda _p: metrics or latency_data()
+        index,
+        "get_real_latency_metrics",
+        lambda _p, _hours=None: metrics or latency_data(),
     )
     return index.calculate_latency_distribution(
         docs_per_hour,
@@ -754,7 +756,7 @@ def test_a_plan_with_no_documents_reports_no_demand_without_measuring_anything(
     function is made to raise here, so reaching it fails the test.
     """
 
-    def must_not_be_called(_pattern):
+    def must_not_be_called(_pattern, _hours=None):
         raise AssertionError("measured timings were fetched for an empty plan")
 
     monkeypatch.setattr(index, "get_real_latency_metrics", must_not_be_called)
@@ -984,7 +986,7 @@ def test_a_missing_token_floor_stops_the_estimate(monkeypatch):
 def test_unavailable_timings_are_reported_as_such_rather_than_estimated(monkeypatch):
     """No synthetic fallback: a made-up processing time is the failure to avoid."""
 
-    def no_documents(_pattern):
+    def no_documents(_pattern, _hours=None):
         raise ValueError("No processed documents found with metering data")
 
     monkeypatch.setattr(index, "get_real_latency_metrics", no_documents)

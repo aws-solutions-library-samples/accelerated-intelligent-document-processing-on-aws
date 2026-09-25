@@ -64,6 +64,7 @@ from __future__ import annotations
 
 import ast
 import json
+import os
 from datetime import datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
@@ -752,6 +753,76 @@ def test_a_large_enough_recent_sample_excludes_older_documents(tracking):
     result = index.get_real_latency_metrics("p")
     assert result["processing_time_percentiles"]["count"] == 5
     assert result["total_processing_time"] == pytest.approx(20.0)
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("window", "expected_count"),
+    [(2, 5), (None, 10)],
+)
+def test_the_history_window_argument_decides_which_documents_are_in_scope(
+    tracking, window, expected_count
+):
+    """The per-request window has to reach the scan, not just be passed around.
+
+    Five documents an hour old and five five hours old, against a configured default
+    of 24 hours. Asking for two hours must see only the recent five; asking for
+    nothing must fall back to the deployed 24 and see all ten. Both directions are
+    needed: a function that ignored its argument entirely would still pass the
+    `None` case, and one that ignored the environment would still pass the `2` case.
+
+    This is the only test that exercises the real function with a window — the
+    handler-level ones assert the value a patched lookup received, which says the
+    argument was threaded but not that it changes anything.
+    """
+    now = datetime.utcnow()
+    for i in range(5):
+        timed_document(
+            tracking,
+            f"recent-{i}",
+            started=(now - timedelta(hours=1, seconds=20)).strftime(
+                "%Y-%m-%dT%H:%M:%S"
+            ),
+            completed=(now - timedelta(hours=1)).strftime("%Y-%m-%dT%H:%M:%S"),
+            metering=durations(OCR=10.0),
+        )
+    for i in range(5):
+        timed_document(
+            tracking,
+            f"older-{i}",
+            started=(now - timedelta(hours=5, seconds=600)).strftime(
+                "%Y-%m-%dT%H:%M:%S"
+            ),
+            completed=(now - timedelta(hours=5)).strftime("%Y-%m-%dT%H:%M:%S"),
+            metering=durations(OCR=10.0),
+        )
+
+    result = index.get_real_latency_metrics("p", window)
+
+    assert result["processing_time_percentiles"]["count"] == expected_count
+
+
+@pytest.mark.unit
+def test_the_history_window_argument_is_reported_in_the_scan_log(tracking, capsys):
+    """The window the scan actually used, named in the line an operator reads.
+
+    Asserted against the configured default as well as the requested value, so a
+    function that logged the argument while scanning on the environment value — or
+    the reverse — is still caught.
+    """
+    timed_document(
+        tracking,
+        "doc-1",
+        started=(datetime.utcnow() - timedelta(seconds=20)).strftime(
+            "%Y-%m-%dT%H:%M:%S"
+        ),
+        completed=datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%S"),
+        metering=durations(OCR=10.0),
+    )
+    index.get_real_latency_metrics("p", 1)
+    printed = capsys.readouterr().out
+    assert "last 1h" in printed
+    assert "last 24h" not in printed
 
 
 @pytest.mark.unit
@@ -2054,21 +2125,32 @@ HAPPY_INPUT = {
 
 
 @pytest.fixture
-def wired(tracking, monkeypatch):
+def latency_windows():
+    """The history window each `get_real_latency_metrics` call was given.
+
+    One entry per call, in order, so a test can tell "asked for six hours" from
+    "asked for the deployed default" — the latter arrives as `None`.
+    """
+    return []
+
+
+@pytest.fixture
+def wired(tracking, monkeypatch, latency_windows):
     """A handler whose Service Quotas and timing lookups are supplied, not live."""
     monkeypatch.setattr(index, "get_simple_quotas", lambda: quota_set())
-    monkeypatch.setattr(
-        index,
-        "get_real_latency_metrics",
-        lambda _p: {
+
+    def timings(_pattern, latency_metrics_hours=None):
+        latency_windows.append(latency_metrics_hours)
+        return {
             "base_times": {"ocr": 10.0, "extraction": 20.0},
             "total_processing_time": 30.0,
             "processing_time_percentiles": {},
             "actual_queue_delays": {},
             "variance_factor": 1.2,
             "data_source": "document_timestamps",
-        },
-    )
+        }
+
+    monkeypatch.setattr(index, "get_real_latency_metrics", timings)
     for step in ("Classification", "Extraction", "Assessment"):
         put_metered(tracking, f"doc-{step}", bedrock(step, 2))
     return tracking
@@ -2342,9 +2424,9 @@ def test_a_ui_supplied_time_range_overrides_the_configured_one_and_clears_the_ca
     """The UI's range selector has to invalidate the five-minute timing cache.
 
     Without the reset, switching from "last 24 hours" to "last hour" would keep
-    showing the previous range's numbers. The override is written into the process
-    environment, so it also persists for every later invocation on the same warm
-    container — a subsequent request that names no range inherits this one.
+    showing the previous range's numbers: the cache is keyed by pattern alone, so
+    an entry computed over the old window is indistinguishable from one computed
+    over the new.
     """
     monkeypatch.setattr(
         index, "_processing_times_cache", {"pattern-2": {"stale": True}}
@@ -2354,10 +2436,44 @@ def test_a_ui_supplied_time_range_overrides_the_configured_one_and_clears_the_ca
 
     index.lambda_handler(payload, None)
 
-    import os
-
-    assert os.environ["LATENCY_METRICS_HOURS"] == "6"
     assert index._processing_times_cache == {}
+
+
+@pytest.mark.unit
+def test_a_ui_supplied_time_range_reaches_the_lookup_as_an_argument(
+    wired, latency_windows
+):
+    """The chosen window is threaded down the call, not stashed in the environment.
+
+    Asserted on the value the lookup received, because that is the only place the
+    choice has to arrive for the plan to be built over the right history.
+    """
+    payload = json.loads(json.dumps(HAPPY_INPUT))
+    payload["latencyMetricsHours"] = 6
+
+    index.lambda_handler(payload, None)
+
+    assert latency_windows == [6]
+
+
+@pytest.mark.unit
+def test_a_ui_supplied_time_range_does_not_outlive_the_request(wired, latency_windows):
+    """The leak this guards is a warm container, which is the normal case in Lambda.
+
+    A request naming six hours is followed here by one naming nothing, in the same
+    process, exactly as two invocations on one container would be. The second must
+    ask for the deployed default — `None`, meaning "no choice made" — rather than
+    inheriting six. Both halves are needed: asserting only the environment variable
+    would pass if the handler stopped honouring the override altogether.
+    """
+    chose_six = json.loads(json.dumps(HAPPY_INPUT))
+    chose_six["latencyMetricsHours"] = 6
+    index.lambda_handler(chose_six, None)
+
+    index.lambda_handler(json.loads(json.dumps(HAPPY_INPUT)), None)
+
+    assert latency_windows == [6, None]
+    assert os.environ["LATENCY_METRICS_HOURS"] == "24"
 
 
 # --------------------------------------------------------------------------

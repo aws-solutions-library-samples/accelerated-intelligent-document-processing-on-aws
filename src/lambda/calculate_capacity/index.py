@@ -110,11 +110,22 @@ def retry_with_backoff(func, max_retries=3, base_delay=1):
     return None
 
 
-def get_real_latency_metrics(pattern):
+def get_real_latency_metrics(pattern, latency_metrics_hours=None):
     """Get processing times from recent processed documents' metering data.
-    
+
     Uses the actual metering data structure from DynamoDB with Metering attribute.
     Estimates processing time from gb_seconds (Lambda GB-seconds = memory_gb * time_seconds).
+
+    Args:
+        latency_metrics_hours: How far back to look, in hours. Passed down from the
+            UI's time-range selector for the current request. ``None`` means the
+            request did not choose one, and the deployed default in
+            ``LATENCY_METRICS_HOURS`` applies. It arrives as an argument rather
+            than through the environment because a Lambda container is reused: a
+            request that wrote its choice into ``os.environ`` set the default for
+            every later invocation served by that container, so one user's
+            six-hour view silently became everybody's until the container aged
+            out.
     """
     global _processing_times_cache, _cache_expiry
     
@@ -136,9 +147,12 @@ def get_real_latency_metrics(pattern):
         # Query recent documents with pagination support
         # Use attribute_exists with correct attribute name (Metering, not meteringData)
         # Time filter: only use recent documents for latency metrics (default 24 hours)
-        # Read latencyMetricsHours from input if provided (passed from UI time range selector)
-        # Falls back to environment variable, then default 24 hours
-        latency_metrics_hours = int(os.environ.get("LATENCY_METRICS_HOURS", "24"))
+        # The per-request value threaded down from the UI time range selector wins;
+        # otherwise the deployed default, otherwise 24 hours.
+        if latency_metrics_hours is None:
+            latency_metrics_hours = int(os.environ.get("LATENCY_METRICS_HOURS", "24"))
+        else:
+            latency_metrics_hours = int(latency_metrics_hours)
         min_recent_docs = int(os.environ.get("LATENCY_METRICS_MIN_DOCS", "5"))
         cutoff_time = datetime.utcnow() - timedelta(hours=latency_metrics_hours)
         cutoff_iso = cutoff_time.strftime('%Y-%m-%dT%H:%M:%S')
@@ -852,10 +866,14 @@ def calculate_latency_distribution(
     max_allowed_latency,
     quotas,
     document_configs=None,
+    latency_metrics_hours=None,
 ):
     """
     Calculate latency distribution using simplified approach.
     Quota capacity determines processing speed - insufficient quota causes throttling and delays.
+
+    ``latency_metrics_hours`` is the request's own history window, forwarded to
+    ``get_real_latency_metrics``; see that function for why it is an argument.
     """
 
     # max_allowed_latency is in seconds (from frontend), convert to minutes for internal calculations
@@ -956,7 +974,7 @@ def calculate_latency_distribution(
 
     # Get ACTUAL processing time and queue delays from real documents
     try:
-        latency_data = get_real_latency_metrics(pattern)
+        latency_data = get_real_latency_metrics(pattern, latency_metrics_hours)
         base_times = latency_data["base_times"]
         
         # Use total_processing_time if available (from timestamps), otherwise sum of steps
@@ -1959,11 +1977,17 @@ def lambda_handler(event: Dict[str, Any], context) -> Dict[str, Any]:
             total_pages_per_hour += docs_per_hour_config * avg_pages
             total_tokens_per_hour += doc_total_tokens * docs_per_hour_config
 
-        # Override LATENCY_METRICS_HOURS from UI input if provided
+        # Per-request latency history window from the UI time range selector.
+        # Held as a local and passed down rather than written into os.environ: the
+        # container outlives the request, so an environment write made this
+        # request's choice the default for every later invocation the same
+        # container served.
         latency_metrics_hours_input = input_data.get("latencyMetricsHours")
+        latency_metrics_hours = None
         if latency_metrics_hours_input:
-            os.environ["LATENCY_METRICS_HOURS"] = str(int(latency_metrics_hours_input))
-            # Clear cache so new time range takes effect
+            latency_metrics_hours = int(latency_metrics_hours_input)
+            # The cache is keyed by pattern alone, so entries computed over the
+            # previous window would otherwise be returned for this one.
             global _processing_times_cache, _cache_expiry
             _processing_times_cache = {}
             _cache_expiry = 0
@@ -1978,6 +2002,7 @@ def lambda_handler(event: Dict[str, Any], context) -> Dict[str, Any]:
             max_allowed_latency,
             quotas,
             document_configs,
+            latency_metrics_hours,
         )
 
         # Build quota requirements using Applied account-level quota values
