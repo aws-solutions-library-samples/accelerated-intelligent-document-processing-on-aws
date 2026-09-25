@@ -18,13 +18,15 @@ whose numbers are an artefact, and nothing inside the report itself says so.
 
 Both CI configurations now run this before the ratchet, which is what lets the ratchet
 reach more than one tree (issue #1256). Sequentially that is a wall clock nobody would
-accept: `scripts` alone measures 989 s and it is one of nine.
+accept: `scripts` alone takes about 16 minutes (measured twice, 959 s and 989 s on
+different hosts) and it is one of nine.
 
 The concurrency has to be **across** trees because it cannot be inside all of them.
 :attr:`check_coverage_debt.Tree.serial` forbids ``-n auto`` for a tree whose suite drives
 the code under test as a subprocess — xdist under-collects it, and the symptom is a
 confident-looking fall in a file whose own suite is green. So `scripts` is stuck being one
-process, and the only way to hide its 989 s is to measure the other eight while it runs.
+process, and the only way to hide those 16 minutes is to measure the other eight while it
+runs.
 
 That makes the **worker budget** the thing to get right. ``-n auto`` asks xdist for one
 worker per CPU, so N concurrent trees each passing it oversubscribe the host by a factor of
@@ -45,6 +47,7 @@ this script makes goes through it.
 from __future__ import annotations
 
 import argparse
+import functools
 import importlib.util
 import os
 import subprocess
@@ -74,8 +77,46 @@ sys.modules["check_coverage_debt"] = _ccd
 _spec.loader.exec_module(_ccd)
 
 
+#: `subprocess.run` as it was at import, before anything could replace it.
+#:
+#: `scripts/tests/test_coverage_all.py` substitutes `subprocess.run` wholesale to record the
+#: pytest command lines this script builds, which is the right thing for it to intercept and
+#: the wrong thing for :func:`_hermetic_expansion` to go through: asking `make` what
+#: `$(HERMETIC_AWS)` expands to is not one of the calls under test, and routing it through
+#: the fake returned `None` and turned the safety mechanism into an exception. Holding the
+#: original here keeps the two uses of `subprocess` separable without the test having to
+#: know about this one.
+_REAL_RUN = subprocess.run
+
 #: The makefile that defines the hermetic environment every gated pytest run uses.
 HERMETIC_MK = REPO_ROOT / "make" / "hermetic_aws.mk"
+
+
+@functools.lru_cache(maxsize=8)
+def _hermetic_expansion(mk: Path) -> str:
+    """``$(HERMETIC_AWS)`` as `make` expands it, which is the only authoritative reading.
+
+    Asking `make` rather than re-parsing the file is the same move the recipe assertions in
+    `scripts/tests/test_coverage_debt.py` make, and for the same reason: a second reader of
+    a makefile is a second grammar, and the one that diverges is the one making the safety
+    decision.
+    """
+    out = _REAL_RUN(
+        [
+            "make",
+            "-s",
+            "-f",
+            str(mk),
+            "--eval=__print_hermetic:;@echo $(HERMETIC_AWS)",
+            "__print_hermetic",
+        ],
+        capture_output=True,
+        text=True,
+    )
+    assert out.returncode == 0, (
+        f"could not expand $(HERMETIC_AWS) from {mk}: {out.stderr[-400:]}"
+    )
+    return out.stdout.strip()
 
 
 def hermetic_env(env: dict[str, str] | None = None) -> dict[str, str]:
@@ -88,33 +129,38 @@ def hermetic_env(env: dict[str, str] | None = None) -> dict[str, str]:
     reaches a live endpoint would quietly transact against whichever account the developer
     is signed in to instead of failing loudly, which is the whole point of that wrapper.
 
-    The variable list is **parsed out of `make/hermetic_aws.mk`**, never restated here. A
-    second copy of it is the copy that goes stale, and the one that goes stale is the one
-    deciding which credential reaches a test subprocess. `scripts/tests/test_coverage_all.py`
-    asserts the parsed set is non-empty and matches the makefile's, so a rename on either
-    side fails there rather than silently reducing this to a no-op.
+    The variable list is **obtained by asking `make` to expand `$(HERMETIC_AWS)`**, never
+    restated here and never re-parsed out of the file by hand. A second copy of it is the
+    copy that goes stale, and the one that goes stale is the one deciding which credential
+    reaches a test subprocess — and a hand-rolled parse is a second copy of the *grammar*,
+    which has the same failure mode one level down: a `--unset=NAME` spelling that GNU
+    ``env`` accepts and a `-u NAME` parser does not silently lets three credentials through.
+    `make` is the only reader whose answer cannot disagree with the recipe's.
+
+    Both ``env`` spellings are honoured when reading the expansion, for the same reason.
     """
-    text = HERMETIC_MK.read_text(encoding="utf-8")
-    body = text.split("HERMETIC_AWS :=", 1)[1]
-    # The assignment continues while lines end in a backslash.
-    lines, rest = [], body.splitlines()
-    for line in rest:
-        lines.append(line)
-        if not line.rstrip().endswith("\\"):
-            break
-    tokens = " ".join(lines).replace("\\", " ").split()
+    expansion = _hermetic_expansion(HERMETIC_MK)
     unset, assign = [], {}
     expect_name = False
-    for token in tokens:
+    for token in expansion.split():
         if token == "-u":
             expect_name = True
         elif expect_name:
             unset.append(token)
             expect_name = False
-        elif "=" in token:
+        elif token.startswith("--unset="):
+            unset.append(token[len("--unset=") :])
+        elif token == "--unset":
+            expect_name = True
+        elif "=" in token and not token.startswith("-"):
             name, _, value = token.partition("=")
             assign[name] = value
-    assert unset, f"parsed no -u names out of HERMETIC_AWS in {HERMETIC_MK}"
+    assert unset, (
+        f"no variables to unset were found in $(HERMETIC_AWS) as {HERMETIC_MK} expands it. "
+        f"An empty set would strip nothing while every assertion about the result still "
+        f"passed on a machine that happened to carry no AWS variables, so this refuses "
+        f"instead. Expansion was: {expansion!r}"
+    )
     out = dict(os.environ if env is None else env)
     for name in unset:
         out.pop(name, None)
@@ -391,7 +437,7 @@ def main() -> int:
                 failures.append(name)
 
     # Submitted in registry order, which is largest-first, so the longest tree (`scripts`,
-    # serial and ~989 s) starts in the first wave rather than being picked up last when
+    # serial and ~16 min) starts in the first wave rather than being picked up last when
     # there is nothing left to overlap it with.
     if jobs == 1:
         for tree in trees:

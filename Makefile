@@ -275,7 +275,7 @@ coverage-all: ## Measure EVERY tree (9 of them) and print each one's figure
 #   --jobs   measures trees concurrently. It has to be concurrency ACROSS trees:
 #            `scripts` declares Tree.serial because xdist under-collects a suite that
 #            drives its subject as a subprocess, so that tree cannot be sped up from
-#            the inside and its ~989 s is hidden behind the other eight instead.
+#            the inside and its ~16 min is hidden behind the other eight instead.
 #   --skip   leaves out the one tree an earlier CI step already measured. The ratchet
 #            step below still requires it BY NAME, so dropping the wrong tree here
 #            turns the gate red rather than quietly narrowing it.

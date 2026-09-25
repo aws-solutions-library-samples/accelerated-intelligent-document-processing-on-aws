@@ -248,7 +248,7 @@ class TestTreeRegistry:
 
         A count alone can be satisfied by swapping a large tree for a small one.
         `scripts` is here because it is 33,000 statements that nobody had measured, and
-        `idp_sdk`/`idp_cli` because at 36% and 27% they are the two the ratchet most
+        `idp_sdk`/`idp_cli` because they are the two whose recorded figures went stale for
         needs to hold.
         """
         assert name in ccd.TREES_BY_NAME
@@ -1744,90 +1744,293 @@ class TestTheCIStepsAreLiveAndNotMerelyPresent:
     """Present is not running, and this gate's whole subject is a check that read as
     protection while providing none.
 
-    Three ways a step can be in a CI config and do nothing, all of them a one-line diff that
-    reads like housekeeping, and all three measured to leave every text-based assertion in
-    this suite green:
+    A step can be in a CI config and do nothing, and the diff that arranges it reads like
+    housekeeping every time. All of these were measured to leave a text-based suite — and a
+    first attempt at a structural one — completely green:
 
-    * ``continue-on-error: true`` — the step runs, prints red, and the job stays green.
-    * ``if: false`` (or any condition that is never true) — the step never runs at all.
-    * the producer ordered **after** the ratchet — both steps run, and the ratchet reads
-      the reports of the previous commit's run, or none.
+    * ``continue-on-error: true`` on the **step**: it runs, prints red, job stays green.
+    * ``continue-on-error: true`` on the **job**: one line, and every gate in that job is
+      neutered at once, and most of the shared gate set are steps in ``developer_tests``.
+      The count is deliberately not written here: it moves whenever a gate is added, and
+      what matters is that one line reaches all of them.
+    * ``if: false``, ``if: ${{false}}``, ``if: ${{ !always() }}``,
+      ``if: ${{ github.event_name == 'never_happens' }}``: the step never runs. A denylist
+      of literal spellings loses to whitespace, and then to semantics.
+    * GitLab ``allow_failure: true``, ``when: never``, or ``rules: [{when: never}]`` on the
+      job.
+    * the producer ordered **after** the ratchet, or moved into a **different job** — where
+      a step list flattened across jobs is satisfied by mere file order.
+    * a ``-`` prefix on the make recipe line (``-@python3 …``), which tells `make` to ignore
+      the command's exit status. Measured end to end: ``make check-coverage-debt-cicd``
+      exits **0** while printing ``🚫 coverage ratchet: no verdict``. ``make -n`` prints the
+      command intact, so asking `make` what it would *run* is structurally blind to it the
+      same way a text search was blind to ``#``.
 
-    A substring search over the YAML cannot see any of them, which is the same reading
-    failure as a flag moved into a trailing ``#`` comment. So this reads the configs as
-    **structure**.
+    The rule these all violate is one rule — **a gate's red mark must be able to reach the
+    thing that decides the merge** — so the assertions are about that rather than about
+    spellings. Two consequences worth stating: the two steps must be **unconditional**
+    (any ``if:`` at all is a finding here, because deciding whether an expression can ever
+    be true is evaluation rather than reading, and these two steps have no reason to carry
+    one), and both must live in the **same** job, which is what makes the ordering question
+    meaningful.
     """
 
+    #: Keys that make a step's or a job's failure not count, in either platform's spelling.
+    FAILURE_SWALLOWING = ("continue-on-error", "allow_failure")
+
+    GATE_COMMANDS = ("make coverage-all-cicd", "make check-coverage-debt-cicd")
+
     @staticmethod
-    def _github_steps() -> list[dict]:
+    def _github_jobs() -> dict:
         doc = yaml.safe_load(
             (REPO_ROOT / ".github/workflows/developer-tests.yml").read_text(
                 encoding="utf-8"
             )
         )
-        steps: list[dict] = []
-        for job in doc.get("jobs", {}).values():
-            steps.extend(job.get("steps", []) or [])
-        assert steps, "no steps parsed out of developer-tests.yml"
-        return steps
+        jobs = doc.get("jobs", {})
+        assert jobs, "no jobs parsed out of developer-tests.yml"
+        return jobs
 
-    def _github_step_running(self, command: str) -> dict:
-        matches = [
-            s for s in self._github_steps() if str(s.get("run", "")).strip() == command
+    def _github_job_running(self, command: str) -> tuple[str, dict, dict]:
+        """The (job name, job, step) whose ``run`` IS this command. Exactly one."""
+        found = [
+            (name, job, step)
+            for name, job in self._github_jobs().items()
+            for step in (job.get("steps") or [])
+            if str(step.get("run", "")).strip() == command
         ]
-        assert len(matches) == 1, (
+        assert len(found) == 1, (
             f"expected exactly one GitHub step whose `run` is `{command}`, found "
-            f"{len(matches)}. A step that merely MENTIONS the command in a comment or a "
-            f"longer shell line does not count, because this gate's failure mode is "
-            f"reading as present while doing nothing."
+            f"{len(found)}. A step that merely MENTIONS the command, in a comment or "
+            f"inside a longer shell line, does not count."
         )
-        return matches[0]
+        return found[0]
 
-    @pytest.mark.parametrize(
-        "command", ["make coverage-all-cicd", "make check-coverage-debt-cicd"]
-    )
-    def test_neither_github_step_is_neutered(self, command):
-        step = self._github_step_running(command)
-        assert step.get("continue-on-error") in (None, False), (
-            f"`{command}` runs with continue-on-error={step.get('continue-on-error')!r}, "
-            f"so its red mark does not reach the job and the gate reports nothing."
+    @pytest.mark.parametrize("command", GATE_COMMANDS)
+    def test_no_github_step_or_its_job_swallows_the_failure(self, command):
+        name, job, step = self._github_job_running(command)
+        for scope, obj in (("step", step), (f"job `{name}`", job)):
+            for key in self.FAILURE_SWALLOWING:
+                value = obj.get(key)
+                # Truthiness, not `is True`: YAML `'true'` is a string and passes an
+                # identity test while GitHub still honours it.
+                swallowed = value is not None and str(value).strip().lower() in (
+                    "true",
+                    "yes",
+                    "on",
+                    "1",
+                )
+                assert not swallowed, (
+                    f"`{command}`: {scope} sets {key}={value!r}, so a red result does not "
+                    f"reach whatever decides the merge. At job scope this disables every "
+                    f"gate in the job, not just this one."
+                )
+
+    @pytest.mark.parametrize("command", GATE_COMMANDS)
+    def test_neither_github_step_is_conditional_at_all(self, command):
+        """Any `if:` is a finding, rather than a denylist of spellings that are false.
+
+        `if: false`, `if: ${{false}}`, `if: ${{ !always() }}` and
+        `if: ${{ github.event_name == 'never_happens' }}` are all permanently false and only
+        the first two look it. Deciding whether an arbitrary expression can ever hold is
+        evaluation, not reading, and nothing here attempts it — so the property asserted is
+        the one that needs no evaluation: these two steps are unconditional.
+        """
+        _, job, step = self._github_job_running(command)
+        assert "if" not in step, (
+            f"`{command}` is behind `if: {step.get('if')!r}`. Whether that can ever be true "
+            f"is not something this test can decide, which is why any condition on this "
+            f"step is a finding: a gate behind a false condition is indistinguishable in a "
+            f"job log from one that passed."
         )
-        # A condition is allowed to exist, but not to be a constant that can never hold.
-        condition = step.get("if")
-        if condition is not None:
-            assert str(condition).strip().lower() not in ("false", "${{ false }}"), (
-                f"`{command}` is behind a condition that is never true, so the step "
-                f"never runs: if={condition!r}"
-            )
+        assert "if" not in job, f"its job is conditional: if={job.get('if')!r}"
 
-    def test_github_produces_the_reports_before_it_checks_them(self):
-        """Order is the whole coupling between the two steps. Reversed, the ratchet reads
-        whatever `test-cicd` left and names the other eight trees as unmeasured — the exact
-        state #1256 is about, with both steps present and green."""
-        runs = [str(s.get("run", "")).strip() for s in self._github_steps()]
+    def test_both_github_steps_are_in_the_same_job_and_in_the_right_order(self):
+        """Ordering only means something within a job, and a flattened step list hides that.
+
+        Moved into a job of its own the producer has no checkout and no dependency on this
+        job, so it cannot write the reports this job's ratchet reads — while a step list
+        gathered across all jobs still shows it "before" by file order.
+        """
+        producer_job, job, _ = self._github_job_running("make coverage-all-cicd")
+        ratchet_job, _, _ = self._github_job_running("make check-coverage-debt-cicd")
+        assert producer_job == ratchet_job, (
+            f"the producer is in job `{producer_job}` and the ratchet in `{ratchet_job}`, so "
+            f"the ratchet cannot read the reports the producer writes — a separate job is a "
+            f"separate filesystem here."
+        )
+        runs = [str(s.get("run", "")).strip() for s in job["steps"]]
         assert runs.index("make coverage-all-cicd") < runs.index(
             "make check-coverage-debt-cicd"
         ), runs
 
-    def test_gitlab_produces_the_reports_before_it_checks_them(self):
+    def test_gitlab_runs_both_in_one_job_that_can_actually_fail(self):
         doc = yaml.safe_load((REPO_ROOT / ".gitlab-ci.yml").read_text(encoding="utf-8"))
-        job = next(
-            j
-            for name, j in doc.items()
-            if isinstance(j, dict)
+        named = [
+            (name, job)
+            for name, job in doc.items()
+            if isinstance(job, dict)
             and any(
                 "make check-coverage-debt-cicd" in str(line)
-                for line in (j.get("script") or [])
+                for line in (job.get("script") or [])
             )
+        ]
+        assert len(named) == 1, (
+            f"expected one GitLab job to run the ratchet, got {named!r}"
+        )
+        name, job = named[0]
+        for key in self.FAILURE_SWALLOWING:
+            value = job.get(key)
+            assert value is None or str(value).strip().lower() not in (
+                "true",
+                "yes",
+                "on",
+                "1",
+            ), f"job `{name}` sets {key}={value!r}, so its red mark blocks nothing"
+        # `when: never` at job scope, and the same thing expressed through `rules:`.
+        assert str(job.get("when")).lower() != "never", job.get("when")
+        rules = job.get("rules") or []
+        assert rules, (
+            f"job `{name}` has no `rules:`, so this check has nothing to inspect and the "
+            f"`rules: [{{when: never}}]` case would pass vacuously"
+        )
+        assert not all(
+            str((r or {}).get("when", "")).lower() == "never"
+            for r in rules
+            if isinstance(r, dict)
+        ), (
+            f"every rule on job `{name}` is `when: never`, so the job never runs: {rules}"
         )
         script = [str(line).strip() for line in job["script"]]
-        # `when: never` would make the whole job unreachable, which is the GitLab spelling
-        # of `if: false` and is not visible in the script list at all.
-        assert job.get("when") != "never", job.get("when")
         assert script.index("make coverage-all-cicd") < script.index(
             "make check-coverage-debt-cicd"
         ), script
-        # And neither is allowed to swallow its own status.
         for line in script:
-            if "coverage-all-cicd" in line or "check-coverage-debt-cicd" in line:
-                assert "|| true" not in line and not line.endswith("|| :"), line
+            if any(cmd.split()[-1] in line for cmd in self.GATE_COMMANDS):
+                assert "|| true" not in line and not line.rstrip().endswith("|| :"), (
+                    line
+                )
+
+    @pytest.mark.parametrize(
+        "target", ["coverage-all-cicd", "check-coverage-debt-cicd"]
+    )
+    def test_neither_recipe_tells_make_to_ignore_the_exit_status(self, target):
+        """The `-` prefix, which `make -n` cannot show and which defeats everything above.
+
+        `-@python3 …` makes `make` ignore the command's status, so the recipe runs, prints
+        the refusal, and the target exits 0. Measured: `make check-coverage-debt-cicd` exits
+        0 while printing `🚫 coverage ratchet: no verdict`. `make -n` prints the command
+        unchanged, so this one has to be read off the recipe text — the prefix characters
+        are the one thing the text carries and the expansion does not.
+        """
+        makefile = (REPO_ROOT / "Makefile").read_text(encoding="utf-8")
+        body = makefile.split(f"\n{target}:")[1].split("\n\n")[0]
+        recipe = [ln for ln in body.splitlines() if ln.startswith("\t")]
+        assert recipe, (
+            f"no recipe lines found for {target}; this check would be vacuous"
+        )
+        for line in recipe:
+            prefix = line[1:].lstrip()[:2]
+            assert not prefix.startswith("-"), (
+                f"{target} has a recipe line prefixed with `-`, which tells make to ignore "
+                f"its exit status, so the target succeeds however the command fails: "
+                f"{line.strip()!r}"
+            )
+
+
+#: Tracked source files a tree has that its baseline does not record, per tree, as measured.
+#:
+#: Pinned rather than required to be zero, because zero is not reachable today and a check
+#: that cannot pass gets deleted. The residual is 55 files in three trees and each has the
+#: same cause: **no suite imports them**, so no coverage report mentions them, so there is
+#: no figure to record. `write_baseline` records what a report contains intersected with
+#: what git tracks, which is why they are absent rather than at 0.
+#:
+#: * `scripts` — 17 standalone operator scripts (`scripts/model_finetuning/`,
+#:   `scripts/examples/`) that no test imports.
+#: * `main_stack_extensions` — 7, six of them copies of `log_sanitizer.py` vendored into
+#:   individual Lambda directories.
+#: * `pii_anonymizer_hook` — 31, the vendored `vendor/pii_anonymizer/` tree, whose scope
+#:   decision is already recorded against `ruff.toml`'s `extend-exclude`.
+#:
+#: Six trees are at **zero**, and that is the half that does the work: a new module added to
+#: any of them is a finding here the moment it is committed, with no measurement needed.
+UNRECORDED_TRACKED_FILES = {
+    "idp_common": 0,
+    "scripts": 17,
+    "idp_sdk": 0,
+    "main_stack_extensions": 7,
+    "idp_cli": 0,
+    "idp_feature_sdk": 0,
+    "seller_entitlement": 0,
+    "pii_anonymizer_hook": 31,
+    "pii_anonymizer_api": 0,
+}
+
+
+@pytest.mark.unit
+class TestTheBaselineAccountsForEveryTrackedSourceFile:
+    """The closure in the direction the gate itself cannot check offline.
+
+    `check_tree` reports a file that is **measured and unrecorded**, which is the right
+    runtime check and needs a coverage report to fire. Before both CIs produced one per tree,
+    seven trees never had a report in CI, so for those the check never ran anywhere: two
+    `parameters.py` files reached the integration branch measured-and-unratcheted, and were
+    found only by measuring nine trees by hand. Wiring CI to measure them is the instance
+    fix. This is the class fix, and it needs no measurement at all — it compares
+    `git ls-files` against the committed baseline, so it fires at commit time on the pull
+    request that adds the module.
+
+    It is a **count** rather than a closure because the closure is not satisfiable today;
+    see :data:`UNRECORDED_TRACKED_FILES` for the residual and why each part of it exists.
+    """
+
+    def test_no_tree_gains_an_unrecorded_tracked_source_file(self):
+        baseline = json.loads(ccd.BASELINE.read_text(encoding="utf-8"))["trees"]
+        assert len(ccd.TREES) >= 9, (
+            "registry looks truncated; this would be near-vacuous"
+        )
+        grown, shrunk = [], []
+        for tree in ccd.TREES:
+            tracked = set(ccd.tracked_source_files(tree))
+            assert tracked, (
+                f"no tracked source files found for {tree.name}, so this check would pass "
+                f"vacuously for it — an empty derived set is a skip, not a failure"
+            )
+            recorded = set(baseline.get(tree.name, {}).get("files", {}))
+            gap = sorted(
+                path
+                for path in tracked - recorded
+                if not any(path.startswith(k) for k in ccd.NOT_MEASURED)
+            )
+            expected = UNRECORDED_TRACKED_FILES.get(tree.name)
+            assert expected is not None, (
+                f"tree `{tree.name}` is in TREES and not in UNRECORDED_TRACKED_FILES, so "
+                f"nothing pins how many of its files are outside the baseline. Add it with "
+                f"its measured count — 0 if its baseline is complete, which is the "
+                f"answer for six of the nine."
+            )
+            if len(gap) > expected:
+                grown.append((tree.name, expected, len(gap), gap[expected:][:6]))
+            elif len(gap) < expected:
+                shrunk.append((tree.name, expected, len(gap)))
+        assert not grown, (
+            "these trees have MORE tracked source files outside their baseline than when "
+            "this was measured, so a new module is unratcheted and no coverage run is "
+            "needed to see it:\n"
+            + "\n".join(
+                f"  {name}: pinned {was}, now {now} — e.g. {', '.join(examples)}"
+                for name, was, now, examples in grown
+            )
+            + "\nRecord it: measure that tree and run `check_coverage_debt.py --write`. If "
+            "it genuinely cannot be measured, lower nothing — add it to NOT_MEASURED with "
+            "the reason, which is the only sanctioned way for a file to be out of scope."
+        )
+        assert not shrunk, (
+            "these trees have FEWER unrecorded files than pinned, which is progress that "
+            "has to be banked or the pin pre-approves losing it again:\n"
+            + "\n".join(
+                f"  {name}: pinned {was}, now {now}" for name, was, now in shrunk
+            )
+            + "\nLower the number in UNRECORDED_TRACKED_FILES to what it now measures."
+        )

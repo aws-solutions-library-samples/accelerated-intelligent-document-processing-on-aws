@@ -413,7 +413,8 @@ class TestTreesAreMeasuredConcurrently:
     Both CI configurations now run this producer before the ratchet, which is the whole of
     issue #1256: before that, the only report either CI wrote was `idp_common`'s and the
     ratchet named the other eight trees as "not checked" and exited 0. Producing nine
-    reports sequentially is a wall clock nobody accepts — `scripts` alone measures 989 s.
+    reports sequentially is a wall clock nobody accepts — `scripts` alone takes about 16
+    minutes.
 
     It cannot be made faster from the inside, either: `scripts` declares `Tree.serial`
     because xdist under-collects a suite that drives its subject as a subprocess, so
@@ -1035,8 +1036,12 @@ class TestTheMeasuredSuitesRunHermetically:
         fake = tmp_path / "hermetic_aws.mk"
         fake.write_text("HERMETIC_AWS := env\n", encoding="utf-8")
         monkeypatch.setattr(cov_all, "HERMETIC_MK", fake)
-        with pytest.raises(AssertionError, match="parsed no -u names"):
+        # The expansion is memoised per path, so a fresh path is enough; clearing it anyway
+        # keeps this independent of whether an earlier test in the file warmed the cache.
+        cov_all._hermetic_expansion.cache_clear()
+        with pytest.raises(AssertionError, match="no variables to unset"):
             cov_all.hermetic_env({})
+        cov_all._hermetic_expansion.cache_clear()
 
     def test_every_invocation_carries_the_hermetic_environment_and_the_pythonpath_pin(
         self, monkeypatch, tmp_path, capsys
@@ -1067,9 +1072,18 @@ class TestTheMeasuredSuitesRunHermetically:
         for env in seen:
             assert "AWS_PROFILE" not in env, "a real profile reached a measured suite"
             assert env["AWS_CONFIG_FILE"] == "/dev/null"
-            assert env["PYTHONPATH"] == str(tmp_path / "lib" / "fake_pkg"), env[
-                "PYTHONPATH"
-            ]
+            # PREFIX, not equality. `run()` prepends the pin to any existing PYTHONPATH,
+            # which is what makes this checkout win over an inherited one — and every
+            # make-driven invocation here already exports the five real roots, so an
+            # equality assertion is red under `make test-packages-cicd` (a shared gate in
+            # both CIs) and red again when `coverage-all-cicd` measures the `scripts` tree.
+            # A permanently-red test carries no more signal than a permanently-green one:
+            # it made the two mutations this test is the sole detector for
+            # (`hermetic_env()` not called, and the pin dropped) indistinguishable from
+            # the baseline failure set.
+            assert env["PYTHONPATH"].split(":")[0] == str(
+                tmp_path / "lib" / "fake_pkg"
+            ), env["PYTHONPATH"]
 
     def test_the_pythonpath_pin_names_every_first_party_root_absolutely(self):
         """Derived from `lib/*/pyproject.toml`, the same rule the makefile uses, so a new

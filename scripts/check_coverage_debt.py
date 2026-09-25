@@ -9,8 +9,7 @@ that fail on different things.
 
 **It covers nine trees, not one.** Measuring them was the point: nobody knew `scripts/`
 was already at 81% across 33,000 statements, or that
-`feature-platform/main-stack-extensions` was at 95%, or that `idp_sdk` (36%) and
-`idp_cli` (27%) were the only genuinely low ones. An unmeasured tree is not a tree at 0%
+`feature-platform/main-stack-extensions` was at 95%. An unmeasured tree is not a tree at 0%
 — it is a tree nobody can make a decision about, and this repository had six of them.
 
 Each tree is a separate pytest invocation, because several packages ship their own
@@ -187,7 +186,8 @@ class Tree(NamedTuple):
 #: Measured 2026-09-23, before this registry existed — which is the point of it. Nobody
 #: knew `scripts/` was already at 81% across 33,000 statements, nor that
 #: `feature-platform/main-stack-extensions` was at 96%; and the two genuinely low trees
-#: (`idp_sdk` 36%, `idp_cli` 27%) were not visible as the outliers they are. An
+#: figures recorded for `idp_sdk` and `idp_cli` were stale by tens of points, which
+#: nothing could have noticed while no CI run measured either tree. An
 #: unmeasured tree is not a tree at 0%, it is a tree nobody can make a decision about.
 TREES: tuple[Tree, ...] = (
     Tree("idp_common", "lib/idp_common_pkg", "idp_common", ("-m", "not integration")),
