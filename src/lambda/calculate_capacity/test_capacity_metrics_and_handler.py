@@ -853,16 +853,25 @@ def test_step_times_are_rescaled_to_add_up_to_the_measured_document_time(trackin
 
 
 @pytest.mark.unit
-def test_documents_with_workflow_timestamps_but_no_step_metering_are_refused(tracking):
-    """A measured document time is not enough on its own, despite what it says.
+@pytest.mark.parametrize(
+    ("metering", "label"),
+    [
+        ({}, "an empty metering map"),
+        ({"Extraction/bedrock/nova": {"requests": 3}}, "token counts but no durations"),
+    ],
+)
+def test_a_measured_document_time_is_enough_on_its_own(tracking, metering, label):
+    """Either source of timing is sufficient, which is what the advice promises.
 
-    The error text offers two alternatives — `/lambda/duration` gb_seconds *or*
-    `WorkflowStartTime`/`CompletionTime` timestamps — but the zero-total check runs
-    against the per-step sum only, before the timestamp total is consulted. A
-    document with usable timestamps and an empty metering map therefore fails the
-    whole report with advice that does not apply, and capacity planning is
-    unavailable until some document records step durations. Pinned as the current
-    behaviour so a change to it is deliberate.
+    `/lambda/duration` gb_seconds *or* `WorkflowStartTime`/`CompletionTime`
+    timestamps: a document carrying only the second is a complete answer for the
+    total, so the zero-total check is made after the timestamp total is computed
+    rather than against the per-step sum before it. Both metering shapes that reach
+    this path are covered — genuinely empty, and carrying keys that are not
+    durations — because the per-step sum is zero either way.
+
+    The per-step breakdown stays at zero and is not back-filled from the total: no
+    estimate is substituted for a measurement that was never taken.
     """
     now = datetime.utcnow()
     timed_document(
@@ -870,8 +879,25 @@ def test_documents_with_workflow_timestamps_but_no_step_metering_are_refused(tra
         "doc-1",
         started=(now - timedelta(seconds=120)).strftime("%Y-%m-%dT%H:%M:%S"),
         completed=now.strftime("%Y-%m-%dT%H:%M:%S"),
-        metering={"Extraction/bedrock/nova": {"requests": 3}},
+        metering=metering,
     )
+    result = index.get_real_latency_metrics("p")
+
+    assert result["total_processing_time"] == pytest.approx(120.0)
+    assert result["data_source"] == "document_timestamps"
+    assert result["processing_time_percentiles"]["p50"] == pytest.approx(120.0)
+    assert set(result["base_times"].values()) == {0}
+
+
+@pytest.mark.unit
+def test_a_document_with_neither_a_duration_nor_a_timestamp_pair_is_refused(tracking):
+    """With both sources missing there is nothing to plan from, and the report fails.
+
+    This is the check the per-step-sum one above it used to make unreachable: it is
+    the only zero-total raise now, and it is the one that runs after both sources
+    have been consulted, so it can name both alternatives truthfully.
+    """
+    put_metered(tracking, "doc-1", {"Extraction/bedrock/nova": {"requests": 3}})
     with pytest.raises(ValueError, match="No processing time data found"):
         index.get_real_latency_metrics("p")
 
@@ -1291,18 +1317,89 @@ def test_disabling_granular_assessment_excludes_its_recorded_requests(tracking):
 
 
 @pytest.mark.unit
-def test_turning_off_granular_assessment_on_an_all_granular_history_fails_the_report(
-    tracking,
+def test_turning_off_granular_assessment_costs_its_rows_not_the_whole_report(
+    tracking, capsys
 ):
     """A history recorded entirely under granular keys leaves nothing to count.
 
-    The step then has demand but no request data, which is an unconditional failure
-    of the whole report — not a skipped row — with a message telling the operator to
-    process more documents. Pinned because the trigger is a configuration change
-    rather than anything about the documents.
+    Assessment then has demand and no countable request data — but because the
+    configuration excluded every entry it had rather than because none was recorded,
+    which is a distinction the operator acts on differently. The step's two rows are
+    dropped and every other step is still reported, rather than one configuration
+    change making the whole report unavailable. No request figure is invented for the
+    dropped step.
+
+    The absent rows do not say which guard produced them: Assessment here has real
+    demand, so the shared no-demand-and-no-metering skip is not the one that could
+    have fired, and the printed line is what identifies the branch — it is also the
+    only place the cause is stated, so its wording is asserted rather than described.
     """
-    put_metered(tracking, "doc-1", bedrock("GranularAssessment", 8))
+    metering = {}
+    metering.update(bedrock("GranularAssessment", 8))
+    metering.update(bedrock("Extraction", 3))
+    put_metered(tracking, "doc-1", metering)
+    hourly = hours(
+        **{
+            "9": {
+                "docsPerHour": 60,
+                "assessmentTokensPerHour": 60000,
+                "extractionTokensPerHour": 60000,
+            }
+        }
+    )
+    requirements = by_type(
+        build(
+            hourly,
+            config=model_config(assessment_model=MODEL, extraction_model=MODEL),
+            granular=False,
+        )
+    )
+
+    assert ("Assessment", "TPM") not in requirements
+    assert ("Assessment", "RPM") not in requirements
+    # 3 req/doc x 60 docs / 60 x 1.1 = 3.3 -> 3: the rest of the report survives.
+    assert requirements[("Extraction", "RPM")]["requiredQuota"] == "3"
+    printed = capsys.readouterr().out
+    assert "granular assessment is disabled" in printed
+    assert "no demand and no metering data" not in printed
+
+
+@pytest.mark.unit
+def test_a_granular_entry_that_recorded_nothing_does_not_excuse_the_missing_data(
+    tracking,
+):
+    """The skip above rests on a measurement having been excluded, not on a key.
+
+    A `GranularAssessment` entry carrying zero requests would not have contributed
+    to the average even with the feature on, so nothing was lost to the
+    configuration and the step is in the ordinary "demand but no measurement" state,
+    which still fails loudly. Without this, the skip would widen to any history that
+    merely mentions a granular key.
+    """
+    put_metered(tracking, "doc-1", bedrock("GranularAssessment", 0))
     hourly = hours(**{"9": {"docsPerHour": 60, "assessmentTokensPerHour": 60000}})
+    with pytest.raises(ValueError, match="No request count data found for Assessment"):
+        build(hourly, config=model_config(assessment_model=MODEL), granular=False)
+
+
+@pytest.mark.unit
+def test_a_history_that_did_yield_a_request_average_is_not_covered_by_the_skip(
+    tracking,
+):
+    """The skip also requires that *nothing* countable was found for the step.
+
+    Here the regular assessment entry gives a per-document average, so the step is
+    not in the all-granular state the skip is for; the request rate reaches zero
+    instead because the schedule asks for assessment tokens in an hour that
+    processes no documents. That contradictory schedule raises today and still does
+    — the point being pinned is the boundary of the new skip, which would otherwise
+    swallow any history that had a granular entry excluded from it.
+    """
+    metering = {}
+    metering.update(bedrock("Assessment", 2))
+    metering.update(bedrock("GranularAssessment", 8))
+    put_metered(tracking, "doc-1", metering)
+    hourly = hours(**{"9": {"docsPerHour": 0, "assessmentTokensPerHour": 60000}})
     with pytest.raises(ValueError, match="No request count data found for Assessment"):
         build(hourly, config=model_config(assessment_model=MODEL), granular=False)
 
@@ -2227,21 +2324,65 @@ def test_an_invalid_request_is_described_specifically(wired, mutation, expected)
 
 
 @pytest.mark.unit
-def test_a_zero_sla_is_reported_as_missing_rather_than_as_out_of_range(wired):
-    """`get("maxAllowedLatency") or get("max_allowed_latency")` treats 0 as absent.
+def test_a_zero_sla_is_refused_as_out_of_range_rather_than_reported_as_missing(wired):
+    """Zero is a value an operator can type, and it is the wrong value, not a gap.
 
-    The "must be positive" check below it is therefore unreachable for the one value
-    an operator can actually type to reach it, and the message sends them looking
-    for a field they did fill in. Pinned as current behaviour.
+    The key is passed **explicitly** rather than omitted, which is the whole point:
+    omitting it exercises the missing-field path, which always worked. Zero is
+    refused rather than accepted — a latency budget of zero seconds cannot be met by
+    any plan, so every report built on one would say the same thing — and the message
+    now names the field's range instead of sending the operator to look for a field
+    they did fill in.
     """
     payload = json.loads(json.dumps(HAPPY_INPUT))
     payload["maxAllowedLatency"] = 0
     result = index.lambda_handler(payload, None)
     assert result["success"] is False
+    assert "maxAllowedLatency must be positive" in result["errorMessage"]
+    assert "is required" not in result["errorMessage"]
+
+
+@pytest.mark.unit
+def test_an_explicit_zero_is_not_replaced_by_the_other_spelling_of_the_field(wired):
+    """A request carrying both spellings, one of them zero, is contradictory.
+
+    Which spelling supplies the value is decided on presence, so the canonical
+    `maxAllowedLatency` wins and its zero is refused, rather than the request being
+    answered against the other spelling's number and a report returned for an SLA
+    nobody asked for. This is the one input whose outcome the presence rule changes
+    from success to refusal.
+    """
+    payload = json.loads(json.dumps(HAPPY_INPUT))
+    payload["maxAllowedLatency"] = 0
+    payload["max_allowed_latency"] = 600
+    result = index.lambda_handler(payload, None)
+    assert result["success"] is False
+    assert "maxAllowedLatency must be positive" in result["errorMessage"]
+
+
+@pytest.mark.unit
+def test_an_sla_left_blank_still_reads_as_a_missing_field(wired):
+    """A cleared field is a missing value, not a malformed number.
+
+    `""` is the shape a hand-built request or a non-console client sends, and the
+    numeric per-document fields in the same request treat it the same way. The
+    console's own cleared field arrives as `null` instead — it builds the payload
+    with `parseFloat`, and `JSON.stringify(NaN)` is `null` — and that shape is not
+    parametrised in here: it reaches the same message through the `is None` check
+    below the selection, so no mutation of the selection distinguishes it and a case
+    for it could not fail. `dict.get` answers `None` for a `null` and for an absent
+    key alike, so the selection step it does exercise is the one the snake-case test
+    above covers — a `None` under one spelling must not stop the other spelling from
+    supplying the value.
+    """
+    payload = json.loads(json.dumps(HAPPY_INPUT))
+    payload["maxAllowedLatency"] = ""
+    result = index.lambda_handler(payload, None)
+    assert result["success"] is False
     assert (
         "maxAllowedLatency or max_allowed_latency is required" in result["errorMessage"]
     )
-    assert "must be positive" not in result["errorMessage"]
+    assert "must be a number" not in result["errorMessage"]
 
 
 @pytest.mark.unit
