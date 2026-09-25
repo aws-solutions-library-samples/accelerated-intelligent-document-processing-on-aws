@@ -596,9 +596,9 @@
         "Makefile::ARN_PARTITION_EXEMPT"
       ],
       "predicateConsidered": {
-        "not_a_nested_stack_of_parent": "True of all nine paths and irrelevant to the premise. None is a template the parent stack instantiates \u2014 they are a CI configuration, two deployment helpers, two of their tests, a credential-vendor template and three configuration presets \u2014 and nothing claims otherwise. What makes a line unredactable is that the id on it is read as a value, which is a fact about the surrounding code rather than about stack topology.",
+        "not_a_nested_stack_of_parent": "True of all nine paths and irrelevant to the premise. None is a template the parent stack instantiates — they are a CI configuration, two deployment helpers, two of their tests, a credential-vendor template and three configuration presets — and nothing claims otherwise. What makes a line unredactable is that the id on it is read as a value, which is a fact about the surrounding code rather than about stack topology.",
         "built_separately_from_main_stack": "True for the SDLC paths and the presets, and irrelevant for the same reason: whether one publish run builds a path says nothing about whether an account id inside it is consulted at run time. The count pin bounds the entry instead.",
-        "file_absent_or_untracked": "False for all nine \u2014 every path is tracked and present. The gate re-measures that on every run, because an entry whose line has moved or been redacted shields nothing and is failed as stale."
+        "file_absent_or_untracked": "False for all nine — every path is tracked and present. The gate re-measures that on every run, because an entry whose line has moved or been redacted shields nothing and is failed as stale."
       },
       "memberKind": "deployable path",
       "ratchetEvidence": "scripts/check_account_ids.py",
@@ -898,7 +898,10 @@
       "ratchet": "none",
       "reason": "A capability grant, not a gate exemption. Registered so the vocabulary match is accounted for rather than silently dropped.",
       "ratchetGap": "Out of scope for this registry by construction. If the registry ever widens to privilege grants this belongs there.",
-      "memberKind": "tool name"
+      "memberKind": "tool name",
+      "crossReferences": [
+        "scripts/sdlc/ai_mr_review.py::ALLOWED_TOOLS"
+      ]
     },
     "scripts/sdlc/integration_test_deployment.py::excludes": {
       "kind": "enforced-universe",
@@ -1162,12 +1165,12 @@
     },
     "scripts/srt/ci_paths.py::NAME_HEURISTIC_EXEMPT": {
       "kind": "exemption",
-      "turnsOff": "the SRT security gate for Bandit B105/B106 only, and only where is_test_only_path() answers true for the finding's path \u2014 test-shaped AND outside every directory a deployment artifact is built from; both checks still gate in shipped code",
+      "turnsOff": "the SRT security gate for Bandit B105/B106 only, and only where is_test_only_path() answers true for the finding's path — test-shaped AND outside every directory a deployment artifact is built from; both checks still gate in shipped code",
       "premise": [
         "JUDGEMENT"
       ],
       "ratchet": "universe-closure",
-      "reason": "What is ratcheted is the classification of every tracked Python file as test code or shipped code, not a count of demoted findings: the members are derived by is_test_only_path() rather than written down, so there is no entry that could go stale. The closure assertion is stated against the CodeUri/ContentUri directories parsed from the templates rather than against the classifier, so it is not satisfied by construction \u2014 it fails on a classifier that reads path shape alone, which demoted 99 files that `sam build` copies into a deployment artifact. B105/B106 match an identifier's NAME against a password wordlist, so `pass_count` and `next_token` arrive as HIGH; whether a constant in a test fixture is a real credential is the judgement, and it is not computable. No Bandit RULE can express this scope: SRT's promotion of the two checks is compiled into its binary, and Bandit's config keys are one flat namespace where `skips` applies to the whole run and `exclude_dirs` drops the file from every check. Its `baseline` key does distinguish paths, but it is a frozen list of findings matched on the literal value, so it cannot cover a finding that does not exist yet.",
+      "reason": "What is ratcheted is the classification of every tracked Python file as test code or shipped code, not a count of demoted findings: the members are derived by is_test_only_path() rather than written down, so there is no entry that could go stale. The closure assertion is stated against the CodeUri/ContentUri directories parsed from the templates rather than against the classifier, so it is not satisfied by construction — it fails on a classifier that reads path shape alone, which demoted 99 files that `sam build` copies into a deployment artifact. B105/B106 match an identifier's NAME against a password wordlist, so `pass_count` and `next_token` arrive as HIGH; whether a constant in a test fixture is a real credential is the judgement, and it is not computable. No Bandit RULE can express this scope: SRT's promotion of the two checks is compiled into its binary, and Bandit's config keys are one flat namespace where `skips` applies to the whole run and `exclude_dirs` drops the file from every check. Its `baseline` key does distinguish paths, but it is a frozen list of findings matched on the literal value, so it cannot cover a finding that does not exist yet.",
       "memberKind": "check id + path scope",
       "ratchetEvidence": "scripts/srt/tests/test_name_heuristic_scope.py",
       "crossReferences": [
@@ -1323,7 +1326,7 @@
     },
     "scripts/tests/test_api_policy_counts_in_docs.py::ALL_DOCS": {
       "kind": "enforced-universe",
-      "turnsOff": "nothing. It is SCANNED_DOCS plus the partially-excluded documents, and it exists so the per-document comparison runs over an excluded page too \u2014 for the measures its exclusion does not name. A member adds coverage. Discovery matches it on the prose of the comment above it, which explains that an excluded document is still compared.",
+      "turnsOff": "nothing. It is SCANNED_DOCS plus the partially-excluded documents, and it exists so the per-document comparison runs over an excluded page too — for the measures its exclusion does not name. A member adds coverage. Discovery matches it on the prose of the comment above it, which explains that an excluded document is still compared.",
       "memberKind": "repo-relative path to a Markdown document",
       "premise": [
         "JUDGEMENT"
@@ -1491,7 +1494,7 @@
         "JUDGEMENT"
       ],
       "ratchet": "universe-closure",
-      "reason": "Whether a target CAN be a CI gate is a property of what it does \u2014 mutates the tree, prompts a human, needs AWS credentials, needs a deployed stack, reports rather than asserts \u2014 and none of that is readable from the Makefile. So one sentence per target, naming that target's own obstacle.",
+      "reason": "Whether a target CAN be a CI gate is a property of what it does — mutates the tree, prompts a human, needs AWS credentials, needs a deployed stack, reports rather than asserts — and none of that is readable from the Makefile. So one sentence per target, naming that target's own obstacle.",
       "ratchetGap": "The reasons themselves are unchecked prose. What is mechanical: no target IN THE UNIVERSE may be absent from both this list and CI; a listed target CI has since started running fails; a listed target that no longer exists fails. Read 'in the universe' precisely -- it is every target in the 5 sections GATE_SECTION_PREFIXES names, plus any check-shaped-by-name target in any other section except Stack tests. It is NOT every Makefile target, and the residual is stated on the GATE_SECTION_PREFIXES entry.",
       "memberKind": "make target",
       "crossReferences": [
@@ -1506,7 +1509,7 @@
         "JUDGEMENT"
       ],
       "ratchet": "staleness",
-      "reason": "Two of `make lint`'s prerequisites auto-fix, so `lint-cicd` cannot invoke them \u2014 it runs the check-only command instead, and that command's spelling is not derivable from the target's name. The substituted command must still be present in the recipe, so this relaxes how the gate is spelled and not whether it runs.",
+      "reason": "Two of `make lint`'s prerequisites auto-fix, so `lint-cicd` cannot invoke them — it runs the check-only command instead, and that command's spelling is not derivable from the target's name. The substituted command must still be present in the recipe, so this relaxes how the gate is spelled and not whether it runs.",
       "memberKind": "make target",
       "ratchetEvidence": "scripts/tests/test_ci_gate_parity.py"
     },
@@ -2597,6 +2600,35 @@
       "reason": "tests, test, examples, build, dist, docs. Mirrors IGNORED_DIR_NAMES in test_package_discovery.py. Every one of those trees is still type-checked through pyrightconfig's own `include`; what this excludes is only the question of which directory constitutes a distribution's importable source.",
       "ratchetGap": "No check that the two mirrored lists stay in step, so this one could narrow while the other did not.",
       "memberKind": "top-level directory name inside a distribution"
+    },
+    "scripts/sdlc/ai_mr_review.py::ALLOWED_TOOLS": {
+      "kind": "capability",
+      "turnsOff": "nothing in any gate; it is the sandbox the advisory MR-review subprocess runs inside, granting Claude Code three reading tools",
+      "premise": [
+        "JUDGEMENT"
+      ],
+      "ratchet": "universe-closure",
+      "ratchetEvidence": "scripts/tests/test_ai_mr_review.py",
+      "reason": "A capability grant, not a gate exemption: it is what the reviewing subprocess is permitted to do, and it withholds rather than excuses. Registered so the vocabulary match on the name is accounted for rather than silently dropped. Same shape as scripts/sdlc/failure_agent.py::_ALLOWED_TOOLS.",
+      "memberKind": "tool name",
+      "crossReferences": [
+        "scripts/sdlc/ai_mr_review.py::DISALLOWED_TOOLS",
+        "scripts/sdlc/failure_agent.py::_ALLOWED_TOOLS"
+      ]
+    },
+    "scripts/sdlc/ai_mr_review.py::DISALLOWED_TOOLS": {
+      "kind": "capability",
+      "turnsOff": "nothing; it is the deny half of the same sandbox, and every entry REMOVES a capability",
+      "premise": [
+        "JUDGEMENT"
+      ],
+      "ratchet": "count-pinned",
+      "ratchetEvidence": "scripts/tests/test_ai_mr_review.py",
+      "reason": "Discovered through its attached comment rather than its name, which the polarity guard correctly refuses to read as an allowlist. Every entry REMOVES a capability, so a missing entry is the risk and an extra entry is free -- the opposite direction from an exemption. The ratchet is a count rather than universe closure because a deny list has no universe to close over: what an audited count buys is that changing the list is a deliberate edit, which is the moment to ask whether it still denies every tool that can write, execute or reach the network.",
+      "memberKind": "tool name",
+      "crossReferences": [
+        "scripts/sdlc/ai_mr_review.py::ALLOWED_TOOLS"
+      ]
     }
   }
 }
