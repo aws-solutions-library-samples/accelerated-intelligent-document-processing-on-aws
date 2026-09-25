@@ -1748,6 +1748,22 @@ class TestRequireAllTreesIsDerivedFromTheRegistry:
 #: and `types` can each narrow it and enumerating the ways is the denylist mistake again.
 GITHUB_WORKFLOW_TRIGGER = {"pull_request": {"branches": ["**"]}}
 
+#: Structural keys of the GitHub job that holds the gates, pinned.
+#:
+#: Each decides whether the job runs at all and none is about a step: `needs` on a job that
+#: is itself skipped, an empty `strategy` matrix, and a `runs-on` label no runner has were
+#: each measured to leave every other check here green while the job never produced a red
+#: mark. `timeout-minutes` is included because a job killed by its own timeout is a
+#: different outcome from a gate finding something.
+GITHUB_GATE_JOB_STRUCTURE = {
+    "runs-on": "ubuntu-latest",
+    "needs": None,
+    "strategy": None,
+    "if": None,
+    "continue-on-error": None,
+    "timeout-minutes": 120,
+}
+
 #: `rules:` of the GitLab job that holds them, pinned, for that reason and one more.
 #:
 #: A `rules:` list cannot be forbidden the way a step's `if:` can, and a never-true
@@ -2015,6 +2031,62 @@ class TestTheCIStepsAreLiveAndNotMerelyPresent:
             f"fails — so this gate would report nothing while both CIs stayed green."
         )
 
+    def test_the_ratchet_target_exits_exactly_as_its_command_does(self):
+        """RUN the target and its command with **no override**, and require equal statuses.
+
+        The forced-failure test above supplies an argument CI does not, and anything
+        observable can be branched on: appending ``|| [ -z "$(CHECK_COVERAGE_DEBT_ARGS)" ]``
+        to this recipe was measured to fail for the probe and **succeed for CI**, with every
+        other check here green. This assertion is taken through the same command line CI
+        uses, so there is nothing about the probe left to branch on, and it subsumes every
+        swallow: `-`/`@-` prefixes, `|| true`, `.IGNORE:`, `MAKEFLAGS += -i`,
+        `.SHELLFLAGS`, a trailing pipe.
+
+        Only this target, and deliberately: `coverage-all-cicd`'s command measures eight
+        trees and takes minutes, so running it here is not affordable. The mechanisms that
+        are **global** to the makefile (`.IGNORE`, `MAKEFLAGS`, `.SHELLFLAGS`) are caught
+        for both targets by this one test, since they are properties of the file rather
+        than of a recipe. What is left uncovered for the producer is a swallow written into
+        **its own** recipe line while the ratchet's stays clean — that one is caught by the
+        forced-failure test above, which is why both exist.
+        """
+        command = ["python3", "scripts/check_coverage_debt.py", "--require-all-trees"]
+        direct = subprocess.run(command, cwd=REPO_ROOT, capture_output=True, text=True)
+        through_make = subprocess.run(
+            ["make", "--no-print-directory", "check-coverage-debt-cicd"],
+            cwd=REPO_ROOT,
+            capture_output=True,
+            text=True,
+        )
+        assert through_make.returncode == direct.returncode, (
+            f"`make check-coverage-debt-cicd` exited {through_make.returncode} while "
+            f"`{' '.join(command)}` exited {direct.returncode}. The target must carry its "
+            f"command's status or this gate blocks nothing.\n"
+            f"make said:\n{(through_make.stdout + through_make.stderr)[-500:]}"
+        )
+
+    def test_the_gate_jobs_own_structure_is_what_was_recorded(self):
+        """The keys that decide whether the job runs at all, none of them about a step.
+
+        Three escapes sit here and none is exotic: `needs: [preflight]` where the preflight
+        job carries `if: false` skips this job entirely, and a job's own `if` is not its
+        dependencies'; an empty `strategy: matrix` produces zero instances; and a `runs-on:`
+        label no runner has means the job never starts, so its check shows pending and never
+        red. Enumerating those would be the denylist mistake a third time, so the structure
+        is pinned and any edit is a finding somebody reads.
+        """
+        job = self._github_jobs()["developer_tests"]
+        actual = {key: job.get(key) for key in GITHUB_GATE_JOB_STRUCTURE}
+        assert actual == GITHUB_GATE_JOB_STRUCTURE, (
+            "the job holding the coverage gates has structural keys other than what was "
+            "recorded. These decide whether it runs at all — a `needs:` on a job that is "
+            "itself skipped, an empty matrix, or a `runs-on:` label no runner has each "
+            "leave every step present and correct in a job that never produces a red "
+            f"mark.\n  recorded: {GITHUB_GATE_JOB_STRUCTURE}\n  now:      {actual}\n"
+            "If deliberate, confirm the job still runs and goes red on a pull request, "
+            "then update GITHUB_GATE_JOB_STRUCTURE."
+        )
+
     def test_the_forced_failure_really_is_the_command_failing(self):
         """The control for the test above, which would otherwise pass on a target that
         always fails, or on a `make` that could not find the target at all."""
@@ -2028,6 +2100,26 @@ class TestTheCIStepsAreLiveAndNotMerelyPresent:
             assert out.returncode == 0, (
                 f"`make -n {target}` fails, so the test above would pass for the wrong "
                 f"reason: {out.stderr[-300:]}"
+            )
+            # And the override has to REACH the command. Dropping
+            # `$(CHECK_COVERAGE_DEBT_ARGS)` from the recipe leaves the forced-failure test
+            # passing on any machine holding a report with findings, because the target
+            # then exits non-zero for its own reasons -- a pass for the wrong reason, which
+            # was measured.
+            override = self.FORCED_FAILURE[target]
+            name, _, value = override.partition("=")
+            expanded = subprocess.run(
+                ["make", "-n", "--no-print-directory", target, f"{name}={value}"],
+                cwd=REPO_ROOT,
+                capture_output=True,
+                text=True,
+            )
+            assert expanded.returncode == 0, expanded.stderr[-300:]
+            assert "a_tree_that_does_not_exist" in expanded.stdout, (
+                f"`make {target} {override}` does not put that argument on the command "
+                f"line, so the forced-failure test is not forcing anything and would pass "
+                f"off whatever the target happened to do. Expanded: "
+                f"{expanded.stdout.strip()[:400]!r}"
             )
 
 
@@ -2191,3 +2283,46 @@ class TestTheBaselineAccountsForEveryTrackedSourceFile:
             )
             + "\nRemove them from UNRECORDED_TRACKED_FILES."
         )
+
+
+#: `check_coverage_debt.NOT_MEASURED`'s members, pinned.
+#:
+#: Its own reason says the list is "deliberately short, and meant to stay short", and until
+#: now nothing evaluated that. It became load-bearing for a second gate when
+#: :data:`UNRECORDED_TRACKED_FILES` started deriving its universe as tracked minus recorded
+#: minus `NOT_MEASURED`: from that point a one-line entry here makes a brand-new tracked
+#: source file invisible to the closure check as well as to the runtime one. Measured: a new
+#: file plus a new entry passed both suites with 1328 tests green.
+#:
+#: Non-vacuity could not see that, because the pre-existing member satisfies it forever
+#: whatever is added beside it. The set is pinned instead, which is the registry's own idiom.
+NOT_MEASURED_MEMBERS = {"idp_common/agents/analytics/assets"}
+
+
+@pytest.mark.unit
+def test_the_not_measured_list_has_not_grown():
+    """A new prefix here is the documented way past the closure check, so it is a finding.
+
+    Not a prohibition — the list exists for a real case and may legitimately gain a member.
+    What it must not do is gain one silently, because a prefix added here takes effect on two
+    gates at once the moment it is written.
+    """
+    assert NOT_MEASURED_MEMBERS, "the pin is empty, so this check would pass vacuously"
+    actual = set(ccd.NOT_MEASURED)
+    added = sorted(actual - NOT_MEASURED_MEMBERS)
+    removed = sorted(NOT_MEASURED_MEMBERS - actual)
+    assert not added, (
+        "these prefixes were added to NOT_MEASURED: "
+        + ", ".join(added)
+        + ". That exempts everything under them from BOTH the coverage ratchet's "
+        "universe-closure check and the offline closure in this file, so a brand-new "
+        "untested module under one of them is ratcheted by nothing. The honest way to have "
+        "a module at 0% is to RECORD it at 0%. If the exemption is right, say why in "
+        "scripts/tests/gate_exemptions.json and add it to NOT_MEASURED_MEMBERS."
+    )
+    assert not removed, (
+        "these prefixes are gone from NOT_MEASURED: "
+        + ", ".join(removed)
+        + ". Good, if their files are now recorded — remove them from "
+        "NOT_MEASURED_MEMBERS so the pin cannot pre-approve re-adding them."
+    )
