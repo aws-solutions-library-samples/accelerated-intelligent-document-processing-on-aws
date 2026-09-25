@@ -52,6 +52,7 @@ from datetime import datetime, timezone
 import pytest
 from botocore.stub import Stubber
 
+from idp_sdk._core.test_studio_processor import configuration_differences
 from idp_sdk.exceptions import IDPProcessingError, IDPResourceNotFoundError
 
 pytestmark = pytest.mark.unit
@@ -723,7 +724,7 @@ class TestCompareTestRuns:
 
             result = proc.compare_test_runs(["run-1", "run-2"])
 
-        assert set(result) == {"metrics"}
+        assert set(result) == {"metrics", "configs"}
         assert set(result["metrics"]) == {"run-1", "run-2"}
         assert result["metrics"]["run-1"] == {
             "testRunId": "run-1",
@@ -811,6 +812,226 @@ class TestCompareTestRuns:
 
             with pytest.raises(IDPProcessingError, match="No test runs could be"):
                 proc.compare_test_runs(["run-1", "run-2"])
+
+    def test_the_configurations_the_runs_captured_are_compared(self, aws_credentials):
+        """`getTestRun` already returns each run's captured configuration.
+
+        So the comparison needs no extra call, and this is the wiring: the `config`
+        key on each run's payload reaches `configuration_differences`, whose result
+        is what the CLI renders. Before this the CLI assigned `configs = []` with a
+        `TODO` and printed "No configuration differences to display" for every
+        input, including two runs on different models.
+        """
+        proc = _make_processor()
+        with _stubs(proc) as (cfn, lam):
+            _queue_resolver_lookup(cfn)
+            for run_id, model in (("run-1", "nova-lite"), ("run-2", "nova-pro")):
+                lam.add_response(
+                    "invoke",
+                    _payload(
+                        _run(
+                            run_id,
+                            config={"Config": {"extraction": {"model": model}}},
+                        )
+                    ),
+                    _expect_invoke(RESOLVER_ARN, "getTestRun", {"testRunId": run_id}),
+                )
+
+            result = proc.compare_test_runs(["run-1", "run-2"])
+
+        assert result["configs"] == [
+            {
+                "setting": "extraction.model",
+                "values": {"run-1": "nova-lite", "run-2": "nova-pro"},
+            }
+        ]
+
+    def test_a_run_that_captured_no_configuration_leaves_configs_unanswered(
+        self, aws_credentials
+    ):
+        """`None`, not `[]`: with one configuration there is nothing to compare.
+
+        A run whose evaluation aggregate has not been written yet returns no
+        `config` key. Treating that as an empty configuration would report every
+        setting the other run has as a difference, and reporting `[]` would tell
+        the user the configurations matched when they were never read.
+        """
+        proc = _make_processor()
+        with _stubs(proc) as (cfn, lam):
+            _queue_resolver_lookup(cfn)
+            lam.add_response(
+                "invoke",
+                _payload(
+                    _run("run-1", config={"Config": {"extraction": {"model": "x"}}})
+                ),
+                _expect_invoke(RESOLVER_ARN, "getTestRun", {"testRunId": "run-1"}),
+            )
+            lam.add_response(
+                "invoke",
+                _payload(_run("run-2")),
+                _expect_invoke(RESOLVER_ARN, "getTestRun", {"testRunId": "run-2"}),
+            )
+
+            result = proc.compare_test_runs(["run-1", "run-2"])
+
+        assert result["configs"] is None
+
+    def test_identical_captured_configurations_compare_to_an_empty_list(
+        self, aws_credentials
+    ):
+        """`[]` is the answer that means "compared, and they match"."""
+        proc = _make_processor()
+        body = {"Config": {"extraction": {"model": "nova-lite"}}}
+        with _stubs(proc) as (cfn, lam):
+            _queue_resolver_lookup(cfn)
+            for run_id in ("run-1", "run-2"):
+                lam.add_response(
+                    "invoke",
+                    _payload(_run(run_id, config=body)),
+                    _expect_invoke(RESOLVER_ARN, "getTestRun", {"testRunId": run_id}),
+                )
+
+            result = proc.compare_test_runs(["run-1", "run-2"])
+
+        assert result["configs"] == []
+
+
+# ---------------------------------------------------------------------------
+# configuration_differences
+# ---------------------------------------------------------------------------
+
+
+class TestConfigurationDifferences:
+    """The pure diff behind `test-compare`'s configuration table.
+
+    Pure, so every case here is measured rather than argued: no AWS, no stubs.
+    """
+
+    @staticmethod
+    def _entry(run_id, body):
+        return {"testRunId": run_id, "config": {"Config": body}}
+
+    def test_fewer_than_two_configurations_is_unanswered_rather_than_empty(self):
+        """`None` and `[]` are different answers a caller must be able to tell apart."""
+        assert configuration_differences([]) is None
+        assert configuration_differences([self._entry("run-1", {"a": 1})]) is None
+
+    def test_identical_configurations_produce_no_differences(self):
+        body = {"extraction": {"model": "nova-lite", "temperature": 0}}
+        assert (
+            configuration_differences(
+                [self._entry("run-1", body), self._entry("run-2", dict(body))]
+            )
+            == []
+        )
+
+    def test_a_differing_scalar_is_reported_with_every_runs_value(self):
+        assert configuration_differences(
+            [
+                self._entry("run-1", {"extraction": {"model": "nova-lite"}}),
+                self._entry("run-2", {"extraction": {"model": "nova-pro"}}),
+            ]
+        ) == [
+            {
+                "setting": "extraction.model",
+                "values": {"run-1": "nova-lite", "run-2": "nova-pro"},
+            }
+        ]
+
+    def test_a_setting_only_one_run_has_reads_missing_for_the_other(self):
+        """Present-versus-absent is a difference, and it is labelled as absence.
+
+        A blank cell would read as "the same as the other run", which is the one
+        thing it is not.
+        """
+        assert configuration_differences(
+            [
+                self._entry("run-1", {"assessment": {"enabled": True}}),
+                self._entry("run-2", {}),
+            ]
+        ) == [
+            {
+                "setting": "assessment.enabled",
+                "values": {"run-1": "True", "run-2": "<missing>"},
+            }
+        ]
+
+    def test_list_elements_are_compared_per_index(self):
+        """One difference at the index that moved, not one opaque "the list changed"."""
+        differences = configuration_differences(
+            [
+                self._entry("run-1", {"steps": ["ocr", "extract"]}),
+                self._entry("run-2", {"steps": ["ocr", "assess"]}),
+            ]
+        )
+
+        assert differences == [
+            {"setting": "steps.1", "values": {"run-1": "extract", "run-2": "assess"}}
+        ]
+
+    def test_the_metadata_and_class_keys_are_not_compared(self):
+        """Save timestamps move on every save and class schemas would fill the table.
+
+        Each key is asserted individually, because the reason for omitting it is a
+        property of that key rather than of the group — and a key that is in the set
+        for no reason is a difference the user will never be shown.
+        """
+        for key in (
+            "UpdatedAt",
+            "Description",
+            "CreatedAt",
+            "IsActive",
+            "Configuration",
+            "version_name",
+            "classes",
+        ):
+            assert (
+                configuration_differences(
+                    [
+                        self._entry("run-1", {key: "a"}),
+                        self._entry("run-2", {key: "b"}),
+                    ]
+                )
+                == []
+            ), key
+
+    def test_a_real_difference_beside_an_ignored_key_is_still_reported(self):
+        """The skip is per key, not a short circuit over the whole configuration."""
+        assert configuration_differences(
+            [
+                self._entry("run-1", {"CreatedAt": "a", "extraction": {"model": "x"}}),
+                self._entry("run-2", {"CreatedAt": "b", "extraction": {"model": "y"}}),
+            ]
+        ) == [{"setting": "extraction.model", "values": {"run-1": "x", "run-2": "y"}}]
+
+    def test_differences_are_ordered_by_setting_path(self):
+        """A table read top to bottom needs a stable order across invocations."""
+        differences = configuration_differences(
+            [
+                self._entry("run-1", {"z": 1, "a": 1, "m": 1}),
+                self._entry("run-2", {"z": 2, "a": 2, "m": 2}),
+            ]
+        )
+
+        assert [d["setting"] for d in differences] == ["a", "m", "z"]
+
+    def test_a_run_whose_captured_object_is_missing_its_body_contributes_nothing(self):
+        """The captured object wraps the configuration under `Config`.
+
+        An entry without that key is read as an empty configuration rather than
+        raising, so one malformed record cannot take the whole comparison down.
+        """
+        assert configuration_differences(
+            [
+                {"testRunId": "run-1", "config": {}},
+                self._entry("run-2", {"extraction": {"model": "x"}}),
+            ]
+        ) == [
+            {
+                "setting": "extraction.model",
+                "values": {"run-1": "<missing>", "run-2": "x"},
+            }
+        ]
 
 
 # ---------------------------------------------------------------------------

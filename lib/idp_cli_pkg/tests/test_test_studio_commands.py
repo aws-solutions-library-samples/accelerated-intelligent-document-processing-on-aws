@@ -401,10 +401,10 @@ class TestTestResultWaitAndExport:
         assert "test run r9 not found" in result.output
 
 
-def _comparison(metrics):
+def _comparison(metrics, configs=None):
     from idp_sdk.models.testing import TestComparisonResult
 
-    return TestComparisonResult(metrics=metrics)
+    return TestComparisonResult(metrics=metrics, configs=configs)
 
 
 #: Two runs whose every metric differs from the other's, so a defect that reads the
@@ -585,26 +585,29 @@ class TestTestCompareRendering:
         assert "90.00%" in result.output
         assert "N/A" in result.output
 
-    def test_defect_configuration_differences_can_never_be_shown(self, runner):
-        """
-        DEFECT (pinned as current behaviour, not fixed). The command's help promises
-        "configuration differences between test runs", and there is a whole table
-        builder for them — but `configs` is assigned the literal `[]` with a `TODO`
-        and is never populated from the comparison result, so `if configs and ...`
-        is unreachable and the branch that builds that table is dead code.
+    def test_the_settings_that_differ_are_shown_with_each_runs_value(self, runner):
+        """The table the command's help promises, from the SDK's `configs`.
 
-        The observable consequence is that `test-compare` always prints
-        "No configuration differences to display", including for two runs that
-        differ in model, prompt or confidence settings — which is the single most
-        useful thing to know when two runs score differently. The message reads as
-        "the runs are configured identically", which is a stronger and wrong claim.
-
-        This test therefore asserts the *absence* of the table for input that, were
-        the data wired through, would produce one. It is also why the dead branch is
-        left uncovered rather than reached by a contrived test.
+        `configs` used to be the literal `[]` with a `TODO`, so this whole branch
+        was dead and the command printed "No configuration differences to display"
+        for every input — including two runs that differ in model or prompt, which
+        is the single most useful thing to know when two runs score differently.
         """
         p, client = _patched_client(
-            compare_test_runs=MagicMock(return_value=_comparison(TWO_RUNS))
+            compare_test_runs=MagicMock(
+                return_value=_comparison(
+                    TWO_RUNS,
+                    configs=[
+                        {
+                            "setting": "extraction.model",
+                            "values": {
+                                "run-a": "us.amazon.nova-lite-v1:0",
+                                "run-b": "us.amazon.nova-pro-v1:0",
+                            },
+                        }
+                    ],
+                )
+            )
         )
         with p:
             result = runner.invoke(
@@ -619,8 +622,102 @@ class TestTestCompareRendering:
             )
 
         assert result.exit_code == 0, result.output
-        assert "No configuration differences to display" in result.output
+        assert "Configuration Differences" in result.output
+        assert "extraction.model" in result.output
+        assert "nova-lite-v1:0" in result.output
+        assert "nova-pro-v1:0" in result.output
+
+    def test_identical_configurations_are_reported_as_identical(self, runner):
+        """`[]` means compared and matched, and the message says exactly that."""
+        p, client = _patched_client(
+            compare_test_runs=MagicMock(return_value=_comparison(TWO_RUNS, configs=[]))
+        )
+        with p:
+            result = runner.invoke(
+                cli_module.cli,
+                [
+                    "test-compare",
+                    "--stack-name",
+                    "IDP",
+                    "--test-run-ids",
+                    "run-a,run-b",
+                ],
+            )
+
+        assert result.exit_code == 0, result.output
+        assert "Configurations are identical" in result.output
         assert "Configuration Differences" not in result.output
+
+    def test_when_no_configuration_was_captured_the_command_says_so(self, runner):
+        """`None` means nothing was compared, which is not "they match".
+
+        This is the distinction the old message erased: it printed "No
+        configuration differences to display" whether the configurations had been
+        compared or never read, and a reader cannot tell those apart. The message
+        for this case must not assert anything about the configurations.
+        """
+        p, client = _patched_client(
+            compare_test_runs=MagicMock(
+                return_value=_comparison(TWO_RUNS, configs=None)
+            )
+        )
+        with p:
+            result = runner.invoke(
+                cli_module.cli,
+                [
+                    "test-compare",
+                    "--stack-name",
+                    "IDP",
+                    "--test-run-ids",
+                    "run-a,run-b",
+                ],
+            )
+
+        assert result.exit_code == 0, result.output
+        assert "Configurations not compared" in result.output
+        assert "identical" not in result.output
+        assert "Configuration Differences" not in result.output
+
+    def test_the_saved_json_carries_the_configuration_differences(
+        self, runner, tmp_path
+    ):
+        """`--output-dir` writes what was displayed, so `configs` must reach the file."""
+        p, client = _patched_client(
+            compare_test_runs=MagicMock(
+                return_value=_comparison(
+                    TWO_RUNS,
+                    configs=[
+                        {
+                            "setting": "extraction.model",
+                            "values": {"run-a": "nova-lite", "run-b": "nova-pro"},
+                        }
+                    ],
+                )
+            )
+        )
+        with p:
+            result = runner.invoke(
+                cli_module.cli,
+                [
+                    "test-compare",
+                    "--stack-name",
+                    "IDP",
+                    "--test-run-ids",
+                    "run-a,run-b",
+                    "--output-dir",
+                    str(tmp_path),
+                ],
+            )
+
+        assert result.exit_code == 0, result.output
+        (written,) = list(tmp_path.glob("comparison-*.json"))
+        payload = json.loads(written.read_text())
+        assert payload["configs"] == [
+            {
+                "setting": "extraction.model",
+                "values": {"run-a": "nova-lite", "run-b": "nova-pro"},
+            }
+        ]
 
     def test_long_run_ids_are_truncated_in_the_table_header(self, runner):
         """Column headers are cut to 20 characters; the CSV uses 30. Both are pinned
@@ -755,9 +852,10 @@ class TestTestCompareExport:
         assert len(json_files) == 1
         payload = json.loads(json_files[0].read_text(encoding="utf-8"))
         assert payload["metrics"] == TWO_RUNS
-        # `configs` is exported as an empty list for the same reason the
-        # configuration-differences table never renders — see the defect test above.
-        assert payload["configs"] == []
+        # `null`, because this comparison carried no captured configurations, which
+        # is a different answer from `[]` ("compared, and identical"). See
+        # `test_when_no_configuration_was_captured_the_command_says_so`.
+        assert payload["configs"] is None
         assert "Comparison JSON saved to" in result.output
         assert "Comparison CSV saved to" in result.output
 

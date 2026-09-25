@@ -6726,8 +6726,13 @@ def test_compare(
         )
 
         metrics = comparison_result.metrics
-        # Note: configs not yet in SDK model, but in raw_data if needed
-        configs = []  # TODO: Add to SDK model if needed
+        # `[]` and `None` are different answers here: `[]` means the captured
+        # configurations were compared and matched, `None` means fewer than two of
+        # the runs recorded one, so nothing was compared. Printing "no configuration
+        # differences" for both is a claim about the configurations that was never
+        # checked, which is exactly the question a user is asking when two runs
+        # score differently.
+        configs = comparison_result.configs
 
         if not metrics:
             console.print("[yellow]⚠ No metrics data available for comparison[/yellow]")
@@ -6834,8 +6839,10 @@ def test_compare(
         console.print(table)
         console.print()
 
-        # Display configuration differences
-        if configs and len(configs) > 0:
+        # Display configuration differences. Three outcomes, kept distinct: some
+        # settings differ, they were compared and matched, or too few runs captured
+        # a configuration for there to be anything to compare.
+        if configs:
             console.print("[bold green]Configuration Differences[/bold green]\n")
 
             config_table = Table(show_header=True, header_style="bold cyan")
@@ -6859,8 +6866,17 @@ def test_compare(
                 config_table.add_row(*row)
 
             console.print(config_table)
+        elif configs is None:
+            console.print(
+                "[dim]Configurations not compared: fewer than two of these runs "
+                "recorded the configuration they ran under. A run records it once "
+                "its evaluation results have been aggregated.[/dim]"
+            )
         else:
-            console.print("[dim]No configuration differences to display[/dim]")
+            console.print(
+                "[dim]Configurations are identical across the compared runs "
+                "(class definitions and save timestamps are not compared).[/dim]"
+            )
 
         console.print()
 

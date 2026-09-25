@@ -15,6 +15,113 @@ from idp_sdk.exceptions import IDPProcessingError, IDPResourceNotFoundError
 
 logger = logging.getLogger(__name__)
 
+#: Configuration keys that differ between two runs for reasons nobody comparing
+#: their scores wants to read about. The four metadata fields move on every save;
+#: `Configuration` is the table's own key attribute; `version_name` names the
+#: profile, which the run ids already say; and `classes` is the class schema, whose
+#: every prompt and description would otherwise fill the difference table and bury
+#: the model or threshold change that is the reason to look. Same set the Test
+#: Studio comparison view in the web UI hides, so the two agree about what "no
+#: differences" means.
+_CONFIG_KEYS_NOT_COMPARED = frozenset(
+    {
+        "UpdatedAt",
+        "Description",
+        "CreatedAt",
+        "IsActive",
+        "Configuration",
+        "version_name",
+        "classes",
+    }
+)
+
+
+def _config_leaf_paths(value, prefix: str = "") -> List[str]:
+    """Every dotted path to a scalar inside a captured configuration.
+
+    A list contributes one indexed path per element, so a reordered or lengthened
+    list shows up as differences at the indices that moved rather than as one
+    opaque "the list changed".
+    """
+    paths: List[str] = []
+
+    if isinstance(value, dict):
+        for key, child in value.items():
+            if key in _CONFIG_KEYS_NOT_COMPARED:
+                continue
+            path = f"{prefix}.{key}" if prefix else str(key)
+            paths.extend(_config_leaf_paths(child, path))
+    elif isinstance(value, list):
+        for index, child in enumerate(value):
+            paths.extend(_config_leaf_paths(child, f"{prefix}.{index}"))
+    else:
+        if prefix:
+            paths.append(prefix)
+
+    return paths
+
+
+def _config_value_at(value, path: str):
+    """Follow a dotted path produced by `_config_leaf_paths`, or return `None`."""
+    current = value
+    for key in path.split("."):
+        if isinstance(current, dict) and key in current:
+            current = current[key]
+        elif isinstance(current, list) and key.isdigit():
+            index = int(key)
+            if not 0 <= index < len(current):
+                return None
+            current = current[index]
+        else:
+            return None
+    return current
+
+
+def configuration_differences(configs: List[Dict]) -> Optional[List[Dict]]:
+    """Compare the configurations two or more test runs captured.
+
+    Each run records the configuration it ran under, and `getTestRun` returns it,
+    so the comparison needs no extra call: it is the most useful thing to know when
+    two runs score differently and it was already on the wire.
+
+    Args:
+        configs: One `{"testRunId": str, "config": dict}` per run that captured a
+            configuration. The captured object wraps the body under `Config`, the
+            same shape the configuration table stores.
+
+    Returns:
+        `None` when fewer than two runs captured a configuration, so a caller can
+        say that rather than claiming the configurations matched — the distinction
+        matters, because "compared and identical" and "never compared" are the same
+        empty table. Otherwise one `{"setting": <dotted path>, "values": {<run id>:
+        <string>}}` per path whose value is not the same in every run, ordered by
+        path. A path absent from one run reads `<missing>` for that run and counts
+        as a difference.
+    """
+    if not configs or len(configs) < 2:
+        return None
+
+    bodies = {
+        entry["testRunId"]: (entry.get("config") or {}).get("Config", {})
+        for entry in configs
+    }
+
+    paths = set()
+    for body in bodies.values():
+        paths.update(_config_leaf_paths(body))
+
+    differences: List[Dict] = []
+    for path in sorted(paths):
+        values = {}
+        for test_run_id, body in bodies.items():
+            value = _config_value_at(body, path)
+            values[test_run_id] = "<missing>" if value is None else str(value).strip()
+
+        if len(set(values.values())) > 1:
+            differences.append({"setting": path, "values": values})
+
+    return differences
+
 
 class TestStudioProcessor:
     """Processes Test Studio operations (test result retrieval and comparison)."""
@@ -221,7 +328,9 @@ class TestStudioProcessor:
             test_run_ids: List of test run identifiers to compare
 
         Returns:
-            Dictionary with comparison metrics for each test run
+            Dictionary with `metrics` per test run and `configs`, the differences
+            between the configurations the runs captured — `None` when fewer than
+            two of them recorded one, which is not the same answer as "identical".
 
         Raises:
             IDPProcessingError: If comparison fails
@@ -234,6 +343,13 @@ class TestStudioProcessor:
         try:
             # Fetch all test runs
             metrics = {}
+            # Each run records the configuration it ran under and `getTestRun`
+            # returns it, so comparing them needs no second call. Only the runs
+            # that actually captured one go in: a run whose evaluation aggregate
+            # has not been written yet returns no `config` key at all, and
+            # treating that as an empty configuration would report every setting
+            # the other run has as a difference.
+            captured_configs = []
             for test_run_id in test_run_ids:
                 payload = {
                     "info": {"fieldName": "getTestRun"},
@@ -269,13 +385,25 @@ class TestStudioProcessor:
                     "completedAt": result.get("completedAt"),
                 }
 
+                captured = result.get("config")
+                if captured:
+                    captured_configs.append(
+                        {"testRunId": test_run_id, "config": captured}
+                    )
+
             if not metrics:
                 raise IDPProcessingError(
                     "No test runs could be retrieved for comparison"
                 )
 
-            logger.info(f"Compared {len(metrics)} test runs")
-            return {"metrics": metrics}
+            logger.info(
+                f"Compared {len(metrics)} test runs "
+                f"({len(captured_configs)} captured a configuration)"
+            )
+            return {
+                "metrics": metrics,
+                "configs": configuration_differences(captured_configs),
+            }
 
         except Exception as e:
             raise IDPProcessingError(f"Failed to compare test runs: {e}") from e
