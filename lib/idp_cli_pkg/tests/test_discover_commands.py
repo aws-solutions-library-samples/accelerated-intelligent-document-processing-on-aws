@@ -1452,27 +1452,22 @@ def test_a_discovery_without_detect_only_is_unaffected_by_that_refusal(
 
 
 @pytest.mark.unit
-def test_auto_detect_takes_precedence_over_page_range_without_saying_so(
+def test_auto_detect_together_with_page_range_is_refused_as_a_contradiction(
     runner, sdk, tmp_path
 ):
-    """DEFECT: `--auto-detect` and `--page-range` together silently ignore the ranges.
+    """Two answers to one question, and the command has no basis on which to choose.
 
-    The `if auto_detect:` block returns before the `if page_range:` block is
-    reached (`cli.py:5381` vs `cli.py:5476`), so explicit page ranges are
-    discarded. These two options are alternative ways of deciding the same thing —
-    where the sections are — so giving both is a contradiction the command should
-    refuse rather than resolve by source order. The user gets AI-detected
-    boundaries while believing they pinned them by hand, and the printed header
-    says "Auto-Detect Sections" without mentioning the ranges it dropped.
+    The `if auto_detect:` arm returned before the `if page_range:` arm was reached,
+    so explicit ranges were discarded: the user paid for AI-detected boundaries
+    while believing they had pinned them, and the header said "Auto-Detect Sections"
+    without mentioning the ranges dropped. Resolving that by source order is a
+    guess, so it is refused — which is what each of these two options already does
+    when given more than one document.
+
+    The refusal must precede the run rather than accompany it, so `assert_no_discovery`
+    is asserted as well as the message.
     """
     from idp_cli.cli import discover
-
-    sdk.client.discovery.run.return_value = DiscoveryBatchResult(
-        total=1,
-        succeeded=1,
-        failed=0,
-        results=[DiscoveryResult(status="SUCCESS", json_schema=SCHEMA_A)],
-    )
 
     result = runner.invoke(
         discover,
@@ -1487,11 +1482,42 @@ def test_auto_detect_takes_precedence_over_page_range_without_saying_so(
         ],
     )
 
+    assert result.exit_code == 1, result.output
+    assert "--auto-detect and --page-range" in result.output
+    assert "1 page range(s) were given" in result.output
+    assert "Auto-Detect Sections" not in result.output
+    sdk.assert_never_constructed()
+    sdk.assert_no_discovery()
+
+
+@pytest.mark.unit
+def test_page_range_without_auto_detect_is_unaffected_by_that_refusal(
+    runner, sdk, tmp_path
+):
+    """Each arm still runs on its own; the guard needs both options set.
+
+    Together with `test_auto_detect_alone_is_unaffected_by_that_refusal` this pins
+    both halves of the conjunction, which a guard keyed on either option alone —
+    the shape that would still pass the test above — fails.
+    """
+    from idp_cli.cli import discover
+
+    sdk.client.discovery.run_multi_section.return_value = DiscoveryBatchResult(
+        total=1,
+        succeeded=1,
+        failed=0,
+        results=[DiscoveryResult(status="SUCCESS", json_schema=SCHEMA_A)],
+    )
+
+    result = runner.invoke(
+        discover,
+        ["-d", _doc(tmp_path, "package.pdf"), "--page-range", "1-2"],
+    )
+
     assert result.exit_code == 0, result.output
-    assert "Auto-Detect Sections" in result.output
-    assert sdk.client.discovery.run_multi_section.call_args_list == []
-    assert sdk.client.discovery.run.call_args.kwargs["auto_detect"] is True
-    assert "Page ranges" not in result.output
+    assert "Multi-Section" in result.output
+    assert sdk.client.discovery.run_multi_section.call_count == 1
+    assert "both decide where the" not in result.output
 
 
 # ---------------------------------------------------------------------------

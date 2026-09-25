@@ -5815,6 +5815,29 @@ def discover(
         )
         sys.exit(1)
 
+    # `--auto-detect` and `--page-range` are two alternative answers to one question —
+    # where the sections are. The auto-detect arm returned before the page-range arm
+    # was reached, so hand-pinned ranges were discarded and the user paid for
+    # AI-chosen boundaries while the header said "Auto-Detect Sections" and mentioned
+    # nothing. This is the case a warning serves worst: the command has no basis on
+    # which to pick one of the two, so resolving the contradiction by source order is
+    # a guess, and refusing is what `--auto-detect` and `--page-range` already each do
+    # when given more than one document.
+    if auto_detect and page_range:
+        console.print(
+            "[red]✗ Error: --auto-detect and --page-range both decide where the "
+            "sections are; give one.[/red]"
+        )
+        console.print(
+            f"  {len(page_range)} page range(s) were given and would have been "
+            "disregarded in favour of AI-detected boundaries."
+        )
+        console.print(
+            "[yellow]Drop --page-range to let the model find the boundaries, or drop "
+            "--auto-detect to use the ranges you pinned.[/yellow]"
+        )
+        sys.exit(1)
+
     try:
         from idp_sdk import IDPClient
 
