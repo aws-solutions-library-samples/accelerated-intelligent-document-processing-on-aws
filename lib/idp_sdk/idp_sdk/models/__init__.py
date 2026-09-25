@@ -10,7 +10,14 @@ from .assessment import (
     AssessmentGeometryResult,
     AssessmentMetrics,
 )
-from .base import DocumentState, Pattern, RerunStep, StackState
+from .base import (
+    DocumentBucket,
+    DocumentState,
+    Pattern,
+    RerunStep,
+    StackState,
+    classify_document_state,
+)
 from .batch import (
     BatchDeletionResult,
     BatchDownloadResult,
@@ -94,8 +101,11 @@ __all__ = [
     # Enums
     "StackState",
     "DocumentState",
+    "DocumentBucket",
     "Pattern",
     "RerunStep",
+    # State classification
+    "classify_document_state",
     # Stack models
     "StackDeploymentResult",
     "StackDeletionResult",

@@ -1430,47 +1430,94 @@ def test_an_empty_owner_attribute_does_not_block_a_claim(mod, table):
 def test_losing_the_claim_race_names_the_winner_in_the_phrase_the_ui_matches(
     mod, table
 ):
-    """The read-then-write check cannot be the exclusion; the condition is.
+    """The `ConditionExpression` is the exclusion, and it phrases the refusal.
 
-    Two annotators clicking Claim in the same moment both pass the read, so the
-    `ConditionExpression` is what makes ownership exclusive. The loser's message
-    must name the actual winner and keep the "already claimed" phrasing, because
-    the UI matches on it to skip ahead to the next document rather than
-    dead-ending on an error toast.
+    Two annotators clicking Claim in the same moment both read an unowned document,
+    so nothing read *before* the write can exclude either of them — and a read
+    before the write cannot refuse anything either, because it answers from an
+    eventually consistent view in which a document released a moment ago still
+    looks owned. The condition on the update is therefore the only ownership test,
+    and the loser's message comes from its recovery path. That message must name
+    the actual winner and keep the "already claimed" phrasing, because the UI
+    matches on it to skip ahead to the next document rather than dead-ending on an
+    error toast.
 
-    The race is staged by making only the *pre-read* see an unowned document while
-    the stored item already has an owner, so the real conditional update fails.
+    The stored owner is the whole staging: `alice`'s conditional update arrives at
+    an item `bob` already owns, which is exactly what a loser's write meets. Three
+    assertions, each answering to a different mutation — that the claim is refused
+    at all (weaken the `ConditionExpression` and alice's write lands), that the
+    refusal came *through* the `ConditionalCheckFailedException` handler rather
+    than from anywhere else (that handler logs a line nothing else in this function
+    logs), and that the loser left the winner's ownership untouched.
     """
-    put_doc(table, HITLReviewOwner="bob")
-    real_table = mod.dynamodb.Table(TRACKING_TABLE)
-
-    class PreReadBlind:
-        """Reports no owner on the first read; otherwise the real table."""
-
-        def __init__(self):
-            self.reads = 0
-
-        def __getattr__(self, name):
-            return getattr(real_table, name)
-
-        def get_item(self, **kwargs):
-            self.reads += 1
-            if self.reads == 1:
-                return {"Item": {"PK": DOC_PK, "SK": "none"}}
-            return real_table.get_item(**kwargs)
-
-    blind = PreReadBlind()
+    put_doc(table, HITLReviewOwner="bob", HITLStatus="InProgress")
     document = FakeDocument([FakeSection("sec-1")])
     with (
         patch.object(
             mod, "create_document_service", return_value=FakeDocumentService(document)
         ),
-        patch.object(mod.dynamodb, "Table", return_value=blind),
+        log_spy(mod) as log,
     ):
         with pytest.raises(ValueError, match="already claimed by bob"):
-            mod.claim_review(OBJECT_KEY, "alice")
+            mod.claim_review(OBJECT_KEY, "alice", "alice@example.com")
 
-    assert read_doc(table)["HITLReviewOwner"] == "bob", "the loser must not overwrite"
+    assert "Claim race lost" in log.text, (
+        "the refusal must be the condition's: any other route would mean something "
+        "other than the atomic write decided ownership"
+    )
+    stored = read_doc(table)
+    assert stored["HITLReviewOwner"] == "bob", "the loser must not overwrite"
+    assert "HITLReviewOwnerEmail" not in stored, "no part of the loser's write landed"
+
+
+@pytest.mark.unit
+def test_a_document_claimed_between_entry_and_the_write_is_refused(mod, table):
+    """The race staged as a transition, which is the case only the condition covers.
+
+    The test above enters on an already-owned document, so *anything* that looks at
+    ownership refuses it — including a read-then-check, which is what this function
+    used to hold and what must not come back. Here the document is unowned when
+    `claim_review` is entered and `bob` wins in the window before alice's update is
+    sent, so a check that reads before writing passes and lets alice overwrite him.
+    Only a test that does the same thing DynamoDB does, evaluating the condition
+    against the item as it stands at the write, can tell the two apart.
+
+    Nothing is blinded and no read is counted: `bob`'s claim is planted through the
+    same table the resolver is using, immediately before the guarded write, so the
+    item genuinely changes under the caller.
+    """
+    put_doc(table, HITLStatus="Review Pending")
+    real_table = mod.dynamodb.Table(TRACKING_TABLE)
+
+    class BobWinsJustBeforeTheWrite:
+        """The real table, with bob's claim landing ahead of each update."""
+
+        def __getattr__(self, name):
+            return getattr(real_table, name)
+
+        def update_item(self, **kwargs):
+            real_table.update_item(
+                Key={"PK": DOC_PK, "SK": "none"},
+                UpdateExpression="SET HITLReviewOwner = :o",
+                ExpressionAttributeValues={":o": "bob"},
+            )
+            return real_table.update_item(**kwargs)
+
+    document = FakeDocument([FakeSection("sec-1")])
+    with (
+        patch.object(
+            mod, "create_document_service", return_value=FakeDocumentService(document)
+        ),
+        patch.object(mod.dynamodb, "Table", return_value=BobWinsJustBeforeTheWrite()),
+        log_spy(mod) as log,
+    ):
+        with pytest.raises(ValueError, match="already claimed by bob"):
+            mod.claim_review(OBJECT_KEY, "alice", "alice@example.com")
+
+    assert "Claim race lost" in log.text
+    stored = read_doc(table)
+    assert stored["HITLReviewOwner"] == "bob", "the winner must keep the document"
+    assert "HITLReviewOwnerEmail" not in stored, "no part of the loser's write landed"
 
 
 @pytest.mark.unit

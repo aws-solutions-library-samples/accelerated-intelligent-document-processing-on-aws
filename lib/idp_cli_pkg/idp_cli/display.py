@@ -107,9 +107,17 @@ def create_recent_completions_table(status_data: Dict, limit: int = 5) -> Table:
 
     completed = status_data.get("completed", [])
 
-    # Sort by end_time (most recent first)
+    # Sort by end_time (most recent first). The key is coerced to `str` so the
+    # comparison has a total order whatever a producer of `status_data` put under
+    # the key: a batch mixing a `datetime` with the `""` substituted for an absent
+    # end time raised `'<' not supported between instances of 'datetime.datetime'
+    # and 'str'` here, and since both callers catch broadly the user saw
+    # `idp-cli status` exit 1 with that message instead of the table. The
+    # `_batch_status_to_display_dicts` mapper now normalises to ISO 8601 strings, so
+    # this coercion is a no-op on that path; it is here so that this function cannot
+    # be made to raise by a caller that does not.
     sorted_completed = sorted(
-        completed, key=lambda x: x.get("end_time", ""), reverse=True
+        completed, key=lambda x: str(x.get("end_time", "") or ""), reverse=True
     )[:limit]
 
     for doc in sorted_completed:

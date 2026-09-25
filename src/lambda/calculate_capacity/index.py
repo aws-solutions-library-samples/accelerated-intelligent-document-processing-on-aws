@@ -25,6 +25,30 @@ from typing import Any, Dict
 import boto3
 from botocore.exceptions import ClientError
 
+# Prose for the `dataSource` a plan was built from, used in the headline
+# recommendation. Every value this module can put into that field has an entry,
+# and the set is closed by a test rather than by inspection: the derivation in
+# `test_capacity_arithmetic.py` walks this file for the three shapes that assign
+# it — a `data_source` assignment, a `"dataSource"` entry in a dict literal, and
+# the default of a `.get("dataSource", ...)` — and fails if the two sets differ
+# in either direction. That makes a newly added source a red gate rather than a
+# row that quietly reads "unknown", and it also refuses a key kept here with
+# nothing able to produce it, which is the state the sole recognised value was
+# in: the mapping knew only `"environment_config"`, which nothing assigns, so
+# every reachable plan — including one built entirely from measured document
+# timestamps — described its own provenance as unknown.
+#
+# A value from outside this module still has to render, because the caller
+# supplies the distribution dict and the recommendations are advisory; the
+# fallback below names the unrecognised value instead of flattening it to
+# "unknown", so it can be traced back to whatever produced it.
+DATA_SOURCE_DESCRIPTIONS = {
+    "document_timestamps": "measured document timestamps",
+    "real_lambda_durations": "measured Lambda durations",
+    "no_demand": "no configured processing demand",
+    "unknown": "a source the measurement step did not report",
+}
+
 
 def convert_decimal_to_float(obj):
     """Convert DynamoDB Decimal types to Python float/int for JSON serialization and math operations."""
@@ -453,10 +477,8 @@ def generate_adaptive_recommendations(
     try:
         # Basic processing info with data source
         data_source = latency_distribution.get("dataSource", "unknown")
-        source_text = (
-            "environment configuration"
-            if data_source == "environment_config"
-            else "unknown source"
+        source_text = DATA_SOURCE_DESCRIPTIONS.get(
+            data_source, f"unrecognised source '{data_source}'"
         )
         recommendations.append(
             f"Processing {int(total_docs_per_hour)} documents/hour using {pattern.upper()} (based on {source_text})"
@@ -1211,6 +1233,10 @@ def build_simple_quota_requirements(
         # is a different condition from "no request data was ever recorded", and
         # the operator acts on it differently, so the two are not merged below.
         requests_excluded_by_config = False
+        # Cleared when the step's request rate has no measurement behind it and
+        # none can be inferred, so the RPM row is withheld while the TPM row —
+        # which needs no metering — is still reported.
+        rpm_measurable = True
 
         if metering_table_name:
             try:
@@ -1386,25 +1412,35 @@ def build_simple_quota_requirements(
             # configuration rather than never measured: on a history recorded
             # entirely under GranularAssessment keys, turning granular assessment
             # off leaves Assessment with demand and nothing countable. That is a
-            # configuration change, not a gap in the documents, so it drops this
-            # step's rows instead of failing the report other steps are still
-            # measurable from. No request figure is invented for it. The message
-            # names GranularAssessment because the flag can only be set in the
-            # Assessment branch above; a second setter would have to generalise it.
+            # configuration change, not a gap in the documents, so it costs the
+            # step its request rate instead of failing the report other steps are
+            # still measurable from. No request figure is invented for it. The
+            # message names GranularAssessment because the flag can only be set in
+            # the Assessment branch above; a second setter would have to
+            # generalise it.
+            #
+            # Only the RPM row is lost. The TPM row is computed from the
+            # operator's own token schedule and the Service Quotas value and
+            # reads no metering at all, so withholding it would hide an answer
+            # that is fully available — and hide it behind advice to process more
+            # documents, which cannot change it. The step keeps its token
+            # planning and loses only the figure that genuinely has no
+            # measurement behind it.
             if requests_excluded_by_config and not metering_data_available:
                 print(
-                    f"ℹ️ Skipping {step_name} - every recorded Bedrock request for it is "
-                    f"under a GranularAssessment key, which is excluded while granular "
+                    f"ℹ️ No RPM row for {step_name} - every recorded Bedrock request for it "
+                    f"is under a GranularAssessment key, which is excluded while granular "
                     f"assessment is disabled. Process documents with the current "
-                    f"configuration, or re-enable granular assessment, to plan this step."
+                    f"configuration, or re-enable granular assessment, to plan this step's "
+                    f"request rate. Its TPM row is unaffected."
                 )
-                continue
-
-            raise ValueError(
-                f"No request count data found for {step_name}. "
-                f"Documents must have metering data with '{step_name.lower()}/bedrock' entries. "
-                f"Process documents through the full workflow to generate metering data."
-            )
+                rpm_measurable = False
+            else:
+                raise ValueError(
+                    f"No request count data found for {step_name}. "
+                    f"Documents must have metering data with '{step_name.lower()}/bedrock' entries. "
+                    f"Process documents through the full workflow to generate metering data."
+                )
         
         peak_rpm = (actual_requests_per_hour / 60) * BUFFER_FACTOR
         
@@ -1416,8 +1452,44 @@ def build_simple_quota_requirements(
         else:
             print("ℹ️ Using configured page values (no metering data)")
 
-        # Include configured inference types with demand
-        should_include = peak_tpm > 0 or peak_rpm > 1.0  # Include if there's meaningful demand
+        # A step belongs in the report if it has quota demand of either kind:
+        # configured tokens, or Bedrock requests actually recorded against it.
+        # The threshold is zero on both terms, and the symmetry is the point —
+        # a floor above zero on one of them made the two halves of the rule
+        # disagree about what "running" means.
+        #
+        # Zero rather than some small positive rate because of what an absent
+        # row means. The report is the operator's list of quotas to check, and a
+        # step with no row is indistinguishable from a step that is switched
+        # off. A floor of one request a minute therefore rendered "runs, and
+        # needs almost no headroom" identically to "not in the pipeline" — and
+        # only for the step whose rate was low, so the report was quietest
+        # exactly where it was least expected to be. A small figure describes
+        # itself; silence does not, and `requiredQuota` carries the magnitude
+        # either way.
+        #
+        # The skips above have in fact already decided this, and with the
+        # threshold at zero this is a floor rather than a filter: it cannot fire.
+        # Note that it is *not* true that `peak_rpm > 0` here — the withheld-RPM
+        # fall-through above reaches this line with `actual_requests_per_hour`
+        # at zero, and so with `peak_rpm` at 0.0. What holds is the disjunction,
+        # by two different routes:
+        #
+        #   * on the ordinary path the second skip's condition was false, so
+        #     `actual_requests_per_hour > 0` and therefore `peak_rpm > 0`;
+        #   * on the withheld-RPM path `peak_rpm` is 0.0, but the *first* skip
+        #     has already continued for any step with `peak_tpm == 0` — its
+        #     condition is the second's plus that conjunct — so `peak_tpm > 0`.
+        #
+        # Either way one term is positive. Replacing the `else` below with an
+        # unconditional `raise` leaves every test in this directory passing, so
+        # there is deliberately no test for that branch: no input reaches it, and
+        # a test asserting its message would be pinning nothing. It is kept so
+        # that a step carrying no demand of either kind cannot acquire a row of
+        # zeroes if those skips change, and its message names both terms because
+        # naming only the token figure described a step dropped for its request
+        # rate as having "no demand".
+        should_include = peak_tpm > 0 or peak_rpm > 0
 
         if should_include:
             print(
@@ -1433,8 +1505,31 @@ def build_simple_quota_requirements(
                 tpm_status_text = (
                     "✅ Sufficient" if peak_tpm <= model_quota_tpm else "⚠️ Increase Needed"
                 )
+            # Reported past 100%, because the size of a shortfall is the whole
+            # decision the operator is making. Capped, a plan needing five times
+            # its quota and one needing 1.01 times were the same number, so the
+            # headline could not tell a near miss from a request that has to be
+            # escalated. `status` and `requiredQuota` already say a shortfall
+            # exists and how large it is; capping this made the one field
+            # expressing it as a ratio the only one that hid it.
+            #
+            # Nothing downstream constrains it to 100, and in fact nothing
+            # downstream reads it: `sanitize_quota_requirements` in
+            # `src/lambda/calculate_capacity_resolver/index.py` rebuilds every row
+            # from the five fields the GraphQL type declares, so this one does not
+            # cross the API boundary at all. That, rather than the UI's TypeScript
+            # interface, is the durable reason — an interface is one line away
+            # from declaring the field, whereas the resolver actively strips it.
+            #
+            # So this is an internal figure today. It is still worth being a true
+            # ratio: the percentages the UI displays are recomputed in the browser
+            # from `requiredQuota` and `currentQuota` and have never been capped,
+            # so a capped value here disagreed with what the operator was shown
+            # for the same quantity, and would have carried that disagreement
+            # into whatever surfaces this field next. There is no bar or
+            # fixed-width gauge anywhere that a value above 100 could overflow.
             tpm_utilization_percent = (
-                min((peak_tpm / model_quota_tpm) * 100, 100)
+                (peak_tpm / model_quota_tpm) * 100
                 if peak_tpm > 0 and model_quota_tpm > 0
                 else 0
             )
@@ -1456,36 +1551,49 @@ def build_simple_quota_requirements(
             }
             requirements.append(tpm_requirement)
 
-            # RPM requirement
-            rpm_quota_display = f"{model_quota_rpm:,}"
-            rpm_status = "success" if peak_rpm <= model_quota_rpm else "warning"
-            if peak_rpm == 0:
-                rpm_status_text = "✅ No Demand"
-            else:
-                rpm_status_text = (
-                    "✅ Sufficient" if peak_rpm <= model_quota_rpm else "⚠️ Increase Needed"
+            # RPM requirement. Withheld, rather than reported as zero, when the
+            # request rate has no measurement behind it: a "0 RPM" row would read
+            # as a measured absence of requests rather than as an absence of
+            # measurement, and the TPM row above is the half of this step that is
+            # genuinely known. The `peak_rpm` of 0.0 that the log above prints for
+            # this step is the arithmetic on an unmeasured zero, which is why it
+            # is not published as a row.
+            if rpm_measurable:
+                rpm_quota_display = f"{model_quota_rpm:,}"
+                rpm_status = "success" if peak_rpm <= model_quota_rpm else "warning"
+                if peak_rpm == 0:
+                    rpm_status_text = "✅ No Demand"
+                else:
+                    rpm_status_text = (
+                        "✅ Sufficient" if peak_rpm <= model_quota_rpm else "⚠️ Increase Needed"
+                    )
+                # Uncapped for the same reason as the TPM figure above. Written
+                # out twice because the two rows are built separately, so a cap
+                # removed from one says nothing about the other.
+                rpm_utilization_percent = (
+                    (peak_rpm / model_quota_rpm) * 100
+                    if peak_rpm > 0 and model_quota_rpm > 0
+                    else 0
                 )
-            rpm_utilization_percent = (
-                min((peak_rpm / model_quota_rpm) * 100, 100)
-                if peak_rpm > 0 and model_quota_rpm > 0
-                else 0
-            )
 
-            rpm_requirement = {
-                "service": f"{step_name} ({model_display_name}) - RPM",
-                "category": "Bedrock Models RPM",
-                "currentQuota": rpm_quota_display,
-                "requiredQuota": f"{round(peak_rpm):,}",
-                "status": rpm_status,
-                "statusText": rpm_status_text,
-                "utilizationPercent": rpm_utilization_percent,
-                "usedFor": step_name,
-                "modelId": model_id,
-                "quotaType": "RPM",
-            }
-            requirements.append(rpm_requirement)
+                rpm_requirement = {
+                    "service": f"{step_name} ({model_display_name}) - RPM",
+                    "category": "Bedrock Models RPM",
+                    "currentQuota": rpm_quota_display,
+                    "requiredQuota": f"{round(peak_rpm):,}",
+                    "status": rpm_status,
+                    "statusText": rpm_status_text,
+                    "utilizationPercent": rpm_utilization_percent,
+                    "usedFor": step_name,
+                    "modelId": model_id,
+                    "quotaType": "RPM",
+                }
+                requirements.append(rpm_requirement)
         else:
-            print(f"❌ Skipping {step_name} - no demand (peak_tpm={peak_tpm})")
+            print(
+                f"❌ Skipping {step_name} - no demand of either kind "
+                f"(peak_tpm={peak_tpm}, peak_rpm={peak_rpm:.3f})"
+            )
 
     print(f"Built {len(requirements)} quota requirements")
     return requirements

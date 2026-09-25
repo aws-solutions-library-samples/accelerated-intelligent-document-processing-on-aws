@@ -330,6 +330,45 @@ class TestCompareTestRuns:
         )
 
     @patch("idp_sdk._core.test_studio_processor.TestStudioProcessor")
+    def test_the_configuration_differences_reach_the_result_model(
+        self, mock_processor_cls
+    ):
+        """`configs` is carried through, not dropped between processor and model.
+
+        The processor computes it and the CLI renders it, so a silent drop here
+        would put the CLI back to printing "no configuration differences" for every
+        comparison — the defect this replaced — with the processor's own tests still
+        green. Both answers are asserted in the same test: a populated list, and
+        `None` for "fewer than two runs captured a configuration", which the model
+        must not coerce to `[]`.
+        """
+        differences = [
+            {
+                "setting": "extraction.model",
+                "values": {"run-1": "nova-lite", "run-2": "nova-pro"},
+            }
+        ]
+        mock_processor = MagicMock()
+        mock_processor.compare_test_runs.return_value = {
+            "metrics": {"run-1": {}, "run-2": {}},
+            "configs": differences,
+        }
+        mock_processor_cls.return_value = mock_processor
+
+        client = IDPClient(stack_name="test-stack")
+        result = client.testing.compare_test_runs(test_run_ids=["run-1", "run-2"])
+
+        assert result.configs == differences
+
+        mock_processor.compare_test_runs.return_value = {
+            "metrics": {"run-1": {}, "run-2": {}},
+            "configs": None,
+        }
+        unanswered = client.testing.compare_test_runs(test_run_ids=["run-1", "run-2"])
+
+        assert unanswered.configs is None
+
+    @patch("idp_sdk._core.test_studio_processor.TestStudioProcessor")
     def test_compare_test_runs_multiple(self, mock_processor_cls):
         """Test comparison with more than 2 test runs."""
         mock_processor = MagicMock()
