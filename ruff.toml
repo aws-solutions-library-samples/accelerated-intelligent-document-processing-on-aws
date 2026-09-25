@@ -308,7 +308,6 @@ exclude = [
     "scripts/sdlc/tests/test_resolver_layer_coverage.py",
     "scripts/sdlc/tests/test_retired_services_not_documented.py",
     "scripts/sdlc/tests/test_scan_api_rbac_function_urls.py",
-    "scripts/sdlc/tests/test_scan_api_rbac_scope_check.py",
     "scripts/sdlc/tests/test_stale_stack_reaper.py",
     "scripts/sdlc/tests/test_suppress_invite_sentinel.py",
     "scripts/sdlc/validate_buildspec.py",
