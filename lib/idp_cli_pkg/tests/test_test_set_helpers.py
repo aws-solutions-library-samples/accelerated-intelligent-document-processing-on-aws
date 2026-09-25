@@ -1315,18 +1315,21 @@ def test_create_test_set_places_the_marker_first_and_removes_it_last(
 
 
 @pytest.mark.unit
-def test_create_test_set_leaves_the_marker_behind_when_an_upload_fails(
-    tmp_path, capsys
-):
-    """DEFECT (pinned, not fixed): a mid-upload failure leaves `.uploading` in the bucket.
+def test_create_test_set_removes_the_marker_when_an_upload_fails(tmp_path, capsys):
+    """A mid-upload failure takes `.uploading` with it (issue #1231 item 5).
 
-    The marker is removed by a plain statement after the upload loop, not by a
-    `try/finally`, so any exception during the loop — a missing local file, a denied
-    `PutObject`, a network drop — propagates with the marker still in place. The
-    resolver's auto-detection skips any folder carrying that marker, so the
-    half-uploaded test set becomes permanently invisible to the backend and will not
-    appear in the UI even after the underlying problem is fixed and the files are
-    re-uploaded, unless someone deletes the marker object by hand.
+    The marker used to be removed by a plain statement after the upload loop, so any
+    exception during the loop — a missing local file, a denied `PutObject`, a network
+    drop — propagated with the object still in place. The resolver's auto-detection
+    skips any folder carrying that marker, so a half-uploaded test set became
+    permanently invisible to the backend and stayed invisible after the underlying
+    problem was fixed and the files were re-uploaded, because the new run wrote the
+    marker again. Only deleting the object by hand recovered it, and nothing said so.
+
+    Both halves are asserted, and they are separate claims. If only the marker were
+    checked, a run in which the upload *succeeded* would satisfy the test and it would
+    then be measuring nothing: the marker is removed on the success path too. So the
+    failure is asserted to have happened as well.
 
     A manifest naming a local file that does not exist is the cheapest way to reach it;
     the manifest is written directly here rather than through `generate-manifest`,
@@ -1336,6 +1339,72 @@ def test_create_test_set_leaves_the_marker_behind_when_an_upload_fails(
 
     missing = tmp_path / "gone.pdf"
     manifest = _manifest_with(tmp_path, [(missing, "")])
+
+    with mock_aws():
+        s3 = boto3.client("s3", region_name="us-east-1")
+        s3.create_bucket(Bucket=TEST_SET_BUCKET)
+
+        # Half one: the failure really happened. Without this the marker assertion
+        # below would also pass on a successful upload.
+        with pytest.raises(Exception):
+            _create_test_set_from_manifest(
+                str(manifest), "set1", "IDP", None, resources()
+            )
+
+        keys = {
+            obj["Key"]
+            for obj in s3.list_objects_v2(Bucket=TEST_SET_BUCKET).get("Contents", [])
+        }
+
+    # Half two: the marker is gone, so the resolver can see whatever did arrive.
+    assert "set1/.uploading" not in keys, (
+        "the upload marker outlived the failure and would hide the test set"
+    )
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("label", "rows"),
+    [
+        # One entry per failure path through the block the marker spans. They are
+        # parametrised rather than argued about, because the point of the fix is that
+        # the removal does not depend on which of them happened -- so the value of the
+        # list is that it covers different *statements*, not that it is complete.
+        ("a missing local input file", [("{tmp}/gone.pdf", "")]),
+        (
+            "an s3 input whose source bucket does not exist",
+            [("s3://no-such-input-bucket/gone.pdf", "")],
+        ),
+        (
+            "an s3 baseline source whose bucket does not exist",
+            [("{tmp}/real.pdf", "s3://no-such-baseline-bucket/gt/")],
+        ),
+    ],
+)
+def test_create_test_set_removes_the_marker_on_every_failure_path(
+    tmp_path, capsys, label, rows
+):
+    """The marker survives none of the ways this function can fail.
+
+    `_copy_s3_baseline`'s is the newest of the three: the `s3://` baseline branch used
+    to be a local `glob.glob` over an `s3://` string, which matched nothing and raised
+    nothing, so a baseline bucket that does not exist was a silent no-op. Now that it
+    is a real S3 copy it can raise — a failure path that appeared in this block *after*
+    the marker handling was written, which is the argument for a `try`/`finally` over a
+    list of cases somebody thought of.
+
+    Each case asserts the failure occurred *and* that the marker is gone. Either alone
+    is satisfiable without the other: the marker is removed on the success path too, so
+    the marker assertion by itself would pass on a run that never failed.
+    """
+    from idp_cli.cli import _create_test_set_from_manifest
+
+    (tmp_path / "real.pdf").write_text("pdf")
+    resolved = [
+        (doc.format(tmp=tmp_path), baseline.format(tmp=tmp_path))
+        for doc, baseline in rows
+    ]
+    manifest = _manifest_with(tmp_path, resolved, name=f"{abs(hash(label))}.csv")
 
     with mock_aws():
         s3 = boto3.client("s3", region_name="us-east-1")
@@ -1351,9 +1420,43 @@ def test_create_test_set_leaves_the_marker_behind_when_an_upload_fails(
             for obj in s3.list_objects_v2(Bucket=TEST_SET_BUCKET).get("Contents", [])
         }
 
-    assert keys == {"set1/.uploading"}, (
-        "the upload marker outlives the failure and hides the test set"
+    assert "set1/.uploading" not in keys, (
+        f"the marker outlived {label} and would hide the test set"
     )
+
+
+@pytest.mark.unit
+def test_create_test_set_removes_the_marker_when_the_manifest_has_no_document_path(
+    tmp_path, capsys
+):
+    """A manifest missing the `document_path` column fails *after* the marker is placed.
+
+    This is the failure path least like the others: nothing to do with S3 at all, a
+    `KeyError` out of `row["document_path"]` on the first iteration. It is here because
+    a marker-cleanup guard written around the S3 calls would not have covered it, and
+    the `try`/`finally` does.
+    """
+    from idp_cli.cli import _create_test_set_from_manifest
+
+    manifest = tmp_path / "wrong-columns.csv"
+    manifest.write_text("path,baseline_source\n/tmp/a.pdf,\n")
+
+    with mock_aws():
+        s3 = boto3.client("s3", region_name="us-east-1")
+        s3.create_bucket(Bucket=TEST_SET_BUCKET)
+
+        with pytest.raises(KeyError):
+            _create_test_set_from_manifest(
+                str(manifest), "set1", "IDP", None, resources()
+            )
+
+        keys = {
+            obj["Key"]
+            for obj in s3.list_objects_v2(Bucket=TEST_SET_BUCKET).get("Contents", [])
+        }
+
+    assert "set1/.uploading" not in keys
+    assert keys == set(), "nothing at all should be left under the test set prefix"
 
 
 @pytest.mark.unit
@@ -1606,15 +1709,19 @@ def test_create_test_set_reads_a_json_manifest(tmp_path, capsys):
 
 
 @pytest.mark.unit
-def test_create_test_set_only_warns_when_the_marker_cannot_be_deleted(tmp_path, capsys):
-    """DEFECT (pinned, not fixed): a failed marker removal is a warning, and nothing else.
+def test_create_test_set_raises_when_the_marker_cannot_be_deleted(tmp_path, capsys):
+    """A marker that cannot be removed after a complete upload is an error, not a warning.
 
-    Same shape as the `generate-manifest` case: the delete is wrapped in its own
-    `except Exception`, so a bucket policy allowing `s3:PutObject` but not
-    `s3:DeleteObject` leaves the `.uploading` marker in place while this function goes
-    on to print that the test set was created. The resolver skips any folder carrying
-    that marker, so the test set is complete in S3 and invisible to the backend, and
-    the caller is told it succeeded.
+    Same shape as the `generate-manifest` case. A bucket policy allowing `s3:PutObject`
+    but not `s3:DeleteObject` leaves the `.uploading` marker in place, and the resolver
+    skips any folder carrying it — so the test set is complete in S3 and invisible to
+    the backend. That used to be a yellow warning followed by "created with 1 files"
+    and a normal return, which is the one outcome a caller cannot act on: the state is
+    unrecoverable without deleting that object, and the report said it worked.
+
+    It now raises, and the message has to name the object to delete, because that is
+    the only recovery. Both are asserted: an exception with an unhelpful message would
+    leave the user where they started.
     """
     from idp_cli.cli import _create_test_set_from_manifest
 
@@ -1638,7 +1745,7 @@ def test_create_test_set_only_warns_when_the_marker_cannot_be_deleted(tmp_path, 
         real_client("s3", region_name="us-east-1").create_bucket(Bucket=TEST_SET_BUCKET)
         fake_s3 = NoDeleteObject(real_client("s3", region_name="us-east-1"))
 
-        with patched_boto3(fake_s3=fake_s3):
+        with patched_boto3(fake_s3=fake_s3), pytest.raises(RuntimeError) as failure:
             _create_test_set_from_manifest(
                 str(manifest), "set1", "IDP", None, resources()
             )
@@ -1650,10 +1757,21 @@ def test_create_test_set_only_warns_when_the_marker_cannot_be_deleted(tmp_path, 
             .get("Contents", [])
         }
 
+    message = str(failure.value)
+    assert f"s3://{TEST_SET_BUCKET}/set1/.uploading" in message, message
+    assert "invisible to the backend" in message, message
+    assert "AccessDenied: s3:DeleteObject" in message, (
+        "the underlying cause has to survive into the message"
+    )
+
     output = capsys.readouterr().out
-    assert "Warning: Could not remove upload marker:" in output
-    assert "created with 1 files" in output
-    assert "set1/.uploading" in keys
+    assert "created with 1 files" not in output, (
+        "success must not be reported for a test set the backend cannot see"
+    )
+
+    # The marker really is still there -- the delete failed -- and the input really did
+    # arrive, so the raise is about visibility and not about a failed upload.
+    assert keys == {"set1/.uploading", "set1/input/invoice.pdf"}, keys
 
 
 @pytest.mark.unit

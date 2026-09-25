@@ -1729,17 +1729,21 @@ def test_an_unreachable_test_set_bucket_warns_twice_and_then_fails(runner, tmp_p
 
 
 @pytest.mark.unit
-def test_a_marker_that_cannot_be_deleted_only_warns(runner, tmp_path):
-    """DEFECT (pinned, not fixed): a failed marker removal warns and still reports success.
+def test_a_marker_that_cannot_be_deleted_fails_the_command(runner, tmp_path):
+    """A marker that cannot be removed is exit 1, not a warning above a success line.
 
-    The `.uploading` marker is removed inside its own `except Exception`, so if the
-    delete fails — an IAM policy granting `s3:PutObject` but not `s3:DeleteObject` on
-    the test set bucket is the realistic shape — the command prints a yellow warning and
-    then goes on to print "✓ Test set created successfully" and exit 0. The test set
-    resolver skips any folder carrying that marker, so the test set is complete in S3
-    and permanently invisible to the backend, and the exit code says everything worked.
-    The warning is the only evidence, and it is above the success message rather than
-    below it.
+    The `.uploading` marker used to be removed inside its own `except Exception`, so a
+    failed delete — an IAM policy granting `s3:PutObject` but not `s3:DeleteObject` on
+    the test set bucket is the realistic shape — printed a yellow warning and then
+    "✓ Test set created successfully" at exit 0. The test set resolver skips any folder
+    carrying that marker, so what the user was told had worked was a test set complete
+    in S3 and permanently invisible to the backend, recoverable only by deleting that
+    object by hand.
+
+    The command now exits 1 and the message names the object, which is the recovery.
+    Three separate claims are asserted, because the first two are each satisfiable
+    without the others: the exit code, the object's name in the message, and that no
+    success line was printed.
     """
     from idp_cli.cli import generate_manifest
 
@@ -1794,10 +1798,193 @@ def test_a_marker_that_cannot_be_deleted_only_warns(runner, tmp_path):
             .get("Contents", [])
         }
 
-    assert result.exit_code == 0, result.output
-    assert "Warning: Could not remove upload marker:" in result.output
-    assert "created successfully" in result.output
-    assert "set1/.uploading" in keys, "the marker survives and hides the test set"
+    assert result.exit_code == 1, result.output
+    assert f"s3://{TEST_SET_BUCKET}/set1/.uploading" in result.output, result.output
+    assert "invisible to the backend" in result.output, result.output
+    assert "created successfully" not in result.output, (
+        "success must not be reported for a test set the backend cannot see"
+    )
+    # The delete really did fail, so the marker is genuinely still there and the input
+    # genuinely did arrive: the failure is about visibility, not about a broken upload.
+    assert "set1/.uploading" in keys
+    assert "set1/input/invoice.pdf" in keys
+
+
+class _FailingS3:
+    """A real S3 client with named operations denied, as an IAM policy would deny them.
+
+    `allow_first` exists so a test can say *which* call of an operation fails. Denying
+    every `upload_file` cannot distinguish the input upload from the baseline upload --
+    both raise, so a test asserting only "exit 1" passes even if one of the two call
+    sites has stopped reporting its errors at all. That is not hypothetical: it was
+    measured, as a mutation swallowing the input upload's exception that left the suite
+    green because the baseline upload then failed in its place.
+    """
+
+    def __init__(self, inner, denied, allow_first=None):
+        self._inner = inner
+        self._denied = denied
+        self._allow_first = allow_first or {}
+        self._calls = {}
+
+    def __getattr__(self, name):
+        if name in self._denied:
+
+            def _maybe_deny(*args, **kwargs):
+                seen = self._calls.get(name, 0)
+                self._calls[name] = seen + 1
+                if seen < self._allow_first.get(name, 0):
+                    return getattr(self._inner, name)(*args, **kwargs)
+                raise RuntimeError(f"AccessDenied: {self._denied[name]}")
+
+            return _maybe_deny
+        return getattr(self._inner, name)
+
+
+def _run_generate_manifest_with_denied(
+    runner, tmp_path, denied, allow_first=None, baseline_files=True, set_name="set1"
+):
+    """Invoke `generate-manifest --test-set` against a client with `denied` operations.
+
+    Returns `(result, keys)` -- the click result and the keys actually in the bucket,
+    read back with an unrestricted client after the command has finished.
+    """
+    from idp_cli.cli import generate_manifest
+
+    docs = tmp_path / "docs"
+    _write(docs / "invoice.pdf")
+    baselines = tmp_path / "baselines"
+    (baselines / "invoice.pdf").mkdir(parents=True)
+    if baseline_files:
+        _write(baselines / "invoice.pdf" / "expected.json", '{"a": 1}')
+
+    real_client = boto3.client
+
+    with mock_aws():
+        real_client("s3", region_name="us-east-1").create_bucket(Bucket=TEST_SET_BUCKET)
+
+        def _client(service_name, **kwargs):
+            built = real_client(service_name, **kwargs)
+            if service_name != "s3":
+                return built
+            return _FailingS3(built, denied, allow_first)
+
+        with (
+            patch("idp_cli.cli.boto3.client", side_effect=_client),
+            _patched_stack_resources({"TestSetBucket": TEST_SET_BUCKET}),
+        ):
+            result = runner.invoke(
+                generate_manifest,
+                [
+                    "--dir",
+                    str(docs),
+                    "--baseline-dir",
+                    str(baselines),
+                    "--test-set",
+                    set_name,
+                    "--stack-name",
+                    "IDP",
+                ],
+            )
+
+        keys = {
+            obj["Key"]
+            for obj in real_client("s3", region_name="us-east-1")
+            .list_objects_v2(Bucket=TEST_SET_BUCKET)
+            .get("Contents", [])
+        }
+
+    return result, keys
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("which", "allow_first", "baseline_files", "expected_input_key"),
+    [
+        # The two upload call sites inside the marker's window, reached one at a time.
+        # Denying every `upload_file` reaches only the first of them, so a fix applied
+        # to one and not the other would go unnoticed -- which is exactly what a
+        # mutation of the input-upload call site demonstrated before this was split.
+        ("the input upload", {}, False, None),
+        ("the baseline upload", {"upload_file": 1}, True, "set1/input/invoice.pdf"),
+    ],
+)
+def test_an_upload_failure_removes_the_marker_and_still_exits_1(
+    runner, tmp_path, which, allow_first, baseline_files, expected_input_key
+):
+    """A denied `PutObject` partway through leaves no `.uploading` marker behind.
+
+    This path had no test at all, and it is the one a user is most likely to hit: an
+    IAM policy short of `s3:PutObject` on the test set bucket, or a file that moved
+    between the scan and the upload. The marker used to be removed by a plain statement
+    after the loops, so the exception went past it and the half-filled folder stayed
+    hidden from the resolver — including after the policy was fixed and the upload
+    re-run, because the new run wrote the marker again.
+
+    Both halves are asserted and neither implies the other. The failure has to have
+    happened (exit 1 with the command's error line), because the marker is removed on
+    the success path too and the marker assertion alone would pass on a clean run; and
+    the marker has to be gone, because exit 1 was already the behaviour before the fix.
+
+    The two call sites are reached separately. `expected_input_key` is what pins that:
+    in the baseline case the input object must be present, which is the evidence that
+    the first upload really did go through and the failure really is the second one.
+    """
+    result, keys = _run_generate_manifest_with_denied(
+        runner,
+        tmp_path,
+        {"upload_file": "s3:PutObject"},
+        allow_first=allow_first,
+        baseline_files=baseline_files,
+    )
+
+    assert result.exit_code == 1, result.output
+    assert "✗ Error:" in result.output
+    assert "AccessDenied: s3:PutObject" in result.output
+
+    if expected_input_key is None:
+        assert keys == set(), (
+            f"{which}: nothing should have landed, and the marker must be gone"
+        )
+    else:
+        assert keys == {expected_input_key}, (
+            f"{which}: the earlier upload went through and only the marker is gone"
+        )
+
+    assert "set1/.uploading" not in keys, (
+        f"the marker outlived the failure at {which} and would hide the test set"
+    )
+    assert "created successfully" not in result.output
+
+
+@pytest.mark.unit
+def test_an_upload_failure_whose_cleanup_also_fails_says_so_and_keeps_the_real_error(
+    runner, tmp_path
+):
+    """When the upload fails *and* the marker cannot be removed, both are reported.
+
+    The cleanup runs on the way out of a failure, so it must not be able to replace the
+    exception that caused the failure -- a `delete_object` error surfacing instead of
+    the `PutObject` one would send the user after the wrong problem. It is reported as
+    a warning naming the object to delete, and the original error is what the command
+    exits on.
+    """
+    result, keys = _run_generate_manifest_with_denied(
+        runner,
+        tmp_path,
+        {"upload_file": "s3:PutObject", "delete_object": "s3:DeleteObject"},
+    )
+
+    assert result.exit_code == 1, result.output
+    # The original cause, not the cleanup's.
+    assert "AccessDenied: s3:PutObject" in result.output, result.output
+    # And the cleanup failure as a warning that names the object to delete by hand.
+    assert f"s3://{TEST_SET_BUCKET}/set1/.uploading" in result.output, result.output
+    assert "delete that object before retrying" in result.output, result.output
+
+    # Nothing removed it, so it is genuinely still there -- which is what makes the
+    # warning the only route to recovery and therefore load-bearing.
+    assert "set1/.uploading" in keys
 
 
 @pytest.mark.unit

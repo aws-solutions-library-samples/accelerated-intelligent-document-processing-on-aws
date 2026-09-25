@@ -7,6 +7,7 @@ IDP CLI - Main Command Line Interface
 Command-line tool for batch document processing with the IDP Accelerator.
 """
 
+import contextlib
 import fnmatch
 import json
 import logging
@@ -2972,6 +2973,82 @@ def list_versions(stack_name: str, document_id: str, region: Optional[str]):
         sys.exit(1)
 
 
+@contextlib.contextmanager
+def _uploading_marker(s3_client, bucket: str, test_set_prefix: str):
+    """Hold a test set's `.uploading` marker over an upload, and always remove it.
+
+    The marker object exists so the test set resolver's auto-detection skips a folder
+    that is still being filled (issue #193), which makes its *removal* the step that
+    lets a finished test set be seen at all. It used to be removed by a plain statement
+    after the upload loop, and that is the half of the contract that failed: every way
+    out of the upload other than falling off the end left the object behind, and the
+    resolver then skips a folder whose files are all present. The test set is complete
+    in S3 and permanently invisible to the backend -- re-running the upload does not
+    help, because the new run writes the marker again -- so the only recovery is
+    deleting that object by hand, and nothing said so.
+
+    The paths that did this are not interesting individually: a denied `PutObject`
+    partway through the inputs, a baseline file that vanished between the scan and the
+    upload, a manifest row with no `document_path`, a `copy_object` whose source key is
+    gone, an `s3://` baseline source whose bucket does not exist. The point is that the
+    next one added would not have been on the list either, so the marker's lifetime is
+    a `try`/`finally` here rather than a set of failures somebody thought of.
+
+    The two directions are treated differently, on purpose.
+
+    - **The body raised.** The marker is removed and the original exception is
+      re-raised unchanged. A removal that *also* fails is reported and swallowed: the
+      caller needs the exception that caused the failure, not this one.
+    - **The body succeeded.** Every file is uploaded, so a surviving marker is exactly
+      the complete-and-invisible test set above, and reporting success would be false.
+      A failed removal therefore **raises**, naming the object to delete. It used to be
+      a yellow warning printed above a green "✓ Test set created successfully" and an
+      exit 0 -- the one line of evidence, above the message that contradicted it.
+
+    `BaseException` rather than `Exception` is caught, because `sys.exit` raises
+    `SystemExit` and a command that refuses partway through an upload must not be the
+    one case that leaves the marker.
+
+    Args:
+        s3_client: An S3 client for the test set bucket.
+        bucket: The test set bucket's name.
+        test_set_prefix: The test set's folder name, with no trailing slash.
+
+    Yields:
+        The marker object's key.
+
+    Raises:
+        RuntimeError: If the upload succeeded and the marker could not be removed.
+    """
+    marker_key = f"{test_set_prefix}/.uploading"
+    s3_client.put_object(Bucket=bucket, Key=marker_key, Body=b"upload-in-progress")
+
+    try:
+        yield marker_key
+    except BaseException:
+        try:
+            s3_client.delete_object(Bucket=bucket, Key=marker_key)
+        except Exception as cleanup_error:
+            console.print(
+                f"[yellow]Warning: the upload failed and the "
+                f"s3://{bucket}/{marker_key} marker could not be removed either "
+                f"({cleanup_error}); delete that object before retrying, or the "
+                f"test set stays hidden from the backend.[/yellow]"
+            )
+        raise
+
+    try:
+        s3_client.delete_object(Bucket=bucket, Key=marker_key)
+    except Exception as removal_error:
+        raise RuntimeError(
+            f"every file was uploaded, but the upload marker "
+            f"s3://{bucket}/{marker_key} could not be removed ({removal_error}). "
+            "The test set resolver skips any folder carrying that marker, so this "
+            "test set is complete in S3 and invisible to the backend until that "
+            "object is deleted."
+        ) from removal_error
+
+
 def _file_pattern_matches(
     filename: str, file_pattern: str, *, case_sensitive: bool = False
 ) -> bool:
@@ -3370,63 +3447,74 @@ def generate_manifest(
                     f"[yellow]Warning: Could not clear existing files: {e}[/yellow]"
                 )
 
-            # Place .uploading marker to prevent resolver race condition
-            # The test set resolver's auto-detection skips folders with this marker,
-            # preventing premature validation before all files are uploaded.
-            # See: https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/193
-            marker_key = f"{test_set}/.uploading"
-            s3_client.put_object(
-                Bucket=test_set_bucket, Key=marker_key, Body=b"upload-in-progress"
-            )
-
-            # Upload input documents
-            for i, doc in enumerate(documents):
-                doc_path = doc["document_path"]
-                filename = os.path.basename(doc_path)
-                s3_key = f"{test_set}/input/{filename}"
-
-                s3_client.upload_file(doc_path, test_set_bucket, s3_key)
-                doc["document_path"] = f"s3://{test_set_bucket}/{s3_key}"
-                console.print(f"  Uploaded input {i + 1}/{len(documents)}: {filename}")
-
-            # Upload baseline files
+            # The `.uploading` marker stops the test set resolver's auto-detection
+            # validating a folder that is still being filled (issue #193), so removing
+            # it is what makes the finished test set visible. Its whole lifetime is the
+            # context manager's, which is what makes the removal independent of how the
+            # upload ends -- see `_uploading_marker` for the failures that used to
+            # escape past it and leave a complete test set permanently hidden.
+            #
+            # Writing the manifest is deliberately *outside* the window. It touches the
+            # local filesystem only, so by the time it runs the folder in S3 is already
+            # complete and there is nothing left for the resolver to see half-done; an
+            # unwritable `--output` path should not be able to hide a test set whose
+            # files all arrived.
             baseline_objects = 0
-            for filename, baseline_path in baseline_map.items():
-                # Upload all files in the baseline directory recursively
-                import glob as glob_module
-                import os
+            with _uploading_marker(s3_client, test_set_bucket, test_set):
+                # Upload input documents
+                for i, doc in enumerate(documents):
+                    doc_path = doc["document_path"]
+                    filename = os.path.basename(doc_path)
+                    s3_key = f"{test_set}/input/{filename}"
 
-                baseline_files = glob_module.glob(
-                    os.path.join(baseline_path, "**", "*"), recursive=True
-                )
-                uploaded = 0
-                for baseline_file in baseline_files:
-                    if os.path.isfile(baseline_file):
-                        # Preserve directory structure relative to baseline_path
-                        rel_path = os.path.relpath(baseline_file, baseline_path)
-                        s3_key = f"{test_set}/baseline/{filename}/{rel_path}"
-                        s3_client.upload_file(baseline_file, test_set_bucket, s3_key)
-                        uploaded += 1
-
-                # Update baseline_map to point to S3 location
-                baseline_map[filename] = (
-                    f"s3://{test_set_bucket}/{test_set}/baseline/{filename}/"
-                )
-                baseline_objects += uploaded
-
-                # Report the count, not the attempt. A baseline directory holding no
-                # files at its top level — empty, or one level deeper than expected —
-                # left this line claiming an upload that moved nothing, while the
-                # manifest row still named the `baseline/<document>/` prefix. The
-                # result is a test set an evaluation cannot score, described as ready.
-                if uploaded:
-                    console.print(f"  Uploaded baseline: {filename} ({uploaded} files)")
-                else:
+                    s3_client.upload_file(doc_path, test_set_bucket, s3_key)
+                    doc["document_path"] = f"s3://{test_set_bucket}/{s3_key}"
                     console.print(
-                        f"[yellow]  Warning: no baseline files found for {filename} "
-                        f"in {baseline_path} - its baseline_source will name an empty "
-                        f"prefix[/yellow]"
+                        f"  Uploaded input {i + 1}/{len(documents)}: {filename}"
                     )
+
+                # Upload baseline files
+                for filename, baseline_path in baseline_map.items():
+                    # Upload all files in the baseline directory recursively
+                    import glob as glob_module
+                    import os
+
+                    baseline_files = glob_module.glob(
+                        os.path.join(baseline_path, "**", "*"), recursive=True
+                    )
+                    uploaded = 0
+                    for baseline_file in baseline_files:
+                        if os.path.isfile(baseline_file):
+                            # Preserve directory structure relative to baseline_path
+                            rel_path = os.path.relpath(baseline_file, baseline_path)
+                            s3_key = f"{test_set}/baseline/{filename}/{rel_path}"
+                            s3_client.upload_file(
+                                baseline_file, test_set_bucket, s3_key
+                            )
+                            uploaded += 1
+
+                    # Update baseline_map to point to S3 location
+                    baseline_map[filename] = (
+                        f"s3://{test_set_bucket}/{test_set}/baseline/{filename}/"
+                    )
+                    baseline_objects += uploaded
+
+                    # Report the count, not the attempt. A baseline directory holding
+                    # no files at its top level — empty, or one level deeper than
+                    # expected — left this line claiming an upload that moved nothing,
+                    # while the manifest row still named the `baseline/<document>/`
+                    # prefix. The result is a test set an evaluation cannot score,
+                    # described as ready.
+                    if uploaded:
+                        console.print(
+                            f"  Uploaded baseline: {filename} ({uploaded} files)"
+                        )
+                    else:
+                        console.print(
+                            f"[yellow]  Warning: no baseline files found for {filename} "
+                            f"in {baseline_path} - its baseline_source will name an "
+                            f"empty prefix[/yellow]"
+                        )
 
         # Write manifest (2 columns only)
         if output:
@@ -3451,15 +3539,6 @@ def generate_manifest(
             console.print()
 
         if test_set:
-            # Remove .uploading marker now that all files are uploaded
-            marker_key = f"{test_set}/.uploading"
-            try:
-                s3_client.delete_object(Bucket=test_set_bucket, Key=marker_key)
-            except Exception as e:
-                console.print(
-                    f"[yellow]Warning: Could not remove upload marker: {e}[/yellow]"
-                )
-
             # Auto-register test set in tracking table
             _client2 = IDPClient(stack_name=stack_name, region=region)
             resources = _client2._get_stack_resources(stack_name)
@@ -4229,79 +4308,79 @@ def _create_test_set_from_manifest(
     except Exception as e:
         console.print(f"[yellow]Warning: Could not clear existing files: {e}[/yellow]")
 
-    # Place .uploading marker to prevent resolver race condition (issue #193)
-    marker_key = f"{test_set_name}/.uploading"
-    s3_client.put_object(
-        Bucket=test_set_bucket, Key=marker_key, Body=b"upload-in-progress"
-    )
-
-    # Copy input files
     baseline_sources = 0
     baseline_objects = 0
-    for _, row in df.iterrows():
-        source_path = str(row["document_path"])
-        filename = os.path.basename(source_path)
 
-        # Upload to test set input directory
-        s3_key = f"{test_set_name}/input/{filename}"
+    # The `.uploading` marker keeps the resolver away from a half-filled folder
+    # (issue #193), so removing it is what makes the test set visible. Every one of the
+    # failures inside this block used to escape past the removal statement that followed
+    # it, leaving a complete-and-invisible test set: a missing local input file, a
+    # `copy_object` whose source key is gone, a manifest row with no `document_path`
+    # column, a baseline file that vanished between the glob and the upload, and -- since
+    # the `s3://` baseline source became a real copy rather than a glob that silently
+    # matched nothing -- a baseline bucket that does not exist. See `_uploading_marker`.
+    with _uploading_marker(s3_client, test_set_bucket, test_set_name):
+        # Copy input files
+        for _, row in df.iterrows():
+            source_path = str(row["document_path"])
+            filename = os.path.basename(source_path)
 
-        if source_path.startswith("s3://"):
-            # Copy from S3 to S3
-            source_bucket, source_key = source_path[5:].split("/", 1)
-            s3_client.copy_object(
-                CopySource={"Bucket": source_bucket, "Key": source_key},
-                Bucket=test_set_bucket,
-                Key=s3_key,
-            )
-        else:
-            # Upload from local file
-            s3_client.upload_file(source_path, test_set_bucket, s3_key)
+            # Upload to test set input directory
+            s3_key = f"{test_set_name}/input/{filename}"
 
-        # Copy baseline if exists
-        if "baseline_source" in row and pd.notna(row["baseline_source"]):
-            baseline_path = str(row["baseline_source"])
-            baseline_sources += 1
-            copied = 0
-
-            if baseline_path.startswith("s3://"):
-                # An `s3://` baseline is what `generate-manifest --test-set` writes, so
-                # this is the ordinary shape of a manifest fed back in, not an exotic
-                # one. It is copied within S3 rather than globbed on the local disk.
-                copied = _copy_s3_baseline(
-                    s3_client,
-                    baseline_path,
-                    test_set_bucket,
-                    f"{test_set_name}/baseline/{filename}/",
+            if source_path.startswith("s3://"):
+                # Copy from S3 to S3
+                source_bucket, source_key = source_path[5:].split("/", 1)
+                s3_client.copy_object(
+                    CopySource={"Bucket": source_bucket, "Key": source_key},
+                    Bucket=test_set_bucket,
+                    Key=s3_key,
                 )
             else:
-                # Upload all files in the baseline directory recursively
-                import glob as glob_module
+                # Upload from local file
+                s3_client.upload_file(source_path, test_set_bucket, s3_key)
 
-                baseline_files = glob_module.glob(
-                    os.path.join(baseline_path, "**", "*"), recursive=True
-                )
-                for baseline_file in baseline_files:
-                    if os.path.isfile(baseline_file):
-                        # Preserve directory structure relative to baseline_path
-                        rel_path = os.path.relpath(baseline_file, baseline_path)
-                        s3_key = f"{test_set_name}/baseline/{filename}/{rel_path}"
-                        s3_client.upload_file(baseline_file, test_set_bucket, s3_key)
-                        copied += 1
+            # Copy baseline if exists
+            if "baseline_source" in row and pd.notna(row["baseline_source"]):
+                baseline_path = str(row["baseline_source"])
+                baseline_sources += 1
+                copied = 0
 
-            baseline_objects += copied
-            if copied == 0:
-                # A test set whose baselines are missing cannot score anything, and the
-                # row count printed at the end cannot show it, so say so per row.
-                console.print(
-                    f"[yellow]Warning: no baseline files found for {filename} at "
-                    f"{baseline_path} - nothing was uploaded for it[/yellow]"
-                )
+                if baseline_path.startswith("s3://"):
+                    # An `s3://` baseline is what `generate-manifest --test-set` writes,
+                    # so this is the ordinary shape of a manifest fed back in, not an
+                    # exotic one. It is copied within S3 rather than globbed locally.
+                    copied = _copy_s3_baseline(
+                        s3_client,
+                        baseline_path,
+                        test_set_bucket,
+                        f"{test_set_name}/baseline/{filename}/",
+                    )
+                else:
+                    # Upload all files in the baseline directory recursively
+                    import glob as glob_module
 
-    # Remove .uploading marker now that all files are uploaded (issue #193)
-    try:
-        s3_client.delete_object(Bucket=test_set_bucket, Key=marker_key)
-    except Exception as e:
-        console.print(f"[yellow]Warning: Could not remove upload marker: {e}[/yellow]")
+                    baseline_files = glob_module.glob(
+                        os.path.join(baseline_path, "**", "*"), recursive=True
+                    )
+                    for baseline_file in baseline_files:
+                        if os.path.isfile(baseline_file):
+                            # Preserve directory structure relative to baseline_path
+                            rel_path = os.path.relpath(baseline_file, baseline_path)
+                            s3_key = f"{test_set_name}/baseline/{filename}/{rel_path}"
+                            s3_client.upload_file(
+                                baseline_file, test_set_bucket, s3_key
+                            )
+                            copied += 1
+
+                baseline_objects += copied
+                if copied == 0:
+                    # A test set whose baselines are missing cannot score anything, and
+                    # the row count printed at the end cannot show it, so say so per row.
+                    console.print(
+                        f"[yellow]Warning: no baseline files found for {filename} at "
+                        f"{baseline_path} - nothing was uploaded for it[/yellow]"
+                    )
 
     console.print(
         f"[green]✓ Test set '{test_set_name}' created with {len(df)} files[/green]"

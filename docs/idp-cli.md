@@ -1578,6 +1578,16 @@ When using `--test-set`, the command:
 4. Creates proper test set structure for evaluation workflows
 5. Test set will be auto-detected by the Test Studio UI
 
+**If the upload fails partway through,** the `.uploading` marker object the command
+places under the test set's prefix is removed before it exits. That marker is what
+stops the Test Studio resolver registering a folder that is still being filled, so a
+marker left behind makes a folder invisible to the backend — and re-running the upload
+does not clear it, because the new run writes it again. The command exits non-zero and
+names what went wrong; the test set is either registered or absent, never complete and
+hidden. In the one case where the marker itself cannot be deleted (an IAM policy with
+`s3:PutObject` but not `s3:DeleteObject` on the test set bucket) the command **fails**
+rather than reporting success, and the error names the S3 object to delete by hand.
+
 **Overwriting an existing test set:** if the test set name already exists, everything
 under its prefix — including the baselines a previous evaluation was scored against —
 is deleted before the new files are uploaded, so the command asks for confirmation
