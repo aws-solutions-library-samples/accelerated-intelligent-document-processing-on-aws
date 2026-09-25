@@ -468,9 +468,10 @@ part of the report.
 - **Symptom**: "No request count data found for [step_name]"
 - **Solution**: Process documents through the full workflow to generate metering data with request counts
 
-**Assessment Rows Missing After Disabling Granular Assessment**:
-- **Symptom**: The report is produced, but it carries no Assessment TPM or RPM row
-- **Cause**: Assessment records its Bedrock calls under `GranularAssessment/...` keys while granular assessment is enabled, and those keys are excluded from the request count when it is disabled. A history recorded entirely under them therefore leaves Assessment with token demand and nothing countable, so its rows are dropped rather than sized from a request rate the current configuration has never produced. The Lambda log names the step and the reason.
+**Assessment RPM Row Missing After Disabling Granular Assessment**:
+- **Symptom**: The report is produced and carries an Assessment TPM row, but no Assessment RPM row
+- **Cause**: Assessment records its Bedrock calls under `GranularAssessment/...` keys while granular assessment is enabled, and those keys are excluded from the request count when it is disabled. A history recorded entirely under them therefore leaves Assessment with token demand and nothing countable, so its request rate is dropped rather than sized from a rate the current configuration has never produced. The Lambda log names the step and the reason.
+- **Why the TPM row is still there**: the token requirement is your own scheduled token demand measured against the account's Service Quotas value, and reads no metering at all — so nothing about it is unknown in this state, and processing more documents cannot change it. Only the request rate has no measurement behind it, and only the request rate is withheld.
 - **Solution**: Process a document under the current configuration, which records an `Assessment/...` key — or re-enable granular assessment, which brings the recorded history back into scope. Every other step is reported either way.
 
 **No Processing Time Data**:

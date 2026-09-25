@@ -45,7 +45,9 @@ does *with* measured timings; that one is about how the timings are measured.
 
 from __future__ import annotations
 
+import ast
 import json
+import pathlib
 from unittest.mock import MagicMock, patch
 
 import index
@@ -1189,26 +1191,156 @@ def test_the_headline_names_the_volume_and_the_pattern(monkeypatch):
     assert "Processing 2500 documents/hour using PATTERN-2" in first
 
 
-@pytest.mark.unit
-@pytest.mark.parametrize(
-    ("data_source", "described_as"),
-    [
-        ("environment_config", "environment configuration"),
-        ("document_timestamps", "unknown source"),
-    ],
-)
-def test_only_an_environment_derived_plan_has_its_source_described(
-    monkeypatch, data_source, described_as
-):
-    """`document_timestamps` is the *good* case and is still called unknown.
+def data_sources_this_module_can_produce():
+    """Every `dataSource` value `index.py` can put into a latency distribution.
 
-    The mapping recognises one value, so a plan built entirely from measured
-    document timestamps tells the operator its provenance is unknown — the least
-    trustworthy-sounding label attached to the most trustworthy data. Pinned as
-    current behaviour so a change to it is deliberate.
+    Derived from the source rather than listed, because a list is what the prose
+    mapping itself used to be: it recognised one spelling, and the check that it
+    was complete was somebody reading it. Three shapes assign this field and all
+    three are collected, so a fourth spelling anywhere in the module is picked
+    up without this function being edited:
+
+    * `data_source = "literal"` — the two inside `get_real_latency_metrics` and
+      the override in `calculate_latency_distribution`.
+    * `"dataSource": "literal"` in a dict literal — the no-demand early return.
+    * the default of a `.get("dataSource", "literal")` — the value a caller gets
+      when the field is absent, which is as reachable as any assigned one.
+
+    A `.get` whose default is a name rather than a literal, or an assignment
+    from a call, contributes nothing: those forward a value one of the shapes
+    above produced, and following them would mean interpreting the module
+    instead of reading it.
+
+    Returns a mapping of value to the (line, shape) sites that produce it, so a
+    failure can name where the unmapped value came from.
     """
+    field_names = {"dataSource", "data_source"}
+    tree = ast.parse(
+        pathlib.Path(index.__file__).read_text(encoding="utf-8"),
+        filename=index.__file__,
+    )
+
+    def is_str(node):
+        return isinstance(node, ast.Constant) and isinstance(node.value, str)
+
+    sites: dict[str, list[tuple[int, str]]] = {}
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Assign):
+            for target in node.targets:
+                if (
+                    isinstance(target, ast.Name)
+                    and target.id in field_names
+                    and is_str(node.value)
+                ):
+                    sites.setdefault(node.value.value, []).append(
+                        (node.lineno, "assignment")
+                    )
+        elif isinstance(node, ast.Dict):
+            for key, value in zip(node.keys, node.values):
+                if is_str(key) and key.value in field_names and is_str(value):
+                    sites.setdefault(value.value, []).append(
+                        (key.lineno, "dict literal")
+                    )
+        elif isinstance(node, ast.Call):
+            func = node.func
+            if (
+                isinstance(func, ast.Attribute)
+                and func.attr == "get"
+                and len(node.args) == 2
+                and is_str(node.args[0])
+                and node.args[0].value in field_names
+                and is_str(node.args[1])
+            ):
+                sites.setdefault(node.args[1].value, []).append(
+                    (node.lineno, ".get default")
+                )
+    return sites
+
+
+@pytest.mark.unit
+def test_the_derivation_of_producible_sources_finds_all_three_shapes():
+    """The authority the exhaustiveness check below rests on is not empty.
+
+    Without this, a walker that silently matched nothing — a renamed field, an
+    `ast` API change, a `Constant` check that rejects every node — would leave
+    the check below iterating an empty set and *passing*, which is the shape of
+    a green mark that means nothing. Each of the three shapes is asserted to
+    have contributed, so the walker cannot degrade to recognising only the
+    easiest one and still look complete.
+    """
+    sites = data_sources_this_module_can_produce()
+    assert sites, "derived no dataSource values at all"
+    shapes = {shape for found in sites.values() for _, shape in found}
+    assert shapes == {"assignment", "dict literal", ".get default"}, shapes
+
+
+@pytest.mark.unit
+def test_every_source_this_module_can_produce_has_prose_and_no_prose_is_unproducible():
+    """The mapping is closed against the module, in both directions.
+
+    Forwards: a source added to `index.py` without an entry here is what put
+    "(based on unknown source)" on the most trustworthy plan the planner can
+    build, so a new one fails this rather than reaching an operator.
+
+    Backwards, which is the half that catches the original defect at its root:
+    an entry nothing can produce is dead, and a mapping allowed to carry dead
+    entries is one whose coverage cannot be read off it. `"environment_config"`
+    was the only value the prose recognised and nothing has ever assigned it, so
+    the mapping looked populated while describing no reachable plan at all.
+    """
+    sites = data_sources_this_module_can_produce()
+    described = set(index.DATA_SOURCE_DESCRIPTIONS)
+    undescribed = {value: sites[value] for value in set(sites) - described}
+    assert not undescribed, (
+        "index.py can produce these dataSource values and "
+        f"DATA_SOURCE_DESCRIPTIONS has no prose for them: {undescribed}"
+    )
+    unproducible = described - set(sites)
+    assert not unproducible, (
+        "DATA_SOURCE_DESCRIPTIONS describes values nothing in index.py assigns, "
+        f"so they can never be read by an operator: {sorted(unproducible)}"
+    )
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("data_source", sorted(index.DATA_SOURCE_DESCRIPTIONS))
+def test_each_described_source_reaches_the_headline_as_its_prose(
+    monkeypatch, data_source
+):
+    """Having an entry is not the same as the entry being used.
+
+    The check above compares two sets and would pass over a mapping that the
+    headline never consults, so every entry is also driven through the function
+    and found in the text. Parametrized over the mapping itself rather than a
+    copy of it, so an added entry is exercised here without this test being
+    edited — the property that a literal list of cases cannot have.
+    """
+    expected = index.DATA_SOURCE_DESCRIPTIONS[data_source]
     first = recommend(monkeypatch, {"dataSource": data_source})[0]
-    assert f"based on {described_as}" in first
+    assert f"(based on {expected})" in first
+
+
+@pytest.mark.unit
+def test_a_source_from_outside_this_module_is_named_rather_than_called_unknown(
+    monkeypatch,
+):
+    """The fallback is diagnosable, and it is reachable.
+
+    This function takes the distribution as an argument, so a value the mapping
+    does not hold can arrive from a caller however closed the mapping is against
+    `index.py` — which is why the fallback is not dead code and why it names the
+    value verbatim. Flattening it to "unknown source" was what made the original
+    defect invisible: the field was carrying `"document_timestamps"` all along
+    and nothing in the report said so.
+
+    Asserted with a value chosen to be absent from the mapping, and that absence
+    is asserted rather than assumed, so the case cannot quietly start testing
+    the mapped path if the spelling is ever adopted.
+    """
+    novel = "a_source_added_after_this_test_was_written"
+    assert novel not in index.DATA_SOURCE_DESCRIPTIONS
+    first = recommend(monkeypatch, {"dataSource": novel})[0]
+    assert f"(based on unrecognised source '{novel}')" in first
 
 
 @pytest.mark.unit
