@@ -153,14 +153,18 @@ class _FakeOrchestrator:
 class Streamed:
     """What the browser and the chat history table would have received."""
 
-    def __init__(self, deltas, final, returned):
+    def __init__(self, deltas, processing_flags, final, returned):
         self.deltas = deltas
+        # `is_processing` per delta. Kept because it decides how the delta is
+        # *rendered*, not merely whether a spinner shows -- see
+        # test_every_streamed_delta_is_marked_still_processing.
+        self.processing_flags = processing_flags
         self.final = final
         self.returned = returned
 
     @property
     def streamed(self) -> str:
-        """The in-flight bubble's text. ChatPanel *appends* each delta."""
+        """The in-flight bubble's text. `use-agent-chat.ts` *appends* each delta."""
         return "".join(self.deltas)
 
 
@@ -177,8 +181,10 @@ def drive(processor, chunks, with_result: bool = True) -> Streamed:
     finally:
         processor.set_sink(None)
 
+    streaming = [e for e in events if e["method"] == "assistant_stream"]
     return Streamed(
-        [e["content"] for e in events if e["method"] == "assistant_stream"],
+        [e["content"] for e in streaming],
+        [e["is_processing"] for e in streaming],
         next(
             (
                 e["content"]
@@ -261,8 +267,11 @@ def test_no_split_of_the_response_into_up_to_three_chunks_misbehaves(processor):
         for chunks in splits(RESPONSE, pieces):
             total += 1
             result = drive(processor, chunks)
-            leaked = REASONING in result.streamed or "think" in result.streamed
-            if leaked or result.streamed != ANSWER or result.returned != ANSWER:
+            # No separate leak term: `streamed != ANSWER` already covers it, since
+            # text that leaks reasoning or a tag fragment cannot also equal the
+            # answer. A `leaked` disjunct here would never be the reason this
+            # fails, which is the shape of apparent coverage worth not having.
+            if result.streamed != ANSWER or result.returned != ANSWER:
                 bad.append((chunks, result.deltas, result.returned))
 
     assert total == 631, total
@@ -366,7 +375,23 @@ def test_a_response_with_no_block_is_delivered_unchanged(processor, text):
             assert result.returned == expected, chunks
 
 
-def test_an_unterminated_block_is_never_streamed(processor):
+@pytest.mark.parametrize(
+    "reasoning",
+    [
+        "the stream died here",
+        # Ends on a proper prefix of the closing tag, which is the *only* input
+        # shape that reaches the `self._inside` guard in `close`. With reasoning
+        # ending on any other character the filter is holding nothing by then, so
+        # the guard is never consulted and deleting it changes no output -- that
+        # was measured, with the case above as the sole input, and the deletion
+        # survived the whole suite green. What it would release is bounded (at most
+        # ten characters, always a proper prefix of `</thinking>`) but it is
+        # reasoning the model did not intend to show, and it is the decision this
+        # test claims to hold.
+        "secret plan</th",
+    ],
+)
+def test_an_unterminated_block_is_never_streamed(processor, reasoning):
     """
     A stream that stops inside a block shows the text before it and nothing more.
 
@@ -374,9 +399,10 @@ def test_an_unterminated_block_is_never_streamed(processor):
     answer to show, so the choice is between showing the reasoning and showing
     nothing, and showing the reasoning is the failure being fixed.
     """
-    result = drive(processor, ["Checking. ", "<thinking>the stream died here"])
+    result = drive(processor, ["Checking. ", f"<thinking>{reasoning}"])
 
-    assert "the stream died here" not in result.streamed
+    assert reasoning not in result.streamed
+    assert "</th" not in result.streamed
     assert result.streamed == "Checking."
     assert result.returned == "Checking."
 
@@ -440,6 +466,39 @@ def test_the_held_tail_is_released_exactly_once(processor):
     # `close` would add a third carrying the tail again.
     assert len(result.deltas) == 2, result.deltas
     assert result.returned == "The opener is <think"
+
+
+@pytest.mark.parametrize(
+    "chunks",
+    [
+        ["Answer"],
+        # The tail release is a second publish site and takes its own arguments,
+        # so it is asserted on an input that produces one.
+        ["The opener is <think"],
+        ["<thinking>reason", "ing</thinking>Answer"],
+    ],
+)
+def test_every_streamed_delta_is_marked_still_processing(processor, chunks):
+    """
+    `is_processing` on an `assistant_stream` delta decides how it is *rendered*.
+
+    `app.py` puts the flag on the SSE frame as `isProcessing` beside
+    `role: "assistant"`, and `use-agent-chat.ts` treats `not isProcessing` on an
+    assistant message as a final response -- a branch that **overwrites** the
+    bubble rather than appending to it. So a delta sent with `False` does not
+    merely hide a spinner: it replaces the whole rendered answer with that delta's
+    text. For the tail release, whose delta is at most ten characters, that would
+    leave a ten-character answer on screen.
+
+    Every delta must therefore say the turn is still in progress, including the
+    one the tail release publishes. Nothing else in this file reads the flag, and
+    with it unread the tail release could be flipped to `False` with all 270 tests
+    green -- measured.
+    """
+    result = drive(processor, chunks)
+
+    assert result.processing_flags, "expected at least one streamed delta"
+    assert all(result.processing_flags), result.processing_flags
 
 
 # --- the filter in isolation -------------------------------------------------
