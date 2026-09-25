@@ -65,7 +65,7 @@ copyrighted work, hosted here with their permission and unmodified — see
 [PROVENANCE.md](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/blob/develop/docs/analyst-reports/PROVENANCE.md)
 for each report's rights grant.
 
-- **[Deep Analysis — *Vendor Analysis: AWS GenAI IDP Accelerator*](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/blob/develop/docs/analyst-reports/deep-analysis-aws-genai-idp-accelerator-2026-08.pdf)**
+- **[Deep Analysis — *Vendor Analysis: AWS GenAI IDP Accelerator*](https://aws-solutions-library-samples.github.io/accelerated-intelligent-document-processing-on-aws/analyst-reports/deep-analysis-aws-genai-idp-accelerator-2026-08.pdf)**
   *(Aug 2026, 9 pages)* — A follow-up to the firm's November 2025 review, which
   had judged the accelerator "a capable developers-only offering" with a steep
   learning curve. Nine months on it finds the progress "striking," crediting

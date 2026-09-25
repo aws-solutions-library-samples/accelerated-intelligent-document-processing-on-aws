@@ -6,6 +6,12 @@ it is not covered by this repository's MIT-0 license, and it may not be modified
 Add a report to this directory only when the publisher has granted redistribution
 rights in writing, and record that grant below.
 
+**This directory is published.** `docs-site/setup.sh` symlinks it into
+`docs-site/public/`, so every file here is copied into `dist/` and served by the
+documentation site at
+`https://aws-solutions-library-samples.github.io/accelerated-intelligent-document-processing-on-aws/analyst-reports/<file>`
+— including this file. Nothing here is internal.
+
 ## Deep Analysis — *Vendor Analysis: AWS GenAI IDP Accelerator*
 
 | | |
@@ -29,6 +35,3 @@ Agent Companion, the analytics agent, and the extensions catalog — closing wit
 advice to buyers and a SOAR analysis. It is a follow-up to the firm's
 November 2025 review.
 
-**Note.** Figure 1 (page 4) is a screenshot of a live console session and shows
-an AWS employee's email address. It is the publisher's own figure and is
-reproduced unaltered.
