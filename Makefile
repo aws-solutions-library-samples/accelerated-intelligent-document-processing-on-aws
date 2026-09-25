@@ -263,6 +263,27 @@ coverage-table: ## Print a tree's table from the last run, without re-measuring 
 coverage-all: ## Measure EVERY tree (9 of them) and print each one's figure
 	@python3 scripts/coverage_all.py $(COVERAGE_ARGS)
 
+# What both CIs run, and the reason the ratchet can now reach more than one tree.
+# Before this, the only report either CI produced was lib/idp_common_pkg's, so
+# check_coverage_debt reported EIGHT of its nine trees as "not checked (no report
+# from this run)" and exited 0 -- an advisory-but-passing gate over the trees where
+# coverage had actually been lost, including this repository's own hook guards
+# (issue #1256).
+#
+# Two things keep the added wall clock down, and neither is a cache (caching is a
+# deliberate follow-up on #1256, not part of this):
+#   --jobs   measures trees concurrently. It has to be concurrency ACROSS trees:
+#            `scripts` declares Tree.serial because xdist under-collects a suite that
+#            drives its subject as a subprocess, so that tree cannot be sped up from
+#            the inside and its ~989 s is hidden behind the other eight instead.
+#   --skip   leaves out the one tree an earlier CI step already measured. The ratchet
+#            step below still requires it BY NAME, so dropping the wrong tree here
+#            turns the gate red rather than quietly narrowing it.
+COVERAGE_CICD_JOBS ?= 4
+COVERAGE_CICD_SKIP ?= --skip idp_common
+coverage-all-cicd: ## Produce a coverage report for every tree except those an earlier step measured, trees run concurrently
+	@python3 scripts/coverage_all.py --jobs $(COVERAGE_CICD_JOBS) $(COVERAGE_CICD_SKIP) $(COVERAGE_ARGS)
+
 coverage-summary: ## Print the recorded per-tree figures, without measuring anything
 	@python3 scripts/check_coverage_debt.py --summary
 
@@ -278,6 +299,14 @@ coverage-summary: ## Print the recorded per-tree figures, without measuring anyt
 CHECK_COVERAGE_DEBT_ARGS ?=
 check-coverage-debt: ## Ratchet per-file coverage across all 9 trees: fail if a file loses coverage, or a new module arrives unratcheted
 	@python3 scripts/check_coverage_debt.py $(CHECK_COVERAGE_DEBT_ARGS)
+
+# The CI form. `--require-all-trees` is the difference and it is not cosmetic: with no
+# argument this gate NAMES an unmeasured tree and exits 0, so the eight trees CI never
+# measured were reported and passed for as long as that was the arrangement. Requiring
+# every tree turns a missing report into a red mark that names the tree. The list is
+# derived from the registry inside the script, so adding a Tree cannot leave it behind.
+check-coverage-debt-cicd: ## The ratchet, failing by name if ANY registry tree has no report from this run
+	@python3 scripts/check_coverage_debt.py --require-all-trees $(CHECK_COVERAGE_DEBT_ARGS)
 
 check-lint-debt: ## Ratchet ruff's per-file exclusions: fail if an excluded file gains a finding, or is now clean (issue #975)
 	@# ruff.toml used to exclude five BARE directory names, which match at any

@@ -748,7 +748,26 @@ def main() -> int:
             "saying only that nothing was checked."
         ),
     )
+    parser.add_argument(
+        "--require-all-trees",
+        action="store_true",
+        help=(
+            "Fail unless EVERY tree in the registry was checked. What both CI "
+            "configurations pass, now that they produce a report per tree"
+        ),
+    )
     args = parser.parse_args()
+
+    if args.require_all_trees:
+        # Derived from the registry, never enumerated by the caller. A Makefile or CI
+        # config listing the nine names would be a second copy of the registry, and the
+        # copy that goes stale is the one that decides what this gate is allowed to skip --
+        # so a tree added to TREES and forgotten there would be unratcheted while the gate
+        # reported that every tree was required. Issue #1256.
+        args.require_tree = [
+            *args.require_tree,
+            *(t.name for t in TREES if t.name not in set(args.require_tree)),
+        ]
 
     unknown = [n for n in args.require_tree if n not in TREES_BY_NAME]
     if unknown:

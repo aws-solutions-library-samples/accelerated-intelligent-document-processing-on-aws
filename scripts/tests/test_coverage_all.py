@@ -31,6 +31,7 @@ from __future__ import annotations
 import importlib.util
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 import pytest
@@ -105,7 +106,10 @@ class TestTheCommandItBuilds:
         monkeypatch.setattr(sys, "argv", ["coverage_all.py"])
         assert cov_all.main() == 0
         capsys.readouterr()
-        assert [c[1].name for c in rec.calls] == ["alpha", "beta"]
+        # Sorted, not ordered: trees are measured concurrently, so which tree's
+        # subprocess is spawned first is not a property. `--jobs 1` is where the
+        # order is pinned, in TestTreesAreMeasuredConcurrently below.
+        assert sorted(c[1].name for c in rec.calls) == ["alpha", "beta"]
 
     def test_the_report_lands_where_the_ratchet_looks_for_it(
         self, monkeypatch, tmp_path, capsys
@@ -238,7 +242,7 @@ class TestFailuresAreDistinguishableFromCleanRuns:
         monkeypatch.setattr(sys, "argv", ["coverage_all.py"])
         assert cov_all.main() == 1
         capsys.readouterr()
-        assert calls == ["a", "b", "c"]
+        assert sorted(calls) == ["a", "b", "c"]
 
     def test_a_tree_that_produced_no_report_is_shown_as_such_not_as_zero_percent(
         self, monkeypatch, tmp_path, capsys
@@ -296,7 +300,7 @@ class TestTreeSelection:
         )
         assert cov_all.main() == 0
         capsys.readouterr()
-        assert [c[1].name for c in rec.calls] == ["c", "a"]
+        assert sorted(c[1].name for c in rec.calls) == ["a", "c"]
 
     def test_an_unknown_tree_name_exits_2_and_lists_the_known_ones(
         self, monkeypatch, tmp_path, capsys
@@ -377,8 +381,9 @@ class TestASerialTreeIsNeverRunInParallel:
         monkeypatch.setattr(sys, "argv", ["coverage_all.py"])
         assert cov_all.main() == 0
         capsys.readouterr()
-        assert "-n" not in rec.calls[0][0]
-        assert "-n" in rec.calls[1][0]
+        by_name = {c[1].name: c[0] for c in rec.calls}
+        assert "-n" not in by_name["ser"]
+        assert "-n" in by_name["par"]
 
     def test_the_scripts_tree_is_declared_serial_in_the_real_registry(self):
         """Not a synthetic tree: the one this was measured on.
@@ -388,3 +393,271 @@ class TestASerialTreeIsNeverRunInParallel:
         real 95%-plus baselines get re-recorded 10 and 33 points lower.
         """
         assert ccd.TREES_BY_NAME["scripts"].serial is True
+
+
+@pytest.mark.unit
+class TestTreesAreMeasuredConcurrently:
+    """Why the concurrency exists, and why it has to be *across* trees.
+
+    Both CI configurations now run this producer before the ratchet, which is the whole of
+    issue #1256: before that, the only report either CI wrote was `idp_common`'s and the
+    ratchet named the other eight trees as "not checked" and exited 0. Producing nine
+    reports sequentially is a wall clock nobody accepts — `scripts` alone measures 989 s.
+
+    It cannot be made faster from the inside, either: `scripts` declares `Tree.serial`
+    because xdist under-collects a suite that drives its subject as a subprocess, so
+    `-n auto` there is a correctness bug rather than a speed-up. The only remaining axis is
+    to measure the other trees while it runs, which is what these tests assert — by
+    **observing overlap**, not by reading the flag back.
+    """
+
+    @staticmethod
+    def _observing_recorder(hold: float = 0.05):
+        """A fake `subprocess.run` that records how many calls were ever in flight."""
+        import threading
+
+        state = {"live": 0, "peak": 0, "order": []}
+        lock = threading.Lock()
+
+        def run(cmd, cwd=None, **kwargs):
+            with lock:
+                state["live"] += 1
+                state["peak"] = max(state["peak"], state["live"])
+                state["order"].append(Path(cwd).name)
+            time.sleep(hold)
+            with lock:
+                state["live"] -= 1
+            return subprocess.CompletedProcess(cmd, 0)
+
+        return run, state
+
+    def test_several_trees_really_are_in_flight_at_once(
+        self, monkeypatch, tmp_path, capsys
+    ):
+        """Measured by overlap, because a flag that is parsed is not work that overlapped.
+
+        The assertion that would be vacuous here is `"--jobs" in sys.argv` or a check that
+        a ThreadPoolExecutor was constructed: both pass over a `main()` that then runs the
+        trees one after another. So the fake subprocess counts how many calls were live
+        simultaneously, and the peak has to exceed one.
+        """
+        trees = [_fake_tree(tmp_path, n) for n in ("a", "b", "c", "d")]
+        run, state = self._observing_recorder()
+        _install(monkeypatch, tmp_path, trees, run)
+        monkeypatch.setattr(sys, "argv", ["coverage_all.py", "--jobs", "4"])
+        assert cov_all.main() == 0
+        capsys.readouterr()
+        assert state["peak"] > 1, (
+            f"four trees with --jobs 4 never overlapped (peak in flight "
+            f"{state['peak']}), so the run is sequential whatever the flag says"
+        )
+        assert sorted(state["order"]) == ["a", "b", "c", "d"]
+
+    def test_jobs_one_is_sequential_and_keeps_registry_order(
+        self, monkeypatch, tmp_path, capsys
+    ):
+        """The other direction, so the previous test is not passing on a fixed pool size.
+
+        `--jobs 1` is also the only mode in which call order is a property: it is what a
+        developer reaches for when reading interleaved output is the problem.
+        """
+        trees = [_fake_tree(tmp_path, n) for n in ("a", "b", "c", "d")]
+        run, state = self._observing_recorder(hold=0.01)
+        _install(monkeypatch, tmp_path, trees, run)
+        monkeypatch.setattr(sys, "argv", ["coverage_all.py", "--jobs", "1"])
+        assert cov_all.main() == 0
+        capsys.readouterr()
+        assert state["peak"] == 1, state
+        assert state["order"] == ["a", "b", "c", "d"]
+
+    def test_the_default_is_concurrent(self, monkeypatch, tmp_path, capsys):
+        """With no flag at all. CI passes `--jobs`, but a default of 1 would mean the
+        local target and the CI target measure the same trees at wildly different cost,
+        and the local one is where the number is usually first read."""
+        trees = [_fake_tree(tmp_path, n) for n in ("a", "b", "c", "d")]
+        run, state = self._observing_recorder()
+        _install(monkeypatch, tmp_path, trees, run)
+        monkeypatch.setattr(sys, "argv", ["coverage_all.py"])
+        assert cov_all.main() == 0
+        capsys.readouterr()
+        assert state["peak"] > 1, state
+
+    def test_no_tree_is_ever_given_n_auto(self, monkeypatch, tmp_path, capsys):
+        """The oversubscription bug concurrency introduces, asserted against directly.
+
+        `-n auto` asks xdist for one worker per CPU **per process**, so four concurrent
+        trees each carrying it request four times the host. On a CI runner that is slower
+        than the sequential run it replaced, which would make this whole change a
+        regression that still looks like parallelism in the log.
+        """
+        trees = [_fake_tree(tmp_path, n) for n in ("a", "b", "c", "d")]
+        rec = _Recorder()
+        _install(monkeypatch, tmp_path, trees, rec)
+        monkeypatch.setattr(sys, "argv", ["coverage_all.py", "--jobs", "4"])
+        assert cov_all.main() == 0
+        capsys.readouterr()
+        for cmd, _ in rec.calls:
+            assert "auto" not in cmd, cmd
+            n = cmd[cmd.index("-n") + 1]
+            assert n.isdigit() and int(n) >= 2, cmd
+
+    def test_the_worker_budget_divides_the_host_between_concurrent_trees(self):
+        """`worker_share` is the division, and both ends of it matter.
+
+        One tree gets the whole host; four trees get a quarter each; and a tree never
+        drops below 2 workers, because a one-worker xdist run pays the startup of
+        parallelism for none of the benefit.
+        """
+        assert cov_all.worker_share(1, cpus=16) == 16
+        assert cov_all.worker_share(4, cpus=16) == 4
+        assert cov_all.worker_share(8, cpus=16) == 2
+        assert cov_all.worker_share(32, cpus=4) == 2, "floor of 2 workers"
+        assert cov_all.worker_share(4, cpus=1) == 2
+
+    def test_the_cpu_count_is_the_affinity_mask_not_the_machine(self):
+        """A CI runner is a container on a bigger host, so `os.cpu_count()` overstates it
+        — and xdist's own `auto` reads the affinity mask, so anything else hands out
+        shares of a machine larger than the one the trees run on."""
+        import os as _os
+
+        if not hasattr(_os, "sched_getaffinity"):  # pragma: no cover - non-Linux
+            pytest.skip("no sched_getaffinity on this platform")
+        assert cov_all.cpu_count() == len(_os.sched_getaffinity(0))
+
+    def test_each_trees_output_is_printed_as_one_block_under_its_own_heading(
+        self, monkeypatch, tmp_path, capsys
+    ):
+        """Interleaved pytest output from four trees is unreadable, and this is the
+        producer for a gate: a reader who cannot find a failure summary reads a failed
+        run as a slow one."""
+        trees = [_fake_tree(tmp_path, n) for n in ("a", "b", "c")]
+
+        def run(cmd, cwd=None, **kwargs):
+            name = Path(cwd).name
+            return subprocess.CompletedProcess(
+                cmd, 0, stdout=f"line1-{name}\nline2-{name}\n", stderr=""
+            )
+
+        _install(monkeypatch, tmp_path, trees, run)
+        monkeypatch.setattr(sys, "argv", ["coverage_all.py", "--jobs", "3"])
+        assert cov_all.main() == 0
+        out = capsys.readouterr().out
+        for name in ("a", "b", "c"):
+            block = out.index(f"coverage: {name} ")
+            assert out.index(f"line1-{name}", block) < out.index(
+                f"line2-{name}", block
+            ), out
+            # Nothing from another tree between this tree's heading and its last line.
+            span = out[block : out.index(f"line2-{name}", block)]
+            for other in set("abc") - {name}:
+                assert f"line1-{other}" not in span, span
+
+    def test_each_tree_gets_its_own_coverage_data_file(
+        self, monkeypatch, tmp_path, capsys
+    ):
+        """Two concurrent trees sharing one `.coverage` would interleave into one data set
+        and each report the other's lines, with both reports well-formed. The default
+        filename is per-cwd, which is *usually* distinct — and "usually" is not a property
+        a measurement can rest on."""
+        trees = [_fake_tree(tmp_path, n) for n in ("a", "b", "c")]
+        seen: list[str] = []
+
+        def run(cmd, cwd=None, env=None, **kwargs):
+            assert env is not None, "no env passed, so COVERAGE_FILE is unset"
+            seen.append(env["COVERAGE_FILE"])
+            return subprocess.CompletedProcess(cmd, 0)
+
+        _install(monkeypatch, tmp_path, trees, run)
+        monkeypatch.setattr(sys, "argv", ["coverage_all.py", "--jobs", "3"])
+        assert cov_all.main() == 0
+        capsys.readouterr()
+        assert len(set(seen)) == 3, seen
+
+
+@pytest.mark.unit
+class TestSkippingATreeAnEarlierStepMeasured:
+    """`--skip` is how CI avoids re-running the one suite it has already run.
+
+    It is the risky half of the wall-clock work: a skip is indistinguishable from a
+    missing report at this level, and a missing report is the #1256 defect itself. What
+    makes it safe is not anything here — it is that the ratchet step is invoked with
+    `--require-all-trees`, so a tree skipped here and produced by nobody is red BY NAME.
+    These tests cover the part that belongs to this script: a skip that does what it says,
+    and a misspelling that cannot pass for one.
+    """
+
+    def test_a_skipped_tree_is_not_measured_and_the_rest_are(
+        self, monkeypatch, tmp_path, capsys
+    ):
+        trees = [_fake_tree(tmp_path, n) for n in ("a", "b", "c")]
+        rec = _Recorder()
+        _install(monkeypatch, tmp_path, trees, rec)
+        monkeypatch.setattr(sys, "argv", ["coverage_all.py", "--skip", "b"])
+        assert cov_all.main() == 0
+        out = capsys.readouterr().out
+        assert sorted(c[1].name for c in rec.calls) == ["a", "c"]
+        # And it is not silently reported as a tree with no coverage.
+        assert "  b " not in out, out
+
+    def test_an_unknown_skip_name_exits_2_and_measures_nothing(
+        self, monkeypatch, tmp_path, capsys
+    ):
+        """A typo must not measure the tree the caller believes it excluded, nor exclude
+        nothing while reporting success — either way the caller's cost expectation and
+        the set of reports produced stop matching."""
+        trees = [_fake_tree(tmp_path, n) for n in ("a", "b")]
+        rec = _Recorder()
+        _install(monkeypatch, tmp_path, trees, rec)
+        monkeypatch.setattr(sys, "argv", ["coverage_all.py", "--skip", "bee"])
+        assert cov_all.main() == 2
+        out = capsys.readouterr().out
+        assert "bee" in out and "'b'" in out, out
+        assert rec.calls == [], "nothing should have been run"
+
+    def test_skipping_every_tree_exits_2_rather_than_reporting_success(
+        self, monkeypatch, tmp_path, capsys
+    ):
+        """Otherwise the producer for a gate can be told to produce nothing and say it
+        worked, which is the state #1190 and #1256 are both about."""
+        trees = [_fake_tree(tmp_path, n) for n in ("a", "b")]
+        rec = _Recorder()
+        _install(monkeypatch, tmp_path, trees, rec)
+        monkeypatch.setattr(
+            sys, "argv", ["coverage_all.py", "--skip", "a", "--skip", "b"]
+        )
+        assert cov_all.main() == 2
+        capsys.readouterr()
+        assert rec.calls == []
+
+    def test_a_non_positive_jobs_count_exits_2(self, monkeypatch, tmp_path, capsys):
+        """`--jobs 0` must not mean "measure nothing" and must not mean "unbounded"."""
+        trees = [_fake_tree(tmp_path, "a")]
+        rec = _Recorder()
+        _install(monkeypatch, tmp_path, trees, rec)
+        monkeypatch.setattr(sys, "argv", ["coverage_all.py", "--jobs", "0"])
+        assert cov_all.main() == 2
+        capsys.readouterr()
+        assert rec.calls == []
+
+    def test_the_cicd_makefile_target_skips_exactly_the_tree_CI_already_measured(self):
+        """The Makefile's `COVERAGE_CICD_SKIP` names one tree, and it has to be the one
+        an earlier CI step really produces a report for. Skipping any other tree would
+        leave it unmeasured, which `--require-all-trees` then makes red — loud, but the
+        point is to not ship it."""
+        makefile = (REPO_ROOT / "Makefile").read_text(encoding="utf-8")
+        line = next(
+            ln for ln in makefile.splitlines() if ln.startswith("COVERAGE_CICD_SKIP ?=")
+        )
+        skipped = [w for w in line.split()[2:] if w != "--skip"]
+        assert skipped == ["idp_common"], line
+        # The RECIPE, not just the variable. Deleting the recipe body leaves a target
+        # that exists, runs nothing, and produces no report for any tree — which is
+        # #1256 restored, with `make coverage-all-cicd` still green in both CI logs.
+        # Measured: that deletion left this test passing until this assertion existed.
+        recipe = makefile.split("\ncoverage-all-cicd:")[1].split("\n\n")[0]
+        assert "scripts/coverage_all.py" in recipe, recipe
+        assert "--jobs $(COVERAGE_CICD_JOBS)" in recipe, recipe
+        assert "$(COVERAGE_CICD_SKIP)" in recipe, recipe
+        # And that tree's report is the one the ratchet accepts from the existing step.
+        assert ccd.LEGACY_IDP_COMMON_REPORT.name == "coverage.xml"
+        assert ccd.TREES_BY_NAME["idp_common"].cwd == "lib/idp_common_pkg"

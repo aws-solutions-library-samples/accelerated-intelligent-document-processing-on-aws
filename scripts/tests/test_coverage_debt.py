@@ -1515,3 +1515,185 @@ class TestTheCIPreconditionNeedsNoCIChange:
             if block.startswith("coverage-debt:")
         )
         assert "$(CHECK_COVERAGE_DEBT_ARGS)" in recipe.split("\n\n")[0], recipe[:400]
+
+
+def _invoked_commands(config: Path) -> set[str]:
+    """Every shell command a CI config actually runs, with comments removed.
+
+    GitHub spells a step's command `run: <cmd>`; GitLab spells it `- <cmd>` inside a
+    `script:` list. Both allow a trailing `# ...` comment on the same line, and both allow
+    a whole line to be commented out — so the text of a disabled invocation survives in the
+    file, and a substring search cannot tell it from a live one. That is the difference this
+    helper exists to make, because the gate being checked here is one whose entire defect
+    was reading as present while doing nothing.
+    """
+    commands: set[str] = set()
+    for raw in config.read_text(encoding="utf-8").splitlines():
+        line = raw.strip()
+        if line.startswith("#"):
+            continue
+        if line.startswith("run:"):
+            line = line[len("run:") :]
+        elif line.startswith("- "):
+            line = line[2:]
+        else:
+            continue
+        # Strip a trailing same-line comment. No CI command here carries a literal `#`.
+        commands.add(line.split("#")[0].strip())
+    return commands
+
+
+@pytest.mark.unit
+class TestRequireAllTreesIsDerivedFromTheRegistry:
+    """What both CI steps now pass, and why it is one flag rather than nine arguments.
+
+    Before it existed, CI produced one report of nine and this gate **named** the other
+    eight as "not checked (no report from this run)" and exited 0. Eight trees'
+    baselines — including the two files that are this repository's own commit-text and
+    shared-branch guards — were therefore ratcheted by nothing while a green tick said
+    otherwise. Issue #1256.
+
+    The property that matters is that the required set is **derived from** :data:`TREES`,
+    not written out by the caller. A Makefile or CI config spelling the nine names would be
+    a second copy of the registry, and the copy that rots is the one deciding what the gate
+    may skip: a tenth tree added to `TREES` and forgotten in that list would be unratcheted
+    while the gate reported that every tree was required.
+    """
+
+    def test_it_fails_naming_every_tree_that_produced_no_report(
+        self, monkeypatch, tmp_path, capsys
+    ):
+        measured = _fake_tree(tmp_path, "measured")
+        absent_a = _fake_tree(tmp_path, "absent_a")
+        absent_b = _fake_tree(tmp_path, "absent_b")
+        _install(
+            monkeypatch,
+            tmp_path,
+            [measured, absent_a, absent_b],
+            {"trees": {"measured": {"total": 90.0, "files": {"pkg/mod.py": 90.0}}}},
+        )
+        _write_tree_report(measured, {"mod.py": 90.0})
+        monkeypatch.setattr(ccd, "tracked_source_files", lambda t: ["pkg/mod.py"])
+        monkeypatch.setattr(
+            sys, "argv", ["check_coverage_debt.py", "--require-all-trees"]
+        )
+        assert ccd.main() == 2
+        out = capsys.readouterr().out
+        assert "✅" not in out, out
+        for name in ("absent_a", "absent_b"):
+            assert f"--require-tree={name}" in out, out
+
+    def test_without_the_flag_the_same_state_passes_which_is_the_defect(
+        self, monkeypatch, tmp_path, capsys
+    ):
+        """The control. Two of three trees unmeasured and the gate exits 0 and prints ✅ —
+        the state both CIs were in. Asserting the flag's effect without asserting that the
+        unflagged run behaves differently would leave the flag untested against a gate
+        that already failed on its own."""
+        measured = _fake_tree(tmp_path, "measured")
+        absent_a = _fake_tree(tmp_path, "absent_a")
+        absent_b = _fake_tree(tmp_path, "absent_b")
+        _install(
+            monkeypatch,
+            tmp_path,
+            [measured, absent_a, absent_b],
+            {"trees": {"measured": {"total": 90.0, "files": {"pkg/mod.py": 90.0}}}},
+        )
+        _write_tree_report(measured, {"mod.py": 90.0})
+        monkeypatch.setattr(ccd, "tracked_source_files", lambda t: ["pkg/mod.py"])
+        monkeypatch.setattr(sys, "argv", ["check_coverage_debt.py"])
+        assert ccd.main() == 0
+        assert "✅" in capsys.readouterr().out
+
+    def test_it_is_satisfied_when_every_tree_was_checked(
+        self, monkeypatch, tmp_path, capsys
+    ):
+        """The other direction, so the flag is not simply "always fail"."""
+        a, b = _fake_tree(tmp_path, "a"), _fake_tree(tmp_path, "b")
+        _install(
+            monkeypatch,
+            tmp_path,
+            [a, b],
+            {
+                "trees": {
+                    "a": {"total": 90.0, "files": {"pkg/mod.py": 90.0}},
+                    "b": {"total": 90.0, "files": {"pkg/mod.py": 90.0}},
+                }
+            },
+        )
+        for tree in (a, b):
+            _write_tree_report(tree, {"mod.py": 90.0})
+        monkeypatch.setattr(ccd, "tracked_source_files", lambda t: ["pkg/mod.py"])
+        monkeypatch.setattr(
+            sys, "argv", ["check_coverage_debt.py", "--require-all-trees"]
+        )
+        assert ccd.main() == 0
+        assert "✅" in capsys.readouterr().out
+
+    def test_a_tree_added_to_the_registry_is_required_without_editing_anything(
+        self, monkeypatch, tmp_path, capsys
+    ):
+        """The derivation, asserted as a derivation.
+
+        A test that only checked today's nine names would pass over an implementation that
+        hardcoded today's nine names, which is the failure mode this flag exists to avoid.
+        So the registry is given a tree that did not exist when the flag was written, and
+        the flag has to require it.
+        """
+        measured = _fake_tree(tmp_path, "measured")
+        newcomer = _fake_tree(tmp_path, "a_tree_invented_by_this_test")
+        _install(
+            monkeypatch,
+            tmp_path,
+            [measured, newcomer],
+            {"trees": {"measured": {"total": 90.0, "files": {"pkg/mod.py": 90.0}}}},
+        )
+        _write_tree_report(measured, {"mod.py": 90.0})
+        monkeypatch.setattr(ccd, "tracked_source_files", lambda t: ["pkg/mod.py"])
+        monkeypatch.setattr(
+            sys, "argv", ["check_coverage_debt.py", "--require-all-trees"]
+        )
+        assert ccd.main() == 2
+        assert "a_tree_invented_by_this_test" in capsys.readouterr().out
+
+    def test_it_is_refused_in_a_mode_that_checks_nothing(
+        self, monkeypatch, tmp_path, capsys
+    ):
+        """Same reason `--require-tree` is: `--summary` and `--write` compare nothing, so
+        a caller passing either alongside this has asserted a precondition nothing will
+        evaluate, and an ignored assertion is the defect the flag exists for."""
+        tree = _fake_tree(tmp_path, "measured")
+        _install(monkeypatch, tmp_path, [tree], {"trees": {}})
+        for mode in ("--summary", "--write"):
+            monkeypatch.setattr(
+                sys, "argv", ["check_coverage_debt.py", mode, "--require-all-trees"]
+            )
+            assert ccd.main() == 2, mode
+            assert "--require-tree" in capsys.readouterr().out, mode
+
+    def test_both_cis_reach_the_target_that_carries_it(self):
+        """A flag no caller passes protects nothing. `check-coverage-debt-cicd` is the
+        target both CI configurations invoke, and it has to be the one carrying the flag —
+        the plain target deliberately does not, because a developer measuring one tree
+        locally would be red for eight they never intended to measure."""
+        makefile = (REPO_ROOT / "Makefile").read_text(encoding="utf-8")
+        recipe = makefile.split("check-coverage-debt-cicd:")[1].split("\n\n")[0]
+        assert "--require-all-trees" in recipe, recipe
+        plain = makefile.split("\ncheck-coverage-debt:")[1].split("\n\n")[0]
+        assert "--require-all-trees" not in plain, plain
+        # Matched as an INVOKED command, not as text anywhere in the file. A plain
+        # substring search over the config passes for `run: true  # make
+        # coverage-all-cicd` — a step commented out in place, which is how a CI gate
+        # gets switched off in a diff that looks like a comment. Measured: that exact
+        # mutation left this assertion green in its substring form.
+        for config in (
+            REPO_ROOT / ".gitlab-ci.yml",
+            REPO_ROOT / ".github/workflows/developer-tests.yml",
+        ):
+            invoked = _invoked_commands(config)
+            for target in ("make coverage-all-cicd", "make check-coverage-debt-cicd"):
+                assert any(target == cmd for cmd in invoked), (
+                    f"{config.name} does not INVOKE `{target}`. It may still mention "
+                    f"it in a comment or behind a disabled step, which is not the same "
+                    f"thing. Commands found: {sorted(invoked)[:12]}"
+                )

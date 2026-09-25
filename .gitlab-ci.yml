@@ -176,9 +176,17 @@ code_checks:
     # on the command line twice, which pytest answers by collecting NOTHING and
     # exiting 5 -- loud rather than silent, but a broken job either way.
     - make test-cicd -C lib/idp_common_pkg SKIP_INSTALL=1
+    # The line above writes ONE of the ratchet's nine trees. Without the next step the
+    # other eight resolve to no report at all, so the ratchet named them as
+    # "not checked" and exited 0 — advisory-but-passing over exactly the trees where
+    # coverage had been lost, including this repository's own hook guards (issue #1256).
+    # Trees are measured concurrently and `idp_common` is skipped because the line above
+    # already produced its report; the ratchet below still requires it by name.
+    - make coverage-all-cicd
     # Ratchet per-file coverage against scripts/coverage_debt.json. Must follow the
-    # line above: it reads the coverage report that step writes.
-    - make check-coverage-debt
+    # lines above: it reads the coverage reports those steps write, and
+    # --require-all-trees (inside the -cicd target) makes a missing one red by name.
+    - make check-coverage-debt-cicd
     # Package/Lambda suites not covered by idp_common_pkg (idp_cli, idp_sdk,
     # idp_feature_sdk, feature-platform, capacity, circuit-breaker, chat,
     # config_library) — all green headless, previously CI-untested.
