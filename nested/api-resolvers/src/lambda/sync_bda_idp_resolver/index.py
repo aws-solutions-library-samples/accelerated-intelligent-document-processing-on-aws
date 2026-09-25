@@ -84,6 +84,93 @@ def _get_user_allowed_config_versions(caller_email: str, caller_sub: str = ""):
     )
 
 
+def _refuse_cleanup_without_a_real_profile(
+    manager, version_name, sync_direction: str
+) -> Dict[str, Any] | None:
+    """Refuse an orphaned-blueprint cleanup whose profile does not exist.
+
+    Returns the response to return, or ``None`` to proceed.
+
+    The cleanup's only safety mechanism is the class list it reads from the named
+    profile: every blueprint carrying the stack's name prefix that no class accounts
+    for is deleted, **account-wide**. `cleanup_orphaned_blueprints` turns a
+    `get_configuration` that answers `None` into `current_classes = []`, so the set of
+    expected blueprint-name prefixes comes out empty, every prefixed blueprint in the
+    account matches nothing, and all of them are deleted — while it reports
+    `success=True` with a deletion count, an answer no caller can tell apart from a
+    correct one. A mistyped `versionName` therefore deletes the live blueprints of the
+    profile the operator meant along with everything else.
+
+    Three inputs reach that state on this path, and they need different checks.
+
+    A name that is not a profile finds no record. That is the likeliest one and the
+    most destructive. It is also easier to hit here than through the SDK, because this
+    resolver does not resolve the active profile: `versionName` defaults to the literal
+    `"default"`, so a stack whose profiles are named anything else reaches the cleanup
+    with a name that matches no record. A whitespace-only name needs no clause of its
+    own — it is truthy, so it reaches the lookup, and `Config#   ` names nothing.
+
+    A falsy `versionName` — `null` in the request, or the empty string — is checked
+    separately rather than left to the lookup, because `_read_record` builds the key as
+    `Config#<version>` only when the version is truthy and reads the **bare** `Config`
+    key otherwise, which can hold a record nothing else can see. Left to the lookup
+    that would *succeed* on a record describing no profile.
+
+    No `ConfigurationManager` at all — `CONFIGURATION_TABLE_NAME` unset — is the third,
+    and it refuses rather than skipping. A guard that a missing environment variable
+    switches off is not a guard: the question it asks is "could we find out what to
+    keep", and with no configuration table the answer is no.
+
+    Deliberately **not** covered: a profile that exists and declares no classes. That
+    is a real instruction to keep nothing, and deleting every prefixed blueprint is the
+    right response to it. The distinction drawn here is between "keep nothing" and
+    "could not find out what to keep", which arrive at the service identically and have
+    opposite safe actions.
+    """
+
+    def _refusal(message: str) -> Dict[str, Any]:
+        # `error.message` and `message` carry the same text on purpose: the UI's
+        # failure path renders `error.message` and falls back to `message` only when it
+        # is absent, and the cleanup panel reads `message`. `cleanupDetails` is present
+        # with zero counts so a consumer of the cleanup response shape reads "deleted
+        # nothing" rather than an absent field.
+        return {
+            "success": False,
+            "message": message,
+            "error": {"type": "CONFIGURATION_ERROR", "message": message},
+            "processedClasses": [],
+            "direction": sync_direction,
+            "cleanupDetails": {"deletedCount": 0, "failedCount": 0, "details": []},
+        }
+
+    if not version_name:
+        return _refusal(
+            "Orphaned-blueprint cleanup needs a configuration profile: its classes "
+            "are what decide which blueprints are kept, and none was named. Name one "
+            "explicitly. Running without one would treat every blueprint carrying "
+            "the stack's prefix as an orphan and delete it."
+        )
+
+    if manager is None:
+        return _refusal(
+            "Orphaned-blueprint cleanup cannot run without the configuration table: "
+            f"there is no way to read profile '{version_name}' and so no way to tell "
+            "which blueprints to keep. Running anyway would treat every blueprint "
+            "carrying the stack's prefix as an orphan and delete it."
+        )
+
+    if manager.get_configuration("Config", version=version_name) is None:
+        return _refusal(
+            f"Configuration profile '{version_name}' does not exist on this stack, so "
+            f"the orphaned-blueprint cleanup cannot tell which blueprints to keep — "
+            f"it would treat every blueprint carrying the stack's prefix as an orphan "
+            f"and delete it, including the ones belonging to profiles that do exist. "
+            f"Check the configuration profile list for the profiles that do."
+        )
+
+    return None
+
+
 def handler(event: Dict[str, Any], context) -> Dict[str, Any]:
     """
     Synchronous BDA/IDP sync resolver with bidirectional support.
@@ -98,6 +185,12 @@ def handler(event: Dict[str, Any], context) -> Dict[str, Any]:
     - "idp_to_bda": Sync from IDP classes to BDA blueprints (read IDP, update BDA)
     - "bidirectional": Sync both directions (default for backward compatibility)
     - "cleanup_orphaned": Delete orphaned BDA blueprints not in current IDP config
+
+    ``cleanup_orphaned`` is not a sync: it deletes every blueprint carrying the stack's
+    name prefix that no class in the named profile accounts for, **account-wide**. The
+    profile named in ``versionName`` is therefore the only thing deciding what survives,
+    and a cleanup whose profile cannot be read is refused before anything is deleted —
+    see ``_refuse_cleanup_without_a_real_profile``.
     """
     # Bound before the try so the handler of last resort can still ask the service
     # whether the sync left a blueprint behind. The deletes run before the last two
@@ -205,6 +298,32 @@ def handler(event: Dict[str, Any], context) -> Dict[str, Any]:
         manager = (
             ConfigurationManager(table_name=config_table) if config_table else None
         )
+
+        # `cleanup_orphaned` is validated HERE, before the ARN resolution below, and
+        # the placement is the whole of the check.
+        #
+        # The cleanup decides what is an orphan from the named profile's classes, and
+        # `cleanup_orphaned_blueprints` reduces a `get_configuration` answering `None`
+        # to an empty class list — so "could not find out what to keep" executes as
+        # "keep nothing" and deletes every blueprint carrying the stack's prefix,
+        # account-wide, reporting `success=True` with a deletion count.
+        #
+        # Before the ARN resolution because that resolution is not side-effect-free: a
+        # `bdaProjectArn` of `CREATE_NEW` sets `force_create_new`, which writes a
+        # `creating` sync status and calls `get_or_create_project_for_version`, so a
+        # cleanup could **create a BDA project** on its way to refusing. A check placed
+        # after it is unreachable in exactly the case it is written for.
+        if sync_direction == "cleanup_orphaned":
+            refusal = _refuse_cleanup_without_a_real_profile(
+                manager, versionName, sync_direction
+            )
+            if refusal is not None:
+                logger.warning(
+                    "Refusing orphaned-blueprint cleanup for versionName=%r: %s",
+                    versionName,
+                    refusal["message"],
+                )
+                return refusal
 
         # Resolve BDA project ARN using priority chain
         bda_project_arn = None

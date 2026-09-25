@@ -298,20 +298,26 @@ own branch to the same method. `idp-cli config-sync-bda --direction cleanup-orph
 not a third caller: it goes through the SDK. So a change to this method's return shape
 has to be read against both.
 
-⚠️ **The two callers do not validate the profile the same way.** The SDK refuses a
-`version` that names no configuration profile before calling this method, because this
-method reduces a `get_configuration` answering `None` to an empty expected-prefix set
-and then deletes every prefixed blueprint in the account while returning
-`success=True`. The resolver has no such check. Do not read the SDK's refusal as a
-property of this method. The keys the callers subscript are `success`, `message`,
+⚠️ **Neither caller's refusal is a property of this method — both live at the entry
+point, and a third caller would need its own.** This method reduces a
+`get_configuration` answering `None` to an empty expected-prefix set and then deletes
+every prefixed blueprint in the account while returning `success=True`, so both
+`ConfigOperation.sync_bda` and the resolver refuse a `version` that names no
+configuration profile before calling it. The resolver refuses one further input the SDK
+cannot reach — no `CONFIGURATION_TABLE_NAME`, hence no configuration manager to ask —
+because the answer there is "could not find out what to keep" rather than "keep
+nothing", and this method cannot tell the two apart. A profile that exists and declares
+no classes is honoured by both. The keys the callers subscript are `success`, `message`,
 `deleted_count` and `failed_count`; the SDK reports the last two on
 `ConfigSyncBdaResult.cleanup_deleted_count` / `cleanup_failed_count` and deliberately
 not on `classes_synced` / `classes_failed`, since the cleanup processes no classes and a
 blueprint counted as a synced class is a wrong answer rather than an imprecise one.
 
-The SDK branch sits *after* the project-ARN resolution, matching the resolver's
-placement, because the cleanup disassociates before deleting and so needs a project to
-disassociate from.
+Both branches to this method sit *after* the project-ARN resolution, because the cleanup
+disassociates before deleting and so needs a project to disassociate from. The profile
+check does **not**: it runs before that resolution on both paths, because the resolution
+creates a BDA project for a name it cannot find one for, and raises on a `None` name. A
+check placed after it is unreachable in exactly the case it is written for.
 
 ⚠️ **The failure paths are the ones to get right, and they are the ones that are easy to
 miss.** The deletes run *before* the last two steps of a sync — the AWS-standard-blueprint
