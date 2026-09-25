@@ -525,15 +525,65 @@ class TestTreesAreMeasuredConcurrently:
         assert cov_all.worker_share(32, cpus=4) == 2, "floor of 2 workers"
         assert cov_all.worker_share(4, cpus=1) == 2
 
-    def test_the_cpu_count_is_the_affinity_mask_not_the_machine(self):
+    def test_the_cpu_count_is_the_affinity_mask_not_the_machine(self, monkeypatch):
         """A CI runner is a container on a bigger host, so `os.cpu_count()` overstates it
-        — and xdist's own `auto` reads the affinity mask, so anything else hands out
-        shares of a machine larger than the one the trees run on."""
-        import os as _os
+        — and xdist's own `auto` reads the affinity mask, so anything else hands out shares
+        of a machine larger than the one the trees run on.
 
-        if not hasattr(_os, "sched_getaffinity"):  # pragma: no cover - non-Linux
-            pytest.skip("no sched_getaffinity on this platform")
-        assert cov_all.cpu_count() == len(_os.sched_getaffinity(0))
+        The two have to be made to **disagree** for this to assert anything. Comparing
+        `cpu_count()` against the live affinity mask passes on any machine where the mask
+        is the whole host, which is every machine this is likely to be run on: replacing
+        the function's body with `os.cpu_count()` — deleting its entire subject — left that
+        comparison green. So the container case is constructed rather than hoped for.
+        """
+        monkeypatch.setattr(cov_all.os, "sched_getaffinity", lambda _pid: {0, 1, 2})
+        monkeypatch.setattr(cov_all.os, "cpu_count", lambda: 64)
+        assert cov_all.cpu_count() == 3, (
+            "cpu_count() read the machine rather than this process's affinity mask, so on "
+            "a CI runner it hands out shares of a host larger than the one in use"
+        )
+
+    def test_the_default_job_count_is_bounded_by_the_host(
+        self, monkeypatch, tmp_path, capsys
+    ):
+        """The bound `DEFAULT_JOBS` documents, asserted as arithmetic rather than prose.
+
+        `worker_share` floors at 2, so N concurrent trees ask for at least 2N xdist workers.
+        On a 4-CPU runner the default of 4 jobs would request 8 — the oversubscription the
+        budget exists to prevent. The bound was documented and not implemented.
+        """
+        trees = [_fake_tree(tmp_path, n) for n in ("a", "b", "c", "d", "e", "f")]
+        rec = _Recorder()
+        _install(monkeypatch, tmp_path, trees, rec)
+        monkeypatch.setattr(cov_all, "cpu_count", lambda: 4)
+        monkeypatch.setattr(sys, "argv", ["coverage_all.py"])
+        assert cov_all.main() == 0
+        out = capsys.readouterr().out
+        assert "2 at a time" in out, out
+
+    def test_every_real_tree_gets_a_distinct_coverage_data_file(self):
+        """Over the REAL registry, not synthetic trees in separate temp directories.
+
+        The data file is derived from each tree's own working directory, so distinctness is
+        a property of `TREES` rather than of the derivation — and a synthetic fixture that
+        puts each tree in its own `tmp_path` subdirectory makes it true by construction and
+        can never catch a second tree added at an existing `cwd`. Measured: adding a tenth
+        Tree at `lib/idp_sdk` collides, two concurrent trees interleave into one data file,
+        and both reports come out well-formed and wrong.
+        """
+        assert len(ccd.TREES) >= 9, (
+            "registry looks truncated; this check would be vacuous"
+        )
+        by_cwd: dict[str, list[str]] = {}
+        for tree in ccd.TREES:
+            by_cwd.setdefault(str(ccd.tree_root(tree)), []).append(tree.name)
+        collisions = {cwd: names for cwd, names in by_cwd.items() if len(names) > 1}
+        assert not collisions, (
+            f"these trees share a working directory, so they share one COVERAGE_FILE and "
+            f"would interleave into one data set when measured concurrently — each "
+            f"reporting the other's lines, both reports well-formed: {collisions}. Give "
+            f"the colliding tree its own data file rather than relying on the cwd."
+        )
 
     def test_each_trees_output_is_printed_as_one_block_under_its_own_heading(
         self, monkeypatch, tmp_path, capsys

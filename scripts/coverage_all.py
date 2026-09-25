@@ -58,9 +58,11 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 
 #: How many trees to measure at once when ``--jobs`` is not given.
 #:
-#: Bounded by the number of trees there are, and by the host: the point of the budget is
-#: that concurrent trees share one machine, so more jobs than CPUs is a slowdown dressed
-#: up as parallelism.
+#: Bounded in :func:`main` by the number of trees there are **and** by the host: concurrent
+#: trees share one machine, and because :func:`worker_share` floors at 2 workers, N jobs ask
+#: for at least 2N workers. More than half the CPUs' worth of jobs is therefore
+#: oversubscription, which is a slowdown dressed up as parallelism — so the value here is a
+#: ceiling a small host lowers, not a number every host obeys.
 DEFAULT_JOBS = 4
 
 _spec = importlib.util.spec_from_file_location(
@@ -271,7 +273,13 @@ def main() -> int:
     if jobs < 1:
         print(f"--jobs must be at least 1, got {jobs}")
         return 2
-    jobs = min(jobs, len(trees))
+    # Bounded by the trees there are AND by the host, which is what DEFAULT_JOBS claims.
+    # The host half was previously only documented: `worker_share` floors at 2 workers, so
+    # `--jobs 4` asks for 8 xdist workers whatever the machine has, and GitHub's runner is
+    # a 4-CPU container. Oversubscription there is a slowdown dressed up as parallelism —
+    # the precise thing the budget exists to prevent — so the bound is computed rather than
+    # asserted in prose.
+    jobs = max(1, min(jobs, len(trees), cpu_count() // 2))
     workers = worker_share(jobs)
 
     print(

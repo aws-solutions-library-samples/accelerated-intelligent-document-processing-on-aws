@@ -49,6 +49,7 @@ from __future__ import annotations
 import importlib.util
 import json
 import os
+import shlex
 import subprocess
 import sys
 import textwrap
@@ -1517,6 +1518,40 @@ class TestTheCIPreconditionNeedsNoCIChange:
         assert "$(CHECK_COVERAGE_DEBT_ARGS)" in recipe.split("\n\n")[0], recipe[:400]
 
 
+def _make_would_run(target: str) -> list[str]:
+    """The commands `make <target>` would actually execute, from `make -n`.
+
+    Reading the recipe as text cannot answer this. `make` strips a leading `@`, expands
+    variables, and — the case that matters — treats everything after a `#` as a comment, so
+    a recipe whose flag has been moved into a trailing comment still *contains* that flag
+    while not passing it. Measured: moving `--require-all-trees` into a trailing comment on
+    the `check-coverage-debt-cicd` recipe left every text-based assertion here green while
+    the gate silently went back to naming unmeasured trees and exiting 0 — which is issue
+    #1256 restored with no red mark anywhere. So the question is put to `make` itself.
+    """
+    out = subprocess.run(
+        ["make", "-n", "--no-print-directory", target],
+        cwd=REPO_ROOT,
+        capture_output=True,
+        text=True,
+    )
+    assert out.returncode == 0, f"make -n {target} failed: {out.stderr[-400:]}"
+    lines = [ln.strip() for ln in out.stdout.splitlines() if ln.strip()]
+    assert lines, f"make -n {target} would run nothing at all"
+    # Split each line the way the SHELL will, discarding `#` comments. `make` does not
+    # treat `#` inside a recipe as a comment -- it hands the whole line to the shell, which
+    # does -- so a flag moved after a `#` survives in `make -n` output while never reaching
+    # the program. Measured: that is the one spelling `make -n` alone still accepted.
+    # Tokens are rejoined per line so callers can go on matching substrings.
+    argv_lines = []
+    for line in lines:
+        try:
+            argv_lines.append(" ".join(shlex.split(line, comments=True)))
+        except ValueError:  # pragma: no cover - unbalanced quoting in a recipe
+            argv_lines.append(line)
+    return [ln for ln in argv_lines if ln]
+
+
 def _invoked_commands(config: Path) -> set[str]:
     """Every shell command a CI config actually runs, with comments removed.
 
@@ -1676,11 +1711,16 @@ class TestRequireAllTreesIsDerivedFromTheRegistry:
         target both CI configurations invoke, and it has to be the one carrying the flag —
         the plain target deliberately does not, because a developer measuring one tree
         locally would be red for eight they never intended to measure."""
-        makefile = (REPO_ROOT / "Makefile").read_text(encoding="utf-8")
-        recipe = makefile.split("check-coverage-debt-cicd:")[1].split("\n\n")[0]
-        assert "--require-all-trees" in recipe, recipe
-        plain = makefile.split("\ncheck-coverage-debt:")[1].split("\n\n")[0]
-        assert "--require-all-trees" not in plain, plain
+        # Asked of `make`, not of the recipe text: see `_make_would_run`.
+        cicd = _make_would_run("check-coverage-debt-cicd")
+        assert any("--require-all-trees" in ln for ln in cicd), cicd
+        plain = _make_would_run("check-coverage-debt")
+        assert not any("--require-all-trees" in ln for ln in plain), plain
+        # And the producer really invokes the producer, with a budget.
+        producer = _make_would_run("coverage-all-cicd")
+        assert any("scripts/coverage_all.py" in ln for ln in producer), producer
+        assert any("--jobs" in ln for ln in producer), producer
+        assert any("--skip" in ln for ln in producer), producer
         # Matched as an INVOKED command, not as text anywhere in the file. A plain
         # substring search over the config passes for `run: true  # make
         # coverage-all-cicd` — a step commented out in place, which is how a CI gate
@@ -1697,3 +1737,97 @@ class TestRequireAllTreesIsDerivedFromTheRegistry:
                     f"it in a comment or behind a disabled step, which is not the same "
                     f"thing. Commands found: {sorted(invoked)[:12]}"
                 )
+
+
+@pytest.mark.unit
+class TestTheCIStepsAreLiveAndNotMerelyPresent:
+    """Present is not running, and this gate's whole subject is a check that read as
+    protection while providing none.
+
+    Three ways a step can be in a CI config and do nothing, all of them a one-line diff that
+    reads like housekeeping, and all three measured to leave every text-based assertion in
+    this suite green:
+
+    * ``continue-on-error: true`` — the step runs, prints red, and the job stays green.
+    * ``if: false`` (or any condition that is never true) — the step never runs at all.
+    * the producer ordered **after** the ratchet — both steps run, and the ratchet reads
+      the reports of the previous commit's run, or none.
+
+    A substring search over the YAML cannot see any of them, which is the same reading
+    failure as a flag moved into a trailing ``#`` comment. So this reads the configs as
+    **structure**.
+    """
+
+    @staticmethod
+    def _github_steps() -> list[dict]:
+        doc = yaml.safe_load(
+            (REPO_ROOT / ".github/workflows/developer-tests.yml").read_text(
+                encoding="utf-8"
+            )
+        )
+        steps: list[dict] = []
+        for job in doc.get("jobs", {}).values():
+            steps.extend(job.get("steps", []) or [])
+        assert steps, "no steps parsed out of developer-tests.yml"
+        return steps
+
+    def _github_step_running(self, command: str) -> dict:
+        matches = [
+            s for s in self._github_steps() if str(s.get("run", "")).strip() == command
+        ]
+        assert len(matches) == 1, (
+            f"expected exactly one GitHub step whose `run` is `{command}`, found "
+            f"{len(matches)}. A step that merely MENTIONS the command in a comment or a "
+            f"longer shell line does not count, because this gate's failure mode is "
+            f"reading as present while doing nothing."
+        )
+        return matches[0]
+
+    @pytest.mark.parametrize(
+        "command", ["make coverage-all-cicd", "make check-coverage-debt-cicd"]
+    )
+    def test_neither_github_step_is_neutered(self, command):
+        step = self._github_step_running(command)
+        assert step.get("continue-on-error") in (None, False), (
+            f"`{command}` runs with continue-on-error={step.get('continue-on-error')!r}, "
+            f"so its red mark does not reach the job and the gate reports nothing."
+        )
+        # A condition is allowed to exist, but not to be a constant that can never hold.
+        condition = step.get("if")
+        if condition is not None:
+            assert str(condition).strip().lower() not in ("false", "${{ false }}"), (
+                f"`{command}` is behind a condition that is never true, so the step "
+                f"never runs: if={condition!r}"
+            )
+
+    def test_github_produces_the_reports_before_it_checks_them(self):
+        """Order is the whole coupling between the two steps. Reversed, the ratchet reads
+        whatever `test-cicd` left and names the other eight trees as unmeasured — the exact
+        state #1256 is about, with both steps present and green."""
+        runs = [str(s.get("run", "")).strip() for s in self._github_steps()]
+        assert runs.index("make coverage-all-cicd") < runs.index(
+            "make check-coverage-debt-cicd"
+        ), runs
+
+    def test_gitlab_produces_the_reports_before_it_checks_them(self):
+        doc = yaml.safe_load((REPO_ROOT / ".gitlab-ci.yml").read_text(encoding="utf-8"))
+        job = next(
+            j
+            for name, j in doc.items()
+            if isinstance(j, dict)
+            and any(
+                "make check-coverage-debt-cicd" in str(line)
+                for line in (j.get("script") or [])
+            )
+        )
+        script = [str(line).strip() for line in job["script"]]
+        # `when: never` would make the whole job unreachable, which is the GitLab spelling
+        # of `if: false` and is not visible in the script list at all.
+        assert job.get("when") != "never", job.get("when")
+        assert script.index("make coverage-all-cicd") < script.index(
+            "make check-coverage-debt-cicd"
+        ), script
+        # And neither is allowed to swallow its own status.
+        for line in script:
+            if "coverage-all-cicd" in line or "check-coverage-debt-cicd" in line:
+                assert "|| true" not in line and not line.endswith("|| :"), line

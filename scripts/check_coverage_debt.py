@@ -85,9 +85,14 @@ correct recovery is to re-run that one tree and record again, which depends on t
 eight reports still being accepted an hour later. Freshness therefore has to be something
 a caller asks for, not a deadline the gate imposes.
 
-Partial measurement is still a pass: one tree measured and eight unmeasured exits 0 and
-names the eight, which is the ordinary local case (`make test-cicd -C lib/idp_common_pkg`
-measures `idp_common` alone) and the CI case as well.
+Partial measurement is still a pass **for the default invocation**: one tree measured and
+eight unmeasured exits 0 and names the eight, which is the ordinary local case
+(`make test-cicd -C lib/idp_common_pkg` measures `idp_common` alone).
+
+That is deliberately not what either CI does. Both reach this through
+`make check-coverage-debt-cicd`, which passes `--require-all-trees` and so fails by name on
+any tree this run did not compare — because for a long time CI produced one report of nine
+and a partial pass was indistinguishable in a job log from a complete one. Issue #1256.
 
 ## What it is not
 

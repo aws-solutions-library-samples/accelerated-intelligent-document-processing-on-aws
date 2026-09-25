@@ -43,7 +43,7 @@ GitHub can only require job-level contexts, never individual steps. So those
 ten collapse to exactly **one** requireable context rather than one per gate.
 The practical consequence is worth stating: because they share one
 context they also share one red mark, so a required-check failure does not say
-*which* of the eight failed — that needs the job log. The remaining two shared
+*which* of the ten failed — that needs the job log. The remaining two shared
 gates, the SRT scan and the dependency audit, are jobs of their own in
 ``security-checks.yml`` and so carry a context each. This script prints which
 gate commands each context covers so the correspondence is at least visible.
