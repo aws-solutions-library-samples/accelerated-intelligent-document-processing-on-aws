@@ -171,6 +171,32 @@ class ConfigOperation:
 
         return ConfigCreateResult(yaml_content=yaml_content, output_path=output)
 
+    @staticmethod
+    def _validation_unavailable(cause: ImportError) -> ConfigValidationResult:
+        """The verdict for an installation that cannot run the checks at all.
+
+        `valid` is False, because nothing about the configuration was established
+        and a caller that gates on `valid` must keep refusing: `upload(validate=True)`
+        is such a caller, and reporting True here would store an unchecked
+        configuration. `validation_available` is what separates this from a
+        configuration that was checked and found wrong — the distinction a caller
+        needs and cannot get from `valid`, and one it should not have to read out of
+        an error message.
+        """
+        return ConfigValidationResult(
+            valid=False,
+            validation_available=False,
+            errors=[
+                # "Validation" is load-bearing in this sentence: `idp-cli
+                # config-upload` keys its `--no-validate` hint on the word, and that
+                # hint is the useful one here — a component only the checks need can
+                # be missing while everything the upload itself needs is present.
+                f"Validation unavailable in this installation: {cause}. This "
+                "environment is missing part of idp_common, which performs the "
+                "checks."
+            ],
+        )
+
     def validate(
         self,
         config_file: str,
@@ -191,13 +217,40 @@ class ConfigOperation:
 
         Returns:
             ConfigValidationResult with validation status, including deprecated_fields
-            and unknown_fields populated when extra keys are found.
+            and unknown_fields populated when extra keys are found. An installation
+            that cannot run the checks at all is reported the same way — as a result
+            with `validation_available` False and the missing component named in
+            `errors` — rather than as an exception out of a method whose contract is
+            to return a verdict.
         """
         from pathlib import Path
 
         import yaml
 
-        from idp_common.config.merge_utils import load_yaml_file, validate_config
+        # `idp_common` does the checking, and a method whose contract is to return a
+        # verdict has to answer when it is not importable rather than raise out of a
+        # `from` statement. `idp_common` is an unconditional requirement of this
+        # package, so an install that resolved cannot be missing it — what this
+        # covers is an environment assembled by other means, which is the ordinary
+        # case for the Lambda packages here (a handler tree plus a pruned copy of the
+        # library, sized against the deployment limit) and for anything vendoring a
+        # subset. `examples/lambda_function.py` calls this method from a handler and
+        # serialises the result.
+        #
+        # Both frames below can raise, and which one does depends on WHICH part is
+        # missing rather than on how much: the import fails for anything
+        # `idp_common.config`'s own `__init__` pulls in — `models` included, since it
+        # imports it — while the modules the validation stack alone imports, and
+        # imports lazily (`bedrock.prompt_cache`, `config.migrations`,
+        # `config.hook_reachability`, `schema.multi_instance`), surface out of
+        # `validate_config` on the second. Both are caught by ImportError's TYPE
+        # rather than by module name or message text: the spellings differ per
+        # module and per cause, and a rule written against any of them misses the
+        # rest.
+        try:
+            from idp_common.config.merge_utils import load_yaml_file, validate_config
+        except ImportError as e:
+            return ConfigOperation._validation_unavailable(e)
 
         try:
             user_config = load_yaml_file(Path(config_file))
@@ -210,7 +263,10 @@ class ConfigOperation:
                 valid=False, errors=[f"Failed to load file: {e}"]
             )
 
-        result = validate_config(user_config, pattern=pattern)
+        try:
+            result = validate_config(user_config, pattern=pattern)
+        except ImportError as e:
+            return ConfigOperation._validation_unavailable(e)
 
         # Keys the configuration models will not read, at every depth, as found by
         # validate_config. Computing `set(config) - set(IDPConfig.model_fields)` here
@@ -462,9 +518,19 @@ class ConfigOperation:
         if validate:
             result = self.validate(config_file, pattern=pattern or "pattern-2")
             if not result.valid:
+                # The gate holds either way — an unchecked configuration is not
+                # stored — but the two refusals ask for different things from the
+                # operator: one is a file to fix, the other is a component to
+                # install. Saying "validation failed" for the second sends them
+                # looking through a configuration that may be perfectly good.
+                reason = (
+                    "Validation failed"
+                    if result.validation_available
+                    else "Validation unavailable"
+                )
                 return ConfigUploadResult(
                     success=False,
-                    error=f"Validation failed: {'; '.join(result.errors)}",
+                    error=f"{reason}: {'; '.join(result.errors)}",
                 )
 
         self._configure_config_env(name)
