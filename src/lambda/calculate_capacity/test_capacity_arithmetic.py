@@ -45,7 +45,9 @@ does *with* measured timings; that one is about how the timings are measured.
 
 from __future__ import annotations
 
+import ast
 import json
+import pathlib
 from unittest.mock import MagicMock, patch
 
 import index
@@ -1189,26 +1191,302 @@ def test_the_headline_names_the_volume_and_the_pattern(monkeypatch):
     assert "Processing 2500 documents/hour using PATTERN-2" in first
 
 
-@pytest.mark.unit
-@pytest.mark.parametrize(
-    ("data_source", "described_as"),
-    [
-        ("environment_config", "environment configuration"),
-        ("document_timestamps", "unknown source"),
-    ],
-)
-def test_only_an_environment_derived_plan_has_its_source_described(
-    monkeypatch, data_source, described_as
-):
-    """`document_timestamps` is the *good* case and is still called unknown.
+DATA_SOURCE_FIELD_NAMES = frozenset({"dataSource", "data_source"})
 
-    The mapping recognises one value, so a plan built entirely from measured
-    document timestamps tells the operator its provenance is unknown — the least
-    trustworthy-sounding label attached to the most trustworthy data. Pinned as
-    current behaviour so a change to it is deliberate.
+
+def data_source_binding_sites():
+    """Every place `index.py` binds a value to the `dataSource` field.
+
+    The point of walking the source rather than listing the values is that a list
+    is what the prose mapping itself used to be: it recognised one spelling, and
+    the check that it was complete was somebody reading it. But collecting the
+    shapes that *are* recognised only moves that problem — it makes the gate as
+    complete as the list of shapes, and a producer written in a shape nobody
+    thought of passes silently. So the rule is inverted: this finds every binding
+    site, and each one's value must be **readable**. A value this cannot read is
+    a failure naming the line, not a site quietly skipped.
+
+    Two value shapes are readable:
+
+    * a string literal, which contributes that value; and
+    * a bare `data_source`/`dataSource` name, which *forwards* a value the
+      literals above already account for — `{"dataSource": data_source}` is how
+      both result dicts publish the field, so this has to be allowed.
+
+    Anything else — an f-string, a `%` or `+` expression, a conditional
+    expression, a call, or a name that is not the tracked variable — is
+    unreadable. Following those would mean interpreting the module rather than
+    reading it, and the honest answer is to refuse: `chosen = "x"` followed by
+    `{"dataSource": chosen}` is exactly the shape that would otherwise slip a new
+    source past the gate, and `"..." if flag else "..."` is the shape this module
+    is most likely to grow next, since it already picks between two sources on a
+    condition.
+
+    Returns `(values, unreadable)`: a mapping of value to the `(line, shape)`
+    sites producing it, and a list of `(line, shape, dump)` for sites whose value
+    could not be read.
+    """
+    tree = ast.parse(
+        pathlib.Path(index.__file__).read_text(encoding="utf-8"),
+        filename=index.__file__,
+    )
+
+    def is_field_literal(node):
+        """True if this node is a string literal naming the dataSource field."""
+        return (
+            isinstance(node, ast.Constant)
+            and isinstance(node.value, str)
+            and node.value in DATA_SOURCE_FIELD_NAMES
+        )
+
+    def names_the_field(node):
+        """True if this target or key designates the dataSource field."""
+        if isinstance(node, ast.Name):
+            return node.id in DATA_SOURCE_FIELD_NAMES
+        if is_field_literal(node):
+            return True
+        if isinstance(node, ast.Subscript):
+            return is_field_literal(node.slice)
+        return False
+
+    def reads_the_field(node):
+        """True if this node reads the field back out of a mapping.
+
+        `data_source = latency_data.get("data_source", "unknown")` binds the
+        variable from a *read*, and the only literal that read can yield — the
+        `.get` default — is collected at the call itself, so the assignment
+        forwards a value already accounted for rather than introducing one.
+
+        Only a **literal** first argument counts.
+        `DATA_SOURCE_DESCRIPTIONS.get(data_source, ...)` is a lookup *keyed by*
+        the source, whose default is prose rather than a source value; treating
+        that as a binding would collect the prose as though it were a
+        `dataSource`, and its f-string default as an unreadable one.
+        """
+        return (
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Attribute)
+            and node.func.attr in {"get", "setdefault"}
+            and len(node.args) == 2
+            and is_field_literal(node.args[0])
+        )
+
+    values: dict[str, list[tuple[int, str]]] = {}
+    unreadable: list[tuple[int, str, str]] = []
+
+    def record(value_node, line, shape):
+        if isinstance(value_node, ast.Constant) and isinstance(value_node.value, str):
+            values.setdefault(value_node.value, []).append((line, shape))
+        elif (
+            isinstance(value_node, ast.Name)
+            and value_node.id in DATA_SOURCE_FIELD_NAMES
+        ):
+            pass  # forwards the tracked variable; its own literals are collected
+        elif reads_the_field(value_node):
+            pass  # reads the field back; that read's own default is collected below
+        else:
+            unreadable.append((line, shape, ast.dump(value_node)[:120]))
+
+    def bind(target, value_node, line, shape):
+        """Bind one target to one value, unpacking a same-length tuple pairwise."""
+        if isinstance(target, (ast.Tuple, ast.List)):
+            elements = target.elts
+            if isinstance(value_node, (ast.Tuple, ast.List)) and len(
+                value_node.elts
+            ) == len(elements):
+                for element, element_value in zip(elements, value_node.elts):
+                    bind(element, element_value, line, shape)
+            elif any(names_the_field(element) for element in elements):
+                unreadable.append(
+                    (
+                        line,
+                        f"{shape} (unpaired tuple target)",
+                        ast.dump(value_node)[:120],
+                    )
+                )
+            return
+        if names_the_field(target):
+            record(value_node, line, shape)
+
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Assign):
+            for target in node.targets:
+                bind(target, node.value, node.lineno, "assignment")
+        elif isinstance(node, ast.AnnAssign):
+            if node.value is not None:
+                bind(node.target, node.value, node.lineno, "annotated assignment")
+        elif isinstance(node, ast.NamedExpr):
+            bind(node.target, node.value, node.lineno, "walrus")
+        elif isinstance(node, ast.AugAssign):
+            if names_the_field(node.target):
+                unreadable.append(
+                    (node.lineno, "augmented assignment", ast.dump(node.value)[:120])
+                )
+        elif isinstance(node, ast.Dict):
+            for key, value in zip(node.keys, node.values):
+                if key is not None and names_the_field(key):
+                    record(value, key.lineno, "dict literal")
+        elif isinstance(node, ast.Call):
+            for keyword in node.keywords:
+                if keyword.arg in DATA_SOURCE_FIELD_NAMES:
+                    record(keyword.value, node.lineno, "call keyword")
+            func = node.func
+            if (
+                isinstance(func, ast.Attribute)
+                and func.attr in {"get", "setdefault"}
+                and len(node.args) == 2
+                and is_field_literal(node.args[0])
+            ):
+                record(node.args[1], node.lineno, f".{func.attr} default")
+    return values, unreadable
+
+
+def data_sources_this_module_can_produce():
+    """The readable half of `data_source_binding_sites`, for the checks below."""
+    values, _ = data_source_binding_sites()
+    return values
+
+
+@pytest.mark.unit
+def test_the_derivation_of_producible_sources_is_not_vacuous():
+    """The authority the checks below rest on is not empty.
+
+    Without this, a walker that silently matched nothing — a renamed field, an
+    `ast` API change, a `Constant` check that rejects every node — would leave
+    the checks below iterating an empty set and *passing*, which is the shape of
+    a green mark that means nothing. The three shapes the module uses today are
+    each asserted to have contributed, so the walker cannot degrade to
+    recognising only the easiest one and still look complete.
+    """
+    values, _ = data_source_binding_sites()
+    assert values, "derived no dataSource values at all"
+    shapes = {shape for found in values.values() for _, shape in found}
+    # A superset rather than an equality: the three shapes the module uses today
+    # must each have been read, so the walk cannot degrade to recognising only the
+    # easiest one, but a legitimate fourth shape appearing later is not a failure
+    # *here* — it is covered by the closure check below, which is the test that
+    # should speak about shapes.
+    assert shapes >= {"assignment", "dict literal", ".get default"}, shapes
+
+
+@pytest.mark.unit
+def test_no_data_source_is_bound_by_a_shape_the_derivation_cannot_read():
+    """The gate is closed by refusing what it cannot read, not by listing shapes.
+
+    This is the assertion that makes "exhaustive" mean something. Collecting the
+    recognised shapes and ignoring the rest would make the mapping's closure only
+    as good as the list of shapes, so a source introduced as `f"..."`, as
+    `"a" if flag else "b"`, via `dict(dataSource=...)`, through a subscript, or
+    through an intermediate variable would pass every check here while rendering
+    as an unrecognised source in the report. Each of those was measured to slip
+    through a shape-collecting version of this walk.
+
+    So an unreadable binding fails here and names its line. The remedy is either
+    to write the value as a literal, or — if it genuinely has to be computed — to
+    widen this walk deliberately, which is a decision someone makes rather than
+    one a new syntax makes for them.
+    """
+    _, unreadable = data_source_binding_sites()
+    assert not unreadable, (
+        "these sites bind a dataSource value this walk cannot read, so the prose "
+        "mapping's closure says nothing about them — make the value a literal or "
+        f"widen `data_source_binding_sites`: {unreadable}"
+    )
+
+
+@pytest.mark.unit
+def test_every_source_this_module_can_produce_has_prose_and_no_prose_is_unproducible():
+    """The mapping is closed against the module, in both directions.
+
+    Forwards: a source added to `index.py` without an entry here is what put
+    "(based on unknown source)" on the most trustworthy plan the planner can
+    build, so a new one fails this rather than reaching an operator.
+
+    Backwards, which is the half that catches the original defect at its root:
+    an entry nothing can produce is dead, and a mapping allowed to carry dead
+    entries is one whose coverage cannot be read off it. `"environment_config"`
+    was the only value the prose recognised and nothing has ever assigned it, so
+    the mapping looked populated while describing no reachable plan at all.
+    """
+    sites = data_sources_this_module_can_produce()
+    described = set(index.DATA_SOURCE_DESCRIPTIONS)
+    undescribed = {value: sites[value] for value in set(sites) - described}
+    assert not undescribed, (
+        "index.py can produce these dataSource values and "
+        f"DATA_SOURCE_DESCRIPTIONS has no prose for them: {undescribed}"
+    )
+    unproducible = described - set(sites)
+    assert not unproducible, (
+        "DATA_SOURCE_DESCRIPTIONS describes values nothing in index.py assigns, "
+        f"so they can never be read by an operator: {sorted(unproducible)}"
+    )
+
+
+# What each source must be *called*, written out here rather than read back out of
+# `index.DATA_SOURCE_DESCRIPTIONS`. Reading the expectation from the mapping makes
+# the keys closed and the prose circular: swapping the descriptions of
+# `document_timestamps` and `real_lambda_durations` — which mislabels the
+# provenance of every plan the planner builds, the same defect this item is about —
+# was measured to leave the whole suite green. The wording is what an operator acts
+# on, so it is pinned, and the cost is deliberate: adding a source means editing
+# this table, which is the point at which its wording gets read by someone.
+EXPECTED_SOURCE_PROSE = {
+    "document_timestamps": "measured document timestamps",
+    "real_lambda_durations": "measured Lambda durations",
+    "no_demand": "no configured processing demand",
+    "unknown": "a source the measurement step did not report",
+}
+
+
+@pytest.mark.unit
+def test_the_expected_prose_table_covers_exactly_the_shipped_mapping():
+    """The pinned wording and the shipped mapping describe the same sources.
+
+    Without this the table above could drift out of step with `index.py` — an
+    entry renamed there and not here would simply stop being checked, which is the
+    quiet direction. Compared as whole dicts so that a changed *description* fails
+    here too, rather than only a changed key.
+    """
+    assert index.DATA_SOURCE_DESCRIPTIONS == EXPECTED_SOURCE_PROSE
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("data_source", sorted(EXPECTED_SOURCE_PROSE))
+def test_each_described_source_reaches_the_headline_as_its_prose(
+    monkeypatch, data_source
+):
+    """Having an entry is not the same as the entry being used.
+
+    The closure checks above compare sets of keys and would pass over a mapping
+    the headline never consults, so every entry is also driven through the
+    function and found in the text — against the literal wording above rather
+    than against whatever the mapping happens to say.
     """
     first = recommend(monkeypatch, {"dataSource": data_source})[0]
-    assert f"based on {described_as}" in first
+    assert f"(based on {EXPECTED_SOURCE_PROSE[data_source]})" in first
+
+
+@pytest.mark.unit
+def test_a_source_from_outside_this_module_is_named_rather_than_called_unknown(
+    monkeypatch,
+):
+    """The fallback is diagnosable, and it is reachable.
+
+    This function takes the distribution as an argument, so a value the mapping
+    does not hold can arrive from a caller however closed the mapping is against
+    `index.py` — which is why the fallback is not dead code and why it names the
+    value verbatim. Flattening it to "unknown source" was what made the original
+    defect invisible: the field was carrying `"document_timestamps"` all along
+    and nothing in the report said so.
+
+    Asserted with a value chosen to be absent from the mapping, and that absence
+    is asserted rather than assumed, so the case cannot quietly start testing
+    the mapped path if the spelling is ever adopted.
+    """
+    novel = "a_source_added_after_this_test_was_written"
+    assert novel not in index.DATA_SOURCE_DESCRIPTIONS
+    first = recommend(monkeypatch, {"dataSource": novel})[0]
+    assert f"(based on unrecognised source '{novel}')" in first
 
 
 @pytest.mark.unit
