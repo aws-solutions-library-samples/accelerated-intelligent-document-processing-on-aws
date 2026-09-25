@@ -960,3 +960,127 @@ class TestASubprocessOfAMeasuredSuiteCannotRunUninstrumented:
         assert cov_all.SUBPROCESS_RC.is_file()
         config = coverage.Coverage(config_file=str(cov_all.SUBPROCESS_RC)).config
         assert config.parallel is True
+
+
+@pytest.mark.unit
+class TestTheMeasuredSuitesRunHermetically:
+    """This script spawns pytest itself, so it has to supply what `$(PYTEST_HERMETIC)` would.
+
+    `coverage-all-cicd` is a **gated** recipe — both CI configurations run it — and every
+    other gated recipe reaches pytest through the wrapper in `make/hermetic_aws.mk`, whose
+    stated job is that "a suite here that reaches a real AWS endpoint should fail loudly
+    rather than quietly transact against whichever account the developer happens to be
+    signed in to". A direct `python -m pytest` with `os.environ` passed through defeats
+    that for all nine trees at once, and it would do so silently, because the symptom is a
+    suite passing.
+
+    The variable list is parsed from that makefile rather than restated, so these tests
+    assert the parse rather than a hard-coded set of names.
+    """
+
+    def test_every_variable_the_makefile_unsets_is_unset_here(self):
+        """Derived, and asserted against the derivation's own source.
+
+        A test naming today's twelve variables would pass over an implementation that named
+        today's twelve variables, and the failure that matters is a THIRTEENTH being added
+        to the makefile and not reaching this path.
+        """
+        text = (REPO_ROOT / "make" / "hermetic_aws.mk").read_text(encoding="utf-8")
+        body = text.split("HERMETIC_AWS :=", 1)[1]
+        lines = []
+        for line in body.splitlines():
+            lines.append(line)
+            if not line.rstrip().endswith("\\"):
+                break
+        tokens = " ".join(lines).replace("\\", " ").split()
+        expected = {
+            tokens[i + 1]
+            for i, tok in enumerate(tokens)
+            if tok == "-u" and i + 1 < len(tokens)
+        }
+        assert len(expected) >= 8, (
+            f"only parsed {len(expected)} names out of HERMETIC_AWS, which would make this "
+            f"check nearly vacuous: {expected}"
+        )
+        seeded = {name: "leaked" for name in expected}
+        seeded["UNRELATED_VARIABLE"] = "kept"
+        got = cov_all.hermetic_env(seeded)
+        leaked = sorted(name for name in expected if name in got)
+        assert not leaked, (
+            f"these AWS variables reach the measured suites: {leaked}. A gated recipe must "
+            f"not hand a test subprocess the machine's real credentials."
+        )
+        assert got["UNRELATED_VARIABLE"] == "kept", (
+            "it stripped more than the AWS names"
+        )
+
+    def test_the_credential_files_are_redirected_not_merely_unset(self):
+        """Unsetting the variables is not enough: botocore falls back to `~/.aws/config`
+        and `~/.aws/credentials` by default, which is how a "clean" environment still finds
+        a profile. The makefile redirects both, and so must this."""
+        got = cov_all.hermetic_env({})
+        assert got["AWS_CONFIG_FILE"] == "/dev/null", got.get("AWS_CONFIG_FILE")
+        assert got["AWS_SHARED_CREDENTIALS_FILE"] == "/dev/null", got
+        assert got["AWS_EC2_METADATA_DISABLED"] == "true", got
+
+    def test_a_renamed_makefile_variable_fails_here_rather_than_silently_disabling_it(
+        self, monkeypatch, tmp_path
+    ):
+        """The one way this whole mechanism could become a no-op: the parse finding nothing.
+
+        An empty derived set would strip nothing and every assertion above would still
+        pass on an environment that happened to carry no AWS variables, which is the
+        "correct authority, empty result" shape. So the parse asserts non-emptiness itself.
+        """
+        fake = tmp_path / "hermetic_aws.mk"
+        fake.write_text("HERMETIC_AWS := env\n", encoding="utf-8")
+        monkeypatch.setattr(cov_all, "HERMETIC_MK", fake)
+        with pytest.raises(AssertionError, match="parsed no -u names"):
+            cov_all.hermetic_env({})
+
+    def test_every_invocation_carries_the_hermetic_environment_and_the_pythonpath_pin(
+        self, monkeypatch, tmp_path, capsys
+    ):
+        """End to end through `main`, not just the helper, because the helper existing is
+        not the helper being called."""
+        trees = [_fake_tree(tmp_path, n) for n in ("a", "b")]
+        seen: list[dict] = []
+
+        def run(cmd, cwd=None, env=None, **kwargs):
+            assert env is not None
+            seen.append(env)
+            return subprocess.CompletedProcess(cmd, 0)
+
+        # A first-party package root in the fake checkout, so the pin has something to
+        # derive. Its absence is what makes the pin empty, which is correct behaviour for a
+        # tree with no `lib/` and would otherwise make this assertion untestable.
+        (tmp_path / "lib" / "fake_pkg").mkdir(parents=True)
+        (tmp_path / "lib" / "fake_pkg" / "pyproject.toml").write_text(
+            "", encoding="utf-8"
+        )
+        monkeypatch.setenv("AWS_PROFILE", "a-real-profile")
+        _install(monkeypatch, tmp_path, trees, run)
+        monkeypatch.setattr(sys, "argv", ["coverage_all.py", "--jobs", "2"])
+        assert cov_all.main() == 0
+        capsys.readouterr()
+        assert len(seen) == 2
+        for env in seen:
+            assert "AWS_PROFILE" not in env, "a real profile reached a measured suite"
+            assert env["AWS_CONFIG_FILE"] == "/dev/null"
+            assert env["PYTHONPATH"] == str(tmp_path / "lib" / "fake_pkg"), env[
+                "PYTHONPATH"
+            ]
+
+    def test_the_pythonpath_pin_names_every_first_party_root_absolutely(self):
+        """Derived from `lib/*/pyproject.toml`, the same rule the makefile uses, so a new
+        package under `lib/` is covered without being listed. The packages import each
+        other, so pinning one and not the rest is refused by the provenance guard."""
+        roots = cov_all.first_party_pythonpath().split(":")
+        expected = sorted(
+            str(p.parent) for p in (REPO_ROOT / "lib").glob("*/pyproject.toml")
+        )
+        assert expected, "no first-party roots found; this check would be vacuous"
+        assert roots == expected, (roots, expected)
+        assert all(r.startswith("/") for r in roots), (
+            "a relative entry does not survive into a subprocess that changes directory"
+        )

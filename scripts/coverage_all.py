@@ -74,6 +74,70 @@ sys.modules["check_coverage_debt"] = _ccd
 _spec.loader.exec_module(_ccd)
 
 
+#: The makefile that defines the hermetic environment every gated pytest run uses.
+HERMETIC_MK = REPO_ROOT / "make" / "hermetic_aws.mk"
+
+
+def hermetic_env(env: dict[str, str] | None = None) -> dict[str, str]:
+    """Strip the machine's real AWS configuration, the way `$(HERMETIC_AWS)` does.
+
+    This script is invoked from a **gated** recipe (`coverage-all-cicd`, which both CI
+    configurations run), and it spawns `python -m pytest` itself rather than through
+    `$(PYTEST_HERMETIC)`. Without this, the nine suites it measures would run with the
+    developer's real region, real credentials and real `AWS_CONFIG_FILE` — so a suite that
+    reaches a live endpoint would quietly transact against whichever account the developer
+    is signed in to instead of failing loudly, which is the whole point of that wrapper.
+
+    The variable list is **parsed out of `make/hermetic_aws.mk`**, never restated here. A
+    second copy of it is the copy that goes stale, and the one that goes stale is the one
+    deciding which credential reaches a test subprocess. `scripts/tests/test_coverage_all.py`
+    asserts the parsed set is non-empty and matches the makefile's, so a rename on either
+    side fails there rather than silently reducing this to a no-op.
+    """
+    text = HERMETIC_MK.read_text(encoding="utf-8")
+    body = text.split("HERMETIC_AWS :=", 1)[1]
+    # The assignment continues while lines end in a backslash.
+    lines, rest = [], body.splitlines()
+    for line in rest:
+        lines.append(line)
+        if not line.rstrip().endswith("\\"):
+            break
+    tokens = " ".join(lines).replace("\\", " ").split()
+    unset, assign = [], {}
+    expect_name = False
+    for token in tokens:
+        if token == "-u":
+            expect_name = True
+        elif expect_name:
+            unset.append(token)
+            expect_name = False
+        elif "=" in token:
+            name, _, value = token.partition("=")
+            assign[name] = value
+    assert unset, f"parsed no -u names out of HERMETIC_AWS in {HERMETIC_MK}"
+    out = dict(os.environ if env is None else env)
+    for name in unset:
+        out.pop(name, None)
+    out.update(assign)
+    return out
+
+
+def first_party_pythonpath() -> str:
+    """This checkout's first-party package roots, absolute, colon-joined.
+
+    Same rule and same reason as `FIRST_PARTY_PYTHONPATH` in `make/hermetic_aws.mk`:
+    `import idp_common` follows the editable-install pointer in the interpreter's
+    site-packages, not the checkout a suite lives in, so an unpinned run can measure a
+    different tree and read green while doing it (#1094). Derived from
+    `lib/*/pyproject.toml` rather than listed, so a package added under `lib/` is covered.
+    """
+    roots = sorted(
+        str(pyproject.parent)
+        for pyproject in (REPO_ROOT / "lib").glob("*/pyproject.toml")
+    )
+    return ":".join(roots)
+
+
 def cpu_count() -> int:
     """CPUs this process may actually use, which on a CI runner is not ``os.cpu_count()``.
 
@@ -190,10 +254,19 @@ def run(
     # well as what lets a child's data be found at all. Every Tree has a distinct cwd, so
     # the per-tree property comes for free from the instrument rather than from a second
     # mechanism here.
+    # Hermetic first, then the subprocess-coverage variables on top: this recipe is gated,
+    # so it must not hand a measured suite the machine's real AWS configuration. The
+    # PYTHONPATH pin is the other thing `$(PYTEST_HERMETIC)` would have supplied, and
+    # without it a run can measure another checkout entirely (#1094).
+    env = subprocess_coverage_env(cwd, source, env=hermetic_env())
+    pinned = first_party_pythonpath()
+    if pinned:
+        existing = env.get("PYTHONPATH")
+        env["PYTHONPATH"] = f"{pinned}:{existing}" if existing else pinned
     result = subprocess.run(
         cmd,
         cwd=cwd,
-        env=subprocess_coverage_env(cwd, source),
+        env=env,
         capture_output=True,
         text=True,
     )
