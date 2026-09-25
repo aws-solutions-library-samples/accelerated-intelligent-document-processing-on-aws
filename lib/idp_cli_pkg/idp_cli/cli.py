@@ -3336,6 +3336,37 @@ def validate_manifest_cmd(manifest: str):
         sys.exit(1)
 
 
+def _timestamp_for_display(value) -> str:
+    """Render an optional timestamp as a string, always -- never as a `datetime`.
+
+    `BatchStatus` carries `datetime` fields that pydantic leaves as `None` when the
+    tracking table has not written them yet, and the dicts `display.py` consumes are
+    plain data that gets sorted and JSON-encoded. Substituting `""` for the absent
+    case while passing the `datetime` through for the present one puts two types
+    under one key, and both of the things `display.py` then does with that key fail
+    on the mix rather than degrade:
+
+    * `create_recent_completions_table` sorts the completed documents by `end_time`,
+      and Python will not order a `datetime` against a `str`, so a batch holding one
+      completed document with an end time and one without raised
+      `'<' not supported between instances of 'datetime.datetime' and 'str'`. Both
+      callers catch broadly, so `idp-cli status` printed that as an error and exited
+      1 instead of showing the table, and `--monitor` abandoned the watch.
+    * `format_status_json` puts the value straight into `json.dumps`, which has no
+      encoder for `datetime`, so `status --format json` on a single completed
+      document with an end time raised `Object of type datetime is not JSON
+      serializable`.
+
+    ISO 8601 is the representation to normalise to: it is what `json.dumps` would
+    have needed anyway, and lexicographic order over it agrees with chronological
+    order, so the sort is still the sort that was intended.
+    """
+    if not value:
+        return ""
+    isoformat = getattr(value, "isoformat", None)
+    return isoformat() if callable(isoformat) else str(value)
+
+
 def _batch_status_to_display_dicts(batch_status):
     """
     Convert a BatchStatus Pydantic model to the legacy dict format expected by display.py.
@@ -3358,8 +3389,8 @@ def _batch_status_to_display_dicts(batch_status):
         doc_dict = {
             "document_id": doc.document_id,
             "status": doc.status,
-            "start_time": doc.start_time or "",
-            "end_time": doc.end_time or "",
+            "start_time": _timestamp_for_display(doc.start_time),
+            "end_time": _timestamp_for_display(doc.end_time),
             "duration": doc.duration_seconds or 0,
             "num_pages": doc.num_pages,
             "num_sections": doc.num_sections,

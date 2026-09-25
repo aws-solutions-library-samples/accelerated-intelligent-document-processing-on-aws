@@ -37,6 +37,7 @@ assertions here become width-dependent.
 
 from __future__ import annotations
 
+import json
 from datetime import datetime
 from types import SimpleNamespace
 from typing import Optional
@@ -205,8 +206,10 @@ class TestDisplayDictMapping:
             {
                 "document_id": "batch-1/invoice.pdf",
                 "status": "COMPLETED",
-                "start_time": started,
-                "end_time": ended,
+                # ISO 8601 strings, never `datetime` -- see
+                # `test_the_timestamps_are_strings_whether_present_or_absent`.
+                "start_time": started.isoformat(),
+                "end_time": ended.isoformat(),
                 "duration": 30.0,
                 "num_pages": 4,
                 "num_sections": 2,
@@ -382,23 +385,14 @@ class TestDisplayDictMapping:
 
         assert display_module.show_final_status_summary(status_data, stats) == 1
 
-    def test_end_time_is_a_datetime_when_present_and_a_string_when_not(self):
-        """DEFECT, pinned as it behaves today (`cli.py:3297`).
+    def test_the_timestamps_are_strings_whether_present_or_absent(self):
+        """One type under one key, so the display layer can sort and encode it.
 
-        `doc.end_time or ""` leaves a `datetime` in place and substitutes `str` when
-        the field is absent, so one batch can produce both types under the same key.
-        `display.create_recent_completions_table` sorts the completed documents by
-        that key, and Python will not order a `datetime` against a `str`: a batch
-        holding one completed document with an end time and one without raises
-        `TypeError` inside the display layer. Both callers catch it broadly, so the
-        observable result is `idp-cli status` printing
-        "✗ Error: '<' not supported between instances of 'datetime.datetime' and
-        'str'" and exiting 1 instead of showing the table, and `--monitor` printing
-        "Monitoring error:" and abandoning the watch.
-
-        The assertion below is on the mapper, where the mixed types originate; the
-        `TypeError` is then demonstrated through the real display function so the
-        consequence is pinned too, not just described.
+        `doc.end_time or ""` used to leave a `datetime` in place and substitute a
+        `str` when the field was absent, which put two types under the same key and
+        broke both of the things `display.py` does with it. The mapper now renders
+        ISO 8601 in both cases -- lexicographic order over which is chronological
+        order, so the sort still means what it was written to mean.
         """
         status_data, _ = cli_module._batch_status_to_display_dicts(
             batch(
@@ -406,6 +400,7 @@ class TestDisplayDictMapping:
                     doc(
                         "batch-1/with.pdf",
                         "COMPLETED",
+                        start_time=datetime(2025, 1, 2, 3, 4, 0),
                         end_time=datetime(2025, 1, 2, 3, 4, 5),
                         duration_seconds=5.0,
                     ),
@@ -415,11 +410,93 @@ class TestDisplayDictMapping:
             )
         )
 
-        end_times = [d["end_time"] for d in status_data["completed"]]
-        assert end_times == [datetime(2025, 1, 2, 3, 4, 5), ""]
+        entries = status_data["completed"]
+        assert [d["end_time"] for d in entries] == ["2025-01-02T03:04:05", ""]
+        assert [d["start_time"] for d in entries] == ["2025-01-02T03:04:00", ""]
+        for entry in entries:
+            assert isinstance(entry["end_time"], str)
+            assert isinstance(entry["start_time"], str)
 
-        with pytest.raises(TypeError, match="not supported between instances"):
-            display_module.create_recent_completions_table(status_data)
+    def test_a_batch_mixing_a_timed_and_an_untimed_completion_renders_its_table(self):
+        """The crash a user saw: `status` exited 1 with a comparison TypeError.
+
+        `create_recent_completions_table` sorts the completed documents by
+        `end_time`, and Python will not order a `datetime` against the `""`
+        substituted for an absent one. Both callers catch broadly, so the observable
+        result was `✗ Error: '<' not supported between instances of
+        'datetime.datetime' and 'str'` and exit 1 instead of the table, and
+        `--monitor` printing "Monitoring error:" and abandoning the watch. Driven
+        through the real display function, and the timed document must sort first.
+        """
+        status_data, _ = cli_module._batch_status_to_display_dicts(
+            batch(
+                [
+                    doc("batch-1/without.pdf", "COMPLETED", duration_seconds=5.0),
+                    doc(
+                        "batch-1/with.pdf",
+                        "COMPLETED",
+                        end_time=datetime(2025, 1, 2, 3, 4, 5),
+                        duration_seconds=5.0,
+                    ),
+                ],
+                all_complete=True,
+            )
+        )
+
+        table = display_module.create_recent_completions_table(status_data)
+        rendered = [cell for cell in table.columns[0]._cells]
+
+        assert rendered == ["batch-1/with.pdf", "batch-1/without.pdf"]
+
+    def test_a_completed_document_with_an_end_time_can_be_encoded_as_json(self):
+        """`status --format json` raised rather than printing.
+
+        The single-document branch of `format_status_json` puts `end_time` straight
+        into `json.dumps`, which has no encoder for `datetime`: the same root cause
+        as the sort crash, reached by a different command, and the reason the fix
+        belongs in the mapper rather than at the sort.
+        """
+        status_data, stats = cli_module._batch_status_to_display_dicts(
+            batch(
+                [
+                    doc(
+                        "batch-1/with.pdf",
+                        "COMPLETED",
+                        end_time=datetime(2025, 1, 2, 3, 4, 5),
+                        duration_seconds=5.0,
+                    )
+                ],
+                all_complete=True,
+            )
+        )
+
+        payload = json.loads(display_module.format_status_json(status_data, stats))
+
+        assert payload["end_time"] == "2025-01-02T03:04:05"
+        assert payload["exit_code"] == 0
+
+    def test_the_completions_table_cannot_be_crashed_by_a_mixed_key(self):
+        """The sort key is total over whatever a caller put under `end_time`.
+
+        The mapper is the only producer of `status_data` in this repository, so this
+        asserts the display function's own robustness rather than a path a user can
+        currently reach -- a hand-built `status_data`, which is what the legacy
+        callers of these display helpers pass.
+        """
+        status_data = {
+            "completed": [
+                {
+                    "document_id": "a.pdf",
+                    "end_time": datetime(2025, 1, 1),
+                    "duration": 1.0,
+                },
+                {"document_id": "b.pdf", "end_time": "", "duration": 1.0},
+            ]
+        }
+
+        table = display_module.create_recent_completions_table(status_data)
+
+        assert [cell for cell in table.columns[0]._cells] == ["a.pdf", "b.pdf"]
 
     def test_average_duration_counts_only_completed_documents(self):
         """A failed document's duration is excluded, so the average is of successes.
