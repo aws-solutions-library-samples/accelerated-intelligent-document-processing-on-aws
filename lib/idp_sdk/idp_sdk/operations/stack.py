@@ -57,7 +57,10 @@ class StackOperation:
             custom_config: Path to local config file or S3 URI
             max_concurrent: Maximum concurrent workflows
             log_level: Logging level (DEBUG, INFO, WARN, ERROR)
-            enable_hitl: Enable Human-in-the-Loop
+            enable_hitl: Accepted only as false/None. HITL stopped being a
+                CloudFormation parameter in v0.4.11 and is a configuration
+                setting; a truthy value raises rather than being sent to
+                CloudFormation, which rejected it as an undeclared parameter.
             parameters: Additional parameters as dict
             wait: Wait for operation to complete (default: True)
             no_rollback: Disable rollback on failure
@@ -80,12 +83,23 @@ class StackOperation:
         # template_path passed directly takes precedence over from_code build output
         explicit_template_path = template_path
 
+        if enable_hitl:
+            # Refuse here, with the remedy, rather than letting CloudFormation
+            # reject "Parameters: [EnableHITL] do not exist in the template" after
+            # the caller has already waited for a template build and upload.
+            raise ValueError(
+                "enable_hitl is no longer a CloudFormation parameter. HITL became "
+                "a configuration setting in v0.4.11: enable it in the Web UI under "
+                "Configuration → Assessment & HITL Configuration, or in the config "
+                "YAML passed as custom_config. Passing it here deployed nothing — "
+                "CloudFormation rejects a parameter the template does not declare."
+            )
+
         additional_params = parameters or {}
         cfn_parameters = build_parameters(
             admin_email=admin_email,
             max_concurrent=max_concurrent,
             log_level=log_level,
-            enable_hitl="true" if enable_hitl else None,
             custom_config=custom_config,
             additional_params=additional_params,
             region=self._client._region,

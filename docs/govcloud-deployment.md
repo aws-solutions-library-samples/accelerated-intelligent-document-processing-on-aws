@@ -61,16 +61,19 @@ Install on the machine you build from:
 
 Also request access to the default Bedrock models in your GovCloud region
 before processing documents: `amazon.nova-lite-v1:0`, `amazon.nova-pro-v1:0`,
-`us.anthropic.claude-3-5-sonnet-20240620-v1:0`, and
-`anthropic.claude-3-7-sonnet-20250219-v1:0`.
+`us-gov.anthropic.claude-sonnet-4-5-20250929-v1:0`, and
+`anthropic.claude-sonnet-4-5-20250929-v1:0`.
 
 > **Note**: The CLI creates the artifacts S3 bucket automatically. Customize
 > with `--bucket-basename` and `--prefix`.
 
 > **Note on `--parameters` formatting**: Commas inside multi-value parameters
-> (like `PrivateSubnetIds`) don't need escaping — the CLI parses
-> `--parameters` by looking for the next `key=` pattern, so commas within
-> values are preserved automatically.
+> (like `PrivateSubnetIds`) don't need escaping — a new pair starts at a comma or
+> whitespace followed by `key=`, so commas within values are preserved
+> automatically. An `=` inside a value needs no escaping either, and whitespace
+> around the `=` is ignored. Text before the first pair that forms no pair, and a
+> value that looks like it swallowed one, are both printed back to you rather than
+> passing unremarked — see [`--parameters`](./idp-cli.md#deploy) for the detail.
 
 ## Keeping the Web UI in GovCloud: `--govcloud`
 
@@ -221,7 +224,7 @@ base), keeping the full document-processing backend. See the
 >   VPC parameters — the template rejects it otherwise at changeset creation.
 >
 > If you want the Jobs API you must pass `EnableJobsApi=true` and the VPC
-> parameters explicitly, as in [Option B](#option-b-headless--jobs-rest-api-all-lambdas-in-vpc) below.
+> parameters explicitly, as in [Option B](#option-b-no-ui---headless--jobs-rest-api-all-lambdas-in-vpc) below.
 
 ### Deployment Packages
 
@@ -338,6 +341,14 @@ Common deployment issues:
 - **"Region '…' is not supported" with `--govcloud`/`--headless` but without
   `--from-code`** — pre-built templates only exist for a few commercial
   regions; in GovCloud always pass `--from-code .` (or `--template-url`).
+- **"`--govcloud` was requested but the build did not produce a GovCloud
+  template variant"** — the deploy is refused at that point and no stack is
+  created. It is refused rather than run against the commercial template,
+  which would deploy CloudFront resources into a partition that has none and
+  fail part-way through CREATE. Run the transform on its own
+  (`idp-cli publish --source-dir . --region <region> --govcloud`) to see why it
+  produced nothing, then deploy the result with
+  `--template-file .aws-sam/idp-govcloud.yaml`.
 
 ## Migration from Commercial AWS
 

@@ -32,6 +32,8 @@ import math
 import re
 from typing import Any, Dict, Mapping, Optional
 
+from idp_common.bedrock.model_utils import REGION_PREFIXES
+
 CACHEPOINT_MARKER = "<<CACHEPOINT>>"
 
 # Published per-model minimum cacheable prefix, in tokens. Order matters: the first
@@ -39,6 +41,9 @@ CACHEPOINT_MARKER = "<<CACHEPOINT>>"
 # Nova is deliberately absent: its minimum was measured at <=355 tokens, below any
 # shipped class, so it never needs a warning.
 _MIN_PREFIX_TIERS = (
+    # ``opus-5`` also matches ``opus-5-5``, and that is the correct answer rather
+    # than a lucky one: the Opus 5.5 model card publishes the same 512-token
+    # minimum and the same 4-checkpoint maximum as Opus 5.
     (re.compile(r"claude-(opus-5|fable-5)"), 512),
     (re.compile(r"claude-opus-4-7"), 2048),
     (re.compile(r"claude-(opus-4-6|opus-4-5|haiku-4-5)"), 4096),
@@ -208,7 +213,7 @@ def model_caches_implicitly(model_id: Optional[str]) -> bool:
         return False
     base = model_id.split("/")[-1]
     parts = base.split(".", 1)
-    if len(parts) == 2 and parts[0] in ("us", "eu", "global"):
+    if len(parts) == 2 and parts[0] in REGION_PREFIXES:
         base = parts[1]
     return base.startswith(_IMPLICIT_CACHE_BASE_NAMES)
 
@@ -335,7 +340,7 @@ def describe_cache_state(summary: Mapping[str, Any]) -> str:
         )
         return (
             f"never cached — the cache point was inert ({counts}); the prompt "
-            f"prefix is probably below {floor}: run 'idp-cli config validate' for "
+            f"prefix is probably below {floor}: run 'idp-cli config-validate' for "
             f"the per-class estimate"
         )
     if state == "disabled":

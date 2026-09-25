@@ -177,6 +177,132 @@ def _widen_scalar_leaves(schema: Any) -> Any:
     return out
 
 
+_CONTAINER_TYPES = frozenset({"array", "object"})
+
+
+def nullable_required_containers_for_shard(schema: Dict[str, Any]) -> Dict[str, Any]:
+    """Return a copy of ``schema`` in which a **required** array or object property
+    also accepts ``null``. ``required`` itself is left exactly as it is.
+
+    This is :func:`nullable_leaves_for_transport`'s argument carried to the one
+    shape it does not reach, for the one caller where that shape has no honest
+    answer: **a shard of a sharded agentic section.**
+
+    A shard is given only its own pages and told "if a field does not appear in your
+    pages, leave it null — another shard will provide it"
+    (``agentic_idp._run_shard_agent``). ``nullable_leaves_for_transport`` makes that
+    instruction satisfiable for a scalar, because it widens scalar *leaves*. It does
+    not add a null branch to an array or to a nested object, so for a required list
+    or group the instruction names the one answer the tool rejects:
+
+    ==============================  ==========================  ==========================
+    shard returns                   without this transform      with it
+    ==============================  ==========================  ==========================
+    ``Account Number: null``        accept                      accept
+    ``Transactions: null``          reject (``list_type``)      **accept**
+    ``Summary: null``               reject (``model_type``)     **accept**
+    ``Transactions`` key omitted    reject                      reject
+    ``{}`` (empty tool call)        reject                      reject
+    misspelled key set              reject                      reject
+    ``Transactions: []`` under a
+    declared ``minItems``           reject (``too_short``)      reject (``too_short``)
+    ==============================  ==========================  ==========================
+
+    The last three rows are the point of doing this narrowly rather than by dropping
+    ``required``. ``required`` conflates *the key must be present* with *the value
+    must be readable*, and only the second can be relaxed for a shard — exactly the
+    split :func:`nullable_leaves_for_transport` makes for scalars. Dropping
+    ``required`` would render every field ``Optional[...] = None``, so ``{}`` becomes
+    a valid tool call and a shard that answered nothing would merge as a success:
+    the #666 whole-list loss, per shard.
+
+    ``minItems`` is deliberately **not** touched. A row-count floor is enforced per
+    shard at the tool boundary and a section-sized floor is unsatisfiable by a shard
+    — that is documented behaviour with its own guidance (put no ``minItems`` on a
+    list whose section shards; use ``extraction.row_shortfall_action``), and this
+    transform must not quietly change it. Verified: a widened array under
+    ``minItems: 100`` still rejects 43 rows and an empty list, and now accepts
+    ``null``.
+
+    Presence is re-checked once on the MERGED section, against the real schema, by
+    ``extraction.validation`` — which treats a null property as absent and reports
+    ``'X' is a required property``. So a required list or group that no shard saw is
+    reported rather than forced, the same treatment a null required scalar already
+    gets.
+
+    Scope, deliberately narrow:
+
+    * Only a property named in its own object's ``required`` list. A property that
+      was already optional needs nothing.
+    * Applied at every level a ``required`` list appears, including inside ``$defs``
+      and ``items``, so one rule covers the whole schema.
+    * A container is recognised by a declared ``array``/``object`` ``type``, or by
+      carrying ``items`` or ``properties`` when no ``type`` is declared.
+    * ⚠️ A required property that is a **bare** ``$ref`` (no ``type``, no
+      ``properties``, no ``items`` of its own) is NOT widened — there is no keyword
+      to widen without resolving the reference, and the ``anyOf`` form the generator
+      would need turns an array field into a wrapper model, which breaks the shard
+      merge's list detection. Such a property still costs a shard one correction
+      round. No shipped configuration uses that shape for a required property.
+    """
+    return _widen_required_containers(schema)
+
+
+def _declared_container_types(prop: Any) -> List[str] | None:
+    """The ``type`` list to widen for a container property, or None if not one.
+
+    Returns ``[]`` for a container recognised by shape (``items`` / ``properties``)
+    with no declared ``type``, in which case the caller supplies the type name.
+    """
+    if not isinstance(prop, dict):
+        return None
+    declared = prop.get("type")
+    types: List[str] | None
+    if isinstance(declared, str):
+        types = [declared]
+    elif isinstance(declared, list) and all(isinstance(x, str) for x in declared):
+        types = list(declared)
+    else:
+        types = None
+    if types:
+        if "null" in types:
+            return None  # already nullable
+        return types if all(x in _CONTAINER_TYPES for x in types) else None
+    if "properties" in prop or "items" in prop:
+        return []
+    return None
+
+
+def _widen_required_containers(node: Any) -> Any:
+    """Recursive worker for :func:`nullable_required_containers_for_shard`."""
+    if isinstance(node, list):
+        return [_widen_required_containers(item) for item in node]
+    if not isinstance(node, dict):
+        return node
+
+    out: Dict[str, Any] = {
+        key: _widen_required_containers(value) for key, value in node.items()
+    }
+    required = node.get("required")
+    properties = out.get("properties")
+    if not (isinstance(required, list) and isinstance(properties, dict)):
+        return out
+
+    for name in required:
+        prop = properties.get(name)
+        if not isinstance(prop, dict):
+            continue
+        types = _declared_container_types(prop)
+        if types is None:
+            continue
+        if not types:
+            types = ["object" if "properties" in prop else "array"]
+        widened = dict(prop)
+        widened["type"] = list(types) + ["null"]
+        properties[name] = widened
+    return out
+
+
 def _normalize_class_name(name: str) -> str:
     """
     Normalize a class name to PascalCase.

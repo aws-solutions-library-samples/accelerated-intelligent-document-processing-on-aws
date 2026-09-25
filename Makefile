@@ -21,11 +21,11 @@ else
   PIP := $(CURDIR)/$(VENV_DIR)/bin/pip
 endif
 
-# Region handed to test suites that construct a boto3 client at import time.
-# Only a region — no credentials are needed or used, and no AWS call is made.
-# Overridable, but it must be set to SOMETHING: botocore raises NoRegionError
-# during collection otherwise. See the note in test-packages-cicd and #988.
-TEST_AWS_REGION ?= us-east-1
+# HERMETIC_AWS / PYTEST_HERMETIC — the AWS environment a CI runner has, stripped
+# of everything a developer machine adds. Defined once and shared with
+# lib/idp_common_pkg/Makefile, which includes the same file; see the comment there
+# for why each source has to be neutralised and which failures it prevents.
+include make/hermetic_aws.mk
 
 # idp-cli invocation — uses `python -m idp_cli.cli` so it works whether or not
 # the virtualenv is activated (picks up $(PYTHON) which prefers .venv).
@@ -143,8 +143,8 @@ setup-venv: ## Create .venv and install all packages into it
 	@echo -e "$(YELLOW)   'basedpyright' is separate again: npm install -g basedpyright$(NC)"
 
 ##@ Code Quality
-lint: ruff-lint format check-arn-partitions check-filtered-scans check-data-plane-tags check-retired-services check-threat-model-currency validate-buildspec cfn-lint ui-lint codegen-check ## Run all linting (ruff, format, ARN checks, filtered scans, retired-service docs, threat-model currency, buildspec, UI, codegen). Use FORCE=1 to force UI lint re-run despite checksum match.
-fastlint: ruff-lint format check-arn-partitions check-filtered-scans check-data-plane-tags check-retired-services check-threat-model-currency validate-buildspec ## Quick lint without UI checks
+lint: ruff-lint format check-lint-debt check-arn-partitions check-account-ids check-filtered-scans check-data-plane-tags check-retired-services check-threat-model-currency check-markdown-links validate-buildspec cfn-lint ui-lint codegen-check ## Run all linting (ruff, format, ARN checks, account-id scan, filtered scans, retired-service docs, threat-model currency, Markdown links, buildspec, UI, codegen). Use FORCE=1 to force UI lint re-run despite checksum match.
+fastlint: ruff-lint format check-lint-debt check-arn-partitions check-account-ids check-filtered-scans check-data-plane-tags check-retired-services check-threat-model-currency check-markdown-links validate-buildspec ## Quick lint without UI checks
 
 ruff-lint: ## Run ruff linting with auto-fix
 	ruff check --fix
@@ -165,8 +165,24 @@ lint-cicd: ## CI/CD lint — checks only, no modifications
 		exit 1; \
 	fi; \
 	echo "All checks passed!"
+	@# The two ruff invocations above are only as strong as what they are
+	@# allowed to read. This asserts the exclusion baseline they honour is still
+	@# the one that was measured -- see issue #975.
+	@if ! make check-lint-debt; then \
+		echo -e "$(RED)ERROR: ruff exclusion baseline is out of date$(NC)"; \
+		echo -e "$(YELLOW)Run 'python3 scripts/check_lint_debt.py --write' after fixing the findings.$(NC)"; \
+		exit 1; \
+	fi
 	@echo "Frontend checks"
-	@if ! make ui-lint; then \
+	@# UI_LINT_NO_SKIP=1 is load-bearing here. `ui-lint` caches on a checksum of
+	@# src/ui, and this target reported overall success on a warm local tree
+	@# without having run eslint or tsc at all (issue #1152). CI never hits the
+	@# skip — `.checksum` is gitignored, so a fresh checkout has no stored hash —
+	@# which is precisely why the CI-equivalent target must not be able to either:
+	@# the one gate in this set whose green mark could mean nothing is the one
+	@# people read when the Actions queue is slow. `lint` and `fastlint` keep the
+	@# cache, since iteration latency is what it was added for.
+	@if ! make ui-lint UI_LINT_NO_SKIP=1; then \
 		echo -e "$(RED)ERROR: UI lint failed$(NC)"; \
 		exit 1; \
 	fi
@@ -199,6 +215,12 @@ lint-cicd: ## CI/CD lint — checks only, no modifications
 		exit 1; \
 	fi
 
+	@echo "Committed AWS account id check"
+	@if ! make check-account-ids; then \
+		echo -e "$(RED)ERROR: a private AWS account id is committed in a tracked file (see issue #1067)$(NC)"; \
+		exit 1; \
+	fi
+
 	@echo "DynamoDB filtered-scan pagination check"
 	@if ! make check-filtered-scans; then \
 		echo -e "$(RED)ERROR: Filtered DynamoDB scan(s) cannot see all their matches (see issue #599)$(NC)"; \
@@ -223,7 +245,56 @@ lint-cicd: ## CI/CD lint — checks only, no modifications
 		exit 1; \
 	fi
 
+	@echo "Markdown link check"
+	@if ! make check-markdown-links; then \
+		echo -e "$(RED)ERROR: A Markdown link does not resolve (see issue #1068)$(NC)"; \
+		exit 1; \
+	fi
+
 	@echo -e "$(GREEN)All code quality checks passed!$(NC)"
+
+coverage: ## Re-measure idp_common and print its table, worst-covered first (other trees: coverage-all)
+	@$(MAKE) --no-print-directory -C lib/idp_common_pkg test-cicd SKIP_INSTALL=1 COV_FLOOR= >/dev/null 2>&1 || true
+	@python3 scripts/coverage_table.py $(COVERAGE_ARGS)
+
+coverage-table: ## Print a tree's table from the last run, without re-measuring (COVERAGE_ARGS=--tree=NAME)
+	@python3 scripts/coverage_table.py $(COVERAGE_ARGS)
+
+coverage-all: ## Measure EVERY tree (9 of them) and print each one's figure
+	@python3 scripts/coverage_all.py $(COVERAGE_ARGS)
+
+coverage-summary: ## Print the recorded per-tree figures, without measuring anything
+	@python3 scripts/check_coverage_debt.py --summary
+
+# Deliberately NOT a prerequisite of `lint` or `fastlint`: it reads the coverage
+# report that `make test-cicd -C lib/idp_common_pkg` writes, and the lint targets
+# never build one. Wired there it would find no report and refuse (exit 2), red-lining
+# every lint run for a condition the lint targets themselves cause.
+# Both CI configurations invoke it immediately after the test step instead. They pass no
+# arguments and need none: with no usable report the gate refuses rather than reporting
+# success, for every caller (#1190). CHECK_COVERAGE_DEBT_ARGS is how a caller that knows
+# which tree it just measured adds `--require-tree=<name>` and gets a failure that names
+# the tree instead of one that says only that nothing was checked.
+CHECK_COVERAGE_DEBT_ARGS ?=
+check-coverage-debt: ## Ratchet per-file coverage across all 9 trees: fail if a file loses coverage, or a new module arrives unratcheted
+	@python3 scripts/check_coverage_debt.py $(CHECK_COVERAGE_DEBT_ARGS)
+
+check-lint-debt: ## Ratchet ruff's per-file exclusions: fail if an excluded file gains a finding, or is now clean (issue #975)
+	@# ruff.toml used to exclude five BARE directory names, which match at any
+	@# path depth, so 442 of 1230 tracked .py files were read by neither the
+	@# linter nor the formatter. The exclusions are now per-file and generated;
+	@# this re-measures them with the exclusions bypassed so a listed file cannot
+	@# quietly accumulate more. Regenerate with --write after fixing findings.
+	@$(PYTHON) scripts/check_lint_debt.py || \
+		(echo -e "$(RED)ERROR: ruff exclusion baseline is out of date (see issue #975)$(NC)" && exit 1)
+
+check-account-ids: ## Fail if a private AWS account id is committed in a tracked file's contents (issue #1067)
+	@# The PreToolUse hook scripts/hooks/check_commit_text.py inspects the COMMAND
+	@# text of a commit or a PR creation. A 12-digit id inside a file never appears
+	@# there, so no pattern could have caught the 175 occurrences this gate was
+	@# written for. This one reads the files instead.
+	@$(PYTHON) scripts/check_account_ids.py || \
+		(echo -e "$(RED)ERROR: an unaccounted AWS account id is committed in a tracked file!$(NC)" && exit 1)
 
 check-filtered-scans: ## Check for DynamoDB filtered Scans that can't see all matches (issue #599)
 	@$(PYTHON) scripts/check_filtered_scans.py || \
@@ -233,15 +304,32 @@ check-data-plane-tags: ## Enforce idp:plane=data on the whitelisted data-plane L
 	@$(PYTHON) scripts/check_data_plane_tags.py || \
 		(echo -e "$(RED)ERROR: Data-plane Lambda tag check failed!$(NC)" && exit 1)
 
-check-threat-model-currency: ## Fail if security/threat-modeling/ is >1 release behind VERSION, or its export is stale
+check-threat-model-currency: ## Fail if security/threat-modeling/ is >1 release behind VERSION, its export is stale, or a document's stated counts disagree with the export
 	@$(PYTHON) scripts/check_threat_model_currency.py || \
 		(echo -e "$(RED)ERROR: Threat model is overdue for re-review!$(NC)" && exit 1)
 	@# The Threat Composer export is generated from the Markdown corpus. It fell
 	@# silently out of sync before (an added threat with no STATUS entry made it
 	@# unbuildable), so the same target verifies it rebuilds byte-identical.
+	@#
+	@# --check ALSO reads the corpus's prose tallies back and compares them with the
+	@# generated ones. The export is where the counts are computed and a dozen
+	@# documents restate them, and nothing compared the two: the export carried 99
+	@# threats while four documents said 98, and three were a release behind on the
+	@# status tally. Every one of those was written by someone who had just read the
+	@# generated numbers, which is why this has to be a gate and not a habit.
 	@$(PYTHON) security/threat-modeling/scripts/build_threat_model.py --check || \
-		(echo -e "$(RED)ERROR: threat-model.tc.json is stale — regenerate with$(NC)" && \
-		 echo -e "$(YELLOW)  python3 security/threat-modeling/scripts/build_threat_model.py$(NC)" && exit 1)
+		(echo -e "$(RED)ERROR: threat-model.tc.json is stale, or a document's counts disagree with it$(NC)" && \
+		 echo -e "$(YELLOW)  regenerate: python3 security/threat-modeling/scripts/build_threat_model.py$(NC)" && \
+		 echo -e "$(YELLOW)  a count mismatch is fixed in the DOCUMENT, not the export$(NC)" && exit 1)
+
+check-markdown-links: ## Resolve every relative Markdown link, anchor, and published-page target offline (issue #1068)
+	@# Discovery is `git ls-files '*.md'` at run time, not a glob list: the glob
+	@# list in the template gates missed five directories, and a docs gate that
+	@# reads only docs/ misses the CHANGELOG, every README under nested/ and
+	@# feature-platform/, and the skill files. External http(s) URLs are never
+	@# fetched -- a blocking gate must not depend on egress.
+	@$(PYTHON) scripts/check_markdown_links.py || \
+		(echo -e "$(RED)ERROR: broken Markdown link(s) found!$(NC)" && exit 1)
 
 check-retired-services: ## Fail if documentation presents a retired service (AppSync) as current (issue #929)
 	@$(PYTHON) scripts/sdlc/check_retired_services.py || \
@@ -253,18 +341,33 @@ validate-buildspec: ## Validate AWS CodeBuild buildspec files
 		(echo -e "$(RED)ERROR: Buildspec validation failed!$(NC)" && exit 1)
 	@echo -e "$(GREEN)✅ All buildspec files are valid!$(NC)"
 
-# Templates the ARN-partition gate does NOT scan, each with its reason. This is
-# a per-PATH exemption, never a per-rule one: every rule still runs on everything
-# else. Keep it short, and justify each entry here.
+# Lines the ARN-partition gate does NOT flag, each with its reason. Entries are
+# `<path>:<line-pattern>`, the same shape scripts/sdlc/retired_services.json uses,
+# so a file can be PARTLY exempt. A bare `<path>` (or `<path>/` prefix) still works
+# and skips the whole file, but prefer the per-line form: this is never a per-RULE
+# exemption, and it should not be a per-DIRECTORY one either.
 #
-#   scripts/sdlc/cfn/ — the SDLC pipeline's own infrastructure (CodePipeline,
-#     the GitLab-runner credential vendor, the builder IAM role). It deploys only
-#     in the commercial CI account by construction: it names a commercial
-#     cross-account principal (arn:aws:iam::<account>:role/gitlab-runners-prod)
-#     that has no counterpart in another partition. Mirrors the /scripts/sdlc/
-#     exclusion in scripts/check_python_arn_partitions.py. If the harness ever
-#     grows a GovCloud probe, drop this and fix the templates.
-ARN_PARTITION_EXEMPT := scripts/sdlc/cfn/
+# Why per line. This used to read `scripts/sdlc/cfn/` — one directory entry, one
+# reason, four templates — justified on the ground that the SDLC pipeline templates
+# "name a commercial cross-account principal that has no counterpart in another
+# partition". Measured with this gate's own greps, that was true of 2 lines out of
+# the 51 the entry hid: one template contained no ARN at all, and the other 49 were
+# own-account or AWS-managed ARNs and service principals that simply needed
+# parameterising, which they now have. The premise was a property of two lines and
+# was attached to a directory, so reading it in aggregate ("do these deploy only in
+# the commercial account?" — yes) confirmed it while it shielded 49 fixable
+# findings. Naming the lines makes the mismatch impossible to write down.
+#
+#   scripts/sdlc/cfn/credential-vendor.yml:gitlab-runners-prod — two statements
+#     trust a named role in the commercial CI account that owns this pipeline.
+#     Cross-partition IAM trust does not exist, so `arn:${AWS::Partition}:` here
+#     would render an ARN naming a GovCloud account that is not the one meant. This
+#     is the only line in these templates that cannot be parameterised.
+#
+# scripts/tests/test_discover_templates.py checks the shape, requires a reason, and
+# fails if an entry hides nothing — a dead exemption is a standing licence for
+# whatever next occupies the path.
+ARN_PARTITION_EXEMPT := scripts/sdlc/cfn/credential-vendor.yml:gitlab-runners-prod
 
 check-arn-partitions: ## Check CloudFormation templates for hardcoded ARN partitions
 	@echo "Checking CloudFormation templates for hardcoded ARN partitions and service principals..."
@@ -278,22 +381,31 @@ check-arn-partitions: ## Check CloudFormation templates for hardcoded ARN partit
 		exit 1; \
 	fi; \
 	for template in $$TEMPLATES; do \
-		SKIP=0; \
+		SKIP=0; LINEFILTER=cat; \
 		for exempt in $(ARN_PARTITION_EXEMPT); do \
-			case "$$template" in $$exempt*) SKIP=1;; esac; \
+			case "$$exempt" in \
+				*:*) epath=$${exempt%%:*}; epat=$${exempt#*:};; \
+				*)   epath=$$exempt; epat='';; \
+			esac; \
+			if [ -n "$$epat" ]; then \
+				if [ "$$template" = "$$epath" ]; then LINEFILTER="grep -v $$epat"; fi; \
+			else \
+				case "$$template" in $$epath*) SKIP=1;; esac; \
+			fi; \
 		done; \
 		if [ $$SKIP -eq 1 ]; then \
 			echo "Skipping $$template (ARN_PARTITION_EXEMPT — see Makefile for the reason)"; \
 		elif [ -f "$$template" ]; then \
-			echo "Checking $$template..."; \
-			ARN_MATCHES=$$(grep -n "arn:aws:" "$$template" | grep -v "arn:\$${AWS::Partition}:" | grep -v "^[0-9]*:[[:space:]]*#" || true); \
+			if [ "$$LINEFILTER" = cat ]; then echo "Checking $$template..."; \
+			else echo "Checking $$template (ARN_PARTITION_EXEMPT hides lines matching '$${LINEFILTER#grep -v }' — see Makefile)"; fi; \
+			ARN_MATCHES=$$(grep -n "arn:aws:" "$$template" | grep -v "arn:\$${AWS::Partition}:" | grep -v "^[0-9]*:[[:space:]]*#" | $$LINEFILTER || true); \
 			if [ -n "$$ARN_MATCHES" ]; then \
 				echo -e "$(RED)ERROR: Found hardcoded 'arn:aws:' references in $$template:$(NC)"; \
 				echo "$$ARN_MATCHES" | sed 's/^/  /'; \
 				echo -e "$(YELLOW)  These should use 'arn:\$${AWS::Partition}:' instead for GovCloud compatibility$(NC)"; \
 				FOUND_ISSUES=1; \
 			fi; \
-			SERVICE_MATCHES=$$(grep -n "\.amazonaws\.com" "$$template" | grep -v "\$${AWS::URLSuffix}" | grep -v "^[0-9]*:[[:space:]]*#" | grep -v "Description:" | grep -v "Comment:" | grep -v "reason:" | grep -v "cognito" | grep -v "ContentSecurityPolicy" || true); \
+			SERVICE_MATCHES=$$(grep -n "\.amazonaws\.com" "$$template" | grep -v "\$${AWS::URLSuffix}" | grep -v "^[0-9]*:[[:space:]]*#" | grep -v "Description:" | grep -v "Comment:" | grep -v "reason:" | grep -v "cognito" | grep -v "ContentSecurityPolicy" | $$LINEFILTER || true); \
 			if [ -n "$$SERVICE_MATCHES" ]; then \
 				echo -e "$(RED)ERROR: Found hardcoded service principal references in $$template:$(NC)"; \
 				echo "$$SERVICE_MATCHES" | sed 's/^/  /'; \
@@ -301,7 +413,7 @@ check-arn-partitions: ## Check CloudFormation templates for hardcoded ARN partit
 				echo -e "$(YELLOW)  Example: 'lambda.amazonaws.com' should be 'lambda.\$${AWS::URLSuffix}'$(NC)"; \
 				FOUND_ISSUES=1; \
 			fi; \
-			CONSOLE_MATCHES=$$(grep -n "console\.aws\.amazon\.com\|s3\.console\.aws\.amazon\.com" "$$template" | grep -v "^[0-9]*:[[:space:]]*#" | grep -v "Domain:" | grep -v "Description:" | grep -v "Comment:" || true); \
+			CONSOLE_MATCHES=$$(grep -n "console\.aws\.amazon\.com\|s3\.console\.aws\.amazon\.com" "$$template" | grep -v "^[0-9]*:[[:space:]]*#" | grep -v "Domain:" | grep -v "Description:" | grep -v "Comment:" | $$LINEFILTER || true); \
 			if [ -n "$$CONSOLE_MATCHES" ]; then \
 				echo -e "$(RED)ERROR: Found hardcoded AWS console domain references in $$template:$(NC)"; \
 				echo "$$CONSOLE_MATCHES" | sed 's/^/  /'; \
@@ -436,19 +548,50 @@ cfn-lint-warnings: ## Same as cfn-lint but lists every advisory warning (W*/I*) 
 
 # Deliberately NOT part of `lint`, `fastlint` or `lint-cicd`, and deliberately NOT
 # in test_ci_gate_parity.py's SHARED_GATES. It needs network access and a token
-# with administration:read, and it reports "not protected" until issue #933 is
-# closed — enabling branch protection needs repository ADMIN, which no contributor
-# and no CI token here has. Wiring it into a blocking gate today would red-line
-# every branch for a condition nobody working in the tree can fix.
+# with administration:read, and on this repository it reports "not protected" on
+# BOTH long-lived branches: `develop`, which pull requests target, and `main`,
+# which is the default branch and the one releases are cut from. Wiring it into a
+# blocking gate would red-line every branch for a condition nobody working in the
+# tree can fix. test_check_branch_protection.py fails if it is added to a lint
+# target, to SHARED_GATES, or to either CI configuration.
 #
-# TODO(#933): once protection is enabled, make this a required, blocking check —
-# add it to lint-cicd and pass --fail-on-skip so a missing token is an error
-# rather than a silent pass.
-check-branch-protection: ## Report whether branch protection actually requires the CI checks (opt-in, needs a GitHub token; see issue #933)
+# That is an accepted residual, not pending work: enabling classic protection
+# needs repository ADMIN, which no contributor and no CI token here has, and the
+# decision to stop pursuing it from the tree is recorded in closed issue #933.
+# Nothing here can substitute -- enforcement is server-side, so a merge taken
+# through GitHub's Merge button runs no code from this tree.
+#
+# It becomes a required, blocking check when a repository SETTING changes — either
+# somebody with repository admin enables protection, or an organization/enterprise
+# owner publishes a branch ruleset targeting these branches (that second route
+# needs no repository admin). At that point add it to lint-cicd and pass
+# --fail-on-skip so a missing token is an error rather than a silent pass.
+#
+# Run it twice: one invocation reads one branch.
+#   make check-branch-protection
+#   make check-branch-protection BRANCH_PROTECTION_ARGS=--branch=main
+check-branch-protection: ## Report whether branch protection actually requires the CI checks (opt-in, needs a GitHub token; reads one branch per run)
 	@$(PYTHON) scripts/sdlc/check_branch_protection.py $(BRANCH_PROTECTION_ARGS)
 
+check-retired-models: ## Ask Bedrock whether any model this repo offers has been retired (opt-in, needs AWS credentials; NOT a CI gate)
+	@$(PYTHON) scripts/sdlc/check_retired_models.py $(RETIRED_MODELS_ARGS)
+
 ##@ Type Checking
-typecheck: ## Run type checks with basedpyright
+# `typecheck` is THE type gate, and it is what both CIs run. It reads
+# pyrightconfig.json's 12-entry `include`, whose closure over every tracked .py
+# file scripts/tests/test_pyright_config.py derives from `git ls-files` — so the
+# set it covers cannot silently shrink. A full run is ~1 minute through make
+# (48-60s measured; the bare binary is ~47s) over every tracked .py file, which is
+# why there is no cheaper CI variant: the PR-scoped form below narrows the file set and
+# therefore cannot see a break your change caused in a file it did not select.
+#
+# It needs NO environment: pyrightconfig.json's `extraPaths` puts the five
+# first-party package roots on the import path, so `idp_common` resolves whatever
+# PYTHONPATH says. Do NOT "fix" resolution by exporting PYTHONPATH here — this
+# machine carries editable installs pointing at a sibling worktree and another
+# project (#1094), so an environment-level answer can type-check somebody else's
+# copy of the library. See #1109 and scripts/tests/test_pyright_config.py.
+typecheck: ## Run type checks with basedpyright over the whole tree (the CI gate)
 	@echo "Running type checks..."
 	basedpyright
 
@@ -457,8 +600,13 @@ typecheck-stats: ## Type checks with detailed statistics
 	basedpyright --stats
 
 # Usage: make typecheck-pr [TARGET_BRANCH=branch_name]
+#
+# A DEVELOPER CONVENIENCE, NOT A GATE. It narrows basedpyright to the files you
+# changed for fast local feedback; it is deliberately in neither CI, because a
+# file-scoped check passes on a signature change whose broken caller lives in a
+# file the diff did not touch. Run `make typecheck` before you push.
 TARGET_BRANCH ?= develop
-typecheck-pr: ## Type check only files changed vs TARGET_BRANCH (default: main)
+typecheck-pr: ## Fast local type check of only the files changed vs TARGET_BRANCH (default: develop) — not a gate
 	@echo "Type checking changed files against $(TARGET_BRANCH)..."
 	$(PYTHON) scripts/sdlc/typecheck_pr_changes.py $(TARGET_BRANCH)
 
@@ -479,6 +627,12 @@ typecheck-pr: ## Type check only files changed vs TARGET_BRANCH (default: main)
 # isolated pytest invocation. It also fails if it finds a test dir that isn't
 # registered (RUN or QUARANTINE), so new tests can never be silently skipped —
 # the gap that let the old hand-maintained list here miss ~200 Lambda tests.
+#
+# `test` itself is NOT a CI target: neither .gitlab-ci.yml nor any workflow in
+# .github/workflows/ invokes it. CI runs `test-packages-cicd` below and
+# `test-cicd -C lib/idp_common_pkg`, and registering a root above buys nothing on
+# a pull request until it is named in one of those two. That is what
+# scripts/tests/test_src_lambda_tests_in_ci.py enforces, over the whole tree.
 test: ## Run every non-integration test suite (auto-discovered; see scripts/run_all_tests.py)
 	$(PYTHON) scripts/run_all_tests.py
 
@@ -490,28 +644,28 @@ test-list: ## List the discovered test roots (run vs quarantined) without runnin
 
 test-packages-cicd: ## CI-safe: run the package/Lambda suites NOT covered by idp_common_pkg test-cicd (all green headless, no AWS)
 	@echo "Running idp_cli_pkg tests..."
-	cd lib/idp_cli_pkg && $(PYTHON) -m pytest -q -p no:cacheprovider
+	cd lib/idp_cli_pkg && $(PYTEST_HERMETIC) -q -p no:cacheprovider
 	@echo "Running idp_sdk tests (not integration)..."
-	cd lib/idp_sdk && $(PYTHON) -m pytest -m "not integration" -q -p no:cacheprovider
+	cd lib/idp_sdk && $(PYTEST_HERMETIC) -m "not integration" -q -p no:cacheprovider
 	@echo "Running idp_feature_sdk tests..."
-	cd lib/idp_feature_sdk && $(PYTHON) -m pytest -q -p no:cacheprovider
+	cd lib/idp_feature_sdk && $(PYTEST_HERMETIC) -q -p no:cacheprovider
 	@echo "Running feature platform tests..."
-	cd feature-platform/main-stack-extensions && $(PYTHON) -m pytest -q -p no:cacheprovider
-	cd feature-platform/feature-template/feature-api && $(PYTHON) -m pytest -q -p no:cacheprovider
+	cd feature-platform/main-stack-extensions && $(PYTEST_HERMETIC) -q -p no:cacheprovider
+	cd feature-platform/feature-template/feature-api && $(PYTEST_HERMETIC) -q -p no:cacheprovider
 	@echo "Running pii-anonymizer tests (feature API RBAC + hook re-entrancy/halt + UI deployer)..."
 	@# These three ran in NO CI gate until #974. `make test` picked them up via
 	@# scripts/run_all_tests.py, but nothing on a PR did — which is how an
 	@# order-dependent failure in the feature API sat unnoticed long enough to be
 	@# written into the docs as a standing failure. All offline (moto), ~2.5s total.
-	cd feature-platform/pii-anonymizer/feature-api && $(PYTHON) -m pytest tests -q -p no:cacheprovider
-	cd feature-platform/pii-anonymizer/hook && $(PYTHON) -m pytest tests -q -p no:cacheprovider
-	cd feature-platform/pii-anonymizer/ui-deployer && $(PYTHON) -m pytest tests -q -p no:cacheprovider
+	cd feature-platform/pii-anonymizer/feature-api && $(PYTEST_HERMETIC) tests -q -p no:cacheprovider
+	cd feature-platform/pii-anonymizer/hook && $(PYTEST_HERMETIC) tests -q -p no:cacheprovider
+	cd feature-platform/pii-anonymizer/ui-deployer && $(PYTEST_HERMETIC) tests -q -p no:cacheprovider
 	@echo "Running seller entitlement service tests (incl. template-security + payload fuzz)..."
-	cd feature-platform/seller-entitlement-service && $(PYTHON) -m pytest tests -q -p no:cacheprovider
+	cd feature-platform/seller-entitlement-service && $(PYTEST_HERMETIC) tests -q -p no:cacheprovider
 	@echo "Running capacity planning Lambda tests..."
-	cd src/lambda/calculate_capacity && $(PYTHON) -m pytest -q -p no:cacheprovider
+	cd src/lambda/calculate_capacity && $(PYTEST_HERMETIC) -q -p no:cacheprovider
 	@echo "Running circuit breaker + queue processor + workflow tracker Lambda tests (slot ownership, counter reconcile + negative repair, decrement floor/idempotency #915 #916, config pin, idempotent start #904)..."
-	$(PYTHON) -m pytest -q -p no:cacheprovider \
+	$(PYTEST_HERMETIC) -q -p no:cacheprovider \
 	    src/lambda/circuit_breaker_manager \
 	    src/lambda/queue_processor \
 	    src/lambda/workflow_tracker
@@ -519,89 +673,165 @@ test-packages-cicd: ## CI-safe: run the package/Lambda suites NOT covered by idp
 	@# Both suites import their own ``index`` module; run each in its
 	@# own directory to prevent the sys.path collision that fails a
 	@# combined pytest invocation.
-	cd src/lambda/queue_sender && $(PYTHON) -m pytest test_index.py -q -p no:cacheprovider
-	cd nested/api-resolvers/src/lambda/reprocess_document_resolver && $(PYTHON) -m pytest test_delete_output_data.py -q -p no:cacheprovider
+	cd src/lambda/queue_sender && $(PYTEST_HERMETIC) test_index.py -q -p no:cacheprovider
+	@# reprocess_document_resolver's suite is run below with the other five
+	@# config-version-scope resolvers, as a whole directory rather than one named
+	@# file — a named file covers only itself, which is how a second test module
+	@# added beside it would silently reach no CI.
 	@echo "Running the remaining src/lambda Lambda suites (157 tests that reached NEITHER CI)..."
-	@# Every src/lambda dir holding a test_*.py must appear in this recipe —
-	@# asserted by scripts/tests/test_src_lambda_tests_in_ci.py, which derives
-	@# both sides (filesystem walk vs this recipe) rather than listing them.
+	@# Every directory in the repository holding a test_*.py must appear in this
+	@# recipe or in lib/idp_common_pkg's test-unit-cicd — asserted by
+	@# scripts/tests/test_src_lambda_tests_in_ci.py, which derives both sides
+	@# (git ls-files vs these two recipes) rather than listing them.
 	@# Each gets its own invocation for the same reason as queue_sender above:
 	@# they all define a module named ``index``, so a combined pytest run fails
 	@# collection on the basename collision.
 	@#
-	@# Three of them build a boto3 client at import time with no region, so they
-	@# need AWS_DEFAULT_REGION or botocore raises NoRegionError at COLLECTION.
-	@# The Lambda runtime always sets AWS_REGION in production, so this is a
-	@# test-harness assumption rather than a defect in the handlers -- but it
-	@# means those suites pass on a developer machine (which has an ambient
-	@# region) and fail on a CI runner, which is why the value is pinned here
-	@# rather than inherited. No credentials are needed or used. See #988.
-	cd src/lambda/api_handler && $(PYTHON) -m pytest -q -p no:cacheprovider
-	cd src/lambda/batch_pre_processor && $(PYTHON) -m pytest -q -p no:cacheprovider
-	cd src/lambda/complete_section_review && $(PYTHON) -m pytest -q -p no:cacheprovider
-	cd src/lambda/external_idp_group_mapping && AWS_DEFAULT_REGION=$(TEST_AWS_REGION) $(PYTHON) -m pytest -q -p no:cacheprovider
-	cd src/lambda/job_tracker && $(PYTHON) -m pytest -q -p no:cacheprovider
-	cd src/lambda/save_reporting_data && AWS_DEFAULT_REGION=$(TEST_AWS_REGION) $(PYTHON) -m pytest -q -p no:cacheprovider
-	cd src/lambda/test_file_copier && AWS_DEFAULT_REGION=$(TEST_AWS_REGION) $(PYTHON) -m pytest -q -p no:cacheprovider
-	cd src/lambda/user_management && $(PYTHON) -m pytest -q -p no:cacheprovider
-	cd src/lambda/version_check_resolver && $(PYTHON) -m pytest -q -p no:cacheprovider
+	@# Three of them -- external_idp_group_mapping, save_reporting_data and
+	@# test_file_copier -- used to be run with AWS_DEFAULT_REGION pinned on the
+	@# recipe line, because the handler each one imports builds a boto3 client at
+	@# module scope and botocore raises NoRegionError with no region to resolve.
+	@# The pins are gone: each suite now supplies its own region from its own
+	@# conftest.py (save_reporting_data needed no conftest in the end -- its
+	@# region dependency came from idp_common.utils.settings_helper, which was
+	@# building an SSM client at import and now does so lazily). Running them
+	@# through $(PYTEST_HERMETIC) like everything else is what proves that, since
+	@# the wrapper takes the region away rather than handing one over. See #988.
+	cd src/lambda/api_handler && $(PYTEST_HERMETIC) -q -p no:cacheprovider
+	cd src/lambda/batch_pre_processor && $(PYTEST_HERMETIC) -q -p no:cacheprovider
+	cd src/lambda/complete_section_review && $(PYTEST_HERMETIC) -q -p no:cacheprovider
+	cd src/lambda/external_idp_group_mapping && $(PYTEST_HERMETIC) -q -p no:cacheprovider
+	cd src/lambda/finetuning_deployment_handler && $(PYTEST_HERMETIC) -q -p no:cacheprovider
+	cd src/lambda/job_tracker && $(PYTEST_HERMETIC) -q -p no:cacheprovider
+	cd src/lambda/save_reporting_data && $(PYTEST_HERMETIC) -q -p no:cacheprovider
+	cd src/lambda/test_file_copier && $(PYTEST_HERMETIC) -q -p no:cacheprovider
+	cd src/lambda/user_management && $(PYTEST_HERMETIC) -q -p no:cacheprovider
+	cd src/lambda/version_check_resolver && $(PYTEST_HERMETIC) -q -p no:cacheprovider
 	@echo "Running Test Studio runner tests (revision pinning + run-id collision #879)..."
-	cd nested/api-resolvers/src/lambda/test_runner && $(PYTHON) -m pytest -q -p no:cacheprovider
+	cd nested/api-resolvers/src/lambda/test_runner && $(PYTEST_HERMETIC) -q -p no:cacheprovider
+	@echo "Running the config-version scope suites for the six API resolvers that enforce it..."
+	@# The fail-closed UsersTable scope lookup: an absent `email` claim or a failed
+	@# Query must DENY, an empty page must stay unrestricted. Each resolver gets its
+	@# own invocation because they all define a module named ``index``, so a combined
+	@# pytest run fails collection on the basename collision (same reason as
+	@# queue_sender above). Four of these directories reached NEITHER CI before,
+	@# which is the omission scripts/tests/test_src_lambda_tests_in_ci.py now detects
+	@# over the whole tree rather than just src/lambda (#980).
+	cd nested/api-resolvers/src/lambda/configuration_resolver && $(PYTEST_HERMETIC) -q -p no:cacheprovider
+	cd nested/api-resolvers/src/lambda/get_stepfunction_execution_resolver && $(PYTEST_HERMETIC) -q -p no:cacheprovider
+	cd nested/api-resolvers/src/lambda/list_documents_gsi_resolver && $(PYTEST_HERMETIC) -q -p no:cacheprovider
+	cd nested/api-resolvers/src/lambda/list_documents_range_resolver && $(PYTEST_HERMETIC) -q -p no:cacheprovider
+	cd nested/api-resolvers/src/lambda/reprocess_document_resolver && $(PYTEST_HERMETIC) -q -p no:cacheprovider
+	cd nested/api-resolvers/src/lambda/sync_bda_idp_resolver && $(PYTEST_HERMETIC) -q -p no:cacheprovider
 	@echo "Running Chat-with-Document Lambda tests..."
-	$(PYTHON) -m pytest -q -p no:cacheprovider \
+	$(PYTEST_HERMETIC) -q -p no:cacheprovider \
 	    src/lambda/chat_with_document_processor/tests \
 	    nested/api-resolvers/src/lambda/send_chat_document_message_resolver/tests
 	@echo "Running Chat-stream processor tests (incl. vendored-in-sync guard)..."
-	cd src/lambda/chat_stream_processor && $(PYTHON) -m pytest tests -q -p no:cacheprovider
+	cd src/lambda/chat_stream_processor && $(PYTEST_HERMETIC) tests -q -p no:cacheprovider
 	@echo "Running BDA OCR project custom-resource tests (incl. library drift guard)..."
-	cd src/lambda/bda_ocr_project && $(PYTHON) -m pytest tests -q -p no:cacheprovider
-	@echo "Running S3 Vectors custom-resource tests (IAM scope vs sanitized bucket name)..."
-	cd nested/bedrockkb/src/s3_vectors_manager && $(PYTHON) -m pytest tests -q -p no:cacheprovider
+	cd src/lambda/bda_ocr_project && $(PYTEST_HERMETIC) tests -q -p no:cacheprovider
+	@echo "Running S3 Vectors custom-resource tests (handler behaviour + IAM scope)..."
+	@# The directory, not just its `tests` subdirectory: test_handler.py sits beside
+	@# handler.py and covers the custom resource's own behaviour, so naming `tests`
+	@# ran the IAM-scope suite and skipped the handler's.
+	cd nested/bedrockkb/src/s3_vectors_manager && $(PYTEST_HERMETIC) . -q -p no:cacheprovider
 	@echo "Running fine-tuning job creator tests (ARN partition passthrough)..."
-	cd src/lambda/finetuning_job_creator && $(PYTHON) -m pytest tests -q -p no:cacheprovider
+	cd src/lambda/finetuning_job_creator && $(PYTEST_HERMETIC) tests -q -p no:cacheprovider
+	@echo "Running the remaining API resolver suites (download allow-list, upload target, filtered scans)..."
+	@# These eight directories held 105 tests that reached NEITHER CI. The recipe
+	@# below and scripts/run_all_tests.py were diffed to find them, and
+	@# scripts/tests/test_src_lambda_tests_in_ci.py now derives that diff on every
+	@# run over the WHOLE tree rather than just src/lambda/, which is what #980
+	@# asked for and what kept these eight invisible.
+	@#
+	@# Each gets its own invocation because they all define a module named ``index``,
+	@# so a combined pytest run fails collection on the basename collision.
+	cd nested/api-resolvers/src/lambda/get_file_contents_resolver && $(PYTEST_HERMETIC) -q -p no:cacheprovider
+	cd nested/api-resolvers/src/lambda/upload_resolver && $(PYTEST_HERMETIC) -q -p no:cacheprovider
+	cd nested/api-resolvers/src/lambda/finetuning_jobs_resolver && $(PYTEST_HERMETIC) -q -p no:cacheprovider
+	cd nested/api-resolvers/src/lambda/test_set_resolver && $(PYTEST_HERMETIC) -q -p no:cacheprovider
+	cd nested/api-resolvers/src/lambda/get_sample_document_resolver && $(PYTEST_HERMETIC) -q -p no:cacheprovider
+	cd nested/api-resolvers/src/lambda/discovery_upload_resolver && $(PYTEST_HERMETIC) -q -p no:cacheprovider
+	cd nested/api-resolvers/src/lambda/get_agent_chat_messages_resolver && $(PYTEST_HERMETIC) -q -p no:cacheprovider
+	cd nested/api-resolvers/src/lambda/list_agent_chat_sessions_resolver && $(PYTEST_HERMETIC) tests -q -p no:cacheprovider
+	@echo "Running the KB-ingestion and docker-build custom-resource suites..."
+	@# Both built a boto3 client at import time with no region, so both errored at
+	@# COLLECTION under $(PYTEST_HERMETIC) while passing on a developer machine.
+	@# Each now supplies its own region from its own conftest.py, which is what makes
+	@# running them through the wrapper meaningful -- the wrapper takes the region
+	@# away rather than handing one over. See #988.
+	cd nested/bedrockkb/src/start_ingestion_job_custom_resource && $(PYTEST_HERMETIC) -q -p no:cacheprovider
+	cd nested/multi-doc-discovery/docker_build_lambda && $(PYTEST_HERMETIC) tests -q -p no:cacheprovider
+	@echo "Running the feature-platform extension suites that reached neither CI..."
+	@# The three pii-anonymizer suites above were added by #974; these eight are the
+	@# rest of the same tree -- the ConfBench test-set extension, the data generator's
+	@# feature API, the two sample features, the health-insurance-review sample and the
+	@# feature template's UI deployer. confbench-testset's test_planner.py
+	@# self-skips unless huggingface_hub + pyarrow are installed, which they are not in
+	@# CI; the other modules in it run unconditionally.
+	cd feature-platform/confbench-testset && $(PYTEST_HERMETIC) tests -q -p no:cacheprovider
+	cd feature-platform/idp-data-generator/feature-api && $(PYTEST_HERMETIC) tests -q -p no:cacheprovider
+	cd feature-platform/feature-template/ui-deployer && $(PYTEST_HERMETIC) tests -q -p no:cacheprovider
+	cd feature-platform/sample-feature/feature-api && $(PYTEST_HERMETIC) tests -q -p no:cacheprovider
+	cd feature-platform/sample-feature/ui-deployer && $(PYTEST_HERMETIC) tests -q -p no:cacheprovider
+	cd feature-platform/sample-health-insurance-review/feature-api && $(PYTEST_HERMETIC) tests -q -p no:cacheprovider
+	cd feature-platform/sample-health-insurance-review/hook && $(PYTEST_HERMETIC) tests -q -p no:cacheprovider
+	cd feature-platform/sample-health-insurance-review/ui-deployer && $(PYTEST_HERMETIC) tests -q -p no:cacheprovider
+	@echo "Running the Lambda hook-inference sample suites..."
+	@# Own invocation each: all three define a module named ``index``.
+	cd samples/lambda-hook-inference/GENAIIDP-cohere-parse-hook && $(PYTEST_HERMETIC) -q -p no:cacheprovider
+	cd samples/lambda-hook-inference/GENAIIDP-mistral-ocr-hook && $(PYTEST_HERMETIC) -q -p no:cacheprovider
+	cd samples/lambda-hook-inference/GENAIIDP-w2-copy-consistency && $(PYTEST_HERMETIC) -q -p no:cacheprovider
+	@echo "Running benchmark harness tests (what a release report claims, and which config a run executes)..."
+	@# A bug in this tree becomes a wrong published number rather than a visible
+	@# failure, which is what happened at v0.6.5. Pure dict/YAML logic, no AWS, and
+	@# the largest of the suites added here at a couple of seconds.
+	$(PYTEST_HERMETIC) benchmarks/tests -q -p no:cacheprovider
 	@echo "Running unified state-machine structure tests (hook fail-closed ordering, retry/timeout shape)..."
 	@# These parse patterns/unified/statemachine/workflow.asl.json only — no AWS.
 	@# They were registered in scripts/run_all_tests.py but in NEITHER CI, so the
 	@# ASL invariants they pin (e.g. the HookFatalError catcher that must precede
 	@# States.ALL, #919) were unguarded on every PR.
-	$(PYTHON) -m pytest patterns/unified/tests -q -p no:cacheprovider
+	$(PYTEST_HERMETIC) patterns/unified/tests -q -p no:cacheprovider
 	@echo "Validating config library files..."
-	$(PYTHON) -m pytest config_library/test_config_library.py -q -p no:cacheprovider
+	$(PYTEST_HERMETIC) config_library/test_config_library.py -q -p no:cacheprovider
 	@echo "Running SDLC harness tests (incl. IAM trust-policy partition guards)..."
-	$(PYTHON) -m pytest scripts/sdlc/tests -q -p no:cacheprovider
+	$(PYTEST_HERMETIC) scripts/sdlc/tests -q -p no:cacheprovider
 	@echo "Running repo-script tests (Python ARN-partition gate)..."
-	$(PYTHON) -m pytest scripts/tests -q -p no:cacheprovider
+	$(PYTEST_HERMETIC) scripts/tests -q -p no:cacheprovider
 	@echo "Running SRT gate tests (CI-visibility split + suppression baseline hygiene)..."
-	$(PYTHON) -m pytest scripts/srt/tests -q -p no:cacheprovider
+	$(PYTEST_HERMETIC) scripts/srt/tests -q -p no:cacheprovider
 	@echo "Running dependency-audit gate tests (OSV allowlist + .ash.yaml hygiene)..."
-	$(PYTHON) -m pytest scripts/security/tests -q -p no:cacheprovider
+	$(PYTEST_HERMETIC) scripts/security/tests -q -p no:cacheprovider
 	@echo -e "$(GREEN)✅ All package/Lambda CI suites passed!$(NC)"
 
 test-cli: ## Run only IDP CLI tests
 	@echo "Running IDP CLI tests..."
-	cd lib/idp_cli_pkg && $(PYTHON) -m pytest -v
+	cd lib/idp_cli_pkg && $(PYTEST_HERMETIC) -v
 	@echo -e "$(GREEN)✅ All CLI tests passed!$(NC)"
 
 test-config-library: ## Run only config library validation tests
 	@echo "Validating config library YAML/JSON files..."
-	$(PYTHON) -m pytest config_library/test_config_library.py -v
+	$(PYTEST_HERMETIC) config_library/test_config_library.py -v
 
-test-hooks: ## Run only the Claude PreToolUse hook tests (commit/PR text guard)
+test-hooks: ## Run only the hook tests (commit/PR text guard, shared-branch guard)
 	@echo "Running Claude hook tests..."
-	$(PYTHON) -m pytest scripts/tests/test_check_commit_text.py -v
+	$(PYTEST_HERMETIC) scripts/tests/test_check_commit_text.py \
+		scripts/tests/test_check_shared_branch.py -v
 
 test-capacity: ## Run only capacity planning tests
 	@echo "Running capacity planning Lambda tests..."
-	cd src/lambda/calculate_capacity && $(PYTHON) -m pytest -v
+	cd src/lambda/calculate_capacity && $(PYTEST_HERMETIC) -v
 
 test-capacity-coverage: ## Run capacity planning tests with coverage report
 	@echo "Running capacity planning Lambda tests with coverage..."
-	cd src/lambda/calculate_capacity && $(PYTHON) -m pytest --cov=. --cov-report=term --cov-report=html -v
+	cd src/lambda/calculate_capacity && $(PYTEST_HERMETIC) --cov=. --cov-report=term --cov-report=html -v
 	@echo -e "$(GREEN)✅ Coverage report generated at src/lambda/calculate_capacity/htmlcov/index.html$(NC)"
 
 test-circuit-breaker: ## Run only circuit breaker tests
 	@echo "Running circuit breaker Lambda tests..."
-	$(PYTHON) -m pytest -v \
+	$(PYTEST_HERMETIC) -v \
 	    src/lambda/circuit_breaker_manager \
 	    src/lambda/queue_processor/test_check_circuit_breaker.py \
 	    src/lambda/workflow_tracker/test_notify_circuit_breaker.py
@@ -817,22 +1047,61 @@ endif
 # no-op; unset (local) installs as before.
 NPM_CI := $(if $(SKIP_NPM_CI),true,npm ci --prefer-offline --no-audit)
 
-ui-lint: ## Run UI linting with checksum caching (skips if unchanged). Use FORCE=1 to force re-run.
+# THE GATE CHECKS; THE FIXER FIXES. Never the same invocation.
+#
+# This recipe used to run `npm run lint -- --fix`, and it is reached from both
+# `make lint` and `make lint-cicd` — so in CI it repaired the ephemeral checkout
+# and then reported it clean. `prettier/prettier` is configured 'error' in
+# src/ui/eslint.config.js and is entirely auto-fixable, which left the UI
+# formatting gate with no failure mode at all. `npm run lint` also carried no
+# --max-warnings 0, so five warn-level rules (no-unused-vars, no-explicit-any,
+# no-shadow, react/no-array-index-key, react/jsx-filename-extension) were
+# advisory forever.
+#
+# `npm run lint` now spells out `--max-warnings 0` and does not fix. Use
+# `make ui-lint-fix` to apply what is auto-fixable.
+# UI_LINT_NO_SKIP disables the checksum cache for callers that cannot afford a
+# skip, and it is deliberately a second variable rather than a reuse of FORCE.
+# FORCE is the operator saying "run it anyway"; UI_LINT_NO_SKIP is a property of
+# the calling target — `lint-cicd` sets it because its whole purpose is to mirror
+# CI, where `.checksum` is gitignored, no stored hash exists and the lint always
+# runs. Keeping them apart is what lets the log say WHY the lint ran.
+#
+# The skip branch reports a SKIP, not a pass. It used to print a green ✅, so a
+# warm tree produced a success line for work that did not happen — `npm run
+# lint` AND `npm run typecheck`, the second of which the target's name does not
+# even imply. Issue #1152.
+ui-lint: ## Run UI linting with checksum caching (skips if unchanged). Use FORCE=1 to force re-run; UI_LINT_NO_SKIP=1 forbids the skip.
 	@echo "Checking if UI lint is needed..."
 	@CURRENT_HASH=$$($(PYTHON) -c "from publish import IDPPublisher; p = IDPPublisher(); print(p.get_directory_checksum('src/ui'))"); \
 	STORED_HASH=$$(test -f src/ui/.checksum && cat src/ui/.checksum || echo ""); \
-	if [ -n "$(FORCE)" ] || [ "$$CURRENT_HASH" != "$$STORED_HASH" ]; then \
+	if [ -n "$(FORCE)" ] || [ -n "$(UI_LINT_NO_SKIP)" ] || [ "$$CURRENT_HASH" != "$$STORED_HASH" ]; then \
 		if [ -n "$(FORCE)" ]; then \
 			echo "FORCE=1 set - running lint..."; \
+		elif [ -n "$(UI_LINT_NO_SKIP)" ]; then \
+			echo "UI_LINT_NO_SKIP=1 set by the calling gate - running lint..."; \
 		else \
 			echo "UI code checksum changed - running lint..."; \
 		fi; \
-		cd src/ui && $(NPM_CI) && npm run lint -- --fix && npm run typecheck || exit 1; \
+		cd src/ui && $(NPM_CI) && npm run lint && npm run typecheck || exit 1; \
 		echo "$$CURRENT_HASH" > .checksum; \
 		echo -e "$(GREEN)✅ UI lint and typecheck completed and checksum updated$(NC)"; \
 	else \
-		echo -e "$(GREEN)✅ UI code checksum unchanged - skipping lint (use FORCE=1 to force re-run)$(NC)"; \
+		echo -e "$(YELLOW)⏭️  UI lint SKIPPED - src/ui matches src/ui/.checksum, so eslint and tsc did NOT run.$(NC)"; \
+		echo -e "$(YELLOW)   This is a cache hit, not a pass. Run 'make ui-lint FORCE=1' to check the tree.$(NC)"; \
 	fi
+
+ui-lint-fix: ## Auto-fix what eslint can fix in src/ui, then re-run the strict gate
+	@echo "Applying eslint --fix to src/ui..."
+	@# The `-` prefix is load-bearing. `eslint --fix` exits non-zero when anything
+	@# it could NOT fix remains, which is the common case — so without it make
+	@# aborts here and the re-check below never runs, leaving the operator with the
+	@# fixer's output instead of the gate's. Ignoring this line's status is safe:
+	@# the gate runs next and decides the target's exit status.
+	-@cd src/ui && $(NPM_CI) && npm run lint:fix
+	@# Deliberately re-runs the CHECKING form, so the exit status reflects what is
+	@# left rather than what was repaired.
+	@$(MAKE) --no-print-directory ui-lint FORCE=1
 
 ui-build: ## Build UI for production (runs lint + typecheck + vite build)
 	@echo "Checking UI build"
@@ -875,6 +1144,57 @@ classes-from-bda: ## Generate standard class catalog from BDA blueprints
 	@echo -e "$(GREEN)✅ Standard class catalog updated! Review changes in src/ui/src/data/standard-classes.json$(NC)"
 
 ##@ Git Workflow
+# `install-git-hooks` installs scripts/hooks/pre-push, which refuses a push whose
+# destination is develop or main (override: ALLOW_SHARED_BRANCH=1). git does not
+# clone hooks, so this is a per-checkout step; the tracked script is the shared
+# copy. The assistant-side half of the same guard needs no install — it is a
+# PreToolUse hook in .claude/settings.json. Neither is a substitute for branch
+# protection, which is a repository setting and needs admin (issue #933).
+#
+# The destination is $(git rev-parse --git-common-dir)/hooks, NOT `git rev-parse
+# --git-path hooks`: the latter honours core.hooksPath, and a managed developer
+# machine may set that system-wide (in /etc/gitconfig) to a root-owned directory
+# of hook runners belonging to a security tool, so it resolves to a path this
+# must never write to. The common dir is also the right answer inside a worktree,
+# where hooks are shared with the main checkout.
+#
+# When core.hooksPath does point elsewhere, the repository's own hook is reached
+# only if that runner chains to it. The runners seen here do chain, and forward
+# the hook's arguments, but not its stdin — so the pre-push hook gets no ref list
+# and falls back to judging by HEAD. This target says so rather than printing an
+# unqualified success, because "installed" and "effective" are different claims.
+#
+# Note the redirect is not the only way the hook sees no ref list: git supplies
+# none for an up-to-date push either, on any machine. That is why the warning below
+# is about what the fallback costs and the hook's own refusal names both causes.
+.PHONY: install-git-hooks
+install-git-hooks: ## Install the shared-branch pre-push guard into this checkout
+	@set -e; \
+	COMMON_DIR=$$(git rev-parse --git-common-dir); \
+	HOOK_DIR="$$COMMON_DIR/hooks"; \
+	mkdir -p "$$HOOK_DIR"; \
+	if [ -e "$$HOOK_DIR/pre-push" ] && ! cmp -s scripts/hooks/pre-push "$$HOOK_DIR/pre-push"; then \
+		BACKUP="$$HOOK_DIR/pre-push.bak"; N=1; \
+		while [ -e "$$BACKUP" ]; do BACKUP="$$HOOK_DIR/pre-push.bak.$$N"; N=$$((N+1)); done; \
+		echo -e "$(YELLOW)$$HOOK_DIR/pre-push exists and differs — copying it to $$BACKUP$(NC)"; \
+		echo -e "$(YELLOW)   The guard REPLACES that hook rather than chaining to it, so whatever it did stops happening.$(NC)"; \
+		cp "$$HOOK_DIR/pre-push" "$$BACKUP"; \
+	fi; \
+	cp scripts/hooks/pre-push "$$HOOK_DIR/pre-push"; \
+	chmod +x "$$HOOK_DIR/pre-push"; \
+	HOOKS_PATH=$$(git config --get core.hooksPath || true); \
+	if [ -n "$$HOOKS_PATH" ] && [ "$$(cd "$$HOOKS_PATH" 2>/dev/null && pwd -P)" != "$$(cd "$$HOOK_DIR" && pwd -P)" ]; then \
+		echo -e "$(GREEN)✅ Installed $$HOOK_DIR/pre-push$(NC)"; \
+		echo -e "$(YELLOW)⚠️  core.hooksPath is set to $$HOOKS_PATH, outside this repository.$(NC)"; \
+		echo -e "$(YELLOW)   git runs that directory's hooks, so this one is reached only if they chain to it.$(NC)"; \
+		echo -e "$(YELLOW)   A chaining runner may not forward the ref list; the hook then judges by HEAD,$(NC)"; \
+		echo -e "$(YELLOW)   which refuses any push made while HEAD is on develop or main AND allows one$(NC)"; \
+		echo -e "$(YELLOW)   whose destination IS develop or main while HEAD is not. Treat it as a reminder$(NC)"; \
+		echo -e "$(YELLOW)   rather than a guard here. Override a refusal: ALLOW_SHARED_BRANCH=1$(NC)"; \
+	else \
+		echo -e "$(GREEN)✅ Installed $$HOOK_DIR/pre-push (override a refusal with ALLOW_SHARED_BRANCH=1)$(NC)"; \
+	fi
+
 commit: lint test ## Lint, test, auto-generate commit message, commit, and push
 	@echo "Generating commit message via Bedrock..."
 	@git add . && \
@@ -1012,6 +1332,32 @@ dep-audit: ## Audit all pinned Python + Node dependencies against OSV (fails on 
 dep-audit-fast: ## Same as dep-audit but reuses existing dist/manifests (no regeneration)
 	@$(PYTHON) scripts/security/dep_audit.py --no-generate
 
+##@ Automated review (advisory — reviews an MR, gates nothing)
+# Runs Claude Code over open GitLab MRs with .claude/skills/pr-review.md and
+# posts the review as an MR note. Deliberately NOT a gate and deliberately NOT
+# check-shaped in name or section: a model's opinion must not decide whether
+# code merges, and scripts/tests/test_ci_gate_parity.py derives its universe of
+# gates from the Makefile's sections and target names. The CI job that runs this
+# is allow_failure: true for the same reason. Needs GITLAB_REVIEW_TOKEN (api
+# scope) plus AWS credentials with bedrock:InvokeModel.
+.PHONY: ai-mr-review ai-mr-review-dry ai-mr-review-local
+
+ai-mr-review: ## Review every open non-Draft MR -> develop and post the reviews (MR=<iid> for one)
+	@$(PYTHON) scripts/sdlc/ai_mr_review.py \
+		$(if $(MR),--mr $(MR),--all-open) $(EXTRA_ARGS)
+
+ai-mr-review-dry: ## Same, but write reviews to ai-reviews/ instead of posting them
+	@$(PYTHON) scripts/sdlc/ai_mr_review.py \
+		$(if $(MR),--mr $(MR),--all-open) --dry-run $(EXTRA_ARGS)
+
+# For a laptop: gitlab.aws.dev's REST API sits behind an authenticating proxy
+# that redirects every request to federated sign-in, so a PRIVATE-TOKEN alone
+# cannot reach it from here. This form takes the MR head from git over SSH
+# instead — no token, always a dry run, and no MR description/comments/CI status.
+ai-mr-review-local: ## Dry-run one MR with NO token, from git over SSH (MR=<iid> required)
+	@$(if $(MR),,$(error set MR=<iid>, e.g. make ai-mr-review-local MR=786))
+	@$(PYTHON) scripts/sdlc/ai_mr_review.py --mr $(MR) --no-api $(EXTRA_ARGS)
+
 ##@ Deploy
 # Thin wrappers around `idp-cli publish` / `deploy` / `delete` for the common
 # 80% case. Uncommon flags can still be passed via EXTRA_ARGS="--foo --bar".
@@ -1114,7 +1460,7 @@ endif
 
 # Usage:
 #   make seller-entitlement-service PRODUCT_REGISTRY='{"prod-xxx":{"productCode":"yyy","allowFreeTier":true}}'
-#   make seller-entitlement-service PRODUCT_REGISTRY='{...}' SELLER_ACCOUNT_ID=145026617366 YES=1
+#   make seller-entitlement-service PRODUCT_REGISTRY='{...}' SELLER_ACCOUNT_ID=123456789012 YES=1
 seller-entitlement-service: ## Preflight + deploy the Seller Entitlement Service into the SELLER account (Usage: make seller-entitlement-service PRODUCT_REGISTRY='{...}' [STACK_NAME=...] [SELLER_ACCOUNT_ID=...] [REGION=...] [YES=1])
 ifndef PRODUCT_REGISTRY
 	$(error PRODUCT_REGISTRY is not set. Usage: make seller-entitlement-service PRODUCT_REGISTRY='{"prod-xxx":{"productCode":"yyy","allowFreeTier":true}}')

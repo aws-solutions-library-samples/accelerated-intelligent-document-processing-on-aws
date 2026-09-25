@@ -14,9 +14,14 @@ The IDP SDK provides programmatic Python access to all IDP Accelerator capabilit
 make setup-venv
 source .venv/bin/activate
 
-# Or install just the SDK with pip/uv
-uv pip install -e ./lib/idp_sdk
+# Or install just the SDK with pip/uv, from the repository root. `idp_common` has
+# to be on the same command line: the SDK requires it by name, and that name on
+# public PyPI belongs to an unrelated party.
+uv pip install -e ./lib/idp_common_pkg -e ./lib/idp_sdk
 ```
+
+See [Installing First-Party Packages Safely](dependency-confusion.md) for why the
+single-command form matters.
 
 ## Quick Start
 
@@ -311,14 +316,24 @@ List processed documents with pagination support.
 - `next_token` (str, optional): Pagination token from previous request
 - `stack_name` (str, optional): Stack name override
 
-**Returns:** `DocumentListResult` with `documents` (list of DocumentInfo), `count`, and optional `next_token`
+**Returns:** `DocumentListResult` with `documents` (list of `DocumentInfo`), `count`, and optional `next_token`
+
+`count` is the number of documents **in this page**. The tracking table is paged
+with a DynamoDB scan, which reports no table-wide total, so there is no grand
+total to read here — walk `next_token` if you need one.
+
+Each `DocumentInfo` carries `document_id`, `status`, `timestamp` and `batch_id`
+(`None` for a document submitted outside a batch). Page counts and the classified
+document type are not part of a listing; use `document.get_status()` or
+`document.get_metadata()`, which read the full record.
 
 ```python
 # List documents
 result = client.document.list(limit=50)
+print(f"{result.count} documents in this page")
 
 for doc in result.documents:
-    print(f"{doc.document_id}: {doc.status}")
+    print(f"{doc.document_id}: {doc.status} (batch: {doc.batch_id})")
 
 # Pagination
 if result.next_token:
@@ -562,16 +577,27 @@ print(f"Downloaded {result.files_downloaded} source files")
 Permanently delete documents and their associated data from InputBucket, OutputBucket, and DynamoDB. Select documents by batch ID or wildcard pattern.
 
 **Parameters:**
-- `batch_id` (str, optional): Batch identifier (selects all docs containing this string)
+- `batch_id` (str, optional): Batch identifier. Selects documents **under** that
+  batch — the id is matched as a leading path segment, so `batch-1` selects
+  `batch-1/a.pdf` and **not** `batch-10/b.pdf`. Use `pattern` for substring or
+  wildcard selection.
 - `pattern` (str, optional): Wildcard pattern to match document keys (e.g., `"batch-123/*.pdf"`, `"*invoice*"`)
 - `status_filter` (str, optional): Filter by document status (e.g., "FAILED", "COMPLETED")
 - `stack_name` (str, optional): Stack name override
 - `dry_run` (bool, optional): If True, simulate deletion without actually deleting (default: False)
 - `continue_on_error` (bool, optional): Continue deleting if one document fails (default: True)
 
-**Note:** Must specify either `batch_id` or `pattern` (not both).
+**Note:** Must specify either `batch_id` or `pattern` (not both). A missing or empty
+selector raises `IDPConfigurationError` before anything is read.
 
 **Returns:** `BatchDeletionResult` with `success`, `deleted_count`, `failed_count`, `total_count`, `dry_run`, and `results` (list of DocumentDeletionResult)
+
+⚠️ **A failure while selecting the documents raises `IDPProcessingError`; it is not
+reported as a success with nothing deleted.** `success=True, deleted_count=0` means the
+selector matched no documents — an empty batch, or a status filter nothing satisfied —
+and nothing else. A throttled or rejected table scan, or a table that does not exist,
+reaches you as an exception naming the cause, so a retry is your decision to make rather
+than something the result hides.
 
 ```python
 # Delete entire batch
@@ -731,18 +757,50 @@ Get evaluation report comparing extraction results to baseline.
 - `section_id` (int, optional): Section number (default: 1)
 - `stack_name` (str, optional): Stack name override
 
-**Returns:** `EvaluationReport` with `document_id`, `section_id`, `accuracy`, `field_results`, and `summary`
+**Returns:** `EvaluationReport` with `document_id`, `section_id`, `document_class`,
+the section's `accuracy` / `precision` / `recall` / `f1_score`, a list of
+`field_comparisons`, and the document-level `overall_metrics`
+
+The report is read from the evaluation artifact the pipeline writes at
+`<document key>/evaluation/results.json` in the output bucket, so the document
+must have been evaluated against a baseline first — see
+[evaluation.use_as_baseline()](#evaluationuse_as_baseline). If it has not, or if
+the results contain no such section, the call raises
+`IDPResourceNotFoundError`.
+
+Every score is `Optional[float]`: a section whose evaluation failed records no
+metrics rather than a zero.
+
+Each entry in `field_comparisons` is a `FieldComparison` with `attribute`,
+`expected`, `actual`, `matched`, `score`, `method` (the comparator that produced
+the score — `EXACT`, `FUZZY`, `LLM`, …) and `reason`. `expected` and `actual` hold
+whatever the schema declared for the attribute, so they may be scalars, lists or
+nested objects.
+
+Because the scores are optional and `overall_metrics` may be `{}`, format them
+only once you have checked — a bare `f"{report.accuracy:.1%}"` raises `TypeError`
+on a section that recorded no metrics, and `overall_metrics['accuracy']` raises
+`KeyError` on a document that recorded none.
 
 ```python
+def pct(value):
+    return f"{value:.1%}" if value is not None else "n/a"
+
+
 report = client.evaluation.get_report(document_id="test-invoice-001.pdf")
 
-print(f"Accuracy: {report.accuracy:.1%}")
+print(f"Section {report.section_id} ({report.document_class})")
+print(f"Accuracy: {pct(report.accuracy)}  F1: {pct(report.f1_score)}")
+print(f"Document overall accuracy: {pct(report.overall_metrics.get('accuracy'))}")
 
-for field, result in report.field_results.items():
-    if result['match']:
-        print(f"✓ {field}: {result['extracted']}")
+for field in report.field_comparisons:
+    if field.matched:
+        print(f"✓ {field.attribute}: {field.actual}")
     else:
-        print(f"✗ {field}: expected '{result['expected']}', got '{result['extracted']}'")
+        print(
+            f"✗ {field.attribute}: expected {field.expected!r}, "
+            f"got {field.actual!r} ({field.reason})"
+        )
 ```
 
 ### evaluation.get_metrics()
@@ -756,19 +814,56 @@ Get aggregated evaluation metrics across multiple documents.
 - `batch_id` (str, optional): Filter by batch identifier
 - `stack_name` (str, optional): Stack name override
 
-**Returns:** `EvaluationMetrics` with `total_evaluations`, `average_accuracy`, and `by_document_class`
+**Returns:** `EvaluationMetrics` with `total_documents`, `avg_accuracy`,
+`avg_precision`, `avg_recall`, `avg_f1_score`, `by_document_class`, and the
+`start_date` / `end_date` / `document_class` filters echoed back
+
+The four `avg_*` scores aggregate **documents** — one `overall_metrics` block
+each. `by_document_class` aggregates **sections**, because a document class is a
+property of a section rather than of the whole document, and maps each class to
+`{"count", "avg_accuracy", "avg_precision", "avg_recall", "avg_f1_score"}`. A
+document with an invoice section and a receipt section contributes one to
+`total_documents` and one section to each class, so the class counts can sum to
+more than `total_documents`.
+
+⚠️ **Passing `document_class` sets the four top-level averages to `None`.** They
+come from whole-document metrics, which cannot answer a question about one class
+of section — a class-filtered `avg_accuracy` would be a real number measuring
+something other than what was asked for. The class-scoped answer is
+`by_document_class[document_class]`. The filter still narrows which documents are
+counted and which sections appear in the breakdown.
+
+Every average is `Optional[float]` for a second reason too: a section the pipeline
+excluded or failed to evaluate carries no scores, and a class where none of them
+did reports `None` rather than `0.0`.
 
 ```python
+def pct(value):
+    return f"{value:.1%}" if value is not None else "n/a"
+
+
 metrics = client.evaluation.get_metrics(
     start_date="2024-01-01",
     end_date="2024-01-31"
 )
 
-print(f"Total evaluations: {metrics.total_evaluations}")
-print(f"Average accuracy: {metrics.average_accuracy:.1%}")
+print(f"Documents evaluated: {metrics.total_documents}")
+print(f"Average accuracy: {pct(metrics.avg_accuracy)}")
+print(f"Average F1: {pct(metrics.avg_f1_score)}")
 
-for doc_class, accuracy in metrics.by_document_class.items():
-    print(f"{doc_class}: {accuracy:.1%}")
+for doc_class, stats in metrics.by_document_class.items():
+    print(f"{doc_class}: {stats['count']} sections, {pct(stats['avg_accuracy'])}")
+
+# Scoped to one class: read the breakdown, not the top-level averages. A class
+# that matched no section is simply absent from the breakdown, so use .get().
+invoices = client.evaluation.get_metrics(document_class="invoice")
+assert invoices.avg_accuracy is None
+
+stats = invoices.by_document_class.get("invoice")
+if stats is None:
+    print("No invoice sections have been evaluated")
+else:
+    print(f"Invoice sections: {stats['count']}, {pct(stats['avg_accuracy'])}")
 ```
 
 ### evaluation.list_baselines()
@@ -780,13 +875,19 @@ List evaluation baselines with pagination support.
 - `next_token` (str, optional): Pagination token from previous request
 - `stack_name` (str, optional): Stack name override
 
-**Returns:** `EvaluationBaselineListResult` with `baselines`, `count`, and optional `next_token`
+**Returns:** `EvaluationBaselineListResult` with `baselines` (list of
+`BaselineInfo`), `count`, and optional `next_token`
+
+`count` is the number of baselines in this page; an S3 prefix listing reports no
+bucket-wide total. Each `BaselineInfo` carries `document_id` and `s3_location`;
+`created_date` and `size_bytes` stay `None` here, because a prefix listing returns
+neither — stat the objects yourself if you need them.
 
 ```python
 result = client.evaluation.list_baselines(limit=50)
 
 for baseline in result.baselines:
-    print(f"{baseline['document_id']}: {baseline['created_at']}")
+    print(f"{baseline.document_id} -> {baseline.s3_location}")
 
 if result.next_token:
     next_page = client.evaluation.list_baselines(limit=50, next_token=result.next_token)
@@ -922,7 +1023,17 @@ Query knowledge base with natural language questions.
 - `next_token` (str, optional): Pagination token from previous request
 - `stack_name` (str, optional): Stack name override
 
-**Returns:** `SearchResult` with `answer`, `confidence`, `citations`, and optional `next_token`
+**Returns:** `SearchResult` with `answer`, `citations`, `confidence`, and optional `next_token`
+
+When the knowledge base matches nothing, `answer` is `""`, `citations` is empty and
+`confidence` is `None` — so "no answer" stays distinguishable from "an answer the
+model scored at zero". Guard on `result.answer` before formatting `confidence`.
+
+Each entry in `citations` is a `SearchCitation` with `text`, its own retrieval
+`confidence`, and a `document` (`SearchDocumentReference`) carrying `document_id`
+plus `section_id` and `page` where the knowledge base could localise the passage.
+Those two are `Optional[int]`: a citation the knowledge base did not localise
+leaves them unset.
 
 ```python
 # Ask a question
@@ -930,8 +1041,11 @@ result = client.search.query(
     question="What is the total amount on invoice INV-12345?"
 )
 
-print(f"Answer: {result.answer}")
-print(f"Confidence: {result.confidence:.1%}")
+if not result.answer:
+    print("No answer found")
+else:
+    print(f"Answer: {result.answer}")
+    print(f"Confidence: {result.confidence:.1%}")
 
 for citation in result.citations:
     print(f"Source: {citation.document.document_id}")
@@ -1374,7 +1488,15 @@ Validate a configuration file against system defaults.
 - `show_merged` (bool, optional): Include merged configuration in result (default: False)
 - `strict` (bool, optional): Report deprecated/unknown fields as errors (default: False)
 
-**Returns:** `ConfigValidationResult` with `valid`, `errors`, `warnings`, `deprecated_fields`, `unknown_fields`, and optional `merged_config`
+**Returns:** `ConfigValidationResult` with `valid`, `validation_available`, `errors`, `warnings`, `deprecated_fields`, `unknown_fields`, and optional `merged_config`
+
+`validation_available` is False when this installation could not run the checks at
+all — `idp_common`, which does the checking, is not importable — and the missing
+component is named in `errors`. The method returns that as a result rather than
+raising, so a caller in a minimal environment still gets an answer; `valid` is False
+in that case too, so code that gates only on `valid` keeps refusing. Branch on
+`validation_available` when you need to tell a configuration that was checked and
+found wrong from an installation that cannot check one.
 
 ```python
 result = client.config.validate(
@@ -1465,10 +1587,15 @@ Download configuration from a deployed stack.
 
 **Returns:** `ConfigDownloadResult` with `config`, `yaml_content`, `output_path`, and `revision`
 
-**Raises:** `IDPResourceNotFoundError` if the requested revision is no longer
-retained. It does not fall back to the profile's current configuration — that
-would hand back a *different* configuration under the name you asked for, and it
-would look like a success.
+**Raises:** `IDPResourceNotFoundError` if the named profile does not exist, or if the
+requested revision is no longer retained. Neither falls back to anything: handing back
+a *different* configuration under the name you asked for would look like a success, and
+for a missing profile the answer on offer was the **YAML null document** — `config` came
+back `{}` and `yaml_content` was `"null\n...\n"`, so `output` was written with `null`
+inside it and every downstream reader took that for an empty configuration. That applies
+to the default resolution too: a stack where nothing has been activated falls back to
+the profile name `default`, and if `Config#default` does not exist this raises rather
+than substituting whichever profile happens to be there.
 
 ```python
 result = client.config.download(
@@ -1560,7 +1687,13 @@ Activate a configuration version. If the configuration uses BDA (`use_bda=True`)
 - `config_profile` (alias: `config_version`) (str, required): Configuration profile to activate
 - `stack_name` (str, optional): Stack name override
 
-**Returns:** `ConfigActivateResult` with `success`, `activated_version`, `bda_synced`, `bda_classes_synced`, `bda_classes_failed`, and `error`
+**Returns:** `ConfigActivateResult` with `success`, `activated_version`, `bda_synced`, `bda_classes_synced`, `bda_classes_failed`, `bda_orphaned_blueprint_arns`, and `error`
+
+`bda_orphaned_blueprint_arns` is the same report `sync_bda()` returns as
+`orphaned_blueprint_arns` — see [`config.sync_bda()`](#configsync_bda) below for what
+leaves a blueprint orphaned. Read it on failure as well as on success: the deletes run
+whatever happened to the classes, so an aborted activation is the outcome most likely to
+have left one, and `bda_synced` is `False` on every failing path.
 
 ```python
 result = client.config.activate("v2")
@@ -1571,6 +1704,10 @@ if result.success:
         print(f"BDA synced: {result.bda_classes_synced} classes")
 else:
     print(f"Failed to activate: {result.error}")
+
+# Independent of success: blueprints left behind in the account.
+for arn in result.bda_orphaned_blueprint_arns:
+    print(f"  ⚠ orphaned, run the cleanup to remove: {arn}")
 ```
 
 ### config.delete()
@@ -1604,7 +1741,73 @@ Synchronize IDP document class schemas with BDA (Bedrock Data Automation) bluepr
 - `config_profile` (alias: `config_version`) (str, optional): Configuration profile to sync (default: active version)
 - `stack_name` (str, optional): Stack name override
 
-**Returns:** `ConfigSyncBdaResult` with `success`, `direction`, `mode`, `classes_synced`, `classes_failed`, `processed_classes`, and `error`
+**Returns:** `ConfigSyncBdaResult` with `success`, `direction`, `mode`, `classes_synced`, `classes_failed`, `processed_classes`, `orphaned_blueprint_arns`, and `error`
+
+`processed_classes` names every document class the sync processed — the ones that
+succeeded and the ones that failed alike, so its length is `classes_synced +
+classes_failed` — in the order the sync reported them. It is the only part of the result
+that says *which* classes reached BDA rather than how many, and it is what
+`idp-cli config-sync-bda` prints under "Classes synced".
+
+⚠️ **A successful entry names a class; a failed one may name something else.** Three
+values can appear that are not a class id you configured, each of them rare and
+per-entry:
+
+- `Document`, for a blueprint whose schema carries no class id at all. This one can
+  appear on a **successful** entry, so a clean sync listing `Document` really has synced
+  a class under that id.
+- A BDA **blueprint name**, such as `idp-Invoice-a1b2c3d4`, on an entry that failed while
+  syncing BDA → IDP — at that point the blueprint is the only handle the sync has on the
+  work. `idp-cli config-sync-bda` never shows one, because it prints the names only for a
+  sync that succeeded, but an SDK caller reading a partial result will see them.
+- `unknown`, where neither a class id nor a blueprint name was available.
+
+A result in which *every* entry is a placeholder is none of those. It means something is
+reading the sync's per-class entries under a key it does not write, which is what
+[#1208](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/1208)
+was.
+
+`orphaned_blueprint_arns` names blueprints a `replace`-mode sync removed from the BDA
+project but could not then delete. The order is forced — BDA refuses to delete a
+blueprint a project still associates, so the project's list is rewritten first and the
+deletes follow — so a failed delete leaves a blueprint that is already out of the
+project: invisible to everything that reads the project, still counted against the
+account's blueprint limit, and still matchable by name prefix. It is reported alongside
+`success` rather than instead of it, and it is **not** counted into `classes_failed`,
+because the classes may all have synced and the outstanding work is a cleanup rather
+than a re-sync. It is populated on the failure and exception paths too, since the
+deletes run before the last steps of a sync. `config.activate()` reports the same thing
+as `bda_orphaned_blueprint_arns`.
+
+⚠️ The remedy is **`config.sync_bda(direction="cleanup_orphaned")`** — the same call as a
+sync, with a direction that is not one. It deletes every blueprint carrying the stack's
+name prefix that the named profile's classes do not account for, **account-wide**, which
+is what makes it the only thing that can reach a blueprint no project-scoped read can
+see. Because the scope is the account and the survivors are decided by the profile you
+name, naming the wrong profile deletes live blueprints. It reports
+`cleanup_deleted_count` and `cleanup_failed_count` rather than the class counts: it
+processes no classes. It returns `success=False` without deleting anything unless the
+profile **exists** — a name that is not a profile is refused, and so is having none at
+all (you passed none and none is active) — because either yields an empty set of classes
+to keep, which is indistinguishable from "keep nothing" and would delete every prefixed
+blueprint in the account. A profile that exists with no classes *is* honoured, and does
+delete them all. The `syncBdaIdp` API operation with
+`direction: "cleanup_orphaned"` is the same operation through the resolver, and
+`idp-cli config-sync-bda --direction cleanup-orphaned` is the same operation on the
+command line.
+
+Do **not** reach for [`stack.cleanup_orphaned()`](#stackcleanup_orphaned): despite the
+name it is a different operation entirely — it removes CloudFront distributions, log
+groups, IAM policies and S3 buckets left behind by deleted stacks, and never touches a
+blueprint.
+
+```python
+result = client.config.sync_bda(
+    direction="cleanup_orphaned", config_profile="v2"
+)
+print(result.cleanup_deleted_count, result.cleanup_failed_count)
+# Anything still in result.orphaned_blueprint_arns is still orphaned.
+```
 
 ```python
 # Bidirectional sync (default)
@@ -1628,6 +1831,10 @@ if result.success:
         print(f"  • {cls}")
 else:
     print(f"Sync failed: {result.error}")
+
+# Independent of success/failure: blueprints left behind in the account.
+for arn in result.orphaned_blueprint_arns:
+    print(f"  ⚠ orphaned, run the cleanup to remove: {arn}")
 ```
 
 ---
@@ -1974,7 +2181,23 @@ Compare multiple Test Studio evaluation runs.
 - `test_run_ids` (list[str], required): List of test run identifiers to compare (minimum 2)
 - `stack_name` (str, optional): Stack name override
 
-**Returns:** `TestComparisonResult` with metrics for each test run
+**Returns:** `TestComparisonResult` with `metrics` for each test run and `configs`,
+the differences between the configurations the runs captured.
+
+⚠️ **`configs` has three values and `None` is not `[]`.** A run records the
+configuration it ran under, and the comparison reads it back, so:
+
+| `configs` | Meaning |
+|---|---|
+| a list of `{"setting": "<dotted path>", "values": {"<test run id>": "<value>"}}` | those settings differ between the runs; `<missing>` means a run has no such setting |
+| `[]` | the configurations were compared and are identical |
+| `None` | **nothing was compared** — fewer than two distinct runs returned a configuration |
+
+Treating `None` as "no differences" reports the runs as identically configured
+without having looked, which is the most misleading answer available when two runs
+score differently. A run returns its configuration once its evaluation results have
+been aggregated, and not at all if the run could not be retrieved. Metadata such as
+save timestamps, and the class definitions, are excluded from the comparison.
 
 ```python
 result = client.testing.compare_test_runs(
@@ -1989,13 +2212,26 @@ for test_run_id, metrics in result.metrics.items():
     print(f"  Accuracy: {metrics['overallAccuracy']:.2%}")
     print(f"  Completed: {metrics['completedFiles']}/{metrics['filesCount']}")
     print(f"  Cost: ${metrics['totalCost']:.2f}")
+
+if result.configs is None:
+    print("\nConfigurations were not compared.")
+elif not result.configs:
+    print("\nConfigurations are identical.")
+else:
+    for difference in result.configs:
+        print(f"\n{difference['setting']}")
+        for test_run_id, value in difference["values"].items():
+            print(f"  {test_run_id}: {value}")
 ```
 
 ---
 
 ## Response Models
 
-All operations return typed Pydantic models. Import them from the top-level `idp_sdk` package:
+All operations return typed result objects — Pydantic models for the document,
+batch, stack and config surfaces, and dataclasses for the evaluation and search
+ones. Either way the fields are the same to read. Import them from the top-level
+`idp_sdk` package:
 
 ```python
 from idp_sdk import (
@@ -2083,10 +2319,14 @@ from idp_sdk import (
     TestComparisonResult,
 
     # Enums
+    DocumentBucket,
     DocumentState,
     Pattern,
     RerunStep,
     StackState,
+
+    # State classification
+    classify_document_state,
 
     # Exceptions
     IDPError,

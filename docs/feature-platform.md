@@ -16,17 +16,13 @@ title: "Feature Platform"
 > Subscribe → Active flow) is wired but unused until paid extensions ship. Set
 > `EnableFeaturePlatform=false` to remove the platform entirely.
 >
-> ⚠️ **Known limitation: decide at create time.** `EnableFeaturePlatform` can be
-> turned **off** on an existing stack, but it cannot be turned back **on** by a
-> stack update: the update fails with `Export with name <StackName>-TrackingTableName
-> is already exported by stack <StackName>` and rolls back cleanly. The main
-> template exports that name while the platform is off and the nested platform
-> stack exports it while the platform is on; CloudFormation creates the nested
-> stack (and its export) during the resource phase but only retires the parent's
-> export at the end of the update, so on the `false` → `true` transition both
-> exist at once. To adopt the platform on a stack created with it off, deploy a
-> new stack with the default `true`. Tracked in
-> [#845](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/845).
+> `EnableFeaturePlatform` can be flipped in either direction on a live stack, so a
+> stack created with the platform off can adopt it later
+> ([#845](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/845)).
+> Coming from 0.6.9 or earlier, enabling it takes **two separate stack updates** —
+> see [Enabling the platform on an existing stack](#enabling-the-platform-on-an-existing-stack).
+> Turning it **off** deletes the platform resources, so uninstall any extension
+> stacks first — see [Turning the platform off](#turning-the-platform-off).
 
 The Feature Platform turns the IDP Accelerator main stack into a **host** for
 *installable extensions* — add-ons that are discovered and installed at runtime
@@ -481,15 +477,50 @@ including a hook that declares `onError: fail`.
 
 BDA performs OCR, classification and extraction inside a single Bedrock Data
 Automation invocation, so the workflow has no separate OCR, classification or
-extraction step to hook after.
+extraction step to hook after. A hook at one of those three points still **does
+not run** in BDA mode — that part is inherent to the architecture. What the
+system does is tell you, in three places, rather than leave the registration
+looking healthy:
 
-**A registered hook at a point that does not exist in the active mode is
-silently inert — including its `onError: fail` policy.** Nothing warns at
-registration time and nothing appears in the execution history, because the
-dispatcher is never invoked. If you are relying on a hook to **gate** the
-pipeline (PII redaction, a compliance check), register it at `preprocessing`,
-which runs in both modes ahead of the routing decision, or verify that the
-mode you deploy actually reaches your chosen point. Tracked as
+| When | What happens |
+|---|---|
+| A feature stack registers a hook (`registerFeatureHooks`) while the active config has `use_bda: true` | **`onError: fail` is refused** — the registration errors and the feature stack's install fails, naming the point and the remedies. Any other policy is accepted with a warning on the response and in the install log. A hook registered `enabled: false` is not a gate anywhere, so it is not refused. |
+| A feature installs a hook inside its **config preset** (`applyFeatureConfigPreset`) — the path both bundled extensions use, so that the hook travels with the classes it belongs to | Same split, judged against the preset merged over the host default: a `fail` registration at an unreachable point fails the install, an advisory one warns. |
+| A configuration is saved through the Configuration UI / `updateConfiguration`, or validated by `idp-cli config-validate` / `config-upload` | Same split. The save-time check is scoped to **what the write changes** — the hook registration for that point, or `use_bda` itself. Editing an unrelated field does not fail because of a hook that was already stored, and the automated BDA blueprint↔class synchronisation (which sends only `classes`) is unaffected. |
+| Every document, at runtime | The `preprocessing` dispatch — the one invocation ahead of the routing decision, so it happens in both modes — lists every hook the chosen branch will not reach at `$.HookResults.preprocessing.Payload.unreachableHooks`, and logs each one. It reads the mode from the **document**, the same value the routing Choice switches on, so a `use_bda` flip made *after* the hook was registered is caught here. |
+
+Three write paths are deliberately outside the refusal, and the runtime report is
+what covers them. **Resetting a profile to `default`** and **restoring a profile
+revision** both replay a configuration that was already stored as a whole, so
+`use_bda` and the hook travel together and no new combination is created; refusing
+either would also make the escape hatch unusable — there is no way to edit a
+`default` row or a stored revision before replaying it. The **`CustomConfigPath`
+custom resource** at stack create/update is the third, where a refusal would fail
+the deployment. A configuration already stored in this shape also still *loads* —
+the checks are write-time, because failing to deserialize a stored record would
+break every Lambda that reads the configuration.
+
+One write form that is **not** exempt, because it is a hook registration in
+disguise: a delta of `{"ocr": null}` means "restore this section from `default`",
+which copies the default's `postHook` list into the profile. That is judged like any
+other hook write.
+
+`unreachableHooks` in the execution history looks like this — one entry per hook,
+naming the hook, the point, its policy and the branch that skipped it:
+
+```json
+{ "hookPoint": "postOcr", "featureId": "pii-redactor", "onError": "fail",
+  "arn": "arn:aws:lambda:...:function:redact", "processingMode": "bda",
+  "message": "Hook pii-redactor is registered at postOcr with onError=fail, but the bda processing mode has no postOcr state, so this hook is NOT invoked for this document and its onError policy cannot gate it. Register it at `preprocessing` (which runs in both modes) or run the pipeline mode." }
+```
+
+If you are relying on a hook to **gate** the pipeline (PII redaction, a
+compliance check), register it at `preprocessing`, which runs in both modes ahead
+of the routing decision. To keep a hook in the configuration without it gating
+anything in this mode, set `enabled: false` on it — the least drastic of the
+remedies, and editable in the View/Edit Configuration UI. Mapping the three points
+onto BDA's own output boundaries — so that a `postOcr` hook could run against BDA's
+OCR output — needs a semantics decision per point and remains open under
 [#982](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/982).
 
 **Inert by default** — hooks are stored inline in the active configuration
@@ -579,11 +610,12 @@ forward so a non-gating hook fault cannot discard an otherwise-good document.
 ⚠️ **"Every hook point" means every point that exists in the mode you are
 running.** In BDA mode (`use_bda: true`) the state machine has no `postOcr`,
 `postClassification` or `postExtraction` state, so the dispatcher is never
-invoked for those points and a `fail` policy registered there is **silently
-inert** — the document processes to completion as though the hook had succeeded.
-See [Not every hook point exists in every processing
-mode](#not-every-hook-point-exists-in-every-processing-mode) and
-[#982](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/982).
+invoked for those points and a `fail` policy registered there cannot abort
+anything. Registering one is refused outright, and any hook the running branch
+will not reach is listed at
+`$.HookResults.preprocessing.Payload.unreachableHooks` on every execution — see
+[Not every hook point exists in every processing
+mode](#not-every-hook-point-exists-in-every-processing-mode).
 
 **When a `fail` policy does abort, the document shows only `FAILED`.** The
 tracking row and the UI carry the terminal status and nothing else — the hook's
@@ -777,12 +809,74 @@ The default brings up:
 - the `InstalledFeatures` DDB table + feature-platform Lambdas,
 - the `FeatureBucket` pre-loaded with the bundled sample feature.
 
-To turn the feature platform off entirely, set `EnableFeaturePlatform=false` —
-no platform resources are created, and the Extensions nav section is empty
-(apart from the Browse catalog link, whose page reports no extensions).
-Turning it off is a one-way change on a live stack: setting the parameter back
-to `true` later fails on the `TrackingTableName` export collision described at
-the top of this page ([#845](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/845)).
+### Enabling the platform on an existing stack
+
+On a stack **already running 0.6.10 or later**, setting `EnableFeaturePlatform=true`
+is a single ordinary update. Nothing else is needed.
+
+Coming from **0.6.9 or earlier** it takes **two separate stack updates**, in this
+order:
+
+1. **Upgrade the stack to 0.6.10 or later**, leaving `EnableFeaturePlatform=false`.
+2. **Then set `EnableFeaturePlatform=true`** in a second update.
+
+⚠️ Do not combine those two. Both are ordinary updates and neither needs anything
+uninstalled, but a single update that changes the template *and* flips the
+parameter fails — 0.6.9's main template declares the cross-stack export
+`<StackName>-TrackingTableName`, the nested platform stack declares the same name
+once enabled, and CloudFormation writes a stack's exports only at the *end* of its
+update while a nested stack claims its own during the resource phase. The nested
+stack is created first, the name is still held by the parent, and the update rolls
+back reporting that the export is already exported by the stack. Splitting it in
+two removes the parent's declaration first, so there is nothing left to collide
+with when the nested stack claims it.
+
+#### Before upgrading a platform-off stack past 0.6.9
+
+Step 1 above — and the plain upgrade every platform-off stack takes, whether or not
+it ever wants the platform — **withdraws** the main stack's
+`<StackName>-TrackingTableName` export. On 0.6.9 and earlier that export was live
+on a platform-off stack and importable by *any* stack in the same account and
+region, so if something imports it the upgrade fails and rolls back. Check first:
+
+```bash
+aws cloudformation list-imports --export-name <StackName>-TrackingTableName
+```
+
+An empty result (`does not exist` for an unimported export) means nothing to do.
+The name is documented solely as a feature-stack reference and nothing in this
+repository imports it outside `feature-platform/`, so this is unlikely — the case
+worth checking is a **`--headless`** deployment, where the platform is stripped out
+and the main stack's export was the only producer, and where hand-wired cross-stack
+references are more common. If something does import it, read the name from the
+stack's `TrackingTableName` **output** instead (unchanged, and now present in every
+configuration) before upgrading.
+
+Upgrading a stack that already has the platform **on** needs no special step,
+whatever extensions are installed: from 0.6.10 the nested platform stack keeps
+producing exactly the export names it produced before, so nothing is withdrawn
+from under an installed extension.
+
+### Turning the platform off
+
+Set `EnableFeaturePlatform=false` — no platform resources are created, and the
+Extensions nav section is empty (apart from the Browse catalog link, whose page
+reports no extensions). Three things to know before turning it off:
+
+- **Delete any installed extension stacks first.** They are separate stacks
+  outside the main stack's dependency graph, and they hold `Fn::ImportValue`
+  references to host exports (`<StackName>-RegisterFeatureFunctionArn`,
+  `-InstalledFeaturesTableName`, …). Turning the platform off deletes the nested
+  stack that produces those, and CloudFormation does not allow an export another
+  stack imports to go away — the wording for the delete case is `Cannot delete
+  export <name> as it is in use by <stack>` — so while an extension is installed
+  the update fails and rolls back.
+- **Extension stacks own their own data, and deleting them destroys it.** Their
+  DynamoDB tables and buckets are part of the extension stack, so a `delete-stack`
+  takes any configuration and history the extension stored with it. Export
+  anything you need first.
+- **The `InstalledFeatures` table is deleted with the platform.** Turning the
+  platform back on gives you an empty one; extensions have to be re-installed.
 
 ### Tear-down
 

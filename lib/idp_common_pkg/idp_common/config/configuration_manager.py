@@ -138,13 +138,24 @@ class ConfigurationManager:
         manager.save_configuration(CONFIG_TYPE_CONFIG, config, version="v1")
     """
 
-    def __init__(self, table_name: Optional[str] = None):
+    def __init__(self, table_name: Optional[str] = None, region: Optional[str] = None):
         """
         Initialize the configuration manager.
 
         Args:
             table_name: Optional override for configuration table name.
                        If not provided, uses CONFIGURATION_TABLE_NAME env var.
+            region: Optional AWS region for the DynamoDB and S3 clients this
+                   manager builds. ``None`` means "let boto3 resolve it"
+                   (AWS_REGION / AWS_DEFAULT_REGION / profile / IMDS), which is
+                   what a Lambda wants — the runtime always sets AWS_REGION.
+                   A caller that resolved the table name in a specific region
+                   MUST pass that same region: the table name is not
+                   region-qualified, so reading it back under a different region
+                   either raises ResourceNotFoundException or, on a multi-region
+                   account, silently hits a same-named table in the wrong
+                   region. That is how ``idp-cli config-upload --region`` used to
+                   report success after writing to the wrong stack.
 
         Raises:
             ValueError: If table name cannot be determined
@@ -156,13 +167,16 @@ class ConfigurationManager:
                 "environment variable or provide table_name parameter."
             )
 
-        self.dynamodb = boto3.resource("dynamodb")
+        self.region = region
+        self.dynamodb = boto3.resource("dynamodb", region_name=self.region)
         self.table = self.dynamodb.Table(table_name)  # pyright: ignore[reportAttributeAccessIssue]
         self.table_name = table_name
         # Revision history for Configuration Profiles. Disabled (no-op) when no
         # configuration bucket is configured, so an older deployment or a unit
-        # test that does not exercise history keeps working unchanged.
-        self.revisions = ConfigRevisionStore(self.table)
+        # test that does not exercise history keeps working unchanged. The region
+        # is passed through for the same reason as above: the revision objects
+        # live in the configuration bucket of the stack we just resolved.
+        self.revisions = ConfigRevisionStore(self.table, region=self.region)
         logger.info(f"ConfigurationManager initialized with table: {table_name}")
 
     def get_configuration(
@@ -704,6 +718,13 @@ class ConfigurationManager:
         Restoring never rewrites history: the restored configuration becomes a
         *new* revision, so the state being replaced remains inspectable. Returns
         the new revision number.
+
+        Not subject to `_reject_inert_gating_hooks` (#982), for the same reason
+        reset-to-default is not: the whole revision body is restored atomically, so
+        `use_bda` and any pipeline hook travel together and no combination is created
+        that was not once live in this profile. Refusing would also make a revision
+        unrestorable with no way to edit it first. The dispatcher's runtime audit
+        still reports an inert hook on every document.
 
         Raises:
             ValueError: If the revision is not retained or is unreadable
@@ -1333,6 +1354,15 @@ class ConfigurationManager:
             config_dict = migrate_config(config_dict)
 
         # === Reset to default ===
+        #
+        # Deliberately NOT subject to _reject_inert_gating_hooks. This copies the
+        # `default` row verbatim; if that row carries an inert gating hook (#982),
+        # refusing the reset would wedge the admin — reset is the escape hatch from
+        # a bad version, there is no in-UI way to edit `default` except through a
+        # save that would itself be refused, and the copy introduces nothing that
+        # was not already stored. The dispatcher's runtime audit still reports the
+        # hook on every document. Covered by
+        # tests/unit/config/test_hook_reachability.py.
         if reset_to_default:
             logger.info(f"Resetting version {version} to default")
             default_config = self.get_configuration(CONFIG_TYPE_CONFIG, DEFAULT_VERSION)
@@ -1356,6 +1386,7 @@ class ConfigurationManager:
         if save_as_default:
             # Frontend sends the complete config to become the new default
             config = IDPConfig(**config_dict)
+            self._reject_inert_gating_hooks(config, config_dict)
             self.save_configuration(
                 CONFIG_TYPE_CONFIG,
                 config,
@@ -1389,6 +1420,7 @@ class ConfigurationManager:
                 deep_update(full_dict, config_dict)
                 # Validate
                 full_config = IDPConfig(**full_dict)
+                self._reject_inert_gating_hooks(full_config, config_dict)
                 self.save_configuration(
                     CONFIG_TYPE_CONFIG,
                     full_config,
@@ -1401,6 +1433,7 @@ class ConfigurationManager:
             else:
                 # No default available, try to save as-is
                 config = IDPConfig(**config_dict)
+                self._reject_inert_gating_hooks(config, config_dict)
                 self.save_configuration(
                     CONFIG_TYPE_CONFIG,
                     config,
@@ -1446,6 +1479,7 @@ class ConfigurationManager:
 
         # Validate and save the full config
         updated_config = IDPConfig(**current_dict)
+        self._reject_inert_gating_hooks(updated_config, config_dict)
         self.save_configuration(
             CONFIG_TYPE_CONFIG,
             updated_config,
@@ -1459,6 +1493,46 @@ class ConfigurationManager:
         return True
 
     # ===== Private Methods =====
+
+    @staticmethod
+    def _reject_inert_gating_hooks(
+        config: IDPConfig, delta: Optional[Dict[str, Any]] = None
+    ) -> None:
+        """Refuse a write that registers an `onError: fail` hook that can never fire.
+
+        Three hook points — postOcr, postClassification, postExtraction — exist
+        only on the Pipeline branch of the state machine, so with
+        ``use_bda: true`` a hook registered at one of them is never invoked and
+        its `onError: fail` policy never gates anything (#982). Accepting that
+        save is fail-open: the config record shows the hook, the UI shows the
+        hook, and the execution history shows nothing, because the dispatcher was
+        never called.
+
+        `config` is the fully merged configuration about to be stored; `delta` is
+        what this write actually asked to change. The refusal is scoped to the
+        delta — see `hook_reachability.delta_touches_hook_registration` for why
+        that matters, including the BDA class-sync callers that would otherwise be
+        refused over a hook they never mentioned. Passing no delta checks
+        everything, which suits a caller that supplies a whole configuration.
+
+        Raised only for the GATING policy. An advisory hook (`continue` /
+        `skip-remaining`) is logged and saved — a config may legitimately carry an
+        observing hook for a mode it will be switched to later — and the
+        dispatcher repeats the whole audit at runtime into
+        `$.HookResults.preprocessing`, which is what covers both a `use_bda` flip
+        and a hook that was already stored when this check arrived.
+
+        This is the WRITE boundary only. It is deliberately NOT an IDPConfig
+        validator: a record already in the table with this shape (written by an
+        earlier release, or by `register_feature_hooks` writing to DynamoDB
+        directly) must still LOAD, or every Lambda that reads the configuration
+        would start failing on upgrade.
+        """
+        from .hook_reachability import reject_inert_gating_hooks
+
+        reject_inert_gating_hooks(
+            config.model_dump(mode="python"), delta, log=logger
+        )
 
     def _get_full_config_for_version(self, version: str) -> Optional[IDPConfig]:
         """

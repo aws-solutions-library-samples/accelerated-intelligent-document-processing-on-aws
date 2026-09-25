@@ -29,7 +29,13 @@ from boto3.dynamodb.conditions import Key
 # handler directory is already on the path) and when another suite loads this
 # module by file path.
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from config_scope import scope_allows  # noqa: E402
+from config_scope import (  # noqa: E402
+    ScopeLookupError,
+    caller_email_from_claims,
+    caller_sub_from_claims,
+    resolve_allowed_config_versions,
+    scope_allows,
+)
 
 # Same story for the log redactor: byte-identical copy of
 # idp_common/utils/log_sanitizer.py, kept in step by
@@ -54,6 +60,55 @@ HOURS_PER_SHARD = 24 // SHARDS_PER_DAY  # 4 hours
 DEFAULT_PAGE_SIZE = 50
 MAX_PAGE_SIZE = 200
 BATCH_GET_LIMIT = 100  # DynamoDB BatchGetItem limit
+
+# Work budget: the most sequential DynamoDB Queries one invocation may issue.
+#
+# The shard fan-out is driven entirely by a caller-supplied value. The range is
+# decomposed into one partition per HOURS_PER_SHARD window and `_query_shard` is
+# called for each, in a `while` loop, one after another. The loop exits early once
+# `limit` entries are collected, so a DENSE range is cheap — but a sparse one (a
+# window holding fewer than `limit` documents, which includes every window before
+# the deployment existed) walks every shard. Unbounded, that is SHARDS_PER_DAY
+# queries per requested day with no ceiling at all.
+#
+# The budget to fit is the one the caller actually experiences, which is neither
+# this function's `Timeout` (120s) nor API Gateway's integration limit (29s): the
+# dispatcher invokes resolvers with a 20s read timeout
+# (`_RESOLVER_READ_TIMEOUT_SECONDS` in http_api_dispatcher/index.py) and returns a
+# labelled 504 when it expires. Past 20s the work is still billed and still
+# consuming read capacity with nobody left to receive the answer.
+#
+# Measured cost of one empty-shard Query issued sequentially from in-region
+# compute against a real tracking table: 3.74ms mean, 4.23ms p90 (n=200). Half the
+# 20s window at the p90 cost is ~2360 queries; the other half covers cold start,
+# the config-scope lookup, the BatchGetItem round trips for the page, and
+# serialization.
+MAX_SHARD_QUERIES_PER_REQUEST = 2360
+
+# The caller-facing rule, in whole days, because that is what the request states
+# and what an error message can usefully name. It is a SEPARATE number from the
+# work budget above on purpose: `test_range_cap.py` recomputes the worst-case
+# query count for this many days FROM SHARDS_PER_DAY and fails if it no longer
+# fits MAX_SHARD_QUERIES_PER_REQUEST. So raising either this cap or the shard
+# fan-out has to be justified against the measurement rather than silently
+# multiplying the work a single request can buy.
+MAX_RANGE_DAYS = 365
+
+# The range cap bounds the WORST case; this bounds the ACTUAL one. A cap derived
+# from a measured per-query cost is only as good as the measurement, and a
+# throttled table, a hot partition or shards that are merely non-empty all cost
+# more than the 4.23ms an empty one did. Mirrors the enforced pair already in
+# list_documents_gsi_resolver (`_COUNT_MAX_PAGES` + `_COUNT_TIME_RESERVE_MS`):
+# stop, return what was collected, and hand back a nextToken so the caller
+# resumes exactly where this invocation stopped. The pagination token already
+# encodes the shard index, so resuming is free.
+#
+# 15s, measured against the dispatcher's 20s window rather than this function's
+# own Timeout: stopping after the dispatcher has stopped listening would answer
+# nobody.
+_SHARD_LOOP_BUDGET_SECONDS = 15.0
+# Leave enough of the invocation to BatchGetItem the page and serialize it.
+_SHARD_LOOP_TIME_RESERVE_MS = 5_000
 
 
 class DecimalEncoder(json.JSONEncoder):
@@ -81,6 +136,29 @@ def _date_range(start_date: str, end_date: str):
         current += timedelta(days=1)
 
 
+def _align_to_shard(dt: datetime) -> datetime:
+    """Floor ``dt`` to the start of the shard window that contains it."""
+    return dt.replace(
+        hour=(dt.hour // HOURS_PER_SHARD) * HOURS_PER_SHARD,
+        minute=0,
+        second=0,
+        microsecond=0,
+    )
+
+
+def _projected_shard_queries(start_dt: datetime, end_dt: datetime) -> int:
+    """How many shard Queries ``_shard_pks_for_range`` would issue, in O(1).
+
+    Counted arithmetically rather than by generating the list, because the list is
+    the thing being bounded: a range spanning centuries materializes tens of
+    millions of tuples and exhausts the function's 512 MB before any limit check
+    could look at them. ``test_range_cap.py`` asserts this agrees exactly with
+    ``len(_shard_pks_for_range(...))``.
+    """
+    span = (end_dt - _align_to_shard(start_dt)).total_seconds()
+    return int(span // (HOURS_PER_SHARD * 3600)) + 1
+
+
 def _shard_pks_for_range(start_dt: datetime, end_dt: datetime):
     """
     Return an ordered list of (date_str, shard_index) tuples covering the
@@ -90,9 +168,9 @@ def _shard_pks_for_range(start_dt: datetime, end_dt: datetime):
     shard that contains start_dt through the latest shard that contains end_dt.
     """
     pairs = []
-    current = start_dt.replace(minute=0, second=0, microsecond=0)
-    # Align to shard boundary
-    current = current.replace(hour=(current.hour // HOURS_PER_SHARD) * HOURS_PER_SHARD)
+    # One implementation of the alignment rule, shared with the O(1) projection
+    # in _projected_shard_queries so the bound cannot drift from what is iterated.
+    current = _align_to_shard(start_dt)
 
     while current <= end_dt:
         date_str = current.strftime("%Y-%m-%d")
@@ -101,6 +179,34 @@ def _shard_pks_for_range(start_dt: datetime, end_dt: datetime):
         current += timedelta(hours=HOURS_PER_SHARD)
 
     return pairs
+
+
+def _remaining_invocation_ms(context):
+    """Milliseconds left in this invocation, or ``None`` when unknowable.
+
+    A direct invoke or a test may pass no context, and the AppSync/Lambda context
+    is duck-typed, so neither the attribute nor an integer answer can be assumed.
+    """
+    remaining = getattr(context, "get_remaining_time_in_millis", None)
+    if not callable(remaining):
+        return None
+    try:
+        return int(remaining())
+    except (TypeError, ValueError, AttributeError):
+        return None
+
+
+def _shard_budget_exhausted(started_at: float, queries: int, context):
+    """Whether the shard walk must stop now, and why. See the constants above."""
+    if queries >= MAX_SHARD_QUERIES_PER_REQUEST:
+        return f"query budget of {MAX_SHARD_QUERIES_PER_REQUEST} reached"
+    elapsed = time.monotonic() - started_at
+    if elapsed >= _SHARD_LOOP_BUDGET_SECONDS:
+        return f"{elapsed:.1f}s spent, over the {_SHARD_LOOP_BUDGET_SECONDS}s budget"
+    left = _remaining_invocation_ms(context)
+    if left is not None and left < _SHARD_LOOP_TIME_RESERVE_MS:
+        return f"only {left}ms of the invocation left"
+    return None
 
 
 def _query_shard(table, date_str: str, shard: int, start_iso: str, end_iso: str):
@@ -201,12 +307,22 @@ def _deserialize_next_token(token: str):
 # ---------------------------------------------------------------------------
 
 def _get_caller_identity(event):
-    """Extract caller's Cognito groups, username, and email from AppSync event identity."""
+    """Extract caller's Cognito groups, username, and email from the event identity.
+
+    ``email`` is the config-version scope lookup key, so it comes from the
+    ``email`` claim alone — see ``caller_email_from_claims`` in the vendored
+    ``config_scope``. ``username`` keeps its fallback chain because it is not a
+    scope key: it matches ``HITLReviewOwner`` for the reviewer-only view.
+    """
     identity = event.get("identity", {})
     claims = identity.get("claims", {})
     groups = claims.get("cognito:groups", [])
     username = claims.get("cognito:username", "") or claims.get("sub", "")
-    email = claims.get("email", "") or identity.get("username", "") or username
+    email = caller_email_from_claims(claims)
+    # The immutable Cognito sub, the config-version scope lookup's PREFERRED key.
+    # It is not a fallback for the email: the two go to disjoint key spaces on the
+    # UsersTable. See caller_sub_from_claims.
+    caller_sub = caller_sub_from_claims(claims)
 
     if isinstance(groups, str):
         groups = [groups]
@@ -215,6 +331,7 @@ def _get_caller_identity(event):
         "groups": groups,
         "username": username,
         "email": email,
+        "sub": caller_sub,
         "is_admin": "Admin" in groups,
         "is_author": "Author" in groups,
         "is_reviewer": "Reviewer" in groups,
@@ -227,35 +344,47 @@ def _is_reviewer_only(caller):
     return caller["is_reviewer"] and not caller["is_admin"] and not caller["is_author"] and not caller["is_viewer"]
 
 
-def _get_user_allowed_config_versions(caller_email):
-    """Look up user's allowedConfigVersions from UsersTable with caching."""
-    users_table_name = os.environ.get("USERS_TABLE_NAME", "")
-    if not users_table_name:
+def _get_user_allowed_config_versions(caller_email, caller_sub=""):
+    """The caller's allowedConfigVersions, or None if unrestricted.
+
+    Thin wrapper over the shared fail-closed lookup in ``config_scope`` so every
+    consumer of this rule resolves it identically. Raises ``ScopeLookupError``
+    when the scope cannot be evaluated; the caller must deny.
+    """
+    return resolve_allowed_config_versions(
+        caller_email,
+        caller_sub=caller_sub,
+        users_table_name=os.environ.get("USERS_TABLE_NAME", ""),
+        dynamodb=dynamodb,
+        cache=_user_scope_cache,
+        cache_ttl=_USER_SCOPE_CACHE_TTL,
+    )
+
+
+def _caller_scope_or_deny(caller):
+    """The caller's config-version scope for one request, or a denial.
+
+    Admins are unrestricted and never looked up. For everyone else this fails
+    CLOSED: a scope that cannot be *evaluated* (no UsersTable wired, no email
+    claim on the verified identity, a failed DynamoDB query) is not a caller
+    without restrictions, and reading it as one hands every document in the
+    deployment to a caller entitled to a subset (AUTH.T07).
+    """
+    if caller["is_admin"]:
         return None
-
-    now = time.time()
-    cached = _user_scope_cache.get(caller_email)
-    if cached and (now - cached["timestamp"]) < _USER_SCOPE_CACHE_TTL:
-        return cached["scope"]
-
     try:
-        users_table = dynamodb.Table(users_table_name)
-        response = users_table.query(
-            IndexName="EmailIndex",
-            KeyConditionExpression=Key("email").eq(caller_email),
+        return _get_user_allowed_config_versions(
+            caller["email"], caller.get("sub", "")
         )
-        items = response.get("Items", [])
-        if items:
-            scope = items[0].get("allowedConfigVersions")
-            result = list(scope) if scope and len(scope) > 0 else None
-        else:
-            result = None
-    except Exception as e:
-        logger.warning(f"Failed to look up user scope for {caller_email}: {e}")
-        result = None
-
-    _user_scope_cache[caller_email] = {"scope": result, "timestamp": now}
-    return result
+    except ScopeLookupError as e:
+        logger.error(
+            "Denying listDocumentsByDateRange: config-version scope "
+            "unresolved: %s",
+            e,
+        )
+        raise PermissionError(
+            "Unauthorized: your configuration scope could not be verified"
+        ) from e
 
 
 def _should_include_document(doc, caller, reviewer_only, allowed_versions):
@@ -284,7 +413,13 @@ def _should_include_document(doc, caller, reviewer_only, allowed_versions):
             hitl_triggered is True
             or hitl_status in ("PendingReview", "InProgress", "ReviewInProgress")
         )
-        owner_is_me = hitl_owner in (reviewer_id, reviewer_email)
+        # Only non-empty identifiers can match an owner. `reviewer_email` comes
+        # from the `email` claim alone and may legitimately be absent, and an
+        # unowned document carries `HITLReviewOwner == ""` — so comparing the two
+        # empties would read "nobody owns it" as "I own it".
+        owner_is_me = bool(hitl_owner) and hitl_owner in (
+            v for v in (reviewer_id, reviewer_email) if v
+        )
 
         if not hitl_active:
             return False
@@ -310,7 +445,11 @@ def handler(event, context):
     args = event.get("arguments", {})
     start_date_time = args.get("startDateTime")
     end_date_time = args.get("endDateTime")
-    limit = min(args.get("limit") or DEFAULT_PAGE_SIZE, MAX_PAGE_SIZE)
+    # Clamped, not defaulted: MAX_PAGE_SIZE is a ceiling the caller cannot raise.
+    # The lower clamp matters too — a negative `limit` makes the collection loop's
+    # `len(collected) < limit` false on entry, so the request returns an empty page
+    # and a null nextToken, which is indistinguishable from "the range is empty".
+    limit = max(1, min(args.get("limit") or DEFAULT_PAGE_SIZE, MAX_PAGE_SIZE))
     next_token = args.get("nextToken")
 
     if not start_date_time or not end_date_time:
@@ -318,14 +457,57 @@ def handler(event, context):
 
     # Parse ISO timestamps
     # Handle both formats: 2026-02-07T00:00:00.000Z and 2026-02-07T00:00:00Z
+    # A malformed value raises ValueError, which the dispatcher reports as 400.
     start_dt = datetime.fromisoformat(start_date_time.replace("Z", "+00:00"))
     end_dt = datetime.fromisoformat(end_date_time.replace("Z", "+00:00"))
 
     if start_dt > end_dt:
         raise ValueError("startDateTime must be before endDateTime")
 
+    # Bound the caller-supplied range BEFORE any partition is generated or read.
+    #
+    # Refusing in band, naming the maximum, is the point. Accepting the request
+    # meant the dispatcher's 20s read timeout fired and the browser showed
+    # "Request failed (504)" with nothing to say the range was the problem, while
+    # the resolver kept querying — up to its own 120s Timeout — and kept spending
+    # read capacity on an answer nobody was left to receive. Any authenticated
+    # caller could do that, repeatedly, for the cost of one HTTP request.
+    #
+    # The check is arithmetic, not a count of the generated list, because the list
+    # is part of what is being bounded: a range spanning centuries materializes
+    # tens of millions of tuples in `_shard_pks_for_range` and exhausts the
+    # function's 512 MB before any limit could look at them.
+    #
+    # `>` on a timedelta, matching DateRangeModal.tsx exactly, so the client bound
+    # and this one refuse the same set of ranges rather than leaving a sliver the
+    # picker offers and the server rejects.
+    span = end_dt - start_dt
+    if span > timedelta(days=MAX_RANGE_DAYS):
+        span_days = span.total_seconds() / 86400
+        logger.warning(
+            "Refusing listDocumentsByDateRange: %.1f-day range would issue %d "
+            "sequential shard queries, over the %d-query budget (max %d days)",
+            span_days,
+            _projected_shard_queries(start_dt, end_dt),
+            MAX_SHARD_QUERIES_PER_REQUEST,
+            MAX_RANGE_DAYS,
+        )
+        raise ValueError(
+            f"Date range too large: {span_days:.0f} days requested, "
+            f"maximum is {MAX_RANGE_DAYS} days. "
+            "Narrow the range, or page through it in shorter windows."
+        )
+
     table_name = os.environ["TRACKING_TABLE_NAME"]
     table = dynamodb.Table(table_name)
+
+    # RBAC: resolve the caller and their config-version scope BEFORE reading any
+    # shard. A caller whose scope cannot be evaluated is denied, and there is no
+    # point iterating partitions for a request that will be refused.
+    caller = _get_caller_identity(event)
+    reviewer_only = _is_reviewer_only(caller)
+    allowed_versions = _caller_scope_or_deny(caller)
+    logger.info(f"Caller groups: {caller['groups']}, reviewer_only: {reviewer_only}")
 
     # Generate all shard partition keys for the range
     shard_pairs = _shard_pks_for_range(start_dt, end_dt)
@@ -347,12 +529,22 @@ def handler(event, context):
     end_iso = end_dt.strftime("%Y-%m-%dT%H:%M:%S")
 
     result_next_token = None
+    budget_stop = None
+    shard_queries = 0
+    loop_started_at = time.monotonic()
 
     while current_shard_idx < len(shard_pairs) and len(collected_entries) < limit:
+        # Checked BEFORE the query, so the shard named by current_shard_idx is
+        # genuinely unread when the resume token is built below.
+        budget_stop = _shard_budget_exhausted(loop_started_at, shard_queries, context)
+        if budget_stop:
+            break
+
         date_str, shard = shard_pairs[current_shard_idx]
         logger.debug(f"Querying shard: {date_str}#s#{shard:02d}")
 
         shard_items = _query_shard(table, date_str, shard, start_iso, end_iso)
+        shard_queries += 1
 
         # Apply offset if resuming within a shard
         if current_item_offset > 0:
@@ -373,20 +565,30 @@ def handler(event, context):
             collected_entries.extend(shard_items)
             current_shard_idx += 1
 
-    # If we ran out of shards, no next token
-    if current_shard_idx >= len(shard_pairs):
-        result_next_token = None
+    # The rule: a nextToken is owed whenever shards remain unread. Stating it that
+    # way rather than per-exit-path matters, because two of the paths out of the loop
+    # do not set one themselves. The budget stop is one. The other is a page that
+    # fills EXACTLY: the `else` branch runs, the index advances, and the `while`
+    # condition goes false without reaching the mid-shard `break` — so a page that
+    # happens to come out exactly `limit` long would leave the rest of the range
+    # unreachable.
+    #
+    # `current_item_offset` is the right resume offset in every path: it is zeroed as
+    # soon as it has been applied, and the budget stop is checked before the query,
+    # so an unconsumed offset is still pending against the shard being named.
+    if result_next_token is None and current_shard_idx < len(shard_pairs):
+        result_next_token = _serialize_next_token(current_shard_idx, current_item_offset)
+
+    if budget_stop:
+        logger.warning(
+            "listDocumentsByDateRange stopped early after %d of %d shard queries "
+            "(%s); returning a nextToken so the caller can resume",
+            shard_queries,
+            len(shard_pairs),
+            budget_stop,
+        )
 
     logger.info(f"Collected {len(collected_entries)} list entries")
-
-    # RBAC: Get caller identity and scope
-    caller = _get_caller_identity(event)
-    reviewer_only = _is_reviewer_only(caller)
-    allowed_versions = None
-    if not caller["is_admin"]:
-        allowed_versions = _get_user_allowed_config_versions(caller["email"])
-
-    logger.info(f"Caller groups: {caller['groups']}, reviewer_only: {reviewer_only}")
 
     # Extract ObjectKeys from list entries
     object_keys = [entry.get("ObjectKey") for entry in collected_entries if entry.get("ObjectKey")]

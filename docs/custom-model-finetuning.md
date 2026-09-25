@@ -36,7 +36,7 @@ flowchart LR
 
 ## Roles & Permissions
 
-Custom Model Fine-tuning is available to **Admin** and **Author** roles. The two mutations (`createFinetuningJob`, `deleteFinetuningJob`) are enforced server-side, in layers: the REST API's Cognito user-pool authorizer rejects an unauthenticated caller with a 401 before any code runs, the dispatcher rejects a malformed argument shape with a 400, and **authorization itself is enforced inside the resolver Lambda** (`nested/api-resolvers/src/lambda/finetuning_jobs_resolver/index.py`), which intersects the caller's `cognito:groups` claim with `{"Admin", "Author"}` and raises a `PermissionError` that the dispatcher returns as a 403. So Reviewer and Viewer roles cannot create or delete jobs even via direct API calls. The `@aws_cognito_user_pools(cognito_groups: [...])` directives in `nested/api-resolvers/src/api/schema.graphql` remain the declarative source of truth for the expected group policy — `make api-test-static` (`scripts/sdlc/scan_api_rbac.py`, checked against `scripts/api_rbac_expectations.yaml`) verifies each resolver's check against them — but nothing evaluates those directives at runtime. The query APIs (`listFinetuningJobs`, `getFinetuningJob`, `listAvailableModels`) are open to all authenticated users, and the UI only exposes the Custom Models page to Admin and Author. See [RBAC](./rbac.md) for the canonical description of where authorization is enforced.
+Custom Model Fine-tuning is available to **Admin** and **Author** roles. The two mutations (`createFinetuningJob`, `deleteFinetuningJob`) are enforced server-side, in layers: the REST API's Cognito user-pool authorizer rejects an unauthenticated caller with a 401 before any code runs, the dispatcher rejects a malformed argument shape with a 400, and **authorization itself is enforced inside the resolver Lambda** (`nested/api-resolvers/src/lambda/finetuning_jobs_resolver/index.py`), which intersects the caller's `cognito:groups` claim with `{"Admin", "Author"}` and raises a `PermissionError` that the dispatcher returns as a 403. So Reviewer and Viewer roles cannot create or delete jobs even via direct API calls. The `@aws_cognito_user_pools(cognito_groups: [...])` directives in `nested/api-resolvers/src/api/schema.graphql` remain the declarative source of truth for the expected group policy — `make api-test-static` (`scripts/sdlc/scan_api_rbac.py`, checked against `scripts/api_rbac_expectations.yaml`) verifies each resolver's check against them — but nothing evaluates those directives at runtime. Two of the three query APIs — `listFinetuningJobs` and `getFinetuningJob` — are open to all authenticated users, and the UI only exposes the Custom Models page to Admin and Author. `listAvailableModels` and `validateTestSetForFinetuning` are **not reachable at all**: the resolver implements both, but the dispatcher's routing table does not name them and the manifest it authorizes against has no entry for them, so default-deny answers 403 to every caller including Admin. The UI calls neither. See [RBAC](./rbac.md) for the canonical description of where authorization is enforced.
 
 > **Note on config-version scoping**: Fine-tuning jobs are currently global — they are not filtered by `allowedConfigVersions`. A scoped Author can see all fine-tuning jobs and create jobs from any test set. However, when applying a custom model to a configuration version (via "Create Config Version"), the config-version scope is enforced — the Author can only target versions within their scope. See [RBAC](./rbac.md) for the full permission matrix.
 
@@ -295,6 +295,10 @@ Custom Model Deployments use on-demand pricing, so you only pay when the model i
 
 ### GraphQL Queries
 
+The last two below, `validateTestSetForFinetuning` and `listAvailableModels`, are
+documented as the schema declares them; they are **not routable today** (see the
+authorization note above), so a call returns 403.
+
 ```graphql
 # List fine-tuning jobs
 query ListFinetuningJobs($limit: Int, $nextToken: String) {
@@ -381,3 +385,4 @@ mutation StartFinetuningJob($input: StartFinetuningJobInput!) {
 mutation DeleteFinetuningJob($jobId: ID!) {
   deleteFinetuningJob(jobId: $jobId)
 }
+```

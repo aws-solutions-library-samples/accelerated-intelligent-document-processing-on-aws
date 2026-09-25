@@ -76,7 +76,7 @@ flowchart TD
 | **Likelihood** | Low |
 | **Severity** | Medium |
 | **Affected Components** | `scripts/test_api_rbac.py`, `scripts/sdlc/scan_api_rbac.py`, `scripts/api_rbac_expectations.yaml` |
-| **Mitigations** | The Jobs API surface is **small and static** (a handful of `/jobs` routes vs 97 UI operations), so the review burden is low and drift is unlikely. Authorization is enforced by the API Gateway Cognito authorizer plus scope configuration in the template — declarative IaC rather than per-resolver imperative code, which is the class of defect the UI harness exists to catch (AUTH.T08). The `zapdast` deployment-variant probe and the `stacktest-jobsapi` deploy-variant test exercise the deployed Jobs API stack. |
+| **Mitigations** | The Jobs API surface is **small and static** (a handful of `/jobs` routes vs 118 UI operations), so the review burden is low and drift is unlikely. Authorization is enforced by the API Gateway Cognito authorizer plus scope configuration in the template — declarative IaC rather than per-resolver imperative code, which is the class of defect the UI harness exists to catch (AUTH.T08). The `zapdast` deployment-variant probe and the `stacktest-jobsapi` deploy-variant test exercise the deployed Jobs API stack. |
 | **Residual risk / recommendation** | Add a small scope-negative test (a `jobs.read`-only token attempting a write route must be refused, and an unauthenticated request must 401) to the Jobs API stack test. Low cost, closes the gate asymmetry. |
 
 ### JOB.T03: Static Client Secret with No Rotation Mechanism

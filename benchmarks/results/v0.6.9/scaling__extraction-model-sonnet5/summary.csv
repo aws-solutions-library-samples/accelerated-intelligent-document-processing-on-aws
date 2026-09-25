@@ -1,0 +1,15 @@
+cell,doc,sub_doc,repeat,status,success,page_count,completeness_recall,truncation_prefix,scalar_accuracy,typed_accuracy,cell_accuracy,sections_correct,weighted_accuracy,parse_failures,forced_tool_attempted,forced_tool_honored,forced_tool_honored_rate,validation_valid_rate,validation_errors,coercions,coercion_refusals,mean_confidence,pct_conf_below_0.9,calibration_separation,class_accuracy,class_mean_confidence,class_calibration_separation,wall_s,cost
+core-tt-simple-sep,scale_25.pdf,,0,COMPLETED,True,1.0,1.0,25,1.0,,1.0,1.0,,,,,,1.0,0,,,0.9962,0.0,,,,,28.620239,0.06
+core-tt-simple-sep,scale_100.pdf,,0,COMPLETED,True,3.0,1.0,100,1.0,,1.0,1.0,,,,,,1.0,0,,,0.9999,0.0,,,,,61.518977,0.1972
+core-tt-simple-sep,scale_400.pdf,,0,COMPLETED,True,9.0,1.0,400,1.0,,1.0,1.0,,,,,,1.0,0,,,0.9993,0.0,,,,,267.655643,0.7118
+core-tt-simple-sep,scale_800.pdf,,0,COMPLETED,True,17.0,0.1263,101,0.5,,1.0,1.0,,,,,,1.0,0,,,0.9998,0.0,,,,,191.960125,0.8265
+core-tt-simple-sep,scale_1200.pdf,,0,COMPLETED,True,25.0,0.0842,101,1.0,,1.0,1.0,,,,,,1.0,0,,,0.99,0.0,,,,,232.653964,1.1204
+core-tt-simple-sep,scale_1600.pdf,,0,COMPLETED,True,33.0,0.0269,43,1.0,,1.0,1.0,,,,,,1.0,0,,,0.9945,0.0,,,,,289.920597,1.3779
+core-tt-simple-sep,scale_3200.pdf,,0,FAILED,False,66.0,0.0,0,0.0,,,0.0,,,,,,,,,,,,,,,,50.766828,1.0559
+core-tt-adv-sep,scale_25.pdf,,0,COMPLETED,True,1.0,1.0,25,1.0,,1.0,1.0,,,,,,1.0,0,,,0.9657,0.0,,,,,34.519605,0.1297
+core-tt-adv-sep,scale_100.pdf,,0,COMPLETED,True,3.0,1.0,100,1.0,,1.0,1.0,,,,,,1.0,0,,,0.9814,0.0,,,,,69.223842,0.2354
+core-tt-adv-sep,scale_400.pdf,,0,COMPLETED,True,9.0,1.0,400,1.0,,1.0,1.0,,,,,,1.0,0,,,0.9876,0.0,,,,,157.487487,0.8118
+core-tt-adv-sep,scale_800.pdf,,0,COMPLETED,True,17.0,1.0,800,1.0,,1.0,1.0,,,,,,1.0,0,,,0.991,0.0,,,,,151.145507,1.4929
+core-tt-adv-sep,scale_1200.pdf,,0,COMPLETED,True,25.0,1.0,1200,1.0,,1.0,1.0,,,,,,1.0,0,,,0.9917,0.0,,,,,150.641017,2.1763
+core-tt-adv-sep,scale_1600.pdf,,0,COMPLETED,True,33.0,1.0,1600,1.0,,1.0,1.0,,,,,,1.0,0,,,0.9883,0.0,,,,,257.02065,2.9252
+core-tt-adv-sep,scale_3200.pdf,,0,COMPLETED,True,66.0,1.0,3200,1.0,,1.0,1.0,,,,,,1.0,0,,,0.9951,0.0,,,,,416.530195,5.6963

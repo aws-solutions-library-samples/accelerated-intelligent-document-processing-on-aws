@@ -106,6 +106,9 @@ def handles(field: str) -> bool:
 # only authenticates, so the group check must be re-applied here (defense in
 # depth, matching the Lambda-backed resolvers).
 #   - value = set of allowed groups (caller must be in at least one)
+#   - value = _ANY_GROUP      -> any caller holding at least one group; a caller
+#                                in NO group is refused. Mirrors the expectations
+#                                file's ANY_GROUP policy (see below).
 #   - value = _ANY_AUTHENTICATED -> any authenticated user (schema type-default)
 #   - value = _IAM_ONLY       -> backend/IAM principals only; NEVER a Cognito
 #                                user. These are unreachable from the UI and the
@@ -117,22 +120,44 @@ def handles(field: str) -> bool:
 # uses the absence of an entry to mean the OPPOSITE — deny. One value with two
 # opposite meanings across two tables in one request path is a defect waiting to
 # happen, so each table names its own sentinel and neither uses ``None``. (See
-# ``authz._UNDECLARED``.) The values themselves are unchanged.
+# ``authz._UNDECLARED``.)
+#
+# WHY ``_ANY_GROUP`` IS "AT LEAST ONE GROUP" AND NOT THE FIVE NAMES
+# -----------------------------------------------------------------
+# The policy in ``scripts/api_rbac_expectations.yaml`` is "at least one of the
+# groups this stack creates", and the generator resolves that vocabulary out of
+# ``template.yaml`` into ``api_rbac_manifest.json``. ``authz.enforce`` applies
+# that exact list, and it runs EARLIER IN THE SAME REQUEST than anything here —
+# ``dispatch`` is only reached from the handler, after the floor. So spelling the
+# five names out again in this module would buy nothing and would go stale the
+# day a sixth group is added to the template, which is the defect class this repo
+# keeps hitting. Asserting only "the caller holds some group" keeps this layer
+# free of a group-name list while still refusing the caller the tightening is
+# about: the self-registered user whose ``cognito:groups`` claim is empty.
+# ``test_ddb_direct_required_groups_agrees_with_the_manifest`` pins the
+# relationship, requiring the manifest's policy for an ``_ANY_GROUP`` field to be
+# the full vocabulary rather than some narrower list this check would not catch.
 _IAM_ONLY = object()
 _ANY_AUTHENTICATED = object()
+_ANY_GROUP = object()
 _REQUIRED_GROUPS: Dict[str, Any] = {
-    "getDocument": _ANY_AUTHENTICATED,
-    "listDocumentsDateHour": _ANY_AUTHENTICATED,
-    "listDocumentsDateShard": _ANY_AUTHENTICATED,
+    # document content, and the means of obtaining it, requires an assigned group
+    # (expectations: ANY_GROUP). The two date-partition lists are in that set
+    # because they return raw TrackingTable index rows carrying ObjectKey with no
+    # filtering, which is where a caller gets the keys the rest of the chain needs.
+    "getDocument": _ANY_GROUP,
+    "listDocumentsDateHour": _ANY_GROUP,
+    "listDocumentsDateShard": _ANY_GROUP,
     "listDiscoveryJobs": {"Admin", "Author"},
     "deleteDiscoveryJob": {"Admin", "Author"},
     "updateDiscoveryJobStatus": _IAM_ONLY,
     "getAgentJobStatus": {"Admin", "Author", "Viewer"},
     "listAgentJobs": {"Admin", "Author", "Viewer"},
     "updateAgentJobStatus": _IAM_ONLY,
-    # any authed; further scoped to the caller's own PK inside the handler
-    "deleteAgentJob": _ANY_AUTHENTICATED,
-    "getCircuitBreakerStatus": _ANY_AUTHENTICATED,
+    # a mutation; further scoped to the caller's own PK inside the handler
+    "deleteAgentJob": _ANY_GROUP,
+    # `lastError` carries the pausing administrator's email after a manual pause
+    "getCircuitBreakerStatus": _ANY_GROUP,
 }
 
 
@@ -158,6 +183,21 @@ def _enforce_rbac(field: str, event: Dict[str, Any]) -> None:
     if required is _IAM_ONLY:
         logger.warning("Rejected IAM-only op %s from Cognito caller", field)
         raise PermissionError(f"Unauthorized: {field} is not callable via the API")
+    if required is _ANY_GROUP:
+        # An assigned group, whichever one. authz.enforce has already checked the
+        # caller's groups against the stack's actual vocabulary for this field
+        # (see the note on _ANY_GROUP above), so the only thing left to refuse
+        # here is the empty claim.
+        if not _caller_groups(event):
+            logger.warning(
+                "Forbidden: caller in no group attempted %s (requires an "
+                "assigned group)",
+                field,
+            )
+            raise PermissionError(
+                f"Unauthorized: {field} requires an assigned group"
+            )
+        return
     groups = _caller_groups(event)
     if not (set(required).intersection(groups)):
         logger.warning(
@@ -185,6 +225,26 @@ def _to_native(obj: Any) -> Any:
     if isinstance(obj, Decimal):
         return int(obj) if obj % 1 == 0 else float(obj)
     return obj
+
+
+# Ceiling on a caller-supplied DynamoDB `Limit`. The central validation spec
+# (api_validation_spec.json) carries type shapes only — no `maximum` vocabulary —
+# so a numeric argument is bounded here or not at all.
+_MAX_PAGE_SIZE = 200
+
+
+def _clamped_limit(requested: Any) -> int:
+    """A caller-supplied page size bounded to ``[1, _MAX_PAGE_SIZE]``.
+
+    The lower bound is not cosmetic: DynamoDB rejects ``Limit <= 0`` with a
+    ``ValidationException``, which the dispatcher reports as a 500 — a caller
+    input error presented as a server fault.
+    """
+    try:
+        value = int(requested)
+    except (TypeError, ValueError) as e:
+        raise ValueError(f"limit must be an integer, got {requested!r}") from e
+    return max(1, min(value, _MAX_PAGE_SIZE))
 
 
 def _caller_user_id(event: Dict[str, Any]) -> str:
@@ -352,8 +412,11 @@ def _list_agent_jobs(event: Dict[str, Any]) -> Dict[str, Any]:
         "KeyConditionExpression": Key("PK").eq(_agent_pk(user_id)),
         "ScanIndexForward": False,
     }
+    # Clamped, not passed through. `Limit` went straight to DynamoDB with no
+    # ceiling, and a non-positive value was rejected by DynamoDB with a
+    # ValidationException that surfaced to the caller as a 500 rather than a 400.
     if args.get("limit"):
-        kwargs["Limit"] = int(args["limit"])
+        kwargs["Limit"] = _clamped_limit(args["limit"])
     if args.get("nextToken"):
         kwargs["ExclusiveStartKey"] = args["nextToken"]
     resp = _agent_table().query(**kwargs)

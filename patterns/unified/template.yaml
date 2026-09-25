@@ -264,6 +264,23 @@ Parameters:
     Description: SageMaker MLflow tracking server ARN
 
 Conditions:
+  # Gates the state machine's Tracing.Enabled AND every Lambda's Tracing mode.
+  # Each traced function writes `Tracing: !If [EnableXRayTracingCondition,
+  # Active, PassThrough]` rather than a literal, so setting the parameter to
+  # "false" actually turns Lambda tracing off; a hardcoded `Active` cannot be
+  # turned off at all, which is what the parameter's description promises.
+  # PassThrough — not an absent property — is written on the false branch: the
+  # two resolve identically, and naming it says the choice was made. Neither
+  # branch changes a function's IAM: SAM attaches its X-Ray managed policy to a
+  # role it GENERATES whenever Tracing is declared in any form, because it
+  # cannot evaluate the Fn::If. Which policy that is depends on the partition —
+  # AWSXrayWriteOnlyAccess in `aws`, AWSXRayDaemonWriteAccess in aws-cn and
+  # aws-us-gov (SAM's get_xray_managed_policy_name) — and both grant
+  # xray:PutTraceSegments, so the behaviour is the same either way.
+  # A function with an explicit `Role:` gets nothing from SAM and must carry the
+  # X-Ray grant itself — checked by scripts/tests/test_xray_tracing.py, along
+  # with the rest of this.
+  EnableXRayTracingCondition: !Equals [!Ref EnableXRayTracing, "true"]
   DeployInVPC: !Not [!Equals [!Ref VpcId, ""]]
   HasGuardrailConfig:
     !And [
@@ -468,7 +485,6 @@ Resources:
                   - "LambdaHook"
                   - "us.amazon.nova-lite-v1:0"
                   - "us.amazon.nova-pro-v1:0"
-                  - "us.amazon.nova-premier-v1:0"
                   - "us.amazon.nova-2-lite-v1:0"
                   - "us.amazon.nova-2-lite-v1:0:priority"
                   - "us.amazon.nova-2-lite-v1:0:flex"
@@ -490,6 +506,8 @@ Resources:
                   - "us.anthropic.claude-opus-4-8:1m"
                   - "us.anthropic.claude-opus-5"
                   - "us.anthropic.claude-opus-5:1m"
+                  - "us.anthropic.claude-opus-5-5"
+                  - "us.anthropic.claude-opus-5-5:1m"
                   - "openai.gpt-5.4"
                   - "openai.gpt-5.5"
                   - "openai.gpt-5.6-sol"
@@ -515,6 +533,8 @@ Resources:
                   - "eu.anthropic.claude-opus-4-8:1m"
                   - "eu.anthropic.claude-opus-5"
                   - "eu.anthropic.claude-opus-5:1m"
+                  - "eu.anthropic.claude-opus-5-5"
+                  - "eu.anthropic.claude-opus-5-5:1m"
                   - "qwen.qwen3-vl-235b-a22b"
                   - "us.meta.llama4-maverick-17b-instruct-v1:0"
                   - "us.meta.llama4-scout-17b-instruct-v1:0"
@@ -537,6 +557,8 @@ Resources:
                   - "global.anthropic.claude-opus-4-8:1m"
                   - "global.anthropic.claude-opus-5"
                   - "global.anthropic.claude-opus-5:1m"
+                  - "global.anthropic.claude-opus-5-5"
+                  - "global.anthropic.claude-opus-5-5:1m"
                   - "global.xai.grok-4.6"
                   - "global.openai.gpt-6-astra"
                 order: 2
@@ -686,7 +708,6 @@ Resources:
                     - ""
                     - "us.amazon.nova-lite-v1:0"
                     - "us.amazon.nova-pro-v1:0"
-                    - "us.amazon.nova-premier-v1:0"
                     - "us.amazon.nova-2-lite-v1:0"
                     - "us.anthropic.claude-haiku-4-5-20251001-v1:0"
                     - "us.anthropic.claude-sonnet-4-5-20250929-v1:0"
@@ -703,6 +724,8 @@ Resources:
                     - "us.anthropic.claude-opus-4-8:1m"
                     - "us.anthropic.claude-opus-5"
                     - "us.anthropic.claude-opus-5:1m"
+                    - "us.anthropic.claude-opus-5-5"
+                    - "us.anthropic.claude-opus-5-5:1m"
                     - "us.xai.grok-4.6"
                     - "us.openai.gpt-6-astra"
                     - "openai.gpt-5.4"
@@ -728,6 +751,8 @@ Resources:
                     - "eu.anthropic.claude-opus-4-8:1m"
                     - "eu.anthropic.claude-opus-5"
                     - "eu.anthropic.claude-opus-5:1m"
+                    - "eu.anthropic.claude-opus-5-5"
+                    - "eu.anthropic.claude-opus-5-5:1m"
                     - "global.amazon.nova-2-lite-v1:0"
                     - "global.anthropic.claude-haiku-4-5-20251001-v1:0"
                     - "global.anthropic.claude-sonnet-4-5-20250929-v1:0"
@@ -744,6 +769,8 @@ Resources:
                     - "global.anthropic.claude-opus-4-8:1m"
                     - "global.anthropic.claude-opus-5"
                     - "global.anthropic.claude-opus-5:1m"
+                    - "global.anthropic.claude-opus-5-5"
+                    - "global.anthropic.claude-opus-5-5:1m"
                     - "global.xai.grok-4.6"
                     - "global.openai.gpt-6-astra"
                 # NOTE: the Web UI edits document classes with the JSON Schema
@@ -999,7 +1026,6 @@ Resources:
                     - !Ref AWS::NoValue
                   - "us.amazon.nova-lite-v1:0"
                   - "us.amazon.nova-pro-v1:0"
-                  - "us.amazon.nova-premier-v1:0"
                   - "us.amazon.nova-2-lite-v1:0"
                   - "us.amazon.nova-2-lite-v1:0:priority"
                   - "us.amazon.nova-2-lite-v1:0:flex"
@@ -1021,6 +1047,8 @@ Resources:
                   - "us.anthropic.claude-opus-4-8:1m"
                   - "us.anthropic.claude-opus-5"
                   - "us.anthropic.claude-opus-5:1m"
+                  - "us.anthropic.claude-opus-5-5"
+                  - "us.anthropic.claude-opus-5-5:1m"
                   - "openai.gpt-5.4"
                   - "openai.gpt-5.5"
                   - "openai.gpt-5.6-sol"
@@ -1046,6 +1074,8 @@ Resources:
                   - "eu.anthropic.claude-opus-4-8:1m"
                   - "eu.anthropic.claude-opus-5"
                   - "eu.anthropic.claude-opus-5:1m"
+                  - "eu.anthropic.claude-opus-5-5"
+                  - "eu.anthropic.claude-opus-5-5:1m"
                   - "qwen.qwen3-vl-235b-a22b"
                   - "us.meta.llama4-maverick-17b-instruct-v1:0"
                   - "us.meta.llama4-scout-17b-instruct-v1:0"
@@ -1069,6 +1099,8 @@ Resources:
                   - "global.anthropic.claude-opus-4-8:1m"
                   - "global.anthropic.claude-opus-5"
                   - "global.anthropic.claude-opus-5:1m"
+                  - "global.anthropic.claude-opus-5-5"
+                  - "global.anthropic.claude-opus-5-5:1m"
                   - "global.xai.grok-4.6"
                   - "global.openai.gpt-6-astra"
                 order: 1
@@ -1310,6 +1342,13 @@ Resources:
                 default: "auto"
                 order: 1.05
                 description: "'auto' (default): every <<CACHEPOINT>> marker in the extraction prompts becomes a Bedrock cache point on models that support it. 'off': send no cache points. A cache write is billed at 1.25x input price and pays back only when a second request with the same prefix arrives inside the 5-minute TTL, so a low-volume deployment that processes one document of a class per TTL pays about +25% on the prefix for nothing — choose 'off' there. Each model also has a minimum cacheable prefix (512 to 4,096 tokens); below it a cache point silently does nothing, which 'idp-cli config validate' warns about per class. Applies to extraction only."
+              row_shortfall_action:
+                type: string
+                title: Truncated list outcome
+                enum: ["warn", "fail"]
+                default: "warn"
+                order: 1.06
+                description: "What the outcome MEANS when extraction returns fewer than half the table rows the section's own OCR text evidences for a list field. 'warn' (default): record the issue and report success. 'fail': the rows that were extracted and the diagnosis are saved, then the section is marked failed - so a document carrying a fraction of a long table cannot be reported as COMPLETED, which is the only signal most consumers read. This does not change WHEN the shortfall is detected, only what it costs, and it applies to both Simple and Advanced extraction. IMPORTANT before choosing 'fail': the check's evidence is OCR tables whose column count equals the list item's property count, summed over the whole section, and a 2- or 3-property array that models an entity GROUP rather than table rows looks identical to one that models rows. A statement's 31-row two-column Daily Balance table is therefore counted as evidence about a 5-row 2-property account summary, and a fully correct extraction scores 0.13. Choose 'fail' for a corpus whose narrow arrays really are table rows - long transaction lists are the case it was built for - after checking your classes for group-shaped arrays."
               agentic:
                 type: object
                 sectionLabel: Advanced extraction settings
@@ -1466,7 +1505,7 @@ Resources:
                     dependsOn: { field: "enabled", value: true }
                   fail_action:
                     type: string
-                    description: "What to do when validation fails (in Advanced extraction, after the agent's own retries). 'warn': record the outcome in metadata and proceed. 'escalate': re-extract only the failing fields with the Escalation Model (roughly doubles that section's cost, still far cheaper than human review), then warn if still invalid. 'reject': mark the section as failed so downstream/HITL can act. Default: warn — it is free, whereas 'escalate' spends real money on every failure, so opt into it deliberately."
+                    description: "What to do when validation fails (in Advanced extraction, after the agent's own retries). 'warn': record the outcome in metadata and proceed. 'escalate': re-extract only the failing fields with the Escalation Model (roughly doubles that section's cost, still far cheaper than human review), then warn if still invalid. 'reject': record the result as not parsed, which makes the section's Processing Report read FAILED and raises the issue at error severity; the extracted values are still stored and the document's status is unchanged, so this is a visibility setting rather than a way to reject a section. Default: warn — it is free, whereas 'escalate' spends real money on every failure, so opt into it deliberately."
                     enum: ["warn", "escalate", "reject"]
                     order: 2
                     default: "warn"
@@ -1481,7 +1520,6 @@ Resources:
                       - ""
                       - "us.amazon.nova-lite-v1:0"
                       - "us.amazon.nova-pro-v1:0"
-                      - "us.amazon.nova-premier-v1:0"
                       - "us.amazon.nova-2-lite-v1:0"
                       - "us.amazon.nova-2-lite-v1:0:priority"
                       - "us.amazon.nova-2-lite-v1:0:flex"
@@ -1503,6 +1541,8 @@ Resources:
                       - "us.anthropic.claude-opus-4-8:1m"
                       - "us.anthropic.claude-opus-5"
                       - "us.anthropic.claude-opus-5:1m"
+                      - "us.anthropic.claude-opus-5-5"
+                      - "us.anthropic.claude-opus-5-5:1m"
                       - "openai.gpt-5.4"
                       - "openai.gpt-5.5"
                       - "openai.gpt-5.6-sol"
@@ -1528,6 +1568,8 @@ Resources:
                       - "eu.anthropic.claude-opus-4-8:1m"
                       - "eu.anthropic.claude-opus-5"
                       - "eu.anthropic.claude-opus-5:1m"
+                      - "eu.anthropic.claude-opus-5-5"
+                      - "eu.anthropic.claude-opus-5-5:1m"
                       - "qwen.qwen3-vl-235b-a22b"
                       - "us.meta.llama4-maverick-17b-instruct-v1:0"
                       - "us.meta.llama4-scout-17b-instruct-v1:0"
@@ -1550,6 +1592,8 @@ Resources:
                       - "global.anthropic.claude-opus-4-8:1m"
                       - "global.anthropic.claude-opus-5"
                       - "global.anthropic.claude-opus-5:1m"
+                      - "global.anthropic.claude-opus-5-5"
+                      - "global.anthropic.claude-opus-5-5:1m"
                       - "global.xai.grok-4.6"
                       - "global.openai.gpt-6-astra"
                     default: ""
@@ -1617,7 +1661,6 @@ Resources:
                     - !Ref AWS::NoValue
                   - "us.amazon.nova-lite-v1:0"
                   - "us.amazon.nova-pro-v1:0"
-                  - "us.amazon.nova-premier-v1:0"
                   - "us.amazon.nova-2-lite-v1:0"
                   - "us.amazon.nova-2-lite-v1:0:priority"
                   - "us.amazon.nova-2-lite-v1:0:flex"
@@ -1639,6 +1682,8 @@ Resources:
                   - "us.anthropic.claude-opus-4-8:1m"
                   - "us.anthropic.claude-opus-5"
                   - "us.anthropic.claude-opus-5:1m"
+                  - "us.anthropic.claude-opus-5-5"
+                  - "us.anthropic.claude-opus-5-5:1m"
                   - "openai.gpt-5.4"
                   - "openai.gpt-5.5"
                   - "openai.gpt-5.6-sol"
@@ -1664,6 +1709,8 @@ Resources:
                   - "eu.anthropic.claude-opus-4-8:1m"
                   - "eu.anthropic.claude-opus-5"
                   - "eu.anthropic.claude-opus-5:1m"
+                  - "eu.anthropic.claude-opus-5-5"
+                  - "eu.anthropic.claude-opus-5-5:1m"
                   - "qwen.qwen3-vl-235b-a22b"
                   - "us.meta.llama4-maverick-17b-instruct-v1:0"
                   - "us.meta.llama4-scout-17b-instruct-v1:0"
@@ -1687,6 +1734,8 @@ Resources:
                   - "global.anthropic.claude-opus-4-8:1m"
                   - "global.anthropic.claude-opus-5"
                   - "global.anthropic.claude-opus-5:1m"
+                  - "global.anthropic.claude-opus-5-5"
+                  - "global.anthropic.claude-opus-5-5:1m"
                   - "global.xai.grok-4.6"
                   - "global.openai.gpt-6-astra"
                 order: 5
@@ -1821,7 +1870,6 @@ Resources:
                         "LambdaHook",
                         "us.amazon.nova-lite-v1:0",
                         "us.amazon.nova-pro-v1:0",
-                        "us.amazon.nova-premier-v1:0",
                         "us.amazon.nova-2-lite-v1:0", "us.amazon.nova-2-lite-v1:0:priority", "us.amazon.nova-2-lite-v1:0:flex", "global.amazon.nova-2-lite-v1:0", "global.amazon.nova-2-lite-v1:0:priority", "global.amazon.nova-2-lite-v1:0:flex",
                         "us.anthropic.claude-haiku-4-5-20251001-v1:0",
                         "us.anthropic.claude-sonnet-4-5-20250929-v1:0",
@@ -1838,6 +1886,8 @@ Resources:
                         "us.anthropic.claude-opus-4-8:1m",
                         "us.anthropic.claude-opus-5",
                         "us.anthropic.claude-opus-5:1m",
+                        "us.anthropic.claude-opus-5-5",
+                        "us.anthropic.claude-opus-5-5:1m",
                         "openai.gpt-5.4",
                         "openai.gpt-5.5",
                         "openai.gpt-5.6-sol",
@@ -1861,6 +1911,8 @@ Resources:
                         "eu.anthropic.claude-opus-4-8:1m",
                         "eu.anthropic.claude-opus-5",
                         "eu.anthropic.claude-opus-5:1m",
+                        "eu.anthropic.claude-opus-5-5",
+                        "eu.anthropic.claude-opus-5-5:1m",
                         "qwen.qwen3-vl-235b-a22b",
                         "us.meta.llama4-maverick-17b-instruct-v1:0",
                         "us.meta.llama4-scout-17b-instruct-v1:0",
@@ -1884,6 +1936,8 @@ Resources:
                         "global.anthropic.claude-opus-4-8:1m",
                         "global.anthropic.claude-opus-5",
                         "global.anthropic.claude-opus-5:1m",
+                        "global.anthropic.claude-opus-5-5",
+                        "global.anthropic.claude-opus-5-5:1m",
                         "global.xai.grok-4.6",
                         "global.openai.gpt-6-astra"
                       ]
@@ -2079,7 +2133,6 @@ Resources:
                     "LambdaHook",
                     "us.amazon.nova-lite-v1:0",
                     "us.amazon.nova-pro-v1:0",
-                    "us.amazon.nova-premier-v1:0",
                     "us.amazon.nova-2-lite-v1:0", "us.amazon.nova-2-lite-v1:0:priority", "us.amazon.nova-2-lite-v1:0:flex", "global.amazon.nova-2-lite-v1:0", "global.amazon.nova-2-lite-v1:0:priority", "global.amazon.nova-2-lite-v1:0:flex",
                     "us.anthropic.claude-haiku-4-5-20251001-v1:0",
                     "us.anthropic.claude-sonnet-4-5-20250929-v1:0",
@@ -2096,6 +2149,8 @@ Resources:
                     "us.anthropic.claude-opus-4-8:1m",
                     "us.anthropic.claude-opus-5",
                     "us.anthropic.claude-opus-5:1m",
+                    "us.anthropic.claude-opus-5-5",
+                    "us.anthropic.claude-opus-5-5:1m",
                     "openai.gpt-5.4",
                     "openai.gpt-5.5",
                     "openai.gpt-5.6-sol",
@@ -2119,6 +2174,8 @@ Resources:
                     "eu.anthropic.claude-opus-4-8:1m",
                     "eu.anthropic.claude-opus-5",
                     "eu.anthropic.claude-opus-5:1m",
+                    "eu.anthropic.claude-opus-5-5",
+                    "eu.anthropic.claude-opus-5-5:1m",
                     "qwen.qwen3-vl-235b-a22b",
                     "us.meta.llama4-maverick-17b-instruct-v1:0",
                     "us.meta.llama4-scout-17b-instruct-v1:0",
@@ -2142,6 +2199,8 @@ Resources:
                     "global.anthropic.claude-opus-4-8:1m",
                     "global.anthropic.claude-opus-5",
                     "global.anthropic.claude-opus-5:1m",
+                    "global.anthropic.claude-opus-5-5",
+                    "global.anthropic.claude-opus-5-5:1m",
                     "global.xai.grok-4.6",
                     "global.openai.gpt-6-astra"
                   ]
@@ -2295,7 +2354,6 @@ Resources:
                       [
                         "us.amazon.nova-lite-v1:0",
                         "us.amazon.nova-pro-v1:0",
-                        "us.amazon.nova-premier-v1:0",
                         "us.amazon.nova-2-lite-v1:0", "us.amazon.nova-2-lite-v1:0:priority", "us.amazon.nova-2-lite-v1:0:flex", "global.amazon.nova-2-lite-v1:0", "global.amazon.nova-2-lite-v1:0:priority", "global.amazon.nova-2-lite-v1:0:flex",
                         "us.anthropic.claude-haiku-4-5-20251001-v1:0",
                         "us.anthropic.claude-sonnet-4-5-20250929-v1:0",
@@ -2312,6 +2370,8 @@ Resources:
                         "us.anthropic.claude-opus-4-8:1m",
                         "us.anthropic.claude-opus-5",
                         "us.anthropic.claude-opus-5:1m",
+                        "us.anthropic.claude-opus-5-5",
+                        "us.anthropic.claude-opus-5-5:1m",
                         "openai.gpt-5.4",
                         "openai.gpt-5.5",
                         "openai.gpt-5.6-sol",
@@ -2335,6 +2395,8 @@ Resources:
                         "eu.anthropic.claude-opus-4-8:1m",
                         "eu.anthropic.claude-opus-5",
                         "eu.anthropic.claude-opus-5:1m",
+                        "eu.anthropic.claude-opus-5-5",
+                        "eu.anthropic.claude-opus-5-5:1m",
                         "qwen.qwen3-vl-235b-a22b",
                         "us.meta.llama4-maverick-17b-instruct-v1:0",
                         "us.meta.llama4-scout-17b-instruct-v1:0",
@@ -2358,6 +2420,8 @@ Resources:
                         "global.anthropic.claude-opus-4-8:1m",
                         "global.anthropic.claude-opus-5",
                         "global.anthropic.claude-opus-5:1m",
+                        "global.anthropic.claude-opus-5-5",
+                        "global.anthropic.claude-opus-5-5:1m",
                         "global.xai.grok-4.6",
                         "global.openai.gpt-6-astra"
                       ]
@@ -2509,7 +2573,6 @@ Resources:
                       [
                         "us.amazon.nova-lite-v1:0",
                         "us.amazon.nova-pro-v1:0",
-                        "us.amazon.nova-premier-v1:0",
                         "us.amazon.nova-2-lite-v1:0", "us.amazon.nova-2-lite-v1:0:priority", "us.amazon.nova-2-lite-v1:0:flex", "global.amazon.nova-2-lite-v1:0", "global.amazon.nova-2-lite-v1:0:priority", "global.amazon.nova-2-lite-v1:0:flex",
                         "us.anthropic.claude-haiku-4-5-20251001-v1:0",
                         "us.anthropic.claude-sonnet-4-5-20250929-v1:0",
@@ -2526,6 +2589,8 @@ Resources:
                         "us.anthropic.claude-opus-4-8:1m",
                         "us.anthropic.claude-opus-5",
                         "us.anthropic.claude-opus-5:1m",
+                        "us.anthropic.claude-opus-5-5",
+                        "us.anthropic.claude-opus-5-5:1m",
                         "eu.amazon.nova-lite-v1:0",
                         "eu.amazon.nova-pro-v1:0",
                         "eu.amazon.nova-2-lite-v1:0", "eu.amazon.nova-2-lite-v1:0:priority", "eu.amazon.nova-2-lite-v1:0:flex",
@@ -2544,6 +2609,8 @@ Resources:
                         "eu.anthropic.claude-opus-4-8:1m",
                         "eu.anthropic.claude-opus-5",
                         "eu.anthropic.claude-opus-5:1m",
+                        "eu.anthropic.claude-opus-5-5",
+                        "eu.anthropic.claude-opus-5-5:1m",
                         "qwen.qwen3-vl-235b-a22b",
                         "us.meta.llama4-maverick-17b-instruct-v1:0",
                         "us.meta.llama4-scout-17b-instruct-v1:0",
@@ -2564,7 +2631,9 @@ Resources:
                         "global.anthropic.claude-opus-4-8",
                         "global.anthropic.claude-opus-4-8:1m",
                         "global.anthropic.claude-opus-5",
-                        "global.anthropic.claude-opus-5:1m"
+                        "global.anthropic.claude-opus-5:1m",
+                        "global.anthropic.claude-opus-5-5",
+                        "global.anthropic.claude-opus-5-5:1m"
                       ]
                     default: "us.amazon.nova-pro-v1:0"
                     order: 0
@@ -2611,7 +2680,6 @@ Resources:
                       [
                         "us.amazon.nova-lite-v1:0",
                         "us.amazon.nova-pro-v1:0",
-                        "us.amazon.nova-premier-v1:0",
                         "us.amazon.nova-2-lite-v1:0", "us.amazon.nova-2-lite-v1:0:priority", "us.amazon.nova-2-lite-v1:0:flex", "global.amazon.nova-2-lite-v1:0", "global.amazon.nova-2-lite-v1:0:priority", "global.amazon.nova-2-lite-v1:0:flex",
                         "us.anthropic.claude-haiku-4-5-20251001-v1:0",
                         "us.anthropic.claude-sonnet-4-5-20250929-v1:0",
@@ -2628,6 +2696,8 @@ Resources:
                         "us.anthropic.claude-opus-4-8:1m",
                         "us.anthropic.claude-opus-5",
                         "us.anthropic.claude-opus-5:1m",
+                        "us.anthropic.claude-opus-5-5",
+                        "us.anthropic.claude-opus-5-5:1m",
                         "eu.amazon.nova-lite-v1:0",
                         "eu.amazon.nova-pro-v1:0",
                         "eu.amazon.nova-2-lite-v1:0", "eu.amazon.nova-2-lite-v1:0:priority", "eu.amazon.nova-2-lite-v1:0:flex",
@@ -2646,6 +2716,8 @@ Resources:
                         "eu.anthropic.claude-opus-4-8:1m",
                         "eu.anthropic.claude-opus-5",
                         "eu.anthropic.claude-opus-5:1m",
+                        "eu.anthropic.claude-opus-5-5",
+                        "eu.anthropic.claude-opus-5-5:1m",
                         "qwen.qwen3-vl-235b-a22b",
                         "us.meta.llama4-maverick-17b-instruct-v1:0",
                         "us.meta.llama4-scout-17b-instruct-v1:0",
@@ -2666,7 +2738,9 @@ Resources:
                         "global.anthropic.claude-opus-4-8",
                         "global.anthropic.claude-opus-4-8:1m",
                         "global.anthropic.claude-opus-5",
-                        "global.anthropic.claude-opus-5:1m"
+                        "global.anthropic.claude-opus-5:1m",
+                        "global.anthropic.claude-opus-5-5",
+                        "global.anthropic.claude-opus-5-5:1m"
                       ]
                     default: "us.amazon.nova-pro-v1:0"
                     order: 0
@@ -2713,7 +2787,6 @@ Resources:
                       [
                         "us.amazon.nova-lite-v1:0",
                         "us.amazon.nova-pro-v1:0",
-                        "us.amazon.nova-premier-v1:0",
                         "us.amazon.nova-2-lite-v1:0", "us.amazon.nova-2-lite-v1:0:priority", "us.amazon.nova-2-lite-v1:0:flex", "global.amazon.nova-2-lite-v1:0", "global.amazon.nova-2-lite-v1:0:priority", "global.amazon.nova-2-lite-v1:0:flex",
                         "us.anthropic.claude-haiku-4-5-20251001-v1:0",
                         "us.anthropic.claude-sonnet-4-5-20250929-v1:0",
@@ -2730,6 +2803,8 @@ Resources:
                         "us.anthropic.claude-opus-4-8:1m",
                         "us.anthropic.claude-opus-5",
                         "us.anthropic.claude-opus-5:1m",
+                        "us.anthropic.claude-opus-5-5",
+                        "us.anthropic.claude-opus-5-5:1m",
                         "eu.amazon.nova-lite-v1:0",
                         "eu.amazon.nova-pro-v1:0",
                         "eu.amazon.nova-2-lite-v1:0", "eu.amazon.nova-2-lite-v1:0:priority", "eu.amazon.nova-2-lite-v1:0:flex",
@@ -2748,6 +2823,8 @@ Resources:
                         "eu.anthropic.claude-opus-4-8:1m",
                         "eu.anthropic.claude-opus-5",
                         "eu.anthropic.claude-opus-5:1m",
+                        "eu.anthropic.claude-opus-5-5",
+                        "eu.anthropic.claude-opus-5-5:1m",
                         "qwen.qwen3-vl-235b-a22b",
                         "us.meta.llama4-maverick-17b-instruct-v1:0",
                         "us.meta.llama4-scout-17b-instruct-v1:0",
@@ -2768,7 +2845,9 @@ Resources:
                         "global.anthropic.claude-opus-4-8",
                         "global.anthropic.claude-opus-4-8:1m",
                         "global.anthropic.claude-opus-5",
-                        "global.anthropic.claude-opus-5:1m"
+                        "global.anthropic.claude-opus-5:1m",
+                        "global.anthropic.claude-opus-5-5",
+                        "global.anthropic.claude-opus-5-5:1m"
                       ]
                     default: "us.amazon.nova-pro-v1:0"
                     order: 0
@@ -2827,18 +2906,28 @@ Resources:
                     order: 0
                   analysis_model_id:
                     type: string
+                    # Claude Opus 5.5 is deliberately ABSENT from this enum, and it
+                    # is the only model picklist in this file it is absent from.
+                    # Cluster analysis is the one path that asks Strands for
+                    # structured output (discovery_agent.py, `structured_output_model=`).
+                    # When the first turn answers in prose instead of calling the tool
+                    # — a normal outcome — Strands retries with
+                    # `toolChoice: {"any": {}}`, which Opus 5.5 rejects with a 400. So
+                    # the model would work until a cluster happened to need the retry
+                    # and then lose that cluster's analysis, which is worse than not
+                    # offering it. `_validate_multi_doc_discovery_forced_tool` refuses
+                    # it at config time as well, since a config can name a model this
+                    # enum does not list.
                     description: Bedrock model ID for analyzing document clusters
                     default: "us.anthropic.claude-sonnet-4-6"
                     enum:
                       - "us.amazon.nova-lite-v1:0"
                       - "us.amazon.nova-pro-v1:0"
-                      - "us.amazon.nova-premier-v1:0"
                       - "us.amazon.nova-2-lite-v1:0"
                       - "us.anthropic.claude-sonnet-4-20250514-v1:0"
                       - "us.anthropic.claude-sonnet-4-6"
                       - "us.anthropic.claude-sonnet-5"
                       - "us.anthropic.claude-sonnet-5:1m"
-                      - "us.anthropic.claude-opus-4-20250514-v1:0"
                       - "us.anthropic.claude-opus-4-6-v1:1m"
                       - "us.anthropic.claude-opus-4-7"
                       - "us.anthropic.claude-opus-4-7:1m"
@@ -2919,6 +3008,8 @@ Resources:
                         "us.anthropic.claude-opus-4-8:1m",
                         "us.anthropic.claude-opus-5",
                         "us.anthropic.claude-opus-5:1m",
+                        "us.anthropic.claude-opus-5-5",
+                        "us.anthropic.claude-opus-5-5:1m",
                         "eu.anthropic.claude-sonnet-4-6",
                         "eu.anthropic.claude-sonnet-4-6:1m",
                         "eu.anthropic.claude-sonnet-5",
@@ -2931,6 +3022,8 @@ Resources:
                         "eu.anthropic.claude-opus-4-8:1m",
                         "eu.anthropic.claude-opus-5",
                         "eu.anthropic.claude-opus-5:1m",
+                        "eu.anthropic.claude-opus-5-5",
+                        "eu.anthropic.claude-opus-5-5:1m",
                         "global.anthropic.claude-sonnet-4-6",
                         "global.anthropic.claude-sonnet-4-6:1m",
                         "global.anthropic.claude-sonnet-5",
@@ -2942,7 +3035,9 @@ Resources:
                         "global.anthropic.claude-opus-4-8",
                         "global.anthropic.claude-opus-4-8:1m",
                         "global.anthropic.claude-opus-5",
-                        "global.anthropic.claude-opus-5:1m"
+                        "global.anthropic.claude-opus-5:1m",
+                        "global.anthropic.claude-opus-5-5",
+                        "global.anthropic.claude-opus-5-5:1m"
                       ]
                     default: "global.anthropic.claude-sonnet-4-6"
                     order: 0
@@ -3000,7 +3095,6 @@ Resources:
                     enum:
                       - "us.amazon.nova-lite-v1:0"
                       - "us.amazon.nova-pro-v1:0"
-                      - "us.amazon.nova-premier-v1:0"
                       - "us.amazon.nova-2-lite-v1:0"
                       - "us.amazon.nova-2-lite-v1:0:priority"
                       - "us.amazon.nova-2-lite-v1:0:flex"
@@ -3022,6 +3116,8 @@ Resources:
                       - "us.anthropic.claude-opus-4-8:1m"
                       - "us.anthropic.claude-opus-5"
                       - "us.anthropic.claude-opus-5:1m"
+                      - "us.anthropic.claude-opus-5-5"
+                      - "us.anthropic.claude-opus-5-5:1m"
                       - "global.anthropic.claude-haiku-4-5-20251001-v1:0"
                       - "global.anthropic.claude-sonnet-4-5-20250929-v1:0"
                       - "global.anthropic.claude-sonnet-4-6"
@@ -3037,6 +3133,8 @@ Resources:
                       - "global.anthropic.claude-opus-4-8:1m"
                       - "global.anthropic.claude-opus-5"
                       - "global.anthropic.claude-opus-5:1m"
+                      - "global.anthropic.claude-opus-5-5"
+                      - "global.anthropic.claude-opus-5-5:1m"
                       - "global.xai.grok-4.6"
                       - "global.openai.gpt-6-astra"
                       - "eu.amazon.nova-lite-v1:0"
@@ -3059,6 +3157,8 @@ Resources:
                       - "eu.anthropic.claude-opus-4-8:1m"
                       - "eu.anthropic.claude-opus-5"
                       - "eu.anthropic.claude-opus-5:1m"
+                      - "eu.anthropic.claude-opus-5-5"
+                      - "eu.anthropic.claude-opus-5-5:1m"
                       - "qwen.qwen3-vl-235b-a22b"
                       - "us.meta.llama4-maverick-17b-instruct-v1:0"
                       - "us.meta.llama4-scout-17b-instruct-v1:0"
@@ -3078,7 +3178,6 @@ Resources:
                     description: Bedrock model ID for the error analysis agent (requires tool use support)
                     enum:
                       - "us.amazon.nova-pro-v1:0"
-                      - "us.amazon.nova-premier-v1:0"
                       - "us.anthropic.claude-sonnet-4-5-20250929-v1:0"
                       - "us.anthropic.claude-sonnet-4-6"
                       - "us.anthropic.claude-sonnet-4-6:1m"
@@ -3093,6 +3192,8 @@ Resources:
                       - "us.anthropic.claude-opus-4-8:1m"
                       - "us.anthropic.claude-opus-5"
                       - "us.anthropic.claude-opus-5:1m"
+                      - "us.anthropic.claude-opus-5-5"
+                      - "us.anthropic.claude-opus-5-5:1m"
                       - "us.xai.grok-4.6"
                       - "us.openai.gpt-6-astra"
                       - "global.amazon.nova-pro-v1:0"
@@ -3110,6 +3211,8 @@ Resources:
                       - "global.anthropic.claude-opus-4-8:1m"
                       - "global.anthropic.claude-opus-5"
                       - "global.anthropic.claude-opus-5:1m"
+                      - "global.anthropic.claude-opus-5-5"
+                      - "global.anthropic.claude-opus-5-5:1m"
                       - "global.xai.grok-4.6"
                       - "global.openai.gpt-6-astra"
                       - "eu.amazon.nova-pro-v1:0"
@@ -3127,6 +3230,8 @@ Resources:
                       - "eu.anthropic.claude-opus-4-8:1m"
                       - "eu.anthropic.claude-opus-5"
                       - "eu.anthropic.claude-opus-5:1m"
+                      - "eu.anthropic.claude-opus-5-5"
+                      - "eu.anthropic.claude-opus-5-5:1m"
                     default: "us.anthropic.claude-sonnet-4-6"
                     order: 0
                   lookback_hours:
@@ -3165,7 +3270,6 @@ Resources:
                     "LambdaHook",
                     "us.amazon.nova-lite-v1:0",
                     "us.amazon.nova-pro-v1:0",
-                    "us.amazon.nova-premier-v1:0",
                     "us.amazon.nova-2-lite-v1:0", "us.amazon.nova-2-lite-v1:0:priority", "us.amazon.nova-2-lite-v1:0:flex", "global.amazon.nova-2-lite-v1:0", "global.amazon.nova-2-lite-v1:0:priority", "global.amazon.nova-2-lite-v1:0:flex",
                     "us.anthropic.claude-haiku-4-5-20251001-v1:0",
                     "us.anthropic.claude-sonnet-4-5-20250929-v1:0",
@@ -3182,6 +3286,8 @@ Resources:
                     "us.anthropic.claude-opus-4-8:1m",
                     "us.anthropic.claude-opus-5",
                     "us.anthropic.claude-opus-5:1m",
+                    "us.anthropic.claude-opus-5-5",
+                    "us.anthropic.claude-opus-5-5:1m",
                     "us.xai.grok-4.6",
                     "us.openai.gpt-6-astra",
                     "openai.gpt-5.4",
@@ -3207,6 +3313,8 @@ Resources:
                     "eu.anthropic.claude-opus-4-8:1m",
                     "eu.anthropic.claude-opus-5",
                     "eu.anthropic.claude-opus-5:1m",
+                    "eu.anthropic.claude-opus-5-5",
+                    "eu.anthropic.claude-opus-5-5:1m",
                     "global.anthropic.claude-haiku-4-5-20251001-v1:0",
                     "global.anthropic.claude-sonnet-4-5-20250929-v1:0",
                     "global.anthropic.claude-sonnet-4-6",
@@ -3222,6 +3330,8 @@ Resources:
                     "global.anthropic.claude-opus-4-8:1m",
                     "global.anthropic.claude-opus-5",
                     "global.anthropic.claude-opus-5:1m",
+                    "global.anthropic.claude-opus-5-5",
+                    "global.anthropic.claude-opus-5-5:1m",
                     "global.xai.grok-4.6",
                     "global.openai.gpt-6-astra"
                   ]
@@ -3338,7 +3448,6 @@ Resources:
                       [
                         "us.amazon.nova-lite-v1:0",
                         "us.amazon.nova-pro-v1:0",
-                        "us.amazon.nova-premier-v1:0",
                         "us.amazon.nova-2-lite-v1:0", "us.amazon.nova-2-lite-v1:0:priority", "us.amazon.nova-2-lite-v1:0:flex", "global.amazon.nova-2-lite-v1:0", "global.amazon.nova-2-lite-v1:0:priority", "global.amazon.nova-2-lite-v1:0:flex",
                         "us.anthropic.claude-haiku-4-5-20251001-v1:0",
                         "us.anthropic.claude-sonnet-4-5-20250929-v1:0",
@@ -3355,6 +3464,8 @@ Resources:
                         "us.anthropic.claude-opus-4-8:1m",
                         "us.anthropic.claude-opus-5",
                         "us.anthropic.claude-opus-5:1m",
+                        "us.anthropic.claude-opus-5-5",
+                        "us.anthropic.claude-opus-5-5:1m",
                         "eu.amazon.nova-lite-v1:0",
                         "eu.amazon.nova-pro-v1:0",
                         "eu.amazon.nova-2-lite-v1:0", "eu.amazon.nova-2-lite-v1:0:priority", "eu.amazon.nova-2-lite-v1:0:flex",
@@ -3373,6 +3484,8 @@ Resources:
                         "eu.anthropic.claude-opus-4-8:1m",
                         "eu.anthropic.claude-opus-5",
                         "eu.anthropic.claude-opus-5:1m",
+                        "eu.anthropic.claude-opus-5-5",
+                        "eu.anthropic.claude-opus-5-5:1m",
                         "qwen.qwen3-vl-235b-a22b",
                         "us.meta.llama4-maverick-17b-instruct-v1:0",
                         "us.meta.llama4-scout-17b-instruct-v1:0",
@@ -3396,6 +3509,8 @@ Resources:
                         "global.anthropic.claude-opus-4-8:1m",
                         "global.anthropic.claude-opus-5",
                         "global.anthropic.claude-opus-5:1m",
+                        "global.anthropic.claude-opus-5-5",
+                        "global.anthropic.claude-opus-5-5:1m",
                         "global.xai.grok-4.6",
                         "global.openai.gpt-6-astra"
                       ]
@@ -3447,7 +3562,6 @@ Resources:
                       [
                         "us.amazon.nova-lite-v1:0",
                         "us.amazon.nova-pro-v1:0",
-                        "us.amazon.nova-premier-v1:0",
                         "us.amazon.nova-2-lite-v1:0", "us.amazon.nova-2-lite-v1:0:priority", "us.amazon.nova-2-lite-v1:0:flex", "global.amazon.nova-2-lite-v1:0", "global.amazon.nova-2-lite-v1:0:priority", "global.amazon.nova-2-lite-v1:0:flex",
                         "us.anthropic.claude-haiku-4-5-20251001-v1:0",
                         "us.anthropic.claude-sonnet-4-5-20250929-v1:0",
@@ -3464,6 +3578,8 @@ Resources:
                         "us.anthropic.claude-opus-4-8:1m",
                         "us.anthropic.claude-opus-5",
                         "us.anthropic.claude-opus-5:1m",
+                        "us.anthropic.claude-opus-5-5",
+                        "us.anthropic.claude-opus-5-5:1m",
                         "eu.amazon.nova-lite-v1:0",
                         "eu.amazon.nova-pro-v1:0",
                         "eu.amazon.nova-2-lite-v1:0", "eu.amazon.nova-2-lite-v1:0:priority", "eu.amazon.nova-2-lite-v1:0:flex",
@@ -3482,6 +3598,8 @@ Resources:
                         "eu.anthropic.claude-opus-4-8:1m",
                         "eu.anthropic.claude-opus-5",
                         "eu.anthropic.claude-opus-5:1m",
+                        "eu.anthropic.claude-opus-5-5",
+                        "eu.anthropic.claude-opus-5-5:1m",
                         "qwen.qwen3-vl-235b-a22b",
                         "us.meta.llama4-maverick-17b-instruct-v1:0",
                         "us.meta.llama4-scout-17b-instruct-v1:0",
@@ -3505,6 +3623,8 @@ Resources:
                         "global.anthropic.claude-opus-4-8:1m",
                         "global.anthropic.claude-opus-5",
                         "global.anthropic.claude-opus-5:1m",
+                        "global.anthropic.claude-opus-5-5",
+                        "global.anthropic.claude-opus-5-5:1m",
                         "global.xai.grok-4.6",
                         "global.openai.gpt-6-astra"
                       ]
@@ -3992,7 +4112,7 @@ Resources:
         - !Ref LambdaArchitecture
       Timeout: 900
       MemorySize: 4096
-      Tracing: Active
+      Tracing: !If [EnableXRayTracingCondition, Active, PassThrough]
       Tags:
         # Data plane — per-doc BDA invocation. See docs/reporting-sql-layer.md §10.3.
         idp:plane: data
@@ -4072,7 +4192,7 @@ Resources:
         - !Ref LambdaArchitecture
       Timeout: 900
       MemorySize: 4096
-      Tracing: Active
+      Tracing: !If [EnableXRayTracingCondition, Active, PassThrough]
       Tags:
         # Data plane — per-doc BDA result parsing. See docs/reporting-sql-layer.md §10.3.
         idp:plane: data
@@ -4221,7 +4341,7 @@ Resources:
         - !Ref LambdaArchitecture
       Timeout: 900
       MemorySize: 4096
-      Tracing: Active
+      Tracing: !If [EnableXRayTracingCondition, Active, PassThrough]
       Tags:
         # Data plane — per-doc BDA completion signal. See docs/reporting-sql-layer.md §10.3.
         idp:plane: data
@@ -4474,7 +4594,7 @@ Resources:
           - "index.handler"
       Timeout: 900
       MemorySize: 4096
-      Tracing: Active
+      Tracing: !If [EnableXRayTracingCondition, Active, PassThrough]
       Tags:
         # Data plane — runs per document. See docs/reporting-sql-layer.md §10.3.
         # The rollup Lambda discovers stack membership via the native
@@ -4667,7 +4787,7 @@ Resources:
           - "index.handler"
       Timeout: 900
       MemorySize: 4096
-      Tracing: Active
+      Tracing: !If [EnableXRayTracingCondition, Active, PassThrough]
       Tags:
         # Data plane — runs per document.
         idp:plane: data
@@ -4837,7 +4957,7 @@ Resources:
           - "index.handler"
       Timeout: 900
       MemorySize: 4096
-      Tracing: Active
+      Tracing: !If [EnableXRayTracingCondition, Active, PassThrough]
       Tags:
         # Data plane — runs per document.
         idp:plane: data
@@ -5014,7 +5134,7 @@ Resources:
           - "sfn_runtime_handler.handler"
       Timeout: 900
       MemorySize: 4096
-      Tracing: Active
+      Tracing: !If [EnableXRayTracingCondition, Active, PassThrough]
       Tags:
         # Data plane — per-doc (or per-shard) Bedrock batch runtime. See docs/reporting-sql-layer.md §10.3.
         idp:plane: data
@@ -5171,7 +5291,7 @@ Resources:
           - "index.handler"
       Timeout: 900
       MemorySize: 4096
-      Tracing: Active
+      Tracing: !If [EnableXRayTracingCondition, Active, PassThrough]
       Tags:
         # Data plane — runs per document.
         idp:plane: data
@@ -5607,6 +5727,15 @@ Resources:
             Action: sts:AssumeRole
       ManagedPolicyArns:
         - !Sub "arn:${AWS::Partition}:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
+        # X-Ray write. This is the one traced function in this template with an
+        # explicit Role, and SAM only attaches this policy to roles it
+        # GENERATES — so the function declared a tracing mode and could not
+        # write a segment. Attached unconditionally, exactly as SAM attaches it
+        # to the generated roles: the grant is write-only and useless without a
+        # segment to write, and making it conditional would give this role a
+        # different shape from the other fourteen for no benefit. Enforced by
+        # scripts/tests/test_xray_tracing.py.
+        - !Sub "arn:${AWS::Partition}:iam::aws:policy/AWSXrayWriteOnlyAccess"
       Policies:
         - PolicyName: ReadActiveConfigForHooks
           PolicyDocument:
@@ -5691,7 +5820,7 @@ Resources:
       # value.)
       Timeout: 900
       MemorySize: 256
-      Tracing: Active
+      Tracing: !If [EnableXRayTracingCondition, Active, PassThrough]
       Tags:
         # Data plane — sync-invoked from pipeline per doc for pre/post-process hooks.
         # See docs/reporting-sql-layer.md §10.3.
@@ -5751,7 +5880,7 @@ Resources:
           - "index.handler"
       Timeout: 900
       MemorySize: 4096
-      Tracing: Active
+      Tracing: !If [EnableXRayTracingCondition, Active, PassThrough]
       Tags:
         # Data plane — runs per document.
         idp:plane: data
@@ -5906,7 +6035,7 @@ Resources:
         - !Ref LambdaArchitecture
       Timeout: 900
       MemorySize: 4096
-      Tracing: Active
+      Tracing: !If [EnableXRayTracingCondition, Active, PassThrough]
       Environment:
         Variables:
           LOG_LEVEL: !Ref LogLevel
@@ -6009,6 +6138,12 @@ Resources:
           OUTPUT_BUCKET: !Ref OutputBucket
           REPORTING_BUCKET: !Ref ReportingBucket
           SAVE_REPORTING_FUNCTION_NAME: !Ref SaveReportingFunctionName
+      # Declared because index.py calls xray_recorder.put_annotation: an
+      # annotation is only queryable if a segment exists to hold it, and with no
+      # Tracing property the function defaults to PassThrough, which creates one
+      # only when an upstream caller already sampled. Same reasoning as the other
+      # annotating pipeline stages (OCR, classification, extraction, assessment).
+      Tracing: !If [EnableXRayTracingCondition, Active, PassThrough]
       LoggingConfig:
         LogGroup: !Ref RuleValidationPolicyClassificationFunctionLogGroup
       Policies:
@@ -6147,6 +6282,9 @@ Resources:
             !If [HasBedrockHubRoleExternalId, !Ref BedrockHubRoleExternalId, !Ref AWS::NoValue]
           BEDROCK_ASSUME_ROLE_SESSION_NAME:
             !If [HasBedrockHubRoleSessionName, !Ref BedrockHubRoleSessionName, !Ref AWS::NoValue]
+      # Declared because index.py calls xray_recorder.put_annotation — see the
+      # note on RuleValidationPolicyClassificationFunction above.
+      Tracing: !If [EnableXRayTracingCondition, Active, PassThrough]
       LoggingConfig:
         LogGroup: !Ref RuleValidationFunctionLogGroup
       Policies:
@@ -6313,6 +6451,10 @@ Resources:
             !If [HasBedrockHubRoleExternalId, !Ref BedrockHubRoleExternalId, !Ref AWS::NoValue]
           BEDROCK_ASSUME_ROLE_SESSION_NAME:
             !If [HasBedrockHubRoleSessionName, !Ref BedrockHubRoleSessionName, !Ref AWS::NoValue]
+      # index.py wraps its handler in @xray_recorder.capture, which records a
+      # subsegment. Under PassThrough there is no segment to attach it to unless
+      # an upstream caller sampled, so the decorator's work is usually discarded.
+      Tracing: !If [EnableXRayTracingCondition, Active, PassThrough]
       LoggingConfig:
         LogGroup: !Ref RuleValidationOrchestrationFunctionLogGroup
       Policies:
@@ -6457,7 +6599,7 @@ Resources:
           - "index.handler"
       Timeout: 900
       MemorySize: 1024
-      Tracing: Active
+      Tracing: !If [EnableXRayTracingCondition, Active, PassThrough]
       Environment:
         Variables:
           MLFLOW_TRACKING_URI: !Ref MlflowTrackingURI

@@ -17,6 +17,11 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 
 from idp_common.config.models import IDPConfig
+from idp_common.metering_units import (
+    NOT_CHARGEABLE,
+    classify_absent_unit,
+    pricing_key_service,
+)
 from idp_common.models import Document
 from idp_common.s3 import get_json_content
 from idp_common.utils import parse_s3_uri
@@ -972,7 +977,9 @@ class SaveReportingData:
         self._pricing_cache = pricing_map
         return pricing_map
 
-    def _get_unit_cost(self, service_api: str, unit: str) -> Optional[float]:
+    def _get_unit_cost(
+        self, service_api: str, unit: str, value: Any = 1
+    ) -> Optional[float]:
         """
         Get the unit cost for a specific service API and unit using the
         configuration dictionary (same source as the UI).
@@ -1003,19 +1010,37 @@ class SaveReportingData:
         it and cache reads were billed at the FRESH INPUT rate: up to 10x their
         real price, always in the expensive direction. See GitHub issue #926.
 
+        A unit the matched entry does not list is only $0.00 when
+        ``metering_units.classify_absent_unit`` says so — the metered count is
+        zero, or the unit is declared non-chargeable for that service on the
+        authority of AWS's own price list. Anything else is ``None``: Bedrock's
+        ``usage`` block grows numeric members and ``bedrock.client.numeric_usage``
+        forwards every one of them into metering, so an undeclared unit used to be
+        a new billable dimension priced at exactly $0.00 with nothing to query for
+        (GitHub issue #1212).
+
+        ``value`` defaults to ``1`` rather than to ``0``, and the direction is the
+        point: ``0`` would mean a caller that forgot to pass it got "free" for
+        every absent unit — the check silently off, which is the state #1212 is
+        about. ``1`` means such a caller gets the strict answer instead, so the
+        omission shows up as a NULL to investigate rather than as a zero nobody
+        sees.
+
         Args:
             service_api: The AWS service API (e.g., 'bedrock/model-id',
                 'textract/operation')
             unit: The unit of measurement (e.g., 'inputTokens', 'pages')
+            value: The metered count for this row, which decides the absent-unit
+                case — a count of zero cannot cost anything at any rate.
 
         Returns:
-            The unit cost in USD; ``0.0`` when a pricing entry exists but does
-            not list this unit (the unit is not chargeable for that service);
-            or ``None`` when no pricing entry exists for ``service_api`` at all.
-            ``None`` is an explicit "unpriced" result, not a price — the caller
-            records it as NULL so a pricing gap stays distinguishable from
-            something that is genuinely free. Never silently substitutes a
-            related model's price.
+            The unit cost in USD; ``0.0`` when a pricing entry exists and either
+            lists this unit or legitimately omits it; or ``None`` when no pricing
+            entry exists for ``service_api`` at all, or when one exists and omits
+            a unit that is neither zero nor declared free. ``None`` is an explicit
+            "unpriced" result, not a price — the caller records it as NULL so a
+            pricing gap stays distinguishable from something that is genuinely
+            free. Never silently substitutes a related model's price.
         """
         pricing_map = self._get_pricing_from_config()
 
@@ -1027,18 +1052,30 @@ class SaveReportingData:
                 continue
             if unit in service_costs:
                 return service_costs[unit]
-            # The entry exists but does not list this unit, which means the unit
-            # is not chargeable for that service rather than that pricing is
-            # missing. Two routine cases: pricing.yaml deliberately omits units
-            # that do not apply (the us-gov Claude profile has no cache units
-            # because it never reports cache reads), and every Bedrock call
-            # meters 'totalTokens' and 'requests', neither of which Bedrock
-            # charges for. So $0.00, not an unpriced NULL.
-            logger.debug(
-                f"Pricing entry '{candidate}' lists no unit '{unit}'; "
-                f"treating as not chargeable ($0.0)"
+            # The entry exists but does not list this unit. Whether that means
+            # "not chargeable" or "nobody has priced this yet" is the one
+            # question classify_absent_unit answers, from a declaration sourced
+            # to AWS's published price list rather than from the shape of
+            # pricing.yaml. Reading the absence itself as "free" is what priced a
+            # newly added Bedrock usage field at $0.00 (#1212).
+            if classify_absent_unit(candidate, unit, value) == NOT_CHARGEABLE:
+                logger.debug(
+                    f"Pricing entry '{candidate}' lists no unit '{unit}'; "
+                    f"not chargeable ($0.0)"
+                )
+                return 0.0
+            logger.warning(
+                f"UNPRICED UNIT: pricing entry '{candidate}' lists no unit "
+                f"'{unit}' and it is not declared non-chargeable for "
+                f"'{pricing_key_service(candidate)}' in "
+                f"idp_common.metering_units.NON_CHARGEABLE_METERING_UNITS. "
+                f"Recording this metering row (value={value}) with a NULL cost "
+                f"rather than $0.00, which would understate spend silently. "
+                f"Either add a '{unit}' rate to the '{candidate}' pricing entry, "
+                f"or declare the unit non-chargeable with the AWS price-list "
+                f"reading that shows it is."
             )
-            return 0.0
+            return None
 
         logger.warning(
             f"UNPRICED: no pricing entry for service_api='{service_api}' "
@@ -1097,6 +1134,16 @@ class SaveReportingData:
                 ("timestamp", pa.timestamp("ms", tz="UTC")),
                 ("initial_event_time", pa.timestamp("ms", tz="UTC")),
                 ("config_version", pa.string()),
+                # ``document_class`` — the document's overall classification,
+                # derived from ``document.sections`` using the 0/1/N rule:
+                # 0 distinct section classes → 'unknown'; 1 → that class;
+                # >1 → 'mixed'. Excluded sections (instruction/legal
+                # boilerplate) are filtered out. Present on rows written
+                # by post-widening writers; older parquet files return
+                # NULL via Parquet schema evolution. The rollup Lambda
+                # falls back to a ``document_sections_*`` JOIN when this
+                # is NULL. See docs/reporting-sql-layer.md §10.
+                ("document_class", pa.string()),
             ]
         )
 
@@ -1155,13 +1202,39 @@ class SaveReportingData:
             :-3
         ]  # Include milliseconds
 
+        # Derive the document's overall classification from its sections.
+        # 0 distinct classes → 'unknown' (in-flight, FAILED, or classifier
+        # didn't fire); 1 → that class; >1 → 'mixed' (packet document).
+        # Excluded sections (instruction/legal boilerplate — Section.excluded)
+        # are filtered out so a W2 with an instructions page doesn't read as
+        # 'mixed'. Matches the read-side 0/1/N rule that the widget
+        # previously computed at query time from ``document_sections_*``,
+        # but with the ``excluded`` filter that the read-side lacked — see
+        # docs/reporting-sql-layer.md §10 and the PR description.
+        section_classes = {
+            s.classification
+            for s in (document.sections or [])
+            if s.classification and not s.excluded
+        }
+        if not section_classes:
+            document_class = "unknown"
+        elif len(section_classes) == 1:
+            document_class = next(iter(section_classes))
+        else:
+            document_class = "mixed"
+
         # Process metering data
         metering_records = []
         # service_api values with no pricing entry at all. Collected so the miss
         # is reported once per document as well as per row — a single grep-able
         # line naming every unpriced service, rather than a warning buried among
         # the per-unit ones.
-        unpriced_service_apis = set()
+        # Each member is "<service_api> [<unit>]": the miss is per (service, unit)
+        # rather than per service, because either axis can be the one that has no
+        # price — no entry for the service at all, or an entry that omits a unit
+        # nothing declares as free (#1212). Naming only the service would report
+        # the second case as though the whole model were unpriced.
+        unpriced_rows = set()
 
         for key, metrics in document.metering.items():
             # Split the key into context and service_api
@@ -1195,9 +1268,16 @@ class SaveReportingData:
                 # spend. SUM() in Athena ignores NULLs the same way it would a
                 # zero, so totals are unaffected, but the gap is now queryable
                 # (``WHERE unit_cost IS NULL``). See _get_unit_cost.
-                unit_cost = self._get_unit_cost(service_api, unit)
+                # ``float_value``, not the raw ``value``: the row records
+                # float_value, so classifying on anything else would judge one
+                # number and store another. It matters in both directions — a
+                # count of "0" as a string is a measured zero once converted, and
+                # an unconvertible count became 1.0 with a warning above, which
+                # is a non-zero the strict branch should see rather than a string
+                # the classifier reads as unreadable.
+                unit_cost = self._get_unit_cost(service_api, unit, float_value)
                 if unit_cost is None:
-                    unpriced_service_apis.add(service_api)
+                    unpriced_rows.add(f"{service_api} [{unit}]")
                     estimated_cost = None
                 else:
                     estimated_cost = float_value * unit_cost
@@ -1214,15 +1294,19 @@ class SaveReportingData:
                     "timestamp": timestamp,
                     "initial_event_time": initial_event_time,
                     "config_version": document.config_version or "default",
+                    "document_class": document_class,
                 }
                 metering_records.append(metering_record)
 
-        if unpriced_service_apis:
+        if unpriced_rows:
             logger.warning(
-                f"UNPRICED SERVICES for document {document_id}: "
-                f"{sorted(unpriced_service_apis)}. Cost for these rows is NULL, "
-                f"so reported spend for this document is INCOMPLETE. Add pricing "
-                f"entries for them to config_library/pricing.yaml."
+                f"UNPRICED for document {document_id}: {sorted(unpriced_rows)}. "
+                f"Cost for these rows is NULL, so reported spend for this "
+                f"document is INCOMPLETE. Add the missing pricing entry — or, "
+                f"for a unit an entry omits, the missing unit rate — to "
+                f"config_library/pricing.yaml; declare the unit non-chargeable "
+                f"in idp_common.metering_units only with the AWS price-list "
+                f"reading that shows it is."
             )
 
         # Save metering data in Parquet format. Path is date+hour partitioned

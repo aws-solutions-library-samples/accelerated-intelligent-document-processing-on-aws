@@ -8,6 +8,7 @@ and one left at "resolved" re-detects as "reopened", which DOES gate CI.
 """
 
 import json
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -220,3 +221,88 @@ class TestAwsProfileBootstrap:
         self._setup_module().write_aws_profile("default", "us-east-1")
         mode = (tmp_path / ".aws" / "config").stat().st_mode & 0o777
         assert mode == 0o600, f"expected 0o600, got {oct(mode)}"
+
+
+class TestTheRegionItRecords:
+    """The region this setup writes must be the developer's, or nothing.
+
+    The `aws configure set` branch **overwrites**, unlike write_aws_profile above,
+    and the caller counts a non-tty stdin as CI — so this ran on any piped or
+    tool-driven `make srt-setup`, not only in a pipeline. Reading only
+    AWS_DEFAULT_REGION therefore rewrote `[default]` (or whatever AWS_PROFILE
+    named) to a hardcoded us-east-1 on the machine of anyone who exports just
+    AWS_REGION, which the AWS CLI and every SDK honour equally.
+    """
+
+    _setup_module = staticmethod(TestAwsProfileBootstrap._setup_module)
+
+    def test_aws_default_region_wins_when_both_are_set(self, monkeypatch):
+        monkeypatch.setenv("AWS_DEFAULT_REGION", "eu-west-1")
+        monkeypatch.setenv("AWS_REGION", "us-west-2")
+        assert self._setup_module().resolve_aws_region() == "eu-west-1"
+
+    def test_aws_region_is_honoured_when_it_is_the_only_one_set(self, monkeypatch):
+        monkeypatch.delenv("AWS_DEFAULT_REGION", raising=False)
+        monkeypatch.setenv("AWS_REGION", "us-west-2")
+        assert self._setup_module().resolve_aws_region() == "us-west-2"
+
+    def test_an_empty_value_does_not_count_as_a_choice(self, monkeypatch):
+        """Exporting the name with no value is not a region; keep looking."""
+        monkeypatch.setenv("AWS_DEFAULT_REGION", "")
+        monkeypatch.setenv("AWS_REGION", "us-west-2")
+        assert self._setup_module().resolve_aws_region() == "us-west-2"
+
+    def test_falls_back_only_when_neither_is_set(self, monkeypatch):
+        monkeypatch.delenv("AWS_DEFAULT_REGION", raising=False)
+        monkeypatch.delenv("AWS_REGION", raising=False)
+        assert self._setup_module().resolve_aws_region() == "us-east-1"
+
+    def test_a_profile_with_a_region_is_reported_as_having_one(self, monkeypatch):
+        mod = self._setup_module()
+        monkeypatch.setattr(
+            mod.subprocess,
+            "run",
+            lambda *a, **k: subprocess.CompletedProcess(a, 0, "us-west-2\n", ""),
+        )
+        assert mod.aws_cli_profile_has_region("default") is True
+
+    def test_an_unset_region_is_reported_as_absent(self, monkeypatch):
+        """`aws configure get` exits 1 and prints nothing for an unset value."""
+        mod = self._setup_module()
+        monkeypatch.setattr(
+            mod.subprocess,
+            "run",
+            lambda *a, **k: subprocess.CompletedProcess(a, 1, "", ""),
+        )
+        assert mod.aws_cli_profile_has_region("default") is False
+
+    def test_a_zero_exit_with_empty_output_is_also_absent(self, monkeypatch):
+        """Do not treat a blank answer as a region just because the exit was 0."""
+        mod = self._setup_module()
+        monkeypatch.setattr(
+            mod.subprocess,
+            "run",
+            lambda *a, **k: subprocess.CompletedProcess(a, 0, "\n", ""),
+        )
+        assert mod.aws_cli_profile_has_region("default") is False
+
+    @pytest.mark.skipif(
+        shutil.which("aws") is None, reason="needs the real AWS CLI to answer"
+    )
+    def test_the_real_aws_cli_agrees_about_both_answers(self, tmp_path, monkeypatch):
+        """Pin the exit-code/empty-output contract against the CLI itself.
+
+        The two mocked cases above encode an assumption about how `aws configure
+        get` reports an unset value. If that ever stopped holding, the mocks would
+        keep passing while the guard silently reported every profile as having a
+        region and stopped writing one at all.
+        """
+        config = tmp_path / "config"
+        config.write_text("[profile hasregion]\nregion = ap-southeast-2\n[profile bare]\noutput = json\n")
+        monkeypatch.setenv("AWS_CONFIG_FILE", str(config))
+        # The env vars outrank the file for the CLI's own region resolution.
+        monkeypatch.delenv("AWS_DEFAULT_REGION", raising=False)
+        monkeypatch.delenv("AWS_REGION", raising=False)
+        mod = self._setup_module()
+        assert mod.aws_cli_profile_has_region("hasregion") is True
+        assert mod.aws_cli_profile_has_region("bare") is False

@@ -9,9 +9,16 @@ import time
 
 from aws_xray_sdk.core import patch_all, xray_recorder
 
-from idp_common import assessment, get_config, metrics, s3
+from idp_common import assessment, get_config, s3
+
+# #1006: a section that comes back without confidence scores must leave the same
+# trace whether the confidence pass failed deterministically (#901, the degrade
+# below) or never ran at all (the skip paths inside AssessmentService). Both live
+# in one module so the alarm on AssessmentConfidenceUnavailable cannot see one
+# cause and miss the other.
+from idp_common.assessment.degradation import degrade_section_to_no_confidence
 from idp_common.docs_service import create_document_service
-from idp_common.models import Document, ProcessingIssue, Status
+from idp_common.models import Document, Status
 from idp_common.utils import (
     calculate_lambda_metering,
     merge_metering_data,
@@ -106,108 +113,7 @@ def check_document_for_throttling_errors(document):
     return False, None
 
 
-def degrade_section_to_no_confidence(document, section_id, error):
-    """#901: keep a successful extraction when assessment fails deterministically.
-
-    Assessment is an *enrichment* pass: extraction already ran, already wrote its
-    results to S3, and was already paid for (two observed runs discarded $17.34 and
-    $7.05 of correct extraction — 1,200/1,200 rows at 1.000 cell accuracy — because
-    the confidence pass hit a deterministic
-    ``ValidationException: Input is too long for requested model.``). Failing the
-    document threw away the expensive, correct part of the work to report the loss
-    of the cheap, advisory part.
-
-    So for a DETERMINISTIC failure the document is no longer marked
-    ``Status.FAILED``. Instead the confidence gap is recorded as an
-    error-severity ``ProcessingIssue`` on the section, which the caller persists via
-    ``update_document_section``.
-
-    **Where it is visible.** That write goes to the section's DynamoDB record, so the
-    issue appears in the **Status** column of the document's Sections panel (and its
-    popover). It does NOT appear in the Visual Editor's **Processing Report** tab:
-    that tab renders ``metadata.processing_issues`` from the section's extraction
-    ``result.json`` in S3, and this degrade path deliberately does not rewrite that
-    file — the assessment run that would have produced a fresh copy is the thing
-    that just failed. (Issues from a *successful* assessment run do reach both,
-    because the service writes them into the result JSON as well.)
-
-    ``processresults_function`` fails a document only when a section
-    document comes back ``Status.FAILED`` (a section's ``errors`` list is read only
-    inside that branch), so leaving the status alone is what makes the document
-    succeed-without-confidence.
-
-    This is deliberately NOT applied to transient failures: the caller checks
-    throttling and ``is_transient_error`` FIRST and re-raises those so Step
-    Functions retries the section as before. Only a failure that would fail
-    identically on every retry degrades — a retry cannot fix an input that is too
-    long for the model.
-
-    **Why this also emits a metric (#996).** Degrading rather than failing is right
-    for one section, but it makes a *systemic* assessment failure — a missing
-    Bedrock grant, a confidence config every section's input exceeds, a code bug on
-    this path — present as a fleet-wide processing issue that no alarm sees, because
-    nothing else on this path publishes to CloudWatch and ``ProcessingIssueCount``
-    is a DynamoDB attribute, not a metric. Before this, the same failure would have
-    failed documents and lit the existing failure alarms. The
-    ``AssessmentConfidenceUnavailable`` count restores a signal at the *volume*
-    level, where the distinction lives: one degraded section is an expected outcome,
-    dozens in a quarter of an hour is a misconfiguration. Alarmed on in the parent
-    template (``AssessmentConfidenceUnavailableAlarm``), which can read this
-    namespace because the pattern's ``METRIC_NAMESPACE`` is the *parent* stack name.
-
-    Returns the recorded ``ProcessingIssue``.
-    """
-    issue = ProcessingIssue(
-        stage="assessment",
-        severity="error",
-        code="assessment_failed_confidence_unavailable",
-        message=(
-            "Confidence assessment failed for this section, so its extracted "
-            "values have NO confidence scores and are not covered by "
-            "confidence-based review (HITL thresholds). The extracted data itself "
-            "is complete and was kept. Deterministic failures are not retried; if "
-            "the confidence model rejected the input as too long, use a "
-            "confidence model with a larger context window, reduce "
-            "extraction.confidence.list_batch_size, or process smaller sections."
-        ),
-        root_cause=f"{type(error).__name__}: {error}",
-        section_id=section_id,
-    )
-    for s in document.sections:
-        if s.section_id == section_id:
-            # Replace only assessment-stage issues; extraction's own issues on this
-            # section (extraction_incomplete, extraction_validation_failed, ...)
-            # must survive, because the section write REPLACES the whole map.
-            s.processing_issues = [
-                pi
-                for pi in (s.processing_issues or [])
-                if getattr(pi, "stage", None) != "assessment"
-            ] + [issue]
-            break
-
-    # Emitted AFTER the issue is recorded but before the caller persists it, so the
-    # count and the section record cannot disagree about whether a degrade happened.
-    #
-    # Wrapped even though ``put_metric`` already swallows errors around its own
-    # CloudWatch call: this runs on the deterministic-failure path, whose entire
-    # purpose is to NOT fail a document whose extraction succeeded. Anything raising
-    # here — a client that cannot be constructed, a credential refresh, a future
-    # change inside the helper — would defeat that, trading a paid-for extraction
-    # for a missing telemetry point. A lost count is the cheaper failure, and it is
-    # logged.
-    try:
-        metrics.put_metric("AssessmentConfidenceUnavailable", 1)
-    except Exception as metric_error:
-        logger.warning(
-            "Could not publish AssessmentConfidenceUnavailable for section %s: %s. "
-            "The section is still degraded and its processing issue still recorded.",
-            section_id,
-            metric_error,
-        )
-    return issue
-
-
-@xray_recorder.capture("assessment_function")
+@xray_recorder.capture("assessment_function")  # pyright: ignore[reportCallIssue] - aws-xray-sdk types capture() as the wrapped function, not the decorator factory
 def handler(event, context):
     """Assess one section. See ``_handle``.
 

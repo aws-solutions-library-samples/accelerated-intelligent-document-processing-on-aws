@@ -62,12 +62,23 @@ class TestLambdaHookClientConfig:
         `_invoke_lambda_hook_with_retry` backs off, logs, and knows which
         errors are worth another attempt; botocore retrying underneath it
         duplicates the spend invisibly.
+
+        ⚠️ Asserted on the RESOLVED client config, and on `total_max_attempts`. In
+        client config botocore's `max_attempts` is a **retry** count and is
+        normalised to `total_max_attempts = max_attempts + 1`
+        (`botocore.args.ClientArgsCreator._compute_retry_max_attempts`). So
+        `max_attempts: 1` permits *two* attempts — a second 840 s invocation of a
+        hook that charges for its work, inside a 900 s caller — which is the
+        opposite of what this test's name claims. Only the resolved value shows
+        that, which is why the raw `Config` is not what is read here.
         """
         client = BedrockClient(region="us-east-1")
-        with patch("boto3.client") as mock_boto:
-            _ = client.lambda_client
-        config = mock_boto.call_args.kwargs["config"]
-        assert config.retries["max_attempts"] == 1
+        resolved = client.lambda_client.meta.config
+        assert resolved.retries["total_max_attempts"] == 1, (
+            f"botocore may attempt the invocation "
+            f"{resolved.retries.get('total_max_attempts')} times, so a slow hook is "
+            "abandoned and re-invoked, re-running whatever it charges for"
+        )
 
     def test_connection_pool_fits_the_ocr_worker_fanout(self):
         """OCR worker threads share this client; the default pool of 10 serializes them."""

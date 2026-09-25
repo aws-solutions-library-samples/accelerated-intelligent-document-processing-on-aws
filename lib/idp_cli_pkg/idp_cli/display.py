@@ -107,9 +107,17 @@ def create_recent_completions_table(status_data: Dict, limit: int = 5) -> Table:
 
     completed = status_data.get("completed", [])
 
-    # Sort by end_time (most recent first)
+    # Sort by end_time (most recent first). The key is coerced to `str` so the
+    # comparison has a total order whatever a producer of `status_data` put under
+    # the key: a batch mixing a `datetime` with the `""` substituted for an absent
+    # end time raised `'<' not supported between instances of 'datetime.datetime'
+    # and 'str'` here, and since both callers catch broadly the user saw
+    # `idp-cli status` exit 1 with that message instead of the table. The
+    # `_batch_status_to_display_dicts` mapper now normalises to ISO 8601 strings, so
+    # this coercion is a no-op on that path; it is here so that this function cannot
+    # be made to raise by a caller that does not.
     sorted_completed = sorted(
-        completed, key=lambda x: x.get("end_time", ""), reverse=True
+        completed, key=lambda x: str(x.get("end_time", "") or ""), reverse=True
     )[:limit]
 
     for doc in sorted_completed:
@@ -412,6 +420,23 @@ def format_status_json(status_data: Dict, stats: Dict) -> str:
 
             return json.dumps(result, indent=2)
 
+        # A single-document lookup that found nothing must not fall through to the
+        # batch summary. It did, and the summary derives its code from
+        # `all_complete`, so `status --document-id <typo> --format json` answered
+        # `exit_code: 0` — nothing was measured and the caller was told the document
+        # succeeded (#1230). `show_final_status_summary` has no such fall-through and
+        # answers UNKNOWN / 2 for the same input; 2 is this CLI's code for "outcome
+        # not established", so the two paths now agree.
+        return json.dumps(
+            {
+                "document_id": None,
+                "status": "UNKNOWN",
+                "error": "No document found matching the search criteria",
+                "exit_code": 2,
+            },
+            indent=2,
+        )
+
     # For batch, return full summary
     result = {
         "total": stats["total"],
@@ -437,9 +462,41 @@ def format_status_json(status_data: Dict, stats: Dict) -> str:
     return json.dumps(result, indent=2)
 
 
+def derive_exit_code(status_data: Dict, stats: Dict) -> int:
+    """The exit code a status result implies. Derives; prints nothing.
+
+    0 every document completed, 1 at least one failed, 2 the outcome is not
+    established (still running, or nothing was found).
+
+    Split out of `show_final_status_summary` so that a caller can have the code
+    without the "FINAL STATUS:" line. `_monitor_progress` is that caller: it needs
+    the code for `status --wait` to exit on, and it has already printed a summary
+    panel of its own — and two of its three callers discard the code, so printing
+    "Exit Code: 1" from there would state an exit code that contradicts `$?` for
+    `process --monitor` and `rerun --monitor`.
+
+    The rule lives here once. Two implementations of it is how the polled and waited
+    forms of `status` came to disagree in the first place (#1230).
+
+    """
+    if stats["total"] == 1:
+        if status_data["completed"]:
+            return 0
+        if status_data["failed"]:
+            return 1
+        return 2
+
+    if stats["all_complete"]:
+        return 1 if stats["failed"] > 0 else 0
+    return 2
+
+
 def show_final_status_summary(status_data: Dict, stats: Dict) -> int:
     """
     Show final status summary for programmatic use and return exit code
+
+    The code comes from `derive_exit_code`, so this function's printing and the
+    code a caller acts on cannot drift apart.
 
     Args:
         status_data: Status data from progress monitor
@@ -448,17 +505,19 @@ def show_final_status_summary(status_data: Dict, stats: Dict) -> int:
     Returns:
         Exit code (0=success, 1=failure, 2=still processing)
     """
+    # The code is derived once, above, so that the line printed here and the value a
+    # caller exits on cannot drift apart.
+    exit_code = derive_exit_code(status_data, stats)
+
     # For single document
     if stats["total"] == 1:
         doc = None
         if status_data["completed"]:
             doc = status_data["completed"][0]
             status = "COMPLETED"
-            exit_code = 0
         elif status_data["failed"]:
             doc = status_data["failed"][0]
             status = "FAILED"
-            exit_code = 1
         else:
             # Running or queued
             if status_data["running"]:
@@ -466,7 +525,6 @@ def show_final_status_summary(status_data: Dict, stats: Dict) -> int:
             elif status_data["queued"]:
                 doc = status_data["queued"][0]
             status = doc.get("status", "UNKNOWN") if doc else "UNKNOWN"
-            exit_code = 2
 
         duration = doc.get("duration", 0) if doc else 0
         console.print()
@@ -479,14 +537,11 @@ def show_final_status_summary(status_data: Dict, stats: Dict) -> int:
     if stats["all_complete"]:
         if stats["failed"] > 0:
             status = f"COMPLETED WITH FAILURES ({stats['failed']} failed)"
-            exit_code = 1
         else:
             status = "ALL COMPLETED"
-            exit_code = 0
     else:
         finished = stats["completed"] + stats["failed"]
         status = f"IN PROGRESS ({finished}/{stats['total']} finished)"
-        exit_code = 2
 
     console.print()
     console.print(

@@ -161,6 +161,186 @@ For optimal performance with BDA:
 
 The BDA service is designed to be thread-safe, supporting concurrent processing of multiple documents in parallel workloads.
 
+## Blueprint Synchronization (`BdaBlueprintService`)
+
+`create_blueprints_from_custom_configuration` aligns a config version's IDP document
+classes with the blueprints its BDA project associates. A blueprint *is* the extraction
+contract in BDA mode — the project's `customOutputConfiguration.blueprints` list decides
+which document types are recognised and which fields come back — so the error contracts
+below are what stop a sync from quietly changing what the next document extracts.
+
+### Reading the project is allowed to fail; it is not allowed to look empty
+
+`_retrieve_all_blueprints` **raises** when the project cannot be read, and when it is
+given no project ARN. It returns an empty list only when the project genuinely
+associates no blueprints, because that is what the empty list means to its callers:
+
+- in replace mode, BDA → IDP reads it as "BDA is empty" and **clears every IDP class**;
+- in phase 2, it hides every existing blueprint from `_blueprint_lookup`, so the sync
+  creates a **second blueprint for every class**.
+
+A project configured for standard output only has no `customOutputConfiguration` at all,
+which the API reports by omitting the field. That is an empty list, not a failure.
+
+### A recorded project is replaced only when it is known to be gone
+
+`get_or_create_project_for_version` verifies the ARN recorded for a version and creates
+a replacement **only** for `ResourceNotFoundException`. A throttle, an `AccessDenied` or
+a server error on `GetDataAutomationProject` raises: it says nothing about whether the
+project still exists, and creating one anyway overwrites the tracking row and orphans
+the first project's blueprints while the version's config names the new, empty one.
+
+### Every dropped property is a warning, not just a log line
+
+BDA supports neither objects inside objects nor arrays whose items nest further, so the
+transform drops those properties. Each drop is recorded in `_skipped_properties`, which
+`_process_single_class` returns as per-class `warnings` and the sync resolver surfaces in
+its response. The recorded `type` values are `nested_object`, `nested_array` and
+`invalid_property_schema` (a property whose value is not a JSON Schema object — `null`,
+or a bare string — which cannot be described to BDA at all and used to fail the whole
+class with a raw `TypeError`).
+
+One known imprecision remains in that report: on the **update** path each dropped
+property is recorded **twice**, because `_check_for_updates` runs the transform to diff
+against the existing blueprint and the update itself runs it again, and nothing
+de-duplicates.
+
+**The class a drop is filed under is ambient, per thread, and per invocation.** The
+recorder sits at the bottom of the transform's call tree, several frames below the method
+that knows which class is being processed, so the label cannot practically be a
+parameter — `_transform_json_schema_to_bedrock_blueprint` and the six helpers below it
+are called from dozens of sites outside this module, all but one of them in tests, and a
+*defaulted* parameter would reintroduce the silent path the label exists to close.
+`_process_single_class` therefore opens a
+`_recording_drops_for()` block around its whole body and `_record_skipped_property`
+reads the recording in force, from a module-level `contextvars.ContextVar`.
+
+⚠️ The reason it is a `ContextVar` and not an instance attribute is the shape of the
+defect it replaced. A label on the instance is shared by every worker
+`_process_classes_parallel` starts, and the collection *filtered* a shared list on that
+label — so a drop labelled with a sibling's name did not arrive misfiled, it arrived
+nowhere, and the class came back `success` with no warnings while a whole section had
+left its extraction contract. A new thread starts with an empty context, so a worker
+cannot see or overwrite a sibling's label; resetting the token on exit is what stops one
+worker's second class inheriting its first class's drops, which is the part a
+`threading.local()` list would get wrong, because an executor reuses its threads. Both
+properties are pinned in `TestDropsAreAttributedPerWorkerThread`, whose interleaving is
+forced with a `threading.Barrier` rather than hoped for — the original defect did not
+reproduce under natural scheduling.
+
+`_skipped_properties` is still on the instance and still receives every drop, in order,
+as a diagnostic record. Nothing reads it to decide what a class's warnings are. Outside
+a recording — `BlueprintOptimizer`, or a direct call to one of the transform helpers —
+a drop is logged and recorded there with a `class` of `None`.
+
+### Failing to associate a blueprint fails its class
+
+Creating a blueprint and then failing to write it into the project leaves it existing in
+the account but absent from the extraction contract, so that document type is not
+recognised. `_process_classes_parallel` and `_convert_aws_standard_blueprints_parallel`
+therefore downgrade the affected classes to `status: failed` with the reason, rather
+than reporting a clean sync.
+
+The downgrade is **all-or-nothing**, and deliberately so: the association is one bulk
+call, and nothing in its failure says which entries did not land. It is conservative in
+the right direction but imprecise in one case — `bulk_update_data_automation_project`
+*merges* into the project's existing list, so a class whose blueprint was already
+associated and unchanged is still recognised, yet is downgraded too, and the message says
+the association failed rather than that it could not be confirmed.
+
+### The project ARN is read through one accessor
+
+`dataAutomationProjectArn` is `Optional[str]`, because the service is also constructed
+to create the project (`get_or_create_project_for_version`) and to run the schema
+transforms, neither of which needs one. Every method that *does* need it reads
+`self._project_arn`, which raises a `RuntimeError` naming the class and the missing ARN
+rather than letting a `None` become a botocore `ParamValidationError` several frames
+away. Assigning the attribute after construction is supported and is what the callers
+that create the project do.
+
+`bda_blueprint_service.py` and `schema_converter.py` carry
+`# pyright: reportArgumentType=error`, which is off repo-wide. Both files are at zero
+findings under it, so a new site that reads the attribute directly and passes it to an
+**annotated** parameter fails `make typecheck`.
+
+⚠️ That qualifier is the whole point of having two halves. Where the callee has no
+annotations the type checker sees nothing: reverting one of the
+`list_blueprints(self._project_arn, "LIVE")` calls to the raw attribute produces **zero**
+diagnostics, because `BDABlueprintCreator.list_blueprints` is unannotated. The accessor
+raising at runtime is what catches that case, and the pragma is what catches a site the
+runtime tests do not exercise. Neither is sufficient alone, and the tests in
+`TestProjectArnIsRequiredWhereItIsUsed` assert both — including that the pragma line is
+still present, since deleting it leaves every gate green.
+
+### Deletes are per-blueprint and their failures are returned
+
+`_synchronize_deletes` removes the blueprints to be deleted from the project first —
+BDA refuses to delete an associated blueprint — and then deletes them one at a time,
+returning the ARNs it could not delete. Those are orphans that the project-scoped
+retrieval can no longer see; `cleanup_orphaned_blueprints` lists account-wide and will
+still find them. Note that `BDABlueprintCreator.delete_blueprint` reports failure by
+returning `False` rather than raising, so its return value is the signal to read.
+
+`create_blueprints_from_custom_configuration` puts that list on
+`self.orphaned_blueprint_arns`, clearing it at the start of every sync so a caller cannot
+read a previous sync's orphans as this one's. Each of its three callers surfaces it: the
+`syncBdaIdp` resolver appends it to the response `message` (with the literal `WARNING`,
+which is what stops the UI auto-dismissing the message), and the SDK returns it as
+`ConfigSyncBdaResult.orphaned_blueprint_arns` and
+`ConfigActivateResult.bda_orphaned_blueprint_arns`, which `idp-cli config-sync-bda` and
+`config-activate` print.
+
+⚠️ **`cleanup_orphaned_blueprints` is reached by a direction that is not a sync, and it
+has two callers now rather than one.** `ConfigOperation.sync_bda` takes
+`direction="cleanup_orphaned"` and branches to it *in process*, the same way it reaches
+the three sync directions — it does not invoke the `syncBdaIdp` resolver, which has its
+own branch to the same method. `idp-cli config-sync-bda --direction cleanup-orphaned` is
+not a third caller: it goes through the SDK. So a change to this method's return shape
+has to be read against both.
+
+⚠️ **The two callers do not validate the profile the same way.** The SDK refuses a
+`version` that names no configuration profile before calling this method, because this
+method reduces a `get_configuration` answering `None` to an empty expected-prefix set
+and then deletes every prefixed blueprint in the account while returning
+`success=True`. The resolver has no such check. Do not read the SDK's refusal as a
+property of this method. The keys the callers subscript are `success`, `message`,
+`deleted_count` and `failed_count`; the SDK reports the last two on
+`ConfigSyncBdaResult.cleanup_deleted_count` / `cleanup_failed_count` and deliberately
+not on `classes_synced` / `classes_failed`, since the cleanup processes no classes and a
+blueprint counted as a synced class is a wrong answer rather than an imprecise one.
+
+The SDK branch sits *after* the project-ARN resolution, matching the resolver's
+placement, because the cleanup disassociates before deleting and so needs a project to
+disassociate from.
+
+⚠️ **The failure paths are the ones to get right, and they are the ones that are easy to
+miss.** The deletes run *before* the last two steps of a sync — the AWS-standard-blueprint
+disassociation and the write-back of sanitized classes, both of which can raise — so a
+sync that failed, aborted an activation, or threw can all have left a blueprint behind,
+and each is more likely to have done so than a clean run. Three consequences, each
+pinned by a test:
+
+- every result-building branch reachable after a sync carries the list, including the
+  ones that report failure — in `ConfigOperation.activate` that means four returns, and
+  the one that legitimately omits it is the pre-sync "version does not exist" answer;
+- the three exception handlers read it **off the service** rather than from a local,
+  because the local is assigned after the sync call returns and on those paths it never
+  was. `activate`'s outermost handler is the one to watch: `manager.activate_version()`
+  runs outside the BDA block, so a throttle on that write arrives there, after a sync
+  that completed. The locals it names are therefore bound before the `try`, since a
+  `NameError` raised inside an exception handler replaces the error the caller needs;
+- the resolver's total-failure branch puts the text on `error.message` as well as on
+  `message`, because the web UI's failure path renders `error.message` and falls back to
+  `message` only when it is absent — text placed only on `message` there is in the
+  response and invisible.
+
+⚠️ **Not an entry in the per-class status list**, which is what the "surface it like a
+skipped property" instinct suggests. Every consumer of that list *counts* it —
+`classes_synced` / `classes_failed` in the SDK, `processedClasses` in the resolver — so an
+entry for something that is not a document class would report a class as unsynced when
+every class synced. An orphan is outstanding *cleanup*, not a failed class, and saying
+otherwise sends the user to re-run a sync that will not remove it.
+
 ## Blueprint Optimization
 
 The `BlueprintOptimizer` class uses the BDA `InvokeBlueprintOptimizationAsync` API to improve extraction accuracy by comparing results against ground truth data.

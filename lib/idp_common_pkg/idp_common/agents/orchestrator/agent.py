@@ -16,6 +16,7 @@ import boto3
 import strands
 from strands import tool
 
+from ..common.config import DEFAULT_AGENT_MODEL_ID
 from ..common.cost_metrics import with_cost_hook
 from ..common.strands_bedrock_model import create_strands_bedrock_model
 from .config import get_chat_companion_model_id
@@ -87,22 +88,24 @@ def create_orchestrator_agent(
                         for k, v in kwargs.items()
                         if k not in ("session_id", "hooks")
                     }
-                    specialized_agent = agent_factory.create_agent(
-                        agent_id=aid,
-                        config=config,
-                        session=sub_session,  # Use fresh session per sub-agent
-                        **sub_kwargs,
-                    )
-
                     # Stream sub-agent events with timeout per event
                     timeout_seconds = int(
                         os.environ.get("SUBAGENT_TIMEOUT_SECONDS", "120")
                     )
-                    logger.info(
-                        f"Starting sub-agent {aid} with {timeout_seconds}s timeout"
-                    )
 
-                    with specialized_agent:
+                    # Entered on the same statement that creates it. `create_agent`
+                    # builds a transcript-write thread pool that `__exit__` drains and
+                    # closes, so any work between construction and `with` is work
+                    # during which a raise leaks an undrained pool and a live thread.
+                    with agent_factory.create_agent(
+                        agent_id=aid,
+                        config=config,
+                        session=sub_session,  # Use fresh session per sub-agent
+                        **sub_kwargs,
+                    ) as specialized_agent:
+                        logger.info(
+                            f"Starting sub-agent {aid} with {timeout_seconds}s timeout"
+                        )
                         stream = specialized_agent.stream_async(query)
                         last_event_time = asyncio.get_event_loop().time()
 
@@ -336,9 +339,7 @@ Example:
         model_id = get_chat_companion_model_id()
     except Exception as e:
         logger.warning(f"Failed to get chat companion model ID, using default: {e}")
-        model_id = config.get(
-            "default_model_id", "us.anthropic.claude-3-7-sonnet-20250219-v1:0"
-        )
+        model_id = config.get("default_model_id", DEFAULT_AGENT_MODEL_ID)
 
     # Create the orchestrator agent
     model = create_strands_bedrock_model(

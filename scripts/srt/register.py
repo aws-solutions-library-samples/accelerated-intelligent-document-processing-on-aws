@@ -138,3 +138,124 @@ def describe_unsynced(issues: list[dict]) -> str:
             f"{i.get('path') or '<no path>'}  ({i.get('resourceName') or '-'})"
         )
     return "\n".join(lines)
+
+
+# --------------------------------------------------------------------------- #
+# Non-vacuity: a suppression that shields nothing
+# --------------------------------------------------------------------------- #
+
+#: Sources whose absence from a scan is *evidence* that the finding is gone, mapped to
+#: the scanner name :mod:`scanner_health` knows and the summary file it writes at
+#: ``.srt/`` root in this register's own schema.
+#:
+#: Membership turns on one question and nothing else: **if this scan reported no finding
+#: matching an entry, does that mean the finding no longer exists?** Bandit answers yes.
+#: It runs locally over every file with rules compiled into the package, so the finding
+#: set is a function of the tree alone, and it is the source the suppression register
+#: accumulated 52 dead entries under. Everything else is in
+#: :data:`NON_VACUITY_EXEMPT_SOURCES` with the reason absence is not evidence for it,
+#: and the two sets are asserted to cover every source in the register.
+WHOLE_REPO_SUMMARIES = {"Bandit": ("bandit", "bandit-summary.json")}
+
+#: Sources whose findings this check does NOT measure, one entry, one reason. Absence of
+#: a finding is not evidence for these, and a check that read it as evidence would delete
+#: a live suppression on a bad day — the one failure this must not have.
+#:
+#: These are not "not yet done". Each names a specific mechanism by which the finding set
+#: moves without the tree moving, which is exactly what makes absence uninformative.
+NON_VACUITY_EXEMPT_SOURCES: dict[str, str] = {
+    "security-matrix": (
+        "SRT's own AWS-resource checks, evaluated per template into a per-template scan "
+        "directory with no whole-repo summary. A template whose scan did not complete "
+        "contributes zero findings and looks identical to a template that is clean; "
+        "scanner_health.failed_checkov_scans exists because that happens routinely on "
+        "the largest templates here"
+    ),
+    "Checkov": (
+        "Per-template, same as above, and additionally sensitive to what is on disk: "
+        "`sam package` re-serialises templates and drops the `# checkov:skip=` comments "
+        "the source templates carry, so a built tree produces a different finding set "
+        "from a clean one"
+    ),
+    "Semgrep": (
+        "Rules come from a remote registry rather than from the installed package, so a "
+        "withdrawn rule or a failed ruleset fetch removes findings with no change to "
+        "this repository. The one suppressed Semgrep entry is a supply-chain rule about "
+        "src/ui/.npmrc whose own reason turns on the npm version the build uses, which "
+        "is not a property of the tree either"
+    ),
+}
+
+
+def _match_key(issue: dict) -> tuple:
+    """:func:`_key` with the path normalised, for comparing across two producers.
+
+    The committed register and a scanner summary are written by different code paths, so
+    a ``./`` prefix or a backslash on one side would read as "no match" — and this check
+    turns "no match" into "delete the entry". Normalising here rather than in
+    :func:`_key` leaves the restore path's behaviour exactly as it was.
+    """
+    path, resource_type, resource_name, check_id = _key(issue)
+    if path:
+        path = str(path).replace("\\", "/").removeprefix("./")
+    return (path, resource_type, resource_name, check_id)
+
+
+def vacuous_suppressions(
+    committed: Iterable[dict], findings: Iterable[dict], *, sources: Iterable[str]
+) -> list[dict]:
+    """Committed ``suppressed`` entries for ``sources`` that ``findings`` does not contain.
+
+    **Why a suppression that shields nothing is not merely untidy.** SRT keys a
+    disposition on ``(path, resourceType, resourceName, check_id)``, so an entry whose
+    finding has been fixed in the source does not go inert: it pre-suppresses whatever
+    finding of that check next appears in that file. A genuine hardcoded credential
+    landing in a pre-registered file is suppressed on arrival, with nothing to notice.
+    That is the dead-exemption hazard this repository's gate doctrine describes —
+    an exemption shielding nothing is not neutral, it is an approval waiting for a new
+    occupant — and the register had no check for it while 52 entries were in that state.
+
+    Only ``suppressed`` counts. A ``resolved`` entry records that something was fixed and
+    does not shield: SRT re-opens it on re-detection, which gates. Deleting resolved
+    entries for being absent would therefore remove the record that makes a regression
+    visible.
+    """
+    wanted = set(sources)
+    findings = list(findings)
+    if not findings:
+        # A summary with no findings at all is not a clean tree, it is a scanner that
+        # produced nothing -- and reading it as evidence would delete every suppression
+        # for that source at once, which is the one failure this check must not have.
+        # scanner_health only asks whether the summary file is fresh, so an empty-but-
+        # fresh summary passes there and would arrive here as "everything is dead".
+        return []
+    seen = {_match_key(f) for f in findings}
+    return [
+        issue
+        for issue in committed
+        if issue.get("source") in wanted
+        and (issue.get("status") or "").lower() == "suppressed"
+        and _match_key(issue) not in seen
+    ]
+
+
+def suppressed_sources(committed: Iterable[dict]) -> set[str]:
+    """The ``source`` of every ``suppressed`` entry in the register.
+
+    The universe the two source sets above have to cover between them. Only suppressed
+    entries, because only they shield anything.
+    """
+    return {
+        issue.get("source") or "<none>"
+        for issue in committed
+        if (issue.get("status") or "").lower() == "suppressed"
+    }
+
+
+def describe_vacuous(issues: list[dict]) -> str:
+    """One line per dead suppression, for the failure message."""
+    return "\n".join(
+        f"  {i.get('check_id') or '?':<8} {i.get('path') or '<no path>'}:"
+        f"{i.get('line', '?')}  {(i.get('issue') or '')[:60]}"
+        for i in issues
+    )

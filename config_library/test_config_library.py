@@ -141,6 +141,173 @@ class TestConfigFilesStructure:
             )
 
 
+def _names_a_model(key) -> bool:
+    """Is `key` a field whose value is a model identifier?
+
+    Matched by SUFFIX, not against the pair ("model", "model_id"). Two of the 71
+    model-bearing fields in this library are named neither — `escalation_model` and
+    `analysis_model_id`, both in `unified/lending-package-sample-govcloud/config.yaml`
+    — so an exact-pair predicate covers 69 of 71 and a private-account ARN written
+    into either one passes every check in this file. The suffix reaches all 71 and,
+    more to the point, reaches the next such field without anyone remembering to add
+    it.
+    """
+    return isinstance(key, str) and (key.endswith("model") or key.endswith("model_id"))
+
+
+def _iter_model_values(node, path=""):
+    """Yield every (dotted-path, value) for a key that names a model."""
+    if isinstance(node, dict):
+        for key, value in node.items():
+            here = f"{path}.{key}" if path else str(key)
+            if _names_a_model(key) and isinstance(value, str):
+                yield here, value
+            else:
+                yield from _iter_model_values(value, here)
+    elif isinstance(node, list):
+        for i, item in enumerate(node):
+            yield from _iter_model_values(item, f"{path}[{i}]")
+
+
+# A Bedrock ARN carrying an account id names a resource that exists only in that
+# account: a custom-model-deployment, a provisioned model, an imported model, an
+# application inference profile. A *foundation* model ARN has an EMPTY account
+# segment (`arn:aws:bedrock:us-east-1::foundation-model/...`) and is therefore fine,
+# which is why this keys on the account segment being populated rather than on a list
+# of resource types that would go stale as Bedrock adds them.
+#
+# ⚠️ Bedrock only. A private-account **SageMaker** endpoint ARN — the Pattern-3 UDOP
+# shape — has a populated account segment too and is not matched here. That is a
+# deliberate bound rather than an oversight: `scripts/check_account_ids.py` (PR #1092)
+# gates committed account ids generally, whatever service names them, so between the
+# two the class is covered. The residual is that this check alone would not catch a
+# SageMaker endpoint, and #1092's own coverage of this directory is what its three
+# preset exemption entries currently suppress — entries slated for deletion once both
+# changes have landed. If #1092 is ever removed, widen the pattern here to any ARN
+# with a populated account segment.
+ACCOUNT_SCOPED_BEDROCK_ARN = re.compile(r"^arn:[^:]*:bedrock:[^:]*:\d{12}:")
+
+# The presets whose whole purpose is to demonstrate a fine-tuned model, and which
+# therefore have to express "substitute your own deployment" without shipping one.
+# Named so that the check below cannot silently stop covering them.
+FINE_TUNED_PRESETS = (
+    "unified/docsplit/docsplit_finedtuned_config.yaml",
+    "unified/ocr-benchmark/fine_tuned_config.yaml",
+    "unified/ocr-benchmark/ocr_fine_tuned_config.yaml",
+)
+
+
+class TestNoAccountScopedModelArns:
+    """A shipped preset must not pin a model to someone else's account.
+
+    `config_library/` is published into every deployment's configuration bucket, so a
+    `model` value naming a Bedrock resource in one specific account cannot work for
+    any other reader: Bedrock answers `AccessDeniedException` ("the provided resource
+    ARN is from a different account") and the stage fails outright rather than
+    degrading. Three fine-tuned presets shipped that way (#1093).
+
+    Nothing else catches this. `model` is declared as a bare `str` on every config
+    model with no validator, the configuration-load path merges with
+    `validate=False`, and `idp-cli config-validate` deliberately downgrades an ARN it
+    cannot resolve offline to a *warning* ("unverifiable, not wrong") — so all three
+    presets validated clean. This check runs in `make test-config-library` and in
+    `make test-packages-cicd`, so it fires in both CIs before a preset ships.
+    """
+
+    @pytest.mark.parametrize("yaml_file", discover_yaml_files())
+    def test_no_model_names_an_account_scoped_bedrock_resource(self, yaml_file: Path):
+        parsed = yaml.safe_load(yaml_file.read_text(encoding="utf-8"))
+        offenders = [
+            field
+            for field, value in _iter_model_values(parsed)
+            if ACCOUNT_SCOPED_BEDROCK_ARN.match(value.strip())
+        ]
+        assert not offenders, (
+            f"{yaml_file.relative_to(CONFIG_LIBRARY_ROOT)} pins "
+            f"{len(offenders)} model value(s) to an account-scoped Bedrock ARN: "
+            f"{offenders}. Such an ARN resolves only in the account that owns the "
+            f"resource, so every other deployment fails at inference. Ship the base "
+            f"model and document the substitution in a comment — see the fine-tuned "
+            f"presets for the pattern. Redacting the account id is not a fix: the "
+            f"ARN still would not resolve."
+        )
+
+    def test_every_model_bearing_key_in_the_tree_is_matched(self):
+        """No model-bearing field may sit outside the predicate's reach.
+
+        Universe closure for the key rule, derived rather than authored. An exact
+        ("model", "model_id") predicate reached 69 of the 71 model-bearing fields in
+        this library, and a private-account ARN in either of the other two passed every
+        check in this file. So the universe is computed from the tree — every key whose
+        name ends in a model-ish word — and any member the predicate rejects fails here,
+        which is what stops the rule narrowing back without the loss being visible.
+        """
+        key_re = re.compile(r"^\s*([A-Za-z_][A-Za-z0-9_]*)\s*:")
+        found: dict[str, int] = {}
+        for param in discover_yaml_files():
+            path = param.values[0]
+            for line in path.read_text(encoding="utf-8").splitlines():
+                m = key_re.match(line)
+                if m and re.search(r"model(_id)?$", m.group(1)):
+                    found[m.group(1)] = found.get(m.group(1), 0) + 1
+
+        assert found, (
+            "no model-bearing keys discovered at all; the census below is vacuous and "
+            "the check above may be scanning nothing"
+        )
+        unmatched = sorted(k for k in found if not _names_a_model(k))
+        assert not unmatched, (
+            f"{unmatched} name a model but are not matched by _names_a_model, so a "
+            f"private-account ARN in one of them would pass. Widen the predicate."
+        )
+        # Non-vacuity: the two keys that motivated the suffix rule must still be here,
+        # or the rule is being kept for nothing and a revert to the exact pair would
+        # look harmless.
+        for key in ("escalation_model", "analysis_model_id"):
+            assert key in found, (
+                f"'{key}' is gone from config_library, so it no longer demonstrates "
+                f"why the key predicate matches by suffix. Re-derive the census before "
+                f"narrowing the predicate — do not narrow it because this list shrank."
+            )
+
+    def test_the_check_can_actually_see_the_fine_tuned_presets(self):
+        """The three presets this check exists for must be in its universe.
+
+        `discover_yaml_files()` is what makes the check above cover more than
+        `config.yaml`, and these three are not named `config.yaml` — they are reachable
+        only by an explicit `--custom-config` path, which is exactly why they went
+        unexamined. If discovery narrows, this fails rather than the check quietly
+        passing over nothing.
+        """
+        discovered = {
+            str(param.values[0].relative_to(CONFIG_LIBRARY_ROOT))
+            for param in discover_yaml_files()
+        }
+        missing = [p for p in FINE_TUNED_PRESETS if p not in discovered]
+        assert not missing, (
+            f"{missing} are no longer discovered, so the account-scoped-ARN check no "
+            f"longer covers them. If a preset was renamed or removed, update "
+            f"FINE_TUNED_PRESETS; do not leave the check pointing at nothing."
+        )
+
+    @pytest.mark.parametrize("preset", FINE_TUNED_PRESETS)
+    def test_each_fine_tuned_preset_says_how_to_substitute_its_own_deployment(
+        self, preset: str
+    ):
+        """Shipping the base model silently would lose the preset's whole point.
+
+        The value that makes these runnable is not the one they are demonstrating, so
+        a reader has to be told which line to change. Asserted on the text rather than
+        the parsed document because the instruction is necessarily a comment.
+        """
+        text = (CONFIG_LIBRARY_ROOT / preset).read_text(encoding="utf-8")
+        assert "custom-model-deployment/<deployment-id>" in text, (
+            f"{preset} no longer tells a reader how to point it at their own "
+            f"fine-tuned deployment. Without that, the preset looks like an ordinary "
+            f"base-model config and its reason for existing is invisible."
+        )
+
+
 class TestPolicyClassRegexCoverage:
     """Every policy class in a preset must be reachable.
 

@@ -11,17 +11,27 @@ import useSettingsContext from '../../contexts/settings';
 import generateS3PresignedUrl from '../common/generate-s3-presigned-url';
 import useAppContext from '../../contexts/app';
 import { getFileContents, getFilePresignedUrl } from '../../graphql/generated';
+import { FILE_ACCESS_DENIED_MESSAGE, isAuthorizationError } from '../../hooks/utils/graphql-error';
 import { useDocumentVersion } from '../../contexts/document-version';
 
 interface FileViewerProps {
   objectKey: string;
   // Bucket holding the object; defaults to the stack's InputBucket.
   bucket?: string;
-  // How to mint the presigned GET URL for binary content. 'client' signs with
-  // the user's Cognito identity-pool credentials (works only for buckets that
-  // role can read: Input/Output/Configuration). 'server' asks the
-  // getFilePresignedUrl resolver, whose allow-list also covers e.g. the
-  // TestSetBucket.
+  // How to mint the presigned GET URL for binary content.
+  //
+  // 'client' signs with the user's Cognito identity-pool credentials, which reach
+  // ONLY the Input and Output buckets. 'server' asks the getFilePresignedUrl
+  // resolver, whose bucket allow-list is wider — the TestSetBucket and the
+  // ConfigurationBucket among others — and which also applies the caller's
+  // per-user scope to the key.
+  //
+  // ⚠️ Any bucket other than Input or Output needs 'server'. The Configuration and
+  // Test Set buckets are deliberately absent from the identity-pool role, because
+  // their contents are partitioned per user (allowedConfigVersions,
+  // allowedTestSets) and one shared IAM role cannot express that. Client-signing a
+  // URL for either yields a 403 at fetch time — and adding them back to the role to
+  // "fix" that would reopen the scope bypass the resolver check exists to close.
   presignVia?: 'client' | 'server';
 }
 
@@ -200,7 +210,9 @@ const FileViewer = ({ objectKey, bucket, presignVia = 'client' }: FileViewerProp
       }
     } catch (err) {
       logger.error('Error preparing document for viewing:', err);
-      setError('Failed to load document. Please try again.');
+      // "Please try again" is advice that cannot work for a 403, and the file reads
+      // now require an assigned Cognito group — so branch on the error.
+      setError(isAuthorizationError(err) ? FILE_ACCESS_DENIED_MESSAGE : 'Failed to load document. Please try again.');
     } finally {
       setIsLoading(false);
     }

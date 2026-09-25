@@ -64,15 +64,164 @@ if not result["valid"]:
         print("ERROR:", err)
 ```
 
+### A key no field matches is reported, at every depth
+
+⚠️ **Of the models reachable from `IDPConfig`, three take `extra="allow"`, none
+takes `extra="forbid"`, and every other one takes Pydantic's default
+`extra="ignore"`.** So a key no field matches is **dropped during validation**, and
+the setting the author believes they changed simply is not set — which is
+indistinguishable from a working configuration, because the shipped default is in
+force and the run completes.
+
+That scope is exactly `IDPConfig`'s tree, and **`extra="forbid"` on a record root
+buys nothing below it.** This module holds three other root models. `PricingConfig`
+and `ModelConfigLimitsConfig` forbid extras at depth 0, so a stray key *there*
+raises — but `PricingEntry`, `PricingUnit` and `ModelLimitEntry`, the element types
+of their one list field each, take the permissive default, so a mistyped key inside
+a row was dropped in silence
+([#1211](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/1211)).
+`SchemaConfig` takes `extra="allow"` and its fields name no model, so it drops
+nothing and has nothing to report.
+
+⚠️ **`ModelConfigLimitsConfig` is not reachable from `IDPConfig` at any depth** —
+there is no `model_limits` field on it — which is why the walk written for #1134
+never saw a limit row. `PricingEntry` *is* reachable, via `IDPConfig.pricing`, so a
+misspelled key in a pricing row was already reported when a whole configuration
+document was validated and not when the `DefaultPricing`/`CustomPricing` record was
+validated on its own. The walk takes any root model, so what was missing in both
+cases was the call.
+
+Each record root now makes that call from its own `mode="before"` validator, through
+the shared `log_ignored_config_keys`, which is also what `IDPConfig`'s validator uses
+— one wording, one `deprecated`/`unknown` split, one bound on the line, and the
+message names the root it came from.
+
+⚠️ **Attach a new root's report to its validator, not to a save path**, and the reason
+is not that the save path is bypassed. `save_custom_pricing` and
+`save_custom_model_config_limits` both call `save_configuration`, and the UI resolver
+calls them — so `save_configuration` *is* reached for an operator's edit. What it is
+not reached with is a dict: the resolver validates `ModelConfigLimitsConfig(**payload)`
+itself and hands the helper a model, so `save_configuration`'s
+`if isinstance(config, dict)` branch — the only place a report there could live — never
+sees the operator's keys. By the time the record arrives, the keys have already been
+dropped. Three modules construct these roots from a dict
+(`ConfigurationManager`, the configuration resolver behind the Pricing and Model Limits
+panels, and `update_configuration` at deploy time), and the validator is the one place
+that covers all three.
+
+`include_top_level` stays off for all of them, and on the two that forbid extras that
+is not a matter of taste: Pydantic raises for a depth-0 key, so a line saying it was
+ignored would be false. Note that a root's declared fields are not only its one list —
+both carry a `config_type` discriminator, which `save_custom_model_config_limits` sets
+deliberately — so "anything but the list raises" is not the rule; "anything no field
+matches" is.
+
+⚠️ **One shape joins neither the walk nor the report**, inherited from #1134 and
+unguarded for these three roots: a field whose annotation names *more than one* model
+resolves to no model, so its subtree is never entered and a key dropped inside it is
+reported by nothing. No field of that shape exists in any of the four root trees today.
+`test_no_field_in_the_tree_holds_a_model_the_walk_declines_to_enter` guards it for the
+`IDPConfig` tree only.
+
+`tests/unit/config/test_record_root_unknown_keys.py` derives the root set from the
+annotation on `ConfigurationManager.save_configuration` — the enumeration production
+code already keeps — and the models under each root from the annotations, so a fifth
+record type is covered by those tests without being named in them. It also checks
+`config_library/pricing.yaml` and `config_library/model_config_limits.yaml` against
+their own roots. `scripts/tests/test_preset_keys_are_read.py` deliberately excludes
+those two files from its scan, correctly, because they are not `IDPConfig` documents;
+the effect was that no gate read them against any model.
+
+`IDPConfig.log_deprecated_fields` reports those keys. It walks the whole model
+tree, so a key at any depth is named with its **dotted path**:
+
+```
+IDPConfig: Ignoring unknown nested fields (not defined in model, so the shipped
+default stays in force): extraction.validation.enabld (did you mean
+extraction.validation.enabled?), ocr.dpi (did you mean ocr.image.dpi?)
+```
+
+`validate_config()` puts the same findings in `result["warnings"]`, which is where
+`idp-cli config-validate` shows them — the moment a typo is cheap to fix — and in
+`result["ignored_keys"]` as `{path, kind, suggestion}` for a caller that needs to act
+rather than print. `idp-cli` and `idp_sdk` both consume those, so **this is the only
+reporter at any depth**. Each used to compute its own top-level extras as
+`set(config) - set(IDPConfig.model_fields)`, which said two keys the loader honours
+would be ignored — `description`, which `update_configuration` pops and stores, and
+`rule_classes`, which is renamed to `policy_classes` — and, once the library began
+reporting too, said everything else twice.
+
+`config-validate --strict` keeps its contract of failing on a **top-level** extra
+only. Extending it downwards would fail configurations that pass today, in the one
+flag built for a pipeline; the nested finding is reported either way.
+
+**It reports; it does not reject.** `extra` is unchanged on every model, so a
+stored configuration that loads today still loads. Rejecting would refuse
+configurations that work, and would need a migration story for every key a later
+version removes.
+
+The walk is `models.collect_ignored_config_keys(data, model)`, and it is public
+because the gates that ask the same question of shipped files call it rather than
+reimplementing the resolution, so none of them can drift from what a load actually
+drops: `scripts/tests/test_preset_keys_are_read.py` over `config_library/`,
+`tests/unit/config/test_unknown_nested_keys.py` over the merged defaults, and
+`tests/unit/config/test_record_root_unknown_keys.py` over the pricing and model-limit
+records.
+
+Three things to know before using it:
+
+- **Migrate first.** A legacy key is *relocated* on load, not dropped —
+  `extraction.agentic.validation` becomes `extraction.validation` — so against a
+  pre-migration dict the walk reports a key that works. The model validator runs
+  after `migrations.migrate_config` for that reason; `validate_config` migrates a
+  copy before asking.
+- **Two things are deliberately not unknown**, and both are read off the models
+  rather than listed. A field whose annotation names no model is a free-form
+  document whose keys are the author's (`classes`, `policy_classes`, a hook's
+  `args`), so the walk does not enter it. A model with `extra="allow"` *keeps* an
+  undeclared key, so nothing is dropped and there is nothing to report.
+- ⚠️ **One thing is a gap rather than a decision:** a field whose annotation names
+  *more than one* model — a discriminated union — is not entered, because nothing
+  in the annotation says which member a value is, and keys in there **are** dropped.
+  No field in the tree is shaped that way today, and
+  `test_no_field_in_the_tree_holds_a_model_the_walk_declines_to_enter` fails when one
+  appears, because otherwise the guarantee narrows silently: the models the walk
+  reaches would stop including that subtree and every derived parametrisation would
+  shrink with it.
+- **One path is suppressed**, `discovery.output_format`, a dead knob this repository
+  ships in its own system defaults. The reasoning, the ratchets and why it is not in
+  `scripts/tests/gate_exemptions.json` are written at
+  `SUPPRESSED_IGNORED_KEY_PATHS`.
+- **The mis-nested case is the sharp one.** `dpi` is a real field of
+  `ImageConfig`; written as `ocr.dpi` it is dropped, and `ImageConfig`'s
+  validator never runs — so `ocr.dpi: "abc"` is accepted in silence while
+  `ocr.image.dpi: "abc"` raises. When you probe this config tree, assert the
+  value **arrived** (`cfg.ocr.image.dpi == expected`), never that construction
+  succeeded.
+- **A suggestion is offered only when it is the only answer.** First the wrong-depth
+  question, read outwards from where the key was written — the written prefix, then
+  its parent, stopping at the first level with any candidate — which answers both
+  directions: `ocr.dpi` → `ocr.image.dpi` and `ocr.image.backend` → `ocr.backend`.
+  Within that level the shallowest candidate wins if it is alone there, and a tie
+  declines: `enabled` is declared at eight places one level under `extraction`, so
+  `extraction.enabled` gets no hint, and `hitl.model` reaches the root to find eleven
+  and declines rather than answering with `classification.model`. Failing that, a
+  close name among the **siblings** (`enabld` → `enabled`). A wrong path is worse
+  than none: it sends the author to edit something correct. A list step is spelled
+  `ocr.postHook[].arn` — notation, since the dotted form is not a path — and a
+  mapping subtree gets findings but no suggestions, because a suggestion there would
+  have to invent a key name.
+
 ## Files
 
 | File | Purpose |
 |------|---------|
 | `models.py` | Typed `IDPConfig` Pydantic models (per-service config: OCR, classification, extraction, assessment, summarization, evaluation, chat, discovery, …). The source of truth for config field defaults and validation. |
 | `merge_utils.py` | Merge user config with system defaults, diff/strip helpers, and `validate_config()` with its enhanced validators. |
-| `configuration_manager.py` | `ConfigurationManager` — CRUD against the DynamoDB Configuration Table (Default + Custom records), compression, versioning. |
+| `configuration_manager.py` | `ConfigurationManager` — CRUD against the DynamoDB Configuration Table (Default + Custom records), compression, versioning. Takes an optional `region`; see [Region for the underlying clients](#region-for-the-underlying-clients). |
 | `migration.py` | Migration of legacy configuration formats to the current JSON-Schema-based format. |
 | `revisions.py` | `ConfigRevisionStore` — immutable numbered snapshots of a Configuration Profile's configuration. See [Configuration Profiles and revisions](#configuration-profiles-and-revisions). |
+| `retired_models.py` | `RETIRED_MODELS` / `is_retired()` — the single registry of Bedrock models past their end-of-life date. See [Retired models](#retired-models). |
 | `constants.py` | Configuration constants, including the reserved profile names and the active-profile pointer key. |
 | `class_names.py` | Canonical rules for document class ids — `is_valid_class_name()` / `sanitize_class_name()`. See [Class ids](#class-ids). |
 | `class_settings.py` | `carry_forward_authored_settings()` — preserve a class's hand-authored class-level `x-aws-idp-*` keys when a generator (Discovery, BDA blueprint optimization) regenerates that class. See [Regenerating a class](#regenerating-a-class). |
@@ -351,6 +500,78 @@ detects a rollback (a stored `config_format_version` newer than the running
 code's) and returns SUCCESS rather than FAILED on a parse error, so the rollback
 completes instead of wedging — a genuine forward bad-config still fails loudly.
 
+## Region for the underlying clients
+
+`ConfigurationManager(table_name=…, region=…)`,
+`ConfigurationReader(table_name=…, region=…)` and the `get_config(…, region=…)`
+convenience wrapper take an optional `region`, which is passed to the DynamoDB
+resource they build and, through `ConfigRevisionStore`, to the S3 client used for
+revision history.
+
+`region=None` means "let boto3 resolve it" — `AWS_REGION`, then
+`AWS_DEFAULT_REGION`, then the profile, then IMDS. That is the right value inside
+a Lambda, where the runtime always sets `AWS_REGION`, and it is why these classes
+worked for years without the parameter.
+
+**An out-of-region caller must pass it.** A DynamoDB table name is not
+region-qualified, so a caller that resolved `ConfigurationTable`'s physical id
+from CloudFormation in one region and then builds a manager without that region
+reads and writes *the same name* in whatever region the ambient credentials
+resolve to. On a multi-region account that is a successful write to a different
+stack's configuration table, and the caller is told it succeeded. Every
+`idp-cli config-*` command, `idp-cli bootstrap`, `idp-cli discover`,
+`idp-cli config-sync-bda` and `scripts/migrate_multi_instance_baselines.py` are
+out-of-region callers in this sense. Two service classes build their own clients
+and take a `region` for the same reason — `BdaBlueprintService`, which writes
+BDA-derived document classes, and both discovery classes, which write the
+discovered schema and rules.
+
+`scripts/tests/test_config_region_threading.py` enforces this across the whole
+tree: it parses every tracked `.py` and requires each construction of these
+classes to pass a `region` unless it lives in a Lambda-deployed directory, where
+the runtime always sets `AWS_REGION`. That exemption is decided by **directory**
+rather than by a list, so a new handler is covered automatically; the two
+library-internal exceptions are named there with a premise the file asserts.
+
+The precedence, stated once: an explicit `--region` (or `region=`) wins;
+otherwise boto3's own chain applies. No hardcoded region is substituted at any
+point in this layer.
+
+## Retired models
+
+`retired_models.py` holds every Bedrock model past its AWS **end-of-life** date —
+inaccessible in every region, every call returning
+`ResourceNotFoundException: This model version has reached the end of its life`.
+That is distinct from `LEGACY`, where existing users can still invoke the model and
+it correctly stays selectable; only the first class is listed.
+
+It lives in shipped code because three consumers need the same answer:
+`validate_config` (so `idp-cli config-validate` and `config-upload --validate`
+reject a configuration that pins a dead model before a document fails two stages
+in), `scripts/tests/test_model_surface_consistency.py`, and the #708 gate
+`scripts/sdlc/tests/test_retired_models_not_offered.py`.
+
+**Why one registry and not two.** There were two, and they encoded contradictory
+policies. The #708 gate required a retired model to be *absent* from
+`pricing.yaml`, because `validate_config` derived its valid-model set from that
+file and the absence is what made validation fail. But a pricing entry is read
+retrospectively — a cost report over documents processed while the model was still
+selectable resolves its rate by model id, so deleting the row re-prices historical
+runs at zero. Both goals are legitimate and neither can be met by the presence or
+absence of a pricing row. So validation now rejects a model because it is *known to
+be retired*, the pricing row stays, and the fragile coupling to an unrelated file
+is gone.
+
+`is_retired()` matches any region or geo variant: end of life is a property of the
+**foundation model**, so when `amazon.nova-premier-v1:0` was withdrawn the `us.`,
+`eu.` and `global.` profiles routing to it died with it, and the bare form is the
+one GovCloud uses.
+
+`was_offered` decides one thing only — whether a `pricing.yaml` row must be
+retained. A model this solution never made selectable cannot appear in anyone's
+cost report, so it needs no rate, and inventing one would breach the "never invent
+model facts" rule in `.claude/skills/add-model.md`.
+
 ## Adding or changing a model
 
 Model defaults and inference fields live in `models.py`, and model/feature
@@ -358,3 +579,12 @@ compatibility is enforced in `merge_utils.py`. Adding a selectable Bedrock model
 touches many other files too (template enums, pricing, UI, the bedrock client,
 docs) — follow the checklist in
 [.claude/skills/documentation.md](../../../../.claude/skills/documentation.md).
+
+Removing one that has reached **end of life** is the reverse walk of that
+checklist, with one exception: the model keeps its `pricing.yaml` entry, its
+`model_config_limits.yaml` pattern and its quota-code entries, because all three
+are consulted for whatever model a *deployed* stack's stored configuration names,
+which is a superset of what is newly selectable. What must go is every surface a
+customer can newly choose from — the template enums, the UI dropdown, the config
+presets and any `default=` in `models.py`.
+`scripts/tests/test_model_surface_consistency.py` enforces both halves.

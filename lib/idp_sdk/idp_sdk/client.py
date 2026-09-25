@@ -92,7 +92,10 @@ class IDPClient:
 
         Search processed documents:
         >>> result = client.search.query("What is the total amount on invoice 12345?")
-        >>> print(f"Answer: {result.answer} (confidence: {result.confidence:.2%})")
+        >>> if result.answer:
+        ...     print(f"Answer: {result.answer} ({result.confidence:.2%})")
+        >>> for citation in result.citations:
+        ...     print(f"  from {citation.document.document_id} p{citation.document.page}")
 
     Attributes:
         stack: StackOperation - Infrastructure management

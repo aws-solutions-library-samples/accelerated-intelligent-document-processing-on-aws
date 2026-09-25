@@ -20,6 +20,7 @@ import { ConsoleLogger } from 'aws-amplify/utils';
 import { generateClient } from '../../api/client-shim';
 import { listDocumentVersions, getDocumentVersion, compareDocumentVersions, deleteDocumentVersion } from '../../graphql/generated';
 import useUserRole from '../../hooks/use-user-role';
+import { describeApiError } from '../../hooks/utils/graphql-error';
 
 const logger = new ConsoleLogger('DocumentVersionsPanel');
 const client = generateClient();
@@ -153,7 +154,7 @@ const DocumentVersionsPanel = ({ objectKey, viewingRunId = null, onViewVersion }
       setCompareResult(typeof raw === 'string' ? JSON.parse(raw) : raw);
     } catch (err) {
       logger.error('Error comparing versions', err);
-      setError('Failed to compare versions');
+      setError(describeApiError(err, 'compare versions'));
       setCompareModalVisible(false);
     } finally {
       setIsComparing(false);
@@ -205,7 +206,7 @@ const DocumentVersionsPanel = ({ objectKey, viewingRunId = null, onViewVersion }
       onViewVersion(version.RunId, detail);
     } catch (err) {
       logger.error('Error loading version for viewing', err);
-      setError('Failed to load version');
+      setError(describeApiError(err, 'load this version'));
     } finally {
       setLoadingVersionId(null);
     }

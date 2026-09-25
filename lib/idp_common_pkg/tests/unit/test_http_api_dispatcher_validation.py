@@ -241,10 +241,26 @@ def _load_index(monkeypatch):
     return _load_module("index", _DISPATCHER_DIR / "index.py")
 
 
-def _http_event(field, arguments):
-    """A normalized HTTP API v2 event the dispatcher's adapter accepts."""
+def _http_event(field, arguments, groups=("Viewer",)):
+    """A normalized HTTP API v2 event the dispatcher's adapter accepts.
+
+    The caller carries a group by default because the two handler tests below drive
+    the full ``handler()`` for ``getDocument``, which requires an assigned Cognito
+    group (`ANY_GROUP`). Without one they would get a 403 from ``authz.enforce``
+    before reaching the argument validation they are about — the group floor doing
+    its job, not a defect in these tests. Any single group satisfies the policy, so
+    the lowest-privilege role is used.
+    """
     return {
-        "requestContext": {"http": {"method": "POST"}},
+        "requestContext": {
+            "http": {"method": "POST"},
+            "authorizer": {
+                "claims": {
+                    "sub": "11111111-2222-3333-4444-555555555555",
+                    "cognito:groups": list(groups),
+                }
+            },
+        },
         "pathParameters": {"field": field},
         "body": json.dumps({"arguments": arguments}),
         "headers": {},
@@ -377,7 +393,7 @@ def test_empty_args_accepted_unless_non_null_required(validation, spec):
 
 def test_required_arg_count_is_stable(spec):
     """Guardrail so a schema change that alters the required-arg surface is
-    visible in the diff (111 fields require a non-null arg as of this spec — the
+    visible in the diff (112 fields require a non-null arg as of this spec — the
     test-set lifecycle ops getTestSetVersions/publishTestSetVersion/
     removeDocumentsFromTestSet/sendTestRunToReview added 91–94, the
     draft-labeling ops generateDraftLabels/getDraftLabelJob added 95–96,
@@ -389,8 +405,9 @@ def test_required_arg_count_is_stable(spec):
     getConfigProfileRevision, restoreConfigProfileRevision,
     labelConfigProfileRevision, deleteConfigProfileRevision — 105–109, each
     requiring profileName and all but the first also revision, and
-    openTestSetAnnotationDraft the 110th, and createEmptyTestSet the 111th)."""
+    openTestSetAnnotationDraft the 110th, createEmptyTestSet the 111th, and
+    addDocumentsToTestSetByKey the 112th)."""
     required = [
         f for f, v in spec["fields"].items() if any(a["non_null"] for a in v["args"])
     ]
-    assert len(required) == 111
+    assert len(required) == 112

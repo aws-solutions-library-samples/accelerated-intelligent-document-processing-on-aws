@@ -12,7 +12,7 @@
 ## 1. Overview
 
 This guide details the security controls implemented in the GenAI IDP Accelerator
-to mitigate the 98 identified threats. Controls are organized by security domain
+to mitigate the 99 identified threats. Controls are organized by security domain
 and mapped to the specific threats they address.
 
 > **A control listed here is a control that exists in the shipped templates and
@@ -147,13 +147,17 @@ and mapped to the specific threats they address.
 |---------|---------------|
 | **Short expiration** | Short expiration on upload URLs |
 | **Minting authorization** | `uploadDocument` requires the Admin/Author group (server-side) |
-| **Read allow-list** | `getFilePresignedUrl`/`getFileContents` restrict the target to this stack's buckets (`_validate_bucket`) |
+| **Read allow-list** | `getFilePresignedUrl`/`getFileContents` restrict the target to this stack's buckets (`_validate_bucket`), and fail closed if the allow-list is unset |
+| **Read key scope** | The same two operations match the requested **key** against the caller's scope for the two per-user-partitioned buckets — `allowedConfigVersions` against the profile in a `config_revisions/<profile>/` key, `allowedTestSets` against the test set in a `<test_set_id>/` key — in the one function both fields call before any S3 call (`_validate_key_scope`) |
 
-> **Read-scoping gap (UI.T06).** Presigned **read** URLs are bucket-scoped but
-> **not key-scoped**, and both operations are callable by *any authenticated
-> user* — so they are not a valid boundary for deployments relying on
-> `allowedConfigVersions` to partition users. The allow-list also fails **open**
-> if the bucket env vars are unset. Open item.
+> **Read-scoping gap (UI.T06).** Object reads are not scoped per **document**:
+> nothing records which documents belong to whom, so for the Input and Output
+> buckets a key is bounded only by the bucket allow-list, and any authenticated
+> caller holding *any one of the five groups* can read any document's bytes. The
+> two per-user scope axes are enforced (see **Read key scope** above) and the
+> buckets they govern are off the browser's Identity Pool role, so
+> `allowedConfigVersions` and `allowedTestSets` are real boundaries here. Closing
+> the rest needs a document ownership model — issue #1033. Open item.
 
 ## 4. Data Protection
 

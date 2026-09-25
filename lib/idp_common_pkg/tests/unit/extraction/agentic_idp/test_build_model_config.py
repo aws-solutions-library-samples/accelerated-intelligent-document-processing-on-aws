@@ -65,6 +65,12 @@ pytestmark = [
             "global.anthropic.claude-opus-5:1m",
             "global.anthropic.claude-opus-5",
         ),
+        ("us.anthropic.claude-opus-5-5:1m", "us.anthropic.claude-opus-5-5"),
+        ("eu.anthropic.claude-opus-5-5:1m", "eu.anthropic.claude-opus-5-5"),
+        (
+            "global.anthropic.claude-opus-5-5:1m",
+            "global.anthropic.claude-opus-5-5",
+        ),
         ("us.anthropic.claude-opus-4-6-v1:1m", "us.anthropic.claude-opus-4-6-v1"),
         ("us.anthropic.claude-sonnet-4-6:1m", "us.anthropic.claude-sonnet-4-6"),
     ],

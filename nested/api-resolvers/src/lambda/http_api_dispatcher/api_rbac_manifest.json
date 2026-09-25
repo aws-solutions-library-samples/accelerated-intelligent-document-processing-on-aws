@@ -13,6 +13,10 @@
     "addDocumentsToTestSet": [
       "Admin"
     ],
+    "addDocumentsToTestSetByKey": [
+      "Admin",
+      "Author"
+    ],
     "addDocumentsToTestSetFromUpload": [
       "Admin",
       "Author"
@@ -43,7 +47,13 @@
       "Admin",
       "Author"
     ],
-    "compareDocumentVersions": "ANY",
+    "compareDocumentVersions": [
+      "Admin",
+      "Annotator",
+      "Author",
+      "Reviewer",
+      "Viewer"
+    ],
     "compareTestRuns": [
       "Admin",
       "Author"
@@ -68,8 +78,20 @@
     "createUser": [
       "Admin"
     ],
-    "deleteAgentJob": "ANY",
-    "deleteChatSession": "ANY",
+    "deleteAgentJob": [
+      "Admin",
+      "Annotator",
+      "Author",
+      "Reviewer",
+      "Viewer"
+    ],
+    "deleteChatSession": [
+      "Admin",
+      "Annotator",
+      "Author",
+      "Reviewer",
+      "Viewer"
+    ],
     "deleteConfigProfileRevision": [
       "Admin"
     ],
@@ -125,8 +147,20 @@
       "Annotator",
       "Author"
     ],
-    "getChatMessages": "ANY",
-    "getCircuitBreakerStatus": "ANY",
+    "getChatMessages": [
+      "Admin",
+      "Annotator",
+      "Author",
+      "Reviewer",
+      "Viewer"
+    ],
+    "getCircuitBreakerStatus": [
+      "Admin",
+      "Annotator",
+      "Author",
+      "Reviewer",
+      "Viewer"
+    ],
     "getConfigProfileRevision": [
       "Admin",
       "Author",
@@ -148,9 +182,27 @@
       "Author",
       "Viewer"
     ],
-    "getDocument": "ANY",
-    "getDocumentCount": "ANY",
-    "getDocumentVersion": "ANY",
+    "getDocument": [
+      "Admin",
+      "Annotator",
+      "Author",
+      "Reviewer",
+      "Viewer"
+    ],
+    "getDocumentCount": [
+      "Admin",
+      "Annotator",
+      "Author",
+      "Reviewer",
+      "Viewer"
+    ],
+    "getDocumentVersion": [
+      "Admin",
+      "Annotator",
+      "Author",
+      "Reviewer",
+      "Viewer"
+    ],
     "getDraftLabelJob": [
       "Admin",
       "Annotator",
@@ -159,8 +211,20 @@
     "getFeatureLaunchUrl": [
       "Admin"
     ],
-    "getFileContents": "ANY",
-    "getFilePresignedUrl": "ANY",
+    "getFileContents": [
+      "Admin",
+      "Annotator",
+      "Author",
+      "Reviewer",
+      "Viewer"
+    ],
+    "getFilePresignedUrl": [
+      "Admin",
+      "Annotator",
+      "Author",
+      "Reviewer",
+      "Viewer"
+    ],
     "getFinetuningJob": "ANY",
     "getLatestPublishedVersion": "ANY",
     "getModelConfigLimits": [
@@ -179,7 +243,13 @@
       "Author",
       "Viewer"
     ],
-    "getStepFunctionExecution": "ANY",
+    "getStepFunctionExecution": [
+      "Admin",
+      "Annotator",
+      "Author",
+      "Reviewer",
+      "Viewer"
+    ],
     "getTestRun": [
       "Admin",
       "Author"
@@ -238,11 +308,41 @@
       "Admin",
       "Author"
     ],
-    "listDocumentVersions": "ANY",
-    "listDocuments": "ANY",
-    "listDocumentsByDateRange": "ANY",
-    "listDocumentsDateHour": "ANY",
-    "listDocumentsDateShard": "ANY",
+    "listDocumentVersions": [
+      "Admin",
+      "Annotator",
+      "Author",
+      "Reviewer",
+      "Viewer"
+    ],
+    "listDocuments": [
+      "Admin",
+      "Annotator",
+      "Author",
+      "Reviewer",
+      "Viewer"
+    ],
+    "listDocumentsByDateRange": [
+      "Admin",
+      "Annotator",
+      "Author",
+      "Reviewer",
+      "Viewer"
+    ],
+    "listDocumentsDateHour": [
+      "Admin",
+      "Annotator",
+      "Author",
+      "Reviewer",
+      "Viewer"
+    ],
+    "listDocumentsDateShard": [
+      "Admin",
+      "Annotator",
+      "Author",
+      "Reviewer",
+      "Viewer"
+    ],
     "listFinetuningJobs": "ANY",
     "listInstalledFeatures": "ANY",
     "listSampleDocuments": [
@@ -272,7 +372,13 @@
       "Admin",
       "Author"
     ],
-    "queryKnowledgeBase": "ANY",
+    "queryKnowledgeBase": [
+      "Admin",
+      "Annotator",
+      "Author",
+      "Reviewer",
+      "Viewer"
+    ],
     "reextractTestSetDocument": [
       "Admin",
       "Annotator",
@@ -312,7 +418,13 @@
       "Author",
       "Viewer"
     ],
-    "sendChatDocumentMessage": "ANY",
+    "sendChatDocumentMessage": [
+      "Admin",
+      "Annotator",
+      "Author",
+      "Reviewer",
+      "Viewer"
+    ],
     "sendTestRunToReview": [
       "Admin",
       "Author"

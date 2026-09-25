@@ -25,6 +25,7 @@ import logging
 import os
 import re
 from datetime import datetime, timedelta, timezone
+from fnmatch import fnmatchcase
 from typing import Any, Dict, List, Optional
 from urllib.parse import unquote
 
@@ -39,6 +40,17 @@ _MAPPING_TABLE = os.environ.get("MAPPING_TABLE_NAME", "")
 _HOOK_FUNCTION_ARN = os.environ.get("HOOK_FUNCTION_ARN", "")
 _USERS_TABLE = os.environ.get("USERS_TABLE_NAME", "")
 _WINDOW_RE = re.compile(r"^(\d+)([hdw])$")
+
+# The two key spaces a caller's scope row is found on, on the HOST's UsersTable,
+# and the claim each is read from. Restated from ``idp_common.config_scope`` — this
+# extension ships as its own stack with no ``idp_common`` layer — and held to that
+# module by ``scripts/tests/test_scope_lookup_fail_closed.py``.
+USERS_TABLE_SCOPE_INDEX = "EmailIndex"
+USERS_TABLE_SCOPE_KEY = "email"
+USERS_TABLE_SUB_POINTER_PREFIX = "SUB#"
+USERS_TABLE_USER_KEY_PREFIX = "USER#"
+SCOPE_KEY_CLAIM = "email"
+SCOPE_SUB_CLAIM = "sub"
 
 # Built on first use, NOT at import. `boto3.resource(...)` at module scope
 # resolves credentials and constructs a client while the module is still being
@@ -77,8 +89,52 @@ def _caller_claims(event: Dict[str, Any]) -> Dict[str, Any]:
 
 
 def _caller_email(event: Dict[str, Any]) -> str:
-    c = _caller_claims(event)
-    return c.get("email") or c.get("cognito:username") or c.get("sub") or ""
+    """The caller's email, from the ``email`` claim and nothing else.
+
+    The value is the hash key of a ``UsersTable`` ``EmailIndex`` query, so it has
+    to be an email address or it matches nothing.
+
+    ⚠️ **There is deliberately no fallback to another claim.** A
+    ``cognito:username`` is not an email address for every caller, so querying an
+    email-keyed index with one matches no row — and an empty page is
+    indistinguishable from "this user has no restriction". A fallback therefore
+    converts an *unresolvable* caller into an *unrestricted* one, with no AWS
+    fault required, on the route that reveals the PII re-identification mapping.
+
+    The Cognito ``sub`` is **not** a fallback for this value either. It is a key
+    into a different key space on the same table and is read separately by
+    :func:`_caller_sub`; putting one where the other belongs is the substitution
+    this docstring is about, not a second route.
+
+    This mirrors ``caller_email_from_claims`` in the host's
+    ``idp_common.config_scope``, which is the canonical statement of the rule.
+    The logic is restated here rather than imported because this extension ships
+    as its own stack with no ``idp_common`` layer; the shared static gate in
+    ``scripts/tests/test_scope_lookup_fail_closed.py`` covers this file so the
+    two cannot drift.
+    """
+    return str(_caller_claims(event).get(SCOPE_KEY_CLAIM) or "").strip()
+
+
+def _caller_sub(event: Dict[str, Any]) -> str:
+    """The caller's immutable Cognito ``sub``, from the ``sub`` claim and no other.
+
+    Used only to build a ``SUB#<sub>`` pointer key on the host UsersTable, never
+    as the hash key of ``EmailIndex``. A request body is not a source for it.
+    """
+    return str(_caller_claims(event).get(SCOPE_SUB_CLAIM) or "").strip()
+
+
+def _sub_pointer_key(caller_sub: str) -> Dict[str, str]:
+    """The UsersTable key of the pointer item for one Cognito ``sub``."""
+    key = f"{USERS_TABLE_SUB_POINTER_PREFIX}{caller_sub}"
+    return {"PK": key, "SK": key}
+
+
+def _user_row_key(user_id: str) -> Dict[str, str]:
+    """The UsersTable key of the row holding one user's scope."""
+    key = f"{USERS_TABLE_USER_KEY_PREFIX}{user_id}"
+    return {"PK": key, "SK": key}
 
 
 def _caller_groups(event: Dict[str, Any]) -> list:
@@ -89,15 +145,24 @@ def _caller_groups(event: Dict[str, Any]) -> list:
     return list(raw)
 
 
-def _caller_allowed_versions(email: str) -> Optional[list]:
+def _caller_allowed_versions(email: str, caller_sub: str = "") -> Optional[list]:
     """The caller's allowedConfigVersions scope from the host UsersTable.
+
+    The row is looked for on the immutable Cognito ``sub`` first, via a
+    ``SUB#<sub>`` pointer item carrying the ``userId``, and on the ``email`` claim
+    second, via ``EmailIndex``. The two are not a fallback chain over one key: each
+    identifier goes only to the key space that indexes it. Preferring the ``sub``
+    is what keeps the restriction working for a caller whose address has diverged
+    from their row, which on this route would otherwise hand out a
+    re-identification key.
 
     Returns None = unrestricted (no scope set, matching the host's own rule).
     Raises ScopeLookupError on a lookup failure so callers gating a sensitive
     resource (the PII mapping) FAIL CLOSED rather than treating a transient
     DynamoDB error as 'unrestricted'."""
-    if not email:
-        raise ScopeLookupError("no caller email in JWT claims")
+    caller_sub = str(caller_sub or "").strip()
+    if not email and not caller_sub:
+        raise ScopeLookupError("no caller email or sub in JWT claims")
     if not _USERS_TABLE:
         # No UsersTable wired — cannot evaluate scope; deny for the mapping.
         raise ScopeLookupError("USERS_TABLE_NAME not configured")
@@ -105,17 +170,50 @@ def _caller_allowed_versions(email: str) -> Optional[list]:
         from boto3.dynamodb.conditions import Key as _Key
 
         table = _ddb().Table(_USERS_TABLE)
-        resp = table.query(
-            IndexName="EmailIndex", KeyConditionExpression=_Key("email").eq(email)
-        )
-        items = resp.get("Items", [])
-        if items:
-            scope = items[0].get("allowedConfigVersions")
-            return list(scope) if scope else None
-        return None  # user has no explicit scope row → unrestricted
+        row = None
+        if caller_sub:
+            pointer = table.get_item(Key=_sub_pointer_key(caller_sub)).get("Item")
+            user_id = str((pointer or {}).get("userId") or "").strip()
+            if user_id:
+                row = table.get_item(Key=_user_row_key(user_id)).get("Item") or None
+            # ⚠️ This leg cannot return an unrestricted row. The host's writer only
+            # creates a pointer for a row that carries a restriction, because the
+            # pointer is read FIRST and so decides the answer — one at an unscoped
+            # row would pin "unrestricted" ahead of whatever the email join would
+            # have found. A pointer resolving an unscoped row means that invariant
+            # is broken, so it is treated as stale and the email join is tried,
+            # which can only tighten. Mirrors ``_row_by_sub`` in the host's
+            # ``idp_common.config_scope``.
+            if row is not None and not _normalize_scope(
+                row.get("allowedConfigVersions")
+            ):
+                logger.warning(
+                    "A host UsersTable %s pointer names a row carrying no "
+                    "allowedConfigVersions; treating it as stale",
+                    USERS_TABLE_SUB_POINTER_PREFIX,
+                )
+                row = None
+        if row is None and email:
+            resp = table.query(
+                IndexName=USERS_TABLE_SCOPE_INDEX,
+                KeyConditionExpression=_Key(USERS_TABLE_SCOPE_KEY).eq(email),
+            )
+            items = resp.get("Items", [])
+            row = items[0] if items else None
     except Exception as exc:  # noqa: BLE001
-        logger.warning("User scope lookup failed for %s: %s", email, exc)
+        # No caller email in the message: it lands in a log group and is re-raised
+        # to a route that may surface it. Mirrors the canonical module, which omits
+        # it for the same reason.
+        logger.warning("User scope lookup failed on the host UsersTable: %s", exc)
         raise ScopeLookupError(str(exc)) from exc
+    if row is None and not email:
+        # A sub-only caller whose sub no row records. Unlike an empty email page
+        # this is not an answer about the caller — their row may simply predate the
+        # pointer writer — and there is no second key to try, so it denies.
+        raise ScopeLookupError("no caller email, and no row records this caller's sub")
+    if row is None:
+        return None  # user has no explicit scope row → unrestricted
+    return _normalize_scope(row.get("allowedConfigVersions"))
 
 
 def _parse_window(raw: Optional[str]) -> Optional[timedelta]:
@@ -201,13 +299,86 @@ def _read_mapping(doc_id: str) -> Optional[Dict[str, Any]]:
         return None
 
 
+def _normalize_scope(raw: Any) -> Optional[list]:
+    """Coerce a raw ``allowedConfigVersions`` attribute into a scope list.
+
+    Returns None for "unrestricted" — absent, empty, or nothing usable left after
+    blank entries are dropped, because a stray empty string must not become a rule
+    that matches nothing. Mirrors ``normalize_scope`` in
+    ``idp_common.config_scope``; see ``_scope_allows`` for why it is restated here.
+    """
+    if not raw:
+        return None
+    if isinstance(raw, str):
+        raw = [raw]
+    if not isinstance(raw, (list, tuple, set)):
+        logger.warning(
+            "Ignoring unusable allowedConfigVersions of type %s", type(raw).__name__
+        )
+        return None
+    entries = [str(entry).strip() for entry in raw if str(entry).strip()]
+    return entries or None
+
+
+def _scope_allows(allowed: Optional[list], profile_name: Optional[str]) -> bool:
+    """Whether a scope permits a configuration profile name.
+
+    Entries may be exact names (``lending``) or **glob patterns**
+    (``lending-*``, ``uc?-prod``): patterns are first-class in this scope axis
+    because deployments predating revision history encode lineage in the profile
+    *name*. A plain ``in`` test would deny a pattern-scoped user every row they are
+    entitled to — fail-closed, so not a leak, but wrong.
+
+    An empty or unset scope is unrestricted; a set scope **denies an unnamed
+    target**, because an object with no profile name cannot be proven in scope.
+
+    ⚠️ This restates ``scope_allows`` from ``idp_common.config_scope``, which is
+    canonical. It is not imported because this extension ships as its own stack
+    with no ``idp_common`` layer — the same reason ``_caller_email`` restates
+    ``caller_email_from_claims``. Keep the two in step; a scope matcher that
+    differs between call sites is the same class of bug as a lookup that does.
+    """
+    entries = _normalize_scope(allowed)
+    if not entries:
+        return True
+    if not profile_name:
+        return False
+    name = str(profile_name)
+    return any(
+        entry == name
+        or (any(c in entry for c in ("*", "?", "[")) and fnmatchcase(name, entry))
+        for entry in entries
+    )
+
+
 def _visible_to(row: Dict[str, Any], is_admin: bool, allowed: Optional[list]) -> bool:
     """Config-version RBAC for a report row: Admins and unrestricted users see
     all; a scoped user sees a row only if the ORIGINAL's config version is in
     their allowedConfigVersions."""
-    if is_admin or allowed is None:
+    if is_admin:
         return True
-    return (row.get("originalConfigVersion") or "") in allowed
+    return _scope_allows(allowed, row.get("originalConfigVersion"))
+
+
+_NOT_FOUND = {"error": "no redaction record for that document, or it is out of scope."}
+
+
+def _not_found() -> Dict[str, Any]:
+    """The single answer for "no such record" and "not yours" on the doc routes.
+
+    ⚠️ **One body and one status for both, deliberately.** Distinguishing them tells a
+    caller which ``documentId``s exist in the audit table — one bit per request, from
+    a caller who is entitled to read none of them, and a scoped Viewer or Author is
+    exactly the population that can ask. The audit table is an inventory of every
+    document the anonymizer touched, so enumerating it is itself the disclosure.
+
+    A caller whose scope cannot be **evaluated** still gets a distinct 403: that
+    answer is about the caller, not about the resource, so it leaks nothing about
+    which ids exist — and telling an operator "your access could not be verified"
+    rather than "not found" is the difference between a diagnosable failure and a
+    silent one.
+    """
+    return _response(404, dict(_NOT_FOUND))
 
 
 def lambda_handler(event: Dict[str, Any], _context: Any) -> Dict[str, Any]:
@@ -237,12 +408,24 @@ def lambda_handler(event: Dict[str, Any], _context: Any) -> Dict[str, Any]:
             return _response(400, {"error": str(exc)})
         since = datetime.now(timezone.utc) - window if window else None
         # RBAC: scope the list to config versions the caller may see. A scope
-        # lookup failure denies (empty list) rather than leaking all rows.
+        # lookup failure denies with the same 403 the two /report/{docId} routes
+        # below return for the identical condition.
+        #
+        # Two shapes this must NOT take. Encoding the denial as an empty `allowed`
+        # list for `_visible_to` to interpret works only while that function reads
+        # `None` — and not any falsy value — as unrestricted, which is one
+        # refactor away from inverting it. And answering 200 with an empty row set
+        # is worse than either: no rows are served, so it is still fail-closed,
+        # but this is an *audit* view, and an empty report is the truthful answer
+        # when nothing was redacted. A missing IAM grant, a throttle or a caller
+        # with no email claim would all present to a reviewer as "the anonymizer
+        # redacted nothing" — the UI renders `rows: []` as a legitimate zero and
+        # only raises its error banner on a non-2xx.
         try:
-            allowed = _caller_allowed_versions(_caller_email(event))
+            allowed = _caller_allowed_versions(_caller_email(event), _caller_sub(event))
         except ScopeLookupError:
-            logger.warning("Scope lookup failed for report list — returning empty")
-            allowed = []
+            logger.warning("Scope lookup failed for the report list — denying")
+            return _response(403, {"error": "Access denied: could not verify scope."})
         try:
             rows = [r for r in _list_report(since) if _visible_to(r, is_admin, allowed)]
         except Exception as exc:  # noqa: BLE001
@@ -266,54 +449,56 @@ def lambda_handler(event: Dict[str, Any], _context: Any) -> Dict[str, Any]:
     mm = re.match(r"^/report/(.+)/mapping$", path)
     if mm:
         doc_id = unquote(mm.group(1))
+        # RBAC first, before the record is read. FAIL CLOSED on a scope-lookup
+        # error (this route serves a re-identification key).
+        #
+        # ⚠️ The ORDER is part of the control, not style. Reading the record first
+        # answers 404 for an absent one and 403 for a present one, to a caller whose
+        # scope could not be resolved — one bit of the audit table's contents per
+        # request, to a caller entitled to none of it. Resolving the scope first
+        # means every such caller gets the same 403 whatever the id names, and an
+        # out-of-scope record then answers exactly as an absent one does: see
+        # `_not_found`, which is the other half of the same property.
+        try:
+            allowed = _caller_allowed_versions(_caller_email(event), _caller_sub(event))
+        except ScopeLookupError:
+            return _response(403, {"error": "Access denied: could not verify scope."})
         try:
             row = _get_row(doc_id)
         except Exception as exc:  # noqa: BLE001
             logger.exception("get report row failed")
             return _response(500, {"error": str(exc)})
-        if not row:
-            return _response(404, {"error": f"no redaction record for {doc_id!r}"})
+        if not row or not _visible_to(row, is_admin, allowed):
+            return _not_found()
         if not row.get("mappingStored"):
-            return _response(404, {"error": "no stored mapping for this document"})
-
-        # RBAC: caller must be allowed the ORIGINAL's config version. FAIL CLOSED
-        # on a scope-lookup error (this is a re-identification key).
-        try:
-            allowed = _caller_allowed_versions(_caller_email(event))
-        except ScopeLookupError:
-            return _response(403, {"error": "Access denied: could not verify scope."})
-        if not _visible_to(row, is_admin, allowed):
-            return _response(
-                403,
-                {
-                    "error": "Access denied: you do not have access to the "
-                    "config version that processed the original document."
-                },
-            )
+            return _not_found()
 
         mapping_doc = _read_mapping(doc_id)
         if mapping_doc is None:
-            return _response(404, {"error": "stored mapping not found"})
+            return _not_found()
         return _response(200, mapping_doc)
 
     m = re.match(r"^/report/(.+)$", path)
     if m:
         doc_id = unquote(m.group(1))
+        # RBAC first, before the record is read: a scoped user may only see a row
+        # for a config version they are allowed (fail closed on a lookup error →
+        # 403). Reading the record first would distinguish an absent id from a
+        # present one for a caller whose scope cannot be resolved — an existence
+        # oracle over the audit table, one bit per request. Same ordering rule as
+        # the /mapping route above, and the same `_not_found` for both "no such
+        # record" and "not yours".
+        try:
+            allowed = _caller_allowed_versions(_caller_email(event), _caller_sub(event))
+        except ScopeLookupError:
+            return _response(403, {"error": "Access denied: could not verify scope."})
         try:
             row = _get_row(doc_id)
         except Exception as exc:  # noqa: BLE001
             logger.exception("get report row failed")
             return _response(500, {"error": str(exc)})
-        if not row:
-            return _response(404, {"error": f"no redaction record for {doc_id!r}"})
-        # RBAC: a scoped user may only see a row for a config version they're
-        # allowed (fail closed on lookup error → 403).
-        try:
-            allowed = _caller_allowed_versions(_caller_email(event))
-        except ScopeLookupError:
-            return _response(403, {"error": "Access denied: could not verify scope."})
-        if not _visible_to(row, is_admin, allowed):
-            return _response(403, {"error": "Access denied."})
+        if not row or not _visible_to(row, is_admin, allowed):
+            return _not_found()
         return _response(200, row)
 
     return _response(404, {"error": f"unknown path {path}"})

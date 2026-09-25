@@ -9,9 +9,23 @@ from unittest.mock import MagicMock, Mock, patch
 
 import boto3
 import pytest
+from botocore.exceptions import ClientError
 from moto import mock_aws
 
-# Mock environment variables and dependencies before importing
+from idp_common.dynamodb.client import DynamoDBError
+
+# Mock environment variables and dependencies before importing.
+#
+# The credentials matter as much as the region, and for a less obvious reason.
+# ``index.py`` builds ``s3_presign_client`` at module scope, so it is constructed
+# by the ``exec_module`` below, and botocore freezes the session's credentials
+# object into a client when the client is created. ``generate_presigned_post``
+# signs offline with exactly that object, so a client built at a moment when no
+# credentials were resolvable can never presign — it raises ``AttributeError:
+# 'NoneType' object has no attribute 'access_key'`` however many credentials
+# appear afterwards, including the ones ``mock_aws`` sets for the fixtures. Naming
+# them here makes this module's import self-contained instead of dependent on
+# whatever the rest of the session has already done to the environment (#988).
 with patch.dict(
     os.environ,
     {
@@ -20,6 +34,10 @@ with patch.dict(
         "TEST_SET_BUCKET": "test-set-bucket",
         "TEST_SET_COPY_QUEUE_URL": "https://sqs.us-east-1.amazonaws.com/123456789012/test-queue",
         "AWS_REGION": "us-east-1",
+        "AWS_DEFAULT_REGION": "us-east-1",
+        "AWS_ACCESS_KEY_ID": "testing",
+        "AWS_SECRET_ACCESS_KEY": "testing",  # nosec B105 - fake moto credential  # pragma: allowlist secret
+        "AWS_SESSION_TOKEN": "testing",  # nosec B105 - fake moto credential
     },
 ):
     with patch("idp_common.dynamodb.DynamoDBClient"):
@@ -76,6 +94,9 @@ def publish_table():
     and the concurrency guarantee would go untested. The module-level
     db_client is a mock (patched at import), so point its get_item/put_item at
     the real table for the duration of the test.
+
+    Publishing copies the set's baselines as part of recording a version, so this
+    needs a real (moto) bucket too — a version that cannot copy must not be written.
     """
     # The resolver builds its own boto3 resource with no explicit region, so it
     # picks up the ambient one. Pin the region for both here — other tests in
@@ -85,6 +106,7 @@ def publish_table():
         "AWS_DEFAULT_REGION": "us-east-1",
         "AWS_REGION": "us-east-1",
         "TRACKING_TABLE": "test-table",
+        "TEST_SET_BUCKET": "test-set-bucket",
     }
     with mock_aws(), patch.dict(os.environ, region_env):
         ddb = boto3.resource("dynamodb", region_name="us-east-1")
@@ -100,8 +122,10 @@ def publish_table():
             ],
             BillingMode="PAY_PER_REQUEST",
         )
+        s3 = boto3.client("s3", region_name="us-east-1")
+        s3.create_bucket(Bucket="test-set-bucket")
 
-        with _db_client_on(table):
+        with _db_client_on(table), patch.object(test_set_index, "s3_client", s3):
             yield table
 
 
@@ -115,7 +139,21 @@ def _db_client_on(table):
         kwargs = {"Item": item}
         if condition_expression:
             kwargs["ConditionExpression"] = condition_expression
-        return table.put_item(**kwargs)
+        try:
+            return table.put_item(**kwargs)
+        except ClientError as exc:
+            # Raise what the REAL client raises. `idp_common.dynamodb.DynamoDBClient`
+            # translates botocore's ClientError into DynamoDBError carrying
+            # `.error_code`; a double that lets moto's ClientError through lets the
+            # resolver catch an exception the deployed artifact never produces.
+            #
+            # That is not hypothetical: it hid a live 500 on every retried publish
+            # through four review rounds. The offline suite was green because this
+            # fixture raised the type the code caught.
+            raise DynamoDBError(
+                f"Put item failed: {exc.response['Error']['Message']}",
+                exc.response["Error"]["Code"],
+            ) from exc
 
     def _update_item(
         key,
@@ -123,6 +161,7 @@ def _db_client_on(table):
         expression_attribute_names=None,
         expression_attribute_values=None,
         return_values="ALL_NEW",
+        condition_expression=None,
     ):
         kwargs = {
             "Key": key,
@@ -133,7 +172,22 @@ def _db_client_on(table):
             kwargs["ExpressionAttributeNames"] = expression_attribute_names
         if expression_attribute_values:
             kwargs["ExpressionAttributeValues"] = expression_attribute_values
-        return table.update_item(**kwargs)
+        # Passed straight through to moto, which evaluates it, rather than
+        # recorded and ignored. A double that accepted the keyword and dropped it
+        # would let every test here pass against an unguarded write, which is the
+        # failure mode `_put_item` below already carries a comment about.
+        if condition_expression:
+            kwargs["ConditionExpression"] = condition_expression
+        try:
+            return table.update_item(**kwargs)
+        except ClientError as exc:
+            # Same translation as `_put_item`: the real client raises
+            # DynamoDBError carrying `.error_code`, and a caller that retries on a
+            # conditional rejection reads exactly that attribute.
+            raise DynamoDBError(
+                f"Update item failed: {exc.response['Error']['Message']}",
+                exc.response["Error"]["Code"],
+            ) from exc
 
     def _delete_item(key):
         return table.delete_item(Key=key)
@@ -1129,9 +1183,16 @@ class TestTestSetResolver:
             Key={"PK": "testset#ts1", "SK": "metadata"}
         )
 
-    @patch.dict(os.environ, {"TRACKING_TABLE": "test-table"})
+    @patch.dict(
+        os.environ, {"TRACKING_TABLE": "test-table", "TEST_SET_BUCKET": "ts-bucket"}
+    )
     def test_get_test_set_versions_maps_and_sorts(self):
-        with patch.object(test_set_index, "boto3") as mock_boto3:
+        s3 = MagicMock()
+        s3.list_objects_v2.return_value = {"KeyCount": 1}
+        with (
+            patch.object(test_set_index, "boto3") as mock_boto3,
+            patch.object(test_set_index, "s3_client", s3),
+        ):
             mock_table = MagicMock()
             mock_table.query.return_value = {
                 "Items": [
@@ -1158,6 +1219,8 @@ class TestTestSetResolver:
             assert [r["version"] for r in result] == [1, 2]  # ascending
             assert result[0]["label"] == "v1"
             assert result[1]["fileCount"] == 12
+            # Probed per version, not inferred from the row.
+            assert [r["hasStoredLabels"] for r in result] == [True, True]
 
     # -- Membership editing: remove ---------------------------------------
 
@@ -1881,6 +1944,346 @@ class TestTestSetResolver:
             "Item"
         ]
         assert sorted(job["harvestedFiles"]) == ["a.pdf", "b.pdf"]
+
+    def _two_document_labeling_job(self, table, s3, seed_job=None):
+        """Seed a two-document job and return the stored job row.
+
+        The row is returned as it is stored, so a test can hold it as a snapshot,
+        let another writer move the row, and then hand the snapshot to the harvest
+        -- which is how the caller reaches it in production: `get_draft_label_job`
+        and `_harvest_active_label_job` both read the row and pass it in.
+        """
+        _seed_test_set(table, "ts1", fileCount=2)
+        uris = {
+            name: _seed_pipeline_result(
+                s3, f"ts1-run/{name}/sections/1/result.json", {"vendor": name}
+            )
+            for name in ("a.pdf", "b.pdf")
+        }
+        _seed_completed_run(
+            table,
+            "ts1-run",
+            "ts1",
+            ["a.pdf", "b.pdf"],
+            {name: [{"Id": "1", "OutputJSONUri": uri}] for name, uri in uris.items()},
+        )
+        item = {
+            "PK": "testset#ts1",
+            "SK": "labeljob#ts1-run",
+            "testSetId": "ts1",
+            "jobId": "ts1-run",
+            "status": "RUNNING",
+            "total": 2,
+            "labeled": 0,
+        }
+        item.update(seed_job or {})
+        table.put_item(Item=item)
+        return table.get_item(Key={"PK": "testset#ts1", "SK": "labeljob#ts1-run"})[
+            "Item"
+        ]
+
+    def _stored_job(self, table):
+        return table.get_item(Key={"PK": "testset#ts1", "SK": "labeljob#ts1-run"})[
+            "Item"
+        ]
+
+    def test_an_overlapping_harvest_does_not_lose_the_files_it_recorded(
+        self, labeling_env
+    ):
+        """Two harvests of one job must not discard each other's progress.
+
+        `harvestedFiles` accumulates and used to be written back whole with no
+        condition, so the second writer erased the first's entries. This is the
+        ordinary case rather than an edge: three UI components poll a running job
+        on a five-second timer, so a job shown in two places is harvested twice.
+
+        The interleaving is exact rather than raced, and needs no interception to
+        be so. The snapshot the harvest is given is read *before* the competing
+        write lands, which is precisely the window the defect lives in -- the
+        caller reads the row and passes it in, so a stale snapshot is the thing the
+        production code actually holds.
+
+        The losing pass is out of time, which is what makes the loss observable at
+        all and is a measured rather than a decorative detail. A pass that still
+        has budget simply re-copies the document the winner already did -- the copy
+        is idempotent -- so the merged set comes out right either way and the
+        assertion passes against the defect. Exhausting the budget is the realistic
+        version of the same overlap: the harvest is bounded at
+        HARVEST_TIME_BUDGET_SECONDS precisely because a large set cannot finish in
+        one pass, so one poller timing out while another completes is the case the
+        budget exists for.
+        """
+        table, s3 = labeling_env
+        stale_job = self._two_document_labeling_job(table, s3)
+
+        # Another harvest of the same job finishes b.pdf and records it.
+        table.update_item(
+            Key={"PK": "testset#ts1", "SK": "labeljob#ts1-run"},
+            UpdateExpression="SET harvestedFiles = :h, labeled = :n",
+            ExpressionAttributeValues={":h": ["b.pdf"], ":n": 1},
+        )
+
+        test_set_index._harvest_label_job(stale_job, deadline=time.monotonic() - 1)
+
+        job = self._stored_job(table)
+        assert sorted(job["harvestedFiles"]) == ["b.pdf"], (
+            "the overlapping harvest's progress was discarded"
+        )
+        # `labeled` is derived from the merged set, so it has to follow it.
+        assert job["labeled"] == 1
+        # a.pdf is still outstanding, so the job is correctly still running.
+        assert job["status"] == "RUNNING"
+
+    def test_a_merged_harvest_still_completes_the_job(self, labeling_env):
+        """The merge must settle the derived status, not only the lists.
+
+        Stated honestly about its own reach: measured against the unguarded write
+        this one still passes, because a pass with budget left re-copies the
+        document the winner already did -- the copy is idempotent -- so the stored
+        set comes out right either way. It is a check that the merge path produces
+        a coherent row, not a discriminator for the guard.
+        `test_a_document_the_winner_resolved_stops_counting_as_pending` is the
+        status assertion that does fail without the fix, and the two sit together
+        for that reason.
+        """
+        table, s3 = labeling_env
+        stale_job = self._two_document_labeling_job(table, s3)
+        table.update_item(
+            Key={"PK": "testset#ts1", "SK": "labeljob#ts1-run"},
+            UpdateExpression="SET harvestedFiles = :h",
+            ExpressionAttributeValues={":h": ["b.pdf"]},
+        )
+
+        test_set_index._harvest_label_job(stale_job)
+
+        job = self._stored_job(table)
+        assert sorted(job["harvestedFiles"]) == ["a.pdf", "b.pdf"]
+        assert job["labeled"] == 2
+        assert job["status"] == "COMPLETED"
+
+    def test_a_document_the_winner_resolved_stops_counting_as_pending(
+        self, labeling_env
+    ):
+        """The one assertion that `pending_files` exists for.
+
+        Pending documents are tracked by name rather than counted so the winner's
+        lists can be subtracted from them exactly. The case that needs it is a pass
+        that is *still waiting* on a document the winner has already resolved: with
+        a bare count, the subtraction cannot be expressed, the pass reports RUNNING
+        on a job that is finished, and the row's own status contradicts its lists
+        until the next poll rewrites it.
+
+        `b.pdf` is deliberately left un-processed in the tracking table, so this
+        pass counts it pending rather than harvesting it -- which is what the other
+        merge tests cannot reproduce, because in those the pass resolves every
+        document itself and the subtraction is a no-op.
+        """
+        table, s3 = labeling_env
+        _seed_test_set(table, "ts1", fileCount=2)
+        uri = _seed_pipeline_result(
+            s3, "ts1-run/a.pdf/sections/1/result.json", {"vendor": "a.pdf"}
+        )
+        _seed_completed_run(
+            table,
+            "ts1-run",
+            "ts1",
+            ["a.pdf", "b.pdf"],
+            {"a.pdf": [{"Id": "1", "OutputJSONUri": uri}]},
+        )
+        # b.pdf has no COMPLETED tracking record, so this pass waits on it.
+        table.put_item(
+            Item={
+                "PK": "doc#ts1-run/b.pdf",
+                "SK": "none",
+                "ObjectStatus": "RUNNING",
+            }
+        )
+        table.put_item(
+            Item={
+                "PK": "testset#ts1",
+                "SK": "labeljob#ts1-run",
+                "testSetId": "ts1",
+                "jobId": "ts1-run",
+                "status": "RUNNING",
+                "total": 2,
+                "labeled": 0,
+            }
+        )
+        stale_job = self._stored_job(table)
+
+        # Another harvest got b.pdf, which this pass cannot.
+        table.update_item(
+            Key={"PK": "testset#ts1", "SK": "labeljob#ts1-run"},
+            UpdateExpression="SET harvestedFiles = :h",
+            ExpressionAttributeValues={":h": ["b.pdf"]},
+        )
+
+        test_set_index._harvest_label_job(stale_job)
+
+        job = self._stored_job(table)
+        assert sorted(job["harvestedFiles"]) == ["a.pdf", "b.pdf"]
+        assert job["labeled"] == 2
+        assert job["status"] == "COMPLETED", (
+            "the document the other harvest resolved was still counted as pending"
+        )
+
+    def test_an_overlapping_harvest_does_not_lose_a_recorded_failure(
+        self, labeling_env
+    ):
+        """The sharper edge of the same loss.
+
+        A dropped `failedFiles` entry does not merely cost a redundant S3 read:
+        the next pass counts an already-failed document as pending, which is the
+        state that leaves a job RUNNING forever with every poll re-reading the set.
+        """
+        table, s3 = labeling_env
+        stale_job = self._two_document_labeling_job(table, s3)
+
+        # Another harvest gave up on b.pdf.
+        table.update_item(
+            Key={"PK": "testset#ts1", "SK": "labeljob#ts1-run"},
+            UpdateExpression="SET failedFiles = :f",
+            ExpressionAttributeValues={":f": ["b.pdf"]},
+        )
+
+        test_set_index._harvest_label_job(stale_job)
+
+        job = self._stored_job(table)
+        assert sorted(job["failedFiles"]) == ["b.pdf"]
+        assert sorted(job["harvestedFiles"]) == ["a.pdf", "b.pdf"]
+        assert job["status"] == "COMPLETED"
+
+    def test_an_uncontended_harvest_writes_once(self, labeling_env):
+        """The guard must not cost a retry when nothing is competing.
+
+        Asserted by counting writes, because a condition that never holds would
+        otherwise be invisible here -- every content assertion in this class would
+        still pass after a merge-and-retry.
+        """
+        table, s3 = labeling_env
+        job = self._two_document_labeling_job(table, s3)
+        real_update = test_set_index.db_client.update_item
+        calls = []
+
+        def spy(**kwargs):
+            calls.append(kwargs.get("key"))
+            return real_update(**kwargs)
+
+        test_set_index.db_client.update_item = spy
+        try:
+            test_set_index._harvest_label_job(job)
+        finally:
+            test_set_index.db_client.update_item = real_update
+
+        job_writes = [k for k in calls if k and k.get("SK") == "labeljob#ts1-run"]
+        assert len(job_writes) == 1, calls
+        assert sorted(self._stored_job(table)["harvestedFiles"]) == ["a.pdf", "b.pdf"]
+
+    def test_a_row_that_keeps_moving_raises_rather_than_writing_blind(
+        self, labeling_env
+    ):
+        """Exhausting the merge budget must not fall back to an unguarded write.
+
+        A blind fallback would be the defect the guard exists to prevent, and the
+        next poll five seconds later retries the whole pass harmlessly.
+        """
+        table, s3 = labeling_env
+        stale_job = self._two_document_labeling_job(table, s3)
+        real_get = test_set_index.db_client.get_item
+        moves = iter(range(1, 100))
+
+        def moving_get(key):
+            item = real_get(key)
+            if key.get("SK") == "labeljob#ts1-run":
+                # Move the row again after every re-read, so no attempt can settle.
+                table.update_item(
+                    Key=key,
+                    UpdateExpression="SET failedFiles = :f",
+                    ExpressionAttributeValues={":f": [f"moved-{next(moves)}.pdf"]},
+                )
+            return item
+
+        table.update_item(
+            Key={"PK": "testset#ts1", "SK": "labeljob#ts1-run"},
+            UpdateExpression="SET failedFiles = :f",
+            ExpressionAttributeValues={":f": ["moved-0.pdf"]},
+        )
+        test_set_index.db_client.get_item = moving_get
+        try:
+            with pytest.raises(DynamoDBError) as excinfo:
+                test_set_index._harvest_label_job(stale_job)
+        finally:
+            test_set_index.db_client.get_item = real_get
+        assert excinfo.value.error_code == "ConditionalCheckFailedException"
+
+    def test_the_progress_poll_reports_stored_state_rather_than_failing(
+        self, labeling_env
+    ):
+        """The read path must not inherit the write path's refusal.
+
+        Refusing to write blind is right inside the harvest and wrong at the
+        resolver the UI polls on a timer: a condition that heals itself on the next
+        poll would otherwise surface as an error on a read that works today, which
+        is a behaviour change for a deployment nobody has touched. Measured through
+        `get_draft_label_job` rather than asserted about it, because the harvest
+        raising and the resolver propagating are two separate facts and only the
+        second one is user-visible.
+
+        Only the conditional rejection is absorbed. The sibling test below holds
+        the other direction: any other DynamoDB failure still propagates.
+        """
+        table, s3 = labeling_env
+        self._two_document_labeling_job(table, s3)
+        real_get = test_set_index.db_client.get_item
+        moves = iter(range(1, 100))
+
+        def moving_get(key):
+            item = real_get(key)
+            if key.get("SK") == "labeljob#ts1-run":
+                table.update_item(
+                    Key=key,
+                    UpdateExpression="SET failedFiles = :f",
+                    ExpressionAttributeValues={":f": [f"moved-{next(moves)}.pdf"]},
+                )
+            return item
+
+        test_set_index.db_client.get_item = moving_get
+        try:
+            result = test_set_index.get_draft_label_job(
+                {"testSetId": "ts1", "jobId": "ts1-run"}
+            )
+        finally:
+            test_set_index.db_client.get_item = real_get
+
+        # The poll answers, and it answers about the row as stored rather than
+        # about the view this pass could not commit.
+        assert result["jobId"] == "ts1-run"
+        assert result["status"] == "RUNNING"
+        assert result["failedDocuments"] == 1
+
+    def test_the_progress_poll_still_propagates_any_other_failure(self, labeling_env):
+        """The absorbing `except` must be narrow, or it hides a real outage.
+
+        Asserted by raising a *different* DynamoDB error from the same call: a bare
+        `except DynamoDBError` here would swallow a throttle or a missing table and
+        report a stale job as live progress.
+        """
+        table, s3 = labeling_env
+        self._two_document_labeling_job(table, s3)
+        real_harvest = test_set_index._harvest_label_job
+
+        def failing_harvest(job, deadline=None):
+            raise DynamoDBError("Update item failed: throttled", "ThrottlingException")
+
+        test_set_index._harvest_label_job = failing_harvest
+        try:
+            with pytest.raises(DynamoDBError) as excinfo:
+                test_set_index.get_draft_label_job(
+                    {"testSetId": "ts1", "jobId": "ts1-run"}
+                )
+        finally:
+            test_set_index._harvest_label_job = real_harvest
+        assert excinfo.value.error_code == "ThrottlingException"
 
     def test_harvest_stops_at_its_deadline_and_stays_resumable(self, labeling_env):
         """A set too large for one pass must make partial progress, not time out.
@@ -3477,6 +3880,526 @@ class TestTestSetResolver:
         )
         assert frozen["inference_result"]["total"] == "original"
 
+    def test_publishing_copies_the_labels_the_version_names(self, labeling_env):
+        """Publishing is the call that promises a version's content, so it is the call
+        that copies it. A version that is a DynamoDB row and no bytes is a number whose
+        meaning the next baseline write can change."""
+        table, s3 = labeling_env
+        self._seed_labelled_set(table, s3, value="as-published")
+
+        result = test_set_index.publish_test_set_version(
+            {"input": {"testSetId": "ts1"}}
+        )
+
+        assert result["version"] == 1
+        assert result["snapshotObjectCount"] == 1
+        assert self._baseline_keys(s3, "ts1/versions/1/baseline/") == [
+            "ts1/versions/1/baseline/a.pdf/sections/1/result.json"
+        ]
+        # And the row records what it froze, so "is this version's content actually
+        # frozen?" is answerable without listing S3.
+        written = table.get_item(Key={"PK": "testset#ts1", "SK": "version#000001"})[
+            "Item"
+        ]
+        assert int(written["snapshotObjectCount"]) == 1
+
+    def test_a_retry_under_the_same_client_token_does_not_publish_twice(
+        self, labeling_env
+    ):
+        """Publishing copies the labels, so it can outlast the dispatcher's 20s bound and
+        report failure for work that in fact succeeded. Without a token, the retry that
+        follows creates a second version and a second full copy of the labels — the caller
+        having been told the first one failed."""
+        table, s3 = labeling_env
+        self._seed_labelled_set(table, s3)
+
+        first = test_set_index.publish_test_set_version(
+            {"input": {"testSetId": "ts1", "label": "reviewed", "clientToken": "tok-1"}}
+        )
+        # The caller saw a 504 and tried again. The dialog no longer holds the label.
+        second = test_set_index.publish_test_set_version(
+            {"input": {"testSetId": "ts1", "clientToken": "tok-1"}}
+        )
+
+        assert second["version"] == first["version"] == 1
+        # The version that exists is the one the first try created, label included.
+        assert second["label"] == "reviewed"
+        assert [
+            v["version"]
+            for v in test_set_index.get_test_set_versions({"testSetId": "ts1"})
+        ] == [1]
+
+    def test_a_retry_while_the_first_attempt_is_still_running_is_refused(
+        self, labeling_env
+    ):
+        """The failure the token exists for, and the one a lookup against written version
+        rows cannot cover.
+
+        The dispatcher's 20s bound is a read timeout on its own invoke, not a cancellation:
+        at the 504 the resolver is still executing, up to its 60s Timeout, and has not
+        written its version row yet. So the retry arrives while the work that will succeed
+        is in flight. Comparing the token against existing versions finds nothing and
+        publishes a second version and a second full copy.
+        """
+        table, s3 = labeling_env
+        self._seed_labelled_set(table, s3)
+        # The claim the in-flight attempt holds: taken, no version recorded yet.
+        table.put_item(
+            Item={
+                "PK": "testset#ts1",
+                "SK": "publishclaim#tok-1",
+                "ItemType": "testset_publish_claim",
+                "claimedAt": datetime.utcnow().isoformat() + "Z",
+            }
+        )
+
+        with pytest.raises(Exception, match="already\\s+running"):
+            test_set_index.publish_test_set_version(
+                {"input": {"testSetId": "ts1", "clientToken": "tok-1"}}
+            )
+
+        assert test_set_index.get_test_set_versions({"testSetId": "ts1"}) == []
+        assert self._baseline_keys(s3, "ts1/versions/1/baseline/") == []
+
+    def test_a_retry_that_arrives_genuinely_mid_flight_publishes_nothing(
+        self, labeling_env, monkeypatch
+    ):
+        """The window itself, rather than a reconstruction of it.
+
+        Every other test here seeds a claim row to *represent* an attempt in flight. This one
+        creates the state: `_snapshot_baselines` is the bounded copy at the centre of a
+        publish, so re-entering `publish_test_set_version` from inside it puts the second
+        caller exactly where a retry after a 504 lands — version number reserved, copy in
+        progress, version row not yet written, claim taken and carrying no version.
+
+        That is the one state a seeded row can only resemble, because what makes it dangerous
+        is that *nothing durable yet records* the attempt that is going to succeed. A retry
+        must not conclude from that absence that it should publish.
+
+        Asserted on outcomes — version rows, snapshot prefixes, the returned payload, the
+        reserved counter — rather than on calls into the claim helpers, so the test survives a
+        refactor of them.
+
+        Measured mutation-sensitive, which is the reason it earns its place alongside the
+        seeded-row cases rather than duplicating them: reverting the claim check to the
+        row-only comparison it replaced — a token compared against written version rows, which
+        is what the design looked like before this — fails **this test and no other**. All
+        fifteen of the surrounding claim and token cases pass under that revert, because none
+        of them can produce a state in which the row is not yet written.
+        """
+        table, s3 = labeling_env
+        self._seed_labelled_set(table, s3, value="as-published")
+
+        real_snapshot = test_set_index._snapshot_baselines
+        copies = []
+        retry = {}
+
+        def snapshot_and_retry_midway(bucket, set_id, version):
+            copies.append(version)
+            # Explicit one-shot. If the retry ever got as far as copying, this stops a third
+            # entry instead of recursing, and `copies` below reports that it did.
+            assert len(copies) <= 2, (
+                f"publish re-entered the copy {len(copies)} times; the recursion guard "
+                "exists so a change to this call graph fails rather than hanging"
+            )
+            if len(copies) == 1:
+                try:
+                    retry["result"] = test_set_index.publish_test_set_version(
+                        {"input": {"testSetId": "ts1", "clientToken": "tok-1"}}
+                    )
+                except Exception as exc:  # noqa: BLE001 - the refusal is the subject
+                    retry["error"] = exc
+            return real_snapshot(bucket, set_id, version)
+
+        monkeypatch.setattr(
+            test_set_index, "_snapshot_baselines", snapshot_and_retry_midway
+        )
+
+        published = test_set_index.publish_test_set_version(
+            {"input": {"testSetId": "ts1", "label": "reviewed", "clientToken": "tok-1"}}
+        )
+
+        # The retry was refused, and refused for the right reason — not by some unrelated
+        # error that would leave this test passing for the wrong cause.
+        assert "result" not in retry, "the retry must not have published"
+        assert "already" in str(retry["error"]) and "running" in str(retry["error"])
+
+        # One version, one snapshot, one reserved number: the retry left no trace anywhere.
+        assert [
+            v["version"]
+            for v in test_set_index.get_test_set_versions({"testSetId": "ts1"})
+        ] == [1]
+        assert copies == [1], "only the first attempt may copy"
+        assert self._baseline_keys(s3, "ts1/versions/2/baseline/") == []
+        meta = table.get_item(Key={"PK": "testset#ts1", "SK": "metadata"})["Item"]
+        assert int(meta["latestVersion"]) == 1, "the retry must not reserve a number"
+
+        # And the attempt that was in flight finished normally, with the labels it froze.
+        assert published["version"] == 1
+        assert published["label"] == "reviewed"
+        assert published["snapshotObjectCount"] == 1
+        assert published["hasStoredLabels"] is True
+        frozen = json.loads(
+            s3.get_object(
+                Bucket="test-set-bucket",
+                Key="ts1/versions/1/baseline/a.pdf/sections/1/result.json",
+            )["Body"].read()
+        )
+        assert frozen["inference_result"]["total"] == "as-published"
+
+    def test_a_failed_attempt_releases_its_claim_so_a_retry_can_publish(
+        self, labeling_env, monkeypatch
+    ):
+        """Otherwise a token whose first attempt died is locked out forever, and the dialog
+        can only ever report the same refusal."""
+        table, s3 = labeling_env
+        self._seed_labelled_set(table, s3)
+        monkeypatch.setattr(test_set_index, "_SNAPSHOT_MAX_OBJECTS", 0)
+
+        with pytest.raises(Exception, match="more than the 0"):
+            test_set_index.publish_test_set_version(
+                {"input": {"testSetId": "ts1", "clientToken": "tok-1"}}
+            )
+        assert "Item" not in table.get_item(
+            Key={"PK": "testset#ts1", "SK": "publishclaim#tok-1"}
+        )
+
+        monkeypatch.setattr(test_set_index, "_SNAPSHOT_MAX_OBJECTS", 6000)
+        result = test_set_index.publish_test_set_version(
+            {"input": {"testSetId": "ts1", "clientToken": "tok-1"}}
+        )
+
+        assert result["snapshotObjectCount"] == 1
+
+    def test_a_version_row_beats_a_claim_that_never_recorded_it(self, labeling_env):
+        """The window between the two writes.
+
+        An attempt writes its version row and then records that row on its claim. Killed
+        between the two — or told its row write failed when it had in fact landed — it leaves
+        a version row and a claim that does not name it. The row is the durable record, so a
+        retry must replay it rather than publish a second version once the claim looks
+        abandoned.
+        """
+        table, s3 = labeling_env
+        self._seed_labelled_set(table, s3)
+        test_set_index.publish_test_set_version(
+            {"input": {"testSetId": "ts1", "label": "reviewed", "clientToken": "tok-1"}}
+        )
+        # Roll the claim back to the state it had before it recorded the version, and age it
+        # past the point where any attempt could still be running.
+        table.put_item(
+            Item={
+                "PK": "testset#ts1",
+                "SK": "publishclaim#tok-1",
+                "ItemType": "testset_publish_claim",
+                "claimedAt": (datetime.utcnow() - timedelta(seconds=600)).isoformat()
+                + "Z",
+            }
+        )
+
+        result = test_set_index.publish_test_set_version(
+            {"input": {"testSetId": "ts1", "clientToken": "tok-1"}}
+        )
+
+        assert result["version"] == 1
+        assert result["label"] == "reviewed"
+        assert [
+            v["version"]
+            for v in test_set_index.get_test_set_versions({"testSetId": "ts1"})
+        ] == [1]
+
+    def test_a_released_claim_does_not_republish_a_version_that_landed(
+        self, labeling_env
+    ):
+        """A failure releases the claim so a retry is not locked out — but the write it
+        failed on may have landed anyway (a lost response, not a lost write). The retry
+        re-claims cleanly, so only the version row can tell it to stop."""
+        table, s3 = labeling_env
+        self._seed_labelled_set(table, s3)
+        test_set_index.publish_test_set_version(
+            {"input": {"testSetId": "ts1", "clientToken": "tok-1"}}
+        )
+        # The claim as a released one leaves it: absent entirely.
+        table.delete_item(Key={"PK": "testset#ts1", "SK": "publishclaim#tok-1"})
+
+        result = test_set_index.publish_test_set_version(
+            {"input": {"testSetId": "ts1", "clientToken": "tok-1"}}
+        )
+
+        assert result["version"] == 1
+        assert [
+            v["version"]
+            for v in test_set_index.get_test_set_versions({"testSetId": "ts1"})
+        ] == [1]
+
+    def test_two_retries_reading_one_abandoned_claim_do_not_both_publish(
+        self, labeling_env
+    ):
+        """Both read the same abandoned claim before either writes. An unconditional takeover
+        lets both conclude they own it, both find no version row, and both publish."""
+        table, s3 = labeling_env
+        self._seed_labelled_set(table, s3)
+        abandoned = (datetime.utcnow() - timedelta(seconds=600)).isoformat() + "Z"
+        observed = {
+            "PK": "testset#ts1",
+            "SK": "publishclaim#tok-1",
+            "ItemType": "testset_publish_claim",
+            "claimedAt": abandoned,
+        }
+        table.put_item(Item=observed)
+
+        # The first retry takes it over, which replaces `claimedAt`.
+        first = test_set_index._take_over_publish_claim("ts1", "tok-1", observed)
+        # The second retry read the same claim a moment earlier, so it is conditioning on a
+        # value that no longer exists.
+        second = test_set_index._take_over_publish_claim("ts1", "tok-1", observed)
+
+        assert first is not None
+        assert second is None, "the loser must not also be told it owns the claim"
+
+    def test_a_late_release_does_not_delete_the_retrys_claim(self, labeling_env):
+        """The release is issued before the dispatcher gives up, and nothing orders the two, so
+        it can land after a retry has claimed cleanly. Deleting the retry's claim would leave a
+        third attempt free to run concurrently with it."""
+        table, s3 = labeling_env
+        self._seed_labelled_set(table, s3)
+        mine = "2026-01-01T00:00:00+00:00"
+        table.put_item(
+            Item={
+                "PK": "testset#ts1",
+                "SK": "publishclaim#tok-1",
+                "ItemType": "testset_publish_claim",
+                "claimedAt": mine,
+            }
+        )
+        # A retry claims, replacing claimedAt with its own.
+        theirs = datetime.now(timezone.utc).isoformat()
+        table.put_item(
+            Item={
+                "PK": "testset#ts1",
+                "SK": "publishclaim#tok-1",
+                "ItemType": "testset_publish_claim",
+                "claimedAt": theirs,
+            }
+        )
+
+        # The first attempt's release lands now.
+        test_set_index._release_publish_claim("ts1", "tok-1", mine)
+
+        surviving = table.get_item(
+            Key={"PK": "testset#ts1", "SK": "publishclaim#tok-1"}
+        )["Item"]
+        assert surviving["claimedAt"] == theirs, "the retry's claim must survive"
+
+    def test_a_claim_naming_a_missing_version_does_not_lock_the_token_out(
+        self, labeling_env
+    ):
+        """A claim that names a version whose row is gone would otherwise refuse every retry
+        forever: the row lookup finds nothing, and the claim is never treated as abandoned
+        because it carries a version number."""
+        table, s3 = labeling_env
+        self._seed_labelled_set(table, s3)
+        test_set_index.publish_test_set_version(
+            {"input": {"testSetId": "ts1", "clientToken": "tok-1"}}
+        )
+        table.delete_item(Key={"PK": "testset#ts1", "SK": "version#000001"})
+
+        result = test_set_index.publish_test_set_version(
+            {"input": {"testSetId": "ts1", "clientToken": "tok-1"}}
+        )
+
+        assert result["version"] == 2
+
+    def test_the_stale_threshold_stays_clear_of_the_deployed_timeout(self):
+        """Two constants in two files with nothing linking them. The threshold is only sound
+        while it exceeds the longest an attempt can live, which the template decides."""
+        template = pathlib.Path(test_set_index.__file__).parents[3] / "template.yaml"
+        block = template.read_text(encoding="utf-8").split("TestSetResolverFunction:")[
+            1
+        ]
+        # Up to the next top-level resource, so this reads that function's own Timeout.
+        boundary = re.search(r"\n  \w+:\n    Type:", block)
+        if boundary:
+            block = block[: boundary.start()]
+        found = re.search(r"^\s+Timeout:\s*(\d+)", block, re.MULTILINE)
+        assert found, "TestSetResolverFunction declares no Timeout"
+        timeout = int(found.group(1))
+
+        assert test_set_index._PUBLISH_CLAIM_STALE_SECONDS >= 2 * timeout, (
+            f"a claim is assumed abandoned after "
+            f"{test_set_index._PUBLISH_CLAIM_STALE_SECONDS}s, but the resolver may run for "
+            f"{timeout}s"
+        )
+
+    def test_a_claim_expires_on_its_own_rather_than_accumulating(self, labeling_env):
+        # One row per publish, forever, is the alternative. Cleanup only — TTL deletion is
+        # best-effort, so nothing depends on it having happened.
+        table, s3 = labeling_env
+        self._seed_labelled_set(table, s3)
+
+        test_set_index.publish_test_set_version(
+            {"input": {"testSetId": "ts1", "clientToken": "tok-1"}}
+        )
+
+        claim = table.get_item(Key={"PK": "testset#ts1", "SK": "publishclaim#tok-1"})[
+            "Item"
+        ]
+        assert int(claim["ExpiresAfter"]) > int(time.time())
+
+    def test_a_claim_older_than_the_function_can_live_is_taken_over(self, labeling_env):
+        """A killed attempt leaves a claim nothing will ever complete or release. The
+        resolver's Timeout is 60s, so a claim past double that cannot have a live owner."""
+        table, s3 = labeling_env
+        self._seed_labelled_set(table, s3)
+        stale = datetime.utcnow() - timedelta(seconds=600)
+        table.put_item(
+            Item={
+                "PK": "testset#ts1",
+                "SK": "publishclaim#tok-1",
+                "ItemType": "testset_publish_claim",
+                "claimedAt": stale.isoformat() + "Z",
+            }
+        )
+
+        result = test_set_index.publish_test_set_version(
+            {"input": {"testSetId": "ts1", "clientToken": "tok-1"}}
+        )
+
+        assert result["version"] == 1
+
+    def test_publishing_without_a_token_still_publishes_every_time(self, labeling_env):
+        # Two deliberate publishes are two versions; the token is opt-in and its absence
+        # must not dedupe anything.
+        table, s3 = labeling_env
+        self._seed_labelled_set(table, s3)
+
+        test_set_index.publish_test_set_version({"input": {"testSetId": "ts1"}})
+        test_set_index.publish_test_set_version({"input": {"testSetId": "ts1"}})
+
+        assert [
+            v["version"]
+            for v in test_set_index.get_test_set_versions({"testSetId": "ts1"})
+        ] == [1, 2]
+
+    def test_a_published_version_survives_a_regenerate_then_annotate(
+        self, labeling_env
+    ):
+        """The sequence that made a published version mutable.
+
+        Publish v1; regenerate the draft labels, which rewrites ``{id}/baseline/``
+        wholesale; then open an annotation draft. Taking the copy at draft-open time
+        snapshotted the *regenerated* labels as v1, so v1's content became labels that
+        were never v1's — and a run pinned to v1 scored against them, with nothing in the
+        version row changing to say so.
+        """
+        table, s3 = labeling_env
+        self._seed_labelled_set(table, s3, value="as-published")
+        test_set_index.publish_test_set_version({"input": {"testSetId": "ts1"}})
+
+        # Generate draft labels: the live baselines are rewritten in place.
+        s3.put_object(
+            Bucket="test-set-bucket",
+            Key="ts1/baseline/a.pdf/sections/1/result.json",
+            Body=json.dumps({"inference_result": {"total": "regenerated"}}).encode(),
+        )
+
+        # A colleague clicks Annotate.
+        result = test_set_index.open_test_set_annotation_draft(
+            {"input": {"testSetId": "ts1"}}
+        )
+
+        assert (result["baseVersion"], result["draftVersion"]) == (1, 2)
+        frozen = json.loads(
+            s3.get_object(
+                Bucket="test-set-bucket",
+                Key="ts1/versions/1/baseline/a.pdf/sections/1/result.json",
+            )["Body"].read()
+        )
+        assert frozen["inference_result"]["total"] == "as-published"
+        # Nothing to copy: v1 was frozen when it was published.
+        assert result["snapshotObjectCount"] == 0
+
+    def test_a_version_published_before_snapshots_existed_is_backfilled_once(
+        self, labeling_env
+    ):
+        """An existing deployment's v1 rows have no snapshot, so the number refers to
+        nothing. The current labels are the most that can still be captured for it —
+        they are not what was published, and the row's missing snapshotObjectCount is
+        what says so.
+        """
+        table, s3 = labeling_env
+        self._seed_labelled_set(table, s3, value="unknown-provenance")
+        # A version row as an older release wrote it: no snapshotObjectCount, no bytes.
+        table.put_item(
+            Item={
+                "PK": "testset#ts1",
+                "SK": "version#000001",
+                "ItemType": "testset_version",
+                "testSetId": "ts1",
+                "versionNumber": 1,
+                "label": "v1",
+            }
+        )
+        table.update_item(
+            Key={"PK": "testset#ts1", "SK": "metadata"},
+            UpdateExpression="SET publishedVersion = :v, latestVersion = :v",
+            ExpressionAttributeValues={":v": 1},
+        )
+
+        result = test_set_index.open_test_set_annotation_draft(
+            {"input": {"testSetId": "ts1"}}
+        )
+
+        assert result["snapshotObjectCount"] == 1
+        assert self._baseline_keys(s3, "ts1/versions/1/baseline/")
+        # Detectable, not repairable: the row still reports no publish-time snapshot.
+        [version] = test_set_index.get_test_set_versions({"testSetId": "ts1"})
+        assert version["snapshotObjectCount"] is None
+        # But it does have labels to score against now, which is a different question and
+        # the one a run pinned to it turns on.
+        assert version["hasStoredLabels"] is True
+
+    def test_whether_a_version_has_stored_labels_is_not_its_object_count(
+        self, labeling_env
+    ):
+        """The two disagree in both directions, so a reader must not substitute one.
+
+        A version published from a set with no labels yet has a count of 0 and an empty
+        prefix — a run pinned to it scores the set's current labels. A version published
+        before publishing copied anything has no count at all and yet does have labels once
+        annotation backfilled them. Reading the count as "has content" is wrong for the
+        first; reading its absence that way is wrong for the second.
+        """
+        table, s3 = labeling_env
+        # A set with a document but no ground truth for it.
+        _seed_test_set(table, "ts1", fileCount=1)
+        s3.put_object(Bucket="test-set-bucket", Key="ts1/input/a.pdf", Body=b"x")
+
+        test_set_index.publish_test_set_version({"input": {"testSetId": "ts1"}})
+
+        [version] = test_set_index.get_test_set_versions({"testSetId": "ts1"})
+        assert version["snapshotObjectCount"] == 0
+        assert version["hasStoredLabels"] is False
+
+    def test_an_oversize_set_is_refused_at_publish_with_no_version_written(
+        self, labeling_env, monkeypatch
+    ):
+        """The copy is bounded, so publishing a set too large to freeze inside one
+        request has to refuse rather than write a version it cannot back with bytes."""
+        table, s3 = labeling_env
+        self._seed_labelled_set(table, s3)
+        monkeypatch.setattr(test_set_index, "_SNAPSHOT_MAX_OBJECTS", 0)
+
+        with pytest.raises(Exception, match="more than the 0"):
+            test_set_index.publish_test_set_version({"input": {"testSetId": "ts1"}})
+
+        assert "Item" not in table.get_item(
+            Key={"PK": "testset#ts1", "SK": "version#000001"}
+        )
+        meta = table.get_item(Key={"PK": "testset#ts1", "SK": "metadata"})["Item"]
+        assert meta.get("publishedVersion") is None
+        assert self._baseline_keys(s3, "ts1/versions/1/baseline/") == []
+
     def test_a_set_with_no_published_version_gets_its_arriving_labels_captured(
         self, labeling_env
     ):
@@ -3592,6 +4515,136 @@ class TestTestSetResolver:
         assert second["baseVersion"] == first["baseVersion"]
         assert second["alreadyOpen"] is True
         assert second["snapshotObjectCount"] == 0
+
+    def test_a_second_annotator_opening_at_the_same_moment_gets_the_same_draft(
+        self, labeling_env
+    ):
+        """The idempotency above is a read; this is the write it has to survive.
+
+        Two annotators pressing Start annotating on one set both read no draft, both
+        compute a version and both write it. Unconditional, the later write replaced
+        the earlier: the metadata row named one transition while two had been opened,
+        and the queue links the first annotator was given belonged to a transition the
+        row no longer mentioned. (The window is two deliberate presses, not every page
+        load -- the workspace does not open a transition on arrival, and a UI test
+        pins that it is never reached from a `useEffect`.)
+
+        The interleaving is forced rather than raced -- the competing open is
+        committed inside the metadata read this call goes on to compute from, so
+        there is no thread, no sleep and no dependence on the scheduler. Only the
+        first read is intercepted, so the conflict path's own re-read sees the
+        settled row.
+
+        The set is published first on purpose. On the never-published path this
+        call publishes a base version itself, and publishing *removes*
+        ``draftVersion`` as part of committing a transition, so a competitor seeded
+        before that point is erased by the call under test and the overlap being
+        modelled never exists. The already-published path is both the common one
+        and the only one where the window is real.
+        """
+        table, s3 = labeling_env
+        self._seed_labelled_set(table, s3)
+        test_set_index.publish_test_set_version({"input": {"testSetId": "ts1"}})
+        real_get = test_set_index.db_client.get_item
+        reads = {"n": 0}
+
+        def competing_get(key):
+            item = real_get(key)
+            if key.get("SK") == "metadata":
+                reads["n"] += 1
+                if reads["n"] == 1:
+                    # The other annotator's open lands here, after this call has
+                    # taken its snapshot and before it writes.
+                    table.update_item(
+                        Key={"PK": "testset#ts1", "SK": "metadata"},
+                        UpdateExpression="SET draftVersion = :d",
+                        ExpressionAttributeValues={":d": 2},
+                    )
+            return item
+
+        test_set_index.db_client.get_item = competing_get
+        try:
+            result = test_set_index.open_test_set_annotation_draft(
+                {"input": {"testSetId": "ts1"}}
+            )
+        finally:
+            test_set_index.db_client.get_item = real_get
+
+        # The winner's transition is reported, not a second one, and the row still
+        # names exactly that transition.
+        assert result["draftVersion"] == 2
+        assert result["alreadyOpen"] is True
+        meta = table.get_item(Key={"PK": "testset#ts1", "SK": "metadata"})["Item"]
+        assert int(meta["draftVersion"]) == 2
+        # The overlap is asserted rather than assumed: with no competing write this
+        # test would pass against the unguarded version too.
+        assert reads["n"] >= 1
+
+    def test_a_never_published_set_still_loses_one_of_two_simultaneous_opens(
+        self, labeling_env
+    ):
+        """Records the residual the condition above does **not** cover.
+
+        This asserts the defective outcome on purpose, because the alternative is a
+        reader concluding from the guarded test alone that every overlap is closed.
+
+        On a set with no published version the call publishes one first, and
+        publishing *removes* ``draftVersion`` as part of committing its own
+        transition. So when the other caller's whole open lands before this one's
+        publish, this call clears the winner's pointer itself and then finds
+        ``attribute_not_exists(draftVersion)`` true. Both callers report
+        ``alreadyOpen: False``, two transitions exist, and the row names only the
+        later one -- which is the loss the condition closes on every other path.
+
+        No condition fixes this: nothing a predicate can read distinguishes "nobody
+        has claimed" from "I removed the claim a moment ago". It needs the publish and
+        the claim to become one atomic step, which is a restructure of the resolver
+        and is deliberately not in this change. The exposure is the first annotation
+        session of a set and no other.
+
+        Change the outcome and this test should be rewritten to assert the fix, not
+        deleted -- the assertions below are the measurement, not the goal.
+        """
+        table, s3 = labeling_env
+        self._seed_labelled_set(table, s3)
+        real_get = test_set_index.db_client.get_item
+        state = {"reads": 0, "winner": None}
+
+        def competing_get(key):
+            item = real_get(key)
+            if key.get("SK") == "metadata":
+                state["reads"] += 1
+                if state["reads"] == 1:
+                    # The other annotator's *entire* open, publish included, between
+                    # this call's read and its own publish. Un-patched for the
+                    # duration so the competitor is an ordinary correct caller.
+                    test_set_index.db_client.get_item = real_get
+                    state["winner"] = test_set_index.open_test_set_annotation_draft(
+                        {"input": {"testSetId": "ts1"}}
+                    )
+                    test_set_index.db_client.get_item = competing_get
+            return item
+
+        test_set_index.db_client.get_item = competing_get
+        try:
+            mine = test_set_index.open_test_set_annotation_draft(
+                {"input": {"testSetId": "ts1"}}
+            )
+        finally:
+            test_set_index.db_client.get_item = real_get
+
+        # The competitor really did open a transition and really did publish, so the
+        # overlap under test exists rather than being asserted into being.
+        assert state["winner"]["draftVersion"] == 2
+        assert state["winner"]["alreadyOpen"] is False
+        # And this call opened a second one instead of being refused.
+        assert mine["draftVersion"] == 3
+        assert mine["alreadyOpen"] is False
+        meta = table.get_item(Key={"PK": "testset#ts1", "SK": "metadata"})["Item"]
+        assert int(meta["draftVersion"]) == 3, (
+            "the row names only the later transition; the winner's queue links point "
+            "at a transition it no longer mentions"
+        )
 
     def test_the_draft_is_recorded_on_the_set(self, labeling_env):
         # The queue link is built from this, so it has to be readable afterwards.
@@ -4785,6 +5838,37 @@ class TestTestSetResolver:
 
         page = test_set_index.get_test_set_documents({"testSetId": "ts1"})
         assert page["activeLabelJobId"] == "run9"
+
+    def test_documents_page_carries_the_sets_own_status(self, labeling_env):
+        """The set's page has no other source for its status.
+
+        There is no per-set query, and getTestSets is Admin-or-Author (the page is
+        reachable by an Annotator) and repairs stale state as a side effect, so it
+        cannot go on a page load. The Publish version control reads this field to
+        refuse a set whose contents are still being written, and its client-side
+        check permits an absent status — it has to, since the field is unknown until
+        this call returns. So dropping the field here silently re-enables publishing
+        mid-copy with every UI test still green: this is what stops that.
+        """
+        table, s3 = labeling_env
+        _seed_test_set(table, "ts1", fileCount=1, status="COPYING")
+        s3.put_object(Bucket="test-set-bucket", Key="ts1/input/a.pdf", Body=b"x")
+
+        page = test_set_index.get_test_set_documents({"testSetId": "ts1"})
+        assert page["status"] == "COPYING"
+
+    def test_documents_page_status_is_present_even_when_the_row_has_none(
+        self, labeling_env
+    ):
+        """A row written before the field existed reports None, not a missing key,
+        so a caller can tell "no status recorded" from "this build dropped it"."""
+        table, s3 = labeling_env
+        _seed_test_set(table, "ts1", fileCount=1)
+        s3.put_object(Bucket="test-set-bucket", Key="ts1/input/a.pdf", Body=b"x")
+
+        page = test_set_index.get_test_set_documents({"testSetId": "ts1"})
+        assert "status" in page
+        assert page["status"] is None
 
     def test_the_annotation_queue_carries_the_class_through(self, labeling_env):
         """End to end: the queue is a different resolver from the documents page,
@@ -7775,6 +8859,7 @@ class TestPatternImportIsAdminOnly:
         [
             "addTestSetFromUpload",
             "addDocumentsToTestSetFromUpload",
+            "addDocumentsToTestSetByKey",
             "createEmptyTestSet",
         ],
     )
@@ -7799,3 +8884,426 @@ def test_publish_snapshot_records_the_drafting_configuration(publish_table):
         "Item"
     ]
     assert written["configVersion"] == "prof-A"
+
+
+@pytest.mark.unit
+class TestAddDocumentsToTestSetByKey:
+    """Selected Document List rows are appended by exact key, unlabeled ones too."""
+
+    def _completed_set(self):
+        return {
+            "id": "my-set",
+            "name": "My Set",
+            "status": "COMPLETED",
+            "fileCount": 3,
+            "createdAt": "2026-09-01T00:00:00Z",
+        }
+
+    @staticmethod
+    def _rows(keys, status="COMPLETED", config_version="lending"):
+        return [
+            {
+                "PK": f"doc#{k}",
+                "SK": "none",
+                "ObjectKey": k,
+                "ObjectStatus": status,
+                "ConfigVersion": config_version,
+            }
+            for k in keys
+        ]
+
+    def _run(self, args, item=None, rows=None, event=None):
+        table = Mock()
+        sqs = Mock()
+        if rows is None:
+            rows = self._rows(args.get("objectKeys") or [])
+        with (
+            patch.object(
+                test_set_index.db_client,
+                "get_item",
+                return_value=item if item is not None else self._completed_set(),
+            ),
+            patch.object(
+                test_set_index.db_client, "batch_get_items", return_value=rows
+            ),
+            patch.object(test_set_index.boto3, "resource") as resource,
+            patch.object(test_set_index.boto3, "client", return_value=sqs),
+            patch.dict(
+                os.environ,
+                {
+                    "TRACKING_TABLE": "tracking",
+                    "TEST_SET_COPY_QUEUE_URL": "https://sqs/queue",
+                },
+            ),
+        ):
+            resource.return_value.Table.return_value = table
+            result = test_set_index.add_documents_to_test_set_by_key(args, event)
+        return result, table, sqs
+
+    def test_queues_the_keys_and_marks_the_set_updating(self):
+        result, table, sqs = self._run(
+            {"testSetId": "my-set", "objectKeys": ["a.pdf", "folder/b.pdf"]}
+        )
+
+        body = json.loads(sqs.send_message.call_args.kwargs["MessageBody"])
+        assert body == {
+            "testSetId": "my-set",
+            "objectKeys": ["a.pdf", "folder/b.pdf"],
+            "bucketType": "input",
+            "trackingTable": "tracking",
+            "mode": "append",
+        }
+        assert "filePattern" not in body
+
+        update = table.update_item.call_args.kwargs
+        assert update["ExpressionAttributeValues"][":status"] == "UPDATING"
+        assert "statusUpdatedAt" in update["UpdateExpression"]
+        assert result["status"] == "UPDATING"
+        assert result["id"] == "my-set"
+        assert result["fileCount"] == 3
+
+    def test_duplicate_and_padded_keys_collapse(self):
+        _, _, sqs = self._run(
+            {"testSetId": "my-set", "objectKeys": [" a.pdf", "a.pdf", "b.pdf "]},
+            rows=self._rows(["a.pdf", "b.pdf"]),
+        )
+        body = json.loads(sqs.send_message.call_args.kwargs["MessageBody"])
+        assert body["objectKeys"] == ["a.pdf", "b.pdf"]
+
+    @pytest.mark.parametrize(
+        "keys",
+        [[], None, [""], ["   "], [42], ["/abs.pdf"], ["dir/"], ["a/../b.pdf"]],
+    )
+    def test_rejects_malformed_key_lists_before_touching_the_set(self, keys):
+        with (
+            patch.object(test_set_index.db_client, "get_item") as get,
+            patch.object(test_set_index.boto3, "client") as client,
+        ):
+            with pytest.raises(ValueError):
+                test_set_index.add_documents_to_test_set_by_key(
+                    {"testSetId": "my-set", "objectKeys": keys}
+                )
+        get.assert_not_called()
+        client.assert_not_called()
+
+    def test_caps_the_number_of_keys(self):
+        keys = [f"{i}.pdf" for i in range(test_set_index.MAX_KEYS_PER_ADD + 1)]
+        with pytest.raises(ValueError, match="At most"):
+            test_set_index.add_documents_to_test_set_by_key(
+                {"testSetId": "my-set", "objectKeys": keys}
+            )
+
+    def test_refuses_a_set_that_is_not_completed(self):
+        item = self._completed_set()
+        item["status"] = "UPDATING"
+        with pytest.raises(Exception, match="not in COMPLETED status"):
+            self._run({"testSetId": "my-set", "objectKeys": ["a.pdf"]}, item=item)
+
+    def test_refuses_a_missing_set(self):
+        with pytest.raises(Exception, match="not found"):
+            self._run({"testSetId": "nope", "objectKeys": ["a.pdf"]}, item={})
+
+    @staticmethod
+    def _event(groups, email="author@example.com"):
+        return {
+            "identity": {
+                "claims": {
+                    "cognito:groups": groups,
+                    "email": email,
+                    "sub": "sub-1",
+                }
+            }
+        }
+
+    def _scoped(self, scope):
+        return patch.object(
+            test_set_index, "resolve_allowed_config_versions", return_value=scope
+        )
+
+    def test_a_scoped_author_can_add_documents_inside_their_scope(self):
+        with self._scoped(["lending*"]):
+            result, _, sqs = self._run(
+                {"testSetId": "my-set", "objectKeys": ["a.pdf"]},
+                rows=self._rows(["a.pdf"], config_version="lending-v2"),
+                event=self._event(["Author"]),
+            )
+        assert result["status"] == "UPDATING"
+        sqs.send_message.assert_called_once()
+
+    @pytest.mark.parametrize(
+        "rows",
+        [
+            pytest.param(
+                lambda s: s._rows(["a.pdf"], config_version="payroll"),
+                id="outside-scope",
+            ),
+            pytest.param(
+                lambda s: [
+                    {**s._rows(["a.pdf"])[0], "ConfigVersion": None},
+                ],
+                id="no-profile-name",
+            ),
+            pytest.param(lambda s: [], id="no-tracking-row"),
+            pytest.param(
+                lambda s: s._rows(["a.pdf"], status="RUNNING"), id="not-completed"
+            ),
+        ],
+    )
+    def test_a_scoped_author_is_refused_with_one_message_that_names_nothing(self, rows):
+        with self._scoped(["lending"]):
+            with pytest.raises(PermissionError) as excinfo:
+                self._run(
+                    {"testSetId": "my-set", "objectKeys": ["a.pdf"]},
+                    rows=rows(self),
+                    event=self._event(["Author"]),
+                )
+        assert str(excinfo.value) == test_set_index._SELECTION_REFUSED
+        assert "a.pdf" not in str(excinfo.value)
+
+    def test_the_refusal_happens_before_the_set_is_touched(self):
+        with (
+            self._scoped(["lending"]),
+            patch.object(
+                test_set_index.db_client,
+                "batch_get_items",
+                return_value=self._rows(["a.pdf"], config_version="payroll"),
+            ),
+            patch.object(test_set_index.db_client, "get_item") as get,
+            patch.object(test_set_index.boto3, "client") as client,
+        ):
+            with pytest.raises(PermissionError):
+                test_set_index.add_documents_to_test_set_by_key(
+                    {"testSetId": "my-set", "objectKeys": ["a.pdf"]},
+                    self._event(["Author"]),
+                )
+        get.assert_not_called()
+        client.assert_not_called()
+
+    def test_an_unfinished_document_is_refused_even_for_an_admin(self):
+        with pytest.raises(PermissionError):
+            self._run(
+                {"testSetId": "my-set", "objectKeys": ["a.pdf"]},
+                rows=self._rows(["a.pdf"], status="RUNNING"),
+                event=self._event(["Admin"]),
+            )
+
+    def test_an_admin_is_never_looked_up(self):
+        with patch.object(test_set_index, "resolve_allowed_config_versions") as lookup:
+            self._run(
+                {"testSetId": "my-set", "objectKeys": ["a.pdf"]},
+                rows=self._rows(["a.pdf"], config_version="anything"),
+                event=self._event(["Admin"]),
+            )
+        lookup.assert_not_called()
+
+    def test_a_scope_that_cannot_be_resolved_is_refused(self):
+        with patch.object(
+            test_set_index,
+            "resolve_allowed_config_versions",
+            side_effect=test_set_index.ScopeLookupError("no table"),
+        ):
+            with pytest.raises(PermissionError, match="could not be verified"):
+                self._run(
+                    {"testSetId": "my-set", "objectKeys": ["a.pdf"]},
+                    event=self._event(["Author"]),
+                )
+
+    def test_an_unscoped_author_is_not_restricted(self):
+        with self._scoped(None):
+            result, _, _ = self._run(
+                {"testSetId": "my-set", "objectKeys": ["a.pdf"]},
+                rows=self._rows(["a.pdf"], config_version="anything"),
+                event=self._event(["Author"]),
+            )
+        assert result["status"] == "UPDATING"
+
+    def test_the_handler_passes_the_caller_identity_through(self):
+        event = {
+            "info": {"fieldName": "addDocumentsToTestSetByKey"},
+            "arguments": {"testSetId": "my-set", "objectKeys": ["a.pdf"]},
+            **self._event(["Author"]),
+        }
+        with patch.object(
+            test_set_index, "add_documents_to_test_set_by_key", return_value={}
+        ) as op:
+            test_set_index.handler(event, {})
+        assert op.call_args.args[1] is event
+
+    def test_pattern_append_still_sends_the_pattern_message(self):
+        table = Mock()
+        sqs = Mock()
+        with (
+            patch.object(
+                test_set_index.db_client, "get_item", return_value=self._completed_set()
+            ),
+            patch.object(test_set_index.boto3, "resource") as resource,
+            patch.object(test_set_index.boto3, "client", return_value=sqs),
+            patch.dict(
+                os.environ,
+                {
+                    "TRACKING_TABLE": "tracking",
+                    "TEST_SET_COPY_QUEUE_URL": "https://sqs/queue",
+                },
+            ),
+        ):
+            resource.return_value.Table.return_value = table
+            result = test_set_index.add_documents_to_test_set(
+                {
+                    "testSetId": "my-set",
+                    "filePattern": "*.pdf",
+                    "bucketType": "input",
+                    "fileCount": 2,
+                    "modifiedAfter": "2026-09-01T00:00:00Z",
+                }
+            )
+        body = json.loads(sqs.send_message.call_args.kwargs["MessageBody"])
+        assert body["filePattern"] == "*.pdf"
+        assert body["modifiedAfter"] == "2026-09-01T00:00:00Z"
+        assert "objectKeys" not in body
+        assert result["status"] == "UPDATING"
+
+
+class TestResolverPathsKeyLikeTheStoredCurve:
+    """#1066: the resolver's field paths use ``curve_store``'s list-index rule.
+
+    Every case here is one where a length-keyed index rule (``prefix if
+    len(node) == 1 else f"{prefix}[{index}]"``) and a depth-keyed one give
+    **different** answers. A suite that only used multi-element lists would pass
+    against either and prove nothing, so each test below names a single-element
+    list or a multi-element outer wrapper.
+    """
+
+    def test_a_one_row_table_keys_its_index_like_the_curve_does(self):
+        """The shape that moved. A one-row table is indexed, same as a two-row one.
+
+        Under a length-keyed rule the single row lost its index, so the same field
+        keyed ``Transactions.Amount`` on a one-row document and
+        ``Transactions[0].Amount`` on a two-row one — a key that depends on the data.
+        """
+        one_row = [{"Transactions": [{"Amount": {"confidence": 0.9}}]}]
+        assert test_set_index._walk_confidence_named(one_row) == [
+            (0.9, None, "Transactions[0].Amount")
+        ]
+        assert test_set_index._absent_field_paths(
+            {"Transactions": [{"Amount": None}]}
+        ) == {"Transactions[0].Amount"}
+
+    def test_the_paths_are_the_same_strings_curve_store_produces(self):
+        """The unification claim itself, on the single-element shape that moved.
+
+        ``flatten_confidences`` and ``flatten_values`` are what a stored confidence
+        curve is keyed by, so a path that differs from theirs silently fails to join.
+        """
+        from idp_common.evaluation import flatten_confidences, flatten_values
+
+        explainability = [
+            {
+                "Transactions": [{"Amount": {"confidence": 0.9}}],
+                "Holder": {"City": {"confidence": 0.7}},
+            }
+        ]
+        inference = {
+            "Transactions": [{"Amount": "-44.00"}],
+            "Holder": {"City": "Seattle"},
+        }
+        resolver_paths = {
+            name
+            for _c, _t, name in test_set_index._walk_confidence_named(explainability)
+        }
+        assert resolver_paths == set(flatten_confidences(explainability))
+        assert resolver_paths == {"Transactions[0].Amount", "Holder.City"}
+        # The value side keys identically, which is what makes the two joinable.
+        assert set(flatten_values(inference)) == resolver_paths
+
+    def test_a_multi_element_outer_wrapper_still_adds_no_path_level(self):
+        """The wrapper is un-indexed because it is the outermost list, not because
+        it holds one element.
+
+        ``explainability_info`` is written as a one-element list today, and a
+        length-keyed rule got the un-indexed answer only from that. Should a payload
+        ever carry two, that rule prefixes every path with ``[0]`` / ``[1]`` while
+        ``_absent_field_paths`` walks a plain ``inference_result`` dict and produces
+        no such prefix — so the intersection matches nothing and absent-field
+        exclusion silently switches off for the whole document.
+        """
+        two_element_wrapper = [
+            {"name": {"confidence": 0.95}},
+            {"other": {"confidence": 0.1}},
+        ]
+        assert {
+            name
+            for _c, _t, name in test_set_index._walk_confidence_named(
+                two_element_wrapper
+            )
+        } == {"name", "other"}
+        # And exclusion still works through it.
+        assert (
+            test_set_index._min_confidence(two_element_wrapper, {"other": None}) == 0.95
+        )
+
+    def test_exclusion_still_lines_up_on_a_one_row_table(self):
+        """Both sides moved together, so the intersection is unaffected.
+
+        This is the migration risk the change carries: ``_min_confidence`` and
+        ``_alert_counts`` exclude absent fields by intersecting two path sets, and a
+        one-row table is exactly the shape whose keys changed. An off-by-one would
+        stop excluding absent fields, inflating the alert count and the review
+        estimate on short documents.
+        """
+        explainability = [
+            {
+                "Transactions": [
+                    {
+                        "Description": {"confidence": 0.0, "confidence_threshold": 0.8},
+                        "Amount": {"confidence": 0.99, "confidence_threshold": 0.8},
+                    }
+                ]
+            }
+        ]
+        inference = {"Transactions": [{"Description": None, "Amount": "-44.00"}]}
+        assert test_set_index._min_confidence(explainability, inference) == 0.99
+        assert test_set_index._alert_counts(explainability, inference) == (0, 1)
+
+    def test_a_null_row_marks_the_row_absent_not_the_whole_list(self):
+        """A list-level score against null rows is NOT excluded, at any list length.
+
+        The exclusion answer no longer depends on how many rows the list holds: a
+        length-keyed rule put the single null row's absence at ``rows``, which
+        matched the list-level confidence and excluded it, while the same payload
+        with two null rows produced ``rows[0]``/``rows[1]`` and excluded nothing.
+        Keying by depth gives the two-row answer in both cases. An *empty* list is
+        still absent at its own path — that is a different observation, and the case
+        ``flatten_values`` cannot report.
+        """
+        explainability = [{"rows": {"confidence": 0.0}, "name": {"confidence": 0.95}}]
+        one_null_row = {"rows": [None], "name": "Acme"}
+        two_null_rows = {"rows": [None, None], "name": "Acme"}
+        assert test_set_index._absent_field_paths(one_null_row) == {"rows[0]"}
+        assert test_set_index._min_confidence(explainability, one_null_row) == 0.0
+        assert test_set_index._min_confidence(
+            explainability, two_null_rows
+        ) == test_set_index._min_confidence(explainability, one_null_row)
+        # An empty list, by contrast, is absent at its own path and IS excluded.
+        assert test_set_index._absent_field_paths({"rows": []}) == {"rows"}
+        assert (
+            test_set_index._min_confidence(explainability, {"rows": [], "name": "Acme"})
+            == 0.95
+        )
+
+    def test_the_resolver_holds_no_second_copy_of_the_index_rule(self):
+        """The rule has one implementation, imported rather than restated.
+
+        A reintroduced private helper would pass every behavioural test above on the
+        day it was written and drift afterwards, which is how the first copy
+        survived.
+        """
+        source = pathlib.Path(test_set_index.__file__).read_text(encoding="utf-8")
+        assert "len(node) == 1" not in source
+        assert "def _list_item_path" not in source
+        assert "def _field_path" not in source
+        assert (
+            test_set_index.list_child_path
+            is importlib.import_module(
+                "idp_common.evaluation.curve_store"
+            ).list_child_path
+        )

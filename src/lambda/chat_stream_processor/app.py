@@ -29,8 +29,17 @@ Auth model
 The Function URL is ``AuthType=AWS_IAM``; the browser signs the request with
 SigV4 using the authenticated Cognito Identity Pool role. The role is granted
 ``lambda:InvokeFunctionUrl`` on this function. The SigV4 principal is read from
-the request context and threaded into the processors as ``callerSub`` for
-session-ownership + RBAC scope checks.
+the request context and threaded into the agent processor as ``callerSub``, which
+is what its chat history is filed under.
+
+It is **not** what any authorization decision is keyed to. On this deployment that
+principal is a pool-wide constant, so it names no particular user (see
+``_GENERIC_IDENTITY_POOL_SESSION_NAMES`` in ``sse.py``), and the value the routes
+resolve therefore falls back to the request body. Both authorization checks the
+processors carry — the agent-chat group gate and Chat-with-Document's
+``allowedConfigVersions`` scope check — read ``identity`` instead, which this
+transport can only report as ``None``. They stand down accordingly, and the
+invocation is gated by IAM alone. That residual is GAP-07.
 
 What this transport does and does not give us:
 
@@ -148,8 +157,14 @@ def _caller_identity() -> dict | None:
     """Verified Cognito claims for the caller, or ``None`` if none are available.
 
     Shaped like the ``identity`` object the resolvers receive
-    (``{"claims": {"cognito:groups": [...]}}``) because the processors' group gate
-    reads that shape, and it is what the dispatcher path already supplies.
+    (``{"claims": {"cognito:groups": [...], "email": "..."}}``) because the
+    processors read that shape, and it is what the dispatcher path already
+    supplies. **Both** claims matter: ``cognito:groups`` is what the agent-chat
+    group gate reads, and ``email`` is what Chat-with-Document's
+    ``allowedConfigVersions`` lookup resolves the caller by (it is the only
+    identifier that joins a Cognito principal to a UsersTable row). Returning a
+    claims dict without ``email`` would deny every Chat-with-Document turn, since
+    that lookup fails closed.
 
     On a Lambda Function URL there is nothing to build it from. The only identity
     the transport forwards is the SigV4 principal —
@@ -272,7 +287,12 @@ async def chat_document(
     request: Request, body: DocumentChatRequest
 ) -> StreamingResponse:
     session_id = body.sessionId
-    caller_sub = _resolve_caller_sub(request, body.callerSub)
+    # Called for its refusal, not its result: it 403s a body-supplied identity
+    # that contradicts the transport-verified one, before the stream is committed.
+    # The value is not otherwise used on this route — the processor resolves the
+    # caller from `identity` below, which only a transport can set, rather than
+    # from a field a client can choose.
+    _resolve_caller_sub(request, body.callerSub)
 
     q: "queue.Queue" = queue.Queue()
 
@@ -310,7 +330,14 @@ async def chat_document(
                     "prompt": body.prompt,
                     "s3Uri": body.s3Uri,
                     "modelId": body.modelId,
-                    "callerSub": caller_sub,
+                    # Verified caller claims, or None when this transport could
+                    # not verify any — which is the case today (GAP-07). The
+                    # processor reads this to resolve the caller's
+                    # allowedConfigVersions and stands that check down on None,
+                    # exactly as the agent processor's group gate does. The key
+                    # must be PRESENT either way: the processor treats an absent
+                    # `identity` as a wiring regression and denies the turn.
+                    "identity": _caller_identity(),
                 },
                 None,
             )

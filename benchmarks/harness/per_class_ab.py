@@ -36,6 +36,8 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import cache_audit  # noqa: E402
 import real_corpus_ab as rc  # noqa: E402
 
+import lib  # noqa: E402
+
 
 def _sign_p(better, worse):
     n = better + worse
@@ -102,6 +104,7 @@ def main():
             self.better = self.worse = self.same = self.n = 0
 
     by_class: dict[str, Acc] = collections.defaultdict(Acc)
+    unread_notes: list[str] = []
     for doc in shared:
         ia, ib = items_a[doc], items_b[doc]
         if (
@@ -109,11 +112,30 @@ def main():
             or ib.get("ObjectStatus", {}).get("S") == "FAILED"
         ):
             continue
-        cls = (rows_a.get(doc, {}).get("classes") or ["(unknown)"])[0]
+        # The class label comes from the document's section objects, so a section that
+        # would not read can change WHICH class this document is grouped under — every
+        # figure below is per class, so a mislabelled document moves two rows at once.
+        # `cache_audit.doc_classes` reports that, and a reason nobody reads is the half
+        # of #1079 that stays open, so the document is excluded rather than grouped on
+        # a label derived from whatever decrypted.
+        row_a = rows_a.get(doc, {})
+        sections_unread = row_a.get("sections_unread") or (
+            rows_b.get(doc, {}).get("sections_unread")
+        )
+        if sections_unread:
+            unread_notes.append(f"{doc} classes: {sections_unread}")
+            continue
+        cls = (row_a.get("classes") or ["(unknown)"])[0]
         g = by_class[cls]
         g.n += 1
-        sa = rc._score(bucket, a.arm_a, doc)
-        sb = rc._score(bucket, a.arm_b, doc)
+        # `_score` returns (score, unread_reason): a report that is not there and one
+        # that would not read are different facts, and a document whose score could
+        # not be READ is excluded from this class's accuracy rather than counted as
+        # having no score (#1079).
+        sa, ua = rc._score(bucket, a.arm_a, doc)
+        sb, ub = rc._score(bucket, a.arm_b, doc)
+        if ua or ub:
+            unread_notes.append(f"{doc} [{cls}]: {ua or ub}")
         if sa is not None and sb is not None:
             g.acc.append(sb - sa)
             if sb > sa:
@@ -122,7 +144,17 @@ def main():
                 g.worse += 1
             else:
                 g.same += 1
-        g.cost.append(rc._cost(ib) - rc._cost(ia))
+        # `_cost` returns (cost, unpriced_reason) for the same reason `_score` returns
+        # an unread reason: a document carrying metering `pricing.yaml` cannot price
+        # has no cost delta to contribute, and a partial one is below truth by a
+        # different amount in each arm — which moves this class's delta in an unknown
+        # direction, not merely by an unknown amount (#1146).
+        cb, pb = rc._cost(ib)
+        ca, pa = rc._cost(ia)
+        if pa or pb:
+            unread_notes.append(f"{doc} [{cls}] cost: {pa or pb}")
+        elif cb is not None and ca is not None:
+            g.cost.append(cb - ca)
         ra, rb = rows_a.get(doc), rows_b.get(doc)
         if ra and rb:
             g.cr.append(rb["cacheReadInputTokens"] - ra["cacheReadInputTokens"])
@@ -131,6 +163,15 @@ def main():
     treated = set(a.treated)
     print(f"\narm A (baseline) {a.arm_a}\narm B (treated)  {a.arm_b}")
     print(f"paired non-failed documents: {sum(g.n for g in by_class.values())}\n")
+    if unread_notes:
+        print(
+            f"⚠ {len(unread_notes)} document(s) contribute no delta because a read "
+            "FAILED or a cost could not be priced, not because they measured nothing "
+            "— the per-class figures below are over the remainder:"
+        )
+        for note in unread_notes[:5]:
+            print(f"    {note}")
+        print()
     print(
         f"{'class':28} {'grp':>4} {'n':>4} {'acc Δ':>9} {'t':>6} {'sign p':>7} "
         f"{'cost Δ':>10} {'cost t':>7} {'cRead Δ':>9} {'input Δ':>9}"
@@ -144,13 +185,17 @@ def main():
         cost = _paired(g.cost)
         cr = statistics.fmean(g.cr) if g.cr else 0
         inp = statistics.fmean(g.inp) if g.inp else 0
+        # The t statistics are formatted BEFORE the f-string, through the one
+        # helper. Nested inside it they were two more sites that could raise on a
+        # null t, and the two here were the ones a regex-shaped guard did not see.
+        acc_t, cost_t = lib.format_t(acc and acc[2]), lib.format_t(cost and cost[2])
         print(
             f"{cls[:27]:28} {grp:>4} {g.n:>4} "
             f"{(f'{acc[0]:+.4f}' if acc else '—'):>9} "
-            f"{(f'{acc[2]:+.2f}' if acc and acc[2] is not None else '—'):>6} "
+            f"{acc_t:>6} "
             f"{_sign_p(g.better, g.worse):>7.3f} "
             f"{(f'{cost[0]:+.5f}' if cost else '—'):>10} "
-            f"{(f'{cost[2]:+.2f}' if cost and cost[2] is not None else '—'):>7} "
+            f"{cost_t:>7} "
             f"{cr:>+9,.0f} {inp:>+9,.0f}"
         )
         out[cls] = {
@@ -178,13 +223,18 @@ def main():
         w = sum(by_class[c].worse for c in keys)
         ndocs = sum(by_class[c].n for c in keys)
         print(f"\n{label} pooled ({len(keys)} classes, {ndocs} docs)")
+        # `t` is null when the paired deltas have zero spread — two arms agreeing
+        # exactly on every document is enough. Formatted through the one helper and
+        # BEFORE the f-string, so that a rule about f-strings can be absolute.
+        pooled_acc_t = lib.format_t(s_acc and s_acc[2])
+        pooled_cost_t = lib.format_t(s_cost and s_cost[2])
         if s_acc:
             print(
-                f"  accuracy Δ {s_acc[0]:+.4f}  sd {s_acc[1]:.4f}  t {s_acc[2]:+.2f}  "
+                f"  accuracy Δ {s_acc[0]:+.4f}  sd {s_acc[1]:.4f}  t {pooled_acc_t}  "
                 f"n={s_acc[3]}   better {b} / worse {w}  sign p={_sign_p(b, w):.4f}"
             )
         if s_cost:
-            print(f"  cost Δ     {s_cost[0]:+.5f}  t {s_cost[2]:+.2f}  n={s_cost[3]}")
+            print(f"  cost Δ     {s_cost[0]:+.5f}  t {pooled_cost_t}  n={s_cost[3]}")
 
     if a.json:
         json.dump(out, open(a.json, "w"), indent=2)

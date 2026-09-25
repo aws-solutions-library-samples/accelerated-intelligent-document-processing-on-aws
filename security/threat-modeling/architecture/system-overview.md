@@ -22,7 +22,7 @@
 > `template.yaml`, `nested/api-resolvers/template.yaml`,
 > `scripts/api_rbac_expectations.yaml` and the dispatcher / queue-processor
 > source rather than edited in place. The main user pool has **five** groups (an
-> `Annotator` group scoped by `allowedTestSets`); **118** operations are routable
+> `Annotator` group scoped by `allowedTestSets`); **119** operations are routable
 > through the dispatcher, with the group distribution in §5 taken from
 > `scripts/api_rbac_expectations.yaml`; §5 names what each layer does *not* cover,
 > including the absence of a default deny at the dispatcher; §5.2 covers the two
@@ -279,35 +279,53 @@ table.
 | In-process handlers (`ddb_direct`, 11 ops) | **Enforces `cognito:groups`** from its own `_REQUIRED_GROUPS` table before touching DynamoDB — the only group check at dispatcher level | Returns without denying for any field absent from that table, so the check is opt-in per field |
 | **Resolver Lambda** (~40 functions) | **Enforces `cognito:groups`, `allowedConfigVersions` scope, and per-object ownership** | Nothing forces a check to exist or to be spelled consistently; three hand-written conventions coexist across resolvers |
 
-**118 operations** are routable at v0.6.9 — 40 mapped directly by the
+**119 operations** are routable at v0.6.10 — 40 mapped directly by the
 `FIELD_FUNCTION_MAP` published to SSM at
-`/${StackName}/http-api/field-function-map`, **68** aliased onto shared
+`/${StackName}/http-api/field-function-map`, **69** aliased onto shared
 resolvers by `FIELD_ALIASES`, and 11 served in process by `ddb_direct`. Those
-three sets sum to 119, not 118, because one field (`getCircuitBreakerStatus`)
+three sets sum to 120, not 119, because one field (`getCircuitBreakerStatus`)
 appears in both `FIELD_FUNCTION_MAP` and `ddb_direct._HANDLED`; the distinct
-union is 118, which is exactly the number of entries in
+union is 119, which is exactly the number of entries in
 `scripts/api_rbac_expectations.yaml`. Their required-group distribution:
 
 | Required groups | Ops |
 |---|---|
 | Admin + Author | 40 |
-| Any authenticated user | 26 |
 | Admin only | 21 |
+| Any assigned group, whichever one (`ANY_GROUP`) | 18 |
 | Admin + Author + Viewer | 15 |
+| Any authenticated user, group or no group (`ANY`) | 8 |
 | Admin + Annotator + Author | 7 |
 | Admin + Annotator + Reviewer | 4 |
 | Admin + Reviewer | 2 |
 | Admin + Annotator + Author + Viewer | 1 |
 | IAM/backend only (Cognito callers rejected) | 2 |
 
-Beyond the group check, **13** operations verify config-version scope, **4** filter
-their result rows by it, and **8** verify per-object ownership.
+`ANY_GROUP` is resolved at build time into every group `template.yaml` creates, so a
+group added there joins those 18 without an edit per operation; what they refuse is a
+caller an administrator has not placed in any group, which domain-scoped self-signup
+produces. Every document read is in that set, including the ones that return an object
+key, an `s3://` URI, a list of extracted attribute names or a model-written page
+description rather than a value, because those compose into one chain that was measured
+running end to end for a groupless caller. ⚠️ That is a check on the **API**.
+`CognitoIdentityPoolSetRole` attaches one `authenticated` role with no `RoleMappings`,
+and it grants `s3:GetObject` and `s3:ListBucket` on the document buckets to every
+authenticated user irrespective of group, so the **document** bytes are not behind this
+distribution (see UI.T06 and AUTH.T03). The two buckets partitioned per user —
+Configuration and Test Set — are deliberately not on that role, so the
+configuration-revision store and the test-set documents are reachable only through a
+resolver that applies the caller's scope to the key.
+
+Beyond the group check, **16** operations verify config-version scope, **4** filter
+their result rows by it, and **9** verify per-object ownership.
 [`scripts/api_rbac_expectations.yaml`](../../../scripts/api_rbac_expectations.yaml)
 is the manifest of record for all of this and is asserted by
 `make api-test-static` in both CI systems and by the live matrix in
-`make api-test`. It records one accepted gap, **GAP-02**: `queryKnowledgeBase`
-performs no group check, so any authenticated user can query a configured
-knowledge base.
+`make api-test`. It records two accepted gaps. **GAP-02**: the `queryKnowledgeBase`
+*resolver* performs no group check of its own, so the dispatcher's floor — which
+requires an assigned group — is the only group gate on it. **GAP-07**: the chat
+Function URL transport carries no `cognito:groups` claim, so neither chat route's
+group check can be applied to callers arriving that way.
 
 Two mechanical details matter when reading resolver code. The REST authorizer
 places claims at `requestContext.authorizer.claims` (not where an AppSync-era

@@ -86,14 +86,15 @@ The capacity calculation system provides sophisticated analysis through GraphQL 
 **Latency Distribution Modeling**:
 - Statistical analysis of processing times from **actual processed documents** (P50, P75, P90, P95, P99)
 - Queue delay calculation from **real QueuedTime/WorkflowStartTime timestamps**
-- SLA compliance checking against configured maximum latency (in seconds)
+- SLA compliance checking of the **P99** against configured maximum latency (in seconds)
 - Performance warning alerts for quota exceedances
 
 **RPM (Requests Per Minute) Calculation**:
-- Calculates **average requests per document** from metering data samples
-- Multiplies by scheduled documents per hour to get total requests per hour
-- Applies SLA factor for peak demand calculation
-- Formula: `avg_requests_per_doc × scheduled_docs_per_hour / 60 × sla_factor`
+- Calculates **average requests per document** from metering data samples, summing
+  every Bedrock metering key a document recorded for that step
+- Multiplies by the **busiest** hour's scheduled documents to get requests per hour
+- Applies the 10% safety buffer
+- Formula: `avg_requests_per_doc × peak_scheduled_docs_per_hour / 60 × 1.1`
 
 ### 3. Document Token Usage Population
 
@@ -272,6 +273,7 @@ Navigate to the Web UI and select the "Capacity Planning" section:
 - Quick reference: 60s = 1 min | 120s = 2 min | 300s = 5 min | 600s = 10 min
 - Used for SLA compliance checking and performance validation
 - Displayed with automatic conversion to minutes for reference
+- `0` is outside the range and is refused as such ("maxAllowedLatency must be positive"), since no plan can meet a zero-second budget. Leaving the field empty is a different case and reports the field as missing.
 
 ### 4. Capacity Calculation and Results
 
@@ -293,6 +295,53 @@ Navigate to the Web UI and select the "Capacity Planning" section:
 - **Quota Status**: Shows "✅ Within Quota" or "⚠️ Quota Exceeded" based on all model quotas
 - **SLA Target**: Configured maximum latency in seconds
 
+**Which statistic the SLA is judged on**:
+
+The SLA breach flag behind the performance warning compares the **P99** total
+latency against the SLA target, not the median. An SLA is a promise about the documents
+that go slowly, and the median is insensitive to those by construction: a plan
+whose typical document finishes comfortably inside the limit while one document in
+a hundred takes many times as long is not meeting the SLA. The warning quotes both
+figures in the function's log, because the gap between them is what says whether to
+chase a slow tail — a few unusually large packets, or a step that occasionally
+retries — or a uniformly slow pipeline.
+
+If your deployment reported "within SLA" before release 0.6.10 and reports a breach
+afterwards with no change to your documents or configuration, this is why: the
+comparison was previously made against the median. The reported percentiles and the
+SLA target itself are unchanged, so the P99 row of the latency chart already showed
+the value the flag now reads.
+
+**Where the derived throughput comes from**:
+
+The planner derives a throughput figure — the smaller of a token-limited and a
+request-limited rate — which it does not display as a field of its own. It reaches
+you through the load and bottleneck **recommendations**, and it is printed in full
+in the function's CloudWatch log, so that log is where to look when a
+recommendation about system load is not the one you expected.
+
+The **token**-limited half is taken from the **most constrained model your plan's
+steps actually call**, resolved from the models selected in View/Edit Configuration,
+not from an account-wide figure and not from every model the stack supports. Both
+halves of that matter. A document is throttled at the narrowest token limit any of
+its steps touches, so a model with generous headroom cannot raise the token-limited
+rate; and a model your pipeline never calls cannot lower it, however little TPM
+quota your account has for that model. The log names the model that is binding,
+which is the one to name in a quota increase request. Models with no quota at all,
+and models absent from the stack's quota-code mapping, are skipped rather than
+allowed to bind the figure — the per-step quota table below is where a single
+model's shortfall is reported, against that model's own limit. If none of your
+plan's models can be priced, the estimate falls back to the narrowest TPM limit in
+the account's mapping and says so in the log.
+
+⚠️ **The request-limited half is not narrowed this way.** It is the smallest RPM
+quota across *every* model in the stack's quota-code mapping, whether or not your
+plan calls it, so a model you never invoke with a low RPM limit still caps the
+derived throughput — and because the figure is the smaller of the two halves, it can
+cap it regardless of how much token headroom your plan's own models have. Read the
+`Request-limited capacity` line in the function's log alongside the token-limited
+one to see which of the two is deciding.
+
 **Latency Bar Colors**:
 - **Green/Blue**: When all model quotas are within limits (regardless of SLA)
 - **Red**: Only when any model quota shows "Increase Needed"
@@ -308,16 +357,21 @@ Navigate to the Web UI and select the "Capacity Planning" section:
 **RPM Calculation Method**:
 ```
 1. Sample up to 100 documents with metering data
-2. Calculate average requests per document for each processing step
-3. Multiply by scheduled documents per hour
+2. Calculate average requests per document for each processing step, adding up every
+   Bedrock metering key that document recorded for the step
+3. Multiply by the busiest hour's scheduled documents
 4. Apply 10% safety buffer for burst traffic
 5. Convert to per-minute rate
 
-Formula: peak_rpm = (avg_requests_per_doc × scheduled_docs_per_hour / 60) × 1.1
+Formula: peak_rpm = (avg_requests_per_doc × peak_scheduled_docs_per_hour / 60) × 1.1
 
 Where:
-- avg_requests_per_doc: Calculated from metering samples
-- scheduled_docs_per_hour: Sum across all hourly time slots
+- avg_requests_per_doc: Calculated from metering samples. A step can record several
+  keys for one document — the key is "{context}/bedrock/{model_id}", so a per-class
+  model override or an escalation adds a key rather than adding to one — and all of
+  them count towards the step's total
+- peak_scheduled_docs_per_hour: The largest docsPerHour across the hourly time slots,
+  not their sum. RPM is a per-minute limit, so it is scaled from one hour, as TPM is
 - 1.1 = 10% safety buffer (not SLA factor)
 ```
 
@@ -409,6 +463,15 @@ The capacity planning system requires **real processed documents** with metering
 - Request counts (requires metering data with requests field)
 - Page counts (requires metering or document-level page data)
 
+The two processing-time sources are genuine alternatives: either one on its own
+produces a report, and the timestamp pair is preferred where both are present
+because it measures the document end to end. A history carrying only the
+timestamps therefore plans normally. The per-step figures the planner derives
+from `gb_seconds` stay at zero in that case rather than being back-filled from
+the document total, so no estimate is substituted for a measurement that was
+never taken; those per-step figures feed the calculation and are not themselves
+part of the report.
+
 **Error Messages When Data is Missing**:
 - "No processed documents found with metering data"
 - "No processing time data found in documents"
@@ -452,9 +515,16 @@ The capacity planning system requires **real processed documents** with metering
 - **Symptom**: "No request count data found for [step_name]"
 - **Solution**: Process documents through the full workflow to generate metering data with request counts
 
+**Assessment RPM Row Missing After Disabling Granular Assessment**:
+- **Symptom**: The report is produced and carries an Assessment TPM row, but no Assessment RPM row
+- **Cause**: Assessment records its Bedrock calls under `GranularAssessment/...` keys while granular assessment is enabled, and those keys are excluded from the request count when it is disabled. A history recorded entirely under them therefore leaves Assessment with token demand and nothing countable, so its request rate is dropped rather than sized from a rate the current configuration has never produced. The Lambda log names the step and the reason.
+- **Why the TPM row is still there**: the token requirement is your own scheduled token demand measured against the account's Service Quotas value, and reads no metering at all — so nothing about it is unknown in this state, and processing more documents cannot change it. Only the request rate has no measurement behind it, and only the request rate is withheld.
+- ⚠️ **Read the per-step table, not the per-model summary, in this state**: the per-step table shows the step with `N/A` for its RPM status, which is accurate. The aggregate-by-model table lists the step under "Used for" but its `Required RPM` total sums only the steps that still have a request row, and it shows a green sufficiency badge with nothing marking the gap — so that total understates the model's request demand by however much the withheld step contributes. The Lambda log names the step and the reason.
+- **Solution**: Process a document under the current configuration, which records an `Assessment/...` key — or re-enable granular assessment, which brings the recorded history back into scope. Every other step is reported either way.
+
 **No Processing Time Data**:
 - **Symptom**: "No processing time data found in documents"
-- **Solution**: Ensure documents have `/lambda/duration` gb_seconds or WorkflowStartTime/CompletionTime timestamps
+- **Solution**: Ensure documents have `/lambda/duration` gb_seconds or WorkflowStartTime/CompletionTime timestamps. Either is sufficient, so this message means **neither** was found in the sampled documents.
 
 **OCR Quota Error When Not Using Bedrock OCR**:
 - **Symptom**: Error about missing OCR metering data
@@ -538,10 +608,8 @@ make test-capacity-coverage  # Run with coverage report
 
 ### Test Documentation
 
-For detailed testing information, see:
-- [Capacity Planning Tests README](../src/lambda/calculate_capacity/README_TESTS.md)
-- [Developer Guide](capacity-planning-developer-guide.md)
-- [Security Mitigations](capacity-planning-mitigations.md)
+For how to run the suites, what each one covers and the coverage goals, see the
+[Capacity Planning Tests README](../src/lambda/calculate_capacity/README_TESTS.md).
 
 ---
 

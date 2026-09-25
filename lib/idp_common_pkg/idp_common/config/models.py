@@ -18,8 +18,22 @@ Usage:
         model = config.extraction.model
 """
 
+import difflib
 import re
-from typing import Annotated, Any, Dict, List, Literal, Optional, Union
+from functools import lru_cache
+from typing import (
+    Annotated,
+    Any,
+    Dict,
+    List,
+    Literal,
+    NamedTuple,
+    Optional,
+    Tuple,
+    Union,
+    get_args,
+    get_origin,
+)
 
 from pydantic import (
     BaseModel,
@@ -93,18 +107,32 @@ class ImageConfig(BaseModel):
     @field_validator("target_width", "target_height", mode="before")
     @classmethod
     def parse_dimensions(cls, v: Any) -> Optional[int]:
-        """Parse dimensions from string or number, treating empty strings as None"""
+        """Parse a dimension from a string or number; empty means unset.
+
+        ⚠️ **An unreadable value raises rather than becoming ``None``.** It used to
+        return ``None``, which is the same value "not configured" produces — so
+        ``target_width: "abc"`` was discarded and ``OcrService`` then applied the
+        default ceiling and logged *"No image sizing configured, applying default
+        ceiling"*, which is the opposite of what happened. The warning written for
+        exactly this case sat behind an ``except`` that could never fire, because by
+        then the value was already ``int | None`` (#1158).
+
+        Raising also removes an asymmetry inside this one model: ``parse_dpi`` below
+        calls ``int(v)`` with no ``try``, so ``dpi: "abc"`` has always failed config
+        validation while ``target_width: "abc"`` was silently dropped. Same config
+        block, opposite behaviour, and the silent half is the one that misreports.
+        """
         if v is None or (isinstance(v, str) and not v.strip()):
             return None
-        if isinstance(v, str):
-            try:
-                return int(v) if v else None
-            except ValueError:
-                return None  # Invalid value, return None
         try:
             return int(v)
-        except (ValueError, TypeError):
-            return None
+        except (ValueError, TypeError) as exc:
+            raise ValueError(
+                f"expected a pixel count or an empty value, got {v!r}. An unreadable "
+                "dimension is rejected rather than ignored, because ignoring it "
+                "applies the default ceiling and reports it as 'no image sizing "
+                "configured'."
+            ) from exc
 
     @field_validator("dpi", mode="before")
     @classmethod
@@ -460,9 +488,10 @@ class ForcedToolConfig(BaseModel):
             "Send the document schema as a forced Converse tool instead of "
             "describing it in the prompt. OFF by default: forcing constrains the "
             "response SHAPE, not the values in it, so it is not self-evidently an "
-            "improvement and is gated on a measured win. Routes that cannot carry "
-            "a toolConfig (a custom Lambda hook, GPT-5.x) fall back to the prompt "
-            "automatically, and the reason is recorded in the section metadata. "
+            "improvement and is gated on a measured win. Models that cannot carry "
+            "a toolConfig (a custom Lambda hook, GPT-5.x) or that reject a forced "
+            "toolChoice (Claude Opus 5.5) fall back to the prompt automatically, "
+            "and the reason is recorded in the section metadata. "
             "Property names Bedrock rejects are sanitized on the way out and "
             "restored on the way back, so no extracted field is renamed."
         ),
@@ -1085,6 +1114,50 @@ class ExtractionConfig(BaseModel):
         default=None,
         description="Lambda function ARN for custom inference (used when model is 'LambdaHook'). Function name must start with GENAIIDP-.",
     )
+    row_shortfall_action: Literal["fail", "warn"] = Field(
+        default="warn",
+        description=(
+            "What a section's outcome MEANS when extraction returned fewer than "
+            "half the table rows the section's own OCR text evidences for a list "
+            "field — the ``extraction_rows_below_ocr_estimate`` check. 'warn' "
+            "(default): record the issue and report success. 'fail': the partial "
+            "result and the issue are still written, then the section fails, so "
+            "the document's status cannot report COMPLETED on a list that lost "
+            "most of its rows. This does NOT change WHEN the shortfall is "
+            "detected, only what it costs; the detection threshold is the same "
+            "one the warning has always used.\n\n"
+            "⚠️ 'fail' is OPT-IN, and the reason is a property of the evidence, "
+            "not caution. The check's evidence is OCR tables whose column count "
+            "equals the list item's property count, summed over the whole "
+            "section, and a 2- or 3-property array that models an entity GROUP "
+            "rather than table rows is structurally indistinguishable from one "
+            "that models rows. So a monthly statement's 31-row two-column Daily "
+            "Balance table is counted as evidence about a 5-row 2-property "
+            "``account_summary``, and a completely correct extraction scores "
+            "0.13. Nine such fields ship in the config library "
+            "(``account_summary``, ``W2.codes``, ``Payslip.{Federal,State,City}"
+            "Taxes``, ``Medical-Insurance-Invoice.Charges`` …), so 'fail' by "
+            "default would fail correct extractions of the default preset. "
+            "Turn it on for a corpus whose narrow arrays really are table rows — "
+            "long transaction lists are what it is for — and see "
+            "docs/extraction-and-confidence.md for the shapes to check first."
+        ),
+    )
+
+    @field_validator("row_shortfall_action", mode="before")
+    @classmethod
+    def _coerce_row_shortfall_action(cls, v: Any) -> Any:
+        """An absent/blank/None value resolves to the field default.
+
+        Same hazard as ``validation.fail_action``: the config editor has
+        persisted nulls for scalar fields before, and a null arriving here must
+        not become a ``ValidationError`` that wedges the whole config load.
+        Resolving to ``warn`` is also what keeps an upgrade behaviour-neutral —
+        every stored config predating this field has the key absent.
+        """
+        if v is None or (isinstance(v, str) and not v.strip()):
+            return "warn"
+        return str(v).lower()
 
     @field_validator("prompt_cache", mode="before")
     @classmethod
@@ -1094,7 +1167,7 @@ class ExtractionConfig(BaseModel):
         PyYAML (YAML 1.1) reads a bare ``prompt_cache: off`` as ``False`` and
         ``on`` as ``True``; the DynamoDB layer keeps booleans as booleans. Without
         this the documented value failed validation everywhere it is loaded —
-        ``idp-cli config validate``, the extraction Lambda and the deploy-time
+        ``idp-cli config-validate``, the extraction Lambda and the deploy-time
         UpdateDefaultConfig custom resource. Unknown strings still fail on the
         Literal.
         """
@@ -1580,8 +1653,14 @@ class SummarizationConfig(BaseModel):
         description="Pipeline hooks invoked after summarization (Feature Platform)",
     )
     enabled: bool = Field(default=True, description="Enable summarization")
+    # Nova Pro, not Nova Premier. Premier reached end of life on 2026-09-14 and
+    # every call to it now fails, so it was the one default in this file that
+    # made a stack fail out of the box: no config preset under config_library/
+    # sets summarization.model, so this default is what most deployments run.
+    # Pro is the highest-tier Nova still Active and is already the default for
+    # classification and discovery below.
     model: str = Field(
-        default="us.amazon.nova-premier-v1:0",
+        default="us.amazon.nova-pro-v1:0",
         description="Bedrock model ID for summarization. Use 'LambdaHook' to invoke a custom Lambda function instead of Bedrock.",
     )
     model_lambda_hook_arn: Optional[str] = Field(
@@ -1825,6 +1904,17 @@ class ErrorAnalyzerParameters(BaseModel):
     max_stepfunction_error_length: int = Field(
         default=400, gt=0, description="Maximum length for Step Function error messages"
     )
+    max_stepfunction_history_pages: int = Field(
+        default=10,
+        gt=0,
+        le=50,
+        description=(
+            "Maximum pages of Step Function execution history to walk back through "
+            "when looking for the transition into the failing state. Each page is 100 "
+            "events. Bounded above because the walk is one API call per page and an "
+            "unbounded value would make a misconfiguration expensive rather than slow."
+        ),
+    )
 
     # X-Ray analysis thresholds
     xray_slow_segment_threshold_ms: int = Field(
@@ -1858,6 +1948,7 @@ class ErrorAnalyzerParameters(BaseModel):
         "max_log_groups",
         "max_stepfunction_timeline_events",
         "max_stepfunction_error_length",
+        "max_stepfunction_history_pages",
         "xray_slow_segment_threshold_ms",
         "xray_response_time_threshold_ms",
         "xray_analysis_hours",
@@ -2420,6 +2511,20 @@ class PricingConfig(BaseModel):
         validate_assignment=True,
     )
 
+    @model_validator(mode="before")
+    @classmethod
+    def _report_ignored_keys(cls, data: Any) -> Any:
+        """Name every key below the root that this record will drop.
+
+        ``extra="forbid"`` above covers the root and nothing under it:
+        ``PricingEntry`` and ``PricingUnit`` take Pydantic's default
+        ``extra="ignore"``, so ``pricing[0].units[0].priec`` was discarded with no
+        diagnostic and the price the operator wrote was never recorded. Reports
+        only — nothing that loads today stops loading.
+        """
+        log_ignored_config_keys(data, cls)
+        return data
+
     def to_dict(self) -> Dict[str, Any]:
         """Convert to a mutable dictionary."""
         return self.model_dump(mode="python")
@@ -2494,6 +2599,23 @@ class ModelConfigLimitsConfig(BaseModel):
         validate_assignment=True,
     )
 
+    @model_validator(mode="before")
+    @classmethod
+    def _report_ignored_keys(cls, data: Any) -> Any:
+        """Name every key inside a limit entry that this record will drop.
+
+        ``extra="forbid"`` above covers the root and nothing under it:
+        ``ModelLimitEntry`` takes Pydantic's default ``extra="ignore"``, so
+        ``model_limits[0].max_input_tokenz`` was accepted and discarded, leaving
+        the shipped context window for that model family in force while the UI
+        showed the save as successful. ``max_input_tokens`` is the window the
+        Bedrock client resolves a model against, so the effect is a limit that
+        appears to have been set and was not. Reports only — nothing that loads
+        today stops loading.
+        """
+        log_ignored_config_keys(data, cls)
+        return data
+
     def to_dict(self) -> Dict[str, Any]:
         """Convert to a mutable dictionary."""
         return self.model_dump(mode="python")
@@ -2502,8 +2624,13 @@ class ModelConfigLimitsConfig(BaseModel):
 class FactExtractionConfig(BaseModel):
     """Fact extraction configuration for rule validation"""
 
+    # Claude Sonnet 4.5, not Claude 3.5 Sonnet (20240620). That model has reached
+    # end of life — Bedrock's GetFoundationModel answers ResourceNotFoundException
+    # for it — and it is in no model enum, so it could not be selected in the UI
+    # either. No config preset under config_library/ sets this field, so the
+    # default is what rule validation actually ran on.
     model: str = Field(
-        default="us.anthropic.claude-3-5-sonnet-20240620-v1:0",
+        default="us.anthropic.claude-sonnet-4-5-20250929-v1:0",
         description="Bedrock model ID for fact extraction",
     )
     system_prompt: str = Field(
@@ -2536,8 +2663,10 @@ class FactExtractionConfig(BaseModel):
 class RuleValidationOrchestratorConfig(BaseModel):
     """Rule validation summarization configuration"""
 
+    # See FactExtractionConfig.model above: Claude 3.5 Sonnet (20240620) is
+    # end-of-life and absent from every enum.
     model: str = Field(
-        default="us.anthropic.claude-3-5-sonnet-20240620-v1:0",
+        default="us.anthropic.claude-sonnet-4-5-20250929-v1:0",
         description="Bedrock model ID for rule validation summarization",
     )
     system_prompt: str = Field(
@@ -2724,8 +2853,11 @@ class EvaluationLLMMethodConfig(BaseModel):
     )
 
     temperature: float = Field(default=0.0, ge=0.0, le=1.0)
+    # Claude Haiku 4.5, not Claude 3 Haiku. The latter reached end of life, so
+    # LLM-based evaluation ran a dead model out of the box; this is the current
+    # Haiku-class model and keeps the same cost/latency intent.
     model: str = Field(
-        default="us.anthropic.claude-3-haiku-20240307-v1:0",
+        default="us.anthropic.claude-haiku-4-5-20251001-v1:0",
         description="Bedrock model ID for evaluation",
     )
     system_prompt: str = Field(
@@ -2991,6 +3123,498 @@ IDP_CONFIG_DEPRECATED_FIELDS = {
 }
 
 
+# --------------------------------------------------------------------------- #
+# Reporting a key the configuration models will drop, at any depth
+# --------------------------------------------------------------------------- #
+#
+# Of the models **reachable from ``IDPConfig``**, three take ``extra="allow"``,
+# none takes ``extra="forbid"`` and the rest take Pydantic's default
+# ``extra="ignore"`` — so a key no field matches is discarded during validation. At
+# the top level ``IDPConfig`` logs a warning about that; below the top level nothing
+# did, so a misspelled or mis-nested key left the shipped default in force with no
+# diagnostic anywhere — and a default is indistinguishable from a working setting.
+#
+# The scope of that sentence is exactly ``IDPConfig``'s tree, and this module holds
+# three other root models that are **not** in it. ``PricingConfig`` and
+# ``ModelConfigLimitsConfig`` take ``extra="forbid"``, which is a better answer than
+# reporting; ``SchemaConfig`` takes ``extra="allow"`` and drops nothing. But
+# ``ModelLimitEntry``, nested inside ``ModelConfigLimitsConfig``, takes the default,
+# so a mistyped key in a per-model limit row is still dropped in silence — the same
+# defect in a different record, tracked as
+# https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/1211.
+# The walk below takes any root model, so covering it is a call site rather than new
+# machinery.
+#
+# The walk reports those keys with their dotted path. It reports; it never rejects.
+# ``extra`` is unchanged on every model, so a stored configuration that loads today
+# still loads.
+#
+# Three things bound what it calls unknown. The first two are properties of the
+# model tree rather than lists kept in step with it; the third is a limitation:
+#
+#   * It descends only where a field's annotation names a model. A field typed
+#     ``Dict[str, Any]`` or ``List[Dict[str, Any]]`` is a free-form document whose
+#     keys are the user's to choose — ``classes``, ``policy_classes``, a hook's
+#     ``args``, ``summary`` — so there is nothing there to be unknown, and it is
+#     never entered.
+#   * It reports nothing on a model whose ``model_config`` says ``extra="allow"``.
+#     Such a model *keeps* an undeclared key, so the key is not dropped and there
+#     is nothing to warn about. It is still descended into, because its declared
+#     model-typed fields are ordinary.
+#   * ⚠️ It does not enter a field whose annotation names **more than one** model —
+#     a discriminated union — because nothing in the annotation says which member a
+#     given value is. Keys in there *are* dropped, so unlike the two cases above
+#     this is a gap rather than a decision. No field in the tree is shaped that way
+#     today and a test fails if one appears, because the guarantee this walk offers
+#     would otherwise narrow silently.
+
+
+#: Top-level keys ``IDPConfig`` **relocates** rather than drops, and their
+#: destination. Read by the rename in ``log_deprecated_fields`` and skipped by the
+#: walk, from one definition, because the two answers must agree: a relocated key
+#: works, so reporting it as "no longer used" sends the author to delete a setting
+#: that is in force. ``rule_classes`` carries policy rules, and that is exactly how
+#: hand-written configs ended up with rule validation that never fired.
+#:
+#: This is the one rename that lives here rather than in ``migrations/``, which is
+#: why it needs saying twice-over: a caller that migrates first — as this walk's
+#: callers must — still has not seen it.
+class LegacyRename(NamedTuple):
+    """Where a renamed top-level key goes, and the release that moved it."""
+
+    to: str
+    since: str
+
+
+LEGACY_TOP_LEVEL_RENAMES: Dict[str, LegacyRename] = {
+    "rule_classes": LegacyRename(to="policy_classes", since="v0.5.9"),
+}
+
+#: Keys a model deliberately stopped declaring, reported as *deprecated* rather
+#: than *unknown*. This changes the wording of a finding and never suppresses one,
+#: which is why it is not a gate exemption: both kinds are logged.
+#:
+#: Keyed by the model class itself, so renaming a class is an import-time failure
+#: rather than a silently inert entry. ``ExtractionConfig`` and
+#: ``ConfidenceConfig`` both declare no ``max_tokens`` on purpose (see the NOTE in
+#: each: output is always requested at the model's maximum), and a configuration
+#: stored before that decision still carries one — so "unknown" would be the wrong
+#: word for the commonest live case.
+DEPRECATED_CONFIG_FIELDS_BY_MODEL: Dict[type, frozenset[str]] = {
+    ExtractionConfig: frozenset({"max_tokens"}),
+    ConfidenceConfig: frozenset({"max_tokens"}),
+}
+
+#: Dotted paths the report stays quiet about, because this repository ships them
+#: in its own configuration. A warning the operator did not cause and cannot act
+#: on, on every load, is what teaches them to ignore the line on the day it is
+#: about their own typo. One entry per path — never per subtree — and each entry
+#: names where the same fact is already **recorded**, so silence here is not
+#: silence everywhere.
+#:
+#: *Recorded*, not reported: nothing in the tree emits a finding for
+#: ``discovery.output_format``. The fact lives in the prose of another exemption,
+#: and what the gate holding it does with the key is excuse a parity finding.
+#:
+#: Not in ``scripts/tests/gate_exemptions.json``, and the reason is a measured
+#: trade-off rather than a claim that this is not an exemption — it is one, for two
+#: gates. ``exemption_discovery.PYTHON_PATHSPECS`` does not read the library, so an
+#: entry would fail ``test_no_registered_exemption_has_vanished``; adding the
+#: narrowest glob that would find this (``lib/idp_common_pkg/idp_common/config/*.py``)
+#: discovers six surfaces — four unrelated to this change, three of them
+#: function-locals — each then owing an authored judgement. A registry that asks for
+#: judgements on noise is how a reviewer learns to rubber-stamp it, which is the
+#: failure that registry exists to prevent. So the ratchets it would ask for live in
+#: ``tests/unit/config/test_unknown_nested_keys.py`` instead, one per entry:
+#: non-vacuity (the path must still be one the models drop, or it is pre-suppressing
+#: whatever next occupies it), closure (the path must still be shipped in this
+#: repository's own system defaults, which is the entire justification), and a pin on
+#: the size of this map so a second entry arrives as a failure.
+SUPPRESSED_IGNORED_KEY_PATHS: Dict[str, str] = {
+    "discovery.output_format": (
+        "Shipped in system_defaults/base-discovery.yaml, so it is on the default "
+        "path of every deployment and no operator wrote it. Already registered as "
+        "a dead knob by UI_ONLY_SUBTREES in "
+        "scripts/sdlc/tests/test_config_ui_schema_parity.py, which is where the "
+        "decision to wire it up or remove it belongs (GitHub #707 follow-up). "
+        "Delete this entry when that decision is taken either way."
+    ),
+}
+
+#: Paths ``IDPConfig`` does not model but that **another consumer reads**, so
+#: "ignored, leaving the default in force" is false for them. Same shape as
+#: ``TOP_LEVEL_KEY_EXEMPT`` in ``scripts/tests/test_preset_keys_are_read.py``, and
+#: for the same reason: the entry names the production reader and the source text
+#: that constitutes the read, so the premise is computed per entry rather than
+#: asserted in prose. A test that merely looked for the key name would stay green
+#: after the line doing the reading was deleted.
+#:
+#: This knowledge used to live only in that test module, which no production code
+#: can consult — and that is how three separate reporters came to tell an operator
+#: that ``description`` would be ignored.
+PATHS_READ_ELSEWHERE: Dict[str, Tuple[str, str]] = {
+    "description": (
+        "src/lambda/update_configuration/index.py",
+        'pop("description"',
+    ),
+}
+
+#: Upper bound on findings named in one log line. A configuration written against
+#: a different product entirely would otherwise produce an unreadable line. A value
+#: large enough not to bound anything is the way this stops working, so the test
+#: asserts the magnitude rather than only the truncation branch.
+MAX_REPORTED_IGNORED_KEYS = 20
+
+#: How close a sibling field name must be to earn a "did you mean" on a
+#: misspelling. Only consulted when the key is not a real field somewhere else in
+#: the tree, since that case is answered exactly.
+_SUGGESTION_CUTOFF = 0.8
+
+
+class IgnoredConfigKey(NamedTuple):
+    """One key in a configuration that the models will not read.
+
+    ``path`` is the dotted path as written (list elements appear as ``[i]``),
+    ``kind`` is ``"unknown"`` or ``"deprecated"``, and ``suggestion`` is the dotted
+    path of a declared field the author plausibly meant, or ``None``.
+    """
+
+    path: str
+    kind: str
+    suggestion: Optional[str]
+
+    def describe(self) -> str:
+        """Render the finding for a log line or a CLI warning."""
+        if self.suggestion:
+            return f"{self.path} (did you mean {self.suggestion}?)"
+        return self.path
+
+
+def _strip_annotated(annotation: Any) -> Any:
+    """Return the underlying type of ``Annotated[T, ...]``, else ``annotation``."""
+    while hasattr(annotation, "__metadata__"):
+        args = get_args(annotation)
+        if not args:
+            break
+        annotation = args[0]
+    return annotation
+
+
+def _nested_model_target(annotation: Any) -> Tuple[Optional[str], Optional[type]]:
+    """Resolve where a field's value carries a nested config model.
+
+    Returns ``(shape, model)`` where shape is ``"model"`` (the value is that
+    model), ``"list"`` (each element is), ``"map"`` (each value is), or
+    ``(None, None)`` when the annotation names no single model — which is the case
+    for every free-form ``Dict[str, Any]`` block and is why those are never walked.
+    """
+    annotation = _strip_annotated(annotation)
+
+    if isinstance(annotation, type) and issubclass(annotation, BaseModel):
+        return "model", annotation
+
+    origin = get_origin(annotation)
+    if origin is None:
+        return None, None
+
+    args = [a for a in get_args(annotation) if a is not type(None)]
+
+    # Optional[X] / Union[X, Y]: usable only when exactly one member is a model,
+    # otherwise there is no way to tell which one this value is.
+    if origin is Union or str(origin) in (
+        "types.UnionType",
+        "<class 'types.UnionType'>",
+    ):
+        resolved = [_nested_model_target(a) for a in args]
+        models = [r for r in resolved if r[0] is not None]
+        return models[0] if len(models) == 1 else (None, None)
+
+    if origin in (list, set, frozenset, tuple):
+        if len(args) != 1:
+            return None, None
+        shape, model = _nested_model_target(args[0])
+        return ("list", model) if shape == "model" else (None, None)
+
+    if origin is dict:
+        if len(args) != 2:
+            return None, None
+        shape, model = _nested_model_target(args[1])
+        return ("map", model) if shape == "model" else (None, None)
+
+    return None, None
+
+
+@lru_cache(maxsize=None)
+def _field_path_index(root: type) -> Dict[str, Tuple[Tuple[str, ...], ...]]:
+    """Map every field name in a model tree to the paths that declare it.
+
+    Derived from the annotations, so a model added to the tree later is indexed
+    without being listed, and each path is a tuple of segments. All paths to a
+    repeated model are enumerated — ``ImageConfig`` is reachable four ways — because
+    what makes a suggestion trustworthy is knowing whether the answer is unique.
+
+    A segment for a list-typed field carries ``[]``: ``ocr.postHook[].arn`` says
+    unambiguously where that field lives, where ``ocr.postHook.arn`` reads as a path
+    and is not one. It is notation rather than something to paste — the index is a
+    lookup table, not config syntax.
+
+    ⚠️ A **map-typed** field (``Dict[str, Model]``) is deliberately not indexed, and
+    nor is anything under it. The walk itself descends there and names findings with
+    the key the author used, but a *suggestion* would have to name a key that does
+    not exist yet, and every spelling of that (``field.*``, ``field.<name>``) either
+    breaks the segment round-trip or invents a name. No field in the tree is shaped
+    that way today; when one is, a suggestion inside it is absent rather than wrong.
+    """
+    index: Dict[str, List[Tuple[str, ...]]] = {}
+
+    def visit(model: type, prefix: Tuple[str, ...], chain: Tuple[type, ...]) -> None:
+        for name, field in model.model_fields.items():
+            index.setdefault(name, []).append(prefix + (name,))
+            shape, nested = _nested_model_target(field.annotation)
+            if nested is None or nested in chain or shape == "map":
+                continue
+            step = f"{name}[]" if shape == "list" else name
+            visit(nested, prefix + (step,), chain + (nested,))
+
+    visit(root, (), (root,))
+    return {name: tuple(paths) for name, paths in index.items()}
+
+
+def _generalise(segments: Tuple[str, ...]) -> Tuple[str, ...]:
+    """Rewrite the indices of a written path to the index's own spelling.
+
+    ``ocr.features[0]`` and ``ocr.features[]`` are the same place; comparing them
+    as written would make every suggestion inside a list unreachable.
+    """
+    return tuple(re.sub(r"\[\d+\]$", "[]", part) for part in segments)
+
+
+def _suggest_path(
+    key: str, prefix: Tuple[str, ...], model: type, root: type
+) -> Optional[str]:
+    """Name a declared field the author plausibly meant, or ``None``.
+
+    Two different questions, in order, and **neither is answered by guessing**. A
+    wrong path is worse than no path: it sends the author to edit something that was
+    already correct, and it is the reading that makes them distrust the next warning.
+
+    1. *Wrong depth, either direction.* The key is a real field near where it was
+       written, and the nearest place is unambiguous. "Near" is read outwards: the
+       written prefix first, then its parent, and so on to the root, stopping at the
+       **first** prefix that has any candidate at all. Within that prefix the
+       shallowest candidate wins if it is alone at that depth, and a tie declines.
+
+       Both mistakes happen, and both are answered. Too shallow: ``ocr.dpi`` →
+       ``ocr.image.dpi``. Too deep: ``ocr.image.backend`` → ``ocr.backend``, which is
+       the mistake the documentation's own "``ocr.backend`` really is one level up"
+       invites an author to over-generalise. Depth settles the ordinary ambiguity —
+       ``extraction.dpi`` has ``extraction.image.dpi`` one level down and
+       ``extraction.confidence.image.dpi`` two — and a tie is what keeps a guess out:
+       ``enabled`` is declared at eight distinct places one level under
+       ``extraction``, so ``extraction.enabled`` gets no hint rather than one of the
+       eight, and ``hitl.model`` reaches the root only to find eleven equally near
+       candidates and decline, rather than being answered with
+       ``classification.model``.
+    2. *Misspelling.* Failing that, a close name among the **siblings** — the fields
+       of the model the key was actually written in.
+
+    **Neither step guesses.** A wrong path is worse than no path: it sends the author
+    to edit something that was already correct, and it is the reading that makes them
+    distrust the next warning.
+    """
+    written = _generalise(prefix + (key,))
+    here = _generalise(prefix)
+    declared = _field_path_index(root).get(key, ())
+
+    # Outwards from where it was written, stopping at the first level that has any
+    # candidate: a nearer prefix with a tie must decline rather than widen, or every
+    # ambiguous key would walk out to the root and be answered from another section.
+    for depth in range(len(here), -1, -1):
+        scope = here[:depth]
+        candidates = [
+            path for path in declared if path != written and path[: len(scope)] == scope
+        ]
+        if not candidates:
+            continue
+        nearest = min(len(path) for path in candidates)
+        closest = [path for path in candidates if len(path) == nearest]
+        if len(closest) == 1:
+            return ".".join(closest[0])
+        break
+
+    close = difflib.get_close_matches(
+        key, list(model.model_fields.keys()), n=1, cutoff=_SUGGESTION_CUTOFF
+    )
+    if close:
+        return ".".join(prefix + (close[0],))
+    return None
+
+
+def collect_ignored_config_keys(
+    data: Any,
+    model: type,
+    *,
+    include_top_level: bool = False,
+) -> List[IgnoredConfigKey]:
+    """Find every key in ``data`` that ``model`` and its nested models will drop.
+
+    ⚠️ ``data`` must already have been through ``migrations.migrate_config`` if it
+    could be legacy-shaped. A legacy key is *relocated* on load rather than dropped
+    — ``extraction.agentic.validation`` becomes ``extraction.validation`` — so
+    against the pre-migration shape this would report a key that works. The
+    ``IDPConfig`` validator that calls it runs after the migration chain for that
+    reason, and ``merge_utils`` migrates a copy before asking.
+
+    Args:
+        data: The configuration mapping as written, before validation.
+        model: The root model to interpret it against, normally ``IDPConfig``.
+        include_top_level: Report depth-0 keys too. Off by default and **no
+            production caller turns it on**, deliberately: depth 0 already has
+            three reporters (``IDPConfig``'s own two messages, and a block each in
+            ``idp_cli`` and ``idp_sdk``), and two of the things they know a generic
+            walk does not — that ``update_configuration`` pops and stores
+            ``description``, and that ``TOP_LEVEL_KEY_EXEMPT`` in
+            ``scripts/tests/test_preset_keys_are_read.py`` is where such a key is
+            recorded — are what make "it will be ignored" false for those keys.
+            Consult that list before enabling this for anything a person reads.
+
+    Returns:
+        Findings sorted by dotted path. Empty when every key is read.
+    """
+    findings: List[IgnoredConfigKey] = []
+
+    def visit(value: Any, current: type, prefix: Tuple[str, ...]) -> None:
+        if not isinstance(value, dict):
+            return
+        fields = current.model_fields
+        keeps_extra = current.model_config.get("extra") == "allow"
+        deprecated = DEPRECATED_CONFIG_FIELDS_BY_MODEL.get(current, frozenset())
+
+        for key, item in value.items():
+            if not isinstance(key, str):
+                continue
+            field = fields.get(key)
+            if field is None:
+                if keeps_extra:
+                    # The model retains this key, so it is not being dropped.
+                    continue
+                if not prefix and key in LEGACY_TOP_LEVEL_RENAMES:
+                    # Relocated on load, not dropped: the setting works.
+                    continue
+                if not prefix and not include_top_level:
+                    continue
+                dotted = ".".join(prefix + (key,))
+                if dotted in SUPPRESSED_IGNORED_KEY_PATHS:
+                    continue
+                if dotted in PATHS_READ_ELSEWHERE:
+                    # Something other than IDPConfig reads this one.
+                    continue
+                findings.append(
+                    IgnoredConfigKey(
+                        path=dotted,
+                        kind="deprecated" if key in deprecated else "unknown",
+                        suggestion=(
+                            None
+                            if key in deprecated
+                            else _suggest_path(key, prefix, current, model)
+                        ),
+                    )
+                )
+                continue
+
+            shape, nested = _nested_model_target(field.annotation)
+            if nested is None:
+                continue
+            if shape == "model":
+                visit(item, nested, prefix + (key,))
+            elif shape == "list" and isinstance(item, (list, tuple)):
+                for position, element in enumerate(item):
+                    visit(element, nested, prefix + (f"{key}[{position}]",))
+            elif shape == "map" and isinstance(item, dict):
+                for name, element in item.items():
+                    if isinstance(name, str):
+                        visit(element, nested, prefix + (f"{key}.{name}",))
+
+    visit(data, model, ())
+    findings.sort(key=lambda finding: finding.path)
+    return findings
+
+
+def format_ignored_config_keys(findings: List[IgnoredConfigKey], kind: str) -> str:
+    """Render the findings of one kind as a bounded, sorted list for a message."""
+    described = [finding.describe() for finding in findings if finding.kind == kind]
+    if len(described) > MAX_REPORTED_IGNORED_KEYS:
+        remaining = len(described) - MAX_REPORTED_IGNORED_KEYS
+        described = described[:MAX_REPORTED_IGNORED_KEYS]
+        described.append(f"... and {remaining} more")
+    return ", ".join(described)
+
+
+def log_ignored_config_keys(
+    data: Any,
+    model: type,
+    *,
+    include_top_level: bool = False,
+) -> List[IgnoredConfigKey]:
+    """Report every key ``model`` will drop to the module logger, and return them.
+
+    The one reporter every record root shares, so a root added to this module does
+    not have to re-derive the wording, the ``deprecated``/``unknown`` split or the
+    bound on the line. The message names ``model`` itself, which is what lets the
+    same code serve ``IDPConfig`` and the smaller record roots without either of
+    them reading as the other.
+
+    **It reports; it does not reject.** ``extra`` is unchanged on every model, so a
+    stored record that loads today still loads.
+
+    Call it from a ``mode="before"`` validator rather than from a save path, and note
+    the reason is not that the save path is bypassed. ``save_custom_pricing`` and
+    ``save_custom_model_config_limits`` do call ``save_configuration``, and the UI
+    resolvers call them — but they hand it an already-validated model, because the
+    resolver constructs the model itself. ``save_configuration`` reads a dict in one
+    branch only, and that branch is not on the operator's path: by the time the record
+    reaches it, the mistyped key is already gone. The validator is the one place that
+    covers every construction site — ``ConfigurationManager``, the configuration
+    resolver, and ``update_configuration`` at deploy time.
+
+    Args:
+        data: The record as written, before validation. A non-mapping is ignored.
+        model: The root model to interpret it against.
+        include_top_level: Report depth-0 keys too. Leave off for a root that
+            takes ``extra="forbid"``: Pydantic already raises for those, and a
+            warning beside the exception says the key was ignored when it was not.
+
+    Returns:
+        The findings, so a caller that needs to act can.
+    """
+    import logging
+
+    if not isinstance(data, dict):
+        return []
+    findings = collect_ignored_config_keys(
+        data, model, include_top_level=include_top_level
+    )
+    if not findings:
+        return findings
+    logger = logging.getLogger(__name__)
+    deprecated_line = format_ignored_config_keys(findings, "deprecated")
+    unknown_line = format_ignored_config_keys(findings, "unknown")
+    if deprecated_line:
+        logger.warning(
+            "%s: Ignoring deprecated nested fields (these are no longer used): %s",
+            model.__name__,
+            deprecated_line,
+        )
+    if unknown_line:
+        logger.warning(
+            "%s: Ignoring unknown nested fields (not defined in model, so the "
+            "shipped default stays in force): %s",
+            model.__name__,
+            unknown_line,
+        )
+    return findings
+
+
 class SchemaConfig(BaseModel):
     """
     Schema configuration model.
@@ -3091,9 +3715,7 @@ class IDPConfig(BaseModel):
         description="Human-in-the-Loop review configuration (v0.6, top-level)",
     )
     summarization: SummarizationConfig = Field(
-        default_factory=lambda: SummarizationConfig(
-            model="us.amazon.nova-premier-v1:0"
-        ),
+        default_factory=lambda: SummarizationConfig(model="us.amazon.nova-pro-v1:0"),
         description="Summarization configuration",
     )
     chat: ChatConfig = Field(
@@ -3101,10 +3723,12 @@ class IDPConfig(BaseModel):
         description="Chat-with-Document configuration (used by the interactive "
         "document Q&A feature in the Web UI)",
     )
+    # No `model=` kwarg: RuleValidationConfig declares no `model` field (its models
+    # live on the nested fact_extraction / rule_validation_orchestrator configs), so
+    # Pydantic silently dropped it. It was therefore an inert end-of-life model
+    # literal, which basedpyright already flagged as `No parameter named "model"`.
     rule_validation: RuleValidationConfig = Field(
-        default_factory=lambda: RuleValidationConfig(
-            model="us.anthropic.claude-3-5-sonnet-20240620-v1:0"
-        ),
+        default_factory=RuleValidationConfig,
         description="Rule validation configuration",
     )
     agents: AgentsConfig = Field(
@@ -3398,29 +4022,41 @@ class IDPConfig(BaseModel):
 
             data = migrate_config(data)
 
-            # Migrate rule_classes → policy_classes (renamed in v0.5.9)
-            if "rule_classes" in data and "policy_classes" not in data:
-                data["policy_classes"] = data.pop("rule_classes")
-                logger.info("Migrated config key 'rule_classes' → 'policy_classes'")
-            elif "rule_classes" in data:
-                # Both keys present: policy_classes wins and rule_classes is
-                # dropped. Say so loudly — this discards user-supplied rules, and
-                # because 'rule_classes' is a known-deprecated key it does not
-                # trip the unknown-field warning either. Silently losing it is
-                # how hand-written and notebook-produced configs ended up with
-                # rule validation that never fired.
-                discarded = data.get("rule_classes")
+            # Apply the renames this model performs itself rather than in
+            # migrations/ — one definition, LEGACY_TOP_LEVEL_RENAMES, so that the
+            # unknown-key walk below knows these keys are relocated and not lost.
+            for old_name, rename in LEGACY_TOP_LEVEL_RENAMES.items():
+                new_name = rename.to
+                if old_name not in data:
+                    continue
+                if new_name not in data:
+                    data[new_name] = data.pop(old_name)
+                    logger.info("Migrated config key '%s' → '%s'", old_name, new_name)
+                    continue
+                # Both keys present: the new name wins and the old one is dropped.
+                # Say so loudly — this discards user-supplied content, and because
+                # the old name is a known-deprecated key it does not trip the
+                # unknown-field warning either. Silently losing it is how
+                # hand-written and notebook-produced configs ended up with rule
+                # validation that never fired.
+                discarded = data.get(old_name)
                 count = len(discarded) if isinstance(discarded, (list, dict)) else 1
                 logger.warning(
-                    "Both 'rule_classes' (deprecated) and 'policy_classes' are "
-                    "present in this configuration; DISCARDING 'rule_classes' "
-                    "(%d %s). 'rule_classes' was renamed to 'policy_classes' in "
-                    "v0.5.9 — merge these entries into 'policy_classes' or they "
-                    "will not be used.",
+                    "Both '%s' (deprecated) and '%s' are present in this "
+                    "configuration; DISCARDING '%s' (%d %s). '%s' was renamed to "
+                    "'%s' in %s — merge these entries into '%s' or they will not be "
+                    "used.",
+                    old_name,
+                    new_name,
+                    old_name,
                     count,
                     "entry" if count == 1 else "entries",
+                    old_name,
+                    new_name,
+                    rename.since,
+                    new_name,
                 )
-                del data["rule_classes"]
+                del data[old_name]
 
             # Get all field names defined in the model
             defined_fields = set(cls.model_fields.keys())
@@ -3445,6 +4081,19 @@ class IDPConfig(BaseModel):
                         f"{sorted(unknown)}"
                     )
 
+            # The same report for every level below this one. Without it a
+            # misspelled or mis-nested key was dropped in silence, leaving the
+            # shipped default in force — which looks exactly like a working
+            # setting, and in the mis-nested case routes the value around the
+            # validator that would have rejected it. Reports only; `extra` is
+            # unchanged, so nothing that loads today stops loading.
+            #
+            # Shared with the other record roots in this module, which have the
+            # same defect one list-entry down and no top-level message of their
+            # own: the wording, the deprecated/unknown split and the bound on the
+            # line are written once.
+            log_ignored_config_keys(data, cls)
+
         return data
 
     def to_dict(self, **extra_fields: Any) -> Dict[str, Any]:
@@ -3467,6 +4116,13 @@ class IDPConfig(BaseModel):
         result = self.model_dump(mode="python")
         result.update(extra_fields)
         return result
+
+
+# Registered here rather than in the literal above because `IDPConfig` does not
+# exist yet at that point. One authority for "deprecated, not unknown" at every
+# depth: a caller asking for top-level keys too (`include_top_level=True`) gets the
+# same wording `IDPConfig`'s own validator uses for them.
+DEPRECATED_CONFIG_FIELDS_BY_MODEL[IDPConfig] = frozenset(IDP_CONFIG_DEPRECATED_FIELDS)
 
 
 class ConfigMetadata(BaseModel):

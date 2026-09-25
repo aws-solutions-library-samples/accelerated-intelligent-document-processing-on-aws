@@ -132,8 +132,6 @@ NOT_LOGICAL_IDS = {
     "PublicAccessBlockConfiguration": "S3 bucket property name",
     "RedrivePolicy": "SQS queue property name",
     "Retry": "Step Functions state field name",
-    "TracingConfiguration": "state-machine property the template deliberately does "
-    "NOT set — the page's point is its absence",
     "VisibilityTimeout": "SQS queue property name",
     "WARN": "LogLevel enum value",
 }
@@ -244,7 +242,17 @@ def _assert_count_phrase(
     forms = [template_str.format(n=str(n))]
     if n in NUMBER_WORDS:
         forms.append(template_str.format(n=NUMBER_WORDS[n]))
-    if not any(f.lower() in flat.lower() for f in forms):
+    # Same word-boundary guard as the strict pattern below, and for the same
+    # reason: a plain substring test finds "one of those 9" inside "**None** of
+    # those 9", so a page asserting the opposite of the measured value would
+    # satisfy the presence check. It is reachable whenever a measured count is 1.
+    present = any(
+        re.search(
+            r"(?<![\w-])" + re.escape(f), flat, re.IGNORECASE
+        )
+        for f in forms
+    )
+    if not present:
         pytest.fail(
             "docs/well-architected.md does not state the measured value "
             f"{n} where it should.\nExpected one of: "
@@ -452,6 +460,50 @@ def test_s3_bucket_count() -> None:
 
 
 @pytest.mark.unit
+def test_traced_lambda_counts() -> None:
+    """The observability paragraph's three tracing numbers, derived per template.
+
+    A count on this page needs a gate or it rots in place: the numbers it carried
+    before were a per-template split that stopped matching the templates and
+    nothing noticed. ``scripts/tests/test_xray_tracing.py`` asserts only a floor,
+    on purpose — a floor is what stops that gate needing an edit every time a
+    function is added — so the exact figures have to be pinned here, where the
+    claim is actually made.
+    """
+    per_template = {
+        path: sum(
+            1
+            for body in _of_type(path, "AWS::Serverless::Function").values()
+            if re.search(r"^\s+Tracing:", body, re.MULTILINE)
+        )
+        for path in (PARENT_TEMPLATE, UNIFIED_TEMPLATE)
+    }
+    total = sum(per_template.values())
+
+    _assert_count_phrase(
+        total,
+        "{n} Lambda functions",
+        f"the two main templates declare a tracing mode on {total} functions "
+        f"({per_template[PARENT_TEMPLATE]} + {per_template[UNIFIED_TEMPLATE]}).",
+    )
+    # The per-template legs carry the surrounding words as well: bare
+    # "{n} in `template.yaml`" also matches the alarm, dashboard, wildcard-policy
+    # and PITR sentences, each of which legitimately states a different number.
+    _assert_count_phrase(
+        per_template[PARENT_TEMPLATE],
+        "{n} in `template.yaml` and",
+        f"template.yaml declares a tracing mode on "
+        f"{per_template[PARENT_TEMPLATE]} functions.",
+    )
+    _assert_count_phrase(
+        per_template[UNIFIED_TEMPLATE],
+        "{n} in `patterns/unified/template.yaml` — plus both state machines",
+        f"patterns/unified/template.yaml declares a tracing mode on "
+        f"{per_template[UNIFIED_TEMPLATE]} functions.",
+    )
+
+
+@pytest.mark.unit
 def test_tls_only_resource_policy_count() -> None:
     """The page said 22 in one place and twenty-three in another. It is 23."""
     n = sum(
@@ -586,15 +638,18 @@ def test_redrive_policy_table_matches_the_queues() -> None:
 def test_api_authorization_counts_match_the_expectations_file() -> None:
     """``scripts/api_rbac_expectations.yaml`` is the declared source of truth.
 
-    The page claimed authorization was enforced per operation on group membership.
-    It is not: a quarter of the operations are ``groups: ANY``, and most of those
-    carry no ownership or configuration-version narrowing either. That is the
-    designed posture, so the code is not the defect — the page was.
+    Authorization is not uniform across the operations, and the page has to say so
+    in the numbers the file actually declares. Three policies coexist: an explicit
+    group list, ``ANY_GROUP`` (any group an administrator assigned), and ``ANY``
+    (authenticated, group or no group — which self-service sign-up produces). The
+    page previously flattened them and read as if group membership were checked
+    everywhere.
     """
     spec = yaml.safe_load(RBAC_EXPECTATIONS.read_text(encoding="utf-8"))
     ops = spec["operations"]
     iam_only = sorted(n for n, s in ops.items() if s.get("groups") == "IAM_ONLY")
     any_auth = sorted(n for n, s in ops.items() if s.get("groups") == "ANY")
+    any_group = sorted(n for n, s in ops.items() if s.get("groups") == "ANY_GROUP")
     group_restricted = len(ops) - len(iam_only) - len(any_auth)
     narrowing = ("ownership", "scope_checked", "scope_filtered")
     unnarrowed = sorted(n for n in any_auth if not any(k in ops[n] for k in narrowing))
@@ -606,8 +661,16 @@ def test_api_authorization_counts_match_the_expectations_file() -> None:
     )
     _assert_count_phrase(
         group_restricted,
-        "{n} of them are restricted to named Cognito groups",
-        f"{group_restricted} operations declare an explicit group list.",
+        "{n} of them require Cognito group membership",
+        f"{group_restricted} operations require a group: "
+        f"{group_restricted - len(any_group)} declare an explicit list and "
+        f"{len(any_group)} accept any assigned group.",
+    )
+    _assert_count_phrase(
+        len(any_group),
+        "{n} of those accept any assigned group",
+        f"{len(any_group)} operations are declared ANY_GROUP — any of the groups "
+        "template.yaml creates, so a self-registered user in no group is refused.",
     )
     _assert_count_phrase(
         len(iam_only),
@@ -625,9 +688,13 @@ def test_api_authorization_counts_match_the_expectations_file() -> None:
         "remaining {n} are declared `groups: ANY`",
         f"{len(any_auth)} operations are reachable by any authenticated user.",
     )
+    # The template carries no verb, so it reads correctly whatever the measured
+    # value is. "{n} ... are narrowed" would force ungrammatical prose the moment
+    # the count reaches one, and the page must not be pushed into bad English to
+    # satisfy a check about numbers.
     _assert_count_phrase(
         len(any_auth) - len(unnarrowed),
-        "{n} of those " + str(len(any_auth)) + " are narrowed further",
+        "{n} of those " + str(len(any_auth)) + " narrowed further",
         "Ownership- or scope-narrowed ANY operations.",
     )
     _assert_count_phrase(
@@ -635,7 +702,24 @@ def test_api_authorization_counts_match_the_expectations_file() -> None:
         "other {n} are not",
         f"{len(unnarrowed)} ANY operations carry no ownership or scope key at all.",
     )
-    # The read surface a customer most needs to see named.
+    # The same count again, in the wording the Security review checklist uses.
+    # `_assert_count_phrase` is strict, so EVERY occurrence of this phrase has to
+    # carry the same number — the checklist row and the pillar prose cannot
+    # disagree. They did: the row said 17 long after the pillar said 11, and no
+    # phrase template matched the row, so changing that 17 to any other number left
+    # the suite green.
+    _assert_count_phrase(
+        len(unnarrowed),
+        "{n} `groups: ANY` operations",
+        f"{len(unnarrowed)} ANY operations carry no ownership or scope key; the "
+        "Security review checklist has to state the same number as the pillar text.",
+    )
+    # The read surface a customer most needs to see named, IF it is still reachable
+    # by any authenticated caller. All four now require an assigned group, so every
+    # branch below is currently skipped — the loop is DORMANT, not a passing check,
+    # and asserting anything unconditionally here would be asserting the opposite of
+    # what the page now says. It is kept because widening any of the four back to
+    # `ANY` must re-impose the naming requirement rather than pass silently.
     for name in (
         "getDocument",
         "getFileContents",
@@ -647,6 +731,92 @@ def test_api_authorization_counts_match_the_expectations_file() -> None:
                 f"{name} is reachable by any authenticated user with no further check "
                 "and is not named on the page."
             )
+    # And the sentinel that makes them not-ANY has to be explained where a reader
+    # meets the counts, or "101 require group membership" is an unexplained jump.
+    if any_group:
+        _assert_phrase(
+            "ANY_GROUP",
+            f"{len(any_group)} operations are declared ANY_GROUP; the page states a "
+            "group-restricted count that includes them, so it must name the policy.",
+        )
+
+
+@pytest.mark.unit
+def test_review_checklists_do_not_restate_a_measured_count_wrongly() -> None:
+    """A checklist row quoting one of this file's measured counts must quote it right.
+
+    Every other guard here works by matching a phrase template, and the six
+    ``### Review checklist`` tables match none of them — so a count in a checklist
+    row was unverifiable by construction, and the Security one duly went stale by six
+    while the prose sixty lines above it was correct. Changing that row's number to
+    anything at all left the suite green.
+
+    The check is deliberately scoped to the values this file **already measures**
+    (recomputed below from the templates and the expectations file) rather than to
+    every bare integer in a checklist. A blanket rule reads well but would fail the
+    first time someone adds a review cadence, a retention threshold, an AZ count or a
+    port number to a row — and the response to that is always an exemption, which is
+    how a guard stops being trusted. Scoped this way, a checklist may introduce a
+    figure of its own freely; what it may not do is quote a number this file measures
+    and get it wrong, which is the failure that happened.
+
+    ⚠️ This is a **complement** to the phrase guards, not a substitute: it cannot
+    tell 11 from another measured value that happens to be 15, so the strict phrase
+    assertions stay the primary check.
+    """
+    text = _doc()
+    sections = re.findall(r"^### Review checklist$(.*?)(?=^#{2,3} |\Z)", text, re.S | re.M)
+    # Floor check: a heading rename would otherwise make this pass vacuously.
+    assert len(sections) >= 5, (
+        f"found {len(sections)} '### Review checklist' sections; the heading must "
+        "have been renamed, and this guard now checks nothing"
+    )
+
+    spec = yaml.safe_load(RBAC_EXPECTATIONS.read_text(encoding="utf-8"))
+    ops = spec["operations"]
+    narrowing = ("ownership", "scope_checked", "scope_filtered")
+    any_auth = [n for n, s in ops.items() if s.get("groups") == "ANY"]
+    measured = {
+        len(ops),
+        len(any_auth),
+        len([n for n, s in ops.items() if s.get("groups") == "ANY_GROUP"]),
+        len([n for n, s in ops.items() if s.get("groups") == "IAM_ONLY"]),
+        len([n for n in any_auth if not any(k in ops[n] for k in narrowing)]),
+        len(_of_type(PARENT_TEMPLATE, "AWS::Cognito::UserPoolGroup")),
+    }
+    assert len(measured) >= 4, f"the measured-value set looks broken: {measured}"
+
+    prose = text
+    for section in sections:
+        prose = prose.replace(section, "")
+
+    # Bare integers only: skip anything inside a version, a decimal, a percentage or
+    # an identifier, none of which is a count.
+    number = r"(?<![\w.\-])(\d{1,4})(?![\w.%\-])"
+    stated = {int(m) for m in re.findall(number, "\n".join(sections))}
+    # A checklist number is in scope only if the pillar prose states a DIFFERENT
+    # value for one of the measured facts and this one is not any of them — i.e. it
+    # looks like a restatement that has drifted.
+    wrong = sorted(
+        n
+        for n in stated
+        if n not in measured
+        and not re.search(rf"(?<![\w.\-]){n}(?![\w.%\-])", prose)
+        and any(abs(n - m) > 0 for m in measured)
+        and re.search(
+            rf"(?<![\w.\-]){n}(?![\w.%\-])[^|]*?"
+            r"(operation|`groups: ANY`|ANY_GROUP|Cognito group|user pool group)",
+            "\n".join(sections),
+            re.I,
+        )
+    )
+    assert not wrong, (
+        f"a review checklist row states {wrong} about API operations or Cognito "
+        "groups, and that is not one of the values measured from the templates and "
+        f"scripts/api_rbac_expectations.yaml ({sorted(measured)}), nor stated "
+        "anywhere in the pillar text.\nThe checklist is summarising a count that has "
+        "drifted from the thing it summarises."
+    )
 
 
 @pytest.mark.unit

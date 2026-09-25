@@ -21,6 +21,7 @@ from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Union
 
 from idp_common import bedrock, image, metrics, s3, utils
+from idp_common.assessment.degradation import skip_section_no_confidence
 from idp_common.config.models import IDPConfig
 from idp_common.config.schema_constants import (
     SCHEMA_DESCRIPTION,
@@ -34,10 +35,111 @@ from idp_common.config.schema_constants import (
     X_AWS_IDP_LIST_ITEM_DESCRIPTION,
 )
 from idp_common.config.schema_utils import deref_schema
-from idp_common.models import Document
+from idp_common.empty_schema import (
+    EMPTY_SCHEMA_CLASS_NOT_CONFIGURED,
+    EMPTY_SCHEMA_NO_ATTRIBUTES,
+    EMPTY_SCHEMA_REASON_KEY,
+)
+from idp_common.models import Document, ProcessingIssue
+from idp_common.section_exclusion import SKIPPED_STATUS
 from idp_common.utils import extract_json_from_text, repair_truncated_json
 
 logger = logging.getLogger(__name__)
+
+
+def _extraction_declared_no_fields(extraction_data: Dict[str, Any]) -> bool:
+    """True when extraction wrote an empty ``inference_result`` deliberately.
+
+    An empty result has several meanings and only some of them are a missing
+    confidence surface worth reporting here:
+
+    * **The class has no attributes to extract.** ``ExtractionService`` skips the
+      LLM entirely for such a class and writes a stub carrying
+      ``metadata.skipped_due_to_empty_attributes`` (``_handle_empty_schema``). An
+      authoring choice: nothing was expected from the section, so nothing is
+      missing. **Silent.**
+    * **No class was determined for the section at all** — the ``unclassified``
+      sentinel, which classification assigns to a blank page, to a page whose
+      classification failed, and to every page of a deployment with no document
+      types configured. No class of that name exists in configuration, so the
+      effective schema is ``{}`` by construction. **Silent here**, because the
+      confidence pass is the wrong stage to report it: a ``root_cause`` written
+      from here would send the operator to Extraction, where nothing is wrong. The
+      classification stage records it, with the severity only it can judge — an
+      ordinary blank page is not the same event as a page whose classification
+      errored after retries.
+    * **The section's named class is absent from the configuration in force.** A
+      class renamed or deleted while documents were in flight, or an old document
+      reprocessed under a configuration that no longer defines its class. The
+      section's fields were never extracted, and it has no confidence either.
+      **Reported**, and extraction reports the extraction-stage half of it at the
+      same time (``extraction_class_not_configured``).
+    * **The class does have a schema and the model returned nothing anyway.** A
+      real gap — the section's values, whatever they should have been, now have no
+      confidence. **Reported.**
+
+    Treating the first two as gaps would put an error-severity issue (a red
+    indicator in the Sections panel) on documents their owner considers normal,
+    and — because every one of them also publishes
+    ``AssessmentConfidenceUnavailable`` — would page the on-call for a healthy
+    fleet: a dozen documents each with one blank page clears the default threshold
+    of ten in fifteen minutes on its own. An alarm that fires on healthy
+    throughput is one operators turn off, which would cost the signal #996 exists
+    to provide.
+
+    The third case is bounded by operator configuration changes rather than by
+    document content **only where the classification path guarantees a configured
+    class** — ``multimodalPageLevelClassification`` with ``enforceValidClasses``
+    on, which is the default. On ``textbasedHolisticClassification`` (no
+    enforcement loop) and with ``enforceValidClasses: false``, an out-of-vocabulary
+    prediction is stored verbatim, so the rate follows model output and can reach
+    ``ConfidenceUnavailableThreshold`` — that parameter is the lever there. It is
+    still reported: unlike the two silent cases, the section was expected to hold
+    data and holds none.
+
+    The distinction is made by the producer and read here:
+    ``metadata.empty_schema_reason`` (see ``idp_common.empty_schema``). A stub
+    written before that key existed has no reason at all and is treated as the
+    attribute-less case, so stored results keep reading back exactly as they did.
+
+    ``SKIPPED_STATUS`` is matched too, for the case where an excluded-class stub is
+    read but the section object has lost its ``excluded`` flag (a document
+    reassessed under a later configuration).
+
+    Note what silence costs for the first two. The flag is recorded in the
+    section's ``result.json`` in S3 and nowhere else a user looks: the Visual
+    Editor's Processing Report tab renders an enumerated set of metadata keys that
+    does not include it, so for this payload it reports "no issues detected", and
+    the Sections panel's ``Skipped`` badge keys on the DynamoDB ``Excluded`` flag,
+    which ``_handle_empty_schema`` does not set. The only visible clue is a field
+    count of zero. For the ``unclassified`` case the classification stage's own
+    issue now covers it; for a deliberately attribute-less class nothing is
+    missing, so there is nothing to surface.
+    """
+    if not isinstance(extraction_data, dict):
+        return False
+    metadata = extraction_data.get("metadata") or {}
+    if isinstance(metadata, dict) and metadata.get("skipped_due_to_empty_attributes"):
+        return (
+            metadata.get(EMPTY_SCHEMA_REASON_KEY, EMPTY_SCHEMA_NO_ATTRIBUTES)
+            != EMPTY_SCHEMA_CLASS_NOT_CONFIGURED
+        )
+    return extraction_data.get("status") == SKIPPED_STATUS
+
+
+def _extraction_class_not_configured(extraction_data: Dict[str, Any]) -> bool:
+    """True when extraction skipped the model because the class is not in config.
+
+    The one empty-result cause that is neither deliberate nor a model failure, so
+    it gets its own skip reason: the remedy is a configuration change, not
+    anything about the extraction call — which never happened.
+    """
+    if not isinstance(extraction_data, dict):
+        return False
+    metadata = extraction_data.get("metadata") or {}
+    if not isinstance(metadata, dict):
+        return False
+    return metadata.get(EMPTY_SCHEMA_REASON_KEY) == EMPTY_SCHEMA_CLASS_NOT_CONFIGURED
 
 
 def _safe_float_conversion(value: Any, default: float = 0.0) -> float:
@@ -1323,6 +1425,42 @@ class AssessmentService:
 
         Returns:
             Document: Updated Document object with assessment results appended to extraction results
+
+        Raises:
+            ValueError: if the document or the requested section is missing, i.e.
+                the call cannot be carried out at all.
+
+        **Every return without confidence scores leaves a trace (#1006).** A
+        section can finish this method with no confidence for four reasons other
+        than a failure: no extraction result to assess, no pages, an extraction
+        result whose ``inference_result`` is empty, or none of its pages being
+        present in the document. Each used to
+        append to ``document.errors`` and return, which is not a signal —
+        ``processresults_function`` reads a section document's ``errors`` only
+        inside its ``Status.FAILED`` branch, so on a document that completes the
+        list is never read, no ``ProcessingIssue`` was recorded, and
+        ``AssessmentConfidenceUnavailable`` was never published. Those paths now
+        call ``skip_section_no_confidence``, so a section without confidence
+        looks the same to the Sections panel and to
+        ``AssessmentConfidenceUnavailableAlarm`` however it got there.
+
+        The all-pages-absent case is the one where silence was actively
+        misleading rather than merely missing: the confidence pass used to run
+        against ``document_text == ""`` and ``page_images == []`` and the section
+        came back WITH a confidence number for every field, derived from nothing.
+        It now skips instead. When only SOME pages are absent the pass still runs
+        — partial evidence is not no evidence — and records a warning-severity
+        ``assessment_pages_missing`` issue without publishing the metric, because
+        the section does have confidence scores.
+
+        The cases where nothing *can* be recorded on a section — no document, a
+        document with no sections, or a ``section_id`` the document does not
+        contain — raise instead: there is no section to carry an issue, and a
+        caller asking for a section that is not there has a bug that should
+        surface rather than resolve to a document which completed without
+        confidence. (The Assessment Lambda already raises for a missing section
+        before calling this, so that only changes what direct library callers
+        see.)
         """
         # Check if confidence assessment is enabled (v0.6: extraction.confidence)
         enabled = self.config.extraction.confidence.enabled
@@ -1332,13 +1470,10 @@ class AssessmentService:
 
         # Validate input document
         if not document:
-            logger.error("No document provided")
-            return document
+            raise ValueError("No document provided for assessment")
 
         if not document.sections:
-            logger.error("Document has no sections to process")
-            document.errors.append("Document has no sections to process")
-            return document
+            raise ValueError("Document has no sections to process")
 
         # Find the section with the given ID
         section = None
@@ -1348,10 +1483,7 @@ class AssessmentService:
                 break
 
         if not section:
-            error_msg = f"Section {section_id} not found in document"
-            logger.error(error_msg)
-            document.errors.append(error_msg)
-            return document
+            raise ValueError(f"Section {section_id} not found in document")
 
         # Short-circuit: skip sections whose class is marked as excluded
         # (e.g., static instruction pages). No extraction ran, so no
@@ -1372,6 +1504,17 @@ class AssessmentService:
             error_msg = f"Section {section_id} has no extraction results to assess"
             logger.error(error_msg)
             document.errors.append(error_msg)
+            skip_section_no_confidence(
+                document,
+                section_id,
+                "No extraction result was written for this section, so there was "
+                "nothing to assess.",
+                remedy=(
+                    "Check the Extraction step for this section — a section "
+                    "reaching assessment without an extraction result means "
+                    "extraction did not complete for it."
+                ),
+            )
             return document
 
         # Extract information about the section
@@ -1382,6 +1525,16 @@ class AssessmentService:
             error_msg = f"Section {section_id} has no page IDs"
             logger.error(error_msg)
             document.errors.append(error_msg)
+            skip_section_no_confidence(
+                document,
+                section_id,
+                "The section lists no page IDs, so there was no document text or "
+                "page image to assess its extracted values against.",
+                remedy=(
+                    "Check the Classification step's section boundaries for this "
+                    "document — a section with no pages is malformed."
+                ),
+            )
             return document
 
         # Sort pages by page number
@@ -1402,9 +1555,61 @@ class AssessmentService:
             extraction_data = s3.get_json_content(section.extraction_result_uri)
             extraction_results = extraction_data.get("inference_result", {})
 
-            # Skip assessment if no extraction results found
+            # Skip assessment if no extraction results found. Nothing was
+            # extracted for this section, so there is nothing to score — but the
+            # section still comes back without confidence, which is what the
+            # recorded issue and the metric report. This one used to return
+            # silently, with not even a line in ``document.errors``.
+            #
+            # Except when extraction wrote the empty result ON PURPOSE, which is
+            # an ordinary outcome and not a gap — see
+            # ``_extraction_declared_no_fields``.
             if not extraction_results:
+                if _extraction_declared_no_fields(extraction_data):
+                    logger.info(
+                        "Assessment skipped for section %s: extraction produced no "
+                        "fields by design (class %s, reason %s), so there is no "
+                        "confidence to report as missing.",
+                        section_id,
+                        class_label,
+                        (extraction_data.get("metadata") or {}).get(
+                            EMPTY_SCHEMA_REASON_KEY, EMPTY_SCHEMA_NO_ATTRIBUTES
+                        ),
+                    )
+                    return document
+
                 logger.warning(f"No extraction results found for section {section_id}")
+                if _extraction_class_not_configured(extraction_data):
+                    # Same empty result, a different cause and a different
+                    # remedy: extraction found no class to extract against, so
+                    # pointing the operator at "extraction returned no fields"
+                    # would send them to look at a model call that never happened.
+                    skip_section_no_confidence(
+                        document,
+                        section_id,
+                        f"The section's class ('{class_label}') is not in the "
+                        "configuration this document was processed under, so "
+                        "extraction produced no fields and there were no values to "
+                        "assess.",
+                        remedy=(
+                            "Add the class back to the configuration, or reclassify "
+                            "the document under the current one. The section also "
+                            "carries the extraction_class_not_configured issue from "
+                            "the Extraction step."
+                        ),
+                    )
+                    return document
+
+                skip_section_no_confidence(
+                    document,
+                    section_id,
+                    "The section's extraction result has an empty "
+                    "inference_result, so there were no values to assess.",
+                    remedy=(
+                        "Check the Extraction step for this section — an empty "
+                        "inference_result means extraction returned no fields."
+                    ),
+                )
                 return document
 
             t1 = time.time()
@@ -1412,17 +1617,63 @@ class AssessmentService:
 
             # Read document text from all pages in order
             document_texts = []
+            missing_page_ids = []
             for page_id in sorted_page_ids:
                 if page_id not in document.pages:
                     error_msg = f"Page {page_id} not found in document"
                     logger.error(error_msg)
                     document.errors.append(error_msg)
+                    missing_page_ids.append(page_id)
                     continue
 
                 page = document.pages[page_id]
                 text_path = page.parsed_text_uri
                 page_text = s3.get_text_content(text_path)
                 document_texts.append(page_text)
+
+            # EVERY page of the section is absent from the document, so there is
+            # no text and (below) no image: the confidence pass would run against
+            # no evidence whatsoever and still return a score per field. That is
+            # worse than returning no confidence — a fabricated number is
+            # indistinguishable in the UI, in HITL routing and in the reporting
+            # lake from one the model derived from the page.
+            #
+            # So the pass does not run. The section is skipped through the same
+            # mechanism as the other nothing-to-assess paths (#1006), which is
+            # what makes it visible: until now the only record was the
+            # per-page line appended to ``document.errors`` just above, and
+            # ``processresults_function`` reads that list only for a document that
+            # FAILED. The extraction result is already written and paid for, so
+            # this deliberately does not fail the document (#901).
+            if missing_page_ids and len(missing_page_ids) == len(sorted_page_ids):
+                logger.error(
+                    "None of section %s's %d page(s) %s are present in document %s; "
+                    "skipping the confidence pass rather than scoring against no "
+                    "page text and no page image.",
+                    section_id,
+                    len(sorted_page_ids),
+                    sorted_page_ids,
+                    document.id,
+                )
+                skip_section_no_confidence(
+                    document,
+                    section_id,
+                    # map(str) because a page id only has to be int-CASTABLE to get
+                    # this far: the sort above uses key=int and accepts integers,
+                    # on which str.join raises TypeError. That would turn the
+                    # reported skip this code exists to produce into an unhandled
+                    # exception, on exactly the malformed input it is reporting.
+                    "None of the section's pages "
+                    f"({', '.join(map(str, sorted_page_ids))}) are present in the "
+                    "document, so there was no page text and no page image to "
+                    "assess its extracted values against.",
+                    remedy=(
+                        "Check the Classification step's section boundaries and the "
+                        "OCR step's page list for this document — a section listing "
+                        "page IDs the document does not contain is malformed."
+                    ),
+                )
+                return document
 
             document_text = "\n".join(document_texts)
             t2 = time.time()
@@ -1576,6 +1827,42 @@ class AssessmentService:
                 ladder_issues=ladder_issues,
             )
             processing_issues = ladder_issues + audit_issues
+
+            # SOME of the section's pages were absent (the all-absent case
+            # returned above). The confidence pass did run and did produce
+            # scores, so this is not a no-confidence event and publishes no
+            # metric — but the values that live on the missing pages were scored
+            # without their evidence, and that has to be visible rather than
+            # inferable only from a ``document.errors`` line nothing reads.
+            # Warning severity, and added to the SAME list the assessment stage
+            # owns, because the assignment further down replaces every
+            # assessment-stage issue on the section: recording it earlier and
+            # separately would have been silently overwritten here.
+            if missing_page_ids:
+                processing_issues = [
+                    ProcessingIssue(
+                        stage="assessment",
+                        severity="warning",
+                        code="assessment_pages_missing",
+                        message=(
+                            f"{len(missing_page_ids)} of this section's "
+                            f"{len(sorted_page_ids)} pages are not present in the "
+                            "document, so confidence for values appearing on them "
+                            "was assessed without their page text or image and may "
+                            "be unreliable. The extracted values are unchanged."
+                        ),
+                        root_cause=(
+                            "Pages missing from the document: "
+                            f"{', '.join(map(str, missing_page_ids))}. Check the "
+                            "Classification step's section boundaries and the OCR "
+                            "step's page list."
+                        ),
+                        section_id=section_id,
+                        details={
+                            "missing_page_ids": [str(p) for p in missing_page_ids]
+                        },
+                    )
+                ] + processing_issues
             # MERGE, do not replace. Extraction already wrote its own issues here
             # (extraction_incomplete, extraction_validation_failed, ...); this step
             # owns only the assessment-stage ones. Replacing the list dropped
@@ -1684,14 +1971,15 @@ class AssessmentService:
         """
         logger.info(f"Starting assessment for document {document.id}")
 
+        # Every section goes through process_document_section, including one with
+        # no extraction result. Filtering those out here logged a warning and
+        # nothing else, so a section left without confidence was reported on this
+        # entry point and not on that one — the same silence #1006 closed inside
+        # process_document_section, one level up. The skip is that method's
+        # decision to make, and it records it.
         for section in document.sections:
-            if section.extraction_result_uri:
-                logger.info(f"Assessing section {section.section_id}")
-                document = self.process_document_section(document, section.section_id)
-            else:
-                logger.warning(
-                    f"Section {section.section_id} has no extraction results to assess"
-                )
+            logger.info(f"Assessing section {section.section_id}")
+            document = self.process_document_section(document, section.section_id)
 
         logger.info(f"Completed assessment for document {document.id}")
         return document

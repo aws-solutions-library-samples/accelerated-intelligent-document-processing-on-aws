@@ -82,6 +82,22 @@ axes:
   schema_restatement:
     'on':  {extraction.agentic.restate_schema_in_system_prompt: true}
     'off': {extraction.agentic.restate_schema_in_system_prompt: false}
+  # extraction.agentic.top_k (#956). AWS's Nova tool-use troubleshooting guide asks
+  # for greedy decoding while a model is doing tool use (temperature 0, topP 1,
+  # topK 1) and attributes malformed tool-use output largely to inference
+  # parameters; the agentic path sets temperature but has never sent topK at all.
+  # `off` (null) is the historical behaviour — the model samples at whatever topK
+  # default it has — so the pair is a same-stack, same-code A/B whose OUTCOME
+  # METRIC is the rate of "Model produced invalid sequence as part of ToolUse"
+  # (#895), not accuracy. Only meaningful on a model that accepts topK at all:
+  # Nova (carrier additionalModelRequestFields.inferenceConfig.topK) and Claude
+  # <= 4.6 (carrier additionalModelRequestFields.top_k). Sonnet 5 / Opus 5 /
+  # Claude 4.7+ / Grok / Astra reject or ignore it, so the arms are IDENTICAL
+  # there and the suite would measure nothing — run it with
+  # `--set extraction_model=nova_lite`, the model #895 was reported on.
+  agentic_top_k:
+    'off': {extraction.agentic.top_k: null}
+    '1':   {extraction.agentic.top_k: 1}
   # ocr.image.dpi. Raised 150 -> 300 by #729/#740, and base-ocr.yaml records the
   # mechanism: "below ~200 dpi Textract silently omits small, faint or skewed
   # characters - PAGE NUMBERS, box numbers, hand-filled values - from its response
@@ -165,6 +181,29 @@ axes:
     # premium model worth it?" question has two candidate answers, not one, and a
     # guide that omits this one cannot recommend Astra honestly.
     opus5:        {extraction.model: us.anthropic.claude-opus-5}
+    # Claude Opus 5.5. The reason it needs its own arm rather than inheriting Opus
+    # 5's numbers is that the launch claim is a RATIO and every term of it moved:
+    # $4/$20 per 1M in/out against Opus 5's $5/$25, a cache read at 0.05x input
+    # ($0.20/1M) where every other model here is 0.1x, and "fewer tokens for the
+    # same task". Cheaper per token AND fewer tokens AND cheaper cache reads
+    # compound, so the cost delta cannot be predicted from the rate card alone —
+    # which is exactly the kind of claim this suite exists to measure rather than
+    # repeat. Completeness/accuracy are the other half: Opus 5 is the most complete
+    # model in the v0.6.8 grid (0.993), so "cheaper" is only interesting if it holds.
+    #
+    # Two behaviours differ from Opus 5 and both are visible in a benchmark run:
+    #   * thinking cannot be disabled, so `reasoning_effort` is the only spend lever
+    #     and its DEFAULT is medium, not high (per the Bedrock model card; a default
+    #     is not observable from a response, so this is cited rather than measured)
+    #     — a cell that leaves effort unset is
+    #     not the same cell it is on Opus 5. Pair with the `reasoning_effort` sweep
+    #     before reading a cost delta as a model difference.
+    #   * a forced `toolChoice` is rejected, so the `forcing` axis cannot be `on`
+    #     here: forced-tool extraction falls back to the prose schema and records
+    #     the reason. Do not build a `forcing` A/B on this model — both arms would
+    #     run the same prose path and the delta would be zero for a reason that has
+    #     nothing to do with forcing.
+    opus55:       {extraction.model: us.anthropic.claude-opus-5-5}
     # OpenAI GPT-6 Astra. Converse (NOT the bedrock-mantle path GPT-5.x uses), so
     # it works in both simple and advanced mode. 1.05M context, 128K output.
     # PRICE: $11/$55 per 1M in/out on `us.`, $10/$50 on `global.` — about 4x Sonnet
@@ -261,6 +300,8 @@ default_cell:
   shard_pages: default                # shipped 5-page agentic shard; astracap's
                                       # `wide25` cells vary it (see the axis note)
   lazy_images: 'on'                   # shipped default; advscale varies it via --set
+  agentic_top_k: 'off'                # shipped behaviour: no topK on the tool-use
+                                      # call at all (#956); the topkab suite varies it
 
 # -----------------------------------------------------------------------------
 # CORE cells — the decision-relevant combinations every release should measure.
@@ -278,6 +319,9 @@ core_cells:
   # #710 pair. ADVANCED mode: the restatement only exists on the agentic path.
   - {id: restate-on,           ocr: textract_tables, extraction_mode: advanced, assessment: separate, schema_restatement: 'on'}
   - {id: restate-off,          ocr: textract_tables, extraction_mode: advanced, assessment: separate, schema_restatement: 'off'}
+  # #956 pair. ADVANCED mode: topK only reaches the agentic tool-use call.
+  - {id: topk-off,             ocr: textract_tables, extraction_mode: advanced, assessment: separate, agentic_top_k: 'off'}
+  - {id: topk-1,               ocr: textract_tables, extraction_mode: advanced, assessment: separate, agentic_top_k: '1'}
   - {id: split-llm,            ocr: textract_tables, extraction_mode: simple,   assessment: separate, section_splitting: llm_determined}
   # WS-05 pair. SIMPLE mode: forcing only applies to the non-agentic path.
   - {id: force-off,            ocr: textract_tables, extraction_mode: simple,   assessment: separate, forcing: 'off'}
@@ -335,6 +379,26 @@ model_premium_cells:
   # that decides whether the recommendation is "buy Astra" or "raise your shard".
   - {id: astra-adv-wide,       ocr: textract_tables, extraction_mode: advanced, assessment: separate, extraction_model: astra,   shard_pages: wide25}
   - {id: sonnet5-adv-wide,     ocr: textract_tables, extraction_mode: advanced, assessment: separate, extraction_model: sonnet5, shard_pages: wide25}
+  # --- Claude Opus 5.5 vs Claude Opus 5 (see the `opus55value` suite). Matched
+  # pairs differing ONLY in extraction.model, as above.
+  #
+  # The comparator is Opus 5, NOT the matrix default sonnet46 and not sonnet5.
+  # That is the whole point: the `extraction_model` sweep already answers "how does
+  # this model compare to the default", and it answers it one cell deep. The claim
+  # that needs a ratio is "Opus 5.5 is cheaper than Opus 5 for the same result",
+  # and a ratio needs its denominator run on the same documents, on the same stack,
+  # in the same window — which a sweep against a third model cannot supply.
+  #
+  # Both modes are here because the cost claim has two mechanisms and they do not
+  # both appear in one mode. Simple mode is one large request, so it is where the
+  # cheaper per-token input rate shows up most directly. Advanced mode re-sends a
+  # prompt prefix per shard, which is where the 0.05x cache read (half Opus 5's
+  # 0.1x) can compound — and also where "fewer tokens for the same task" is
+  # testable, since agent turn count is the thing that would fall.
+  - {id: opus55-simple-sep,    ocr: textract_tables, extraction_mode: simple,   assessment: separate, extraction_model: opus55}
+  - {id: opus5-simple-sep,     ocr: textract_tables, extraction_mode: simple,   assessment: separate, extraction_model: opus5}
+  - {id: opus55-adv-sep,       ocr: textract_tables, extraction_mode: advanced, assessment: separate, extraction_model: opus55}
+  - {id: opus5-adv-sep,        ocr: textract_tables, extraction_mode: advanced, assessment: separate, extraction_model: opus5}
 
 # -----------------------------------------------------------------------------
 # MULTI-INSTANCE cells (#715 / #753). Kept out of `core_cells` on purpose: they
@@ -406,8 +470,11 @@ sweeps:
   # added for its own head-to-head suite but not to the sweep, so neither appeared
   # in published guidance. astra_global is deliberately NOT swept: it is the same
   # weights at ~10% less, a price/region choice the `astravalue` suite settles, not
-  # a quality axis worth a full grid.
-  extraction_model: [nova_lite, nova_pro, sonnet5, sonnet5_1m, opus5, astra]
+  # a quality axis worth a full grid. opus55 IS swept: it is the model a user
+  # choosing "best Claude" now lands on, it is cheaper than the opus5 arm already
+  # here, and a guide whose premium recommendation names the previous Opus would be
+  # wrong rather than merely incomplete.
+  extraction_model: [nova_lite, nova_pro, sonnet5, sonnet5_1m, opus5, opus55, astra]
   confidence_model: [nova_lite, nova_2_lite, sonnet5]
   classification_model: [nova_2_lite, sonnet5]
   reasoning_effort: [low, medium, high]
@@ -537,6 +604,90 @@ suites:
     - valuenoise_100
     - longdesc_100
     repeats: 3
+  # A wider `restatement` (#710) for the 0.6.10 re-measurement. Same two cells; the
+  # additions are deliberate:
+  #   manylists_400  8 SEPARATE lists in one class, 400 rows, 9 pages -> it SHARDS.
+  #                  This is where schema adherence has the most to lose (the agent
+  #                  must keep eight sibling arrays straight) and the only doc here
+  #                  where #710's other claim — that the reclaimed tokens are shard
+  #                  budget — can bite at all.
+  #   repeats: 5     the agentic path is non-deterministic; 3 leaves a single
+  #                  deviating run able to move a 2-doc cell mean past the -0.02
+  #                  regression threshold on its own (the `midetectlong` lesson).
+  # Both docs now carry `rows_typed`, so cell_accuracy is populated for every run —
+  # check that before reading any "no effect" conclusion (METHODOLOGY §4).
+  restate710:
+    cells:
+    - restate-on
+    - restate-off
+    docs:
+    - valuenoise_100
+    - longdesc_100
+    - manylists_400
+    repeats: 5
+  # Follow-up to `restate710`, on the ONE metric that moved. At 5 repeats the
+  # quality gate was flat (recall and cell_accuracy 1.000 in 30/30 runs) and the
+  # input-side token saving was clean and deterministic (-5.3% to -6.7%), but
+  # EXTRACTION OUTPUT tokens came back ~30% HIGHER in the `off` arm on
+  # manylists_400 (13.5K -> 20.2K in 3 of 5 runs, Mann-Whitney p=0.059) — the
+  # opposite direction to the one #710 is arguing for, and exactly at the edge of
+  # what 5 v 5 can say. One document, 10 repeats, so the question is settled with
+  # samples instead of an eyebrow. `manylists_400` because that is where it
+  # appeared: 8 sibling arrays is the most adherence pressure in the corpus.
+  restate710b:
+    cells:
+    - restate-on
+    - restate-off
+    docs:
+    - manylists_400
+    repeats: 10
+  # #956: does greedy tool-use decoding (topK 1) change the invalid-ToolUse rate?
+  # The OUTCOME METRIC IS NOT ACCURACY. #895 recorded 247 "Model produced invalid
+  # sequence as part of ToolUse" stream errors in one Nova Lite advanced grid, all
+  # on Nova Lite and none on any other model, each classified transient and
+  # retried — so the visible cost is wall-clock and spend, not a wrong answer.
+  # Count the errors in the ShardRuntime/extraction logs per arm; accuracy and
+  # completeness ride along only to catch a greedy-decoding regression.
+  #
+  # MUST be run with `--set extraction_model=nova_lite`. On the default control
+  # model (Sonnet 4.6) the arms differ, but on Sonnet 5 / Opus 5 / Claude 4.7+ /
+  # Grok / Astra topK is rejected or silently ignored, so both arms would send
+  # byte-identical requests and the suite would measure nothing but noise.
+  #
+  # Docs are chosen to maximise ConverseStream CALLS per run, because the error is
+  # per call: longdesc_100 and manylists_400 both make the agent emit many rows,
+  # and manylists_400 shards (8 lists / 400 rows), so one run is several agent
+  # loops. repeats: 4 for the same non-determinism reason as `restatement`.
+  topkab:
+    cells:
+    - topk-off
+    - topk-1
+    docs:
+    - longdesc_100
+    - manylists_400
+    repeats: 4
+  # Round 2 of the #956 A/B, sized from round 1 rather than guessed. What round 1
+  # (4 repeats) showed: Nova Lite fails MOST documents on the agentic path either
+  # way, and it fails in TWO ways — ModelInvalidToolUseSequence (the #895 error)
+  # and MaxTokensReachedException — in similar proportions in both arms. So:
+  #   * `small_narrow` joins the grid as the EASY case. manylists_400 failed 8/8
+  #     at document level in round 1, which means it carries no information about
+  #     the arm at document level (only at shard level); a document Nova Lite can
+  #     sometimes finish is where a decoding change has room to show.
+  #   * repeats: 8 because the outcome is a RATE. At 4 repeats the per-arm counts
+  #     were 4 vs 6 invalid-ToolUse events, which cannot separate the arms from
+  #     each other or from chance.
+  # The unit of observation is the AGENTIC CALL CHAIN, not the document: an
+  # unsharded doc is one, and manylists_400 is ~4 shards. Count both.
+  topkab2:
+    cells:
+    - topk-off
+    - topk-1
+    docs:
+    - small_narrow
+    - longdesc_100
+    - manylists_400
+    repeats: 8
   # #715 / #753 three-arm study: silent loss -> visible loss -> fixed. Runs on
   # `twodocs_2x20` (two complete statements, distinct account numbers, globally
   # unique SEQ tags across copies, so completeness is exact) plus `small_narrow` as
@@ -667,6 +818,32 @@ suites:
     - sonnet5-adv-wide
     docs: [scale_3200]
     repeats: 2
+  # opus55value — is Claude Opus 5.5 cheaper than Claude Opus 5 for the same
+  # result? Both halves of that have to be measured, and the answer is only useful
+  # as a pair of numbers from one stack.
+  #
+  # repeats: 5, matching `astravalue` and for the same reason: this suite's headline
+  # is a COST difference, and agentic cost is non-deterministic (agent turn count
+  # has been observed to spread ~4x), so a single draw per cell cannot resolve one.
+  # 4 cells x 2 docs x 5 = 40 runs. The rate-card delta alone predicts ~-20% on
+  # input and output; anything the run reports beyond that is the "fewer tokens"
+  # claim, and anything short of it is worth explaining before publishing.
+  #
+  # ⚠️ Read the effort caveat on the `opus55` axis value before attributing a cost
+  # delta to the model. Opus 5.5 defaults to `medium` effort where Opus 5 defaults
+  # to `high`, and NEITHER cell here sets `reasoning_effort`, so the two arms differ
+  # by model AND by default effort. That is deliberate — it is what a user who
+  # switches model and changes nothing else actually gets, which is the decision the
+  # guide has to inform — but it means this suite measures the SWITCH, not the
+  # model. To separate them, re-run with `--set reasoning_effort=high` on both arms.
+  opus55value:
+    cells:
+    - opus5-simple-sep
+    - opus55-simple-sep
+    - opus5-adv-sep
+    - opus55-adv-sep
+    docs: opus_docs
+    repeats: 5
   core:    {cells: "core_cells", docs: "core_docs", repeats: 1}
   # corefast: full 10-cell grid on the <=100-row docs only, so advanced-mode
   # assessment completes on v0.5.16 (see corefast group note). This is the clean

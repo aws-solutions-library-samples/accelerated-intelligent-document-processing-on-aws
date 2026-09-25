@@ -53,6 +53,10 @@ if [ -n "${MAIN_STACK}" ]; then
   echo "    aws cloudformation create-stack \\"
   echo "      --stack-name idp-feature-idp-data-generator \\"
   echo "      --capabilities CAPABILITY_NAMED_IAM CAPABILITY_AUTO_EXPAND \\"
+  # FeatureBucket is declared with no Default, so a command listing only
+  # MainStackName is rejected with "Parameters: [FeatureBucket] must have values"
+  # and creates nothing. The installer supplies it; a hand-rolled command must too.
   echo "      --parameters ParameterKey=MainStackName,ParameterValue=${MAIN_STACK} \\"
+  echo "                   ParameterKey=FeatureBucket,ParameterValue=${BUCKET_BASENAME}-${REGION} \\"
   echo "      --template-url <the template.yaml URL printed above> --region ${REGION}"
 fi

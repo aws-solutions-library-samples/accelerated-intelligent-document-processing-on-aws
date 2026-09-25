@@ -20,9 +20,29 @@
 # Entry schema
 # ------------
 #   groups:        [Admin, Author, ...]  groups the SERVER must enforce
-#                  ANY       = any authenticated Cognito user
+#                  ANY       = any authenticated Cognito user, whether or not an
+#                              administrator has placed them in any group
+#                  ANY_GROUP = authenticated AND holding at least one of the
+#                              groups this stack creates. Resolved at build time
+#                              into the concrete list of
+#                              AWS::Cognito::UserPoolGroup names in
+#                              template.yaml, so a group added there joins the
+#                              set without editing any operation here.
 #                  IAM_ONLY  = backend/IAM principals only; every Cognito
 #                              caller must be rejected (403)
+#
+#                  ANY vs ANY_GROUP is the distinction that matters when
+#                  AllowedSignUpEmailDomain is set: template.yaml then sets
+#                  AllowAdminCreateUserOnly: false, so a user can self-register
+#                  and holds a valid token with an EMPTY cognito:groups claim.
+#                  That caller satisfies ANY and satisfies nothing else, so ANY
+#                  is "anyone with an address at the permitted domain", not
+#                  "anyone an administrator onboarded". Every ANY entry below
+#                  says why ANY is the intended answer for it; an undecided ANY
+#                  and a decided one would otherwise be indistinguishable.
+#                  An unrecognised policy string is a hard error in both
+#                  generate_api_rbac_manifest.py and scan_api_rbac.py (check
+#                  S0), never a permissive default.
 #   kind:          read | mutation  (mutations are driven with bogus ids so an
 #                  allowed caller fails benign validation, never mutates data)
 #   enforced_in:   repo-relative source file that must contain the group check
@@ -34,6 +54,15 @@
 #                  allowed_config_versions) to appear in enforced_in.
 #   scope_filtered: true -> op returns lists row-filtered by the caller's
 #                  allowedConfigVersions / reviewer status instead of 403.
+#   scope_enforced_in: OPTIONAL function name, for a scope_checked/scope_filtered
+#                  op whose module has no dispatch S4 can find on the op's name.
+#                  S4 reads only the code THIS op can reach — its dispatch branch
+#                  plus the module-level functions that branch calls — because
+#                  grepping the whole file let `getDocumentCount` declare
+#                  `scope_filtered: true` while enforcing nothing, satisfied by
+#                  `listDocuments` in the same module. S4 FAILs (rather than
+#                  passing quietly) when the entry point cannot be determined and
+#                  the file serves more than one declared op.
 #   ownership:     true  -> ANY-auth op further scoped to caller's own records
 #                  (chat sessions, agent jobs).
 #   schema_groups: set only when the code INTENTIONALLY enforces different
@@ -68,37 +97,77 @@ anchors:
 
 operations:
   # ==========================================================================
-  # Documents — read (any authenticated user; row-level filtering only)
+  # Documents — read
   # ==========================================================================
+  # Document CONTENT, and the means of obtaining it, requires an assigned group
+  # (ANY_GROUP): a self-registered user in no group is refused. Every operation in
+  # this section carries that floor, because the means of obtaining content is not
+  # only the operations that return it — an object key, an `s3://` URI, a state
+  # machine execution ARN and a prose description of what a document contains are
+  # each a step of the same chain, and #1033 measured that chain composing end to
+  # end for a caller in no group. The payload these return is the sensitive thing
+  # the whole system exists to process, and the narrowing they do carry — reviewer
+  # row filtering, allowedConfigVersions, get_file_contents_resolver's bucket
+  # allow-list — bounds WHICH objects are reachable, not WHO may ask. Two of those
+  # three also stand down for a self-registered caller specifically: a caller in no
+  # group is not a Reviewer, and a caller no UsersTable row matches is unrestricted
+  # on the config-version axis. Group membership is still the wrong axis for
+  # per-document privacy; a Viewer may read any document a Viewer can see. That
+  # is a separate question, tracked in the notes on issue #979 rather than
+  # settled by this declaration.
   getDocument:
-    groups: ANY
+    groups: ANY_GROUP
     kind: read
     enforced_in: *ddb
     args: { ObjectKey: "__nonexistent__.pdf" }
   listDocuments:
-    groups: ANY
+    groups: ANY_GROUP
     kind: read
     scope_filtered: true
     enforced_in: nested/api-resolvers/src/lambda/list_documents_gsi_resolver/index.py
     args: {}
   getDocumentCount:
-    groups: ANY
+    groups: ANY_GROUP
     kind: read
     scope_filtered: true
     enforced_in: nested/api-resolvers/src/lambda/list_documents_gsi_resolver/index.py
     args: {}
+    note: >-
+      The header figure beside listDocuments, which is ANY_GROUP, and it carries
+      the same two filters (config-version scope, reviewer-only) from the same
+      helpers. Neither filter narrows anything for a caller in no group, so they
+      cannot carry the policy on their own: _is_reviewer_only requires "Reviewer"
+      among the caller's groups, and resolve_allowed_config_versions returns None —
+      unrestricted, deliberately — for a caller no UsersTable row matches, which is
+      what self-service sign-up produces. A count is data, and the one a groupless
+      caller receives is the deployment's whole tally. ANY_GROUP, matching the list
+      it is the header for.
   listDocumentsDateHour:
-    groups: ANY
+    groups: ANY_GROUP
     kind: read
     enforced_in: *ddb
     args: {}
+    note: >-
+      ANY_GROUP. It returns raw TrackingTable index rows for one date and hour,
+      each carrying ObjectKey, with no filter of any kind applied — so it is a
+      source of document keys rather than a volume-and-timing summary, and it is
+      the pairing with listDocuments (ANY_GROUP) that decides it. The web UI does
+      not call this operation: the timeline pages through listDocuments and
+      listDocumentsByDateRange, so the floor costs the UI nothing.
   listDocumentsDateShard:
-    groups: ANY
+    groups: ANY_GROUP
     kind: read
     enforced_in: *ddb
     args: {}
+    note: >-
+      ANY_GROUP. Same unfiltered TrackingTable index rows carrying ObjectKey as
+      listDocumentsDateHour, for a four-hour shard instead of an hour. This is the
+      operation the #1033 chain was measured against: on a live stack a
+      self-registered caller in no group got 200 and a document's object key and
+      queued time from it, so a caller needs no prior knowledge of the deployment
+      to obtain a key. Not called by the web UI.
   listDocumentsByDateRange:
-    groups: ANY
+    groups: ANY_GROUP
     kind: read
     scope_filtered: true
     enforced_in: nested/api-resolvers/src/lambda/list_documents_range_resolver/index.py
@@ -106,19 +175,80 @@ operations:
       startDateTime: "2020-01-01T00:00:00Z"
       endDateTime: "2020-01-02T00:00:00Z"
   getFileContents:
-    groups: ANY
+    groups: ANY_GROUP
     kind: read
+    scope_checked: true
+    # `_parse_and_validate_uri` is the one function BOTH fields call before touching
+    # S3, and it is where both authorization checks live. Named explicitly because
+    # this module dispatches on `getFilePresignedUrl` only — `getFileContents` is the
+    # default branch, so S4 can find no `if` test on its name and would otherwise
+    # fall back to module scope, which is what it stopped doing on purpose.
+    scope_enforced_in: _parse_and_validate_uri
     enforced_in: nested/api-resolvers/src/lambda/get_file_contents_resolver/index.py
-    args: { s3Uri: "s3://__nonexistent-bucket__/x" }
-    note: bucket allow-list enforced in resolver, not groups
+    args: { s3Uri: "s3://__resolved-at-runtime__/__sectest-nonexistent-key__.json" }
+    note: >-
+      Two controls, both in the resolver rather than in groups. The BUCKET
+      allow-list stops the operation being a generic S3-read gadget; before
+      ANY_GROUP it was the only thing between an authenticated caller and any
+      object in a permitted bucket, and the group floor removed the groupless
+      caller only. The KEY scope is the per-user half: two allow-listed buckets
+      are partitioned per user — the Configuration bucket by configuration
+      profile (`config_revisions/<profile>/`) and the Test Set bucket by test set
+      (`<test_set_id>/`) — so `key_scope` applies the caller's
+      allowedConfigVersions / allowedTestSets to the key, fail-closed, before any
+      S3 call. A bucket-only check was the negation of both axes for exactly the
+      callers they restrict. What remains open is per-DOCUMENT scope on the Input
+      and Output buckets, which no per-user axis in this deployment records
+      (UI.T06, #1033).
+      The `args` bucket is REPLACED by apply_dynamic_args() with this
+      deployment's own input bucket, because the matrix measures the GROUP floor
+      and an out-of-allow-list bucket is refused to every caller by the
+      allow-list instead — which the matrix would read as the allowed roles
+      being wrongly denied. An in-allow-list bucket with a key that does not
+      exist gives an allowed role a clean 400 (auth passed, argument bogus) and
+      a disallowed role the dispatcher's 403. The input bucket is also
+      deliberately NOT one of the two scoped buckets, so the substitution does
+      not turn a group-floor measurement into a scope measurement. Both the
+      allow-list refusal and the out-of-scope-key refusal are 403s asserted
+      offline, where the buckets and keys are knowable:
+      get_file_contents_resolver/test_index.py and
+      get_file_contents_resolver/test_key_scope.py.
+      ⚠️ `groups: ANY_GROUP` UNDERSTATES what this operation refuses for
+      Test-Set-bucket keys. The test-set axis is enforced with the canonical
+      `assert_can_access_test_set`, whose rule is Admin/Author unscoped, an
+      Annotator restricted to their `allowedTestSets`, and **every other role
+      refused outright** — so a Viewer or Reviewer is denied any
+      `<test_set_id>/…` key even though they hold a group. That is deliberate and
+      consistent rather than stricter than the rest: `getTestSetDocuments` is
+      `[Admin, Author, Annotator]`, so no other role has a route to discover such
+      a key, and serving the bytes to them would be the only one they had. It is
+      recorded here because the declared policy is a per-FIELD group floor and
+      cannot express a per-key role rule, so the manifest is not the place a
+      reader would learn it. The live matrix does not exercise it either: its
+      `args` bucket is substituted with the input bucket, which no axis
+      partitions.
   getFilePresignedUrl:
-    groups: ANY
+    groups: ANY_GROUP
     kind: read
     alias_of: getFileContents
+    scope_checked: true
+    # Same choke point as getFileContents, and named for the same reason: this
+    # field DOES have a dispatch branch, but pinning the entry point makes the two
+    # aliases verifiably identical rather than identical by coincidence of call
+    # graph.
+    scope_enforced_in: _parse_and_validate_uri
     enforced_in: nested/api-resolvers/src/lambda/get_file_contents_resolver/index.py
-    args: { s3Uri: "s3://__nonexistent-bucket__/x" }
+    args: { s3Uri: "s3://__resolved-at-runtime__/__sectest-nonexistent-key__.json" }
+    note: >-
+      capability-issuing: the returned URL carries its own authorization for the
+      lifetime of the signature, so it is the operation least able to rely on a
+      later check. That is why the key-scope check is in the shared
+      `_parse_and_validate_uri` rather than in either handler — a check this field
+      could be added without is one that will eventually be missing from it. Same
+      runtime bucket substitution as getFileContents, and the same open
+      per-document residual — see its note.
   getStepFunctionExecution:
-    groups: ANY
+    groups: ANY_GROUP
     kind: read
     scope_checked: true
     enforced_in: nested/api-resolvers/src/lambda/get_stepfunction_execution_resolver/index.py
@@ -132,18 +262,41 @@ operations:
       them with a live execution ARN read from listDocuments (see
       apply_dynamic_args in scripts/test_api_rbac.py) and SKIPs the op when the
       stack has processed no documents.
+
+      ANY_GROUP. The two per-object checks are real but neither binds a
+      self-registered caller: the ARN arm only asks that the execution be this
+      deployment's own, and resolve_allowed_config_versions returns None —
+      unrestricted — for a caller no UsersTable row matches, so the config-version
+      arm stands down for exactly the population the floor is about. Measured on a
+      live stack (#1033), a caller in no group passed both and received 317,614
+      bytes: the execution input and the step history, which name the document and
+      the S3 location of its full state.
   listDocumentVersions:
-    groups: ANY
+    groups: ANY_GROUP
     kind: read
     enforced_in: nested/api-resolvers/src/lambda/document_versions_resolver/index.py
     args: { objectKey: "__nonexistent__.pdf" }
+    note: >-
+      ANY_GROUP. It shapes every run of one object key through the same
+      _shape_version helper as getDocumentVersion (ANY_GROUP), so for EVERY run it
+      returns what getDocumentVersion returns for one, less a single field:
+      getDocumentVersion adds the run manifest's file list (version["Files"]).
+      The asymmetry therefore runs in the direction that argues for the floor —
+      more runs, one fewer field. The shared fields are Sections[].OutputJSONUri,
+      Pages[].ImageUri / TextUri / OcrPageDataUri, the whole
+      ConfidenceThresholdAlerts list — which names every extracted attribute — and
+      Pages[].ClassReason, model-generated prose about what the document contains.
+      Measured on a live stack (#1033), a caller in no group received 17,527 bytes
+      in which ClassReason named "employee personal information (name, address,
+      Social Security Number), pay period dates". The object key is not prior
+      knowledge either: listDocumentsDateShard hands one over.
   getDocumentVersion:
-    groups: ANY
+    groups: ANY_GROUP
     kind: read
     enforced_in: nested/api-resolvers/src/lambda/document_versions_resolver/index.py
     args: { objectKey: "__nonexistent__.pdf", runId: "__x__" }
   compareDocumentVersions:
-    groups: ANY
+    groups: ANY_GROUP
     kind: read
     enforced_in: nested/api-resolvers/src/lambda/document_versions_resolver/index.py
     args: { objectKey: "__nonexistent__.pdf", runIdA: "__a__", runIdB: "__b__" }
@@ -537,6 +690,18 @@ operations:
     kind: mutation
     enforced_in: nested/api-resolvers/src/lambda/test_set_resolver/index.py
     args: { testSetId: "__nope__", filePattern: "x", bucketType: "input", fileCount: 0 }
+  # Unlike the pattern import this names exact keys rather than searching the
+  # bucket, and every key is checked server-side before anything is queued: the
+  # document must have finished processing under a profile the caller's
+  # allowedConfigVersions admits. One refusal message covers every failing case, so
+  # the op cannot be used to learn which keys exist.
+  addDocumentsToTestSetByKey:
+    groups: [Admin, Author]
+    kind: mutation
+    scope_checked: true
+    scope_enforced_in: _enforce_selection_scope
+    enforced_in: nested/api-resolvers/src/lambda/test_set_resolver/index.py
+    args: { testSetId: "__nope__", objectKeys: ["__nope__.pdf"] }
   addDocumentsToTestSetFromUpload:
     groups: [Admin, Author]
     kind: mutation
@@ -643,11 +808,16 @@ operations:
     enforced_in: *ddb
     args: { jobId: "x", userId: "y", status: "COMPLETED" }
   deleteAgentJob:
-    groups: ANY
+    groups: ANY_GROUP
     kind: mutation
     ownership: true
     enforced_in: *ddb
     args: { jobId: "__nope__" }
+    note: >-
+      A mutation, so ANY_GROUP: a caller with no assigned group has no agent jobs
+      to delete, the three groups that can create one (submitAgentQuery is
+      Admin/Author/Viewer) all hold a group, and the per-caller PK scope in
+      ddb_direct is what stops a grouped caller deleting someone else's.
   listAvailableAgents:
     groups: [Admin, Author, Viewer]
     kind: read
@@ -661,18 +831,50 @@ operations:
     ownership: true
     enforced_in: nested/api-resolvers/src/lambda/list_agent_chat_sessions_resolver/index.py
     args: {}
+    note: >-
+      ANY is deliberate, and the reason is the SHAPE of the scope rather than the
+      existence of one: the resolver's DynamoDB read is a KeyConditionExpression on
+      `userId`, taken from the verified identity, so the caller's own partition is
+      the only one it can address and there is no branch on which it addresses
+      another. A caller in no group also has nothing to list — neither operation
+      that creates a session admits one (sendAgentChatMessage is Admin/Author/Viewer,
+      sendChatDocumentMessage is ANY_GROUP). getChatMessages is ANY_GROUP: its scope
+      is a separate ownership VERIFICATION with two stand-down branches, which is a
+      different control, so it gets its own decision rather than this one.
+      deleteChatSession is ANY_GROUP because it is a mutation.
   getChatMessages:
-    groups: ANY
+    groups: ANY_GROUP
     kind: read
     ownership: true
     enforced_in: nested/api-resolvers/src/lambda/get_agent_chat_messages_resolver/index.py
     args: { sessionId: "__nope__" }
+    note: >-
+      ANY_GROUP, and of every operation tightened for #1033 this is the one with the
+      least to argue about, because it is the only one whose existing control fails
+      OPEN. The message read itself is `PK = sessionId` with no caller term; what
+      bounds it to the caller is _verify_session_ownership, which `return`s **True**
+      when CHAT_SESSIONS_TABLE is unset — "allowing access ... to preserve
+      functionality", in its own words — and which an operator can switch off
+      wholesale with ENFORCE_CHAT_SESSION_OWNERSHIP=false. On either branch a
+      session id is the whole credential, and the resolver's own comment says the
+      messages can hold "user queries, document content quoted by the LLM". So the
+      group floor is not redundant with the ownership check; it is the layer that
+      holds when that check does not. Its cost is provably nil: neither operation
+      that creates a session admits a groupless caller (sendAgentChatMessage is
+      Admin/Author/Viewer, sendChatDocumentMessage is ANY_GROUP), so no reachable
+      record is lost. The ownership verification stays — it is what stops one
+      GROUPED caller reading another's session, which the floor does not.
   deleteChatSession:
-    groups: ANY
+    groups: ANY_GROUP
     kind: mutation
     ownership: true
     enforced_in: nested/api-resolvers/src/lambda/delete_agent_chat_session_resolver/index.py
     args: { sessionId: "__nope__" }
+    note: >-
+      A mutation, so ANY_GROUP even though the ownership scope already bounds it
+      to the caller's own sessions: a caller who may hold no session has nothing
+      to delete, and a state-changing operation is the wrong place to rely on the
+      reachable set being empty.
   sendAgentChatMessage:
     groups: [Admin, Author, Viewer]
     kind: mutation
@@ -684,7 +886,7 @@ operations:
       (Reviewer excluded, closes former GAP-03); allowed-role call skipped
       (would start a live agent session)
   sendChatDocumentMessage:
-    groups: ANY
+    groups: ANY_GROUP
     kind: mutation
     ownership: true
     scope_checked: true
@@ -692,16 +894,32 @@ operations:
     enforced_in: src/lambda/chat_with_document_processor/index.py
     args: { sessionId: "__nope__", prompt: "hi" }
     note: >
-      scope enforced in the downstream processor Lambda, not the resolver;
-      allowed-role call skipped (would start chat processing)
+      scope enforced in the downstream processor Lambda, not the resolver, from
+      the verified claims the resolver forwards as `identity`; every failure to
+      evaluate it denies the turn. The live scope suite does not reach this op —
+      it is skip_allowed, because an allowed-role call would start chat
+      processing — so the enforcement is covered by the processor's own unit
+      suite (src/lambda/chat_with_document_processor/tests/), including a check
+      that the index it queries is one template.yaml declares.
+      ANY_GROUP: a mutation that sends document content to a model and bills
+      inference to the deployment. ⚠️ On the REST route the dispatcher applies
+      this floor; the streaming Lambda Function URL (POST /chat/document below)
+      reaches the same processor WITHOUT it, because that transport forwards no
+      cognito:groups claim at all — GAP-07.
   queryKnowledgeBase:
-    groups: ANY
+    groups: ANY_GROUP
     kind: read
     skip_allowed: true
     enforced_in: nested/api-resolvers/src/lambda/query_knowledgebase_resolver/index.py
     args: { input: "hi" }
     known_gap: GAP-02
-    note: allowed-role call skipped (live Bedrock KB invocation)
+    note: >-
+      allowed-role call skipped (live Bedrock KB invocation). ANY_GROUP: the
+      knowledge base is built from processed document content, so a query
+      against it returns that content in synthesised form, and the call bills
+      Bedrock inference. GAP-02 records that the resolver itself still has no
+      group check — the dispatcher floor is now the only group gate, which is
+      why the gap stays open rather than being retired here.
 
   # ==========================================================================
   # Users & profile
@@ -734,8 +952,19 @@ operations:
   getMyProfile:
     groups: ANY
     kind: read
+    ownership: true
     enforced_in: src/lambda/user_management/index.py
     args: {}
+    note: >-
+      ANY is deliberate and is the clearest case for it. It returns the caller's
+      own record and nothing else, so it is exactly what a user with no group
+      assigned must still be able to read — the UI calls it to discover the
+      caller's scope, and denying it would make a groupless account
+      indistinguishable from a broken deployment. `ownership: true` because
+      own-record-only IS record ownership: the schema declares no arguments and the
+      handler resolves the row from the verified `sub` and `email` claims, so there
+      is no arbitrary-user read path. It was previously unflagged, which understated
+      by one the count of ANY operations carrying a per-caller narrowing.
 
   # ==========================================================================
   # Fine-tuning
@@ -756,11 +985,37 @@ operations:
     kind: read
     enforced_in: nested/api-resolvers/src/lambda/finetuning_jobs_resolver/index.py
     args: {}
+    note: >-
+      ANY is deliberate, and it is a whole-deployment list: the query filters on
+      PK begins_with "finetuning#" with no caller term, and the job rows carry no
+      creator attribute for one to be written against. What that list holds is
+      platform state — job and test-set names, base and custom model ids and ARNs,
+      status, hyperparameters, training metrics, deployment endpoint — and no
+      document content or document location. Creating and deleting jobs is
+      [Admin, Author]. The whole of this reason is a property of ONE dict literal,
+      _format_job_for_graphql, and the row it reads from does carry a dataset
+      location: `trainingDataUri` and `validationDataUri` are written onto it by the
+      data generator and the merge step and are simply not projected, while the
+      projection's trainingDataConfig / validationDataConfig / outputDataConfig keys
+      are Bedrock request parameter names nothing ever writes to DynamoDB, so they
+      resolve to null. That premise is computable, so it is computed:
+      finetuning_jobs_resolver/test_projected_keys.py pins the returned key set,
+      fails if any projected value carries an `s3://` URI, and fails if the policy
+      here stops being ANY — because one added line in that dict would otherwise turn
+      an unvetted read into a dataset-location disclosure with nothing to notice. The
+      one residual it cannot pin: `errorMessage` relays a caught exception string,
+      whose contents are not bounded by anything here.
   getFinetuningJob:
     groups: ANY
     kind: read
     enforced_in: nested/api-resolvers/src/lambda/finetuning_jobs_resolver/index.py
     args: { jobId: "__nope__" }
+    note: >-
+      ANY is deliberate. One job by jobId, projected through the same
+      _format_job_for_graphql as listFinetuningJobs, so the same platform-state
+      fields, the same pinned key set (test_projected_keys.py covers both operations
+      through the one projection) and the same `errorMessage` residual apply to it —
+      and it has no owner check either, because the rows record no owner.
 
   # ==========================================================================
   # Capacity / version metadata / knowledge
@@ -777,7 +1032,10 @@ operations:
     kind: read
     enforced_in: src/lambda/version_check_resolver/index.py
     args: {}
-    note: version number intentionally readable by all authenticated users
+    note: >-
+      ANY is deliberate: the published release number, which is public
+      information on GitHub, readable by every authenticated user so the UI can
+      show an upgrade notice whatever the caller's role.
   listSampleDocuments:
     groups: [Admin, Author, Viewer]
     kind: read
@@ -794,11 +1052,25 @@ operations:
   # Circuit breaker (conditional on CircuitBreakerEnabled)
   # ==========================================================================
   getCircuitBreakerStatus:
-    groups: ANY
+    groups: ANY_GROUP
     kind: read
     enforced_in: *ddb
     args: {}
-    note: served by ddb_direct when the breaker is disabled, resolver when enabled
+    note: >-
+      served by ddb_direct when the breaker is disabled, resolver when enabled.
+      ANY_GROUP because of `lastError`. One global singleton row, so there is
+      nothing per-caller to scope, and the rest of the payload — enabled, state,
+      timestamps, counters — is genuinely just the badge. But `lastError` has two
+      writers, and the second is `f"Manual pause by {user}: {reason}"` in
+      circuit_breaker_manager, where `user` is the pausing administrator's EMAIL
+      (circuit_breaker_resolver sends `caller["email"]`). So after any manual pause
+      this operation serves an administrator's address and an operator's free-text
+      note. The floor costs nothing, and the reason is structural rather than a claim
+      about who signs in: the badge has exactly one render site, the documents table
+      header, and AuthRoutes returns the no-role notice IN PLACE OF the router for a
+      session in no group, so no route mounts and the badge is never requested. A
+      groupless user can still sign in; they just cannot reach it. The three controls
+      that change the breaker stay Admin-only.
   pauseCircuitBreaker:
     groups: [Admin]
     kind: mutation
@@ -821,24 +1093,58 @@ operations:
   # ==========================================================================
   # Feature platform (conditional on EnableFeaturePlatform)
   # ==========================================================================
+  # ANY is deliberate for all three, but they return three different things and the
+  # note on each says what its own payload is. What they share is that none reads
+  # cognito:groups, none scopes per caller, and none returns document data.
+  # Installing, subscribing and launching a feature are Admin-only.
+  #
+  # Note what is NOT the reason: "the UI needs these before it knows the caller's
+  # role" does not hold at all. use-user-role.ts reads cognito:groups straight off
+  # the ID token with no API call, and the pre-token-generation trigger injects the
+  # groups into the FIRST token rather than only the second, so the role is known
+  # before any of these three is called. (The forced token refresh in that hook is a
+  # fallback for a token that arrives without the claim anyway, not a window in which
+  # the role is unknowable.) The reason is the payloads, per operation, below.
   listInstalledFeatures:
     groups: ANY
     kind: read
     conditional: feature_platform
     enforced_in: feature-platform/main-stack-extensions/lambdas/list_installed_features/index.py
     args: {}
+    note: >-
+      ANY is deliberate: the install inventory — feature id, display name,
+      installed and latest version, whether an update is available, and where the
+      feature's own UI bundle and API live. Nothing document-derived, nothing
+      per-caller, and every role needs it to render the nav at all. It does
+      disclose deployment topology (stack id, stack name, the feature API endpoint,
+      a generation queue ARN) to any authenticated caller, which is reconnaissance
+      value rather than data; that is the accepted cost, and it is the one thing on
+      this entry a future reviewer might weigh differently.
   listCatalogFeatures:
     groups: ANY
     kind: read
     conditional: feature_platform
     enforced_in: feature-platform/main-stack-extensions/lambdas/list_catalog_features/index.py
     args: {}
+    note: >-
+      ANY is deliberate: the published catalog manifest — what optional features
+      exist, their versions, descriptions, docs links, and the artifact bucket and
+      prefix the published extension templates are fetched from. That is the
+      feature-artifacts location, not a document bucket, and the manifest is the
+      same for every caller.
   checkFeatureEntitlement:
     groups: ANY
     kind: read
     conditional: feature_platform
     enforced_in: feature-platform/main-stack-extensions/lambdas/check_feature_entitlement/index.py
     args: { featureId: "__nope__" }
+    note: >-
+      ANY is deliberate, and this one is not a catalog read: it answers whether
+      THIS DEPLOYMENT is entitled to one feature, and the answer carries the
+      deployment's own AWS Marketplace customer identifier, product code and
+      license mode. Those are per-deployment billing identifiers, not per-caller
+      and not document-derived: the answer is the same whoever asks, and the UI
+      needs it for every role to decide whether to offer the feature at all.
   getFeatureLaunchUrl:
     groups: [Admin]
     kind: read
@@ -887,6 +1193,17 @@ operations:
 #                        the two must declare the same groups
 #       enforced_in:     the processor this route invokes, which must carry the
 #                        group check for a group-restricted route
+#       transport_enforces:
+#                        what this transport can ACTUALLY apply, declared only
+#                        when it is weaker than `groups`. `groups` is the policy
+#                        and must equal the equivalent_op's — one user action has
+#                        one policy — so without this key the only way to keep
+#                        S9's equivalent_op comparison quiet was to weaken the
+#                        declared policy, and then the real divergence appeared
+#                        nowhere. With it, S9 emits a finding naming the gap
+#                        (WARN, FAIL under --strict) and requires a
+#                        residual_gap/known_gap id, so the divergence is reported
+#                        by the check that measures it rather than declared away.
 #       known_gap:       GAP-NN, as for operations above — downgrades a
 #                        mismatch on this route from FAIL to WARN
 #       residual_gap:    GAP-NN listed in the register for auditability that
@@ -912,15 +1229,29 @@ function_url_endpoints:
     handler: src/lambda/chat_stream_processor/app.py
     routes:
       POST /chat/document:
-        groups: ANY
+        groups: ANY_GROUP
+        transport_enforces: ANY
         ownership: true
         equivalent_op: sendChatDocumentMessage
         enforced_in: src/lambda/chat_with_document_processor/index.py
+        residual_gap: GAP-07
         note: >
-          same processor and the same allowedConfigVersions scope check as the
-          REST path; the processor denies a turn it cannot attribute to a caller
+          the same processor as the REST path, carrying the same
+          allowedConfigVersions scope check, but that check does not apply to
+          callers arriving this way: it resolves the caller from the verified
+          claims an invoking transport supplies, and this one can supply none
+          (GAP-07). The route forwards an explicit null identity, the processor
+          stands the check down and logs that it did so per turn. On the
+          dispatcher path the same code denies a turn whose scope cannot be
+          evaluated for any reason. The ANY_GROUP floor its equivalent REST op
+          carries is enforced by the dispatcher, which this transport does not go
+          through, and cannot be re-applied here for the same reason: no
+          cognito:groups claim arrives. So a caller in no group is refused on the
+          REST route and is not refused here. Both halves close together when the
+          endpoint verifies an ID token.
       POST /chat/agent:
         groups: [Admin, Author, Viewer]
+        transport_enforces: ANY
         equivalent_op: sendAgentChatMessage
         enforced_in: src/lambda/agent_chat_processor/index.py
         residual_gap: GAP-07
@@ -930,6 +1261,13 @@ function_url_endpoints:
           the verified transport principal only. The group check is enforced for
           callers whose groups are known (the dispatcher path forwards them);
           this transport forwards no group claim at all, hence GAP-07.
+          transport_enforces: ANY states that plainly — _caller_identity() in
+          chat_stream_processor/app.py returns None unconditionally and
+          _enforce_agent_chat_groups returns early on a null identity, so the
+          declared three-group policy applies on neither half of this route. The
+          span is wider than /chat/document's (three groups' worth of denial lost
+          rather than the group-less caller's), which is why the key belongs on
+          both rather than only on the route whose policy this branch changed.
 
 # ============================================================================
 # Known gaps register — tracked deviations between the ideal authorization
@@ -951,6 +1289,33 @@ function_url_endpoints:
 # will then hold the line.
 # ============================================================================
 known_gaps:
+  GAP-SEC-INCONCLUSIVE-5XX:
+    # Assigned by the DYNAMIC harness from the observed response, not declared on
+    # an operation — so the orphan check in the static scanner (S0) verifies the
+    # reference HERE instead, and fails if this file stops mentioning the id.
+    assigned_by: scripts/test_api_rbac.py
+    summary: >
+      a 5xx makes a matrix cell INCONCLUSIVE, and 5xx is common because ~50
+      resolver-level validation refusals raise a bare Exception
+    detail: >
+      An authorization check establishes that a caller was refused. A 5xx
+      establishes nothing: whether the resolver refused this caller before or
+      after doing the work is exactly what is unknown. classify() therefore
+      records a 5xx as ERROR rather than as a pass — the published 0.6.9
+      snapshot contains 43 cells reading "500 OK" beneath a header claiming the
+      gate passed, because the positive arms asserted only "not denied".
+      It is registered here rather than left as a hard failure because the cause
+      is a known backlog and not a regression: the dispatcher chooses an HTTP
+      status from the resolver exception's class name, and roughly 50 validation
+      refusals across the resolvers (test_set_resolver alone has ~40) raise a
+      bare `Exception`, which can only map to 500 `InternalError`. This harness
+      deliberately sends bogus arguments to prove auth ran before the argument
+      was used, so it lands on many of them.
+      Closing it means giving those refusals a `ValueError` so they become 400
+      `BadRequest`. Until then these are WARN: visible, counted separately, and
+      never counted as passes. Everything else inconclusive — a timeout, a dead
+      connection, an unreadable body — is a HARD failure, because none of those
+      is a known condition of this deployment.
   GAP-02:
     summary: queryKnowledgeBase has no group check
     detail: >
@@ -958,8 +1323,9 @@ known_gaps:
       when one is configured.
   GAP-07:
     summary: >
-      the chat Function URL transport carries no Cognito group claim, so the
-      agent-chat group check cannot be applied to callers arriving that way
+      the chat Function URL transport carries no Cognito group claim, so
+      neither chat route's group check can be applied to callers arriving
+      that way
     detail: >
       POST /chat/agent on ChatStreamProcessorUrl is authenticated by IAM
       (SigV4 with the authenticated Cognito Identity Pool role), which proves
@@ -981,21 +1347,36 @@ known_gaps:
       already runs synchronously in the route so closing this gap needs no
       second change on that path.
 
-      Until then the practical exposure is limited to the Reviewer group, the
-      only signed-in role excluded from agent chat.
+      On /chat/agent the practical exposure is limited to the Reviewer group,
+      the only signed-in role excluded from agent chat. On /chat/document the
+      population is different and is not a group at all: that route's declared
+      floor is ANY_GROUP, so what this transport fails to refuse is a caller in
+      NO group — the user a domain-scoped self-signup produces
+      (AllowedSignUpEmailDomain, AUTH.T04). Such a caller is refused
+      sendChatDocumentMessage on the REST route and is not refused
+      POST /chat/document here.
 
-      SCOPE — what that last sentence does and does not cover. "Limited to the
-      Reviewer group" is true of the AGENT-CHAT GROUP CHECK on this transport
+      SCOPE — what the Reviewer sentence does and does not cover. "Limited to
+      the Reviewer group" is true of the AGENT-CHAT GROUP CHECK on this transport
       specifically: Admin, Author and Viewer are all allowed the operation, so
       the only group whose denial is lost is Reviewer, and a Reviewer reaching
       /chat/agent is still an authenticated user of this deployment. The residual
       is wider than that one check, though: NEITHER streaming route obtains a
       per-user identity from the transport. That also leaves the
       allowedConfigVersions scope lookup in
-      src/lambda/chat_with_document_processor/index.py (the caller-scope
-      resolution around lines 239-291) without a verified per-user subject to
-      resolve, so it falls back rather than failing closed. Both halves close
-      together when the endpoint verifies an ID token.
+      src/lambda/chat_with_document_processor/index.py
+      (_allowed_config_versions_for_event) with no verified subject to resolve,
+      so Chat-with-Document turns arriving on this transport are NOT restricted
+      by allowedConfigVersions. The route forwards an explicit null identity,
+      which is the same signal an IAM-authorized backend invocation carries, and
+      the processor stands the check down and logs that it did so on every turn
+      rather than appearing to have consulted the UsersTable. Enforcing the check
+      against the request body's self-asserted identity instead would not be a
+      control: the caller it would restrict is the same caller that chooses the
+      value. Both halves close together when the endpoint verifies an ID token —
+      at which point _caller_identity() returning real claims (which must include
+      `email`, the only identifier that joins to a UsersTable row) turns both on
+      with no further change on this path.
 
       RESIDUAL — the transport principal's session name is undocumented. The
       identity resolution in src/lambda/chat_stream_processor/sse.py has to

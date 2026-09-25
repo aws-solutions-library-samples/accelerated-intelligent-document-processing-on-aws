@@ -60,7 +60,6 @@ DEFAULT_MODELS_TO_TEST = [
     "us.anthropic.claude-3-haiku-20240307-v1:0",
     "us.anthropic.claude-3-opus-20240229-v1:0",
     # Amazon Nova models (1st gen)
-    "us.amazon.nova-premier-v1:0",
     "us.amazon.nova-pro-v1:0",
     "us.amazon.nova-lite-v1:0",
     "us.amazon.nova-micro-v1:0",
@@ -106,11 +105,19 @@ def test_model_limit(
     while current <= max_tokens:
         try:
             logger.debug(f"  Trying max_tokens={current:,}")
-            _ = bedrock_client.call_model(
+            # `invoke_model`, not `call_model`: the latter has never existed on
+            # BedrockClient, so every run of this script died here with
+            # "'BedrockClient' object has no attribute 'call_model'" — reported to
+            # the operator as "Check AWS credentials and permissions" by the handler
+            # below. The signature differs too: a system prompt plus Converse-format
+            # `content`, not a `messages` list.
+            _ = bedrock_client.invoke_model(
                 model_id=model_id,
-                messages=[{"role": "user", "content": test_prompt}],
+                system_prompt="Answer as briefly as possible.",
+                content=[{"text": test_prompt}],
                 max_tokens=current,
                 temperature=0.0,
+                context="ModelLimitDiscovery",
             )
 
             # Success - this limit works
@@ -288,7 +295,7 @@ def main():
 
     # Initialize Bedrock client
     logger.info(f"Initializing Bedrock client in {args.region}...")
-    bedrock_client = BedrockClient(region_name=args.region)
+    bedrock_client = BedrockClient(region=args.region)
 
     # Test each model
     model_limits = {}

@@ -199,12 +199,14 @@ def complete_section_review(
     doc = response.get("Item", {})
     skipped = set(doc.get("HITLSectionsSkipped", []) or [])
 
-    # If HITLSectionsPending was never initialized, initialize it from all sections
+    # If HITLSectionsPending was never initialized, initialize it from all sections.
+    # Every section starts pending, including the one being reviewed now: the move to
+    # completed just below is the single place a section leaves the pending set, on
+    # this path and on the one where the set came from the stored item.
     if not pending and not completed and not skipped:
-        all_section_ids = {
+        pending = {
             section.section_id for section in document.sections if section.section_id
         }
-        pending = all_section_ids - {section_id}
         logger.info(f"Initialized HITLSectionsPending from sections: {pending}")
 
     # Move section from pending to completed
@@ -241,11 +243,20 @@ def complete_section_review(
         "reviewedByEmail": user_email or "",
         "reviewedAt": datetime.now(timezone.utc).isoformat(),
     }
-    review_history = doc.get("HITLReviewHistory", []) or []
-    review_history.append(review_record)
-
-    update_expr = "SET HITLReviewHistory = :history"
-    expr_values = {":history": review_history}
+    # Appended by DynamoDB rather than by this process, so a second annotator
+    # finishing another section in the same window cannot overwrite this record.
+    # Reading the array, appending in Python and writing the whole array back is
+    # a lost update: both writers succeed, and the loser's entry is gone with
+    # nothing reporting it. `list_append` is the right remedy here rather than a
+    # version check because the attribute is append-only and order-insensitive —
+    # no writer needs to see another's entry, so there is no conflict to detect
+    # and no retry to get wrong. `if_not_exists` covers the first entry on a
+    # document that has never been reviewed, where the attribute is absent.
+    update_expr = (
+        "SET HITLReviewHistory = "
+        "list_append(if_not_exists(HITLReviewHistory, :empty_history), :new_history)"
+    )
+    expr_values = {":empty_history": [], ":new_history": [review_record]}
 
     if all_completed:
         update_expr += ", HITLCompleted = :hitlCompleted"
@@ -459,10 +470,10 @@ def _field_diffs(previous, saved):
     if not previous:
         return {}
     try:
-        from idp_common.evaluation.curve_store import _flatten_values
+        from idp_common.evaluation.curve_store import flatten_values
 
-        before = _flatten_values(previous.get("inference_result") or {})
-        after = _flatten_values(saved.get("inference_result") or {})
+        before = flatten_values(previous.get("inference_result") or {})
+        after = flatten_values(saved.get("inference_result") or {})
     except Exception as e:  # noqa: BLE001 — provenance must not fail the save
         logger.warning(f"Could not diff review changes: {e}")
         return {}
@@ -622,17 +633,47 @@ def skip_all_sections_review(object_key, username="", user_email=""):
         "action": "skip_all",
         "skippedSections": list(sections_to_skip),
     }
-    review_history = doc.get("HITLReviewHistory", []) or []
-    review_history.append(review_record)
-
+    # Appended by DynamoDB, for the same reason as in complete_section_review
+    # above: a reviewer finishing a section while an admin skips the rest would
+    # otherwise have their entry overwritten by whichever of the two wrote last.
+    #
+    # `HITLSectionsSkipped` in the same statement is still a whole-list write, and
+    # it is **not** safe under the same overlap. Stating the residual precisely,
+    # because the shape invites a wrong reading: `all_skipped` unions
+    # `existing_skipped` in, so nothing another skip-all recorded is dropped, and
+    # two skip-alls that read the same `completed` do compute the same set. What
+    # diverges is `completed` itself. A reviewer finishing a section while this runs
+    # means one of the two callers computed `all_section_ids - completed` from a
+    # `completed` that did not yet name that section, so it lands in
+    # `HITLSectionsSkipped` as well as in `HITLSectionsCompleted` -- and because the
+    # union is monotonic, clicking Skip All again reproduces it rather than clearing
+    # it. Measured, not assumed. What an operator sees is a section recorded both
+    # reviewed and skipped, and a later `complete_section_review` reading
+    # `has_skipped` and reporting `Skipped` for a document whose sections were all
+    # actually reviewed.
+    #
+    # It is left here because the input that diverges is `completed`, which arrives
+    # from the document model rather than from the read above, and every writer of
+    # that attribute goes through `DocumentDynamoDBService.update_document` -- one
+    # unconditional whole-document write shared by the pipeline and several
+    # resolvers. Guarding one caller of it in isolation is the change that looks
+    # like a fix and is not. Reported in #1111 with the other sites on that path.
     table.update_item(
         Key={"PK": f"doc#{object_key}", "SK": "none"},
-        UpdateExpression="SET HITLStatus = :status, HITLSectionsPending = :pending, HITLSectionsSkipped = :skipped, HITLReviewHistory = :history, HITLCompleted = :hitlCompleted, HITLReviewedBy = :reviewedBy, HITLReviewedByEmail = :reviewedByEmail REMOVE HITLPendingReview",
+        UpdateExpression=(
+            "SET HITLStatus = :status, HITLSectionsPending = :pending, "
+            "HITLSectionsSkipped = :skipped, "
+            "HITLReviewHistory = list_append("
+            "if_not_exists(HITLReviewHistory, :empty_history), :new_history), "
+            "HITLCompleted = :hitlCompleted, HITLReviewedBy = :reviewedBy, "
+            "HITLReviewedByEmail = :reviewedByEmail REMOVE HITLPendingReview"
+        ),
         ExpressionAttributeValues={
             ":status": "Review Skipped",
             ":pending": [],
             ":skipped": all_skipped,
-            ":history": review_history,
+            ":empty_history": [],
+            ":new_history": [review_record],
             ":hitlCompleted": True,
             ":reviewedBy": username or "unknown",
             ":reviewedByEmail": user_email or "",
@@ -670,18 +711,17 @@ def claim_review(object_key, username="", user_email=""):
         raise ValueError(f"Document {object_key} not found")
 
     table = dynamodb.Table(TRACKING_TABLE_NAME)
-    response = table.get_item(Key={"PK": f"doc#{object_key}", "SK": "none"})
-    doc = response.get("Item", {})
-    current_owner = doc.get("HITLReviewOwner", "")
 
-    if current_owner and current_owner != username:
-        raise ValueError(f"Document is already claimed by {current_owner}")
-
-    # Conditional, so the claim is exclusive rather than advisory. The read above
-    # cannot be: two annotators clicking Claim at the same moment both pass it and
-    # both write, and the collaborative queue is exactly the feature that depends
-    # on only one winning. Updating in place (rather than via the document model)
-    # also avoids re-serializing metering data.
+    # Conditional, so the claim is exclusive rather than advisory, and the condition
+    # is the *only* ownership test here. A read-then-check before this write cannot
+    # be one: two annotators clicking Claim at the same moment both pass it and both
+    # write, and the collaborative queue is exactly the feature that depends on only
+    # one winning. It also cannot refuse anything this condition accepts, since it
+    # answers from an eventually consistent read — a document released a moment ago
+    # can still read as owned, and refusing that claim is wrong. So ownership is
+    # decided once, here, and the recovery path below phrases the refusal. Updating
+    # in place (rather than via the document model) also avoids re-serializing
+    # metering data.
     try:
         table.update_item(
             Key={"PK": f"doc#{object_key}", "SK": "none"},
@@ -698,9 +738,12 @@ def claim_review(object_key, username="", user_email=""):
             },
         )
     except dynamodb.meta.client.exceptions.ConditionalCheckFailedException:
-        # Lost the race. Re-read so the message names the actual winner, and phrase
-        # it the way the read-path check does — the UI matches on "already claimed"
-        # to skip to the next document instead of dead-ending.
+        # Lost the race. Re-read so the message names the actual winner, and keep the
+        # "already claimed" phrasing — the UI matches on it to skip to the next
+        # document instead of dead-ending. This re-read is eventually consistent like
+        # any other, so a winner it cannot yet see degrades the name to "another
+        # reviewer"; the phrase the UI keys on is there either way, which is why the
+        # fallback is worded as a reviewer rather than as an error.
         current = (
             table.get_item(Key={"PK": f"doc#{object_key}", "SK": "none"}).get("Item")
             or {}

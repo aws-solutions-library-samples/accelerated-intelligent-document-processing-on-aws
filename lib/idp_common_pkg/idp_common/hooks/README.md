@@ -13,11 +13,18 @@ calls.
 
 ## Installation
 
-```
-pip install "idp_common[core]"
+`idp_common` is first-party and is **not published to PyPI**, while the name
+`idp-common` on public PyPI is registered by an unrelated party. Install from a
+path, run from the repository root:
+
+```bash
+pip install -e "lib/idp_common_pkg[core]"
 ```
 
 No extra dependencies beyond core — the helpers only touch `Document` and S3.
+Inside a Lambda source directory the same thing is expressed as a relative path in
+`requirements.txt` (`../../lib/idp_common_pkg[core]`). See
+[Installing First-Party Packages Safely](../../../../docs/dependency-confusion.md).
 
 ## Quick start
 

@@ -4,7 +4,7 @@
 """Configuration operations for IDP SDK."""
 
 import logging
-from typing import Optional
+from typing import TYPE_CHECKING, Optional
 
 from idp_sdk._core.naming import resolve_config_profile
 from idp_sdk.exceptions import IDPProcessingError, IDPResourceNotFoundError
@@ -22,7 +22,41 @@ from idp_sdk.models import (
     ConfigVersionInfo,
 )
 
+if TYPE_CHECKING:
+    # Type-only. `idp_common` is imported lazily inside every method that needs it —
+    # the CLI pays that import cost per command — so this must not become a runtime
+    # import. It is here so the ONE call that decides whether an account-wide
+    # destructive operation proceeds is checkable: with `manager` inferred as Unknown,
+    # a wrong argument shape at that call site produced a `TypeError` the outer
+    # handler turned into `success=False`, i.e. a false refusal of *every* cleanup,
+    # and both the suite and basedpyright were silent.
+    from idp_common.config.configuration_manager import ConfigurationManager
+
 logger = logging.getLogger(__name__)
+
+
+def _failed_cleanup_arns(cleanup: dict) -> list:
+    """The ARNs an orphaned-blueprint cleanup tried and failed to delete.
+
+    `cleanup_orphaned_blueprints` returns one `details` entry per blueprint it
+    attempted, each carrying `name`, `arn` and a `status` of `"deleted"` or
+    `"failed"`. A blueprint it could not delete is still an orphan afterwards, and
+    the ARN is the only way to find it — no project-scoped read will ever show it
+    again, which is the premise #1194 rests on. So the failed entries are the ones
+    a caller needs.
+
+    Defensive about the shape rather than subscripting: this is the error path of a
+    destructive operation, and a `KeyError` raised while reporting a partial failure
+    would replace the report with a stack trace. An entry with no `arn` is dropped
+    rather than rendered as `None`.
+    """
+    return [
+        entry["arn"]
+        for entry in (cleanup.get("details") or [])
+        if isinstance(entry, dict)
+        and entry.get("status") == "failed"
+        and entry.get("arn")
+    ]
 
 
 class ConfigOperation:
@@ -82,9 +116,30 @@ class ConfigOperation:
         left its revision bodies orphaned in S3. The Lambdas always had both set,
         which is why this was invisible until the CLI read a real stack.
 
+        Also bridges the resolved region into the environment, as the backstop for
+        clients built too deep in `idp_common` to be handed one explicitly. The
+        constructors that a CLI command reaches directly take `region=` (see
+        `ConfigurationManager`), but some are several frames down with no region in
+        scope — `bedrock.model_utils._load_model_limits_from_dynamodb`, on
+        `config-upload`'s own validation path, builds a `ConfigurationManager` with
+        no caller able to pass one. Without this bridge that read lands in the
+        ambient region, fails, and is swallowed by a total `except`, so the upload
+        validates against on-disk default limits instead of the stack's and can
+        reject a config that is legitimately above a default cap.
+
+        `AWS_DEFAULT_REGION` (not `AWS_REGION`) because it is the variable boto3
+        consults for a client built with no explicit region, which is exactly the
+        case being covered. `_core/publish.py` uses the same bridge for the same
+        reason. Only set when a region was actually requested — writing it
+        unconditionally would pin the process to `None`.
+
         Returns the configuration table's physical ID.
         """
         import os
+
+        region = self._client._region
+        if region:
+            os.environ["AWS_DEFAULT_REGION"] = region
 
         found = self._lookup_stack_resources(
             stack_name, {"ConfigurationTable", "ConfigurationBucket"}
@@ -150,6 +205,32 @@ class ConfigOperation:
 
         return ConfigCreateResult(yaml_content=yaml_content, output_path=output)
 
+    @staticmethod
+    def _validation_unavailable(cause: ImportError) -> ConfigValidationResult:
+        """The verdict for an installation that cannot run the checks at all.
+
+        `valid` is False, because nothing about the configuration was established
+        and a caller that gates on `valid` must keep refusing: `upload(validate=True)`
+        is such a caller, and reporting True here would store an unchecked
+        configuration. `validation_available` is what separates this from a
+        configuration that was checked and found wrong — the distinction a caller
+        needs and cannot get from `valid`, and one it should not have to read out of
+        an error message.
+        """
+        return ConfigValidationResult(
+            valid=False,
+            validation_available=False,
+            errors=[
+                # "Validation" is load-bearing in this sentence: `idp-cli
+                # config-upload` keys its `--no-validate` hint on the word, and that
+                # hint is the useful one here — a component only the checks need can
+                # be missing while everything the upload itself needs is present.
+                f"Validation unavailable in this installation: {cause}. This "
+                "environment is missing part of idp_common, which performs the "
+                "checks."
+            ],
+        )
+
     def validate(
         self,
         config_file: str,
@@ -170,13 +251,40 @@ class ConfigOperation:
 
         Returns:
             ConfigValidationResult with validation status, including deprecated_fields
-            and unknown_fields populated when extra keys are found.
+            and unknown_fields populated when extra keys are found. An installation
+            that cannot run the checks at all is reported the same way — as a result
+            with `validation_available` False and the missing component named in
+            `errors` — rather than as an exception out of a method whose contract is
+            to return a verdict.
         """
         from pathlib import Path
 
         import yaml
 
-        from idp_common.config.merge_utils import load_yaml_file, validate_config
+        # `idp_common` does the checking, and a method whose contract is to return a
+        # verdict has to answer when it is not importable rather than raise out of a
+        # `from` statement. `idp_common` is an unconditional requirement of this
+        # package, so an install that resolved cannot be missing it — what this
+        # covers is an environment assembled by other means, which is the ordinary
+        # case for the Lambda packages here (a handler tree plus a pruned copy of the
+        # library, sized against the deployment limit) and for anything vendoring a
+        # subset. `examples/lambda_function.py` calls this method from a handler and
+        # serialises the result.
+        #
+        # Both frames below can raise, and which one does depends on WHICH part is
+        # missing rather than on how much: the import fails for anything
+        # `idp_common.config`'s own `__init__` pulls in — `models` included, since it
+        # imports it — while the modules the validation stack alone imports, and
+        # imports lazily (`bedrock.prompt_cache`, `config.migrations`,
+        # `config.hook_reachability`, `schema.multi_instance`), surface out of
+        # `validate_config` on the second. Both are caught by ImportError's TYPE
+        # rather than by module name or message text: the spellings differ per
+        # module and per cause, and a rule written against any of them misses the
+        # rest.
+        try:
+            from idp_common.config.merge_utils import load_yaml_file, validate_config
+        except ImportError as e:
+            return ConfigOperation._validation_unavailable(e)
 
         try:
             user_config = load_yaml_file(Path(config_file))
@@ -189,41 +297,26 @@ class ConfigOperation:
                 valid=False, errors=[f"Failed to load file: {e}"]
             )
 
-        result = validate_config(user_config, pattern=pattern)
+        try:
+            result = validate_config(user_config, pattern=pattern)
+        except ImportError as e:
+            return ConfigOperation._validation_unavailable(e)
 
-        # Enhancement 3: detect deprecated and unknown fields
-        deprecated_fields: list = []
-        unknown_fields: list = []
+        # Keys the configuration models will not read, at every depth, as found by
+        # validate_config. Computing `set(config) - set(IDPConfig.model_fields)` here
+        # instead — which this did — reports every key IDPConfig does not declare, so
+        # it named two the loader honours: `description`, which update_configuration
+        # pops and stores, and `rule_classes`, which is renamed to `policy_classes`.
+        # It also saw only the top level, where a typo is least likely. The warnings
+        # already carry these findings in prose, with the path and, where there is
+        # one, the field the key was meant to be.
         errors = list(result.get("errors", []))
         warnings = list(result.get("warnings", []))
-
-        try:
-            from idp_common.config.models import IDP_CONFIG_DEPRECATED_FIELDS, IDPConfig
-
-            defined_fields = set(IDPConfig.model_fields.keys())
-            user_fields = (
-                set(user_config.keys()) if isinstance(user_config, dict) else set()
-            )
-            extra_fields = user_fields - defined_fields
-
-            deprecated_fields = sorted(extra_fields & IDP_CONFIG_DEPRECATED_FIELDS)
-            unknown_fields = sorted(extra_fields - IDP_CONFIG_DEPRECATED_FIELDS)
-
-            # Add informational warnings for deprecated / unknown fields
-            for field in deprecated_fields:
-                warnings.append(
-                    f"Deprecated field '{field}' found — it will be ignored by the pipeline"
-                )
-            for field in unknown_fields:
-                warnings.append(
-                    f"Unknown field '{field}' found — it is not part of the IDPConfig schema"
-                )
-
-        except ImportError:
-            # If idp_common.config.models is not available, skip the check gracefully
-            logger.warning(
-                "Could not import IDP_CONFIG_DEPRECATED_FIELDS — skipping deprecated field check"
-            )
+        ignored = result.get("ignored_keys", [])
+        deprecated_fields = sorted(
+            f["path"] for f in ignored if f["kind"] == "deprecated"
+        )
+        unknown_fields = sorted(f["path"] for f in ignored if f["kind"] == "unknown")
 
         return ConfigValidationResult(
             valid=result["valid"],
@@ -265,9 +358,12 @@ class ConfigOperation:
             ConfigDownloadResult with downloaded configuration
 
         Raises:
-            IDPResourceNotFoundError: If the requested revision is not retained.
-                Falling back to the profile head would hand back a *different*
-                configuration than the one asked for, under the same filename.
+            IDPResourceNotFoundError: If the named profile does not exist, or if the
+                requested revision is not retained. Answering anything else would
+                hand back a *different* configuration than the one asked for, under
+                the same filename — and for a missing profile the answer on offer was
+                the YAML null document, which every downstream reader takes for an
+                empty configuration.
         """
         config_version = resolve_config_profile(config_profile, config_version)
 
@@ -281,7 +377,7 @@ class ConfigOperation:
         if not config_version:
             from idp_common.config.configuration_manager import ConfigurationManager
 
-            manager = ConfigurationManager()
+            manager = ConfigurationManager(region=self._client._region)
             for v in manager.list_config_versions():
                 if v.get("isActive"):
                     config_version = v.get("versionName")
@@ -298,7 +394,7 @@ class ConfigOperation:
         if config_revision is not None:
             from idp_common.config.configuration_manager import ConfigurationManager
 
-            manager = ConfigurationManager()
+            manager = ConfigurationManager(region=self._client._region)
             body = manager.get_revision(config_version, int(config_revision))
             if body is None:
                 raise IDPResourceNotFoundError(
@@ -316,10 +412,28 @@ class ConfigOperation:
         else:
             from idp_common.config import ConfigurationReader
 
-            reader = ConfigurationReader(table_name=config_table)
-            config_data = reader.get_configuration(
-                "Config", version=config_version, as_model=False
+            reader = ConfigurationReader(
+                table_name=config_table, region=self._client._region
             )
+            # `as_dict=True` is the declared way to ask for the dict form. The
+            # implementation also takes an undeclared `as_model`, but it only has
+            # an effect when True, so `as_model=False` asked for nothing.
+            config_data = reader.get_configuration(
+                "Config", version=config_version, as_dict=True
+            )
+            if config_data is None:
+                # `get_configuration` answers `None` for a profile that does not
+                # exist, and this branch used to pass that straight on:
+                # `yaml.dump(None)` is the string "null\n...\n", so
+                # `config-download --config-profile lendnig > config.yaml` exited 0
+                # and left a file every downstream step reads as an *empty*
+                # configuration (#1230). The revision branch above raises for exactly
+                # this case; the two paths disagreed.
+                raise IDPResourceNotFoundError(
+                    f"Configuration profile '{config_version}' does not exist on "
+                    f"stack '{name}'. Run `idp-cli config-list` to see the profiles "
+                    f"that do."
+                )
 
         if format == "minimal":
             from idp_common.config.merge_utils import (
@@ -454,9 +568,19 @@ class ConfigOperation:
         if validate:
             result = self.validate(config_file, pattern=pattern or "pattern-2")
             if not result.valid:
+                # The gate holds either way — an unchecked configuration is not
+                # stored — but the two refusals ask for different things from the
+                # operator: one is a file to fix, the other is a component to
+                # install. Saying "validation failed" for the second sends them
+                # looking through a configuration that may be perfectly good.
+                reason = (
+                    "Validation failed"
+                    if result.validation_available
+                    else "Validation unavailable"
+                )
                 return ConfigUploadResult(
                     success=False,
-                    error=f"Validation failed: {'; '.join(result.errors)}",
+                    error=f"{reason}: {'; '.join(result.errors)}",
                 )
 
         self._configure_config_env(name)
@@ -464,7 +588,16 @@ class ConfigOperation:
         try:
             from idp_common.config.configuration_manager import ConfigurationManager
 
-            manager = ConfigurationManager()
+            # `region=` is not optional decoration. _configure_config_env above
+            # resolved the ConfigurationTable NAME from CloudFormation in
+            # self._client._region, and a DynamoDB table name is not
+            # region-qualified — so a manager built without the region reads and
+            # writes that name in whatever region the ambient credentials resolve
+            # to. On a multi-region account that is a successful write to another
+            # stack's configuration table, reported as success. Every
+            # ConfigurationManager in this module is constructed the same way for
+            # the same reason.
+            manager = ConfigurationManager(region=self._client._region)
 
             # Enhancement 4: check whether the version already exists and set saveAsVersion
             # flag for new versions, matching CLI config_upload behavior.
@@ -542,7 +675,7 @@ class ConfigOperation:
         try:
             from idp_common.config.configuration_manager import ConfigurationManager
 
-            manager = ConfigurationManager()
+            manager = ConfigurationManager(region=self._client._region)
             versions_raw = manager.list_config_versions()
 
             versions = [
@@ -621,7 +754,7 @@ class ConfigOperation:
         try:
             from idp_common.config.configuration_manager import ConfigurationManager
 
-            manager = ConfigurationManager()
+            manager = ConfigurationManager(region=self._client._region)
             # A disabled store returns [] from every read, which would report
             # "this profile has no history" for a profile that has plenty — the
             # store just cannot see it. Say which of the two it is.
@@ -691,11 +824,21 @@ class ConfigOperation:
         name = self._client._require_stack(stack_name)
         self._configure_config_env(name)
 
+        # Bound here, before the try, rather than beside the other BDA locals inside
+        # it: the handler of last resort below has to be able to name it, and a local
+        # first assigned inside the try is unbound for every exception raised before
+        # that point — a `NameError` from inside an exception handler replaces the error
+        # the caller actually needs to see.
+        bda_service = None
+        bda_orphaned_arns: list = []
+        bda_classes_synced = 0
+        bda_classes_failed = 0
+
         try:
             os.environ["STACK_NAME"] = name
             from idp_common.config.configuration_manager import ConfigurationManager
 
-            manager = ConfigurationManager()
+            manager = ConfigurationManager(region=self._client._region)
 
             # Check if the version exists
             existing_config = manager.get_configuration(
@@ -716,8 +859,13 @@ class ConfigOperation:
             )
 
             bda_synced = False
-            bda_classes_synced = 0
-            bda_classes_failed = 0
+            # `bda_classes_synced`, `bda_classes_failed`, `bda_orphaned_arns` and
+            # `bda_service` are bound before the try above. The orphan list holds
+            # blueprints the sync took out of the project but could not delete: they
+            # belong to no class, so they are absent from the per-class status list and
+            # do not count as a class failure, and they are reported so that a caller
+            # told the activation succeeded — or that it failed — also learns that
+            # cleanup is outstanding.
 
             if use_bda:
                 logger.info(
@@ -729,7 +877,8 @@ class ConfigOperation:
 
                     bda_project_arn = manager.get_bda_project_arn(config_version)
                     bda_service = BdaBlueprintService(
-                        dataAutomationProjectArn=bda_project_arn
+                        dataAutomationProjectArn=bda_project_arn,
+                        region=self._client._region,
                     )
 
                     if not bda_project_arn:
@@ -755,15 +904,27 @@ class ConfigOperation:
 
                     bda_classes_synced = len(sync_succeeded)
                     bda_classes_failed = len(sync_failed)
+                    bda_orphaned_arns = list(bda_service.orphaned_blueprint_arns)
+                    if bda_orphaned_arns:
+                        logger.error(
+                            "BDA sync left %d orphaned blueprint(s) in the account; "
+                            "run the orphaned-blueprint cleanup to remove them: %s",
+                            len(bda_orphaned_arns),
+                            bda_orphaned_arns,
+                        )
 
                     if bda_classes_synced == 0 and bda_classes_failed > 0:
-                        # Total failure — abort activation
+                        # Total failure — abort activation. The orphan list is carried
+                        # here too: the deletes run whatever happened to the classes,
+                        # so this is the outcome most likely to have left one, and it
+                        # is also the one where nothing else in the result mentions it.
                         return ConfigActivateResult(
                             success=False,
                             activated_version=config_version,
                             bda_synced=False,
                             bda_classes_synced=0,
                             bda_classes_failed=bda_classes_failed,
+                            bda_orphaned_blueprint_arns=bda_orphaned_arns,
                             error="BDA sync failed for all classes — activation aborted",
                         )
                     elif bda_classes_failed > 0:
@@ -786,12 +947,19 @@ class ConfigOperation:
 
                 except Exception as bda_exc:
                     logger.error("BDA blueprint sync raised an exception: %s", bda_exc)
+                    # Read the orphans off the service rather than trusting the local:
+                    # the deletes happen before the last two steps of a sync, both of
+                    # which can raise, so a sync that never returned may still have
+                    # left one — and in that case the local is untouched.
+                    if bda_service is not None:
+                        bda_orphaned_arns = list(bda_service.orphaned_blueprint_arns)
                     return ConfigActivateResult(
                         success=False,
                         activated_version=config_version,
                         bda_synced=False,
                         bda_classes_synced=bda_classes_synced,
                         bda_classes_failed=bda_classes_failed,
+                        bda_orphaned_blueprint_arns=bda_orphaned_arns,
                         error=f"BDA sync error: {bda_exc}",
                     )
 
@@ -804,6 +972,7 @@ class ConfigOperation:
                 bda_synced=bda_synced,
                 bda_classes_synced=bda_classes_synced,
                 bda_classes_failed=bda_classes_failed,
+                bda_orphaned_blueprint_arns=bda_orphaned_arns,
             )
 
         except IDPResourceNotFoundError:
@@ -811,9 +980,20 @@ class ConfigOperation:
         except IDPProcessingError:
             raise
         except Exception as e:
+            # `manager.activate_version()` is outside the inner BDA handler, so a
+            # throttle or a denial on that write lands here — after a sync that may
+            # already have left a blueprint orphaned. Read the orphans off the service
+            # for the same reason the inner handler does, and carry the class counts
+            # too: a result that reports 0 synced and 0 failed after a sync that ran is
+            # a third wrong answer.
+            if bda_service is not None:
+                bda_orphaned_arns = list(bda_service.orphaned_blueprint_arns)
             return ConfigActivateResult(
                 success=False,
                 activated_version=config_version,
+                bda_classes_synced=bda_classes_synced,
+                bda_classes_failed=bda_classes_failed,
+                bda_orphaned_blueprint_arns=bda_orphaned_arns,
                 error=str(e),
             )
 
@@ -847,7 +1027,7 @@ class ConfigOperation:
         try:
             from idp_common.config.configuration_manager import ConfigurationManager
 
-            manager = ConfigurationManager()
+            manager = ConfigurationManager(region=self._client._region)
             manager.delete_configuration("Config", version=config_version)
 
             return ConfigDeleteResult(success=True, deleted_version=config_version)
@@ -857,6 +1037,84 @@ class ConfigOperation:
             return ConfigDeleteResult(
                 success=False, deleted_version=config_version, error=str(e)
             )
+
+    def _refuse_cleanup_without_a_real_profile(
+        self,
+        manager: "ConfigurationManager",
+        config_version: Optional[str],
+        mode: str,
+    ) -> Optional[ConfigSyncBdaResult]:
+        """Refuse an orphaned-blueprint cleanup whose profile does not exist.
+
+        Returns a failing ``ConfigSyncBdaResult`` to return, or ``None`` to proceed.
+
+        The cleanup's only safety mechanism is the class list it reads from the named
+        profile: every blueprint carrying the stack's name prefix that no class
+        accounts for is deleted, account-wide. `cleanup_orphaned_blueprints` turns a
+        `get_configuration` that answers `None` into `current_classes = []` and then
+        deletes everything, reporting `success=True` with a deletion count — an
+        answer no caller can tell apart from a correct one.
+
+        Two inputs reach that state, and they need different checks.
+
+        A name that is not a profile — a typo in `--config-profile`, or a
+        whitespace-only value — finds no record. That is the likelier one and the more
+        destructive, because `--config-profile lendnig` deletes `lending`'s live
+        blueprints along with everything else. A whitespace-only name needs no clause
+        of its own: it is truthy, so it reaches the lookup, and `Config#   ` names
+        nothing. A `.strip()` test was written here and removed as redundant — no
+        input distinguished it from the lookup, and mutating it away left the suite
+        green, which is what a redundant guard looks like from outside.
+
+        `None` is not a failed lookup and so is checked separately: `_read_record`
+        builds the key as `Config#<version>` only when the version is truthy, so
+        `version=None` reads the **bare** `Config` key, which #1230 showed can hold a
+        record nothing else can see. Left to the lookup, that would *succeed* on a
+        record describing no profile. `None` reaches here when the caller named no
+        profile and the resolution above found none active. An empty *string* does not
+        reach either check — the resolution treats it as "not specified" and
+        substitutes the active profile, the same reading `config-download` gives it.
+
+        Deliberately **not** covered: a profile that exists and declares no classes.
+        That is a real instruction to keep nothing, and deleting every prefixed
+        blueprint is the right response. The distinction this method draws is between
+        "keep nothing" and "could not find out what to keep", which arrive at the
+        service identically and have opposite safe actions.
+        """
+        if not config_version:
+            return ConfigSyncBdaResult(
+                success=False,
+                direction="cleanup_orphaned",
+                mode=mode,
+                cleanup_deleted_count=0,
+                cleanup_failed_count=0,
+                error=(
+                    "Orphaned-blueprint cleanup needs a configuration profile: its "
+                    "classes are what decide which blueprints are kept, and no "
+                    "profile is active on this stack. Name one explicitly. Running "
+                    "without one would treat every blueprint carrying the stack's "
+                    "prefix as an orphan and delete it."
+                ),
+            )
+
+        if manager.get_configuration("Config", version=config_version) is None:
+            return ConfigSyncBdaResult(
+                success=False,
+                direction="cleanup_orphaned",
+                mode=mode,
+                cleanup_deleted_count=0,
+                cleanup_failed_count=0,
+                error=(
+                    f"Configuration profile '{config_version}' does not exist on "
+                    f"this stack, so the orphaned-blueprint cleanup cannot tell "
+                    f"which blueprints to keep — it would treat every blueprint "
+                    f"carrying the stack's prefix as an orphan and delete it, "
+                    f"including the ones belonging to profiles that do exist. Run "
+                    f"`idp-cli config-list` to see the profiles that do."
+                ),
+            )
+
+        return None
 
     def sync_bda(
         self,
@@ -874,12 +1132,25 @@ class ConfigOperation:
         configuration's document classes and BDA (Bedrock Data Automation)
         blueprints.
 
+        ``'cleanup_orphaned'`` is not a sync: it deletes every blueprint carrying the
+        stack's name prefix that no class in the named profile accounts for. That is an
+        **account-wide** scan rather than a project-scoped one, which is what makes it
+        the only way to remove a blueprint a replace-mode sync disassociated but could
+        not delete — such a blueprint is invisible to every project-scoped read. It
+        reports its outcome in ``cleanup_deleted_count`` and ``cleanup_failed_count``
+        rather than in the class counts, because it processes no classes and reporting
+        a blueprint as a synced class is a wrong answer rather than an imprecise one.
+
         Args:
             direction: Sync direction — ``'bidirectional'`` (default),
-                ``'bda_to_idp'``, or ``'idp_to_bda'``.
+                ``'bda_to_idp'``, ``'idp_to_bda'``, or ``'cleanup_orphaned'``.
             mode: Sync mode — ``'replace'`` (default, full alignment) or
-                ``'merge'`` (additive, don't delete).
+                ``'merge'`` (additive, don't delete). Not read for
+                ``'cleanup_orphaned'``, which deletes by definition.
             config_version: Configuration profile to sync (default: active version).
+                For ``'cleanup_orphaned'`` this is the profile whose classes decide
+                which blueprints are orphaned, so naming the wrong one deletes live
+                blueprints.
             config_profile: Configuration profile (the current name for
                 config_version; either may be given, not both with different values).
             stack_name: Optional stack name override.
@@ -894,12 +1165,14 @@ class ConfigOperation:
         name = self._client._require_stack(stack_name)
         self._configure_config_env(name)
 
+        bda_service = None
+
         try:
             os.environ["STACK_NAME"] = name
             from idp_common.bda.bda_blueprint_service import BdaBlueprintService
             from idp_common.config.configuration_manager import ConfigurationManager
 
-            manager = ConfigurationManager()
+            manager = ConfigurationManager(region=self._client._region)
 
             # Resolve config version if not provided
             if not config_version:
@@ -908,15 +1181,105 @@ class ConfigOperation:
                         config_version = v.get("versionName")
                         break
 
+            # `cleanup_orphaned` is validated HERE, before the project resolution
+            # below, and the placement is the whole of the check.
+            #
+            # The cleanup decides what is an orphan by building the set of expected
+            # blueprint-name prefixes from the named profile's classes, and
+            # `cleanup_orphaned_blueprints` reduces a `get_configuration` that
+            # answers `None` to `current_classes = []`. An empty expected set means
+            # every blueprint carrying the stack's prefix matches nothing, so all of
+            # them are deleted — and it reports `success=True` with a deletion count,
+            # which is indistinguishable from having done the right thing.
+            #
+            # `get_configuration` answers `None` for two different inputs, and both
+            # reach that state: `version=None` reads the *bare* `Config` key, which
+            # holds nothing on a normal stack; and a `version` naming a profile that
+            # does not exist — a typo in `--config-profile`, or a whitespace-only
+            # value — finds no record. The second is the likelier one in practice and
+            # is the more destructive: `--config-profile lendnig` deletes the live
+            # blueprints of `lending` along with everything else.
+            #
+            # A profile that exists and declares no classes is a different answer and
+            # is allowed through: "keep nothing" is a real instruction, and deleting
+            # every prefixed blueprint is the correct response to it. What must not
+            # happen is "could not find out what to keep" being executed as if it
+            # were that.
+            #
+            # Before the project resolution because that resolution is not
+            # side-effect-free on these inputs: with no ARN recorded it calls
+            # `get_or_create_project_for_version(config_version)`, which **creates a
+            # BDA project** for a valid name and raises `TypeError` out of
+            # `_sanitize_project_name(None)` for `None`. Validating afterwards meant
+            # the useful message never arrived and a cleanup could create a project
+            # on its way to refusing.
+            if direction == "cleanup_orphaned":
+                refusal = self._refuse_cleanup_without_a_real_profile(
+                    manager, config_version, mode
+                )
+                if refusal is not None:
+                    return refusal
+
             # Get or create BDA project ARN
             bda_project_arn = manager.get_bda_project_arn(config_version)
-            bda_service = BdaBlueprintService(dataAutomationProjectArn=bda_project_arn)
+            bda_service = BdaBlueprintService(
+                dataAutomationProjectArn=bda_project_arn,
+                region=self._client._region,
+            )
 
             if not bda_project_arn:
                 bda_project_arn = bda_service.get_or_create_project_for_version(
                     config_version
                 )
                 bda_service.dataAutomationProjectArn = bda_project_arn
+
+            # Orphaned-blueprint cleanup is not a sync and shares none of the steps
+            # below: it processes no classes, writes no project blueprint list from the
+            # configuration, and its outcome is a count of deletions. It is placed
+            # after the project-ARN resolution above for the same reason the resolver
+            # places it there (sync_bda_idp_resolver/index.py): the cleanup
+            # disassociates before deleting, which needs a project to disassociate
+            # from.
+            if direction == "cleanup_orphaned":
+                cleanup = bda_service.cleanup_orphaned_blueprints(
+                    version=config_version
+                )
+                deleted = int(cleanup.get("deleted_count", 0))
+                failed = int(cleanup.get("failed_count", 0))
+                succeeded = bool(cleanup.get("success", False)) and failed == 0
+                if not succeeded:
+                    logger.error(
+                        "Orphaned blueprint cleanup did not complete: %d deleted, "
+                        "%d failed. %s",
+                        deleted,
+                        failed,
+                        cleanup.get("message", ""),
+                    )
+                return ConfigSyncBdaResult(
+                    success=succeeded,
+                    direction=direction,
+                    mode=mode,
+                    cleanup_deleted_count=deleted,
+                    cleanup_failed_count=failed,
+                    # The blueprints the cleanup could not delete are still orphaned
+                    # after it ran, and the ARN is the only way to find one: nothing
+                    # project-scoped will ever show it again, which is the premise
+                    # #1194 rests on.
+                    #
+                    # Read off the cleanup's own `details`, NOT off
+                    # `bda_service.orphaned_blueprint_arns`. That attribute is written
+                    # only by `_synchronize_deletes`, inside
+                    # `create_blueprints_from_custom_configuration`, which this path
+                    # never calls — so it is `[]` here however the cleanup went, and
+                    # reading it reported "0 orphans" beside a non-zero failure count.
+                    orphaned_blueprint_arns=_failed_cleanup_arns(cleanup),
+                    error=(
+                        cleanup.get("message")
+                        or f"{failed} orphaned blueprint(s) could not be deleted"
+                    )
+                    if not succeeded
+                    else None,
+                )
 
             # Perform sync
             sync_result = bda_service.create_blueprints_from_custom_configuration(
@@ -932,13 +1295,47 @@ class ConfigOperation:
             sync_failed = [
                 item for item in sync_result if item.get("status") != "success"
             ]
-            processed_names = [
-                item.get("class_name", item.get("name", "unknown"))
-                for item in sync_result
-            ]
+            # `class` is read by subscript rather than through a chain of
+            # defaults ending in a literal. Every entry the sync appends carries
+            # it, on all seven paths that build one, and the two aggregators
+            # inside the service subscript that same key to assemble them — so a
+            # default here could only ever fire on a future rename, and a default
+            # is precisely what let this field report a placeholder for every
+            # class indefinitely: a list of plausible-looking names reads as an
+            # answer, so nothing ever went looking. A rename is now a sync that
+            # reports failure and names the key it could not read, which no
+            # caller can mistake for the name of a document class.
+            #
+            # Re-raised as a `RuntimeError` rather than re-raising the `KeyError`:
+            # the handler below stringifies whatever comes out into `error`, which
+            # the CLI prints, and `str()` of a `KeyError` is the message wrapped in
+            # quotes. Nothing reads the type — this method converts every exception
+            # into a result object — so the message is the whole payload.
+            try:
+                processed_names = [item["class"] for item in sync_result]
+            except KeyError as missing_key:
+                raise RuntimeError(
+                    f"A BDA sync status entry carries no {missing_key} key, so "
+                    "the classes the sync processed cannot be named. Those "
+                    "entries are produced by "
+                    "BdaBlueprintService.create_blueprints_from_custom_configuration; "
+                    "a rename of that key has to be made here too."
+                ) from missing_key
 
             classes_synced = len(sync_succeeded)
             classes_failed = len(sync_failed)
+            # Blueprints removed from the project that could not then be deleted. Not
+            # a class failure — they belong to no class and every class may have
+            # synced — so they are reported alongside the result rather than folded
+            # into `classes_failed`, which would misreport a class as unsynced.
+            orphaned_arns = list(bda_service.orphaned_blueprint_arns)
+            if orphaned_arns:
+                logger.error(
+                    "BDA sync left %d orphaned blueprint(s) in the account; run the "
+                    "orphaned-blueprint cleanup to remove them: %s",
+                    len(orphaned_arns),
+                    orphaned_arns,
+                )
 
             # Update BDA project ARN status
             if classes_synced > 0 and classes_failed == 0:
@@ -953,6 +1350,7 @@ class ConfigOperation:
                 classes_synced=classes_synced,
                 classes_failed=classes_failed,
                 processed_classes=processed_names,
+                orphaned_blueprint_arns=orphaned_arns,
                 error=f"{classes_failed} class(es) failed to sync"
                 if classes_failed > 0
                 else None,
@@ -960,9 +1358,26 @@ class ConfigOperation:
 
         except Exception as e:
             logger.error(f"BDA sync failed: {e}")
+            # A sync that raised may still have deleted — or failed to delete —
+            # blueprints: the deletes happen before the last two steps, both of which
+            # can raise. So the orphans are read here as well, off the service, since
+            # a raise means the normal return path did not run.
+            failed_orphans = (
+                list(bda_service.orphaned_blueprint_arns)
+                if bda_service is not None
+                else []
+            )
+            if failed_orphans:
+                logger.error(
+                    "The failed BDA sync left %d orphaned blueprint(s) in the "
+                    "account; run the orphaned-blueprint cleanup to remove them: %s",
+                    len(failed_orphans),
+                    failed_orphans,
+                )
             return ConfigSyncBdaResult(
                 success=False,
                 direction=direction,
                 mode=mode,
+                orphaned_blueprint_arns=failed_orphans,
                 error=str(e),
             )

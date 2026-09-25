@@ -182,7 +182,12 @@ def test_pricing_with_invalid_price_values():
     invalid_cost = reporter._get_unit_cost("textract/detect_document_text", "pages")
     valid_cost = reporter._get_unit_cost("textract/detect_document_text", "documents")
 
-    # Invalid price returns 0.0 (logged as warning and skipped)
-    assert invalid_cost == 0.0, f"Expected 0.0 for invalid price, got {invalid_cost}"
+    # A price that will not parse is dropped from the unit map, so the unit reads
+    # as absent from the entry — and an absent unit nothing declares free is
+    # unpriced, i.e. NULL. That is the right answer for this input: an unparseable
+    # rate is unknown, not zero, and $0.00 for it understated every page of every
+    # document with nothing to query for. See idp_common.metering_units and
+    # GitHub issue #1212.
+    assert invalid_cost is None, f"Expected NULL for invalid price, got {invalid_cost}"
     # Valid price returns the actual value
     assert valid_cost == 0.002, f"Expected 0.002, got {valid_cost}"

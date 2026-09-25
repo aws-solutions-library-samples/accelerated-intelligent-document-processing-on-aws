@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import shutil
 from pathlib import Path
 from textwrap import dedent
@@ -9,6 +10,31 @@ from textwrap import dedent
 import boto3
 import pytest
 from moto import mock_aws
+
+#: Width to render Rich output at, for every test in this package.
+#:
+#: Rich decides its width from the output file's terminal size, falling back to 80 when
+#: there is no terminal. Click's `CliRunner` captures into a StringIO, so there never is
+#: one — and under `pytest -n` the worker has no controlling terminal either, while a
+#: direct run inherits the developer's. So the same assertion passed serially and failed
+#: under xdist: five tests asserting a long path, URL or account id found it wrapped
+#: mid-token (`de\nfaulted`, `d eploy.yaml`) or replaced by a `…` inside a table.
+#:
+#: That is worse than a plain failure, because it makes the result a property of how
+#: pytest was invoked rather than of the code. Pinning the width makes it deterministic
+#: in both, and 200 is wide enough that nothing these tests assert wraps.
+#:
+#: Note whitespace-collapsing the output is NOT an adequate substitute: a table cell
+#: truncated to `2026-08…` has lost characters that no amount of rejoining recovers.
+RICH_TEST_WIDTH = "200"
+
+
+# Set at conftest IMPORT time, not in a fixture. `idp_feature_sdk.cli` builds its
+# `Console` at module level, and Rich captures the environment mapping it will consult
+# when the Console is constructed — so a fixture that sets COLUMNS later has already
+# missed it. pytest imports conftest before the test modules that import the CLI, which
+# makes this the last point that is still early enough.
+os.environ["COLUMNS"] = RICH_TEST_WIDTH
 
 
 @pytest.fixture(autouse=True)
@@ -123,3 +149,39 @@ def feature_bucket(aws_credentials):
         bucket = "test-feature-bucket"
         s3.create_bucket(Bucket=bucket)
         yield bucket
+
+
+FIRST_PARTY_UNDER_TEST = ("idp_feature_sdk",)
+
+
+# Fail fast if a first-party package resolves outside this checkout. These tests import
+# the library as an external dependency, so nothing puts its source on `sys.path` and the
+# editable-install pointer alone decides which revision runs. On a machine sharing one
+# interpreter between checkouts that pointer is rewritten by whoever last ran
+# `make test-cicd`, and the wrong tree produces a green run describing other code.
+#
+# The imports sit inside the function deliberately: this block is appended after a
+# module's own imports, and module-level imports there are an E402 lint failure.
+#
+# Rationale, and the identity-vs-ancestry distinction:
+# scripts/tests/first_party_provenance.py
+def _assert_first_party_provenance(packages):
+    import pathlib as _pathlib
+    import sys as _sys
+
+    for ancestor in _pathlib.Path(__file__).resolve().parents:
+        gate = ancestor / "scripts" / "tests" / "first_party_provenance.py"
+        if not gate.is_file():
+            continue
+        _sys.path.insert(0, str(gate.parent))
+        try:
+            from first_party_provenance import assert_resolves_in
+
+            for package in packages:
+                assert_resolves_in(package, __file__)
+        finally:
+            _sys.path.pop(0)
+        return
+
+
+_assert_first_party_provenance(FIRST_PARTY_UNDER_TEST)

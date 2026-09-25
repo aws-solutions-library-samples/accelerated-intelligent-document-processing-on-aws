@@ -27,10 +27,29 @@ from botocore.config import Config as _BotoConfig
 # Sibling module — CodeBuild runs this as `python3 scripts/sdlc/...`, so the
 # script's own directory is not necessarily on sys.path for a plain import.
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+# The in-repo library, for the ONE shared rule this script borrows: which state a
+# Step Functions execution's terminal failure is attributable to. `make setup` has
+# installed idp_common by the time CodeBuild runs this, but the checkout is added to
+# sys.path anyway so the revision read is the one being deployed rather than whatever
+# an editable-install pointer happens to name (the pattern check_retired_models.py
+# uses). `idp_common.stepfunctions_history` imports nothing outside the standard
+# library, so this costs no dependency.
+sys.path.append(
+    os.path.join(
+        os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
+        "lib",
+        "idp_common_pkg",
+    )
+)
 from failure_agent import (  # noqa: E402
     build_evidence_brief,
     fetch_full_build_log,
     run_failure_agent,
+)
+
+from idp_common.stepfunctions_history import (  # noqa: E402
+    failing_state,
+    failing_state_is_resolvable,
 )
 
 # Cap test/monitor commands so a hung inference run cannot consume the
@@ -356,10 +375,11 @@ def validate_headless_template(main_template_url):
 
     out_path = os.path.join(".aws-sam", "idp-headless.yaml")
     try:
-        from idp_sdk._core.template_transform import HeadlessTemplateTransformer
+        from idp_sdk import IDPClient
 
-        if not HeadlessTemplateTransformer().transform(packaged, out_path):
-            return False, "headless transform reported failure (see log above)"
+        result = IDPClient().publish.transform_template_headless(packaged, out_path)
+        if not result.success:
+            return False, f"headless transform reported failure: {result.error}"
     except Exception as e:  # noqa: BLE001
         return False, f"headless transform raised: {e}"
 
@@ -3061,8 +3081,16 @@ def run_inference_test(
     config_version=None,
     sample_dir="samples",
     additional_checks=None,
+    region=None,
 ):
     """Run inference test and verify results
+
+    ``region`` is forwarded to the shelled-out ``idp-cli`` calls. Without it the
+    CLI resolves its region from the environment or the profile, which need not
+    be the region the stack was deployed to: the stack then reads as absent, or
+    as "not in a valid state for operations", while being healthy in the region
+    the caller actually asked for. Optional, so existing callers -- which run
+    where the environment already names the right region -- are unaffected.
 
     Args:
         stack_name: Name of the CloudFormation stack
@@ -3079,7 +3107,8 @@ def run_inference_test(
     try:
         # Run inference
         print(f"Running inference with batch-id: {batch_id}...")
-        cmd = f"idp-cli run-inference --stack-name {stack_name} --dir {sample_dir} --file-pattern {sample_file} --batch-id {batch_id} --monitor"
+        region_flag = f" --region {region}" if region else ""
+        cmd = f"idp-cli run-inference --stack-name {stack_name} --dir {sample_dir} --file-pattern {sample_file} --batch-id {batch_id} --monitor{region_flag}"
         if config_version:
             cmd += f" --config-version {config_version}"
         run_command(cmd)
@@ -3088,7 +3117,7 @@ def run_inference_test(
         # Download results
         print("Downloading results...")
         result_dir = f"/tmp/result-{batch_id}"  # nosec B108 - isolated CodeBuild environment
-        cmd = f"idp-cli download-results --stack-name {stack_name} --batch-id {batch_id} --output-dir {result_dir}"
+        cmd = f"idp-cli download-results --stack-name {stack_name} --batch-id {batch_id} --output-dir {result_dir}{region_flag}"
         run_command(cmd)
 
         # Verify result content
@@ -3434,6 +3463,46 @@ def _is_deliberate_hook_fail_execution(sfn, execution_arn):
 # cannot crowd a genuine one out of the window.
 _HOOK_FAIL_EVIDENCE_MARGIN = 3
 
+# How far back from the terminal failure to read the execution history when naming the
+# state that failed. The failure event itself is always on the first page; the failing
+# state's StateEntered is the EARLIER of the two and routinely is not. A multi-section
+# document runs to several hundred events (five to seven per task invocation, over 55
+# states and three inline Maps), so a single 25-event page reached the state only on the
+# smallest executions — and a window too short to hold it is why the answer has to be
+# allowed to come back unknown rather than guessed at.
+_FAILURE_HISTORY_PAGE_SIZE = 100
+_FAILURE_HISTORY_MAX_PAGES = 5
+
+
+def _fetch_failure_window(sfn, execution_arn):
+    """History events around an execution's terminal failure, newest-first.
+
+    Pages backwards from the failure rather than forwards from the start of the
+    execution, and stops as soon as the window can name the failing state — checked
+    after each page rather than by counting events, because how far back the state sits
+    depends on the shape of the execution, not on a number. Reading the whole history
+    instead would be thousands of events on a large document, almost all irrelevant,
+    for every failed execution in the summary.
+    """
+    events = []
+    next_token = None
+    for _ in range(_FAILURE_HISTORY_MAX_PAGES):
+        kwargs = {
+            "executionArn": execution_arn,
+            "reverseOrder": True,
+            "maxResults": _FAILURE_HISTORY_PAGE_SIZE,
+        }
+        if next_token:
+            kwargs["nextToken"] = next_token
+        page = sfn.get_execution_history(**kwargs)
+        events.extend(page.get("events", []))
+        next_token = page.get("nextToken")
+        if not next_token or failing_state_is_resolvable(
+            events, more_pages=bool(next_token)
+        ):
+            break
+    return events
+
 
 def get_workflow_failure_details(stack_name, max_executions=5):
     """Capture the real cause of a document processing failure before teardown.
@@ -3482,9 +3551,7 @@ def get_workflow_failure_details(stack_name, max_executions=5):
             # exception) that the tracking table flattens to "Unknown error".
             error = cause = failed_state = ""
             try:
-                events = sfn.get_execution_history(
-                    executionArn=arn, reverseOrder=True, maxResults=25
-                ).get("events", [])
+                events = _fetch_failure_window(sfn, arn)
                 for event in events:
                     for key in (
                         "executionFailedEventDetails",
@@ -3495,17 +3562,15 @@ def get_workflow_failure_details(stack_name, max_executions=5):
                         if detail:
                             error = error or detail.get("error", "")
                             cause = cause or detail.get("cause", "")
-                    # reverseOrder=True → the first StateEntered we see is the
-                    # last state the execution reached, i.e. the one that
-                    # failed. (Don't break once error/cause are set: the
-                    # terminal ExecutionFailed event precedes this in reverse
-                    # order, so an early break would miss the state name.)
-                    if not failed_state and event.get("type", "").endswith(
-                        "StateEntered"
-                    ):
-                        failed_state = event.get("stateEnteredEventDetails", {}).get(
-                            "name", ""
-                        )
+                # Which state failed is NOT "the newest state transition in the
+                # window". A Catch that routes to a Fail state enters that handler
+                # before the terminal ExecutionFailed arrives, and FailStateEntered
+                # matches a StateEntered suffix like any other transition — so the
+                # newest one names the error handler, and sends whoever reads this
+                # summary to the wrong log group (#1168). The rule is shared with the
+                # error analyzer, which had the same bug (#1139): see
+                # idp_common.stepfunctions_history.
+                failed_state = failing_state(events) or ""
             except Exception as e:  # noqa: BLE001
                 cause = f"(could not read execution history: {e})"
 

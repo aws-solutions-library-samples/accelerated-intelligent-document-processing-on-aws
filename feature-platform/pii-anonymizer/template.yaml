@@ -103,8 +103,10 @@ Resources:
   # synthetic value map (a RE-IDENTIFICATION KEY containing real PII), keyed by
   # documentId, only when store_mapping is enabled. Deliberately a feature-owned
   # DynamoDB table — NOT the host Output/Working buckets — because the host's
-  # getFileContents resolver proxies any Output-bucket key to any authenticated
-  # user (no config-version scoping), which would bypass the RBAC gate. Reachable
+  # getFileContents resolver proxies any Output-bucket key to any caller holding
+  # one of the five Cognito groups (no key-level or config-version scoping), and
+  # the browser's Identity Pool role reads that bucket directly whatever group the
+  # caller is in. Either path would bypass the RBAC gate. Reachable
   # ONLY via the feature API's RBAC-gated /report/{docId}/mapping route.
   ###########################################################################
   RedactionMappingTable:
@@ -291,8 +293,11 @@ Resources:
             - Effect: Allow
               Action: dynamodb:GetItem
               Resource: !GetAtt RedactionMappingTable.Arn
-            # RBAC scope lookup: query UsersTable.EmailIndex for the caller's
-            # allowedConfigVersions.
+            # RBAC scope lookup for the caller's allowedConfigVersions. Both key
+            # spaces on the host UsersTable are read: GetItem for the SUB#<sub>
+            # pointer (the immutable join, preferred) and Query on EmailIndex (the
+            # compatibility join). A failed read on either DENIES the request, so a
+            # missing grant here blocks the Redaction Report rather than widening it.
             - Effect: Allow
               Action:
                 - dynamodb:GetItem

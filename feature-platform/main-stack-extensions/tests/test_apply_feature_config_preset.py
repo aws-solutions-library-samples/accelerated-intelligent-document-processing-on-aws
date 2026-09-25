@@ -433,3 +433,173 @@ def test_unknown_field_raises(monkeypatch, configuration_table, load_lambda):
     mod = _preload(monkeypatch, load_lambda)
     with pytest.raises(ValueError, match="Unknown field"):
         mod.handler(make_appsync_event("someOtherField", {}), None)
+
+
+# --------------------------------------------------------------------------
+# A preset is a pipeline-hook write boundary too (#982).
+#
+# Both bundled extensions install their hook INSIDE the preset rather than through
+# `registerFeatureHooks`, so the hook travels with the classes it belongs to and
+# activating the version brings both. That makes this the live install path for
+# hooks, and it has to apply the same rule: a preset registering `onError: fail` at
+# a point the merged configuration's processing mode can never reach declares a gate
+# that cannot gate.
+# --------------------------------------------------------------------------
+
+_HOOK_ARN = "arn:aws:lambda:us-east-1:123456789012:function:redact-hook"
+
+
+def _seed_bda_default(with_stored_hook: bool = False) -> None:
+    """A readable full `Config#default` in BDA mode.
+
+    Without a parseable default, `_merge_over_default` falls back to a sparse write
+    and no IDPConfig is ever built — so this row is what puts the install on the
+    merge path the check lives on.
+    """
+    item = {
+        "Configuration": "Config#default",
+        "_config_format": "full",
+        "IsActive": True,
+        "use_bda": True,
+        "classes": [{"name": "Invoice"}],
+    }
+    if with_stored_hook:
+        item["ocr"] = {
+            "postHook": [
+                {
+                    "featureId": "someone-else",
+                    "arn": _HOOK_ARN,
+                    "onError": "fail",
+                    "enabled": True,
+                }
+            ]
+        }
+    boto3.resource("dynamodb", region_name="us-east-1").Table(_TABLE).put_item(
+        Item=item
+    )
+
+
+def test_a_preset_registering_a_gating_hook_at_an_unreachable_point_is_refused(
+    monkeypatch, configuration_table, load_lambda
+):
+    mod = _preload(monkeypatch, load_lambda)
+    _seed_bda_default()
+    preset = {
+        "classes": [{"name": "Invoice"}],
+        "ocr": {
+            "postHook": [
+                {
+                    "featureId": "pii-redactor",
+                    "arn": _HOOK_ARN,
+                    "onError": "fail",
+                    "enabled": True,
+                }
+            ]
+        },
+    }
+
+    with pytest.raises(ValueError, match="postOcr"):
+        mod.handler(
+            make_appsync_event(
+                "applyFeatureConfigPreset",
+                {"input": _apply_input(config=json.dumps(preset))},
+            ),
+            None,
+        )
+
+
+def test_a_preset_that_says_nothing_about_hooks_is_unaffected_by_a_stored_one(
+    monkeypatch, configuration_table, load_lambda
+):
+    """The preset is the delta, so an inert hook already in the host default does
+    not block an unrelated feature's install."""
+    mod = _preload(monkeypatch, load_lambda)
+    _seed_bda_default(with_stored_hook=True)
+
+    result = mod.handler(
+        make_appsync_event("applyFeatureConfigPreset", {"input": _apply_input()}),
+        None,
+    )
+    assert result["configVersionName"] == "sample-health-insurance-review"
+
+
+def test_a_self_contradictory_preset_is_refused_on_the_sparse_path_too(
+    monkeypatch, configuration_table, load_lambda
+):
+    """No `Config#default` to merge with is not a reason to skip the check.
+
+    With the default unreadable, `_merge_over_default` returns None and the preset is
+    written raw by `_write_sparse`. A preset that sets `use_bda: true` AND registers
+    an `onError: fail` hook at `postOcr` is determinable from the preset alone — no
+    host default needed — so losing that case to the fallback would leave the docs
+    claiming a check this path does not make.
+    """
+    mod = _preload(monkeypatch, load_lambda)
+    # No Config#default row is seeded, so the merge path is unavailable.
+    preset = {
+        "use_bda": True,
+        "ocr": {
+            "postHook": [
+                {
+                    "featureId": "pii-redactor",
+                    "arn": _HOOK_ARN,
+                    "onError": "fail",
+                    "enabled": True,
+                }
+            ]
+        },
+    }
+
+    with pytest.raises(ValueError, match="postOcr"):
+        mod.handler(
+            make_appsync_event(
+                "applyFeatureConfigPreset",
+                {"input": _apply_input(config=json.dumps(preset))},
+            ),
+            None,
+        )
+    assert _get_row("sample-health-insurance-review") is None
+
+
+def test_a_sparse_preset_without_a_mode_is_still_installable(
+    monkeypatch, configuration_table, load_lambda
+):
+    """The ordinary sparse install: no `use_bda` in the preset and no default to
+    read means no basis to judge reachability, and the install proceeds."""
+    mod = _preload(monkeypatch, load_lambda)
+    result = mod.handler(
+        make_appsync_event("applyFeatureConfigPreset", {"input": _apply_input()}),
+        None,
+    )
+    assert result["configVersionName"] == "sample-health-insurance-review"
+
+
+def test_a_preset_registering_at_preprocessing_installs_in_bda_mode(
+    monkeypatch, configuration_table, load_lambda
+):
+    """The PII Anonymizer's shape: one flat `preprocessing` hook with
+    `onError: fail`, which runs ahead of the routing Choice in both modes."""
+    mod = _preload(monkeypatch, load_lambda)
+    _seed_bda_default()
+    preset = {
+        "preprocessing": {
+            "enabled": True,
+            "featureId": "pii-anonymizer",
+            "arn": _HOOK_ARN,
+            "onError": "fail",
+            "args": [{"key": "mode", "value": "redactcopy_and_stop"}],
+        }
+    }
+
+    result = mod.handler(
+        make_appsync_event(
+            "applyFeatureConfigPreset",
+            {
+                "input": _apply_input(
+                    featureId="pii-anonymizer", config=json.dumps(preset)
+                )
+            },
+        ),
+        None,
+    )
+    assert result["configVersionName"] == "pii-anonymizer"

@@ -394,7 +394,7 @@ All datasets share these deployment characteristics:
 
 ### GraphQL Schema
 - **Location**: `src/api/schema.graphql`
-- **Operations**: `getTestSets`, `addTestSet`, `addTestSetFromUpload`, `createEmptyTestSet`, `addDocumentsToTestSet`, `addDocumentsToTestSetFromUpload`, `removeDocumentsFromTestSet`, `deleteTestSets`, `getTestRuns`, `startTestRun`, `abortTestRuns`, `compareTestRuns`
+- **Operations**: `getTestSets`, `addTestSet`, `addTestSetFromUpload`, `createEmptyTestSet`, `addDocumentsToTestSet`, `addDocumentsToTestSetByKey`, `addDocumentsToTestSetFromUpload`, `removeDocumentsFromTestSet`, `deleteTestSets`, `getTestRuns`, `startTestRun`, `abortTestRuns`, `compareTestRuns`
 
 ### Frontend Components
 
@@ -637,8 +637,9 @@ as it exists in the bucket; everything after it is matched regardless of case.
 directly into the TestSetBucket under `<set-name>/input/…` are auto-detected.
 
 Once a set exists, select it and use **Actions** to browse its documents, annotate
-its ground truth, add more documents, publish a version, edit its details, or
-delete it.
+its ground truth, add more documents, edit its details, or delete it. Opening the
+set — by clicking its name, or **Actions** → **Browse documents** — is where you
+generate draft labels, annotate, prune documents and publish a version.
 
 ### Browsing Test Set Documents and Ground Truth
 
@@ -651,6 +652,11 @@ browser as rows scroll into view (for PDFs only the byte ranges needed for
 page 1 are fetched, so large packets stay cheap). Each document name links
 to a per-document detail page (`/test-studio/sets/<id>/doc/<file>`) —
 mirroring the app's Document List → Document Details structure.
+
+This page is where a set is worked on end to end: **Publish version** at the top
+acts on the set as a whole, while **Add documents**, **Generate draft labels**,
+**Annotate**, **Clear draft labels** and **Remove** sit above the document list and
+act on its documents. See [Publishing a version](#publishing-a-version).
 
 The document detail page offers two views:
 
@@ -682,16 +688,18 @@ You can edit a test set's description and document classification type after cre
 
 You can incrementally add documents to a COMPLETED test set — useful for building up test sets over time as new documents are processed and human-reviewed, or for growing a set you started empty.
 
-The same **Add documents** menu is available in two places: on the Test Sets table (select one COMPLETED set, then **Actions → Add documents**) and on the set's own page (open the set, then **Add documents** above its document list). It offers three sources:
+The same **Add documents** menu is available in two places: on the Test Sets table (select one COMPLETED set, then **Actions → Add documents**) and on the set's own page (open the set, then **Add documents** above its document list). It offers these sources; **Generate synthetic documents** appears only on the set's own page:
 
 - **From files in a bucket** (Admin only): Select a bucket, enter a file pattern, and optionally filter by modification time. Matching a pattern searches the whole bucket, so this source is not offered to Authors
 - **From a zip upload**: Upload a zip file containing new documents and, optionally, their baselines. A zip with only `input/` adds unlabeled documents; a set that was fully labeled then shows as unlabeled until those documents are draft-labeled or reviewed
+- **From processed documents**: Pick documents that have finished processing from a list of completed Production documents, newest first, with their configuration profile, a filter, and **Load older documents** for earlier ones. Each is copied into the set with any ground truth already saved for it in the evaluation baseline bucket. A document with **no** ground truth is added **unlabeled** rather than skipped, and the dialog names those documents before you confirm. If the set is labeled or draft-labeled, the dialog instead warns that one unlabeled document is enough to make the whole set read as `unlabeled` until you run **Generate draft labels**; its existing labels are kept. A document already in the set is skipped rather than copied again, so labels reviewed in the set are never overwritten. Available to Admins and Authors. Every selected document is checked on the server before anything is copied: it must have finished processing under a configuration profile the caller may access, so a user scoped to certain profiles cannot add documents outside them. If any selected document fails that check, the whole request is refused with one message that does not say which document or why.
 - **Generate synthetic documents**: Opens the generator already pointed at this set (requires the synthetic data generator extension)
+
 
 On the table, the set shows an "Updating..." status while files are being added and the file count updates when it completes. On the set's page, a notice reports that documents are arriving and the list refreshes when they land; for generation it follows the job and refreshes when the job completes.
 
 **Key behaviors:**
-- **Automatic baseline filtering** (Input Bucket): Files without matching baseline data in the evaluation bucket are automatically excluded rather than failing. A result message reports the counts (e.g., "Added 8 of 12 files (4 excluded - no baseline data)").
+- **Automatic baseline filtering** (Input Bucket pattern import only): Files without matching baseline data in the evaluation bucket are automatically excluded rather than failing. Documents added **From processed documents** are never excluded for this reason; they arrive unlabeled instead. A result message reports the counts (e.g., "Added 8 of 12 files (4 excluded - no baseline data)").
 - **Idempotent**: Adding a document that already exists overwrites it. File counts are always recounted from S3 for accuracy.
 - **Prepopulated file pattern**: The file pattern field is pre-filled with the pattern used to create the test set, so you can reuse or adjust it.
 - **Time filter**: Use the "Modified after" filter — choose a preset (Last 1 hour, 4 hours, 24 hours, 7 days, 30 days) or select "Custom date/time" with a date picker to specify an exact cutoff. This makes it easy to pick up recently reviewed documents without crafting complex patterns.
@@ -770,10 +778,11 @@ Each test set records where its documents came from, shown as a **Source** colum
 ## Versioning test sets
 
 A test set is a **versioned benchmark object**, not just a folder of files. It
-has one mutable working draft plus zero or more immutable published versions —
-the same model as a version-control system: the draft is the working tree,
-publishing is a commit, and the *active reference* is the tag that scoring
-follows.
+has one mutable working draft plus zero or more published versions — the same
+model as a version-control system: the draft is the working tree, publishing is
+a commit, and the *active reference* is a tag naming one of those commits. Which
+version a test run is scored against is chosen per run, not taken from the tag —
+see the note under [Publishing a version](#publishing-a-version).
 
 ### Publishing a version
 
@@ -783,15 +792,56 @@ follows.
 > different things. See the
 > [terminology table](configuration-profiles.md#terminology-which-word-means-what).
 
-Select a COMPLETED test set and click **Publish version**. This freezes the
-current document and label state into a numbered version (`v1`, `v2`, …) and, by
-default, marks it the **active reference** — the version that test runs record
-themselves as having scored against. Publishing does not require every document
-to be reviewed; unreviewed fields keep their machine labels and remain flagged
-as such, which supports time-boxed "first pass" golden sets.
+Open the test set and click **Publish version** at the top of its page — beside the
+label-generation and annotation controls, since publishing is what completes the pass
+those two begin. The dialog names the version number it will create and how many
+documents it covers, and takes an optional **Label** and **Notes** that appear
+wherever versions are listed.
 
-The **Version** column shows the active reference, and notes when the latest
-published version is ahead of it.
+Publishing records the current document and label state as a numbered version
+(`v1`, `v2`, …) and copies the set's labels to `{testSetId}/versions/{n}/baseline/`, so
+the number names a fixed set of bytes that later annotation and later draft-labelling runs
+cannot change. By default it also marks the version the **active reference** — the version
+the **Test Sets** table reports as that set's reference point. Clear **Make this the
+active reference** to publish without moving that pointer. Publishing does not require
+every document to be reviewed; unreviewed fields keep their machine labels and remain
+flagged as such, which supports time-boxed "first pass" golden sets.
+
+The copy is what makes publishing take a moment on a large set, and it has a ceiling of
+3000 baseline objects — what fits the 20-second budget the API's request dispatcher allows a
+single resolver call, which is deliberately shorter than the gateway's own timeout so that a
+slow call comes back as a labelled error rather than a bare one. A set above that is
+**refused**, with that as the reason, rather than recorded as a version whose content was
+never captured. Publishing such a set needs an asynchronous snapshot, which is not available
+yet.
+
+Retrying a publish that reported an error is safe, and the dialog stays open holding what you
+entered so that retrying is the obvious thing to do. The copy can outlast that budget, so a
+failure message does not always mean nothing happened: the retry either returns the version
+the first attempt created, or tells you that attempt is still running and to wait for it —
+those two outcomes are what it does instead of publishing again. Closing the dialog ends the
+attempt, so publishing afterwards starts a new one.
+
+⚠️ **A version published before 0.6.10 has no such copy.** Its number refers to whatever
+the set's labels were when annotation was next started on it, which is not necessarily the
+state that was published, and the original state cannot be recovered. Versions published
+from 0.6.10 onward report how many objects they froze; earlier ones report nothing, which
+is how you tell them apart.
+
+⚠️ **The active reference does not decide what a test run is scored against.** A run
+is scored against whichever version you pick in the runner, and that control defaults
+to **Current labels** — the set as it stands, including annotation in progress —
+rather than to the last published version, so that the ordinary review-then-rerun loop
+scores the corrections just made. Pin a run to a published version explicitly if that
+is what you want.
+
+The button is available to Admins and Authors, the two groups
+`publishTestSetVersion` is restricted to. It is disabled, with the reason on hover,
+while a draft-labelling run is still writing labels, while the set is still being
+written to, and when it has no documents.
+
+On the **Test Sets** table the **Version** column shows each set's active reference,
+and notes when the latest published version is ahead of it.
 
 Concurrency: version numbers are allocated atomically, so two people publishing
 at the same moment get distinct versions rather than one silently overwriting
@@ -814,7 +864,19 @@ revision, and for the same reason: two runs are comparable only when both name w
 they measured against, so a metric delta can be attributed to the configuration or to
 the ground truth rather than left ambiguous.
 
-> **Storage.** Every version transition copies the set's whole baseline tree under
+A version with no stored labels has nothing to stage, so a run pinned to it falls back to
+the set's **current** labels while still recording the version number it was asked for. Two
+kinds of version are in that state: one published before 0.6.10 that nobody has annotated
+since, and one published from a set that had no labels yet. The version picker marks both,
+so the choice is visible before the run rather than only in the file copier's log
+afterwards.
+
+Note that a version published before 0.6.10 on a set that *has* been annotated since does
+have stored labels — they were captured when annotation started — so a run pinned to it
+scores those. They are not necessarily the labels the version was published with, which is
+the caveat above.
+
+> **Storage.** Every publish copies the set's whole baseline tree under
 > `versions/{n}/baseline/`, and nothing prunes old versions; deleting the test set
 > removes them all. For a 2000-document set that is a full copy of its labels per
 > version — cheap in absolute terms, but it grows with every publish.
@@ -1277,12 +1339,12 @@ Correcting ground truth changes what every previously-scored run was measured ag
 starting an annotation session is an explicit step: **Start annotating** opens a *version
 transition*, shown in the header as e.g. `v1 → v2`.
 
-Agreeing to it is what preserves the labels you are moving away from. The set's current
-baselines are copied to `{testSetId}/versions/{n}/baseline/`, so `v1` keeps meaning the
-bytes it meant when a run scored against it. A set that arrived with its own ground truth
-and was never published gets that state captured first as `v1` — without
-it, the labels a set was uploaded with are exactly the ones overwritten with no record of
-what they were.
+Agreeing to it is what names the version you are moving away from. The labels themselves
+were already copied to `{testSetId}/versions/{n}/baseline/` when that version was
+published, so `v1` keeps meaning the bytes it meant when a run scored against it, and
+starting a session does not disturb them. A set that arrived with its own ground truth and
+was never published gets that state published first as `v1` — without it, the labels a set
+was uploaded with are exactly the ones overwritten with no record of what they were.
 
 Until the transition is open the editor is read-only. You can read every document and its
 labels; you cannot change them. That ordering is the point: editing first and versioning

@@ -67,7 +67,7 @@ cd notebooks/examples/demo-lambda
 
 # Deploy using AWS SAM
 sam deploy --guided
-
+```
 
 ### Step 2: Get the Lambda ARN
 

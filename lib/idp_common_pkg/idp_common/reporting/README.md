@@ -140,9 +140,22 @@ reporter = SaveReportingData(
 2. **Service Matching**: The pricing key is resolved by **exact** match on `service_api`, then on progressively shorter `/`-delimited suffixes of it (longest wins). This is the same rule the benchmark harness uses (`benchmarks/harness/lib.py::price_metering`), so a benchmark cost and a reported cost for the same metering map agree.
 3. **Unit Matching**: The unit name is matched **exactly** within the resolved entry
 4. **Cost Calculation**: `estimated_cost = value × unit_cost` for each metering record
-5. **Miss Handling**: Two different misses, two different outcomes:
-   - *Unit absent from an entry that exists* → `$0.00`. The unit is not chargeable for that service. `pricing.yaml` omits units that do not apply, and every Bedrock call meters `totalTokens` and `requests`, which Bedrock does not charge for.
+5. **Miss Handling**: Three misses, and only one of them is free:
+   - *Unit absent from an entry that exists, and **declared** non-chargeable for that service* → `$0.00`. The declaration is `idp_common.metering_units.NON_CHARGEABLE_METERING_UNITS`, one entry per `(service, unit)` pair, each naming the authority it comes from and what that source showed. **The population basis is that a unit appearing in no priced entry of AWS's published price list is treated as non-chargeable** — `totalTokens` and `requests` on Bedrock are there because no Bedrock usagetype names a total token count and every one of the 3,841 `On-demand Inference` products is priced in tokens, images or video and none per request. ⚠️ That step from *absent* to *free* is an accepted assumption, not something the price list states: a unit AWS charges for but publishes no dimension for would be classified as free here. The module's docstring carries the risk and the one partial bound measured against it.
+   - *Unit absent from an entry that exists, and **not** declared* → **unpriced**, same as a missing entry. `bedrock.client.numeric_usage` forwards every numeric member of a Converse `usage` block into metering by design, so a field AWS adds arrives here without anyone adding it — and reading its absence from `pricing.yaml` as "free" priced a new billable dimension at exactly `$0.00`, in the cheap direction, with nothing to query for (GitHub #1212). A metered count of `0` is still `$0.00` whatever the unit: cost is `count × rate`, so there is no spend for a zero to hide.
    - *No entry for `service_api` at all* → **unpriced**: `_get_unit_cost` returns `None` and both `unit_cost` and `estimated_cost` are written as SQL `NULL`, with a `WARNING` naming the service. `SUM()` ignores NULLs exactly as it would zeros, so totals are unchanged, but the gap is queryable (`WHERE unit_cost IS NULL`) instead of masquerading as something free.
+
+   **Declaring a unit free is a gate exemption** and is registered as one, in
+   `scripts/tests/gate_exemptions.json`. Two ratchets apply, both in
+   `tests/unit/reporting/test_non_chargeable_units.py`: every entry must currently
+   shield a unit that some metering writer really produces and some shipped pricing
+   entry really omits (a dead entry would pre-declare whatever next arrived under
+   that name), and the entry count is pinned. The four Bedrock entries are asserted
+   against a committed digest of the price list, re-derivable with
+   `python3 lib/idp_common_pkg/tests/unit/reporting/bedrock_price_list_digest.py --refresh`
+   and re-checkable live with `CHECK_AWS_PRICE_LIST=1`.
+
+   **The benchmark harness follows the same split**, which is what keeps the two cost figures comparable rather than only the matching rule (GitHub #1146). `price_metering` returns a `Priced` whose `.total` is unavailable unless every entry priced; a metering key with no entry is named in the row's `cost_unpriced` and the row reports no cost, rather than a total below truth. The harness cannot write a queryable `NULL` per metering record the way a database column can, so it withholds the row's scalar `cost` instead — same rule, different granularity.
 
 > **There is no fuzzy/substring matching.** It was removed in GitHub issue #926.
 > It had accepted a pricing key that was merely a substring of the requested
@@ -245,10 +258,16 @@ Retrieves the unit cost for a specific service API and unit combination.
 **Parameters**:
 - `service_api`: The service identifier (e.g., "bedrock/us.anthropic.claude-3-sonnet-20240229-v1:0")
 - `unit`: The unit of measurement (e.g., "inputTokens", "pages")
+- `value`: The metered count for this row. It decides the absent-unit case, and
+  it defaults to `1` rather than to `0` on purpose: a caller who forgets it gets
+  the strict answer (a NULL to investigate) rather than the lenient one (a zero
+  nobody sees).
 
-**Returns**: Unit cost in USD; `0.0` if the entry exists but does not list that
-unit (not chargeable); `None` if there is no entry for `service_api` at all
-(**unpriced** — the caller records NULL). Never returns a related model's price.
+**Returns**: Unit cost in USD; `0.0` if the entry lists the unit, or omits one
+that is declared non-chargeable for that service or metered as zero; `None` if
+there is no entry for `service_api` at all, **or** if the entry omits a unit that
+is neither (**unpriced** — the caller records NULL). Never returns a related
+model's price.
 
 **Example**:
 ```python
@@ -373,7 +392,7 @@ than raw metering:
 - `metering_docs_daily` — daily doc/pages rollup, day × config_version (`n_docs`, `sum_pages`), where `n_docs` is a doc-hours count (a doc processed across two hours counts twice)
 - `control_plane_hourly` — per-Lambda cost attribution for control-plane infra
 
-See [`docs/reporting-sql-layer.md`](../../../../../docs/reporting-sql-layer.md)
+See [`docs/reporting-sql-layer.md`](../../../../docs/reporting-sql-layer.md)
 for the tier picker (`<2h → raw`, `2-24h → hourly`, `>24h → daily`),
 the tagging model, and the migration path for the new `hour` partition
 key.

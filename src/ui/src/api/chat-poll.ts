@@ -31,6 +31,7 @@
 //
 
 import { getChatMessages } from '../graphql/generated';
+import { isAuthorizationError } from '../hooks/utils/graphql-error';
 
 export interface PolledChatMessage {
   role: string;
@@ -54,18 +55,19 @@ const ASSISTANT_ROLE = 'assistant';
 /** Stable identity of an assistant message for baseline-diffing. */
 const assistantKey = (m: PolledChatMessage): string => `${m.timestamp}|${m.content?.length ?? 0}`;
 
-/** True for errors that must NOT be retried (auth/authorization failures). */
-const isAuthError = (err: unknown): boolean => {
-  const e = err as { errors?: { errorType?: string; message?: string }[]; message?: string };
-  const parts: string[] = [];
-  if (e?.message) parts.push(e.message);
-  for (const ge of e?.errors ?? []) {
-    if (ge?.errorType) parts.push(ge.errorType);
-    if (ge?.message) parts.push(ge.message);
-  }
-  const blob = parts.join(' ').toLowerCase();
-  return blob.includes('unauthorized') || blob.includes('forbidden') || blob.includes('access denied');
-};
+/**
+ * True for errors that must NOT be retried (auth/authorization failures).
+ *
+ * Delegates to the shared predicate rather than keeping a second copy. The copy this
+ * replaces matched `access denied` anywhere in the joined message blob, so a
+ * server-side S3 or KMS denial — which `get_file_contents_resolver` surfaces as
+ * `errorType: "InternalError"` with the text `Error accessing S3: Access Denied` —
+ * aborted the poll as an authorization failure. The shared predicate skips the
+ * substring arm whenever a non-authorization `errorType` is stated, so such a fault
+ * is now retried until the deadline like any other transient read error, which is
+ * what the loop below is for.
+ */
+const isAuthError = (err: unknown): boolean => isAuthorizationError(err);
 
 const sleep = (ms: number, signal?: AbortSignal): Promise<void> =>
   new Promise((resolve, reject) => {

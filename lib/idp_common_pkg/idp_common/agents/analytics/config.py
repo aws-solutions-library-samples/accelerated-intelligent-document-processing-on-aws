@@ -8,7 +8,11 @@ Configuration management for analytics agents.
 import logging
 from typing import Any, Dict
 
-from ..common.config import configure_logging, get_environment_config
+from ..common.config import (
+    DEFAULT_AGENT_MODEL_ID,
+    configure_logging,
+    get_environment_config,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -83,7 +87,7 @@ def get_analytics_model_id() -> str:
         logger.warning(f"Failed to load model ID from configuration: {e}")
 
         # Final fallback to default
-        default_model_id = "us.anthropic.claude-3-7-sonnet-20250219-v1:0"
+        default_model_id = DEFAULT_AGENT_MODEL_ID
         logger.info(f"Using default analytics model ID: {default_model_id}")
         return default_model_id
 

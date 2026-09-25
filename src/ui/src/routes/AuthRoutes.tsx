@@ -20,6 +20,7 @@ import AgentChatRoutes from './AgentChatRoutes';
 import QuickStartWidget from '../components/agent-chat/QuickStartWidget';
 import FeaturesRoutes from './FeaturesRoutes';
 import WelcomePage from '../pages/WelcomePage';
+import { NoRoleAssigned, SessionError } from './SessionStates';
 
 import {
   DOCUMENTS_PATH,
@@ -44,7 +45,7 @@ interface AuthRoutesProps {
 
 const AuthRoutes = ({ redirectParam }: AuthRoutesProps): React.JSX.Element => {
   const { currentCredentials } = useAppContext();
-  const { isAnnotatorOnly } = useUserRole();
+  const { isAnnotatorOnly, hasNoRole, sessionError, retrySession } = useUserRole();
   const settings = useParameterStore(currentCredentials);
   const { signOut } = useAuthenticator();
 
@@ -91,6 +92,36 @@ const AuthRoutes = ({ redirectParam }: AuthRoutesProps): React.JSX.Element => {
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: '50vh' }}>
           <Spinner size="large" />
         </div>
+      </SettingsContext.Provider>
+    );
+  }
+
+  // The caller's groups could not be read at all, which is a different thing from
+  // their having none — and a much more common one: `api/auth-session.ts` records
+  // a live `400 NotAuthorizedException` on a valid token, shared across every
+  // consumer of the one in-flight promise. `SessionError` says what that needs
+  // ("usually temporary"). It was previously unreachable from here, because
+  // `Routes` only renders it when credentials are ABSENT and they exist by the
+  // time this component mounts, so the failure fell through to the no-role screen
+  // and sent an entitled user to an administrator with nothing to fix.
+  if (sessionError) {
+    return (
+      <SettingsContext.Provider value={settingsContextValue}>
+        <SessionError onRetry={retrySession} />
+      </SettingsContext.Provider>
+    );
+  }
+
+  // An account in no Cognito group is refused every document read by the API, so
+  // mounting the app would hand it the Viewer navigation (see the fall-through in
+  // navigation.tsx) and fail on each page in turn — which reads as a broken
+  // deployment rather than an account nobody has finished setting up. Say it once
+  // instead. `hasNoRole` requires a SUCCESSFUL session read and is false while one
+  // is in flight, so this cannot fire on a user whose groups have not arrived yet.
+  if (hasNoRole) {
+    return (
+      <SettingsContext.Provider value={settingsContextValue}>
+        <NoRoleAssigned onSignOut={signOut} />
       </SettingsContext.Provider>
     );
   }

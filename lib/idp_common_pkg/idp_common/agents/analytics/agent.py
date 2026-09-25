@@ -13,7 +13,10 @@ from typing import Any, Dict
 import boto3
 import strands
 
-from ..common.config import load_result_format_description
+from ..common.config import (
+    DEFAULT_AGENT_MODEL_ID,
+    load_result_format_description,
+)
 from ..common.cost_metrics import with_cost_hook
 from ..common.strands_bedrock_model import create_strands_bedrock_model
 from .analytics_logger import analytics_logger
@@ -378,7 +381,7 @@ def create_analytics_agent(
         model_id = get_analytics_model_id()
     except Exception as e:
         logger.warning(f"Failed to get analytics model ID, using default: {e}")
-        model_id = "us.anthropic.claude-3-7-sonnet-20250219-v1:0"
+        model_id = DEFAULT_AGENT_MODEL_ID
 
     bedrock_model = create_strands_bedrock_model(
         model_id=model_id, boto_session=session

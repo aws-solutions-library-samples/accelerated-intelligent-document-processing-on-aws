@@ -196,7 +196,15 @@ Examples:
             if result.returncode != 0:
                 sys.exit(1)
 
-            # Transform template (fallback — dynamic import to avoid TID251 lint rule)
+            # Transform template. Imported dynamically, and from the private
+            # module rather than through the public
+            # IDPClient().publish.transform_template_headless() wrapper, because
+            # this branch runs exactly when `from idp_sdk import IDPClient`
+            # raised ImportError: the package __init__ is what failed, while the
+            # transformer's own module may still import. Going through the public
+            # wrapper here would re-raise the error this fallback exists to
+            # survive. It also sidesteps the TID251 banned-api rule, which is a
+            # side effect of that, not the reason.
             import importlib
 
             _mod = importlib.import_module("idp_sdk._core.template_transform")

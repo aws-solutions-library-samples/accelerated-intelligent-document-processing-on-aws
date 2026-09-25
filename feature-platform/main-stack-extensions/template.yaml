@@ -40,10 +40,9 @@ Parameters:
       stacks that need to read document state (e.g. docs-by-status) grant
       themselves `dynamodb:Scan`/`Query` on this table name. Re-exported as
       `<MainStackName>-TrackingTableName` for Fn::ImportValue usage by
-      feature stacks. The main stack's `TrackingTableName` export is
-      conditionally suppressed when EnableFeaturePlatform=true so this
-      nested stack is the sole producer (avoids "Export already exported
-      by stack" errors during stack updates).
+      feature stacks. This nested stack is its sole producer, because the main
+      stack keeps a plain `TrackingTableName` Output with no `Export` and so can
+      never collide with it.
 
   CustomerManagedEncryptionKeyArn:
     Type: String
@@ -305,6 +304,18 @@ Parameters:
       all IAM roles. Required by some organizations with Service Control
       Policies (SCPs). Forwarded from the main stack's PermissionsBoundaryArn.
 
+  EnableXRayTracing:
+    Type: String
+    Default: 'true'
+    AllowedValues: ['true', 'false']
+    Description: >-
+      Enable X-Ray tracing for this stack's resolver and install-hook
+      Lambdas. Forwarded from the main stack's EnableXRayTracing, so one
+      setting covers the whole deployment. This is the only feature-platform
+      template the main stack's parameter can reach: the rest are installed
+      from the Extensions catalog as separate stacks with their own
+      parameters — see docs/monitoring.md.
+
 Conditions:
 
   HasConfigurationTable: !Not [!Equals [!Ref ConfigurationTableName, '']]
@@ -320,6 +331,15 @@ Conditions:
   HasCustomerManagedEncryptionKey: !Not [!Equals [!Ref CustomerManagedEncryptionKeyArn, '']]
   HasSellerBuckets: !Not [!Equals [!Join ['', !Ref SellerBucketObjectArns], '']]
   HasPermissionsBoundary: !Not [!Equals [!Ref PermissionsBoundaryArn, '']]
+  # Gates every Lambda's Tracing mode in this stack. Each function writes
+  # `Tracing: !If [EnableXRayTracingCondition, Active, PassThrough]` rather than
+  # a literal, so the main stack's EnableXRayTracing=false actually turns Lambda
+  # tracing off here. The mode is written per function and NOT in `Globals`,
+  # matching template.yaml and patterns/unified/template.yaml: no template in
+  # this repo uses an intrinsic inside `Globals`, and the per-resource form is
+  # the one `sam build` is known to accept. Enforced by
+  # scripts/tests/test_xray_tracing.py.
+  EnableXRayTracingCondition: !Equals [!Ref EnableXRayTracing, 'true']
 
 Globals:
 
@@ -327,7 +347,13 @@ Globals:
     Runtime: python3.12
     Timeout: 30
     MemorySize: 256
-    Tracing: Active
+    # Tracing is deliberately NOT global here — see EnableXRayTracingCondition.
+    # ⚠️ Consequence: a function added to this template inherits NO tracing mode,
+    # where it used to inherit `Active` from this block. Every function must write
+    # `Tracing: !If [EnableXRayTracingCondition, Active, PassThrough]` itself, and
+    # scripts/tests/test_xray_tracing.py's
+    # test_every_function_here_declares_a_tracing_mode fails if one does not —
+    # rule 1 alone would not, because it only judges a mode that is present.
     # Architectures is deliberately NOT global here. SAM COMBINES a Globals list
     # with a function's own rather than overriding it, so a function that needs a
     # different architecture cannot override this — `sam build` fails with
@@ -373,6 +399,26 @@ Resources:
             Action: sts:AssumeRole
       ManagedPolicyArns:
         - !Sub "arn:${AWS::Partition}:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
+        # X-Ray write. Every function in this template shares this explicit
+        # role, and SAM attaches an X-Ray policy only to roles it GENERATES — so
+        # before this line every one of them declared `Tracing: Active` and
+        # could not write a segment: tracing was on, cost nothing, and produced
+        # nothing. Attached unconditionally, matching what SAM does for a
+        # generated role and what PipelineHooksDispatcherFunctionRole in
+        # patterns/unified/template.yaml does: the grant is write-only and
+        # useless without a segment to write, so a conditional attachment would
+        # give this role a different shape for no benefit. Enforced by
+        # scripts/tests/test_xray_tracing.py.
+        #
+        # The policy NAME is the one SAM uses in the `aws` partition. SAM's
+        # get_xray_managed_policy_name() switches to AWSXRayDaemonWriteAccess in
+        # aws-cn and aws-us-gov; AWSXrayWriteOnlyAccess exists in all four
+        # partitions per SAM's own managed-policy table, so `${AWS::Partition}`
+        # resolves everywhere, but this role and a SAM-generated one therefore
+        # carry DIFFERENT policies outside commercial. Both grant
+        # xray:PutTraceSegments, so nothing behaves differently — worth
+        # confirming on the --govcloud transform-deploy tier rather than assuming.
+        - !Sub "arn:${AWS::Partition}:iam::aws:policy/AWSXrayWriteOnlyAccess"
       Policies:
         - PolicyName: InstalledFeaturesTableAccess
           PolicyDocument:
@@ -523,6 +569,7 @@ Resources:
       CodeUri: ./lambdas/list_installed_features/
       Handler: index.handler
       Role: !GetAtt FeaturePlatformLambdaRole.Arn
+      Tracing: !If [EnableXRayTracingCondition, Active, PassThrough]
       Environment:
         Variables:
           INSTALLED_FEATURES_TABLE: !Ref InstalledFeaturesTable
@@ -551,6 +598,7 @@ Resources:
       CodeUri: ./lambdas/list_catalog_features/
       Handler: index.handler
       Role: !GetAtt FeaturePlatformLambdaRole.Arn
+      Tracing: !If [EnableXRayTracingCondition, Active, PassThrough]
       Environment:
         Variables:
           CONFIGURATION_BUCKET: !Ref ConfigurationBucketName
@@ -573,6 +621,7 @@ Resources:
       CodeUri: ./lambdas/register_feature/
       Handler: index.handler
       Role: !GetAtt FeaturePlatformLambdaRole.Arn
+      Tracing: !If [EnableXRayTracingCondition, Active, PassThrough]
       Environment:
         Variables:
           INSTALLED_FEATURES_TABLE: !Ref InstalledFeaturesTable
@@ -585,6 +634,7 @@ Resources:
       CodeUri: ./lambdas/get_feature_launch_url/
       Handler: index.handler
       Role: !GetAtt FeaturePlatformLambdaRole.Arn
+      Tracing: !If [EnableXRayTracingCondition, Active, PassThrough]
       Environment:
         Variables:
           INSTALLED_FEATURES_TABLE: !Ref InstalledFeaturesTable
@@ -617,6 +667,7 @@ Resources:
       CodeUri: ./lambdas/check_feature_entitlement/
       Handler: index.handler
       Role: !GetAtt FeaturePlatformLambdaRole.Arn
+      Tracing: !If [EnableXRayTracingCondition, Active, PassThrough]
       Environment:
         Variables:
           # productCode is read from the feature's InstalledFeatures row (baked
@@ -678,6 +729,7 @@ Resources:
       CodeUri: ./lambdas/subscribe_feature/
       Handler: index.handler
       Role: !GetAtt FeaturePlatformLambdaRole.Arn
+      Tracing: !If [EnableXRayTracingCondition, Active, PassThrough]
       Environment:
         Variables:
           SIMULATOR_ADMIN_ENDPOINT: !Ref SimulatorEntitlementEndpoint
@@ -711,6 +763,7 @@ Resources:
       CodeUri: ./lambdas/unsubscribe_feature/
       Handler: index.handler
       Role: !GetAtt FeaturePlatformLambdaRole.Arn
+      Tracing: !If [EnableXRayTracingCondition, Active, PassThrough]
       Environment:
         Variables:
           SIMULATOR_ADMIN_ENDPOINT: !Ref SimulatorEntitlementEndpoint
@@ -746,6 +799,7 @@ Resources:
       CodeUri: ./lambdas/register_feature_hooks/
       Handler: index.handler
       Role: !GetAtt FeaturePlatformLambdaRole.Arn
+      Tracing: !If [EnableXRayTracingCondition, Active, PassThrough]
       Environment:
         Variables:
           CONFIGURATION_TABLE: !Ref ConfigurationTableName
@@ -764,6 +818,7 @@ Resources:
       CodeUri: ./lambdas/apply_feature_config_preset/
       Handler: index.handler
       Role: !GetAtt FeaturePlatformLambdaRole.Arn
+      Tracing: !If [EnableXRayTracingCondition, Active, PassThrough]
       # Importing idp_common (pydantic + the config models), reading the host
       # default, merging the preset over it and writing a revision body to S3 does
       # not fit the 3s default. Install-time only, so the headroom is free.
@@ -956,12 +1011,18 @@ Outputs:
       Re-export of main stack's TrackingTable name. Feature stacks that
       need document state (e.g. docs-by-status) read this via
       Fn::ImportValue '<MainStackName>-TrackingTableName' and grant
-      themselves scoped dynamodb:Scan/Query on the resulting ARN. The
-      main stack's template.yaml also has a TrackingTableName Output
-      with the same export name, but it is conditionally suppressed
-      whenever EnableFeaturePlatform=true so that this nested stack is
-      the sole producer of the export (avoids the "Export already
-      exported by stack" error during stack updates).
+      themselves scoped dynamodb:Scan/Query on the resulting ARN.
+      This stack is the sole producer of the export, unconditionally.
+      The main stack's template.yaml keeps a TrackingTableName Output
+      carrying the same value but declares no Export for it, because an
+      export name cannot change producing stack in a single update:
+      CloudFormation writes a stack's exports at the END of its update
+      while a nested stack claims its own during the resource phase, so
+      a second declaration there would collide with this one on the
+      transition to EnableFeaturePlatform=true. Do not add one — and do
+      not move this export to the parent either: feature stacks import
+      it, and CloudFormation will not let this stack withdraw a name
+      that is in use. See scripts/tests/test_cfn_export_ownership.py.
     Value: !Ref TrackingTableName
     Export:
       Name: !Sub '${MainStackName}-TrackingTableName'

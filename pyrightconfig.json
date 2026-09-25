@@ -1,13 +1,19 @@
 {
   "include": [
-    "lib/idp_common_pkg/idp_common",
-    "lib/idp_cli_pkg/idp_cli",
-    "lib/idp_sdk/idp_sdk",
-    "lib/idp_feature_sdk/idp_feature_sdk",
-    "lib/idp_mcp_connector_pkg/idp_mcp_connector",
-    "src/lambda"
+    "benchmarks",
+    "config_library",
+    "feature-platform",
+    "lib",
+    "nested",
+    "notebooks",
+    "patterns",
+    "publish.py",
+    "samples",
+    "scripts",
+    "security",
+    "src"
   ],
-  
+
   "exclude": [
     "**/node_modules",
     "**/__pycache__",
@@ -16,16 +22,25 @@
     "**/build",
     "**/dist",
     "**/cdk.out",
-    "notebooks",
-    "patterns/*/src",
-    "options/*/src"
+    "notebooks/**/*.ipynb",
+    "**/*-converted.py",
+    "feature-platform/idp-data-generator/idp_common_pkg/**",
+    "feature-platform/idp-data-generator/bootstrap-processor/idp_common_pkg/**"
   ],
-  
+
+  "extraPaths": [
+    "lib/idp_cli_pkg",
+    "lib/idp_common_pkg",
+    "lib/idp_feature_sdk",
+    "lib/idp_mcp_connector_pkg",
+    "lib/idp_sdk"
+  ],
+
   "pythonVersion": "3.12",
   "pythonPlatform": "Linux",
-  
+
   "typeCheckingMode": "basic",
-  
+
   "reportMissingImports": "none",
   "reportMissingTypeStubs": "none",
   "reportImportCycles": "warning",
@@ -33,7 +48,7 @@
   "reportUnusedVariable": "none",
   "reportDuplicateImport": "warning",
   "reportUndefinedVariable": "error",
-  
+
   "reportGeneralTypeIssues": "none",
   "reportOptionalCall": "none",
   "reportOptionalMemberAccess": "none",
@@ -44,9 +59,15 @@
   "reportUnknownVariableType": "none",
   "reportArgumentType": "none",
   "reportAttributeAccessIssue": "none",
-  "reportReturnType": "warning",
-  "reportCallIssue": "warning",
-  
-  "venvPath": ".",
-  "venv": ".venv"
+
+  "reportReturnType": "error",
+  "reportCallIssue": "error",
+
+  "executionEnvironments": [
+    {
+      "root": "feature-platform/pii-anonymizer/hook/vendor",
+      "reportReturnType": "warning",
+      "reportCallIssue": "warning"
+    }
+  ]
 }

@@ -288,7 +288,7 @@ def test_failed_validation_raises_a_warning_naming_the_fields():
 
 
 def test_reject_is_an_error_not_a_warning():
-    """`reject` already failed the section, so the issue must not read as advisory."""
+    """`reject` is the strongest action, so the issue must not read as advisory."""
     svc = _svc(agentic=False)
     issues = svc._build_extraction_issues(
         extracted_fields=_clean_fields(),
@@ -298,6 +298,32 @@ def test_reject_is_an_error_not_a_warning():
     issue = next(i for i in issues if i.code == "extraction_validation_failed")
     assert issue.severity == "error"
     assert "FAILED" in issue.message
+
+
+def test_reject_says_what_it_does_rather_than_claiming_the_section_failed():
+    """#1048: `reject` records the result as unparsed. It fails nothing.
+
+    `parsing_succeeded=False` is read by `_generate_processing_report`'s status
+    line and the UI's Processing Report tab, and by nothing in the status path, so
+    the section and the document still complete. The message used to say "The
+    section is marked FAILED because Fail Action is 'reject'", which named an
+    outcome no code produces.
+    """
+    svc = _svc(agentic=False)
+    issues = svc._build_extraction_issues(
+        extracted_fields=_clean_fields(),
+        metadata=_validation_meta(fail_action="reject"),
+        section_id="2",
+    )
+    issue = next(i for i in issues if i.code == "extraction_validation_failed")
+    lowered = issue.message.lower()
+    assert "section is marked failed" not in lowered
+    assert "section as failed" not in lowered
+    # What it DOES say: the report reads FAILED, the values survive, status is
+    # untouched. All three are load-bearing for a reader deciding to set `reject`.
+    assert "processing report reads FAILED" in issue.message
+    assert "stored as extracted" in lowered
+    assert "status is unchanged" in lowered
 
 
 def test_unresolved_escalation_says_so():

@@ -637,6 +637,7 @@ export type FinetuningJob = {
 };
 
 export type FinetuningJobConnection = {
+  complete?: Maybe<Scalars['Boolean']['output']>;
   items?: Maybe<Array<Maybe<FinetuningJob>>>;
   nextToken?: Maybe<Scalars['String']['output']>;
 };
@@ -774,6 +775,7 @@ export type Mutation = {
   abortTestRuns: AbortWorkflowResponse;
   abortWorkflow: AbortWorkflowResponse;
   addDocumentsToTestSet?: Maybe<TestSet>;
+  addDocumentsToTestSetByKey?: Maybe<TestSet>;
   addDocumentsToTestSetFromUpload?: Maybe<TestSetUploadResponse>;
   addTestSet?: Maybe<TestSet>;
   addTestSetFromUpload?: Maybe<TestSetUploadResponse>;
@@ -918,6 +920,12 @@ export type MutationAddDocumentsToTestSetArgs = {
   fileCount: Scalars['Int']['input'];
   filePattern: Scalars['String']['input'];
   modifiedAfter?: InputMaybe<Scalars['String']['input']>;
+  testSetId: Scalars['String']['input'];
+};
+
+
+export type MutationAddDocumentsToTestSetByKeyArgs = {
+  objectKeys: Array<Scalars['String']['input']>;
   testSetId: Scalars['String']['input'];
 };
 
@@ -1465,6 +1473,14 @@ export type ProcessingIssue = {
 };
 
 export type PublishTestSetVersionInput = {
+  /**
+   * Makes a retry safe. Publishing copies the set's labels, and the dispatcher abandons the
+   * request at 20s while the resolver runs on — so a caller can be told the publish failed
+   * after it in fact succeeded. Publishing again would then create a second version and a
+   * second full copy. Send the same token on a retry and the version already recorded under it
+   * is returned instead. Omit it and every call publishes.
+   */
+  clientToken?: InputMaybe<Scalars['String']['input']>;
   label?: InputMaybe<Scalars['String']['input']>;
   notes?: InputMaybe<Scalars['String']['input']>;
   setAsActiveReference?: InputMaybe<Scalars['Boolean']['input']>;
@@ -2098,10 +2114,14 @@ export type TestSet = {
 /**
  * The version transition an annotation session commits to.
  *
- * `baseVersion` is the state being left, snapshotted to
- * `{testSetId}/versions/{baseVersion}/baseline/` so the number refers to bytes rather than
+ * `baseVersion` is the state being left. Publishing it copied its baselines to
+ * `{testSetId}/versions/{baseVersion}/baseline/`, so the number refers to bytes rather than
  * to whatever the labels happen to be later. `draftVersion` is what the session is working
  * toward, and what the queue link carries so a link identifies its transition.
+ *
+ * `snapshotObjectCount` is what *this call* copied: 0 whenever `baseVersion` was already
+ * frozen by its publish, non-zero when it published the arriving state itself or backfilled
+ * a version published before publishing copied anything.
  */
 export type TestSetAnnotationDraft = {
   alreadyOpen?: Maybe<Scalars['Boolean']['output']>;
@@ -2141,6 +2161,7 @@ export type TestSetDocumentsPage = {
   activeLabelJobId?: Maybe<Scalars['String']['output']>;
   documents: Array<TestSetDocument>;
   nextToken?: Maybe<Scalars['String']['output']>;
+  status?: Maybe<Scalars['String']['output']>;
   totalCount?: Maybe<Scalars['Int']['output']>;
 };
 
@@ -2197,8 +2218,29 @@ export type TestSetVersion = {
   createdAt?: Maybe<Scalars['AWSDateTime']['output']>;
   createdBy?: Maybe<Scalars['String']['output']>;
   fileCount?: Maybe<Scalars['Int']['output']>;
+  /**
+   * Whether this version has labels stored under `{testSetId}/versions/{version}/baseline/`.
+   *
+   * The only field that answers what a run pinned to this version scores against: the file
+   * copier stages that prefix when it is non-empty and falls back to the set's **current**
+   * labels when it is not. It is not derivable from `snapshotObjectCount` in either
+   * direction — a version published before publishing copied anything has no count and yet
+   * does have labels once annotation backfilled them, and a version published from a set with
+   * no labels yet has a count of `0` and no stored labels at all.
+   */
+  hasStoredLabels?: Maybe<Scalars['Boolean']['output']>;
   label?: Maybe<Scalars['String']['output']>;
   notes?: Maybe<Scalars['String']['output']>;
+  /**
+   * How many baseline objects publishing copied into `{testSetId}/versions/{version}/baseline/`.
+   *
+   * `null` means the version was published before publishing copied anything, so its content
+   * was captured — if at all — when annotation next opened a draft, which is not necessarily
+   * the state that was published. `0` means the set genuinely had no labels yet. This is
+   * provenance; for what a run pinned to the version will score against, read
+   * `hasStoredLabels`.
+   */
+  snapshotObjectCount?: Maybe<Scalars['Int']['output']>;
   testSetId: Scalars['String']['output'];
   version: Scalars['Int']['output'];
 };
@@ -2341,6 +2383,14 @@ export type AddDocumentsToTestSetMutationVariables = Exact<{
 
 
 export type AddDocumentsToTestSetMutation = { addDocumentsToTestSet?: { id: string, name: string, description?: string | null, filePattern?: string | null, fileCount?: number | null, status?: string | null, createdAt: string, error?: string | null, lastAddResult?: string | null } | null };
+
+export type AddDocumentsToTestSetByKeyMutationVariables = Exact<{
+  testSetId: Scalars['String']['input'];
+  objectKeys: Array<Scalars['String']['input']> | Scalars['String']['input'];
+}>;
+
+
+export type AddDocumentsToTestSetByKeyMutation = { addDocumentsToTestSetByKey?: { id: string, name: string, description?: string | null, filePattern?: string | null, fileCount?: number | null, status?: string | null, createdAt: string } | null };
 
 export type AddDocumentsToTestSetFromUploadMutationVariables = Exact<{
   input: TestSetDocumentsUploadInput;
@@ -3020,14 +3070,14 @@ export type GetTestSetDocumentsQueryVariables = Exact<{
 }>;
 
 
-export type GetTestSetDocumentsQuery = { getTestSetDocuments?: { nextToken?: string | null, totalCount?: number | null, activeLabelJobId?: string | null, documents: Array<{ objectKey: string, inputKey: string, size?: number | null, lastModified?: string | null, labelSource?: string | null, minConfidence?: number | null, confidenceThreshold?: number | null, alertCount?: number | null, fieldCount?: number | null, sections: Array<{ sectionId: string, baselineKey: string, documentClass?: string | null, pageIndices?: Array<number> | null }> }> } | null };
+export type GetTestSetDocumentsQuery = { getTestSetDocuments?: { nextToken?: string | null, totalCount?: number | null, activeLabelJobId?: string | null, status?: string | null, documents: Array<{ objectKey: string, inputKey: string, size?: number | null, lastModified?: string | null, labelSource?: string | null, minConfidence?: number | null, confidenceThreshold?: number | null, alertCount?: number | null, fieldCount?: number | null, sections: Array<{ sectionId: string, baselineKey: string, documentClass?: string | null, pageIndices?: Array<number> | null }> }> } | null };
 
 export type GetTestSetVersionsQueryVariables = Exact<{
   testSetId: Scalars['String']['input'];
 }>;
 
 
-export type GetTestSetVersionsQuery = { getTestSetVersions?: Array<{ testSetId: string, version: number, label?: string | null, notes?: string | null, fileCount?: number | null, createdAt?: string | null, createdBy?: string | null } | null> | null };
+export type GetTestSetVersionsQuery = { getTestSetVersions?: Array<{ testSetId: string, version: number, label?: string | null, notes?: string | null, fileCount?: number | null, snapshotObjectCount?: number | null, hasStoredLabels?: boolean | null, createdAt?: string | null, createdBy?: string | null } | null> | null };
 
 export type GetTestSetsQueryVariables = Exact<{ [key: string]: never; }>;
 

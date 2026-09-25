@@ -25,13 +25,10 @@ meaning so the committed baseline stays comparable:
   matched to the extraction by SEQ tag.
 """
 
-import sys
-
 import pytest
+from harness_import import harness_module
 
-sys.path.insert(0, "benchmarks/harness")
-
-analyze = pytest.importorskip("analyze")
+analyze = harness_module("analyze")
 
 
 # --------------------------------------------------------------------------- #
@@ -488,15 +485,15 @@ class TestSectionCountScoring:
         import types
 
         secs = [{"inference_result": {}}]
-        orig = analyze.lib.iter_section_results
-        analyze.lib.iter_section_results = lambda *a, **k: iter(secs)
+        orig = analyze.lib.read_sections
+        analyze.lib.read_sections = lambda *a, **k: analyze.lib.SectionRead(secs)
         try:
             out = analyze.score_synthetic("b", "p/", {"fields": {}, "seq_ids": []})
             assert out["sections_correct"] is None
             assert out["sections_expected"] is None
             assert out["sections"] == 1
         finally:
-            analyze.lib.iter_section_results = orig
+            analyze.lib.read_sections = orig
         assert isinstance(types, types.ModuleType)
 
     @pytest.mark.parametrize(
@@ -507,13 +504,13 @@ class TestSectionCountScoring:
         self, expected, actual, want
     ):
         secs = [{"inference_result": {}} for _ in range(actual)]
-        orig = analyze.lib.iter_section_results
-        analyze.lib.iter_section_results = lambda *a, **k: iter(secs)
+        orig = analyze.lib.read_sections
+        analyze.lib.read_sections = lambda *a, **k: analyze.lib.SectionRead(secs)
         try:
             out = analyze.score_synthetic(
                 "b", "p/", {"fields": {}, "seq_ids": [], "expected_sections": expected}
             )
         finally:
-            analyze.lib.iter_section_results = orig
+            analyze.lib.read_sections = orig
         assert out["sections_correct"] == want
         assert out["sections"] == actual

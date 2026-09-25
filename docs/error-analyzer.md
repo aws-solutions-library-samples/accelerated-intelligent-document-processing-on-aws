@@ -298,8 +298,8 @@ agents:
         type: string
         enum: [
           "anthropic.claude-3-sonnet-20240229-v1:0",
-          "us.anthropic.claude-3-5-sonnet-20241022-v2:0",
-          "us.anthropic.claude-3-7-sonnet-20250219-v1:0",
+          "us.anthropic.claude-sonnet-4-5-20250929-v1:0",
+          "us.anthropic.claude-sonnet-4-5-20250929-v1:0",
           "us.anthropic.claude-sonnet-4-20250514-v1:0"
         ]
         default: "us.anthropic.claude-sonnet-4-20250514-v1:0"
@@ -329,8 +329,8 @@ agents:
 - More accurate root cause identification
 
 **Alternative Options**:
-- `us.anthropic.claude-3-7-sonnet-20250219-v1:0`: Good balance of cost and capability
-- `us.anthropic.claude-3-5-sonnet-20241022-v2:0`: Cost-effective for simple errors
+- `us.anthropic.claude-sonnet-4-5-20250929-v1:0`: Good balance of cost and capability
+- `us.anthropic.claude-sonnet-4-5-20250929-v1:0`: Cost-effective for simple errors
 - `anthropic.claude-3-sonnet-20240229-v1:0`: Legacy option
 
 #### system_prompt
@@ -802,7 +802,7 @@ Choose model based on error complexity:
 
 ```yaml
 # Simple validation errors, frequent analysis
-model_id: us.anthropic.claude-3-5-sonnet-20241022-v2:0
+model_id: us.anthropic.claude-sonnet-4-5-20250929-v1:0
 
 # Complex multi-component failures, critical analysis
 model_id: us.anthropic.claude-sonnet-4-20250514-v1:0  # Recommended

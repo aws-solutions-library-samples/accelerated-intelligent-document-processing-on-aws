@@ -32,9 +32,10 @@ from typing import Any, Dict, Optional
 import boto3
 from botocore.config import Config
 from botocore.exceptions import BotoCoreError, ClientError
+from log_sanitizer import sanitize_event_for_logging
 
 logger = logging.getLogger()
-logger.setLevel(os.environ.get("LOG_LEVEL", "INFO"))
+logger.setLevel(os.environ.get("LOG_LEVEL", "WARN"))
 
 _SIMULATOR_ADMIN_ENDPOINT = os.environ.get("SIMULATOR_ADMIN_ENDPOINT", "").rstrip("/")
 _DEFAULT_CUSTOMER_IDENTIFIER = os.environ.get("DEFAULT_CUSTOMER_IDENTIFIER", "")
@@ -207,7 +208,7 @@ def _iso(value: Any) -> Optional[str]:
 
 
 def handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
-    logger.info("unsubscribeFeature event: %s", event)
+    logger.info("unsubscribeFeature event: %s", sanitize_event_for_logging(event))
     _assert_admin(event)
 
     args = event.get("arguments", {}) or {}

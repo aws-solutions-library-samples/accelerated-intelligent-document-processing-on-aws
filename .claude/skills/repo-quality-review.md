@@ -126,7 +126,7 @@ ASSESSED with the reason**, never dropped.
 | 2 | **Security** | IAM wildcard census (measurement E) and whether each `Resource: "*"` carries a `reason:` in cfn-nag/checkov metadata. Authorization decision points: `lib/idp_common_pkg/idp_common/config_scope.py` is the canonical fail-closed contract — find every caller and check each honours it. `scripts/tests/test_iam_privilege_escalation.py` and `scripts/tests/test_config_revision_read_grants.py` are the existing structural gates; read what they *don't* cover. Log redaction (Class 2 worked example). SRT suppressions in `scripts/srt/issues.json` and dep-audit triage in `scripts/security/dep_audit_allowlist.json` — each needs a specific justification, not a bulk waiver |
 | 3 | **Test strategy & coverage** | Registered vs quarantined test roots (measurement C) and what each quarantine reason costs. Which suites CI actually runs vs which only `make test` runs (measurement G) — a suite outside both `test-cicd` and `test-packages-cicd` runs on no PR. Structural gates in `scripts/tests/` are this repo's strongest asset; inventory them and note which enumerate from the source and which carry a hardcoded list (Class 2). `docs/testing.md` is the published per-method map; check it against reality |
 | 4 | **Observability** | Alarm inventory and action wiring (measurement D) — an alarm whose topic has no subscriber is decoration. Lambda-to-LogGroup ratio per template (measurement D2) and whether the gaps are the deliberate custom-resource-only ones `scripts/tests/test_lambda_log_groups.py` enforces. Metric namespace consistency (`scripts/tests/test_metric_namespace_alignment.py`). X-Ray annotation correctness (Class 2 worked example). Whether a failure that matters is *visible*: dead-letter queues with no alarm, `logger.error` on a fail-open path with no metric |
-| 5 | **Code quality** | Lint and typecheck coverage (measurement B) — the *coverage* number matters more than the finding count, because an excluded path reports zero. `ruff.toml` `extend-exclude` currently skips whole trees (`src`, `scripts`, `patterns`, `notebooks`) plus per-file config debt; `pyrightconfig.json` `include` is a three-entry allowlist. Largest files (`find . -name '*.py' | xargs wc -l | sort -rn | head`) — a 6,000-line module that no gate covers is the worst combination. Duplication: identical helper defined in N Lambdas |
+| 5 | **Code quality** | Lint and typecheck coverage (measurement B) — the *coverage* number matters more than the finding count, because an excluded path reports zero. `ruff.toml` skips a named per-file list rather than any directory, and `pyrightconfig.json` `include` covers every tree holding tracked Python, so the coverage question is now "has the debt list grown?" rather than "which trees are dark?" — `python3 scripts/check_lint_debt.py --summary` answers it. Largest files (`find . -name '*.py' | xargs wc -l | sort -rn | head`) — a 6,000-line module that no gate covers is the worst combination. Duplication: identical helper defined in N Lambdas |
 | 6 | **CI/CD & automation** | Gate inventory (measurement G): which `make` targets exist, which run on GitHub, which on GitLab, which are advisory (`allow_failure`, `continue-on-error`), and — the one people skip — which are actually **required** on `develop` (measurement G2). `scripts/tests/test_ci_gate_parity.py` enforces GitHub/GitLab symmetry; it cannot enforce branch protection, so check that separately. Workflow triggers: GitHub is `pull_request`-only, so a direct push to `develop` runs nothing there |
 | 7 | **Documentation** | Doc-to-template drift, both directions (measurement F): a service shipped and documented nowhere, and a service documented that no template declares. `docs/aws-services-and-roles.md` is the one that must match IAM reality. Both doc tiers per `.claude/skills/documentation.md` — `docs/*.md` and `lib/idp_common_pkg/**/README.md`. Frontmatter/licence header conformance. `CHANGELOG.md` `[Unreleased]` shape. Skill-file inventory vs the `CLAUDE.md` table (measurement F2) |
 | 8 | **Frontend / UI** | `src/ui/src` test-file-to-source ratio (measurement H). Cloudscape-only component use; no stray `console.log`; `DOMPurify` on every `dangerouslySetInnerHTML`. Generated GraphQL types in sync (`src/ui/src/graphql/generated/`). Accessibility on new surfaces. Bundle/dependency posture: `src/ui/.npmrc` supply-chain keys and whether the pinned npm honours them (Class 1 worked example) |
@@ -137,14 +137,25 @@ ASSESSED with the reason**, never dropped.
 
 Run these yourself, before and independently of the fan-out, so every reviewer
 argues against the same numbers. All are **offline** — no AWS, no network except the
-two `gh` reads in G2 and I2. Every command below was executed in this repo; every
-"last measured" figure was taken at `fac1c120b` / `VERSION 0.6.9.dev3` on
-**2026-09-18** — the commit this skill's own branch was cut from, so the whole column
-is reproducible by checking out that one commit. Re-measure rather than trusting those figures; the point
+`gh` reads in G2 and I2. Every command below was executed in this repo; every
+"last measured" figure was taken at `bbf0dc9c9` / `VERSION 0.6.10.dev3` on
+**2026-09-21**, so the whole column is reproducible by checking out that one commit.
+Re-measure rather than trusting those figures; the point
 of recording them is that a number that moved a lot is itself a finding. When you
 re-record, replace the commit label too, and check every figure was actually taken at
 the commit you name — a column that mixes states under one label is worthless, because
 a reader can no longer treat a difference as signal.
+
+⚠️ **Three of these are not properties of the commit at all**, so the label above does
+not bound them. G2 reads a live *repository setting* and I2 reads the live issue and
+pull-request lists — both move without any commit, so record a timestamp with them and
+do not treat a difference from the last run as a change in the tree. And
+**basedpyright's warning count is a property of the working tree**, not of the commit:
+in a clean worktree it analyses every tracked `.py` file and reports 91 warnings, and
+in a populated checkout — one carrying staged library copies, a `.aws-sam/` build tree
+or an editable install resolving elsewhere — the same commit reports 173. Say which
+kind of checkout you measured in. The **error** count is the number that must stay at zero and it is
+stable across both.
 
 The measurements assume an **existing** dev environment with `ruff` on `PATH`
 (measurement B is the only one that needs a binary the shell does not already have —
@@ -190,10 +201,56 @@ for t in $(scripts/discover_templates.sh cfn); do
 done | sort -rn
 ```
 
-Last measured: `template.yaml` **304**, `nested/api-resolvers/template.yaml` 86,
-`patterns/unified/template.yaml` 57. The parent at 304 of a hard 500 is the number to
-track release over release — it is the constraint that forced the nested-stack split
-and it will force the next one.
+Last measured: `template.yaml` **314**, `nested/api-resolvers/template.yaml` 86,
+`patterns/unified/template.yaml` 57.
+
+⚠️ **That is the count before the SAM transform, and the 500-resource limit binds on
+the count after it.** `AWS::Serverless::Function` expands to a Lambda function plus,
+unless `Role` is given, a generated IAM role; `AWS::Serverless::Api` expands to a
+RestApi plus a Deployment and a Stage; each `Api`, `CloudWatchEvent`, `SQS` or
+`DynamoDB` event source adds a Permission or an EventSourceMapping. Reporting only the
+pre-transform number overstates the headroom by about seventy resources, so transform
+it:
+
+```bash
+python3 - <<'PY'
+import datetime
+from unittest.mock import MagicMock
+import cfnlint.decode.cfn_yaml as cfn_yaml
+from samtranslator.translator.translator import Translator
+
+URI = {"CodeUri", "ContentUri"}
+def plain(o, key=None):
+    if isinstance(o, dict):  return {str(k): plain(v, str(k)) for k, v in o.items()}
+    if isinstance(o, list):  return [plain(v, key) for v in o]
+    if isinstance(o, (datetime.date, datetime.datetime)): return o.isoformat()
+    if key in URI and isinstance(o, str): return "s3://bucket/key.zip"
+    return o if isinstance(o, (str, int, float, bool)) or o is None else str(o)
+
+loaded = cfn_yaml.load("template.yaml")
+tpl = plain(loaded if isinstance(loaded, dict) else loaded[0])
+src = len(tpl["Resources"])
+for body in tpl["Resources"].values():                  # stub out local artifacts
+    if body.get("Type") == "AWS::Serverless::Api":
+        body.setdefault("Properties", {}).setdefault(
+            "DefinitionBody", {"swagger": "2.0",
+                               "info": {"title": "t", "version": "1"}, "paths": {}})
+    if body.get("Type") == "AWS::Serverless::StateMachine":
+        p = body.setdefault("Properties", {}); p.pop("DefinitionUri", None)
+        p.setdefault("Definition", {"StartAt": "s",
+                                    "States": {"s": {"Type": "Succeed"}}})
+mp = MagicMock(); mp.get_availability_zones.return_value = ["us-east-1a"]
+out = Translator(None, mp).translate(sam_template=tpl, parameter_values={})
+print(f"source={src} transformed={len(out['Resources'])}")
+PY
+```
+
+Last measured: **314 source → 384 after the transform**, of a hard 500. So the real
+headroom is around **115 resources, not 185**, and that is the number to track release
+over release — it is the constraint that forced the nested-stack split and it will
+force the next one. Treat 384 as `measured` but approximate to within a few: the
+stub API definition body above is not the real one, and a handful of resources sit
+behind `Condition:`.
 
 ### B. Lint and typecheck coverage
 
@@ -201,10 +258,13 @@ Coverage first, findings second. A path that is excluded — or that does not ex
 reports zero problems, which reads identically to clean.
 
 ```bash
-# ruff: files it would actually check, against every tracked .py.
-# ${RUFF:-ruff} so this works unchanged in a worktree, where ruff is not on PATH
-# (set RUFF as shown above) and in the main checkout, where it is.
-echo "tracked: $(git ls-files '*.py' | wc -l)   ruff-checked: $(${RUFF:-ruff} check --show-files | wc -l)"
+# ruff: files it would actually check, against every tracked .py. Take the
+# "checked" figure from check_lint_debt.py, NOT from ruff: `ruff check
+# --show-files` does not honour `[lint] exclude`, so it over-reports by exactly
+# the size of that list. The one authority on whether a given file is linted is
+# `python3 scripts/check_lint_debt.py --explain <path>`.
+echo "tracked: $(git ls-files '*.py' | wc -l)"
+python3 scripts/check_lint_debt.py --summary
 
 # basedpyright: does every include/exclude path in pyrightconfig.json exist?
 python3 -c "
@@ -217,21 +277,44 @@ for k in ('include', 'exclude'):
 "
 ```
 
-Last measured: **767 of 1114** tracked `.py` files are linted (347, ~31%, are not),
-and `pyrightconfig.json` `include` names **`idp_cli/idp_cli`, which does not exist** —
-the package lives at `lib/idp_cli_pkg/idp_cli`. basedpyright silently type-checks
-nothing there, including `lib/idp_cli_pkg/idp_cli/cli.py` at **6,791 lines** (issue
-**#923**). `exclude` also names a non-existent `options/*/src`; harmless, but the same
-class.
+Measure the coverage figures rather than quoting them: they grow with the tree, so a
+number written here is wrong by the next review. `git ls-files '*.py' | wc -l` is the
+tracked total and is exactly what `basedpyright` reports as `filesAnalyzed`; `python3
+scripts/check_lint_debt.py --summary` prints how many of them `ruff check` reads and
+how many it skips. The figure that is an **invariant** rather than a measurement is
+basedpyright's **0 errors** — that is the one to treat as a regression if it moves.
+What each gate skips is a named list of individual files, not a tree — files carrying
+pre-existing lint findings, files `ruff format` has never run over, plus two scope
+entries (the vendored `pii-anonymizer` tree and `**/*.ipynb`); the same `--summary`
+prints that split, and `make check-lint-debt` fails if a listed file gains a finding
+or has become clean.
 
-One thing to know before you report the ruff gap as new: the bare-name `extend-exclude`
-entries that produce it are tracked as issue **#975**, and `scripts/tests/` is inside
-the excluded `scripts` tree — so this skill's own guard,
-`scripts/tests/test_repo_quality_review_skill.py`, is one of the unlinted files
-(`ruff check --force-exclude <that path>` reports "No Python files found", exit 0;
-`basedpyright` does cover it). Cite #975 rather than re-deriving it, and use
-`--force-exclude` when demonstrating an exclusion — it is not ruff's default, and an
-explicitly named path bypasses exclusions without it.
+⚠️ **basedpyright is not pinned**, unlike `cfn-lint`. `package.json` declares
+`"basedpyright": "^1.32.1"`, which is a caret range and in any case is not what gets
+run: all three install sites — the `Makefile` hint, `.github/workflows/developer-tests.yml`
+and `.gitlab-ci.yml` — run a bare `npm install -g basedpyright`, so the version is
+whatever was current that day. Read the version off the run and record it beside the
+counts, and treat a warning-count change as possibly-a-release rather than
+possibly-a-regression:
+
+```bash
+basedpyright --version
+basedpyright --outputjson | python3 -c "import json,sys; print(json.load(sys.stdin)['summary'])"
+```
+
+The **error** count is the one that must stay at zero, and it is the count that is
+stable across versions and across checkout states.
+
+Two things to know before reporting a coverage gap here. The **formatting** debt is
+deliberately unpaid and is not a new finding: reformatting that list of files is a
+mechanical sweep deferred to its own change (issue #975 closed the exclusions, not the
+formatting). And when you demonstrate that a file is excluded, use
+`python3 scripts/check_lint_debt.py --explain <path>`. **No ruff invocation answers
+this correctly.** A plain `ruff check <path>` bypasses the exclusions, and
+`--force-exclude` restores only `exclude`/`extend-exclude` — `[lint] exclude` and
+`[format] exclude` filter after discovery, so `ruff check --force-exclude <path>`
+prints `All checks passed!` and exits 0 for every lint-excluded file.
+`ruff check --show-files` does not honour `[lint] exclude` either.
 
 Pair the coverage number with the largest uncovered files:
 
@@ -239,13 +322,15 @@ Pair the coverage number with the largest uncovered files:
 git ls-files '*.py' | xargs wc -l | sort -rn | head -20
 ```
 
-Last measured: 433,432 tracked Python lines; the top four are
-`lib/idp_common_pkg/tests/unit/test_test_set_resolver.py` (7,801),
-`lib/idp_common_pkg/idp_common/extraction/service.py` (7,411),
-`lib/idp_cli_pkg/idp_cli/cli.py` (6,791 — the one no type checker sees) and
-`scripts/sdlc/codebuild_deployment.py` (5,874). Cross-reference every entry against
-the two coverage checks above: size alone is a style opinion, size **plus** no lint
-and no typecheck is a finding.
+Last measured: 518,109 tracked Python lines; the top five are
+`lib/idp_common_pkg/tests/unit/test_test_set_resolver.py` (8,399),
+`lib/idp_common_pkg/idp_common/extraction/service.py` (8,147),
+`lib/idp_cli_pkg/idp_cli/cli.py` (6,897), `scripts/sdlc/codebuild_deployment.py`
+(6,291) and `nested/api-resolvers/src/lambda/test_set_resolver/index.py` (5,615).
+Cross-reference every entry against the two coverage checks above: size alone is a
+style opinion, size **plus** no lint and no typecheck is a finding. `cli.py` is no
+longer that combination — `pyrightconfig.json`'s `include` now reaches every tree
+holding tracked Python, so the type checker sees it (issue #923, PR **#943**).
 
 ### C. Registered vs orphaned test roots
 
@@ -264,7 +349,7 @@ for d in $(python3 scripts/run_all_tests.py --list | sed -n 's/^  - \([^:]*\):.*
 done
 ```
 
-Last measured: **59 RUN roots, 6 QUARANTINE**. Each quarantine carries a written
+Last measured: **64 RUN roots, 6 QUARANTINE**. Each quarantine carries a written
 reason in the script; check the reason is still true (a `cfnresponse`-only quarantine
 stops being justified the moment someone adds a stub).
 
@@ -283,11 +368,14 @@ grep -n -A2 'AlarmActions:' template.yaml | grep -oE '!Ref [A-Za-z0-9]+' | sort 
 grep -n -A6 'Type: AWS::SNS::Subscription' template.yaml | grep -E 'TopicArn|Protocol|Endpoint'
 ```
 
-Last measured: **12 alarms**, all 12 with an `AlarmActions`. Eleven point at
-`AlertsTopic`, which has **zero `AWS::SNS::Subscription` resources**; the twelfth
-points at `CircuitBreakerTopic`, which has one. So eleven of twelve alarms fire into
-nothing (issue **#922**) — a Class 1 instance, and a good illustration of why
-"12 alarms configured" is not an observability measurement.
+Last measured: **15 alarms**, all 15 with an `AlarmActions`, and all 15 now reaching a
+topic that has a subscriber — 14 point at `AlertsTopic`, which carries an email
+subscription to `AdminEmail`, and the fifteenth at `CircuitBreakerTopic`, which has a
+Lambda subscription. That closes issue **#922**, where eleven of twelve alarms fired
+into a topic with **zero** `AWS::SNS::Subscription` resources (PR **#941**). Keep
+running both halves anyway: "15 alarms configured" was never the observability
+measurement, the subscription is, and a new topic added without one puts the gap
+straight back.
 
 **D2 — Lambda-to-LogGroup ratio:**
 
@@ -299,34 +387,168 @@ for t in $(scripts/discover_templates.sh cfn); do
 done | sort -k1 -r
 ```
 
-Last measured: `template.yaml` 58 functions / 56 log groups; `nested/bedrockkb/`
-**5 functions / 0 log groups**. The bedrockkb gap is *deliberate* — those are
-custom-resource-only Lambdas that keep Lambda's auto-created group, and
-`scripts/tests/test_lambda_log_groups.py` asserts exactly that. Do not report it.
-It is in the known-non-defects list for that reason.
+Last measured: `template.yaml` 58 functions / 56 log groups;
+`nested/api-resolvers/` 31 / 33; `feature-platform/main-stack-extensions/` 9 / 6;
+`nested/bedrockkb/` **5 functions / 0 log groups**. The bedrockkb gap is
+*deliberate* — those are custom-resource-only Lambdas that keep Lambda's
+auto-created group, and `scripts/tests/test_lambda_log_groups.py` asserts exactly
+that. Do not report it. It is in the known-non-defects list for that reason.
+
+Across all 30 templates there are **158** `AWS::Logs::LogGroup` resources, of which
+**84** declare no `LogGroupName` and so take CloudFormation's generated
+`<StackName>-<LogicalId>-<hash>` name. That is the most common shape in the repo and
+it has no leading `/`, which matters when anyone goes looking for a function's logs:
+
+```bash
+python3 - <<'PY'
+import subprocess
+import cfnlint.decode.cfn_yaml as cfn_yaml
+tot = named = 0
+for t in subprocess.run(["scripts/discover_templates.sh", "cfn"],
+                        capture_output=True, text=True, check=True).stdout.split():
+    loaded = cfn_yaml.load(t)
+    tpl = loaded if isinstance(loaded, dict) else loaded[0]
+    for v in (tpl.get("Resources") or {}).values():
+        if v.get("Type") == "AWS::Logs::LogGroup":
+            tot += 1
+            named += "LogGroupName" in (v.get("Properties") or {})
+print(f"log groups={tot} explicit name={named} generated name={tot - named}")
+PY
+```
 
 ### E. IAM wildcard census
 
-```bash
-echo '--- Resource: "*" ---'
-for t in $(scripts/discover_templates.sh cfn); do
-  n=$(grep -cE "Resource:[[:space:]]*(\"\*\"|'\*'|\*)[[:space:]]*$" "$t")
-  [ "$n" -gt 0 ] && printf '%4d  %s\n' "$n" "$t"
-done | sort -rn
+**Parse the templates; do not grep the lines.** A line grep for these is wrong in
+four independent ways, and three of them make it *under*-report, which is the direction
+that loses findings.
 
-echo '--- Action wildcards (service:*) ---'
-for t in $(scripts/discover_templates.sh cfn); do
-  n=$(grep -cE "^[[:space:]]*-?[[:space:]]*['\"]?[a-z0-9-]+:\*['\"]?[[:space:]]*$" "$t")
-  [ "$n" -gt 0 ] && printf '%4d  %s\n' "$n" "$t"
-done | sort -rn
+1. **It is quoting-fragile.** The `Resource:[[:space:]]*("\*"|'\*'|\*)` pattern returns
+   143 under one shell and 101 under another, because the nested quotes are
+   re-interpreted before `grep` ever sees them. A figure you cannot reproduce on
+   another machine is not a measurement.
+2. **It sees only the spelling it was written for.** `Resource: "*"` on one line
+   matches; a scalar with a **trailing comment** does not
+   (`nested/bedrockkb/template.yaml:635`, `Resource: '*'   # no resource
+   specification applicable`), and neither does the list-item form:
+
+   ```yaml
+   Resource:
+     - "*"
+   ```
+
+   For actions the same anchoring is worse: a pattern requiring the wildcard alone on
+   its line cannot see `Action: "sqs:*"`, which is how most of them are written here.
+   The action grep finds **41** of the **80** that exist, and the same-line spelling is
+   why it misses 39.
+3. **It cannot tell a statement from a sentence about one.** `template.yaml:14036` is a
+   *comment* — "CloudWatch Logs actions for Step Functions logging require
+   `Resource: "*"`" — and the grep counts it as a statement.
+4. **It cannot see `Effect`.** This is the one that changes the conclusion rather than
+   the count, and the walk below is what makes it visible: a wildcard in a `Deny`
+   broadens a denial, which is the safe direction, and **34 of the 80** action
+   wildcards are exactly that.
+
+Two things a line grep is *not* wrong about, so do not repeat them as criticisms: it
+matches `!If`-wrapped statements perfectly well, because it reads lines and does not
+care that the statement is a branch of a condition rather than a member of the
+`Statement` list — all six such statements here have plain scalar lines and all six
+match. And only one template in the tree contains a `ZipFile:` block at all, with no
+wildcard line inside it, so embedded Lambda source is a hazard in principle and not a
+present source of error.
+
+```bash
+python3 - <<'PY'
+import subprocess
+import cfnlint.decode.cfn_yaml as cfn_yaml
+
+
+def statements(node):
+    """Every IAM statement anywhere, keyed on SHAPE, not on nesting.
+
+    A mapping carrying `Effect` plus an action key is a statement wherever it
+    sits — which is what reaches the ones inside `!If` and inside SAM's
+    `Policies:` shorthand.
+    """
+    if isinstance(node, dict):
+        if "Effect" in node and ("Action" in node or "NotAction" in node):
+            yield node
+        for v in node.values():
+            yield from statements(v)
+    elif isinstance(node, list):
+        for v in node:
+            yield from statements(v)
+
+
+def as_list(v):
+    return [] if v is None else (v if isinstance(v, list) else [v])
+
+
+# Resource types whose policy scopes `Resource` to the resource ITSELF, so `*`
+# there means "this key/bucket/queue", not "everything in the account".
+SELF_SCOPED = {"AWS::KMS::Key", "AWS::S3::BucketPolicy", "AWS::SQS::QueuePolicy",
+               "AWS::SNS::TopicPolicy"}
+
+res, act = {}, {}
+for t in subprocess.run(["scripts/discover_templates.sh", "cfn"],
+                        capture_output=True, text=True, check=True).stdout.split():
+    loaded = cfn_yaml.load(t)
+    tpl = loaded if isinstance(loaded, dict) else loaded[0]
+    # Iterate RESOURCES, not the whole template, so each statement keeps the type
+    # of the resource enclosing it — which is what the self-scoped split needs.
+    for body in (tpl.get("Resources") or {}).values():
+        rtype = body.get("Type")
+        for s in statements(body):
+            # A wildcard in a Deny BROADENS the deny. Counting it as a finding is
+            # the way the grep misleads that invents work rather than losing it.
+            effect = "Allow" if str(s.get("Effect")) == "Allow" else "Deny"
+            bucket = (effect, "self-scoped" if rtype in SELF_SCOPED else "account")
+            if any(r == "*" for r in as_list(s.get("Resource")) if isinstance(r, str)):
+                res.setdefault(bucket, {})
+                res[bucket][t] = res[bucket].get(t, 0) + 1
+            for a in as_list(s.get("Action")):
+                if isinstance(a, str) and a.endswith(":*"):
+                    act.setdefault(bucket, {})
+                    act[bucket][t] = act[bucket].get(t, 0) + 1
+
+for title, rows in (('Resource: "*"', res), ("action wildcards service:*", act)):
+    for bucket in sorted(rows):
+        by_t = rows[bucket]
+        print(f'--- {title} {bucket} : {sum(by_t.values())} '
+              f'across {len(by_t)} template(s) ---')
+        for path, n in sorted(by_t.items(), key=lambda kv: -kv[1]):
+            print(f"{n:5d}  {path}")
+PY
 ```
 
-Last measured: **141** `Resource: "*"` statements across 14 templates (47 in
-`template.yaml`, 40 in `patterns/unified/template.yaml`) and **44** `service:*` action
-wildcards (29 of them in `iam-roles/cloudformation-management/`, where a deployment
-service role legitimately needs breadth). Report the *unjustified* ones — cross-check
-each against a cfn-nag/checkov suppression carrying a `reason:`; a wildcard with a
-written reason is a decision, one without is a finding.
+Last measured, exactly as the snippet prints it:
+
+| | `Allow`, account-wide | `Allow`, self-scoped | `Deny` | total |
+|---|---|---|---|---|
+| `Resource: "*"` | **128** across 13 templates | 16 across 4 | 3 across 2 | **147** |
+| `service:*` actions | **40** across 4 templates | 6 across 4 | 34 across 5 | **80** |
+
+The account-wide `Allow` column is the one to report. The other two are the reason a
+single total misleads, in two different ways:
+
+- **`Deny`.** A wildcard in a denial makes the denial *broader*, which is the safe
+  direction. All 34 `Deny` action wildcards are the `EnforceSSLOnly` bucket and queue
+  resource policies (`Principal: "*"`, `Condition: aws:SecureTransport: false`), so
+  quoting "80 over-broad action grants" describes 34 statements as the opposite of what
+  they are.
+- **Self-scoped.** In a resource policy, `Resource: "*"` means *this* resource, not
+  every resource in the account — that is the only thing it can mean there. All 16 of
+  these are `AWS::KMS::Key` key policies, and 6 of the `Allow` action wildcards are
+  `kms:*` in the same place. ⚠️ **This is the `Deny` argument one level down**, and it
+  is easy to make the `Deny` split and then quote 144 as though every one of them were
+  account-wide. The snippet's `SELF_SCOPED` set also covers bucket, queue and topic
+  policies so the question gets asked of a new resource policy automatically; only KMS
+  keys hit it today.
+
+Within the account-wide column, report the *unjustified* ones — cross-check each against
+a cfn-nag/checkov suppression carrying a `reason:`; a wildcard with a written reason is a
+decision, one without is a finding. 26 of the 40 account-wide action wildcards are in
+`iam-roles/cloudformation-management/`, where a deployment service role legitimately
+needs breadth, so that is a decision rather than a finding too.
 
 ### F. Documentation-to-template drift, both directions
 
@@ -344,15 +566,20 @@ grep -rl "AWS::AppSync" $(scripts/discover_templates.sh cfn) || echo "no templat
 grep -rl "AppSync" docs/*.md | wc -l
 ```
 
-Last measured: **26 service namespaces** shipped, of which four —
-`AWS::CodePipeline`, `AWS::OpenSearchServerless`, `AWS::Scheduler`,
-`AWS::SecretsManager` — appear in no template *and* nowhere in
-`docs/aws-services-and-roles.md`. In the reverse direction, **no template declares an
-AppSync resource**, and when this review was first run **28 files under `docs/`**
+Last measured: **27 service namespaces** shipped, of which two —
+`AWS::CodePipeline` and `AWS::OpenSearchServerless` — appear nowhere in
+`docs/aws-services-and-roles.md`. ⚠️ Note what the reverse grep now returns: two
+templates *do* match `AWS::AppSync`, both of them IAM templates
+(`iam-roles/cloudformation-management/IDP-Cloudformation-Service-Role.yaml` and
+`scripts/sdlc/cfn/codepipeline-s3.yml`) naming the service in an `Action:` rather than
+declaring a resource of that type. So `grep -rl` answers a different question from
+"does any template declare an AppSync resource" — read the hits before concluding
+anything, or parse for `Type: AWS::AppSync::`. No template declares an
+AppSync resource, and when this review was first run **28 files under `docs/`**
 described AppSync as the UI-to-backend API while `CLAUDE.md` listed it under "Key AWS
 Services Used". That is now closed: issue #929 fixed the prose, `CLAUDE.md` keeps only
 a parenthetical saying the nested stack was *historically* named `APPSYNCSTACK`, and
-the 12 remaining `docs/` mentions are each either explicitly historical or a retained
+the 13 remaining `docs/` mentions are each either explicitly historical or a retained
 GraphQL-schema identifier, triaged one at a time in
 `scripts/sdlc/retired_services.json`. The reverse direction is therefore no longer a
 manual search here — `make check-retired-services` enforces it on every push and MR,
@@ -375,28 +602,28 @@ for c in .cline/skills/*.md; do basename "$(readlink -f "$c")"; done | sort -u >
 comm -23 /tmp/skills.txt /tmp/linked.txt      # .claude skills with no .cline symlink
 ```
 
-Last measured at `fac1c120b`: **26 skill files, 25 rows** — `sync-pii-anonymizer.md`
-had no row. All `.cline/skills` entries are symlinks (the `find -type f` returns
-nothing), which is the required state per `.claude/skills/documentation.md`. That gap
-is now closed and guarded: the PR that added this skill also added the missing row, so
-the counts are equal from here on and `comm -23` returning **nothing** is the expected
-state. `scripts/tests/test_repo_quality_review_skill.py` asserts it for every skill
-file rather than for one, so this particular drift cannot recur silently — which makes
-this measurement a check on the *test*, not a hunt for a known gap.
+Last measured: **28 skill files, 28 `CLAUDE.md` rows** — `comm -23` returns nothing,
+which is the expected state. All `.cline/skills` entries are symlinks (the `find -type
+f` returns nothing), which is the required state per
+`.claude/skills/documentation.md`. `scripts/tests/test_repo_quality_review_skill.py`
+asserts both for every skill file rather than for one, so this drift cannot recur
+silently — which makes this measurement a check on the *test*, not a hunt for a known
+gap.
 
 The third `comm` is the one worth actually reading, because it is the direction the
 first version of that test left open. Skill visibility is a **triangle** — a `.claude`
 file, a `CLAUDE.md` row, a `.cline` symlink — and closing two sides can leave the third
 wide: registering `sync-pii-anonymizer.md` in the table did nothing to make Cline able
-to read it. When this measurement was first taken at this PR's head it found **27
-`.claude` skills and 21 `.cline` entries** — six absences. Five were the deliberately
-Claude-only live-stack tiers (`full-test-battery.md`, `run-benchmarks.md`,
-`run-stack-tests.md`, `test-upgrade.md`, `transform-deploy-test.md`), which is a
-legitimate reason to have no symlink. The sixth, `sync-pii-anonymizer.md`, was not: it is
-an offline vendored-code resync with no live-stack step, so the live-tier rationale did
-not cover it, and the owner resolved it by adding the symlink. **Now 27 and 22, with five
-absences, all of them explained.** The five reasons are recorded per entry in the test's
-`CLINE_EXEMPT` table, so an absence has to be stated rather than merely observed.
+to read it. That case is what the direction was added for. It is an offline
+vendored-code resync with no live-stack step, so the live-tier rationale that covers the
+other absences did not cover it, and the owner resolved it by adding the symlink.
+
+Last measured: **28 `.claude` skills and 23 `.cline` entries** — five absences, all five
+the deliberately Claude-only live-stack tiers (`full-test-battery.md`,
+`run-benchmarks.md`, `run-stack-tests.md`, `test-upgrade.md`,
+`transform-deploy-test.md`), which is a legitimate reason to have no symlink. Their
+reasons are recorded per entry in the test's `CLINE_EXEMPT` table, so an absence has to
+be stated rather than merely observed.
 
 Note what that sequence does and does not license. The rule is still: do not close a gap
 in this direction by creating symlinks to make the test green. Whether a live-stack skill
@@ -431,26 +658,36 @@ target list with `comm`/`grep -Fxf`. Second, a target invoked as
 `make test-cicd -C lib/idp_common_pkg` lives in a **sub-Makefile** and will not appear
 in `/tmp/all_targets.txt` — check for it by name before concluding it runs nowhere.
 
-Last measured: **79 root `make` targets**; GitHub CI invokes 9 of them, GitLab 6 plus
+Last measured: **85 root `make` targets**; GitHub CI invokes 9 of them, GitLab 6 plus
 `test-cicd` in the sub-Makefile; the GitHub-only three (`dep-manifest`, `docs-deploy`,
-`install-first-party`) are publish/scaffold steps, not gates, so the *gate* sets match
-— which is what `scripts/tests/test_ci_gate_parity.py` exists to keep true. One
-GitLab job is `allow_failure: true` (a draft-MR manual button) and three GitHub steps
-are explicitly `continue-on-error: false`.
+`install-first-party`) are publish/scaffold steps, not gates, and nothing is
+GitLab-only, so the *gate* sets match — which is what
+`scripts/tests/test_ci_gate_parity.py` exists to keep true. Two `allow_failure` entries
+appear in `.gitlab-ci.yml` and three GitHub steps in `developer-tests.yml` are
+explicitly `continue-on-error: false`.
 
-**G2 — which checks are actually required on `develop`.** This is the step that turns
-"the gate runs" into "the gate blocks", and it is the one the parity test cannot
-cover:
+**G2 — which checks are actually required on `develop` *and* on `main`.** This is the
+step that turns "the gate runs" into "the gate blocks", and it is the one the parity
+test cannot cover.
 
-Read it from the two endpoints that answer at ordinary permission levels, and do
-**not** infer protection state from the protection endpoint alone:
+**Read both branches.** `develop` is what pull requests target, but `main` is the
+repository's **default** branch and the one releases are cut from, and it carries its
+own independent protection setting. Checking only `develop` is why `main` being equally
+unprotected went unnoticed. Read the two endpoints that answer at ordinary permission
+levels, and do **not** infer protection state from the protection endpoint alone:
 
 ```bash
 R=aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws
 
+gh api "repos/$R" -q '.default_branch'   # main — note which branch that is
+
 # 1. Classic branch protection — take it from the BRANCH object. The `protected`
-#    field is returned at `pull` level and settles the question either way.
-gh api "repos/$R/branches/develop" -q '.protected'
+#    field is returned at `pull` level and settles the question either way. Per
+#    branch: one read answers for one branch.
+for b in develop main; do
+  echo "$b: $(gh api "repos/$R/branches/$b" -q '.protected')"
+  gh api "repos/$R/branches/$b" -q '.protection.required_status_checks'
+done
 
 # 2. Rulesets, which is the other way a check can be required. Includes
 #    org- and enterprise-INHERITED rulesets, and also needs no admin.
@@ -464,16 +701,45 @@ gh api "repos/$R/branches/develop/protection"
 gh api "repos/$R" -q '.permissions'   # admin:false => that 404 told you nothing
 ```
 
-Last measured, with `{"admin":false,"maintain":true,"pull":true,"push":true,"triage":true}`:
-`branches/develop` reports **`protected: false`**, and all five rulesets are
+The repository ships this as a tool, which is the better way to run it — it also
+derives the required-check list the workflows *should* produce and diffs it against the
+live one, which the raw reads above do not:
+
+```bash
+make check-branch-protection                                      # develop
+make check-branch-protection BRANCH_PROTECTION_ARGS=--branch=main  # main
+```
+
+Last measured **2026-09-21** with
+`{"admin":false,"maintain":true,"pull":true,"push":true,"triage":true}`: the default
+branch is `main`; `branches/develop` **and** `branches/main` both report
+**`protected: false`** with `required_status_checks` of
+`{checks: [], contexts: [], enforcement_level: "off"}`; and all five rulesets are
 enterprise-inherited with **no branch target** — four `target=repository` (block
 internal visibility, block private visibility, block repository deletion, only
-enterprise owners can transfer) and one `target=tag` (`block-untagged`). Both of those
-are **measured** at this permission level. The protection endpoint did return 404, but
-that reading was discarded as uninformative: it is the branch object and the ruleset
-list that establish the result. So no required status check exists on `develop` — every
-gate in G is visible and none is blocking, and a red PR can be merged (issue **#933**).
-This is the flagship Class 1 instance; lead with it.
+enterprise owners can transfer) and one `target=tag` (`block-untagged`). All of that is
+**measured** at this permission level. The protection endpoint did return 404, but that
+reading was discarded as uninformative: it is the branch objects and the ruleset list
+that establish the result. So no required status check exists on either long-lived
+branch — every gate in G is visible and none is blocking, and a red PR can be merged.
+
+**Report this as a known, accepted residual, not as a new finding, and do not re-file
+it.** The decision is recorded in closed issue **#933** (`NOT_PLANNED`): enabling
+classic protection needs repository **admin**, which no contributor and no CI token
+here has, so it cannot be done from the tree or from tooling. Cite the issue as the
+decision record. The condition under which it stops being a residual is a repository
+**setting** changing, by one of two routes that are not the same permission — somebody
+with repository admin enabling protection, or an organization or enterprise owner
+publishing a **branch ruleset** targeting these branches, which needs no repository
+admin at all and is demonstrably available here given the five inherited rulesets.
+Report the residual with its **structural** limit stated: nothing in the repository can
+substitute, because enforcement is server-side and a merge taken through GitHub's own
+Merge button runs no code from the tree. That is why this is the one Class 1 instance
+whose decision point cannot be brought inside the repository.
+
+It is still the flagship Class 1 instance — a control that exists and is consulted by
+nothing — and still worth leading the report with, as a statement of exposure rather
+than as an action item.
 
 Two rules for re-running this, because the conclusion is security-relevant and the
 skill is meant to be re-run:
@@ -483,10 +749,13 @@ skill is meant to be re-run:
   you, you cannot establish protection state at all — report the conclusion as
   **`unverified`** per the output contract's rule 3, and say which read you were denied.
   The rulesets half stays `measured` regardless, since it needs no admin.
-- **Re-read it every run rather than carrying the finding forward.** A maintainer
-  enabling protection is the single most likely consequence of this finding, so a
-  stale "nothing blocks" is precisely the Class 1 error this skill exists to catch:
-  a decision made as though a control's state had been consulted when it never was.
+- **Re-read it every run rather than carrying the finding forward, even though it is a
+  recorded residual.** A maintainer or an organization owner turning protection on is
+  the single most likely way this changes, and neither announces itself in the tree —
+  so a stale "nothing blocks" is precisely the Class 1 error this skill exists to
+  catch: a decision made as though a control's state had been consulted when it never
+  was. "It is recorded in #933" is a reason not to re-file the issue, never a reason
+  not to re-measure.
 
 ### H. Frontend test ratio
 
@@ -495,7 +764,7 @@ echo "UI test files: $(find src/ui/src \( -name '*.test.*' -o -name '*.spec.*' \
 echo "UI sources:    $(find src/ui/src \( -name '*.tsx' -o -name '*.ts' -o -name '*.jsx' -o -name '*.js' \) | grep -v generated | wc -l)"
 ```
 
-Last measured: **83 test files against 387 sources**. Treat the ratio as a prompt to
+Last measured: **99 test files against 408 sources**. Treat the ratio as a prompt to
 ask *which* surfaces are untested (auth, upload, config editing) rather than as a
 score.
 
@@ -513,21 +782,21 @@ The explicit `HEAD` is load-bearing, not decorative. Given **no revision argumen
 stdin is empty — so it prints nothing and exits **0**, which reads exactly like "no
 commits in this window". Do not respond to that by swapping in a commit-count window
 such as `-200`, which is a different measurement wearing the same label: at this commit
-those 200 commits span **nine days** (2026-09-09 to 2026-09-18), so the window's width
-varies silently with commit rate, and it distorts the answer in both directions —
-`-200` reports an **88%** single-author share against the six-month **69%**, and it drops
-Taniya Mathur (212 commits in six months) from the list entirely, so a bus-factor
-measurement silently loses its third-largest contributor. Keep `-sn` and not
+those 200 commits span **four days** (2026-09-18 to 2026-09-21), so the window's width
+varies silently with commit rate, and it distorts the answer badly — `-200` reports a
+**100%** single-author share against the six-month **73%**, and it drops every other
+contributor from the list entirely, so a bus-factor measurement loses the very thing it
+measures. Keep `-sn` and not
 `-sne`: `-e` splits one author here across three email addresses and re-fragments the
 number being measured. `-sn` groups by author *name*, which has the mirror-image
 problem — one contributor under two spellings is undercounted — so scan the list for
 near-duplicate names before quoting a share.
 
-Last measured over **six months to 2026-09-18** (window opens 2026-03-18; **2,534
-commits** by **31** distinct author names): **1,752 Bob Strahan, 293 Jeremy Feldman,
-212 Taniya Mathur, 99 dependabot** — a **69% single-author share**. `src/ui` over the
-same window: 256 / 192 / 41 / 34. Two of those names are the same person
-("Taniya Mathur" 212 and "Taniya [C] Mathur" 20). Always record the window alongside
+Last measured over **six months to 2026-09-21** (window opens 2026-03-21; **2,917
+commits** by **31** distinct author names): **2,132 Bob Strahan, 296 Jeremy Feldman,
+221 Taniya Mathur, 100 dependabot** — a **73% single-author share**. `src/ui` over the
+same window: 283 / 192 / 45 / 34. Two of those names are the same person
+("Taniya Mathur" 221 and "Taniya [C] Mathur" 18). Always record the window alongside
 the numbers, so the next run compares like with like. Report it as a risk statement
 with the number, not as a criticism; then name the subsystems where the count is
 exactly one.
@@ -544,9 +813,12 @@ ls .github/ISSUE_TEMPLATE/
 find . -name CODEOWNERS -not -path '*/node_modules/*'   # no output = there is none
 ```
 
-Last measured: **39 open issues** (5 unlabelled), **13 open PRs**, three issue
-templates present (`bug_report.yml`, `feature_request.yml`, `config.yml`), and **no
-`CODEOWNERS` and no PR template**. Before filing anything
+Last measured **2026-09-21**: **22 open issues** (10 unlabelled), **5 open PRs**, three
+issue templates present (`bug_report.yml`, `feature_request.yml`, `config.yml`),
+`.github/CODEOWNERS` present, and **no PR template**. ⚠️ These four counts are a live
+read of the issue and pull-request lists, not a property of the commit, so they move
+between runs with no change to the tree — record the date beside them and do not read a
+difference as a trend. Before filing anything
 from this review, search the open issues — the 2026-09 pass found several of its own
 findings already filed, and re-filing them is noise.
 
@@ -573,17 +845,28 @@ citing it, and when an instance gets fixed move it to a "closed" list with the f
 PR rather than deleting it, so the class keeps its evidence without implying the
 instance is still open.
 
+**Open instances.**
+
 | Control | Decision point that should read it | What is actually there |
 |---|---|---|
-| CI gates on GitHub and GitLab (#933) | branch protection / rulesets on `develop` | Nothing requires any check — measurement G2 reads `protected: false` on the branch object and finds no branch-targeted ruleset. Every gate is visible; none blocks a merge |
-| Pipeline hook `onError: fail` (#919) | the state machine's error routing | `patterns/unified/src/pipeline_hooks_function/index.py:799` raises when `onError == "fail"` — and the ASL `Catch` on `States.ALL` routes **forward** to the next step (`patterns/unified/statemachine/workflow.asl.json:343` `Next: ClassificationStep`, `:432` `ProcessSections`, `:697` `AssessmentStep`, `:997` `SummarizationStep`, `:1104` `EvaluationStep`). `onError: fail` cannot fail the workflow |
-| DynamoDB `SubIndex`, granted in IAM | `src/lambda/chat_with_document_processor/index.py:275` queries it to resolve the caller's config-version scope | No template declares it. Every query raises `ValidationException`, the `except` at L286 logs and returns `None` — fail-**open**. Config-version scoping on the chat path has therefore never restricted anything. The gap is documented in the docstring at L258-265, which is honest and still a finding |
-| 12 CloudWatch alarms (#922) | an SNS subscriber | 11 of 12 publish to `AlertsTopic`, which has zero subscriptions (measurement D) |
+| CI gates on GitHub and GitLab | branch protection / rulesets on `develop` **and** `main` | Nothing requires any check — measurement G2 reads `protected: false` on both branch objects and finds no branch-targeted ruleset. Every gate is visible; none blocks a merge. The archetype of the class, and the one instance here that is **not fixable from the tree**: it needs repository admin or an org/enterprise branch ruleset. Recorded as an accepted residual in closed issue **#933** — report the exposure, do not re-file it, and re-measure it every run |
 | Published SHA-256 for a feature bundle | the loader that installs the bundle | No loader reads it, so the digest cannot reject a tampered artifact |
 | `src/ui/.npmrc` `min-release-age=7` | the npm client resolving a new dependency | Honoured only by npm >= 11.10; the pinned `engines.npm` still allows 10.x, which ignores the key with a warning. The comment in the file says so — read it, then check what npm the build actually runs |
-| `pyrightconfig.json` `include: idp_cli/idp_cli` (#923) | basedpyright's file walk | The path does not exist (measurement B); a 6,791-line module is type-checked by nothing |
 
-**The generalized searches to run**, beyond re-checking the seven above:
+**Closed instances — evidence for the class, not work to do.** Each was fixed and
+verified fixed; they stay here because the class keeps its evidence that way. Do not
+re-report one, and do not re-derive it as though it were open: run the generalized
+searches below instead, which are what would have found them.
+
+| Control | Decision point that should have read it | What was there, and the fix |
+|---|---|---|
+| Pipeline hook `onError: fail` (#919) | the state machine's error routing | PR **#953**. `pipeline_hooks_function/index.py` raised when `onError == "fail"` — and the ASL `Catch` on `States.ALL` routed **forward** to the next step at **six** of the seven hook points in `patterns/unified/statemachine/workflow.asl.json` — only `PreprocessingHook` caught to a `Fail` state — so `onError: fail` could not fail the workflow. The routing now aborts the document |
+| DynamoDB `SubIndex`, granted in IAM | the Chat-with-Document processor queried it to resolve the caller's config-version scope | #970, PR **#1020**. No template ever declared it, so every query raised `ValidationException` and the `except` logged and returned `None` — fail-**open**. Config-version scoping on the chat path had never restricted anything. Two things make this the archetype: the gap was *documented* in the function's own docstring, which is honest and was still a finding; and the unit suite stubbed `table.query` without validating `IndexName`, so it passed on a query the service would reject. **PR #1020** repointed the lookup at the `EmailIndex` that `template.yaml` actually declares, made any lookup failure deny rather than allow, and added a unit check tying the index the code names to the declared one. A later change (PR **#1038**) keyed the lookup on the immutable Cognito `sub` through a pointer item, because an email address that stops matching its record silently lifts the restriction; the `sub` route and the email join are deliberately **not** a fallback chain — the implementation's own docstring says so — so do not describe them as one |
+| 12 CloudWatch alarms (#922) | an SNS subscriber | PR **#941**. 11 of 12 published to `AlertsTopic`, which had zero subscriptions. `AlertsTopic` now carries an email subscription to `AdminEmail`; measurement D reads 15 alarms all reaching a subscribed topic |
+| `pyrightconfig.json` `include: idp_cli/idp_cli` (#923) | basedpyright's file walk | PR **#943**. The path did not exist, so a 6,800-line module was type-checked by nothing. `include` now covers every tree holding tracked Python and `test_pyright_config.py` derives that closure from `git ls-files` |
+| X-Ray `put_annotation` document id (#925) | the annotation value X-Ray records | PR **#943**. Written as a set literal `{document.id}` in four pipeline Lambdas, so the value was unusable in exactly the four places it mattered most |
+
+**The generalized searches to run**, beyond re-checking the eight above:
 
 ```bash
 # every DynamoDB index a runtime query names, vs every index a template declares
@@ -615,10 +898,14 @@ of the bug across the whole tree and count how many places have it. Then check w
 prevents the next one: is the guard a **test that enumerates from the source**, or a
 **list someone has to remember to update**?
 
-A hand-maintained inventory in a repo that has already built content-discovery twice
-(`scripts/discover_templates.sh` for templates and state machines,
-`scripts/run_all_tests.py` for test roots) is itself a Class 2 finding — the pattern
-for closing the class exists and was not reused.
+A hand-maintained inventory in a repo that has already built content-discovery **four**
+times (`scripts/discover_templates.sh` for templates and state machines,
+`scripts/run_all_tests.py` for test roots, `scripts/tests/repo_files.py`'s
+`tracked_paths` for tracked files of a given glob, and
+`scripts/tests/gate_premises.py`'s `tracked_files` for git pathspecs) is itself a
+Class 2 finding — the pattern for closing the class exists and was not reused. Four
+helpers with overlapping jobs may be worth a finding of its own, but that is a
+different one from a gate that reuses none of them.
 
 Be fair about the trade-off, though: `scripts/tests/test_state_machine_provisioning_retry.py`
 hardcodes its path list **on purpose**, and its header argues that "a discovery engine
@@ -627,16 +914,22 @@ exactly the kind of change that should have to touch this file". That is a defen
 position. Report a hardcoded inventory as a finding only when you can say what it
 currently misses — measure, do not assume.
 
-**Worked examples, all verified in this tree** — as in Class 1, illustrative and dated
-(2026-09) rather than an open work list: re-derive before citing, and move a fixed
-instance to a "closed" list with its PR instead of deleting it.
+**Worked examples, all verified in this tree** — as in Class 1, illustrative rather than
+an open work list. Re-derive before citing.
+
+**Open instances.**
 
 | Fix that was applied | The class it left open |
 |---|---|
-| Deterministic-timeout / provisioning retry (#917) | applied to 1 of 12 Lambda task states. Measure with the Task-vs-Retry counts below; `patterns/unified/statemachine/workflow.asl.json` has 24 Task states and 24 `Retry` blocks, `src/lambda/finetuning_state_machine/definition.json` has 10 Tasks and **7** Retries, `src/lambda/multi_doc_discovery/statemachine.asl.json` 7 and **5** |
+| Deterministic-timeout / provisioning retry (#917) | Still uneven. Measure with the Task-vs-Retry counts below; `patterns/unified/statemachine/workflow.asl.json` has 24 Task states and 25 `Retry` blocks, but `src/lambda/finetuning_state_machine/definition.json` has 10 Tasks and **7** Retries and `src/lambda/multi_doc_discovery/statemachine.asl.json` 7 and **5** |
 | Fail-closed scope contract articulated in `lib/idp_common_pkg/idp_common/config_scope.py` | the circuit breaker and several API resolvers still fail open. Find every caller and check each one, rather than trusting the module's own tests |
-| Canonical log redactor `lib/idp_common_pkg/idp_common/utils/log_sanitizer.py` (#921) | hand-copied `_sanitize_for_log` into **10** resolvers under `nested/api-resolvers/src/lambda/`, each carrying a 10-key denylist against the canonical **18** — so eight keys (`passwd`, `access_key`, `accesskey`, `secretkey`, `secret_key`, `privatekey`, `private_key`, `x-api-key`) are redacted by the library and not by the copies |
-| X-Ray `put_annotation` document id (#925) | written as a **set literal** `{document.id}` in four pipeline Lambdas and correctly as `document.id` in two others, so the annotation value is unusable in exactly the four places it matters most |
+
+**Closed instances — evidence for the class, not work to do.**
+
+| Fix that was applied | The class it left open, and how it was closed |
+|---|---|
+| Canonical log redactor `lib/idp_common_pkg/idp_common/utils/log_sanitizer.py` (#921) | PR **#945**. `_sanitize_for_log` had been hand-copied into **10** resolvers under `nested/api-resolvers/src/lambda/`, each carrying a 10-key denylist against the canonical 18, so eight keys were redacted by the library and not by the copies. The copies are gone; the resolvers call the canonical redactor. ⚠️ The `comm -23` search below now returns the **entire** canonical key set, because there is no local set left to subtract — an empty `/tmp/local.txt` makes the set difference look like a total divergence. Check that the local grep matched anything before reading its output |
+| X-Ray `put_annotation` document id (#925) | PR **#943**. Written as a set literal `{document.id}` in four pipeline Lambdas and correctly as `document.id` in two others, so the value was unusable in exactly the four places it mattered most. ⚠️ The shape grep below now returns **2** hits, both of them prose inside `scripts/tests/test_xray_annotations.py`, which is the guard that closed the class — so a non-zero count here is not a finding until you have read the hits |
 
 **The generalized searches:**
 
@@ -665,7 +958,16 @@ python3 - <<'PY'
 import ast, pathlib, re
 ITEM = re.compile(r"^(?:[\w.*/-]+\.(?:py|ya?ml|json|ts|tsx|txt|sh|ipynb)"
                   r"|[\w.*/-]*/[\w.*/-]*|make [\w-]+)$")
-WALKS = re.compile(r"discover_templates|run_all_tests|rglob|\.glob\(|iterdir|os\.walk")
+# The content-discovery helpers this repo has TODAY, plus the raw walk primitives
+# and `ls-files` for a gate that shells out to git itself. Keep this current: a
+# helper missing from here mislabels its callers `ONLY RECORD`, a false positive in
+# the expensive direction, since it sends a reviewer to audit a list that a
+# universe-closure test already covers. Re-derive the list each run rather than
+# trusting it — `grep -rln "def .*tracked\|discover" scripts/tests scripts/sdlc`
+# is a reasonable start.
+WALKS = re.compile(r"discover_templates|run_all_tests|tracked_paths|tracked_files"
+                   r"|repo_files|gate_premises|ls-files|ls_files"
+                   r"|rglob|\.glob\(|iterdir|os\.walk")
 for f in sorted(p for r in ("scripts/tests", "scripts/sdlc")
                 for p in pathlib.Path(r).rglob("*.py")):
     src = f.read_text(encoding="utf-8")
@@ -694,7 +996,7 @@ instance and the lesson is the point.
 
 **Why it is shaped this way.** The obvious search is
 `grep -rn -i 'hard.coded' --include='*.py' scripts/tests/ scripts/sdlc/`. Do not use
-it. It returns **exactly one hit** at this commit —
+it. It returns **two hits** at this commit, of which only one is an inventory —
 `scripts/tests/test_state_machine_provisioning_retry.py:45`, the one the "be fair about
 the trade-off" paragraph above already excuses — because it is keyed on an author having
 *confessed* in a comment. A search that can only return inventories whose authors already flagged them
@@ -713,25 +1015,51 @@ also walks the tree somewhere, so a stale entry has a decent chance of being cau
 Read the `ONLY RECORD` rows; skim the rest. This is a heuristic on the file, not the
 assignment, so confirm by reading before you report.
 
-**Last measured** at `fac1c120b`: **15 inventories, 8 of them `ONLY RECORD`.** The one
-to lead with is `scripts/tests/test_ci_gate_parity.py:36` `SHARED_GATES`, an eight-entry
-list of the gates that must run in both CIs — and the file contains no walk, so the
-list is the only record. Its blind spot is live and specific: the test asserts each
-listed gate appears in **both** CI configurations, so it cannot see a gate that is
-absent from **both**. Adding a gate to `Makefile` and to neither CI passes. Note that
-`grep -c -i 'hard.coded' scripts/tests/test_ci_gate_parity.py` returns **0** — this is
-exactly the inventory the old search could not reach.
+**Last measured at `bbf0dc9c9`: 30 inventories, 6 of them `ONLY RECORD`.** The
+previous run recorded 15 at `fac1c120b`; the doubling is tree drift over three days of
+heavy gate work rather than a change in the search, and it is not reconstructable from
+here — if a jump like that matters to you, check out the older commit and re-run.
+
+`scripts/tests/test_ci_gate_parity.py` `SHARED_GATES` is still hand-authored, and still
+the only record of *which specific invocations* must appear in both CI configurations —
+deliberately, because deciding which lines of a CI config are gate invocations is not
+derivable. But do **not** lead a review with "adding a gate to the `Makefile` and to
+neither CI passes": the file derives a gate universe from the `Makefile`
+(`gate_universe()`) and fails when a target in it is absent from both CIs *and* from
+`GATES_DELIBERATELY_OUT_OF_CI`. Verify rather than assume — add a `check-*` target to one
+of the scanned sections, run the suite, and watch
+`test_every_gate_shaped_target_is_in_both_cis_or_registered` fail.
+
+What is still worth probing there is the universe's own edge. It is every target in the
+five `##@` sections that are entirely checks, plus any **check-shaped-by-name** target in
+any other section, minus the live-stack section. A check elsewhere whose *name* does not
+look like one is outside it. That residual is registered with its ratchet in
+`scripts/tests/gate_exemptions.json`, so the question to ask is whether the registered
+reason still matches the tree — not whether the gap exists.
+
 `scripts/tests/test_state_machine_provisioning_retry.py:50` `ASL_JSON_PATHS` also comes
 back `ONLY RECORD`, correctly: it is deliberately the only record, and the paragraph
-above is why that is defensible.
+above is why that is defensible. The remaining four are
+`scripts/sdlc/tests/test_config_schema_order.py:31` `_TEMPLATES`,
+`scripts/sdlc/tests/test_retired_models_not_offered.py` `_OFFERING_SURFACES` and
+`_UI_SURFACES`, and `scripts/tests/test_config_revision_read_grants.py:35` `TEMPLATES`.
 
-Two known limits of the search, so you do not over-read a clean run. It scans dict
+Three known limits of the search, so you do not over-read a clean run. It scans dict
 *values* and not keys — including keys found nothing extra and, by doubling the element
 count, pushed the excused example below the 0.6 ratio threshold, so values-only is
-strictly better here but an inventory keyed by path would be missed. And two files carry
+strictly better here but an inventory keyed by path would be missed. Two files carry
 paths inside dict values that are justification *prose*; the element pattern rejects
 strings containing spaces to keep those out, but re-check any hit whose entries read
-like sentences.
+like sentences. And the second column is a **heuristic on the file**, so keep `WALKS`
+current: with `tracked_paths`/`repo_files` missing from it the search reported 8
+`ONLY RECORD` rather than 6, the two false positives being
+`scripts/tests/test_lambda_log_groups.py` and
+`scripts/tests/test_log_group_encryption.py`. Each discovers its templates through a
+**single** `tracked_paths` call (`:792` and `:514`) and each carries a real
+universe-closure test, so both were the opposite of an unchecked record. One call is all
+it takes, which is the trap: `grep -c tracked_paths` returns 3 and 4 for those files
+because it also counts the import and the comments, so do not read a grep count as a
+number of discovery sites.
 
 Then, for each fix landed since the last review (read `CHANGELOG.md`'s `### Fixed`
 entries and the PR numbers in them), do the same by hand: take the shape of that bug
@@ -751,6 +1079,8 @@ the pass in the date column and then withdrawn after investigation.
 | 2026-09 | `nested/bedrockkb/` declaring 5 Lambda functions and 0 `AWS::Logs::LogGroup` resources | Deliberate: those are custom-resource-only Lambdas that run during a stack operation and keep Lambda's auto-created log group, an accepted retention cost. `scripts/tests/test_lambda_log_groups.py` asserts exactly this shape |
 | 2026-09 | `last_exception` in `lib/idp_common_pkg/idp_common/bedrock/client.py` looks like a swallowed error | It is dead but harmless, and it is a **Python semantics trap a fresh reviewer will re-derive from scratch** — which is why it is here rather than left to be rediscovered. The three sites (`:1554`, `:2058`, `:2603`) are *function parameters*, not local variables, on the recursive retry helpers `_invoke_with_retry`, `_generate_embedding_with_retry` and `_invoke_lambda_hook_with_retry`; each is threaded down the recursion at the `last_exception=e` call sites and **never loaded** (verified by AST: zero `Name`-in-`Load` occurrences). Nothing is swallowed because every exhaustion path ends in a **bare `raise`** (`:1706` and `:1792` in the first helper, `:2165`, `:2746` and `:2768`), which re-raises the exception currently being handled in that frame — i.e. the most recent attempt's — which is what the parameter was presumably meant to supply. Dead code worth deleting; not an error-handling defect |
 | 2026-09 | "108 of 109 log groups are encrypted", i.e. one unencrypted log group | The **figure** is withdrawn as a conflation of two different statistics over the same population, and it carries a **scope trap** worth recording: 106 of 109 declare `KmsKeyId` and 108 of 109 take `RetentionInDays` from a parameter, and the denominator 109 only reproduces if you restrict to `template.yaml` (56), `patterns/unified/template.yaml` (20) and `nested/api-resolvers/template.yaml` (33). Against `scripts/discover_templates.sh cfn`'s **30** templates it is **158** log groups, 131 with `KmsKeyId` and 145 parameterised — so quoting "109" without naming the three-template scope is not reproducible. ⚠️ **Only the statistic is withdrawn, not the gap.** `HttpApiDispatcherLogGroup` (`nested/api-resolvers/template.yaml:2876`) is the sole exception on retention (hardcoded `30`) and one of *three* on encryption, and unlike the other two (`StacknameCheckFunctionLogGroup`, `ReadPreviousIDPPatternFunctionLogGroup`, which each carry a `cfn_nag` W84 suppression and a `checkov:skip` with a reason) it carries no suppression, comment or test saying the deviation is deliberate. That is a live finding, addressed by PR **#973** |
+| 2026-09 | `TEMPLATES` in `scripts/tests/test_lambda_log_groups.py:113` and `CMK_TEMPLATES` in `scripts/tests/test_log_group_encryption.py:143` are hardcoded template inventories with no cross-check | Both files **do** enumerate from the tree — each through one `scripts/tests/repo_files.py` `tracked_paths` call, at `:792` and `:514` — and both carry universe-closure tests, so a template added to the repo and not to the list fails rather than being silently uncovered. The lists are a second filter on an already-derived set, not the record of what should be there. They were reported because the Class 2 inventory search's `WALKS` pattern did not know about `tracked_paths`, which is the repo's third content-discovery helper after `discover_templates.sh` and `run_all_tests.py`; the pattern now names it. If you see either of these come back `ONLY RECORD` again, the regex has gone stale, not the tests |
+| 2026-09 | `scripts/tests/test_cfn_export_ownership.py` needs an append-only snapshot of host export names, so that withdrawing or moving one forces a deliberate acknowledgement | The property is already enforced, twice, and `PINNED_PRODUCERS` *is* that snapshot: `test_every_host_export_is_pinned` compares the produced suffixes against it **in both directions**, so a withdrawn name fails, and `test_host_exports_keep_their_pinned_producer` compares each name's producing template against the pin, so a move fails. Verified by probe — renaming one `Export.Name` in `feature-platform/main-stack-extensions/template.yaml` fails **three** tests. A second artifact would duplicate a passing check and add a third place to keep in step. ⚠️ **The gap the review actually found is a different one, and a snapshot does not close it:** `MARKETPLACE_EXTENSION_HOST_IMPORTS` records which *closed-source* extension imports which name, is a documented **lower bound** rather than a census, and is used only to cross-check manifest `featureId`s and to enrich a failure message — never to assert a template property. Those templates live in another repository, so nothing readable from here can enumerate them; an artifact that looked authoritative about consumers would be trusted more than it deserves. Leave the lower bound, labelled as one |
 
 When you withdraw a finding, **add a row here in the same PR as the report**, dated,
 with the reason in one sentence. When you keep a finding that looks like one of these,
@@ -782,7 +1112,10 @@ This matters because several of this skill's own worked examples are exactly tha
 runtime claims reasoned out from static structure. The `onError: fail` routing, the
 `SubIndex` query raising `ValidationException`, the `min-release-age` key being ignored
 by the pinned npm, and the set-literal X-Ray annotation being unusable are all
-**`inferred`**, not `measured`, however confident the reasoning looks. Label them that
+**`inferred`**, not `measured`, however confident the reasoning looks. The `SubIndex`
+one makes the point twice over: it was fixed on the strength of the inference alone,
+so whether the deny path it now takes ever ran against a real DynamoDB endpoint is
+*still* unmeasured. Label them that
 way per the output contract's rule 3, and where a live check would settle it, say which
 check. Do not run it — say it.
 

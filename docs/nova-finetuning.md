@@ -44,6 +44,18 @@ Install the required packages:
 pip install boto3 pillow python-dotenv datasets tqdm
 ```
 
+`create_finetuning_job.py` and `create_provisioned_throughput.py` also import
+`idp_common.model_finetuning`, so install the library from the local checkout as
+well (never by bare name — see
+[dependency-confusion.md](dependency-confusion.md)):
+```bash
+pip install -e "lib/idp_common_pkg[all]"
+```
+
+### Where the scripts live
+Every command on this page is written to run from the repository root; the four
+scripts are in `scripts/model_finetuning/`.
+
 ### Supported Model Types
 Currently supports Amazon Nova models:
 - Nova Lite (`amazon.nova-lite-v1:0`)
@@ -96,7 +108,7 @@ Your dataset should be prepared in the Bedrock fine-tuning format. Each training
 Use the provided script to prepare a dataset from the RVL-CDIP document classification dataset:
 
 ```bash
-python prepare_nova_finetuning_data.py \
+python scripts/model_finetuning/prepare_nova_finetuning_data.py \
     --bucket-name my-finetuning-bucket \
     --directory rvl-cdip-sampled \
     --samples-per-label 100 \
@@ -115,7 +127,7 @@ python prepare_nova_finetuning_data.py \
 
 **Basic dataset preparation:**
 ```bash
-python prepare_nova_finetuning_data.py \
+python scripts/model_finetuning/prepare_nova_finetuning_data.py \
     --bucket-name my-bucket \
     --samples-per-label 50
 ```
@@ -123,7 +135,7 @@ python prepare_nova_finetuning_data.py \
 **Using a custom dataset:**
 It should have the similar structure of [RVL-CDIP](https://huggingface.co/datasets/chainyo/rvl-cdip)
 ```bash
-python prepare_nova_finetuning_data.py \
+python scripts/model_finetuning/prepare_nova_finetuning_data.py \
     --bucket-name my-bucket \
     --local-dataset /path/to/local/dataset \
     --samples-per-label 75
@@ -131,7 +143,7 @@ python prepare_nova_finetuning_data.py \
 
 **With custom prompts:**
 ```bash
-python prepare_nova_finetuning_data.py \
+python scripts/model_finetuning/prepare_nova_finetuning_data.py \
     --bucket-name my-bucket \
     --samples-per-label 100 \
     --system-prompt-file custom_system.txt \
@@ -184,7 +196,7 @@ The default configuration supports 16 document classes from RVL-CDIP:
 Before creating fine-tuning jobs, set up the required IAM role:
 
 ```bash
-python create_finetuning_job.py \
+python scripts/model_finetuning/create_finetuning_job.py \
     --training-data-uri s3://my-bucket/data/train.jsonl \
     --output-uri s3://my-bucket/output/ \
     --job-name my-finetuning-job \
@@ -196,7 +208,7 @@ This automatically creates an IAM role with necessary permissions for Bedrock fi
 ### 2.2. Create Fine-tuning Job with Separate Validation Data
 
 ```bash
-python create_finetuning_job.py \
+python scripts/model_finetuning/create_finetuning_job.py \
     --training-data-uri s3://my-bucket/data/train.jsonl \
     --validation-data-uri s3://my-bucket/data/validation.jsonl \
     --output-uri s3://my-bucket/output/ \
@@ -208,7 +220,7 @@ python create_finetuning_job.py \
 ### 2.3. Create Fine-tuning Job with Automatic Data Splitting
 
 ```bash
-python create_finetuning_job.py \
+python scripts/model_finetuning/create_finetuning_job.py \
     --training-data-uri s3://my-bucket/data/train.jsonl \
     --output-uri s3://my-bucket/output/ \
     --job-name my-auto-split-job \
@@ -219,7 +231,7 @@ python create_finetuning_job.py \
 ### 2.4. Custom Hyperparameters
 
 ```bash
-python create_finetuning_job.py \
+python scripts/model_finetuning/create_finetuning_job.py \
     --training-data-uri s3://my-bucket/data/train.jsonl \
     --output-uri s3://my-bucket/output/ \
     --job-name custom-job \
@@ -238,14 +250,14 @@ python create_finetuning_job.py \
 
 Check job status:
 ```bash
-python create_finetuning_job.py \
+python scripts/model_finetuning/create_finetuning_job.py \
     --status-only \
     --job-arn arn:aws:bedrock:us-east-1:123456789012:model-customization-job/job-id
 ```
 
 Wait for completion with monitoring:
 ```bash
-python create_finetuning_job.py \
+python scripts/model_finetuning/create_finetuning_job.py \
     --training-data-uri s3://my-bucket/data/train.jsonl \
     --output-uri s3://my-bucket/output/ \
     --job-name monitored-job \
@@ -283,7 +295,7 @@ Job details are saved locally as JSON:
 ### 3.1. Create Provisioned Throughput from Job Details
 
 ```bash
-python create_provisioned_throughput.py \
+python scripts/model_finetuning/create_provisioned_throughput.py \
     --job-details-file finetuning_job_20241201_120000.json \
     --provisioned-model-name my-provisioned-model \
     --model-units 1
@@ -292,7 +304,7 @@ python create_provisioned_throughput.py \
 ### 3.2. Create Provisioned Throughput from Model ID
 
 ```bash
-python create_provisioned_throughput.py \
+python scripts/model_finetuning/create_provisioned_throughput.py \
     --model-id arn:aws:bedrock:us-east-1:123456789012:custom-model/... \
     --provisioned-model-name my-provisioned-model \
     --model-units 2
@@ -301,7 +313,7 @@ python create_provisioned_throughput.py \
 ### 3.3. Create Provisioned Throughput from Job ARN
 
 ```bash
-python create_provisioned_throughput.py \
+python scripts/model_finetuning/create_provisioned_throughput.py \
     --job-arn arn:aws:bedrock:us-east-1:123456789012:model-customization-job/... \
     --provisioned-model-name my-provisioned-model \
     --model-units 1
@@ -311,7 +323,7 @@ python create_provisioned_throughput.py \
 
 Check provisioning status:
 ```bash
-python create_provisioned_throughput.py \
+python scripts/model_finetuning/create_provisioned_throughput.py \
     --status-only \
     --provisioned-model-arn arn:aws:bedrock:us-east-1:123456789012:provisioned-model/...
 ```
@@ -319,7 +331,7 @@ python create_provisioned_throughput.py \
 ### 3.5. List All Provisioned Models
 
 ```bash
-python create_provisioned_throughput.py --list-models
+python scripts/model_finetuning/create_provisioned_throughput.py --list-models
 ```
 
 ### 3.6. Model Units Guidelines
@@ -337,14 +349,14 @@ python create_provisioned_throughput.py --list-models
 
 **With base model:**
 ```bash
-python inference_example.py \
+python scripts/model_finetuning/inference_example.py \
     --model-id us.amazon.nova-lite-v1:0 \
     --image-path document.png
 ```
 
 **With fine-tuned provisioned model:**
 ```bash
-python inference_example.py \
+python scripts/model_finetuning/inference_example.py \
     --provisioned-model-arn arn:aws:bedrock:us-east-1:123456789012:provisioned-model/... \
     --image-path document.png
 ```
@@ -353,7 +365,7 @@ python inference_example.py \
 
 Process multiple images:
 ```bash
-python inference_example.py \
+python scripts/model_finetuning/inference_example.py \
     --model-id us.amazon.nova-lite-v1:0 \
     --image-directory /path/to/images/ \
     --output-file results.json
@@ -363,7 +375,7 @@ python inference_example.py \
 
 Evaluate accuracy with known labels:
 ```bash
-python inference_example.py \
+python scripts/model_finetuning/inference_example.py \
     --model-id us.amazon.nova-lite-v1:0 \
     --image-directory /path/to/images/ \
     --ground-truth-file labels.json \
@@ -383,7 +395,7 @@ Ground truth file format (`labels.json`):
 
 Compare base model with fine-tuned model:
 ```bash
-python inference_example.py \
+python scripts/model_finetuning/inference_example.py \
     --provisioned-model-arn arn:aws:bedrock:us-east-1:123456789012:provisioned-model/... \
     --image-directory /path/to/images/ \
     --compare-with-base \
@@ -395,7 +407,7 @@ python inference_example.py \
 
 Use custom system and task prompts:
 ```bash
-python inference_example.py \
+python scripts/model_finetuning/inference_example.py \
     --model-id us.amazon.nova-lite-v1:0 \
     --image-path document.png \
     --system-prompt-file custom_system.txt \
@@ -406,7 +418,7 @@ python inference_example.py \
 
 Fine-tune inference behavior:
 ```bash
-python inference_example.py \
+python scripts/model_finetuning/inference_example.py \
     --model-id us.amazon.nova-lite-v1:0 \
     --image-path document.png \
     --temperature 0.1 \
@@ -527,7 +539,7 @@ Nova fine-tuning costs include:
 To avoid ongoing costs, delete provisioned throughput when not needed:
 
 ```bash
-python create_provisioned_throughput.py \
+python scripts/model_finetuning/create_provisioned_throughput.py \
     --delete \
     --provisioned-model-arn arn:aws:bedrock:us-east-1:123456789012:provisioned-model/...
 ```
@@ -595,7 +607,7 @@ python create_provisioned_throughput.py \
 
 **Enable verbose logging:**
 ```bash
-python inference_example.py \
+python scripts/model_finetuning/inference_example.py \
     --model-id us.amazon.nova-lite-v1:0 \
     --image-path document.png \
     --verbose
@@ -603,14 +615,14 @@ python inference_example.py \
 
 **Check job logs:**
 ```bash
-python create_finetuning_job.py \
+python scripts/model_finetuning/create_finetuning_job.py \
     --status-only \
     --job-arn <job-arn>
 ```
 
 **Monitor provisioning:**
 ```bash
-python create_provisioned_throughput.py \
+python scripts/model_finetuning/create_provisioned_throughput.py \
     --status-only \
     --provisioned-model-arn <model-arn>
 ```
@@ -640,9 +652,9 @@ python create_provisioned_throughput.py \
 
 - **IDP Common Library**: `genaiic-idp-accelerator/lib/idp_common_pkg/`
 - **Notebooks**: 
-  - [Dataset Preparation](../notebooks/finetuning_dataset_prep.ipynb)
-  - [Fine-tuning Service Demo](../notebooks/finetuning_model_service_demo.ipynb) 
-  - [Model Evaluation](../notebooks/finetuning_model_document_classification_evaluation.ipynb)
+  - [Dataset Preparation](../notebooks/misc/finetuning_dataset_prep.ipynb)
+  - [Fine-tuning Service Demo](../notebooks/misc/finetuning_model_service_demo.ipynb) 
+  - [Model Evaluation](../notebooks/misc/finetuning_model_document_classification_evaluation.ipynb)
 - **Python Scripts**:
   - `prepare_nova_finetuning_data.py`
   - `create_finetuning_job.py`
@@ -658,19 +670,19 @@ python create_provisioned_throughput.py \
 
 ```bash
 # 1. Prepare dataset
-python prepare_nova_finetuning_data.py --bucket-name my-bucket --samples-per-label 100
+python scripts/model_finetuning/prepare_nova_finetuning_data.py --bucket-name my-bucket --samples-per-label 100
 
 # 2. Create fine-tuning job  
-python create_finetuning_job.py --training-data-uri s3://my-bucket/train.jsonl --job-name my-job --create-role
+python scripts/model_finetuning/create_finetuning_job.py --training-data-uri s3://my-bucket/train.jsonl --job-name my-job --create-role
 
 # 3. Create provisioned throughput
-python create_provisioned_throughput.py --job-details-file job.json --provisioned-model-name my-model --model-units 1
+python scripts/model_finetuning/create_provisioned_throughput.py --job-details-file job.json --provisioned-model-name my-model --model-units 1
 
 # 4. Run inference
-python inference_example.py --provisioned-model-arn <arn> --image-directory /path/to/images --output-file results.json
+python scripts/model_finetuning/inference_example.py --provisioned-model-arn <arn> --image-directory /path/to/images --output-file results.json
 
 # 5. Clean up
-python create_provisioned_throughput.py --delete --provisioned-model-arn <arn>
+python scripts/model_finetuning/create_provisioned_throughput.py --delete --provisioned-model-arn <arn>
 ```
 
 ---

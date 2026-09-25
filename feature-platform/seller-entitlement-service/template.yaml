@@ -46,7 +46,7 @@ Mappings:
   # would ever substitute it. Hence a literal.
   ServiceMeta:
     ServiceVersion:
-      Value: '0.6.9'
+      Value: '0.6.10'
 
 Parameters:
   ProductRegistryJson:
@@ -113,7 +113,15 @@ Parameters:
 
   LogLevel:
     Type: String
-    Default: 'INFO'
+    # WARN, matching the root template. This service is deployed standalone by a
+    # seller (`make seller-entitlement-service` / `idp-feature-cli seller-service
+    # deploy`), and that path never passes LogLevel -- see the override list built in
+    # lib/idp_feature_sdk/idp_feature_sdk/seller_service.py, which names
+    # ProductRegistryJson, AllowedAccounts, TokenTtlSeconds and one region parameter.
+    # So this value is literally what a seller gets. There is also no feature.yaml
+    # here, so the installer-manifest route that supplies a value to the catalog
+    # features does not exist for this service either.
+    Default: 'WARN'
     AllowedValues: ['DEBUG', 'INFO', 'WARN', 'WARNING', 'ERROR']
 
   LogRetentionInDays:

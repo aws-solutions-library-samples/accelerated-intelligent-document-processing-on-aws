@@ -86,16 +86,18 @@ npm --version (Example: 11.0.0)
 ```
 ### 4.2 Install the IDP CLI
 
-⚠️ **Critical**: Install packages in this exact order to avoid "No such command" errors.
+⚠️ **Critical**: install all three packages in a **single** `pip install`, from the
+repository root. They require each other by name, those names on public PyPI belong
+to unrelated parties, and installing them one at a time lets pip resolve a
+not-yet-installed sibling from the index instead of from `lib/`. See
+[Installing First-Party Packages Safely](dependency-confusion.md).
 
 ```bash
 cd accelerated-intelligent-document-processing-on-aws
-pip install -e lib/idp_common_pkg
-pip install -e lib/idp_sdk
-pip install -e lib/idp_cli_pkg
+pip install -e lib/idp_common_pkg -e lib/idp_sdk -e lib/idp_cli_pkg
 ```
 
-> **Note**: This installs the `idp-cli` command along with all required Python dependencies.
+> **Note**: This installs the `idp-cli` command along with all required Python dependencies. `make setup` does the same thing and adds the rest of the development dependencies.
 
 ### 4.3 Test Build Process
 

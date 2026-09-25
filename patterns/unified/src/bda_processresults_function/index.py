@@ -25,10 +25,17 @@ logging.getLogger("idp_common.bedrock.client").setLevel(
 )
 # Get LOG_LEVEL from environment variable with INFO as default
 
-# Use the common S3 client
+# Use the common S3 client. Constructed at module scope deliberately: a warm
+# invocation reuses it, and `s3` is the one service botocore resolves without a
+# region, so importing this module needs no AWS configuration. The `ssm` and
+# `bedrock-data-automation` clients that used to sit here were never referenced
+# anywhere in the file, and both are regional-only — so they did nothing except
+# make the module impossible to import without a region. Every other AWS client
+# this handler uses — DynamoDB for the HITL tracking row, the BDA *runtime*
+# client for a blueprint-change job lookup — is built inside the function that
+# uses it. Enforced by
+# patterns/unified/tests/test_handler_imports_are_region_free.py.
 s3_client = get_s3_client()
-ssm_client = boto3.client("ssm")
-bedrock_client = boto3.client("bedrock-data-automation")
 
 
 def is_hitl_enabled(config_version=None, config_revision=None):
@@ -907,7 +914,7 @@ def process_bda_pages(
         return document
 
 
-def parse_s3_path(s3_uri: str) -> (str, str):
+def parse_s3_path(s3_uri: str) -> tuple[str, str]:
     """Extract bucket and key from s3:// URI.
 
     Delegates to idp_common.utils.parse_s3_uri, which splits on '/' instead of
@@ -1005,12 +1012,18 @@ def process_keyvalue_details(
         """Convert path array to flattened key notation."""
         formatted = []
         for part in path_parts:
-            if isinstance(part, int) or (
-                isinstance(part, str) and part.startswith("_")
-            ):
-                formatted[-1] += f"[{part[1:]}]"
+            # traverse() encodes a list index as the string "_<i>", so the "_"
+            # is sliced off to recover the index. A bare int is accepted
+            # defensively and IS the index already -- subscripting one raises
+            # TypeError, which is what this branch used to do.
+            if isinstance(part, int):
+                index = str(part)
+            elif isinstance(part, str) and part.startswith("_"):
+                index = part[1:]
             else:
                 formatted.append(str(part))
+                continue
+            formatted[-1] += f"[{index}]"
         return ".".join(formatted)
 
     def traverse(data: dict, path: list = None, current_page: int = None):

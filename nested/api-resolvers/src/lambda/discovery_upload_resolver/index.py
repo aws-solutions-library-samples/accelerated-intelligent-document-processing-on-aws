@@ -11,6 +11,7 @@ from datetime import datetime, timedelta, timezone
 
 import boto3
 from botocore.config import Config
+import idp_common.s3_targets as s3_targets
 from idp_common.utils.log_sanitizer import sanitize_event_for_logging
 
 logger = logging.getLogger()
@@ -26,6 +27,10 @@ s3_config = Config(
     s3={"addressing_style": _s3_addressing},
 )
 s3_client = boto3.client("s3", endpoint_url=_s3_endpoint_url, config=s3_config)
+
+# Which bucket and key this resolver may target. See s3_targets: one allow-list
+# shared with get_file_contents_resolver (read) and upload_resolver (write).
+ALLOWED_BUCKETS = s3_targets.resolve_allowed_buckets()
 sqs_client = boto3.client('sqs')
 dynamodb = boto3.resource('dynamodb')
 
@@ -137,6 +142,10 @@ def handle_auto_detect_sections(event, context):
 
     if not document_key or not bucket:
         raise ValueError("documentKey and bucket are required")
+
+    # A read rather than a write, so the bucket allow-list applies and the write-once
+    # key rule does not.
+    s3_targets.assert_bucket_allowed(bucket, ALLOWED_BUCKETS, logger=logger)
 
     logger.info(f"Auto-detecting sections for s3://{bucket}/{document_key}, version={version}")
 
@@ -252,6 +261,17 @@ def create_s3_signed_post_url(bucket_name, content_type, file_name, file_type, p
         object_key = f"{prefix}/{file_type}/{timestamp}_{sanitized_file_name}"
     else:
         object_key = f"{file_type}/{timestamp}_{sanitized_file_name}"
+
+    # Constrain the target here, at the one choke point every presign path in this
+    # module goes through, rather than at each caller. `bucket` and `prefix` are
+    # request arguments and this function's role holds write on the discovery bucket,
+    # so the request is bounded here or not at all. Same allow-list the read path in
+    # get_file_contents_resolver and the write path in upload_resolver use, plus the
+    # write-once key rule. Raises PermissionError -> HTTP 403.
+    s3_targets.assert_write_target_allowed(
+        bucket_name, object_key, ALLOWED_BUCKETS, logger=logger
+    )
+
     # Generate a presigned POST URL for uploading
     logger.info(f"Generating presigned POST data for: {object_key} with content type: {content_type}")
     presigned_post = s3_client.generate_presigned_post(

@@ -43,6 +43,8 @@ from .models import (
     # Discovery models
     AutoDetectResult,
     AutoDetectSection,
+    BaselineInfo,
+    BaselineResult,
     # Batch models
     BatchDeletionResult,
     BatchDownloadResult,
@@ -53,6 +55,8 @@ from .models import (
     BatchRerunResult,
     BatchResult,
     BatchStatus,
+    BucketInfo,
+    CancelUpdateResult,
     # Chat models
     ChatResponse,
     # Config models
@@ -61,12 +65,17 @@ from .models import (
     ConfigDeleteResult,
     ConfigDownloadResult,
     ConfigListResult,
+    ConfigRevisionInfo,
+    ConfigRevisionListResult,
     ConfigSyncBdaResult,
     ConfigUploadResult,
     ConfigValidationResult,
     ConfigVersionInfo,
+    DeleteResult,
+    DiscoveredClassResult,
     DiscoveryBatchResult,
     DiscoveryResult,
+    DocumentBucket,
     # Document models
     DocumentDeletionResult,
     DocumentDownloadResult,
@@ -85,11 +94,15 @@ from .models import (
     EvaluationMetrics,
     EvaluationReport,
     ExecutionsStoppedResult,
+    FailureAnalysis,
+    FailureCause,
+    FieldComparison,
     # Manifest models
     LoadTestResult,
     ManifestDocument,
     ManifestResult,
     ManifestValidationResult,
+    MultiDocDiscoveryResult,
     # Stack models
     OrphanedResourceCleanupResult,
     # Enums
@@ -103,13 +116,20 @@ from .models import (
     SearchResult,
     StackDeletionResult,
     StackDeploymentResult,
+    StackMonitorResult,
+    StackOperationInProgress,
     StackResources,
+    StackStableStateResult,
     StackState,
     StopWorkflowsResult,
     TemplateTransformResult,
+    TestComparisonResult,
+    TestRunResult,
+    UseAsBaselineResult,
+    classify_document_state,
 )
 
-__version__ = "0.6.9"
+__version__ = "0.6.10"
 
 __all__ = [
     # Client
@@ -125,8 +145,11 @@ __all__ = [
     # Enums
     "StackState",
     "DocumentState",
+    "DocumentBucket",
     "Pattern",
     "RerunStep",
+    # State classification
+    "classify_document_state",
     # Publish models
     "PublishResult",
     "TemplateTransformResult",
@@ -134,6 +157,13 @@ __all__ = [
     "StackDeploymentResult",
     "StackDeletionResult",
     "StackResources",
+    "StackOperationInProgress",
+    "StackMonitorResult",
+    "StackStableStateResult",
+    "FailureCause",
+    "FailureAnalysis",
+    "BucketInfo",
+    "CancelUpdateResult",
     "OrphanedResourceCleanupResult",
     # Batch models
     "BatchResult",
@@ -161,6 +191,11 @@ __all__ = [
     "EvaluationReport",
     "EvaluationMetrics",
     "EvaluationBaselineListResult",
+    "BaselineResult",
+    "BaselineInfo",
+    "FieldComparison",
+    "DeleteResult",
+    "UseAsBaselineResult",
     # Assessment models
     "AssessmentConfidenceResult",
     "AssessmentFieldConfidence",
@@ -181,11 +216,15 @@ __all__ = [
     "ConfigListResult",
     "ConfigDeleteResult",
     "ConfigSyncBdaResult",
+    "ConfigRevisionInfo",
+    "ConfigRevisionListResult",
     # Discovery models
     "DiscoveryResult",
     "DiscoveryBatchResult",
     "AutoDetectResult",
     "AutoDetectSection",
+    "DiscoveredClassResult",
+    "MultiDocDiscoveryResult",
     # Manifest models
     "ManifestDocument",
     "ManifestResult",
@@ -195,4 +234,6 @@ __all__ = [
     "ExecutionsStoppedResult",
     "DocumentsAbortedResult",
     "LoadTestResult",
+    "TestRunResult",
+    "TestComparisonResult",
 ]

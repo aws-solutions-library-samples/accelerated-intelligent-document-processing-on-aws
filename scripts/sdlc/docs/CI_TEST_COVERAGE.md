@@ -118,7 +118,8 @@ ran on that change.
 ⚠️ **A workflow makes a check visible, not blocking.** Both check names have to be
 added to the branch-protection rule for `develop` as *required status checks*, or a
 PR can still be merged while they are red or pending. **Today they are not**, and
-`develop` has no branch protection at all — so every gate on this page is advisory.
+**neither `develop` nor `main` has any branch protection** — `main` being the default
+branch and the one releases are cut from — so every gate on this page is advisory.
 
 Run `make check-branch-protection` to measure it rather than trust this paragraph.
 It parses `.github/workflows/*.yml` for the job names GitHub turns into check
@@ -126,18 +127,20 @@ contexts and compares them with the live required-check list, reporting anything
 required-but-never-reported (a renamed job) or reported-but-not-required (a new
 gate).
 
-Three contexts cover every gate on this page. All eight of
-`test_ci_gate_parity.py`'s `SHARED_GATES` are *steps* inside a **single** job,
-`developer_tests`, and GitHub can only require job-level contexts, never
-individual steps — so those eight gates collapse to exactly **one** requireable
-context, not eight and not three. That has a practical consequence worth knowing
-before you read a red check: because the eight share one context, they also share
-one red mark, so a required-check failure does not say which of the eight failed.
-The other two contexts are the two security jobs, one each.
+Three contexts cover every gate on this page. `test_ci_gate_parity.py`'s
+`SHARED_GATES` names ten shared gates, and eight of the ten are *steps* inside a
+**single** job, `developer_tests`; GitHub can only require job-level contexts, never
+individual steps, so those eight collapse to exactly **one** requireable context
+rather than one per gate. That has a practical consequence worth knowing before you
+read a red check: because the eight share one context, they also share one red mark,
+so a required-check failure does not say which of them failed. The remaining two
+shared gates — the SRT scan and the dependency audit — are jobs of their own in
+`security-checks.yml`, one context each, which is how ten gates produce three
+requireable contexts.
 
 | Check context | Workflow / job | Covers |
 |---|---|---|
-| `Lint, Type Check, and Test` | `developer-tests.yml` / `developer_tests` | all eight shared gates: `lint-cicd`, `typecheck-pr`, `api-test-static`, `test-cicd`, `test-packages-cicd`, vitest, first-party dep check, service-role permissions |
+| `Lint, Type Check, and Test` | `developer-tests.yml` / `developer_tests` | eight of the ten shared gates: `lint-cicd`, `typecheck`, `api-test-static`, `test-cicd`, `test-packages-cicd`, vitest, first-party dep check, service-role permissions |
 | `SRT Security Review` | `security-checks.yml` / `srt_security_review` | `srt-setup`, `srt-scan` |
 | `Dependency Audit (SCA)` | `security-checks.yml` / `dep_audit` | `scripts/security/dep_audit.py` |
 
@@ -164,8 +167,11 @@ enterprise: four `target=repository`, one `target=tag`), so the tool reaches a
 `protected: null` when even that read fails, which is not the same as `false`.
 
 The command is opt-in and is in neither `lint-cicd` nor `SHARED_GATES`, because
-enabling protection needs repository **admin** — tracked by
-[issue #933](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/933).
+enabling protection needs repository **admin**, which no contributor and no CI token
+here has. That is a known, accepted residual rather than open work, and the decision
+is recorded in closed
+[issue #933](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/933);
+cite it as the decision record, not as a pending task.
 A `pull`-scoped token is enough to run it, and enough to check one of the six
 assertions after protection is enabled: `.../branches/develop` carries a nested
 `protection.required_status_checks` object at that scope, so the required-check
@@ -174,17 +180,22 @@ comparison is made from it rather than being abandoned as unverifiable.
 dismissal, the force-push and deletion blocks, and `enforce_admins` — and a run
 without it emits a `protection_detail_unreadable` finding saying those five are
 unverified rather than verified-good, so such a run still exits non-zero.
-Once that is closed it should become a required, blocking check, run with
-`--fail-on-skip`.
+
+It becomes a required, blocking check, run with `--fail-on-skip`, when a repository
+**setting** changes — either somebody with repository admin enables protection, or an
+organization or enterprise owner publishes a **branch ruleset** targeting these
+branches, which needs no repository admin at all. Nothing in the repository can
+substitute in the meantime: enforcement is server-side, so a merge taken through
+GitHub's own Merge button runs no code from this tree.
 
 **Trigger matrix** — what runs, when:
 
-| Event | fast_checks (code + SRT) | deployment_validation | integration_tests |
-|-------|:---:|:---:|:---:|
-| Push to any branch, **no MR** | ✅ | — | — |
-| Push to branch with a **Draft** MR → `develop` | ✅ | ✅¹ | ▶️ **manual** (button on MR) |
-| Push to branch with a **non-Draft** MR → `develop` | ✅ | ✅¹ | ✅ auto¹ |
-| Push to **`develop`** | ✅ | ✅¹ | ✅ auto¹ |
+| Event | fast_checks (code + SRT) | ai_mr_review² | deployment_validation | integration_tests |
+|-------|:---:|:---:|:---:|:---:|
+| Push to any branch, **no MR** | ✅ | — | — | — |
+| Push to branch with a **Draft** MR → `develop` | ✅ | — | ✅¹ | ▶️ **manual** (button on MR) |
+| Push to branch with a **non-Draft** MR → `develop` | ✅ | ✅ auto | ✅¹ | ✅ auto¹ |
+| Push to **`develop`** | ✅ | — | ✅¹ | ✅ auto¹ |
 
 ¹ **Doc-only commits skip the deploy stages.** `deployment_validation` and the
 auto `integration_tests` only run when the commit/MR touches a **deploy-affecting
@@ -196,6 +207,61 @@ path** (the `.deploy_affecting_changes` allowlist in `.gitlab-ci.yml`:
 is deliberately generous (a false "run" wastes CI minutes; a false "skip" could
 merge a broken deploy). The **Draft-MR manual button ignores this filter** — you
 can always force a deploy by clicking it, even on a doc-only branch.
+
+² **`ai_mr_review` is advisory, is not a gate, and does not run on its own.** It
+runs Claude Code (via Bedrock) over the MR diff with
+`.claude/skills/pr-review.md` and posts the review as an MR note; it is
+`allow_failure: true`, has `needs: []` so it does not wait for `code_checks`, and
+it is deliberately absent from `test_ci_gate_parity.py`'s `SHARED_GATES` — a
+model's opinion must not decide whether code merges, and a Bedrock throttle must
+not red-line an MR. It is **GitLab-only** because the AWS credentials are here; a
+GitHub equivalent would need its own OIDC role.
+
+⚠️ **It runs automatically, and it costs real money per run.** A 5,400-line MR
+measured **$3.42** in CI ($6.12 locally), and reviews are idempotent per head SHA,
+so a new push means a new paid review. Three things bound that and all three must
+stay: `interruptible: true` (a push mid-review cancels it, so a burst costs about
+one review rather than one per push — this is the main protection and it is one
+line), Draft MRs excluded (the WIP phase, where pushes are frequent, is free), and
+exactly one triggering rule with **no scheduled sweep** — the script supports one
+(`--all-open`) but enabling it applies the per-push multiplier to the whole open
+queue. The unbounded residual is pushes spaced further apart than a review takes
+(~9 min in CI); if that dominates, add a cooldown in `ai_mr_review.py` rather than
+reverting to a manual button. Pinned by
+`test_the_automatic_trigger_keeps_its_cost_bounds`.
+
+Automatic also means no human is in the loop before a model reads
+author-controlled text, which is why the sandbox note below matters.
+
+⚠️ **The tool sandbox is enforced by `--permission-mode manual` in the argv, not
+by a settings file.** `--allowedTools` is *additive*, so a machine whose
+`~/.claude/settings.json` sets `"defaultMode": "bypassPermissions"` grants the
+review every tool regardless of the lists. That is not hypothetical: the first
+live run executed `make cfn-lint`, several `make check-*` targets and the MR's own
+pytest suite on the operator's machine — arbitrary code execution from an MR diff,
+beside an AWS credential. `scripts/tests/test_ai_mr_review.py` pins the flag, and
+`AI_REVIEW_LIVE_PROBE=1` runs an opt-in probe that measures the refusal.
+
+⚠️ **The model's output is escaped before it is posted, because GitLab executes
+quick actions in a note body.** A line whose first non-whitespace character is `/`
+— `/approve`, `/merge`, `/close` — is run as a command with the posting token's
+permissions, so every line of the review gets a leading backslash (`/` is ASCII
+punctuation, so CommonMark renders `\/merge` as `/merge` while the raw line no
+longer starts a command). This is the one control that is about the **parent**
+rather than the child: the reviewing process holds no credential, and that says
+nothing about the process which submits its output holding one. The path needs no
+malicious model — the prompt asks the review to quote suspicious text when
+reporting an injection attempt. Give the token the least role that can create a
+note, so a quick action that did get through could not merge or approve.
+
+It needs a `GITLAB_REVIEW_TOKEN` CI variable (project access token, `api` scope,
+**masked and NOT protected** — a protected variable is absent from the MR-branch
+pipelines this job runs in) — without it the job prints `SKIPPED:` and exits 0.
+Run it by hand with `make ai-mr-review`, `make ai-mr-review-dry MR=<iid>` to see a
+review without posting it, or `make ai-mr-review-local MR=<iid>` from a laptop,
+which takes the MR head from git over SSH because this instance's REST API sits
+behind federated sign-in and a token alone cannot reach it. The unattended
+contract is `.claude/skills/pr-review-ci.md`.
 
 Notes:
 - **Every push runs fast_checks** (code checks + SRT), so lint/typecheck/unit and
@@ -1288,9 +1354,9 @@ but revisit:
 
 ## Related Documentation
 
-- [CHANGELOG.md](../../CHANGELOG.md) - Feature changes and test additions
-- [CLAUDE.md](../../CLAUDE.md) - Project architecture and build commands
-- [docs/test-studio.md](../../docs/test-studio.md) - Test Studio user guide
-- [scripts/sdlc/README.md](../README.md) - SDLC infrastructure setup
+- [CHANGELOG.md](../../../CHANGELOG.md) - Feature changes and test additions
+- [CLAUDE.md](../../../CLAUDE.md) - Project architecture and build commands
+- [docs/test-studio.md](../../../docs/test-studio.md) - Test Studio user guide
+- [scripts/sdlc/cfn/README.md](../cfn/README.md) - SDLC infrastructure setup
 - [scripts/sdlc/cfn/codepipeline-s3.yml](../cfn/codepipeline-s3.yml) - CodeBuild IAM permissions
 

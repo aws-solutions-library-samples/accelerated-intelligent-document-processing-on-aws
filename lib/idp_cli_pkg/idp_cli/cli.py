@@ -7,12 +7,19 @@ IDP CLI - Main Command Line Interface
 Command-line tool for batch document processing with the IDP Accelerator.
 """
 
+import contextlib
+import fnmatch
 import json
 import logging
 import os
 import sys
 import time
-from typing import TYPE_CHECKING, Any, Dict, Optional
+from pathlib import Path
+from typing import TYPE_CHECKING, Any, Dict, List, Optional
+
+# Stdlib-only and in this package, so it belongs to neither import tier below: it
+# cannot fail to import and nothing has to be stubbed for it.
+from .parameters import parse_parameters
 
 _SETUP_HELP = """\
 Error: Required packages not found.
@@ -48,6 +55,7 @@ try:
     import click
     from rich.console import Console
     from rich.live import Live
+    from rich.markup import escape
     from rich.table import Table
 except ImportError as exc:
     print(_SETUP_HELP, file=sys.stderr)
@@ -66,12 +74,15 @@ except ImportError as exc:
 # real cause.
 try:
     from idp_sdk import IDPClient
+    from idp_sdk.models import DocumentBucket, classify_document_state
 
     from . import display
 except ImportError as exc:
     _IMPORT_ERROR = exc
     if not TYPE_CHECKING:
         IDPClient = None
+        DocumentBucket = None
+        classify_document_state = None
         display = None
 
 # Configure logging
@@ -166,6 +177,9 @@ def _build_from_local_code(
         region: AWS region
         stack_name: CloudFormation stack name (unused but kept for signature compatibility)
         headless: If True, also generate a headless template variant.
+        govcloud: If True, generate and deploy the GovCloud template variant
+            (CloudFront removed, API Gateway UI hosting). Mutually exclusive
+            with `headless` at the command layer.
         bucket: S3 bucket basename for artifacts (auto-generated if not provided).
         prefix: S3 key prefix for artifacts (default: idp-cli).
         public: If True, make artifacts publicly readable.
@@ -177,10 +191,14 @@ def _build_from_local_code(
 
     Returns:
         Tuple of (template_path, template_url) on success.
-        If headless, returns the headless template path/url instead.
+        If headless, returns the headless template path/url instead; if
+        govcloud, the GovCloud path/url, which takes precedence.
 
     Raises:
-        SystemExit: On build failure
+        SystemExit: On build failure, and when `govcloud` was requested but the
+            build produced no GovCloud template variant — deploying the
+            commercial template into a GovCloud partition is refused rather
+            than done silently.
     """
     console.print("[bold cyan]Building project from source...[/bold cyan]")
     console.print(f"[dim]Source: {from_code_dir}[/dim]")
@@ -216,8 +234,41 @@ def _build_from_local_code(
 
         console.print()
 
-        # Return govcloud template if govcloud mode
-        if govcloud and result.govcloud_template_path:
+        # Return govcloud template if govcloud mode.
+        #
+        # A build that reported success without emitting the variant is REFUSED
+        # rather than falling back to the plain template. The fallback is not a
+        # degraded outcome, it is a broken one: the commercial template declares
+        # `AWS::CloudFront::*` resources, which no GovCloud partition has, so the
+        # first sign of the ignored flag is a CloudFormation failure minutes into
+        # the deploy on a resource that looks unrelated to it. Issue #1233.
+        if govcloud:
+            if not result.govcloud_template_path:
+                # The path the publish build writes the variant to, named in full
+                # so the remedy below can be pasted from whatever directory this
+                # was run in rather than only from the source tree.
+                expected = os.path.join(from_code_dir, ".aws-sam", "idp-govcloud.yaml")
+                console.print(
+                    "[red]✗ Error: --govcloud was requested but the build did not "
+                    f"produce a GovCloud template variant ({expected}).[/red]"
+                )
+                console.print(
+                    "  Refusing to deploy the commercial template instead: its "
+                    "CloudFront resources do not exist in a GovCloud partition."
+                )
+                console.print("  To produce the GovCloud template, run:")
+                console.print(
+                    f"    [cyan]idp-cli publish --source-dir {from_code_dir} "
+                    f"--region {region} --govcloud[/cyan]"
+                )
+                console.print(
+                    "  which reports why the transform produced nothing. To deploy "
+                    "a transformed template you already have, pass it explicitly:"
+                )
+                console.print(
+                    f"    [cyan]idp-cli deploy --template-file {expected} ...[/cyan]"
+                )
+                sys.exit(1)
             console.print(
                 f"[green]✓ Build complete (GovCloud). Template: {result.govcloud_template_path}[/green]"
             )
@@ -362,15 +413,17 @@ def _parse_tags(tags: Optional[str]) -> Dict[str, str]:
     . : / + - _, so we split on commas then on the first '=' rather than
     using a key-name regex. Commas are not supported inside tag values.
 
+    The comma split goes through `_comma_separated_values` like every other
+    comma-separated option in this module, which is where the stripping and the
+    dropping of blank segments now happen. That used to be two inlined lines here, and
+    a second implementation of a rule is a second place for it to be wrong.
+
     Raises click.BadParameter on malformed input (missing '=' or empty key).
     """
     result: Dict[str, str] = {}
     if not tags:
         return result
-    for pair in tags.split(","):
-        pair = pair.strip()
-        if not pair:
-            continue
+    for pair in _comma_separated_values(tags):
         if "=" not in pair:
             raise click.BadParameter(
                 f"Invalid tag '{pair}'. Expected key=value,key2=value2.",
@@ -388,8 +441,35 @@ def _parse_tags(tags: Optional[str]) -> Dict[str, str]:
     return result
 
 
+def _print_orphaned_blueprints(arns: Optional[List[str]]) -> None:
+    """Report blueprints a BDA sync disassociated but could not delete.
+
+    A replace-mode sync rewrites the project's blueprint list before deleting, because
+    BDA refuses to delete a blueprint a project still associates. So a delete that
+    fails leaves one that no project-scoped read can see, that still counts against the
+    account's blueprint limit, and that a name-prefix match can still pick up. It is
+    not a class failure — the classes may all have synced — so it is printed as its own
+    warning beside the result rather than changing the counts.
+    """
+    if not arns:
+        return
+    console.print(
+        f"  [yellow]⚠ {len(arns)} blueprint(s) were removed from the BDA project but "
+        f"could not be deleted, so they remain in the account:[/yellow]"
+    )
+    for arn in arns:
+        console.print(f"    • {arn}")
+    console.print(
+        "  [yellow]They are removed by the orphaned-blueprint cleanup: run "
+        "`idp-cli config-sync-bda --stack-name <stack> --direction cleanup-orphaned` "
+        "(or the syncBdaIdp API operation with direction 'cleanup_orphaned'). The "
+        "cleanup is account-wide and deletes every prefixed blueprint the profile "
+        "does not account for, so pass the same --config-profile.[/yellow]"
+    )
+
+
 @click.group()
-@click.version_option(version="0.6.9")
+@click.version_option(version="0.6.10")
 def cli():
     """
     IDP CLI - Batch document processing for IDP Accelerator
@@ -447,7 +527,16 @@ def cli():
     "--enable-hitl",
     default="false",
     type=click.Choice(["true", "false"]),
-    help="Enable Human-in-the-Loop (default: false)",
+    # Kept as an accepted-and-refused flag rather than removed: `--enable-hitl
+    # false` is the default and has always been a no-op, so a script passing it
+    # explicitly keeps working, while `true` — which has never deployed, since the
+    # root template dropped EnableHITL in v0.4.11 — now says so instead of failing
+    # at CreateStack with an undeclared-parameter error.
+    help=(
+        "Deprecated and refused if 'true'. HITL is a configuration setting, not a "
+        "stack parameter: enable it in the Web UI under Configuration → "
+        "Assessment & HITL Configuration, or in the config YAML."
+    ),
 )
 @click.option(
     "--custom-config",
@@ -585,6 +674,19 @@ def deploy(
                 "[red]✗ Error: --headless and --govcloud are mutually exclusive. "
                 "--headless removes the UI entirely; --govcloud keeps the UI but "
                 "removes CloudFront and uses API Gateway hosting.[/red]"
+            )
+            sys.exit(1)
+
+        if enable_hitl == "true":
+            # Refused up front rather than after a template build and upload. The
+            # root template stopped declaring EnableHITL in v0.4.11, so this has
+            # only ever ended in "Parameters: [EnableHITL] do not exist in the
+            # template" at CreateStack, with nothing created.
+            console.print(
+                "[red]✗ Error: --enable-hitl is no longer a stack parameter.[/red]\n"
+                "  HITL became a configuration setting in v0.4.11. Enable it in the "
+                "Web UI under Configuration → Assessment & HITL Configuration, or "
+                "in the config YAML passed to --custom-config."
             )
             sys.exit(1)
 
@@ -862,21 +964,15 @@ def deploy(
 
         console.print()
 
-        # Parse additional parameters
-        additional_params = {}
-        if parameters:
-            # Parse key=value pairs separated by commas, but handle values
-            # that themselves contain commas (e.g., subnet lists).
-            # Strategy: split on commas that are followed by a key= pattern.
-            import re
-
-            for match in re.finditer(
-                r"([A-Za-z][A-Za-z0-9]*)=((?:(?![A-Za-z][A-Za-z0-9]*=).)*)",
-                parameters,
-            ):
-                key = match.group(1).strip()
-                value = match.group(2).strip().rstrip(",")
-                additional_params[key] = value
+        # Parse additional parameters. The grammar, the three shapes it used to
+        # mis-read silently, and why it is committed twice are all in
+        # idp_cli/parameters.py. Anything it could not read is printed here
+        # rather than dropped: a parameter that never reached CloudFormation is
+        # indistinguishable afterwards from one submitted at its default.
+        additional_params = parse_parameters(
+            parameters,
+            on_warning=lambda message: console.print(f"[yellow]⚠ {message}[/yellow]"),
+        )
 
         if _default_email_mutable_for_new_federated_stack(
             additional_params, stack_exists=stack_exists, headless=headless
@@ -913,7 +1009,9 @@ def deploy(
                 admin_email=admin_email,
                 max_concurrent=max_concurrent if max_concurrent != 100 else None,
                 log_level=log_level,
-                enable_hitl=enable_hitl == "true" if enable_hitl != "false" else None,
+                # No enable_hitl: "true" exits above, so this could only ever pass
+                # None. The kwarg still exists on client.stack.deploy for callers
+                # outside this CLI, where it raises with the same explanation.
                 custom_config=custom_config,
                 parameters=additional_params,
                 tags=tags_dict or None,
@@ -1259,12 +1357,25 @@ def delete(
             )
 
         # Show CloudFormation deletion results.
-        # success=True  → deletion completed (waited to DELETE_COMPLETE)
-        # success=False + status=INITIATED → deletion started but not waited on
-        # success=False + other status    → genuine failure
-        initiated_only = not result.success and result.status == "INITIATED"
+        #   status=INITIATED → deletion started, not waited on (no --wait)
+        #   success=True     → deletion completed (waited to DELETE_COMPLETE)
+        #   otherwise        → genuine failure
+        #
+        # The INITIATED test comes first and does NOT also require `success` to be
+        # false. `StackOperation.delete` computes
+        # `success = result.get("success", status == "INITIATED")` and the underlying
+        # no-wait path sets no `success` key, so an initiated-but-unwaited deletion
+        # arrives as `success=True, status="INITIATED"`: the old
+        # `not result.success and result.status == "INITIATED"` could never be true.
+        # A user omitting `--wait` was told "✓ Stack deleted successfully!" while
+        # CloudFormation was still deleting, with "Status: INITIATED" as the only
+        # hint, and never saw the console path or the `--force --wait` command below.
+        initiated_only = result.status == "INITIATED"
+        # Set when --force-delete-all suppresses the early exit so the cleanup phase
+        # can run; exited on at the end of the command.
+        deletion_failed = False
 
-        if result.success:
+        if result.success and not initiated_only:
             console.print("\n[green]✓ Stack deleted successfully![/green]")
             console.print(f"Stack: {stack_name}")
             console.print(f"Status: {result.status}")
@@ -1294,6 +1405,13 @@ def delete(
             if not force_delete_all:
                 sys.exit(1)
             else:
+                # The early exit is skipped on purpose so the cleanup phase below
+                # still runs — that is what --force-delete-all is for. But nothing
+                # then set a failing code, so a stack that failed to delete was
+                # indistinguishable to a caller from one that deleted cleanly
+                # (#1230). Recorded here and exited on at the end, after the
+                # cleanup has had its run.
+                deletion_failed = True
                 console.print()
                 console.print(
                     "[yellow]Stack deletion failed, but continuing with force cleanup...[/yellow]"
@@ -1364,8 +1482,11 @@ def delete(
                 console.print(
                     "[yellow]Some resources may remain - check AWS Console[/yellow]"
                 )
-        elif result.success:
-            # Standard deletion without force-delete-all — stack was fully deleted
+        elif result.success and not initiated_only:
+            # Standard deletion without force-delete-all — stack was fully deleted.
+            # `not initiated_only` matters: this note reads as a post-mortem of a
+            # finished deletion, and it was printing under a deletion that had only
+            # been started, reinforcing the false "deleted successfully" above it.
             console.print()
             console.print(
                 "[bold]Note:[/bold] LoggingBucket (if exists) is retained by design."
@@ -1373,6 +1494,13 @@ def delete(
             console.print("Delete it manually if no longer needed:")
             console.print("  [cyan]aws s3 rb s3://<logging-bucket-name> --force[/cyan]")
             console.print()
+
+        if deletion_failed:
+            console.print(
+                "[red]✗ The stack was not deleted. The force cleanup above ran "
+                "anyway; check the AWS Console for what remains.[/red]"
+            )
+            sys.exit(1)
 
     except Exception as e:
         logger.error(f"Error deleting stack: {e}", exc_info=True)
@@ -1503,7 +1631,13 @@ def delete_documents_cmd(
 
         # Get document list
         if document_ids:
-            doc_list = [d.strip() for d in document_ids.split(",")]
+            doc_list = _comma_separated_values(document_ids)
+            if not doc_list:
+                console.print(
+                    "[red]✗ Error: --document-ids contains no document IDs. Give one "
+                    "or more S3 object keys, comma-separated.[/red]"
+                )
+                sys.exit(1)
             console.print(f"Selected {len(doc_list)} document(s) for deletion")
         elif pattern:
             console.print(
@@ -1616,6 +1750,17 @@ def delete_documents_cmd(
 
         console.print()
 
+        # A run that deleted nothing at all must not report success: an automated
+        # cleanup step otherwise proceeds having removed no documents (#1230). The
+        # reporting branch above had no `sys.exit`, so "⚠ Deleted 0/2 document(s)"
+        # and "2 failed" were followed by exit 0.
+        #
+        # Scoped to the total failure the issue names. A *partial* failure still
+        # exits 0, which is a residual rather than a decision anyone would defend:
+        # see `test_a_partial_failure_still_exits_zero_and_that_is_the_residual`.
+        if not dry_run and result["deleted_count"] == 0 and result["failed_count"] > 0:
+            sys.exit(1)
+
     except Exception as e:
         logger.error(f"Error deleting documents: {e}", exc_info=True)
         console.print(f"[red]✗ Error: {e}[/red]")
@@ -1657,6 +1802,47 @@ def _process_impl(
             console.print("[red]✗ Error: Cannot specify multiple input sources[/red]")
             sys.exit(1)
 
+        # `--config` cannot be honoured on a batch submission, so refuse rather
+        # than submit the batch under a configuration the caller did not ask for.
+        #
+        # Forwarding the value would not honour it either. `batch.process` takes a
+        # `config_path`, hands it to `BatchProcessor(config_path=...)`, which assigns
+        # `self.config_path` and never reads it again — there is no read of that
+        # attribute anywhere in `idp_sdk`. A wiring fix would therefore leave the
+        # batch running under the stack's existing configuration exactly as before,
+        # while making the option look plumbed to the next reader. Applying a local
+        # YAML for real means writing it into the stack's configuration table, which
+        # re-configures the stack for every later run rather than for this batch, and
+        # is not something an unqualified `--config` should do.
+        #
+        # A batch is paid work whose results the caller will compare and act on, so
+        # the wrong configuration is not a degraded outcome. The two-step form below
+        # is the supported way to process under a file, and it is the one the run is
+        # then recorded against.
+        if config:
+            console.print(
+                "[red]✗ Error: --config is not applied to a batch submission.[/red]"
+            )
+            console.print(
+                f"  Nothing in the submission path reads [cyan]{escape(str(config))}"
+                "[/cyan], so the batch would run under the stack's existing "
+                "configuration at full cost."
+            )
+            console.print(
+                "[yellow]Upload the file as a configuration profile, then process "
+                "under that profile:[/yellow]"
+            )
+            console.print(
+                f"   [cyan]idp-cli config-upload --stack-name {escape(stack_name)}"
+                f" --config-file {escape(str(config))}"
+                " --config-profile <name>[/cyan]"
+            )
+            console.print(
+                f"   [cyan]idp-cli process --stack-name {escape(stack_name)} ..."
+                " --config-profile <name>[/cyan]"
+            )
+            sys.exit(1)
+
         from idp_sdk import IDPClient
 
         client = IDPClient(stack_name=stack_name, region=region)
@@ -1671,6 +1857,12 @@ def _process_impl(
                 client=client,
                 number_of_files=number_of_files,
                 config_version=config_version,
+                # Pin the revision on this path too. `_process_test_set` has always
+                # forwarded it into the test-runner payload; only this call site
+                # dropped it, so `--test-set --config-profile v2 --config-revision 7`
+                # ran under whatever v2 currently held while the run was recorded,
+                # and later compared, as r7.
+                config_revision=config_revision,
             )
             # test_set path returns legacy dict — extract fields
             result_batch_id = batch_result["batch_id"]
@@ -1734,6 +1926,13 @@ def _process_impl(
 
         # Monitor if requested
         if monitor and result_queued > 0:
+            # The returned exit code is deliberately not propagated, and the
+            # asymmetry with `status --wait` is the point. This command's work is
+            # the submission, which succeeded; `--monitor` is a view of what
+            # happens next. Exiting non-zero because 1 of 100 documents failed
+            # would stop `process --monitor && download-results` from collecting
+            # the 99 that worked. Ask for the batch's verdict with
+            # `idp-cli status --batch-id <id>`, which answers exactly that.
             _monitor_progress(
                 client=client,
                 batch_id=result_batch_id,
@@ -1779,9 +1978,15 @@ def _process_impl(
     help="Include subdirectories when scanning (default: recursive)",
 )
 @click.option(
+    # Deliberately untyped. `click.Path(exists=True)` would make a mistyped path
+    # exit 2 on the path before the refusal is reached, so the user would fix the
+    # typo only to be told the option is not applied at all — two round trips for
+    # one mistake. Nothing here opens the file, so its existence is irrelevant.
     "--config",
-    type=click.Path(exists=True),
-    help="Path to configuration YAML file (optional)",
+    help=(
+        "Not applied to a batch, and refused rather than ignored. Upload the file "
+        "with 'config-upload' and process under it with --config-profile."
+    ),
 )
 @click.option(
     "--batch-prefix",
@@ -1967,8 +2172,10 @@ def reprocess(
           --batch-id cli-batch-20251015-143000 \\
           --monitor
     """
-    # Call the existing rerun_inference implementation
-    return rerun_inference(
+    # Call the shared implementation directly. `rerun_inference` is the
+    # `click.Command` the decorator stack leaves behind, not a function, so
+    # calling that name here would invoke `Command.main()` instead.
+    return _rerun_inference_impl(
         stack_name,
         step,
         document_ids,
@@ -2014,9 +2221,15 @@ def reprocess(
     help="Include subdirectories when scanning (default: recursive)",
 )
 @click.option(
+    # Deliberately untyped. `click.Path(exists=True)` would make a mistyped path
+    # exit 2 on the path before the refusal is reached, so the user would fix the
+    # typo only to be told the option is not applied at all — two round trips for
+    # one mistake. Nothing here opens the file, so its existence is irrelevant.
     "--config",
-    type=click.Path(exists=True),
-    help="Path to configuration YAML file (optional)",
+    help=(
+        "Not applied to a batch, and refused rather than ignored. Upload the file "
+        "with 'config-upload' and process under it with --config-profile."
+    ),
 )
 @click.option(
     "--batch-prefix",
@@ -2185,7 +2398,13 @@ def _rerun_inference_impl(
 
         # Get document count for confirmation display
         if document_ids:
-            doc_id_list = [doc_id.strip() for doc_id in document_ids.split(",")]
+            doc_id_list = _comma_separated_values(document_ids)
+            if not doc_id_list:
+                console.print(
+                    "[red]✗ Error: --document-ids contains no document IDs. Give one "
+                    "or more document IDs, comma-separated, or use --batch-id.[/red]"
+                )
+                sys.exit(1)
             console.print(f"Processing {len(doc_id_list)} specified documents")
             reprocess_doc_ids = doc_id_list
             reprocess_batch_id = None
@@ -2260,6 +2479,7 @@ def _rerun_inference_impl(
         console.print()
 
         if monitor and result.documents_queued > 0:
+            # Not propagated, for the reason given at the `process --monitor` call.
             _monitor_progress(
                 client=client,
                 batch_id=batch_id or "rerun",
@@ -2499,11 +2719,17 @@ def status(
             from idp_sdk import IDPClient as _IDPClient
 
             _client = _IDPClient(stack_name=stack_name, region=region)
-            # Monitor until completion
-            _monitor_progress(
-                client=_client,
-                batch_id=identifier,
-                refresh_interval=refresh_interval,
+            # Monitor until completion, and exit on what it found. `status` is a
+            # query, so its exit code is its answer — and the polled branch below
+            # has always exited on that answer. This branch discarded it, so the
+            # same batch reported 1 when polled and 0 when waited on, and `--wait`
+            # is the form a pipeline uses (#1230).
+            sys.exit(
+                _monitor_progress(
+                    client=_client,
+                    batch_id=identifier,
+                    refresh_interval=refresh_interval,
+                )
             )
         else:
             # Show current status once via IDPClient
@@ -2683,7 +2909,14 @@ def download_results(
         if file_types == "all":
             types_list = ["all"]
         else:
-            types_list = [t.strip() for t in file_types.split(",")]
+            types_list = _comma_separated_values(file_types)
+            if not types_list:
+                console.print(
+                    "[red]✗ Error: --file-types contains no file types. Give one or "
+                    "more of pages, sections, summary, evaluation — comma-separated — "
+                    "or 'all'.[/red]"
+                )
+                sys.exit(1)
 
         # Download results
         result = client.batch.download_results(
@@ -2806,6 +3039,138 @@ def list_versions(stack_name: str, document_id: str, region: Optional[str]):
         sys.exit(1)
 
 
+@contextlib.contextmanager
+def _uploading_marker(s3_client, bucket: str, test_set_prefix: str):
+    """Hold a test set's `.uploading` marker over an upload, and always remove it.
+
+    The marker object exists so the test set resolver's auto-detection skips a folder
+    that is still being filled (issue #193), which makes its *removal* the step that
+    lets a finished test set be seen at all. It used to be removed by a plain statement
+    after the upload loop, and that is the half of the contract that failed: every way
+    out of the upload other than falling off the end left the object behind, and the
+    resolver then skips a folder whose files are all present. The test set is complete
+    in S3 and permanently invisible to the backend -- re-running the upload does not
+    help, because the new run writes the marker again -- so the only recovery is
+    deleting that object by hand, and nothing said so.
+
+    The paths that did this are not interesting individually: a denied `PutObject`
+    partway through the inputs, a baseline file that vanished between the scan and the
+    upload, a manifest row with no `document_path`, a `copy_object` whose source key is
+    gone, an `s3://` baseline source whose bucket does not exist. The point is that the
+    next one added would not have been on the list either, so the marker's lifetime is
+    a `try`/`finally` here rather than a set of failures somebody thought of.
+
+    The two directions are treated differently, on purpose.
+
+    - **The body raised.** The marker is removed and the original exception is
+      re-raised unchanged. A removal that *also* fails is reported and swallowed: the
+      caller needs the exception that caused the failure, not this one.
+    - **The body succeeded.** Every file is uploaded, so a surviving marker is exactly
+      the complete-and-invisible test set above, and reporting success would be false.
+      A failed removal therefore **raises**, naming the object to delete. It used to be
+      a yellow warning printed above a green "✓ Test set created successfully" and an
+      exit 0 -- the one line of evidence, above the message that contradicted it.
+
+    `BaseException` rather than `Exception` is caught, because `sys.exit` raises
+    `SystemExit` and a command that refuses partway through an upload must not be the
+    one case that leaves the marker.
+
+    Args:
+        s3_client: An S3 client for the test set bucket.
+        bucket: The test set bucket's name.
+        test_set_prefix: The test set's folder name, with no trailing slash.
+
+    Yields:
+        The marker object's key.
+
+    Raises:
+        RuntimeError: If the upload succeeded and the marker could not be removed.
+    """
+    marker_key = f"{test_set_prefix}/.uploading"
+    s3_client.put_object(Bucket=bucket, Key=marker_key, Body=b"upload-in-progress")
+
+    try:
+        yield marker_key
+    except BaseException:
+        try:
+            s3_client.delete_object(Bucket=bucket, Key=marker_key)
+        except Exception as cleanup_error:
+            console.print(
+                f"[yellow]Warning: the upload failed and the "
+                f"s3://{bucket}/{marker_key} marker could not be removed either "
+                f"({cleanup_error}); delete that object before retrying, or the "
+                f"test set stays hidden from the backend.[/yellow]"
+            )
+        raise
+
+    try:
+        s3_client.delete_object(Bucket=bucket, Key=marker_key)
+    except Exception as removal_error:
+        raise RuntimeError(
+            f"every file was uploaded, but the upload marker "
+            f"s3://{bucket}/{marker_key} could not be removed ({removal_error}). "
+            "The test set resolver skips any folder carrying that marker, so this "
+            "test set is complete in S3 and invisible to the backend until that "
+            "object is deleted."
+        ) from removal_error
+
+
+def _file_pattern_matches(
+    filename: str, file_pattern: str, *, case_sensitive: bool = False
+) -> bool:
+    """Decide whether one file name is selected by a `--file-pattern` value.
+
+    One predicate serves both of `generate-manifest`'s scan paths on purpose. The
+    local scan handed the pattern to `glob.glob` and the S3 scan to
+    `fnmatch.fnmatch`, and on Linux both are case-sensitive, so a corpus exported
+    from a system that uppercases extensions produced a manifest missing *every*
+    document -- at exit 0, with no warning, and valid-looking -- because the pattern
+    was the default `*.pdf` and every name ended `.PDF`. Two parallel filters can
+    drift apart; there is one rule here instead, and it is stated in this docstring.
+
+    The rule: the **whole pattern** is matched against the **base name**, ignoring
+    case unless `case_sensitive` is set.
+
+    Three parts of that are deliberate choices rather than side effects.
+
+    - Case is folded over the whole pattern, not over an extension the pattern is
+      first parsed out of, so `Invoice*.pdf` also selects `INVOICE01.PDF`. Folding
+      only an extension would leave the reported defect in place for the prefix --
+      a corpus that is uppercase throughout would still yield an empty manifest --
+      and there is no general way to say which part of a glob is an extension
+      (`W2*.pdf`, `*.[pP]df`, `lending_package.pdf`). A pattern whose case really is
+      meant literally has `--case-sensitive`.
+    - `fnmatch.fnmatchcase` is used, not `fnmatch.fnmatch`: the latter routes
+      through `os.path.normcase`, which makes it case-sensitive on POSIX and
+      case-insensitive on Windows. Which documents a manifest names must not depend
+      on the host that generated it.
+    - Only the base name is matched, which is what the S3 scan always did. A pattern
+      naming a directory component is refused by the caller, so the local path's
+      loss of that spelling is a message rather than an empty result.
+
+    Two ways folding can **narrow** rather than widen, stated because narrowing is the
+    failure mode this exists to prevent. A **negated** character class inverts:
+    `[!A-Z]*.pdf` means "does not start with an uppercase letter", and folded against a
+    lowered name it now rejects `report.pdf`, which it used to select. And `str.lower()`
+    can change a string's *length* for a few characters (`"İ"` lowers to `i` plus a
+    combining dot), so a `?` counting one character stops lining up: `?nvoice.pdf`
+    matches `Invoice.pdf` but not `İnvoice.pdf`. Both are one-way, both are obscure, and
+    both have `--case-sensitive` as the exact route -- special-casing either would make
+    the rule harder to state than it is worth.
+
+    Args:
+        filename: One file's base name, with no directory components.
+        file_pattern: The `--file-pattern` value, a glob.
+        case_sensitive: Match exactly as written instead of ignoring case.
+
+    Returns:
+        True if the name is selected by the pattern.
+    """
+    if case_sensitive:
+        return fnmatch.fnmatchcase(filename, file_pattern)
+    return fnmatch.fnmatchcase(filename.lower(), file_pattern.lower())
+
+
 @cli.command()
 @click.option(
     "--dir",
@@ -2826,6 +3191,14 @@ def list_versions(stack_name: str, document_id: str, region: Optional[str]):
 )
 @click.option("--file-pattern", default="*.pdf", help="File pattern (default: *.pdf)")
 @click.option(
+    "--case-sensitive/--no-case-sensitive",
+    default=False,
+    help=(
+        "Match --file-pattern exactly as written. The default ignores case, so "
+        "*.pdf also selects .PDF (default: --no-case-sensitive)"
+    ),
+)
+@click.option(
     "--recursive/--no-recursive",
     default=True,
     help="Include subdirectories (default: recursive)",
@@ -2838,16 +3211,24 @@ def list_versions(stack_name: str, document_id: str, region: Optional[str]):
 @click.option(
     "--stack-name", help="CloudFormation stack name (required with --test-set)"
 )
+@click.option(
+    "--force",
+    "-y",
+    is_flag=True,
+    help="Overwrite an existing test set without the confirmation prompt (required to overwrite non-interactively)",
+)
 def generate_manifest(
     directory: Optional[str],
     s3_uri: Optional[str],
     baseline_dir: Optional[str],
     output: Optional[str],
     file_pattern: str,
+    case_sensitive: bool,
     recursive: bool,
     region: Optional[str],
     test_set: Optional[str],
     stack_name: Optional[str],
+    force: bool,
 ):
     """
     Generate a manifest file from directory or S3 URI
@@ -2867,14 +3248,20 @@ def generate_manifest(
       # Generate from S3 URI
       idp-cli generate-manifest --s3-uri s3://bucket/prefix/ --output manifest.csv
 
-      # With file pattern
+      # With file pattern. The pattern ignores case, so this also selects W2-2024.PDF
       idp-cli generate-manifest --dir ./docs/ --output manifest.csv --file-pattern "W2*.pdf"
+
+      # Take the pattern's case literally (only lowercase .pdf is selected here)
+      idp-cli generate-manifest --dir ./docs/ --output manifest.csv --file-pattern "*.pdf" --case-sensitive
 
       # Create test set and upload files (output optional) - use test set name
       idp-cli generate-manifest --dir ./documents/ --baseline-dir ./baselines/ --test-set "fcc example test" --stack-name IDP
 
       # Create test set with baseline matching and manifest output
       idp-cli generate-manifest --dir ./documents/ --baseline-dir ./baselines/ --test-set "fcc example test" --stack-name IDP --output manifest.csv
+
+      # Overwrite an existing test set from a script or CI job (no prompt to answer)
+      idp-cli generate-manifest --dir ./documents/ --baseline-dir ./baselines/ --test-set "fcc example test" --stack-name IDP --force
     """
     try:
         import csv
@@ -2914,6 +3301,24 @@ def generate_manifest(
             console.print("[red]✗ Error: Cannot specify both --dir and --s3-uri[/red]")
             sys.exit(1)
 
+        # `--file-pattern` selects on a file's base name, on both scan paths. The S3
+        # scan has always matched base names, so a pattern naming a directory matched
+        # nothing there and the only report was "No documents found" -- true, and no
+        # help at all in working out why. Say which option does the thing being asked
+        # for instead, on both paths, rather than leaving an empty scan to explain it.
+        # On POSIX all three of these collapse to `/`, so the extra terms are
+        # unreachable here and no test on this platform can pin them; they are what
+        # refuses a Windows backslash, where `os.sep` is `\\` and `os.altsep` is `/`.
+        path_separators = {"/", os.sep, os.altsep} - {None}
+        if any(separator in file_pattern for separator in path_separators):
+            console.print(
+                "[red]✗ Error: --file-pattern matches a file name, not a path, so "
+                f"'{file_pattern}' selects nothing. Point --dir or --s3-uri at the "
+                "directory and use --recursive/--no-recursive to choose the "
+                "depth.[/red]"
+            )
+            sys.exit(1)
+
         # Import here to avoid circular dependency during scanning
 
         documents = []
@@ -2943,13 +3348,36 @@ def generate_manifest(
             import glob as glob_module
 
             dir_path = os.path.abspath(directory)
-            if recursive:
-                search_pattern = os.path.join(dir_path, "**", file_pattern)
-            else:
-                search_pattern = os.path.join(dir_path, file_pattern)
 
-            for file_path in glob_module.glob(search_pattern, recursive=recursive):
-                if os.path.isfile(file_path):
+            # `glob` still does the walking, but the pattern is applied afterwards by
+            # `_file_pattern_matches` rather than handed to glob, because glob is
+            # case-sensitive on a case-sensitive filesystem and there is no way to ask
+            # it not to be -- which is one half of the defect this is fixing, the
+            # other half being the S3 scan's `fnmatch`.
+            #
+            # Enumerating with `*` inherits glob's own rule that `*` does not match a
+            # leading dot, so hidden files stay out exactly as they did before. The
+            # one case a bare `*` would newly miss is a pattern that deliberately
+            # names hidden files, and `.*` is added to the enumeration for it.
+            enumerated_leaves = ["*"]
+            if file_pattern.startswith("."):
+                enumerated_leaves.append(".*")
+
+            for leaf in enumerated_leaves:
+                if recursive:
+                    search_pattern = os.path.join(dir_path, "**", leaf)
+                else:
+                    search_pattern = os.path.join(dir_path, leaf)
+
+                for file_path in glob_module.glob(search_pattern, recursive=recursive):
+                    if not os.path.isfile(file_path):
+                        continue
+                    if not _file_pattern_matches(
+                        os.path.basename(file_path),
+                        file_pattern,
+                        case_sensitive=case_sensitive,
+                    ):
+                        continue
                     documents.append({"document_path": file_path})
         else:  # s3_uri
             console.print(f"[bold blue]Scanning S3 URI: {s3_uri}[/bold blue]")
@@ -2964,8 +3392,6 @@ def generate_manifest(
             prefix = uri_parts[1] if len(uri_parts) > 1 else ""
 
             # List S3 objects
-            import fnmatch
-
             import boto3
 
             s3 = boto3.client("s3", region_name=region)
@@ -2989,7 +3415,9 @@ def generate_manifest(
                             continue
 
                     filename = os.path.basename(key)
-                    if not fnmatch.fnmatch(filename, file_pattern):
+                    if not _file_pattern_matches(
+                        filename, file_pattern, case_sensitive=case_sensitive
+                    ):
                         continue
 
                     full_uri = f"s3://{bucket}/{key}"
@@ -3002,7 +3430,24 @@ def generate_manifest(
 
         console.print(f"Found {len(documents)} documents")
 
-        # Match baselines if baseline_dir provided
+        # Match baselines if baseline_dir provided.
+        #
+        # `baseline_map` is keyed on the **document's** base name, not on the baseline
+        # directory's, and that is load-bearing rather than cosmetic. Two reasons.
+        #
+        # Selecting documents ignores case (see `_file_pattern_matches`), so matching
+        # them to baselines has to ignore case by the same rule or the two disagree:
+        # a `W2-A.PDF` corpus beside a `w2-a.pdf/` baseline directory would select both
+        # and pair neither, producing a test set with a full `input/`, baselines under
+        # keys nothing references, and every manifest row's `baseline_source` empty --
+        # at exit 0, with `Matched 0/2` as the only sign. Before case folding that
+        # combination could not arise, because the documents were never selected.
+        #
+        # And the backend pairs a baseline to its document by the exact prefix
+        # `baseline/<input file name>/` (`src/lambda/test_file_copier`), so a baseline
+        # uploaded under the directory's spelling rather than the document's is a
+        # baseline nothing scores against. Keying on the document is what keeps that
+        # convention true when the two spellings differ only in case.
         baseline_map = {}
         if baseline_dir:
             if s3_uri:
@@ -3018,50 +3463,127 @@ def generate_manifest(
 
                 baseline_path = os.path.abspath(baseline_dir)
 
-                # Scan for baseline subdirectories
-                for item in os.listdir(baseline_path):
+                # Scan for baseline subdirectories, indexed by the same rule that
+                # selected the documents.
+                baseline_dirs = {}
+                for item in sorted(os.listdir(baseline_path)):
                     item_path = os.path.join(baseline_path, item)
-                    if os.path.isdir(item_path):
-                        baseline_map[item] = item_path
+                    if not os.path.isdir(item_path):
+                        continue
+                    index_key = item if case_sensitive else item.lower()
+                    if index_key in baseline_dirs:
+                        # Two directories that differ only in case are two candidate
+                        # ground truths for one document, and picking either would be
+                        # arbitrary. Refuse before anything is uploaded or cleared.
+                        console.print(
+                            f"[red]✗ Error: baseline directories "
+                            f"'{baseline_dirs[index_key][0]}' and '{item}' differ only "
+                            "in case, so which one a document should be scored against "
+                            "is ambiguous. Rename one, or pass --case-sensitive to "
+                            "match baselines exactly as named.[/red]"
+                        )
+                        sys.exit(1)
+                    baseline_dirs[index_key] = (item, item_path)
 
-                console.print(f"Found {len(baseline_map)} baseline directories")
+                console.print(f"Found {len(baseline_dirs)} baseline directories")
 
-                # Show matching statistics
-                matched = 0
+                # Resolve each document to a baseline directory, keyed by the document.
                 for doc in documents:
                     filename = os.path.basename(doc["document_path"])
-                    if filename in baseline_map:
-                        matched += 1
+                    index_key = filename if case_sensitive else filename.lower()
+                    if index_key in baseline_dirs:
+                        baseline_map[filename] = baseline_dirs[index_key][1]
 
+                matched = len(baseline_map)
                 console.print(
                     f"Matched {matched}/{len(documents)} documents to baselines"
                 )
+
+                # A baseline directory matching no document cannot be scored against
+                # anything. It used to be uploaded anyway, inflating the object count
+                # reported at the end; now it is named and skipped.
+                matched_paths = set(baseline_map.values())
+                unmatched_dirs = sorted(
+                    item
+                    for item, item_path in baseline_dirs.values()
+                    if item_path not in matched_paths
+                )
+                if unmatched_dirs:
+                    console.print(
+                        f"[yellow]Warning: {len(unmatched_dirs)} baseline director"
+                        f"{'y' if len(unmatched_dirs) == 1 else 'ies'} matched no "
+                        f"document and will not be uploaded: "
+                        f"{', '.join(unmatched_dirs)}[/yellow]"
+                    )
+
+                if baseline_dirs and not baseline_map:
+                    # Baselines were supplied and none of them matched. On the
+                    # `--test-set` path `--baseline-dir` is mandatory, so this is
+                    # unambiguously a mistake rather than a deliberately unlabeled set,
+                    # and continuing would clear an existing test set and upload one
+                    # that cannot score. Refuse before either happens. Without
+                    # `--test-set` the result is a manifest the user can still edit --
+                    # which the command's own "Next steps" text tells them to do -- so
+                    # that stays a warning.
+                    message = (
+                        f"{len(baseline_dirs)} baseline director"
+                        f"{'y' if len(baseline_dirs) == 1 else 'ies'} were found and "
+                        "none matched a document. A baseline directory must be named "
+                        "after the document file it labels, extension included "
+                        f"(for example '{os.path.basename(documents[0]['document_path'])}')."
+                    )
+                    if test_set:
+                        console.print(f"[red]✗ Error: {message}[/red]")
+                        sys.exit(1)
+                    console.print(f"[yellow]Warning: {message}[/yellow]")
+
                 console.print()
 
         # Upload to test set bucket if test_set is specified
         if test_set:
-            # Check if test set already exists
+            # Check if test set already exists. The check and the confirmation are
+            # kept apart on purpose: a failed listing is a tidy-up problem and warns,
+            # but the confirmation is the only thing standing between this command and
+            # a previous test set's baselines, so a failure to READ an answer must
+            # never be absorbed by the listing's error handler. `input()` raises
+            # EOFError on a closed or empty stdin, and EOFError is an Exception.
+            test_set_exists = False
             try:
                 response = s3_client.list_objects_v2(
                     Bucket=test_set_bucket, Prefix=f"{test_set}/", MaxKeys=1
                 )
-                if response.get("Contents"):
-                    console.print(
-                        f"[yellow]Warning: Test set '{test_set}' already exists in bucket[/yellow]"
-                    )
-                    console.print(
-                        "[yellow]Files will be overwritten. Continue? [y/N][/yellow]",
-                        end=" ",
-                    )
-
-                    response = input().strip().lower()
-                    if response not in ["y", "yes"]:
-                        console.print("[red]✗ Aborted[/red]")
-                        sys.exit(1)
+                test_set_exists = bool(response.get("Contents"))
             except Exception as e:
                 console.print(
                     f"[yellow]Warning: Could not check existing test set: {e}[/yellow]"
                 )
+
+            if test_set_exists and not force:
+                console.print(
+                    f"[yellow]Warning: Test set '{test_set}' already exists in bucket[/yellow]"
+                )
+                console.print(
+                    "[yellow]Files will be overwritten. Continue? \\[y/N][/yellow]",
+                    end=" ",
+                )
+
+                try:
+                    answer = input().strip().lower()
+                except EOFError:
+                    # Non-interactive stdin. Overwriting clears the test set's
+                    # baselines, which are not recoverable from the CLI, so take the
+                    # absence of an answer as "no" rather than as consent.
+                    console.print()
+                    console.print(
+                        "[red]✗ Aborted: no answer read from stdin, so the existing "
+                        f"test set '{test_set}' was left untouched. Re-run with "
+                        "--force to overwrite it non-interactively.[/red]"
+                    )
+                    sys.exit(1)
+
+                if answer not in ["y", "yes"]:
+                    console.print("[red]✗ Aborted[/red]")
+                    sys.exit(1)
 
             console.print(
                 f"[bold blue]Uploading files to test set: {test_set}[/bold blue]"
@@ -3069,70 +3591,83 @@ def generate_manifest(
 
             # Clear existing test set folder if it exists
             try:
-                response = s3_client.list_objects_v2(
-                    Bucket=test_set_bucket, Prefix=f"{test_set}/"
-                )
-
-                if "Contents" in response:
-                    # Delete all existing objects in the test set folder
-                    objects_to_delete = [
-                        {"Key": obj["Key"]} for obj in response["Contents"]
-                    ]
-
-                    if objects_to_delete:
-                        s3_client.delete_objects(
-                            Bucket=test_set_bucket,
-                            Delete={"Objects": objects_to_delete},
-                        )
-                        console.print(
-                            f"  Cleared {len(objects_to_delete)} existing files"
-                        )
+                cleared = _clear_s3_prefix(s3_client, test_set_bucket, f"{test_set}/")
+                if cleared:
+                    console.print(f"  Cleared {cleared} existing files")
 
             except Exception as e:
                 console.print(
                     f"[yellow]Warning: Could not clear existing files: {e}[/yellow]"
                 )
 
-            # Place .uploading marker to prevent resolver race condition
-            # The test set resolver's auto-detection skips folders with this marker,
-            # preventing premature validation before all files are uploaded.
-            # See: https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/193
-            marker_key = f"{test_set}/.uploading"
-            s3_client.put_object(
-                Bucket=test_set_bucket, Key=marker_key, Body=b"upload-in-progress"
-            )
+            # The `.uploading` marker stops the test set resolver's auto-detection
+            # validating a folder that is still being filled (issue #193), so removing
+            # it is what makes the finished test set visible. Its whole lifetime is the
+            # context manager's, which is what makes the removal independent of how the
+            # upload ends -- see `_uploading_marker` for the failures that used to
+            # escape past it and leave a complete test set permanently hidden.
+            #
+            # Writing the manifest is deliberately *outside* the window. It touches the
+            # local filesystem only, so by the time it runs the folder in S3 is already
+            # complete and there is nothing left for the resolver to see half-done; an
+            # unwritable `--output` path should not be able to hide a test set whose
+            # files all arrived.
+            baseline_objects = 0
+            with _uploading_marker(s3_client, test_set_bucket, test_set):
+                # Upload input documents
+                for i, doc in enumerate(documents):
+                    doc_path = doc["document_path"]
+                    filename = os.path.basename(doc_path)
+                    s3_key = f"{test_set}/input/{filename}"
 
-            # Upload input documents
-            for i, doc in enumerate(documents):
-                doc_path = doc["document_path"]
-                filename = os.path.basename(doc_path)
-                s3_key = f"{test_set}/input/{filename}"
+                    s3_client.upload_file(doc_path, test_set_bucket, s3_key)
+                    doc["document_path"] = f"s3://{test_set_bucket}/{s3_key}"
+                    console.print(
+                        f"  Uploaded input {i + 1}/{len(documents)}: {filename}"
+                    )
 
-                s3_client.upload_file(doc_path, test_set_bucket, s3_key)
-                doc["document_path"] = f"s3://{test_set_bucket}/{s3_key}"
-                console.print(f"  Uploaded input {i + 1}/{len(documents)}: {filename}")
+                # Upload baseline files
+                for filename, baseline_path in baseline_map.items():
+                    # Upload all files in the baseline directory recursively
+                    import glob as glob_module
+                    import os
 
-            # Upload baseline files
-            for filename, baseline_path in baseline_map.items():
-                # Upload all files in the baseline directory recursively
-                import glob as glob_module
-                import os
+                    baseline_files = glob_module.glob(
+                        os.path.join(baseline_path, "**", "*"), recursive=True
+                    )
+                    uploaded = 0
+                    for baseline_file in baseline_files:
+                        if os.path.isfile(baseline_file):
+                            # Preserve directory structure relative to baseline_path
+                            rel_path = os.path.relpath(baseline_file, baseline_path)
+                            s3_key = f"{test_set}/baseline/{filename}/{rel_path}"
+                            s3_client.upload_file(
+                                baseline_file, test_set_bucket, s3_key
+                            )
+                            uploaded += 1
 
-                baseline_files = glob_module.glob(
-                    os.path.join(baseline_path, "**", "*"), recursive=True
-                )
-                for baseline_file in baseline_files:
-                    if os.path.isfile(baseline_file):
-                        # Preserve directory structure relative to baseline_path
-                        rel_path = os.path.relpath(baseline_file, baseline_path)
-                        s3_key = f"{test_set}/baseline/{filename}/{rel_path}"
-                        s3_client.upload_file(baseline_file, test_set_bucket, s3_key)
+                    # Update baseline_map to point to S3 location
+                    baseline_map[filename] = (
+                        f"s3://{test_set_bucket}/{test_set}/baseline/{filename}/"
+                    )
+                    baseline_objects += uploaded
 
-                # Update baseline_map to point to S3 location
-                baseline_map[filename] = (
-                    f"s3://{test_set_bucket}/{test_set}/baseline/{filename}/"
-                )
-                console.print(f"  Uploaded baseline: {filename}")
+                    # Report the count, not the attempt. A baseline directory holding
+                    # no files at its top level — empty, or one level deeper than
+                    # expected — left this line claiming an upload that moved nothing,
+                    # while the manifest row still named the `baseline/<document>/`
+                    # prefix. The result is a test set an evaluation cannot score,
+                    # described as ready.
+                    if uploaded:
+                        console.print(
+                            f"  Uploaded baseline: {filename} ({uploaded} files)"
+                        )
+                    else:
+                        console.print(
+                            f"[yellow]  Warning: no baseline files found for {filename} "
+                            f"in {baseline_path} - its baseline_source will name an "
+                            f"empty prefix[/yellow]"
+                        )
 
         # Write manifest (2 columns only)
         if output:
@@ -3157,15 +3692,6 @@ def generate_manifest(
             console.print()
 
         if test_set:
-            # Remove .uploading marker now that all files are uploaded
-            marker_key = f"{test_set}/.uploading"
-            try:
-                s3_client.delete_object(Bucket=test_set_bucket, Key=marker_key)
-            except Exception as e:
-                console.print(
-                    f"[yellow]Warning: Could not remove upload marker: {e}[/yellow]"
-                )
-
             # Auto-register test set in tracking table
             _client2 = IDPClient(stack_name=stack_name, region=region)
             resources = _client2._get_stack_resources(stack_name)
@@ -3174,9 +3700,13 @@ def generate_manifest(
             console.print(
                 f"[green]✓ Test set '{test_set}' created successfully[/green]"
             )
-            console.print(f"  Input files: s3://{test_set_bucket}/{test_set}/input/")
             console.print(
-                f"  Baseline files: s3://{test_set_bucket}/{test_set}/baseline/"
+                f"  Input files: s3://{test_set_bucket}/{test_set}/input/ "
+                f"({len(documents)} documents)"
+            )
+            console.print(
+                f"  Baseline files: s3://{test_set_bucket}/{test_set}/baseline/ "
+                f"({baseline_objects} objects)"
             )
             console.print()
             console.print("[bold]Next Steps: Run inference[/bold]")
@@ -3247,6 +3777,81 @@ def validate_manifest_cmd(manifest: str):
         sys.exit(1)
 
 
+def _comma_separated_values(option_value: str) -> List[str]:
+    """Split a comma-separated option value, dropping blank segments.
+
+    **Every comma-separated option in this module parses through this function.**
+    `str.split` never returns an empty list, and that is the whole reason it exists:
+    `"".split(",")` is `[""]` and `"a,".split(",")` is `["a", ""]`, so a blank segment
+    arrives as a *value* that is the empty string. Two consequences, and both have
+    shipped here.
+
+    A `if not values` guard after a plain split is **unreachable code** -- it reads like
+    a check and can never run -- so the empty string went on to be used as if it were a
+    real value: `--test-run-ids ""` asked the service to abort a run whose id was `""`,
+    and `--document-ids ""` asked about a document whose S3 object key was `""`.
+
+    And a length check counts a trailing comma as another value: `--test-run-ids
+    "run-a,"` passed `test-compare`'s "at least 2 ids" check with one real id and then
+    rendered a column for a run that does not exist.
+
+    Dropping the blanks during parsing is what makes each caller's own guard reachable
+    and mean what it says, instead of a separate blank check beside every one of them.
+    That matters more than the individual fix: this was originally corrected at the two
+    `--test-run-ids` sites only, and five others -- `--document-ids` twice,
+    `--file-types`, `--check-stack-regions` and `--features` -- carried the identical
+    bare split for a further release. A shared parser is the form of the fix that does
+    not leave the next one behind, and there is **no** exception: `_parse_tags` splits
+    each segment again on `=`, but its comma split comes through here too, so
+    `str.split(",")` appears exactly once in this module and a test derived from the AST
+    holds it that way.
+
+    Args:
+        option_value: The raw option value, as typed.
+
+    Returns:
+        The non-blank values, stripped, in the order given. Possibly empty -- which is
+        the point, and which every caller must then refuse.
+    """
+    return [
+        candidate.strip() for candidate in option_value.split(",") if candidate.strip()
+    ]
+
+
+def _timestamp_for_display(value) -> str:
+    """Render an optional timestamp as a string, always -- never as a `datetime`.
+
+    `BatchStatus` carries `datetime` fields that pydantic leaves as `None` when the
+    tracking table has not written them yet, and the dicts `display.py` consumes are
+    plain data that gets sorted and JSON-encoded. Substituting `""` for the absent
+    case while passing the `datetime` through for the present one puts two types
+    under one key, and both of the things `display.py` then does with that key fail
+    on the mix rather than degrade:
+
+    * `create_recent_completions_table` sorts the completed documents by `end_time`,
+      and Python will not order a `datetime` against a `str`, so a batch holding one
+      completed document with an end time and one without raised
+      `'<' not supported between instances of 'datetime.datetime' and 'str'`. Both
+      callers catch broadly, so `idp-cli status` printed that as an error and exited
+      1 instead of showing the table, and `--monitor` abandoned the watch.
+    * `format_status_json` puts the value straight into `json.dumps`, which has no
+      encoder for `datetime`, so `status --format json` on a single completed
+      document with an end time raised `Object of type datetime is not JSON
+      serializable`.
+
+    ISO 8601 is the representation to normalise to: it is what `json.dumps` would
+    have needed anyway, and lexicographic order over it agrees with chronological
+    order, so the sort is still the sort that was intended.
+    """
+    if not value:
+        return ""
+    isoformat = getattr(value, "isoformat", None)
+    # `str(...)` around the call, not just around the fallback: `getattr` is untyped,
+    # so without it this function's return type is `object | str` and every consumer
+    # -- the sort key, `json.dumps` -- is back to not knowing what it has.
+    return str(isoformat()) if callable(isoformat) else str(value)
+
+
 def _batch_status_to_display_dicts(batch_status):
     """
     Convert a BatchStatus Pydantic model to the legacy dict format expected by display.py.
@@ -3269,32 +3874,30 @@ def _batch_status_to_display_dicts(batch_status):
         doc_dict = {
             "document_id": doc.document_id,
             "status": doc.status,
-            "start_time": doc.start_time or "",
-            "end_time": doc.end_time or "",
+            "start_time": _timestamp_for_display(doc.start_time),
+            "end_time": _timestamp_for_display(doc.end_time),
             "duration": doc.duration_seconds or 0,
             "num_pages": doc.num_pages,
             "num_sections": doc.num_sections,
             "error": doc.error or "",
         }
-        status_upper = (doc.status or "").upper()
-        if status_upper == "COMPLETED":
+        # Bucketed through `idp_sdk.models.classify_document_state`, which is total
+        # over `DocumentState` -- the same authority the SDK's own progress monitor
+        # uses, so the CLI's counts and the SDK's `all_complete` cannot disagree
+        # about whether a state is terminal. The chain this replaced named eleven
+        # members and sent the other twelve to `queued` by falling off the end,
+        # which put `PREPROCESSING` (set for every document whenever a
+        # preprocessing hook is registered) under "Queued" and left the terminal
+        # `ABORTED` reporting "IN PROGRESS" forever.
+        bucket = classify_document_state(doc.status)
+        if bucket is DocumentBucket.COMPLETED:
             completed_docs.append(doc_dict)
             if doc.duration_seconds:
                 total_duration += doc.duration_seconds
                 duration_count += 1
-        elif status_upper == "FAILED":
+        elif bucket is DocumentBucket.FAILED:
             failed_docs.append(doc_dict)
-        elif status_upper in (
-            "RUNNING",
-            "CLASSIFYING",
-            "EXTRACTING",
-            "ASSESSING",
-            "RULE_VALIDATION",
-            "RULE_VALIDATION_ORCHESTRATOR",
-            "SUMMARIZING",
-            "HITL_IN_PROGRESS",
-            "EVALUATING",
-        ):
+        elif bucket is DocumentBucket.RUNNING:
             running_docs.append(doc_dict)
         else:
             queued_docs.append(doc_dict)
@@ -3342,7 +3945,7 @@ def _monitor_progress(
     document_ids: Optional[list] = None,
     region: Optional[str] = None,
     resources: Optional[dict] = None,
-):
+) -> int:
     """
     Monitor batch progress with live updates using IDPClient.
 
@@ -3354,6 +3957,22 @@ def _monitor_progress(
         document_ids: (legacy, unused) kept for signature compatibility
         region: (legacy) AWS region
         resources: (legacy, unused) kept for signature compatibility
+
+    Returns:
+        The exit code the batch's outcome implies, on the same scale
+        ``display.show_final_status_summary`` uses: 0 every document completed,
+        1 at least one failed, 2 the outcome was not established.
+
+        This function used to return nothing, so a caller had no value to
+        propagate and `status --wait` exited 0 on a batch in which every document
+        failed — while the *polled* form of the same command exited 1 (#1230). The
+        exit code is frequently the only thing a pipeline reads, so 0 there was a
+        confidently wrong success rather than a missing signal.
+
+        2, not 0, for a watch that ended without a verdict — a monitoring error or
+        a Ctrl-C. Nothing about the batch was measured on those paths, and 2 is
+        already this CLI's code for "not established"; answering 1 would report
+        documents as failed that may all have succeeded.
     """
     from idp_sdk import IDPClient as _IDPClient
 
@@ -3428,7 +4047,7 @@ def _monitor_progress(
             else getattr(idp_client, "_stack_name", batch_id)
         )
         display.show_monitoring_instructions(_sn or batch_id, batch_id)
-        return
+        return 2
     except Exception as e:
         logger.error(f"Monitoring error: {e}", exc_info=True)
         console.print()
@@ -3436,12 +4055,22 @@ def _monitor_progress(
         console.print("[yellow]You can check status later with:[/yellow]")
         _sn = stack_name or batch_id
         display.show_monitoring_instructions(_sn, batch_id)
-        return
+        return 2
 
     # Show final summary
     logger.info("Showing final summary")
     elapsed_time = time.time() - start_time
     display.show_final_summary(status_data, stats, elapsed_time)
+    # Derived by the same function the polled form of `status` reads, rather than
+    # re-derived from `stats` here. Two implementations of one rule is how the two
+    # forms of `status` came to disagree in the first place.
+    #
+    # `derive_exit_code` rather than `show_final_status_summary`, which also PRINTS
+    # "FINAL STATUS: ... | Exit Code: N". Two of this function's three callers discard
+    # the value it returns, so printing that line here would have
+    # `process --monitor` and `rerun --monitor` state an exit code that contradicts
+    # $?. The panel above already reports the failures.
+    return display.derive_exit_code(status_data, stats)
 
 
 def _process_test_set(
@@ -3668,6 +4297,110 @@ def _invoke_test_runner(
     return result
 
 
+#: The most keys one `DeleteObjects` request may carry. A request over this limit is
+#: rejected outright by S3 (`MalformedXML`), and `moto` does not enforce it — so a
+#: test asserting only that the objects are gone cannot see an unbatched delete.
+_DELETE_OBJECTS_BATCH_SIZE = 1000
+
+
+def _clear_s3_prefix(s3_client, bucket: str, prefix: str) -> int:
+    """Delete every object under `prefix`, and return how many were deleted.
+
+    Both halves of this are load-bearing on a test set larger than one page.
+    `list_objects_v2` returns at most 1000 keys per response and reports the rest
+    through `NextContinuationToken`, and `delete_objects` accepts at most 1000 keys per
+    request. Reading a single response and deleting its keys in one call therefore
+    removes the first 1000 objects of a larger test set and leaves the remainder
+    behind, orphaned under a prefix the caller has been told it emptied — and the
+    caller's next act is to upload a new test set over it, so the leftovers become
+    baselines and inputs of an older set mixed into a newer one.
+    """
+    paginator = s3_client.get_paginator("list_objects_v2")
+    deleted = 0
+    failures: List[Dict[str, str]] = []
+    batch: List[Dict[str, str]] = []
+
+    def _send(keys):
+        # Count what S3 says it deleted, not what was asked for. `DeleteObjects`
+        # answers 200 with a per-key `Errors` array — an object under a legal hold, or
+        # a key a policy denies — while deleting the rest, so a count of the request
+        # would report a prefix as emptied that still holds objects, which is the same
+        # harm as the unpaginated listing arriving by another route.
+        nonlocal deleted
+        response = s3_client.delete_objects(Bucket=bucket, Delete={"Objects": keys})
+        deleted += len(response.get("Deleted", []))
+        failures.extend(response.get("Errors", []))
+
+    for page in paginator.paginate(Bucket=bucket, Prefix=prefix):
+        for obj in page.get("Contents", []):
+            batch.append({"Key": obj["Key"]})
+            if len(batch) == _DELETE_OBJECTS_BATCH_SIZE:
+                _send(batch)
+                batch = []
+
+    if batch:
+        _send(batch)
+
+    if failures:
+        first = failures[0]
+        console.print(
+            f"[yellow]Warning: {len(failures)} object(s) under {prefix} could not be "
+            f"deleted, so it is not empty (first: {first.get('Key')}: "
+            f"{first.get('Code')}). Files uploaded now will sit alongside them."
+            "[/yellow]"
+        )
+
+    return deleted
+
+
+def _copy_s3_baseline(
+    s3_client, source_uri: str, dest_bucket: str, dest_prefix: str
+) -> int:
+    """Copy the baseline objects at `source_uri` under `dest_prefix`; return the count.
+
+    A manifest's `baseline_source` is an `s3://` URI whenever it came from
+    `generate-manifest --test-set`, which rewrites every baseline to point into the test
+    set bucket. A local `glob` over such a value matches nothing, so feeding that
+    manifest back produced a test set with a complete `input/` and an empty `baseline/`
+    — an evaluation with nothing to score against, reported as created.
+
+    The URI may name a prefix (what `generate-manifest` writes) or a single object, so
+    the destination key is the remainder of the source key below the prefix, falling
+    back to the object's basename when the URI names the object exactly. A key that
+    merely *starts* with the same characters is not a member and is skipped: listing
+    `gt/inv` would otherwise draw in `gt/inv2/other.json` and store it under a mangled
+    name. Paginated for the same reason the clear is: a baseline directory can hold
+    more than 1000 files.
+    """
+    source_bucket, _, source_key = source_uri[len("s3://") :].partition("/")
+    if not source_bucket or not source_key:
+        return 0
+
+    member_prefix = source_key if source_key.endswith("/") else source_key + "/"
+    paginator = s3_client.get_paginator("list_objects_v2")
+    copied = 0
+
+    for page in paginator.paginate(Bucket=source_bucket, Prefix=source_key):
+        for obj in page.get("Contents", []):
+            key = obj["Key"]
+            if key.endswith("/"):
+                continue  # a directory marker carries no baseline content
+            if key == source_key:
+                relative = os.path.basename(key)  # the URI names this object exactly
+            elif key.startswith(member_prefix):
+                relative = key[len(member_prefix) :]
+            else:
+                continue  # shares the leading characters without being under it
+            s3_client.copy_object(
+                CopySource={"Bucket": source_bucket, "Key": key},
+                Bucket=dest_bucket,
+                Key=f"{dest_prefix}{relative}",
+            )
+            copied += 1
+
+    return copied
+
+
 def _get_test_set_document_ids(
     stack_name: str,
     test_set: str,
@@ -3686,13 +4419,17 @@ def _get_test_set_document_ids(
     s3_client = boto3.client("s3", region_name=region)
 
     try:
-        response = s3_client.list_objects_v2(
-            Bucket=test_set_bucket, Prefix=f"{test_set}/input/"
-        )
+        # Paginated: a single `list_objects_v2` response stops at 1000 keys, and these
+        # ids are what the monitor waits for — a short list makes the run look complete
+        # while the documents it omits are still being processed, and any evaluation
+        # computed from it is scored on a subset without saying so.
+        paginator = s3_client.get_paginator("list_objects_v2")
 
         document_ids = []
-        if "Contents" in response:
-            for obj in response["Contents"]:
+        for page in paginator.paginate(
+            Bucket=test_set_bucket, Prefix=f"{test_set}/input/"
+        ):
+            for obj in page.get("Contents", []):
                 key = obj["Key"]
                 if key.endswith("/"):  # Skip directories
                     continue
@@ -3758,76 +4495,97 @@ def _create_test_set_from_manifest(
 
     # Clear existing test set folder if it exists
     try:
-        response = s3_client.list_objects_v2(
-            Bucket=test_set_bucket, Prefix=f"{test_set_name}/"
-        )
-
-        if "Contents" in response:
-            # Delete all existing objects in the test set folder
-            objects_to_delete = [{"Key": obj["Key"]} for obj in response["Contents"]]
-
-            if objects_to_delete:
-                s3_client.delete_objects(
-                    Bucket=test_set_bucket,
-                    Delete={"Objects": objects_to_delete},
-                )
-                console.print("  Cleared existing test set files")
+        cleared = _clear_s3_prefix(s3_client, test_set_bucket, f"{test_set_name}/")
+        if cleared:
+            console.print(f"  Cleared {cleared} existing test set files")
 
     except Exception as e:
         console.print(f"[yellow]Warning: Could not clear existing files: {e}[/yellow]")
 
-    # Place .uploading marker to prevent resolver race condition (issue #193)
-    marker_key = f"{test_set_name}/.uploading"
-    s3_client.put_object(
-        Bucket=test_set_bucket, Key=marker_key, Body=b"upload-in-progress"
-    )
+    baseline_sources = 0
+    baseline_objects = 0
 
-    # Copy input files
-    for _, row in df.iterrows():
-        source_path = str(row["document_path"])
-        filename = os.path.basename(source_path)
+    # The `.uploading` marker keeps the resolver away from a half-filled folder
+    # (issue #193), so removing it is what makes the test set visible. Every one of the
+    # failures inside this block used to escape past the removal statement that followed
+    # it, leaving a complete-and-invisible test set: a missing local input file, a
+    # `copy_object` whose source key is gone, a manifest row with no `document_path`
+    # column, a baseline file that vanished between the glob and the upload, and -- since
+    # the `s3://` baseline source became a real copy rather than a glob that silently
+    # matched nothing -- a baseline bucket that does not exist. See `_uploading_marker`.
+    with _uploading_marker(s3_client, test_set_bucket, test_set_name):
+        # Copy input files
+        for _, row in df.iterrows():
+            source_path = str(row["document_path"])
+            filename = os.path.basename(source_path)
 
-        # Upload to test set input directory
-        s3_key = f"{test_set_name}/input/{filename}"
+            # Upload to test set input directory
+            s3_key = f"{test_set_name}/input/{filename}"
 
-        if source_path.startswith("s3://"):
-            # Copy from S3 to S3
-            source_bucket, source_key = source_path[5:].split("/", 1)
-            s3_client.copy_object(
-                CopySource={"Bucket": source_bucket, "Key": source_key},
-                Bucket=test_set_bucket,
-                Key=s3_key,
-            )
-        else:
-            # Upload from local file
-            s3_client.upload_file(source_path, test_set_bucket, s3_key)
+            if source_path.startswith("s3://"):
+                # Copy from S3 to S3
+                source_bucket, source_key = source_path[5:].split("/", 1)
+                s3_client.copy_object(
+                    CopySource={"Bucket": source_bucket, "Key": source_key},
+                    Bucket=test_set_bucket,
+                    Key=s3_key,
+                )
+            else:
+                # Upload from local file
+                s3_client.upload_file(source_path, test_set_bucket, s3_key)
 
-        # Copy baseline if exists
-        if "baseline_source" in row and pd.notna(row["baseline_source"]):
-            baseline_path = str(row["baseline_source"])
+            # Copy baseline if exists
+            if "baseline_source" in row and pd.notna(row["baseline_source"]):
+                baseline_path = str(row["baseline_source"])
+                baseline_sources += 1
+                copied = 0
 
-            # Upload all files in the baseline directory recursively
-            import glob as glob_module
+                if baseline_path.startswith("s3://"):
+                    # An `s3://` baseline is what `generate-manifest --test-set` writes,
+                    # so this is the ordinary shape of a manifest fed back in, not an
+                    # exotic one. It is copied within S3 rather than globbed locally.
+                    copied = _copy_s3_baseline(
+                        s3_client,
+                        baseline_path,
+                        test_set_bucket,
+                        f"{test_set_name}/baseline/{filename}/",
+                    )
+                else:
+                    # Upload all files in the baseline directory recursively
+                    import glob as glob_module
 
-            baseline_files = glob_module.glob(
-                os.path.join(baseline_path, "**", "*"), recursive=True
-            )
-            for baseline_file in baseline_files:
-                if os.path.isfile(baseline_file):
-                    # Preserve directory structure relative to baseline_path
-                    rel_path = os.path.relpath(baseline_file, baseline_path)
-                    s3_key = f"{test_set_name}/baseline/{filename}/{rel_path}"
-                    s3_client.upload_file(baseline_file, test_set_bucket, s3_key)
+                    baseline_files = glob_module.glob(
+                        os.path.join(baseline_path, "**", "*"), recursive=True
+                    )
+                    for baseline_file in baseline_files:
+                        if os.path.isfile(baseline_file):
+                            # Preserve directory structure relative to baseline_path
+                            rel_path = os.path.relpath(baseline_file, baseline_path)
+                            s3_key = f"{test_set_name}/baseline/{filename}/{rel_path}"
+                            s3_client.upload_file(
+                                baseline_file, test_set_bucket, s3_key
+                            )
+                            copied += 1
 
-    # Remove .uploading marker now that all files are uploaded (issue #193)
-    try:
-        s3_client.delete_object(Bucket=test_set_bucket, Key=marker_key)
-    except Exception as e:
-        console.print(f"[yellow]Warning: Could not remove upload marker: {e}[/yellow]")
+                baseline_objects += copied
+                if copied == 0:
+                    # A test set whose baselines are missing cannot score anything, and
+                    # the row count printed at the end cannot show it, so say so per row.
+                    console.print(
+                        f"[yellow]Warning: no baseline files found for {filename} at "
+                        f"{baseline_path} - nothing was uploaded for it[/yellow]"
+                    )
 
     console.print(
         f"[green]✓ Test set '{test_set_name}' created with {len(df)} files[/green]"
     )
+    if baseline_sources:
+        # Objects uploaded, not manifest rows: the row count above cannot distinguish a
+        # test set with baselines from one whose baseline step copied nothing.
+        console.print(
+            f"  Baseline objects uploaded: {baseline_objects} "
+            f"(from {baseline_sources} baseline sources)"
+        )
 
 
 @cli.command(name="stop-workflows")
@@ -4115,7 +4873,13 @@ def remove_residual_resources_from_deleted_stacks(
     """
     try:
         # Parse regions list
-        regions_list = [r.strip() for r in check_stack_regions.split(",")]
+        regions_list = _comma_separated_values(check_stack_regions)
+        if not regions_list:
+            console.print(
+                "[red]✗ Error: --check-stack-regions contains no regions. Give one or "
+                "more region names, comma-separated.[/red]"
+            )
+            sys.exit(1)
 
         client = IDPClient(region=region)
         cleanup_result = client.stack.cleanup_orphaned(
@@ -4253,9 +5017,19 @@ def config_create(
     try:
         from idp_common.config.merge_utils import generate_config_template
 
-        # Parse features - could be a preset or comma-separated list
+        # Parse features - could be a preset or comma-separated list. The comma is what
+        # decides which of the two it is, so that branch is left alone; only the blank
+        # segments inside a list change, and a list that is all blanks is refused rather
+        # than handed on as a section whose name is the empty string.
         if "," in features:
-            feature_list = [f.strip() for f in features.split(",")]
+            feature_list = _comma_separated_values(features)
+            if not feature_list:
+                console.print(
+                    "[red]✗ Error: --features contains no section names. Give a preset "
+                    "('min', 'core', 'all') or one or more section names, "
+                    "comma-separated.[/red]"
+                )
+                sys.exit(1)
         else:
             feature_list = features  # type: ignore
 
@@ -4399,36 +5173,34 @@ def config_validate(
                 f"[green]✓ Migrated config written to: {emit_migrated}[/green]"
             )
 
-        # Check for extra/deprecated fields before Pydantic validation
-        from idp_common.config.models import IDP_CONFIG_DEPRECATED_FIELDS, IDPConfig
+        # Validate config. The unread-key findings come from validate_config rather
+        # than from a set difference computed here: a raw
+        # `set(config) - set(IDPConfig.model_fields)` reports every key IDPConfig
+        # does not declare, which told an operator that two keys the loader honours
+        # would be ignored — `description`, which update_configuration pops and
+        # stores, and `rule_classes`, which is renamed to `policy_classes` on load.
+        # It also sees only the top level, where a typo is least likely.
+        result = validate_config(user_config, pattern="pattern-2")
 
-        defined_fields = set(IDPConfig.model_fields.keys())
-        user_fields = set(user_config.keys())
-        extra_fields = user_fields - defined_fields
-
-        deprecated_fields = extra_fields & IDP_CONFIG_DEPRECATED_FIELDS
-        unknown_fields = extra_fields - IDP_CONFIG_DEPRECATED_FIELDS
-
-        if deprecated_fields:
-            console.print(
-                f"[yellow]⚠ Deprecated fields found (will be ignored): {sorted(deprecated_fields)}[/yellow]"
-            )
-
-        if unknown_fields:
-            console.print(
-                f"[yellow]⚠ Unknown fields found (will be ignored): {sorted(unknown_fields)}[/yellow]"
-            )
-
-        if strict and extra_fields:
+        # --strict keeps its contract: top-level fields only. A nested finding is
+        # reported either way (in the warnings below, with the path and often the
+        # field it was meant to be), and failing on one would fail configurations
+        # that pass today, which is a decision for a release rather than a fix.
+        top_level_extras = sorted(
+            finding["path"]
+            for finding in result.get("ignored_keys", [])
+            if "." not in finding["path"] and "[" not in finding["path"]
+        )
+        if strict and top_level_extras:
             console.print()
             console.print("[red]✗ Strict mode: config contains extra fields[/red]")
+            console.print(
+                f"[yellow]Extra top-level fields: {top_level_extras}[/yellow]"
+            )
             console.print(
                 "[yellow]Remove these fields or run without --strict[/yellow]"
             )
             sys.exit(1)
-
-        # Validate config
-        result = validate_config(user_config, pattern="pattern-2")
 
         if result["valid"]:
             console.print("[green]✓ Config merges with system defaults[/green]")
@@ -4472,6 +5244,19 @@ def config_validate(
             console.print()
             for error in result["errors"]:
                 console.print(f"  [red]• {error}[/red]")
+            # The unread-key findings belong on this branch too, not only on the
+            # passing one. They are the likely explanation for the error above rather
+            # than a separate observation: a key at the wrong depth is accepted in
+            # silence while its correctly-nested sibling raises, so `ocr.dpi: "abc"`
+            # validates and `ocr.image.dpi: "abc"` does not — and the finding names
+            # which of the two the author wrote. On this path `warnings` holds these
+            # findings and nothing else, since every other check runs only after the
+            # configuration validates, so there is no duplication with the block above.
+            if result["warnings"]:
+                console.print()
+                console.print("[bold yellow]Warnings:[/bold yellow]")
+                for warning in result["warnings"]:
+                    console.print(f"  ⚠ {warning}")
             sys.exit(1)
 
     except FileNotFoundError as e:
@@ -4557,6 +5342,22 @@ def config_upload(
     try:
         from idp_sdk import IDPClient
 
+        # `--config-profile ""` is *present* as far as click is concerned, so
+        # `required=True` passes it and `resolve_config_profile(..., required=True)`
+        # — which tests for None — passes it too. `ConfigurationManager` then builds
+        # its key as f"Config#{version}" only when the version is truthy, so the
+        # configuration landed on the bare `Config` key: a record `config-list` cannot
+        # see (it filters on begins_with(Configuration, "Config#")) and nothing reads,
+        # reported as "Configuration is now active!" with exit 0 (#1230). Refuse here,
+        # before anything is written.
+        if config_version is not None and not config_version.strip():
+            console.print(
+                "[red]✗ Error: --config-profile is empty. Name the profile to "
+                "update or create; `idp-cli config-list` shows the existing "
+                "ones.[/red]"
+            )
+            sys.exit(1)
+
         console.print(f"[bold blue]Uploading config to stack: {stack_name}[/bold blue]")
         console.print(f"Config file: {config_file}")
         console.print()
@@ -4566,7 +5367,8 @@ def config_upload(
         # Warn for the default profile
         if config_version and config_version.lower() == "default":
             console.print(
-                "[yellow]⚠️  Warning: This will update the default [system default] config profile[/yellow]"
+                "[yellow]⚠️  Warning: This will update the default "
+                "\\[system default] config profile[/yellow]"
             )
 
         result = client.config.upload(
@@ -4606,9 +5408,12 @@ def config_upload(
                 console.print(
                     "Use --config-profile to process documents with this profile."
                 )
-        else:
-            console.print("[bold]Configuration is now active![/bold]")
-            console.print("New documents will use this configuration immediately.")
+        # There is deliberately no `else` here. `--config-profile` is `required=True`
+        # and the blank-value guard above rejects the only other way `config_version`
+        # could be falsy, so this branch is always taken. The `else` that used to sit
+        # here printed "Configuration is now active!" and was reachable *only* through
+        # the #1230 defect the guard closes — an empty profile name writing to a key
+        # nothing reads. Keeping it would leave a message that can only ever be wrong.
 
     except Exception as e:
         logger.error(f"Error uploading config: {e}", exc_info=True)
@@ -4772,6 +5577,12 @@ def config_activate(
                 console.print(
                     f"Use 'idp-cli config-list --stack-name {stack_name}' to see available versions"
                 )
+            # Before the exit, and not inside the `bda_synced` branch below. A failed
+            # activation is the outcome most likely to have left a blueprint behind —
+            # the deletes run whatever happened to the classes — and it is the one
+            # where nothing else printed says so. `bda_synced` is False on every
+            # failing path, so gating on it would have hidden exactly those.
+            _print_orphaned_blueprints(result.bda_orphaned_blueprint_arns)
             sys.exit(1)
 
         # Show BDA sync results if performed
@@ -4785,6 +5596,7 @@ def config_activate(
                 console.print(
                     f"[green]✓ Successfully synced {result.bda_classes_synced} classes to BDA[/green]"
                 )
+        _print_orphaned_blueprints(result.bda_orphaned_blueprint_arns)
 
         console.print(
             f"[green]✓ Successfully activated configuration profile: {config_version}[/green]"
@@ -5115,9 +5927,15 @@ def config_delete(
 )
 @click.option(
     "--direction",
-    type=click.Choice(["bidirectional", "bda-to-idp", "idp-to-bda"]),
+    type=click.Choice(
+        ["bidirectional", "bda-to-idp", "idp-to-bda", "cleanup-orphaned"]
+    ),
     default="bidirectional",
-    help="Sync direction (default: bidirectional)",
+    help=(
+        "Sync direction (default: bidirectional). 'cleanup-orphaned' is not a sync: "
+        "it deletes every blueprint carrying the stack's prefix that the profile's "
+        "classes do not account for, account-wide"
+    ),
 )
 @click.option(
     "--mode",
@@ -5131,12 +5949,21 @@ def config_delete(
     "config_version",
     help="Configuration profile to sync (default: active profile); --config-version is the former name and still works",
 )
+@click.option(
+    "--force",
+    is_flag=True,
+    help=(
+        "Skip the confirmation prompt. Only --direction cleanup-orphaned prompts, "
+        "because only it deletes account-wide"
+    ),
+)
 @click.option("--region", help="AWS region (optional)")
 def config_sync_bda(
     stack_name: str,
     direction: str,
     mode: str,
     config_version: Optional[str],
+    force: bool,
     region: Optional[str],
 ):
     """
@@ -5146,13 +5973,27 @@ def config_sync_bda(
     configuration's document classes and BDA (Bedrock Data Automation) blueprints.
 
     Sync directions:
-      bidirectional: Full two-way sync (default)
-      bda-to-idp:    Import BDA blueprints into IDP config
-      idp-to-bda:    Push IDP classes to BDA blueprints
+      bidirectional:    Full two-way sync (default)
+      bda-to-idp:       Import BDA blueprints into IDP config
+      idp-to-bda:       Push IDP classes to BDA blueprints
+      cleanup-orphaned: Delete orphaned blueprints (see below)
 
     Sync modes:
       replace: Target is aligned to match source exactly (default)
       merge:   Source items are added without removing existing items
+
+    \b
+    Orphaned-blueprint cleanup:
+      A replace-mode sync removes a blueprint from the BDA project before deleting
+      it, so a delete that fails leaves one that no project-scoped read can see,
+      that still counts against the account's blueprint limit, and that a
+      name-prefix match can still pick up. --direction cleanup-orphaned is the only
+      thing that removes those.
+      It is DESTRUCTIVE and ACCOUNT-WIDE: it deletes every blueprint carrying the
+      stack's name prefix that the named profile's classes do not account for, not
+      just the ones a sync reported. So the profile decides what survives -- naming
+      the wrong one deletes live blueprints. It prompts for confirmation unless
+      --force is given, and --mode is not read.
 
     Examples:
 
@@ -5167,28 +6008,94 @@ def config_sync_bda(
 
       # Sync specific config profile
       idp-cli config-sync-bda --stack-name my-stack --config-profile v2
+
+      # Delete blueprints a previous sync left orphaned
+      idp-cli config-sync-bda --stack-name my-stack --direction cleanup-orphaned \\
+          --config-profile v2
     """
     try:
         from idp_sdk import IDPClient
 
         # Normalize direction for SDK (CLI uses dashes, SDK uses underscores)
         sdk_direction = direction.replace("-", "_")
+        is_cleanup = sdk_direction == "cleanup_orphaned"
 
-        console.print(f"[bold blue]BDA Sync for stack: {stack_name}[/bold blue]")
-        console.print(f"Direction: {direction}")
-        console.print(f"Mode: {mode}")
-        if config_version:
-            console.print(f"Config profile: {config_version}")
-        console.print()
+        if is_cleanup:
+            console.print(
+                f"[bold blue]Orphaned blueprint cleanup for stack: "
+                f"{stack_name}[/bold blue]"
+            )
+            console.print(
+                "[bold red]⚠️  This deletes every BDA blueprint carrying this "
+                "stack's prefix that the configuration profile below does not "
+                "account for, account-wide.[/bold red]"
+            )
+            console.print(
+                f"Profile deciding what survives: "
+                f"{config_version or 'the active profile'}"
+            )
+            console.print("[bold red]This action cannot be undone.[/bold red]")
+            console.print()
+            if not force:
+                try:
+                    confirmed = click.confirm(
+                        "Delete the orphaned blueprints?", default=False
+                    )
+                except click.Abort:
+                    # No terminal to prompt on -- a CI runner, or stdin closed.
+                    # `click.confirm` raises `Abort`, which carries no message, so the
+                    # command's generic handler printed a bare "✗ Error: " and logged a
+                    # traceback. Nothing was deleted, which is right; what was missing
+                    # was saying how to proceed.
+                    console.print(
+                        "[yellow]Cleanup cancelled: there is no terminal to confirm "
+                        "on. Pass --force to run it without a prompt.[/yellow]"
+                    )
+                    sys.exit(1)
+                if not confirmed:
+                    console.print("[yellow]Cleanup cancelled[/yellow]")
+                    sys.exit(1)
+        else:
+            console.print(f"[bold blue]BDA Sync for stack: {stack_name}[/bold blue]")
+            console.print(f"Direction: {direction}")
+            console.print(f"Mode: {mode}")
+            if config_version:
+                console.print(f"Config profile: {config_version}")
+            console.print()
 
         client = IDPClient(stack_name=stack_name, region=region)
 
-        with console.status("[cyan]Synchronizing with BDA...[/cyan]"):
+        status_message = (
+            "[cyan]Deleting orphaned blueprints...[/cyan]"
+            if is_cleanup
+            else "[cyan]Synchronizing with BDA...[/cyan]"
+        )
+        with console.status(status_message):
             result = client.config.sync_bda(
                 direction=sdk_direction,
                 mode=mode,
                 config_version=config_version,
             )
+
+        if is_cleanup:
+            deleted = result.cleanup_deleted_count or 0
+            failed = result.cleanup_failed_count or 0
+            if result.success:
+                console.print(
+                    f"[green]✓ Orphaned blueprint cleanup completed: "
+                    f"{deleted} deleted[/green]"
+                )
+            else:
+                console.print(
+                    "[yellow]⚠ Orphaned blueprint cleanup did not complete[/yellow]"
+                )
+                console.print(f"  Blueprints deleted: {deleted}")
+                console.print(f"  Blueprints failed:  {failed}")
+                if result.error:
+                    console.print(f"  [red]Error: {result.error}[/red]")
+                _print_orphaned_blueprints(result.orphaned_blueprint_arns)
+                sys.exit(1)
+            return
 
         if result.success:
             console.print("[green]✓ BDA sync completed successfully[/green]")
@@ -5196,12 +6103,14 @@ def config_sync_bda(
             if result.processed_classes:
                 for cls_name in result.processed_classes:
                     console.print(f"    • {cls_name}")
+            _print_orphaned_blueprints(result.orphaned_blueprint_arns)
         else:
             console.print("[yellow]⚠ BDA sync completed with issues[/yellow]")
             console.print(f"  Classes synced: {result.classes_synced}")
             console.print(f"  Classes failed: {result.classes_failed}")
             if result.error:
                 console.print(f"  [red]Error: {result.error}[/red]")
+            _print_orphaned_blueprints(result.orphaned_blueprint_arns)
             sys.exit(1)
 
     except Exception as e:
@@ -5255,17 +6164,27 @@ def config_sync_bda(
 @click.option(
     "--page-label",
     multiple=True,
-    help="Label for corresponding --page-range (e.g., 'W2 Form'). Used as class name hint per range.",
+    help=(
+        "Label for corresponding --page-range (e.g., 'W2 Form'). Used as class name "
+        "hint per range. Optional per range, but a label with no range is refused."
+    ),
 )
 @click.option(
     "--auto-detect",
     is_flag=True,
-    help="Auto-detect document section boundaries using AI, then discover each section.",
+    help=(
+        "Auto-detect document section boundaries using AI, then discover each "
+        "section. Cannot be combined with --page-range, --page-label, -g or "
+        "--class-hint, none of which this mode applies."
+    ),
 )
 @click.option(
     "--detect-only",
     is_flag=True,
-    help="Only detect section boundaries (use with --auto-detect). Prints boundaries without running discovery.",
+    help=(
+        "Only detect section boundaries. Requires --auto-detect, and is refused "
+        "without it. Prints boundaries without running discovery."
+    ),
 )
 @click.option(
     "--model-id",
@@ -5315,6 +6234,16 @@ def discover(
     JSON file per schema; if path is a file, writes all schemas as a
     JSON array.
 
+    Option combinations that cannot be honoured are refused before any Bedrock
+    call rather than resolved silently, since discovery is paid and its output is
+    written to disk and consumed as configuration:
+
+    \b
+      --auto-detect with -g or --class-hint : this mode applies neither
+      --auto-detect with --page-range       : both decide where the sections are
+      --detect-only without --auto-detect   : otherwise a full discovery ran
+      more --page-label than --page-range   : the extra labels had no range
+
     Examples:
 
       # Single document
@@ -5347,6 +6276,139 @@ def discover(
     """
     import json
     from pathlib import Path
+
+    # Contradictory or unusable option combinations are refused here, ahead of the
+    # `try` block and therefore ahead of `IDPClient(...)`, so a refusal costs no
+    # client construction and no Bedrock call. Each of these was previously accepted
+    # and then ignored, and discovery is paid work whose output is written to disk and
+    # consumed as configuration — so the wrong answer is not a degraded one, and a
+    # warning the user reads after the charge is not a remedy.
+
+    # `--auto-detect` cannot apply `-g` or `--class-hint`. The SDK's auto-detect arm
+    # calls `_run_auto_detect_and_discover(doc, config_version, stack_name, model_id)`
+    # and forwards neither, so there is nowhere for either to be applied — a wiring
+    # fix is not available here. `--class-hint` is additionally a contradiction in
+    # this mode: auto-detect infers one class per detected section, so a single class
+    # name does not describe what the command produces.
+    if auto_detect:
+        _unusable = []
+        if ground_truth:
+            _unusable.append("--ground-truth/-g")
+        # `is not None` rather than truthiness: `--class-hint ""` is an option the user
+        # typed, and dropping it because it is empty is the same accepted-then-ignored
+        # shape in miniature. An absent option is `None`.
+        if class_hint is not None:
+            _unusable.append("--class-hint")
+        if _unusable:
+            console.print(
+                f"[red]✗ Error: --auto-detect cannot apply {' or '.join(_unusable)}."
+                "[/red]"
+            )
+            console.print(
+                "  Auto-detect infers one class per detected section and applies "
+                "neither, so the run would cost the same and disregard them."
+            )
+            console.print(
+                "[yellow]Drop --auto-detect to discover the whole document, where "
+                "both apply:[/yellow]"
+            )
+            # Every document and every ground truth, not just the first: the
+            # non-auto-detect form the hint suggests accepts all of them, and a hint
+            # that quietly narrows the user's work to one file is its own small
+            # version of this issue.
+            _rerun = "idp-cli discover"
+            for _doc_path in document:
+                _rerun += f" -d {escape(_doc_path)}"
+            for _gt_path in ground_truth:
+                _rerun += f" -g {escape(_gt_path)}"
+            if class_hint is not None:
+                _rerun += f' --class-hint "{escape(class_hint)}"'
+            console.print(f"   [cyan]{_rerun}[/cyan]")
+            console.print(
+                "[yellow]Or name each section yourself with --page-range and "
+                "--page-label, whose labels are the per-section class names.[/yellow]"
+            )
+            sys.exit(1)
+
+    # `--detect-only` is only consulted inside the auto-detect arm, so on its own it
+    # fell through to standard discovery and ran a full schema inference — a *more*
+    # expensive operation than the boundary detection that was asked for, and the
+    # opposite of what the flag is for. That is why this refuses rather than warns.
+    # The option's own help already says "use with --auto-detect"; this enforces the
+    # dependency it documents instead of leaving it to be discovered from a bill.
+    if detect_only and not auto_detect:
+        console.print("[red]✗ Error: --detect-only requires --auto-detect.[/red]")
+        console.print(
+            "  On its own it was disregarded and a full schema discovery ran instead, "
+            "which costs more than the boundary detection you asked for."
+        )
+        console.print("[yellow]Detect boundaries only:[/yellow]")
+        console.print(
+            f"   [cyan]idp-cli discover -d {escape(document[0])}"
+            " --auto-detect --detect-only[/cyan]"
+        )
+        sys.exit(1)
+
+    # `--auto-detect` and `--page-range` are two alternative answers to one question —
+    # where the sections are. The auto-detect arm returned before the page-range arm
+    # was reached, so hand-pinned ranges were discarded and the user paid for
+    # AI-chosen boundaries while the header said "Auto-Detect Sections" and mentioned
+    # nothing. This is the case a warning serves worst: the command has no basis on
+    # which to pick one of the two, so resolving the contradiction by source order is
+    # a guess, and refusing is what `--auto-detect` and `--page-range` already each do
+    # when given more than one document.
+    if auto_detect and page_range:
+        console.print(
+            "[red]✗ Error: --auto-detect and --page-range both decide where the "
+            "sections are; give one.[/red]"
+        )
+        console.print(
+            f"  {len(page_range)} page range(s) were given and would have been "
+            "disregarded in favour of AI-detected boundaries."
+        )
+        console.print(
+            "[yellow]Drop --page-range to let the model find the boundaries, or drop "
+            "--auto-detect to use the ranges you pinned.[/yellow]"
+        )
+        sys.exit(1)
+
+    # A `--page-label` with no `--page-range` to pair with was dropped by the
+    # index pairing below, so that section lost its class-name hint and took a
+    # model-chosen `$id` — which then becomes the schema's filename on disk. Both
+    # options are repeated and order-dependent, so the usual cause is a missing range
+    # rather than a deliberate extra label, and the run is paid.
+    #
+    # The rule is the comparison, not a list of shapes: *fewer* labels than ranges
+    # stays legitimate, because a label is optional per range, and a label given with
+    # no ranges at all (`--page-label X` on its own) is covered by the same comparison
+    # rather than needing a case of its own.
+    if len(page_label) > len(page_range):
+        console.print(
+            f"[red]✗ Error: {len(page_label)} --page-label(s) were given for "
+            f"{len(page_range)} --page-range(s).[/red]"
+        )
+        console.print("  Labels pair with ranges in order, so these have no range:")
+        for _orphan in page_label[len(page_range) :]:
+            # An empty or whitespace label would otherwise render as a bare bullet,
+            # which names nothing and is the hardest case to spot on a command line.
+            console.print(
+                f"    - {escape(_orphan)}" if _orphan.strip() else "    - (empty label)"
+            )
+        if auto_detect:
+            # "Add the missing --page-range" is the wrong remedy here: the next guard
+            # up refuses --auto-detect together with --page-range, so following it
+            # would land the user on a second refusal.
+            console.print(
+                "[yellow]--auto-detect names each section itself, so drop the "
+                "label.[/yellow]"
+            )
+        else:
+            console.print(
+                "[yellow]Add the missing --page-range, or drop the extra label. A "
+                "range may be given without a label; a label may not be given "
+                "without a range.[/yellow]"
+            )
+        sys.exit(1)
 
     try:
         from idp_sdk import IDPClient
@@ -5696,10 +6758,61 @@ def discover(
         sys.exit(1)
 
 
+def _schema_output_filename(class_name: str) -> str:
+    """Reduce a discovered class id to a filename, dropping anything path-like.
+
+    `class_name` is the schema's `$id` (or `x-aws-idp-document-type`), which a
+    model generated from the content of the document being analysed. It is a
+    label, not a path, and it is not trusted as one: a value holding `/` or `..`
+    would name a file outside the directory `-o` asked for, and an absolute one
+    would replace that directory altogether.
+
+    The reduction goes through `sanitize_class_name`, which is this repository's
+    canonical rule for a class id — `[a-zA-Z0-9_-]`, a set admitting no path
+    separator, no `..` and no drive letter — rather than through a second rule
+    written here that could drift from it.
+
+    A class id with nothing usable in it falls back to `unknown`, the same name a
+    schema carrying no id at all is given, so the schema is still written
+    somewhere the operator can find rather than silently dropped.
+    """
+    from idp_common.config.class_names import sanitize_class_name
+
+    return sanitize_class_name(class_name) or "unknown"
+
+
+def _schema_output_path(output_path: Path, class_name: str) -> Path:
+    """Decide where `class_name`'s schema is written, refusing to leave `-o`.
+
+    The containment check is kept *after* the sanitising rather than instead of
+    it. Sanitising decides what the name should be; this decides whether the
+    result is the directory the operator asked for, which is the half that cannot
+    be defeated by a spelling nobody anticipated. Reaching the refusal means the
+    sanitising stopped holding, so it raises rather than quietly relocating the
+    file: the command reports the error and exits non-zero.
+
+    What is resolved is the **directory being written into**, not the file. A
+    symlink the operator put at the target filename inside their own output
+    directory — schemas linked into a configuration repository is the ordinary
+    reason — is followed, exactly as it was before this check existed. Resolving
+    the file instead would refuse that write for a class id as ordinary as
+    `Invoice`, and would abandon the rest of the batch to do it. Every escaping
+    class id is still refused: a separator or a `..` moves the *directory*, and an
+    absolute id replaces it.
+    """
+    root = output_path.resolve()
+    file_path = output_path / f"{_schema_output_filename(class_name)}.json"
+    if file_path.parent.resolve() != root:
+        raise ValueError(
+            f"Refusing to write a discovered schema outside {root}: document "
+            f"class id {class_name!r} names the directory {file_path.parent}"
+        )
+    return file_path
+
+
 def _write_discover_output(output, all_schemas, console, is_batch=True):
     """Helper to write discovery output to file or stdout."""
     import json
-    from pathlib import Path
 
     if not all_schemas:
         return
@@ -5729,7 +6842,12 @@ def _write_discover_output(output, all_schemas, console, is_batch=True):
                     or schema.get("x-aws-idp-document-type")
                     or "unknown"
                 )
-                file_path = output_path / f"{class_name}.json"
+                file_path = _schema_output_path(output_path, class_name)
+                if file_path.stem != class_name:
+                    console.print(
+                        f"[yellow]  ↳ Class id {class_name!r} is not a usable class "
+                        f"id; written as {file_path.name}[/yellow]"
+                    )
                 with open(file_path, "w", encoding="utf-8") as f:
                     f.write(json.dumps(schema, indent=2))
                 console.print(f"[green]✓ Schema written to: {file_path}[/green]")
@@ -6203,9 +7321,16 @@ def chat(
     try:
         from .chat import run_chat
     except ImportError:
+        # `\[agents]` escapes the bracket for Rich, which otherwise reads
+        # `[agents]` as a style tag, fails to resolve it as a style, and drops it
+        # silently -- leaving the user told to run `pip install -e
+        # 'lib/idp_common_pkg'`, which fixes nothing, because `idp_common` is
+        # already installed in the situation that produces this message and the
+        # missing piece is the extra. They run it, watch it succeed, retry, and get
+        # the identical error. Same idiom as the `\[Y/w/n]` prompts above.
         console.print(
-            "[red]✗ Chat requires idp_common[agents] to be installed.\n"
-            "  Run: pip install -e 'lib/idp_common_pkg[agents]'[/red]"
+            "[red]✗ Chat requires idp_common\\[agents] to be installed.\n"
+            "  Run: pip install -e 'lib/idp_common_pkg\\[agents]'[/red]"
         )
         sys.exit(1)
 
@@ -6338,6 +7463,25 @@ def test_result(
         if test_result.completed_at:
             console.print(f"[dim]Completed: {test_result.completed_at}[/dim]")
 
+        # The run's outcome has to reach the shell. This command reported the status
+        # and never let it influence the exit code, so a run with status="FAILED"
+        # and every file failed exited 0 exactly like a clean pass, and
+        # `idp-cli test-result ... && deploy` proceeded on a failed evaluation
+        # (#1230).
+        #
+        # Two conditions, because either alone leaves a real failure at 0: a run can
+        # carry a terminal FAILED status with no per-file count, and a run whose
+        # status is not FAILED can still have failed files (a partial run reports
+        # COMPLETED). Reading the printed text was the only route before this, which
+        # is what having an exit code is for.
+        if str(test_result.status).upper() == "FAILED" or test_result.failed_files > 0:
+            console.print(
+                f"[red]✗ Test run {test_result.test_run_id} did not pass: "
+                f"status {test_result.status}, "
+                f"{test_result.failed_files} failed file(s)[/red]"
+            )
+            sys.exit(1)
+
     except Exception as e:
         logger.error(f"Error getting test results: {e}", exc_info=True)
         console.print(f"[red]✗ Error: {e}[/red]")
@@ -6382,8 +7526,9 @@ def test_compare(
         region = os.environ.get("AWS_REGION", "us-east-1")
 
     try:
-        # Parse test run IDs
-        test_run_id_list = [tid.strip() for tid in test_run_ids.split(",")]
+        # Parse test run IDs. Blank segments are dropped, so a trailing comma no
+        # longer counts as a second run and satisfy this check with one real id.
+        test_run_id_list = _comma_separated_values(test_run_ids)
 
         if len(test_run_id_list) < 2:
             console.print(
@@ -6403,8 +7548,13 @@ def test_compare(
         )
 
         metrics = comparison_result.metrics
-        # Note: configs not yet in SDK model, but in raw_data if needed
-        configs = []  # TODO: Add to SDK model if needed
+        # `[]` and `None` are different answers here: `[]` means the captured
+        # configurations were compared and matched, `None` means fewer than two of
+        # the runs recorded one, so nothing was compared. Printing "no configuration
+        # differences" for both is a claim about the configurations that was never
+        # checked, which is exactly the question a user is asking when two runs
+        # score differently.
+        configs = comparison_result.configs
 
         if not metrics:
             console.print("[yellow]⚠ No metrics data available for comparison[/yellow]")
@@ -6511,8 +7661,10 @@ def test_compare(
         console.print(table)
         console.print()
 
-        # Display configuration differences
-        if configs and len(configs) > 0:
+        # Display configuration differences. Three outcomes, kept distinct: some
+        # settings differ, they were compared and matched, or too few runs captured
+        # a configuration for there to be anything to compare.
+        if configs:
             console.print("[bold green]Configuration Differences[/bold green]\n")
 
             config_table = Table(show_header=True, header_style="bold cyan")
@@ -6521,23 +7673,49 @@ def test_compare(
             for test_run_id in test_run_id_list:
                 config_table.add_column(test_run_id[:20])
 
+            # Every cell here is user-authored configuration text, and Rich reads
+            # `[...]` in a table cell as markup exactly as it does in a printed
+            # string. Two measured consequences if it is not escaped, both of them
+            # the item this table was written for: a prompt containing
+            # `[full log_group name]` — which five shipped `config_library` profiles
+            # do — renders with that run gone, so a row asserting the two runs
+            # *differ* displays two identical cells; and a value containing
+            # `[/INST]`, the Llama and Mistral instruction token, raises
+            # `MarkupError`, which the broad handler below turns into `✗ Error:` and
+            # exit 1 after the metrics table has already printed. Escaped before the
+            # truncation, so the escape cannot itself be cut in half.
             for diff in configs:
-                setting = diff.get("setting", "")
+                row = [escape(str(diff.get("setting", "")))]
                 values = diff.get("values", {})
-
-                row = [setting]
                 for test_run_id in test_run_id_list:
-                    value = values.get(test_run_id, "<missing>")
-                    # Truncate long values
-                    if len(str(value)) > 50:
-                        value = str(value)[:47] + "..."
-                    row.append(str(value))
+                    value = str(values.get(test_run_id, "<missing>"))
+                    if len(value) > 50:
+                        value = value[:47] + "..."
+                    row.append(escape(value))
 
                 config_table.add_row(*row)
 
             console.print(config_table)
+        elif configs is None:
+            # Deliberately says nothing about whether the configurations match, and
+            # does not promise that waiting will produce them. A run records its
+            # configuration when it is created; what is conditional is that
+            # `getTestRun` withholds it until the run's evaluation aggregate has been
+            # written — and two other states land here too, a run this command could
+            # not retrieve at all and one whose stored configuration would not
+            # decompress, for which no amount of waiting helps.
+            console.print(
+                "[dim]Configurations not compared: fewer than two of these runs "
+                "returned the configuration they ran under. A run returns it once "
+                "its evaluation results have been aggregated, and not at all if it "
+                "could not be retrieved.[/dim]"
+            )
         else:
-            console.print("[dim]No configuration differences to display[/dim]")
+            console.print(
+                "[dim]Configurations are identical across the compared runs "
+                "(metadata such as save timestamps, and the class definitions, are "
+                "not compared).[/dim]"
+            )
 
         console.print()
 
@@ -6591,8 +7769,11 @@ def abort_test_run(
         region = os.environ.get("AWS_REGION", "us-east-1")
 
     try:
-        # Parse test run IDs
-        test_run_id_list = [tid.strip() for tid in test_run_ids.split(",")]
+        # Parse test run IDs. Blank segments are dropped, which is what makes the
+        # guard below reachable: after a plain `split(",")` it never was, because
+        # `"".split(",")` is `[""]`, and `--test-run-ids ""` went on to ask the
+        # service to abort a run whose id is the empty string.
+        test_run_id_list = _comma_separated_values(test_run_ids)
 
         if not test_run_id_list:
             console.print("[red]✗ No test run IDs provided[/red]")
@@ -6754,7 +7935,13 @@ def bootstrap(
         progress.print(
             f"[yellow]Note: document generator unavailable ({reason}).[/yellow]"
         )
-        progress.print(f"[yellow]{synthesis_engine.INSTALL_HINT}[/yellow]")
+        # `escape`, because INSTALL_HINT names the `[synthesis-generator]` pip extra
+        # and Rich would read that as a style tag and drop it -- leaving the user told
+        # to `pip install idp_common`, which is already installed. The constant is
+        # shared with consumers that do not render through Rich (the bootstrap
+        # module, the capability field), so the escape belongs at this call site
+        # rather than in the constant.
+        progress.print(f"[yellow]{escape(synthesis_engine.INSTALL_HINT)}[/yellow]")
 
     request = bootstrap_mod.BootstrapRequest(
         prompt=prompt,
@@ -6794,7 +7981,9 @@ def bootstrap(
 
         from idp_common.config.configuration_manager import ConfigurationManager
 
-        config_manager = ConfigurationManager()
+        # The table name above was resolved in `region`; the manager must read
+        # and write it there too (see ConfigurationManager's region docstring).
+        config_manager = ConfigurationManager(region=region)
         test_set_bucket = _os.environ.get("TEST_SET_BUCKET")
 
         result = bootstrap_mod.run_bootstrap(

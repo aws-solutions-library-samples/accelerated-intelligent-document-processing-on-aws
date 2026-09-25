@@ -9,6 +9,7 @@ import boto3
 import strands
 from strands_tools import calculator
 
+from ..common.config import DEFAULT_AGENT_MODEL_ID
 from ..common.strands_bedrock_model import create_strands_bedrock_model
 
 logger = logging.getLogger(__name__)
@@ -28,8 +29,7 @@ def create_sample_calculator_agent(
     Returns:
         strands.Agent: Configured Strands agent instance
     """
-    # Use hardcoded model ID
-    model_id = "us.anthropic.claude-3-7-sonnet-20250219-v1:0"
+    model_id = DEFAULT_AGENT_MODEL_ID
 
     # Create Bedrock model
     model = create_strands_bedrock_model(model_id=model_id, session=session)

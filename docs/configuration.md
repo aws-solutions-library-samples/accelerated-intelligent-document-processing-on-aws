@@ -122,8 +122,20 @@ The GenAI IDP Accelerator uses a **system defaults** architecture where configur
 ### How It Works
 
 1. **System defaults** are loaded first from `lib/idp_common_pkg/idp_common/config/system_defaults/`:
-   - `pattern-1.yaml` - BDA mode defaults (used when `use_bda: true`)
-   - `pattern-2.yaml` - Pipeline mode defaults (used when `use_bda: false`)
+   - `pattern-1.yaml` - BDA mode defaults
+   - `pattern-2.yaml` - Pipeline mode defaults
+
+   Which of the two is used comes from the caller's explicit pattern argument. Where
+   that is omitted, the tools that auto-detect it (the SDK's config download and
+   upload, and the `update_configuration` Lambda) select `pattern-1.yaml` only for a
+   configuration whose `classification.classificationMethod` is `bda`, and
+   `pattern-2.yaml` otherwise — they do not read the top-level `use_bda` flag, so a
+   BDA deployment configured only through `use_bda: true` resolves against
+   `pattern-2.yaml`. That is benign but not free: your own `use_bda: true` still wins
+   the merge, so the workflow routes to BDA as you asked, and the cost is a
+   configuration carrying the OCR, classification, chat, rule-validation and LLM
+   extraction defaults BDA mode does not use. `use_bda` is what routes the workflow at
+   run time; the pattern file only decides which defaults are merged underneath it.
 
 2. **User configurations** are merged on top, overriding only the specified values
 
@@ -196,6 +208,102 @@ classes:
   # ... your document classes
 ```
 
+### A key the solution does not recognise is reported, not applied
+
+A configuration key whose name no setting matches is **ignored on load**, at every
+level of the file. The configuration is still accepted and the run still completes —
+what changes is that the shipped default stays in force, which looks exactly like a
+working configuration. A misspelled `enabled` leaves a guard on; a mis-nested
+`fail_action` leaves the default `warn` in place, and the conclusion a reader draws
+is that escalation does not work.
+
+Every such key is therefore named, with the full path to where it was written:
+
+```
+IDPConfig: Ignoring unknown nested fields (not defined in model, so the shipped
+default stays in force): extraction.validation.enabld (did you mean
+extraction.validation.enabled?), ocr.dpi (did you mean ocr.image.dpi?)
+```
+
+Two places to look for it:
+
+- **Before you upload.** `idp-cli config-validate --config-file <file>` lists them
+  as warnings, with the path. This is the cheap moment — the file is in front of
+  you. Note that `idp-cli config-upload` does **not** print them: it checks only
+  whether the configuration is valid, and an ignored key does not make it invalid.
+  `--strict` turns a **top-level** extra into a non-zero exit; a nested one is
+  reported but does not fail, so adding this flag to a pipeline cannot break a
+  configuration that passes today.
+- **On load, in CloudWatch.** The same finding appears at `WARNING` from the Lambda
+  that loaded the configuration. Search the log group for `Ignoring` after changing
+  a configuration — that matches the unknown-key line and the deprecated-key one.
+
+⚠️ **A key at the wrong nesting level is the trap worth knowing about**, because the
+name itself is valid. `dpi` is a real setting, under `ocr.image`. Written as
+`ocr.dpi` it is ignored — and so is any bad *value* you gave it, because the check
+that would have rejected it lives with the real key:
+
+```yaml
+ocr:
+  dpi: 300          # ignored: no such setting at this level
+  image:
+    dpi: 300        # this is the one that takes effect
+```
+
+That is why the message offers the path the key belongs at. Since `ocr.backend` and
+`ocr.model_id` genuinely are one level up, this is an easy mistake to make and a hard
+one to see afterwards.
+
+The same works the other way round: write `ocr.image.backend`, one level too deep,
+and the message points you back at `ocr.backend`.
+
+**A "did you mean" appears only when there is one answer.** Some setting names are
+used in several places — `enabled` exists at eight different places one level under
+`extraction` — and in that case the key is still reported but no path is suggested,
+because a guess would send you to edit something that was already correct.
+
+**The warning is not an error.** An unrecognised key does not stop a configuration
+from being accepted or a deployment from loading it, so upgrading cannot break a
+stored configuration on this account. It also means the only signal is the warning:
+after changing a setting, confirm the value you set is the value in effect rather
+than inferring it from the absence of an error.
+
+Two kinds of key are deliberately *not* reported, because nothing is being dropped:
+free-form content whose names are yours to choose — your document `classes`, a
+pipeline hook's `args` — and the pipeline-hook blocks, which keep whatever they are
+given.
+
+#### Pricing and Model Limits are separate records, and they report the same way
+
+The **Pricing** and **View / Edit Model Limits** panels edit their own records
+rather than part of the configuration document, so the paragraphs above describe
+them too but the message names the record instead of the configuration:
+
+```
+ModelConfigLimitsConfig: Ignoring unknown nested fields (not defined in model, so
+the shipped default stays in force): model_limits[0].max_input_tokenz (did you mean
+model_limits[0].max_input_tokens?)
+```
+
+The list index is part of the path, so the line tells you which row to fix. Two
+things worth knowing about these two records specifically:
+
+- **A stray key at the top of the record is refused outright**, with a validation
+  error rather than a warning, because these records recognise only their own small
+  set of top-level keys. The warning above is for a key *inside* a row, which is
+  where the silent drop was: a row's own settings were accepted permissively, so a
+  misspelled `max_input_tokens` left the shipped context window for that model
+  family in force while the save reported success.
+- **A price belongs to a unit, not to the entry.** Writing `price` alongside `name`
+  and `units` on a pricing entry is the mis-nesting equivalent of `ocr.dpi`: it is
+  ignored, the shipped rate stays in force, and the cost figures carry on looking
+  plausible. The warning names `pricing[<n>].price` and points at
+  `pricing[].units[].price`.
+
+As with the configuration document, the finding appears at `WARNING` in the log
+group of whichever function loaded or saved the record — so search for `Ignoring`
+after editing either panel.
+
 ### Benefits
 
 - **Simpler configs** - Only specify what makes your use case unique
@@ -216,7 +324,9 @@ See the [config_library README](../config_library/README.md) for available confi
 
 Bedrock retires model versions over time. A retired model is removed from the
 model picklists (the enums in `patterns/unified/template.yaml` and
-`template.yaml`) and from `config_library/pricing.yaml`. Model IDs in a
+`template.yaml`) but **keeps** its `config_library/pricing.yaml` entry, so a cost
+report covering documents processed while it was still selectable resolves the
+right rate. Model IDs in a
 configuration are plain strings, not a closed enum, so **a stored configuration
 that still names a retired model keeps loading** — it just fails at invoke time
 with:
@@ -231,17 +341,42 @@ current model to fix it.
 
 Two failure shapes to distinguish:
 
-- **End of life** — the model is gone for everyone. It is removed from the
-  picklists. `us.anthropic.claude-3-5-haiku-20241022-v1:0` is the most recent
-  example.
-- **Provider-legacy, account-scoped** — the model still exists but access is
-  withdrawn per account after inactivity:
+- **End of life** — the model is gone for everyone, in every region, and no
+  account can invoke it. It is removed from the picklists.
+  `us.amazon.nova-premier-v1:0` (end of life 2026-09-14) and
+  `us.anthropic.claude-3-5-haiku-20241022-v1:0` are examples. You can confirm the
+  state yourself: `aws bedrock get-foundation-model --model-identifier
+  amazon.nova-premier-v1:0` answers `ResourceNotFoundException` with the
+  end-of-life message, while a live model returns its details.
+- **Provider-legacy, account-scoped** — the model still exists and existing users
+  can still invoke it, but access is withdrawn per account after inactivity:
   `ResourceNotFoundException: Access denied. This Model is marked by provider as
   Legacy and you have not been actively using the model in the last 30 days.`
-  `us.amazon.nova-premier-v1:0` is currently in this state for some accounts. It
-  remains selectable because it works for accounts that have used it recently —
-  if you hit this error, either pick a current model or request access again in
-  the Bedrock console.
+  `us.anthropic.claude-sonnet-4-20250514-v1:0` is in this state. Such models stay
+  selectable, because they work for accounts that have used them recently — if
+  you hit this error, either pick a current model or request access again in the
+  Bedrock console.
+
+A model removed from the picklists keeps its `pricing.yaml` entry, so cost
+reports covering documents processed while it was selectable still resolve the
+right rate.
+
+**`config-validate` catches it before you deploy.** `idp-cli config-validate` and
+`idp-cli config-upload` (unless you pass `--no-validate`) reject a configuration
+that pins an end-of-life model, naming the date and the command that confirms it,
+rather than letting the failure appear part-way through a document. Loading a
+stored configuration that still names one is unaffected — the model fields are
+plain strings and nothing revalidates a stored config — so an existing deployment
+does not break on upgrade; it keeps failing at inference exactly as it already
+was, until you repoint the stage.
+
+**Upgrading a stack that selected a removed model.** `KnowledgeBaseModelId` is a
+CloudFormation parameter, so if your stack's current value is a model that this
+release removed from `AllowedValues`, the stack update is rejected with
+`Parameter value ... does not match AllowedValues` rather than proceeding. Pass a
+current model for that parameter in the same update. A removed model named in
+your stored *configuration* (rather than a stack parameter) does not block the
+update; repoint that stage in the Configuration editor.
 
 ## Summarization Configuration
 
@@ -253,7 +388,7 @@ Summarization can be controlled via the configuration file rather than CloudForm
 ```yaml
 summarization:
   enabled: true  # Set to false to disable summarization
-  model: us.anthropic.claude-3-7-sonnet-20250219-v1:0
+  model: us.anthropic.claude-sonnet-4-5-20250929-v1:0
   temperature: 0.0
   # ... other summarization settings
 ```
@@ -399,7 +534,7 @@ Key parameters that can be configured during CloudFormation deployment:
 - `CustomConfigPath`: Optional S3 URI to a custom configuration file that overrides pattern presets. Leave blank to use selected pattern configuration. Example: s3://my-bucket/custom-config/config.yaml
 
 ### Integration and Tracing Parameters
-- `EnableXRayTracing`: Enable X-Ray tracing for Lambda functions and Step Functions (default: true). Provides distributed tracing capabilities for debugging and performance analysis.
+- `EnableXRayTracing`: Enable X-Ray tracing for Lambda functions and Step Functions (default: true). Provides distributed tracing capabilities for debugging and performance analysis. It covers every traced Lambda function in the main stack, the unified pattern and the nested feature-platform stack, plus both state machines — so setting it to `false` turns tracing off, and stops the associated X-Ray charges, for everything the main stack creates. On `false` those functions run in `PassThrough` mode: they record nothing of their own and continue a trace only if a caller already sampled the request. It does **not** reach an extension you install from the Extensions catalog: each is a separate stack with its own parameters and traces unconditionally, and for those of its functions whose execution role can write a trace segment that means real X-Ray charges. See [monitoring.md](./monitoring.md#installed-extensions-trace-unconditionally).
 - `EnableMCP`: Enable Model Context Protocol (MCP) integration for external application access via AWS Bedrock AgentCore Gateway (default: true). See [mcp-server.md](mcp-server.md) for details.
 - `EnableECRImageScanning`: Enable automatic vulnerability scanning for Lambda container images in ECR for Patterns 1-3 (default: false). Recommended for production deployments but may impact deployment reliability. See [troubleshooting.md](troubleshooting.md) for guidance.
 
@@ -451,7 +586,7 @@ The solution provides built-in cost estimation capabilities:
 - Historical cost analysis and trends
 - Budget alerts and threshold monitoring
 
-See [COST_CALCULATOR.md](../COST_CALCULATOR.md) for detailed cost analysis across different processing volumes.
+See [the cost considerations guide](./cost-calculator.md) for the cost drivers of each processing mode, the optimization levers, what the built-in estimate cannot express, and how to attribute Bedrock spend with an application inference profile.
 
 ## Bedrock Guardrail Integration
 
@@ -505,17 +640,29 @@ The solution tracks metrics for throttling events and successful retries, viewab
 The state machine retries each processing task on **transient** failures only. Step
 Functions matches the error *name* the Lambda reports (the Python exception class),
 so each task lists the Lambda service errors and the Bedrock throttling /
-availability codes. The five
-extraction and assessment task states (in-process extraction, shard plan, shard,
-shard merge, assessment) additionally list `TransientError` — the one name their
-handlers re-raise a transient cause under when it arrives as an ordinary Python
-exception (a botocore read or connect timeout, a dropped connection, a Strands
-wrapper around one). The classification lives in
+availability codes. Eight task states additionally list `TransientError` — the five
+extraction and assessment states (in-process extraction, shard plan, shard, shard
+merge, assessment) and the three rule-validation states (policy classification,
+per-section rule validation, orchestration). That is the one name their handlers
+re-raise a transient cause under when it arrives as an ordinary Python exception (a
+botocore read or connect timeout, a dropped connection, a Strands wrapper around
+one). The classification lives in
 `idp_common.utils.transient_errors`. It judges an exception by its own error
 code first (a `ValidationException` is deterministic whatever its message says),
 and looks through only explicit `raise ... from` wrappers, so a wrapper cannot
 hide a transient root and a swallowed transient error cannot lend its transience
 to an unrelated failure raised after it.
+
+**Why the name rather than the codes.** A `Retry.ErrorEquals` entry can only match a
+class name, so it matches a Bedrock throttle only because botocore names the
+exception class after the modeled error code. Most transient failures do not arrive
+that way — a read timeout is a `ReadTimeoutError`, a throttling code that is not
+modeled on the operation arrives as a bare `ClientError`, and `ModelTimeoutException`
+and `InternalServerException` are modeled but were never in the shorter lists. Listing
+every such name in every state would be a second, drifting copy of the
+classification, so the library answers the question once and reports the answer under
+one name. A state whose handler does **not** re-raise that name must not list it, and
+`patterns/unified/tests/test_workflow_transient_retry.py` checks both directions.
 
 Deterministic failures — a malformed request (`ValidationException`), a schema
 violation, an unparseable document, missing input — keep their own names and are
@@ -562,7 +709,7 @@ what is retried, it does not weaken retrying for genuinely transient faults.
 }
 ```
 
-Per-state values differ (the shard and rule-validation states use shorter
+Per-state values differ (the shard-plan and policy-classification states use shorter
 intervals and 6 attempts on the transient ladder, and `Lambda.Unknown` appears only
 where a state already listed it), but the shape above holds everywhere: one
 single-attempt timeout retrier, one generous transient retrier, and no
@@ -597,6 +744,91 @@ naming the state:
 If a future state genuinely must not retry — an idempotency hazard, for instance — add
 it to a named, commented exemption set in that test file rather than deleting the
 assertion.
+
+#### Sharded extraction: the shard Map, and the budget inside one shard
+
+Advanced (agentic) extraction splits a section into shards and runs each in its own
+Lambda invocation through a Distributed Map, `ExtractionShardMap`. Three things about
+how that Map handles failure, because they interact:
+
+**No shard failure is tolerated, on purpose.** The Map sets neither
+`ToleratedFailurePercentage` nor `ToleratedFailureCount`, so Step Functions' default
+of zero applies and one failed shard fails the Map. Raising the tolerance would let a
+document *complete* with shards missing, and a document that reports success with
+part of its data absent is worse than one that fails: nothing downstream — not
+confidence scoring, not evaluation, not the UI — can tell that anything is gone.
+
+**The Map itself is retried once.** Every shard persists its own result to S3 as soon
+as it finishes, and a shard whose result is already there loads it instead of
+re-inferring. So retrying the Map re-runs only the shards that did not complete,
+which is what that persistence exists for.
+
+Be clear about what that retry costs, because it is not one extra invocation. For a
+shard that completed it costs nothing. For the shard that failed, the second Map pass
+re-runs `ShardExtractionStep`'s **entire** retry ladder from the start:
+
+| The failed shard hit | One Map pass | With the retry |
+|---|---|---|
+| `Sandbox.Timedout` (single-attempt timeout retrier) | 2 × 900 s | **4 × 900 s** |
+| a transient error (8 attempts, 10 s at 2× = 2,550 s of backoff) | up to 9 × 900 s + 2,550 s | that again, bounded only by `WorkflowExecutionTimeoutSeconds` (21,600 s by default) |
+
+That trade is deliberate: one duplicated ladder is worth not discarding a document's
+completed shards. It is also why the count is one and stays one — at two or more, a
+deterministic shard failure multiplies whole ladders rather than attempts.
+`scripts/tests/test_state_machine_retry_policies.py` holds Map-level retriers to the
+same single-attempt rule as the Lambda task states.
+
+**A failed Map names the section and the cause.** The `Catch` on
+`ExtractionShardMap` routes to a `Fail` state, so the execution reports
+`ExtractionShardMapFailed` with a cause carrying the section id and the Map's error
+output rather than a bare `States.ExceedToleratedFailureThreshold`. The failing shard's
+individual error lives in the **Map Run**, reachable from the `ExtractionShardMap`
+entry in the execution history — a Distributed Map records per-iteration failures there
+rather than on the parent execution. The catcher names that one error rather than
+`States.ALL`, because the Map's other failure modes (`States.DataLimitExceeded`,
+`States.Runtime`) already report a specific and differently-actionable condition.
+
+Inside one shard, several durations draw on the same invocation and only add up if
+they are chosen together:
+
+| | Value | What it bounds |
+|---|---|---|
+| Agentic `read_timeout` | 180 s | One socket read on the **streamed** extraction call — time to first response event, then each inter-event gap |
+| Confidence `read_timeout` | 300 s | One **non-streamed** `converse`, which bounds the whole response rather than a gap, so it is legitimately larger. Inside the shard invocation whenever confidence runs in `separate` mode |
+| botocore attempts per call | 1 | botocore retries a read timeout *itself*, multiplying either timeout above inside a single call, where no deadline check can see it |
+| Retry backoff allowance | 90 s | Total time the retry ladder around the agent call may spend asleep, across all attempts |
+| Lambda `Timeout` | 900 s | The whole invocation — Lambda's maximum, so it cannot be widened |
+
+The worst case is a stall on **each** client plus the whole backoff allowance —
+180 + 300 + 90 = 570 s — which leaves 330 s for the work itself. A stall then surfaces
+as a `ReadTimeoutError` with most of the invocation still available, the ladder retries
+inside the same invocation, and the shard returns a result. The alternative is that the
+invocation is killed at 900 s: Step Functions reports that as `Sandbox.Timedout`, which
+is deterministic and retried once (see above), so the transient blip a retry would have
+cleared becomes the failure that is not retried.
+
+**Why `read_timeout` can be this short.** The agentic path streams, so 180 s is not a
+cap on how long a generation may take — it is how long the socket may go completely
+silent. A healthy long generation emits deltas continuously and never approaches it;
+three minutes of no traffic at all is a stall by definition. Observed per-call latency
+is far below the ceiling in any case: a 3,200-row document completes in about 408 s
+spread over many calls. The confidence call is **not** streamed, which is exactly why
+its timeout is larger and why it has to be counted separately.
+
+The numbers live together in `idp_common.timeout_budget`, and
+`lib/idp_common_pkg/tests/unit/extraction/test_shard_timeout_budget.py` asserts the
+whole inequality — reading the resolved client configurations, not the source, so
+botocore's own attempt count is inside the bound — along with the Map's `Retry`,
+`Catch` and zero tolerance.
+
+⚠️ **One exposure the arithmetic above does not close.** The `BedrockClient` used for
+the non-streamed call has its own retry ladder (7 attempts, backing off 2 s doubling to
+300 s) which does not consult the invocation deadline, so on the separate-confidence
+shard path it can overrun an invocation by itself regardless of the table above. The
+budget bounds one stalled call per client, not that ladder. Making it deadline-aware
+changes behaviour for every non-agentic step — classification, simple extraction,
+summarization, assessment — so it is tracked separately; the test above pins its
+numbers so the exposure cannot drift unnoticed.
 
 ### Concurrency Control
 
@@ -803,7 +1035,7 @@ request. The minimum is model-dependent and **newer is not safer**:
 
 | Model | Minimum cacheable prefix |
 |---|---:|
-| Claude Opus 5, Fable 5 | 512 tokens |
+| Claude Opus 5, Opus 5.5, Fable 5 | 512 tokens |
 | Claude Sonnet 5, Sonnet 4.6, Sonnet 4.5, Sonnet 4, Opus 4.8, Opus 4.1, Opus 4, 3.7 Sonnet | 1,024 tokens |
 | Claude Opus 4.7 | 2,048 tokens |
 | Claude Opus 4.6, Opus 4.5, **Haiku 4.5** | **4,096 tokens** |
@@ -813,7 +1045,7 @@ Measured across the shipped presets, 25% of classes never cache on the 1,024-tok
 tier and **none** do on Haiku 4.5 — someone choosing Haiku to save money on extraction
 gets no caching at all and, until now, no indication of it.
 
-`idp-cli config validate` (and the SDK validate operation) now **warns per class**
+`idp-cli config-validate` (and the SDK validate operation) now **warns per class**
 when a Simple-mode extraction prompt prefix — system prompt plus the task prompt up
 to the marker, with the class schema substituted — is under the configured extraction
 model's minimum, naming both numbers. The estimate is chars/4, accurate to about
@@ -829,7 +1061,8 @@ path, whose prefix is the agent's own system prompt; the forced-tool `toolSpec` 
 the multi-instance detection probe (both off by default, both make the real prefix
 *longer*, so the estimate errs toward warning); application inference-profile ARNs
 (not resolved to a base model, so no warning); and the newer tokenizer introduced
-with Claude Opus 4.7 and shared by Opus 4.8, Opus 5 and Fable 5, which produces up to
+with Claude Opus 4.7 and shared by Opus 4.8, Opus 5, Opus 5.5 and Fable 5, which
+produces up to
 about 1.35× the tokens the estimate assumes — again in the direction of a spurious
 warning, never a missed one.
 
@@ -863,7 +1096,7 @@ section result and the Athena columns, in parentheses):
 |---|---|---|
 | **caching** (`caching`) | Reads are landing; the ~0.1× read price applies to the prefix (the read share is shown) | Nothing |
 | **write-only** (`write-only`) | Writes with no reads: paying 1.25× on the prefix and collecting nothing | Expected when a class is processed once per 5-minute TTL; a low-volume deployment can set `prompt_cache: off` |
-| **never cached** (`never-cached`) | Reads and writes are both zero although a cache point reached a model that supports it: the cache point is inert | The prefix is below the model's minimum (named); run `idp-cli config validate` for the per-class estimate, add real field descriptions, or pick a model with a lower minimum |
+| **never cached** (`never-cached`) | Reads and writes are both zero although a cache point reached a model that supports it: the cache point is inert | The prefix is below the model's minimum (named); run `idp-cli config-validate` for the per-class estimate, add real field descriptions, or pick a model with a lower minimum |
 | **off** (`disabled`) | `extraction.prompt_cache: off`, so zero/zero is the intended outcome | Nothing |
 | **no cache point** (`no-cache-point`) | No cache point reached the model: the prompt has no `<<CACHEPOINT>>` marker, or the model is not one the client sends cache points to (Claude still reports `cacheReadInputTokens: 0` in that case, so the counts alone cannot tell this from *never cached*) | Add a marker, or nothing if caching was not wanted |
 | ↳ **on an implicit-caching model** | Same state, different meaning — and the report says so explicitly. OpenAI GPT-6 Astra (Converse) and GPT-5.4 / GPT-5.5 (bedrock-mantle) cache **without** a `cachePoint` block, so this state is the normal, healthy one for them and does **not** mean caching is unavailable. Astra in fact *rejects* an explicit cache point. Expect the state to become `caching` once a prefix is seen a second time within the TTL. GPT-5.6 Sol/Terra/Luna are **not** in this set: their caching is explicit, driven by a `<<CACHEPOINT>>` marker the client translates into a Responses-API breakpoint (see [OpenAI models](./openai-models.md#gpt-5x-prompt-caching)), so for them the generic row above applies and the remedy is to add a marker | Nothing — do not add a `<<CACHEPOINT>>` marker for Astra or GPT-5.4/5.5 |
@@ -970,7 +1203,7 @@ ocr:
   bda_project_arn: null
 
   # For Bedrock backend:
-  bedrock_model: us.anthropic.claude-3-5-sonnet-20241022-v2:0
+  bedrock_model: us.anthropic.claude-sonnet-4-5-20250929-v1:0
   system_prompt: "You are an OCR expert..."
   task_prompt: "Extract all text from this document..."
 ```
@@ -1151,6 +1384,38 @@ See `notebooks/examples/demo-lambda/` for:
 - Complete documentation and examples
 
 For more details, see [Extraction & Confidence](extraction-and-confidence.md).
+
+### Making a truncated list fail the section (`extraction.row_shortfall_action`)
+
+Extraction compares the rows it returned for a list field with the rows in the section's own
+OCR tables *of the same width*. When those tables hold at least 30 rows and fewer than half
+came back, that is recorded as `extraction_rows_below_ocr_estimate`. Like every other
+processing issue it does not change the document's status, so a document carrying 3% of a
+long table reports `COMPLETED` — and a truncated run is *cheaper* than a complete one, so
+neither status nor cost flags it. This setting is how a deployment changes that:
+
+```yaml
+extraction:
+  row_shortfall_action: warn     # warn (default) | fail
+```
+
+Under `fail`, the partial rows, the issue and the processing report are written to the
+section's `result.json` first and the section then fails, so the failure costs the claim of
+success and not the data. It changes only what the shortfall costs, never when it is
+detected, and it applies to both Simple and Advanced extraction.
+
+⚠️ **`fail` is opt-in for a reason and needs a check first.** Matching is on width alone and
+matched tables are summed over the whole section, so a 2- or 3-property array that models an
+entity *group* rather than table rows collects evidence that has nothing to do with it —
+and the two shapes are structurally identical. In the default preset a fully correct
+extraction of `Bank-Statement.account_summary` (2 properties, 5 rows) scores 0.13, because a
+monthly statement's 31-row two-column Daily Balance table is summed into its evidence. Nine
+such fields ship in the config library. Before turning `fail` on, confirm every
+array-of-object field in your classes models table rows and that no unrelated table in the
+same section shares a width with one. It is the right setting for a corpus of long
+transaction lists, which is what it was built for. Editable in the Web UI under
+**Configuration → Extraction → Truncated list outcome**; the shapes to check are listed in
+[Extraction & Confidence](extraction-and-confidence.md#why-fail-is-opt-in-and-what-to-check-before-turning-it-on).
 
 ### Tiered Models (Validation + Escalation)
 

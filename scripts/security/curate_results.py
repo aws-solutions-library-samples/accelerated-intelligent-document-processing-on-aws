@@ -406,6 +406,31 @@ def curate_srt(issues_path: Path) -> tuple[str, dict]:
 # ---------------------------------------------------------------------------
 
 
+# Statuses that mean the check established nothing. This MUST agree with
+# `inconclusive()` in scripts/test_api_rbac.py, which is the definition; the
+# agreement is asserted by scripts/tests/test_curate_rbac_inconclusive.py rather
+# than trusted, because the two cannot share an import (the harness's module-scope
+# imports are not loadable from here).
+#
+# The status test is what makes an ARCHIVED report readable. A report written before
+# the harness distinguished outcomes has no `outcome` key, no `inconclusive` flag and
+# no "INCONCLUSIVE" prose — `classify()` returned `(True, f"{status}")`, so the row is
+# literally `{"passed": True, "detail": "500", "http_status": 500}`. Recognising only
+# the new fields would re-publish such a run as an unqualified pass, i.e. regenerate
+# exactly the page this distinction exists to correct.
+def _row_is_inconclusive(row: dict) -> bool:
+    """Whether this result row established nothing about the API's behaviour."""
+    if row.get("inconclusive") or row.get("outcome") == "ERROR":
+        return True
+    if str(row.get("detail", "")).startswith("INCONCLUSIVE"):
+        return True
+    status = row.get("http_status")
+    # `http_status` carries "SKIP"/"ERR"/"n/a" as well as integers.
+    if isinstance(status, bool) or not isinstance(status, int):
+        return status == "ERR"
+    return status == 0 or status >= 500
+
+
 def curate_rbac_dynamic(report_dir: Path | None) -> tuple[str, dict]:
     hint = "`./scratch/api-test-results/<stack>-<ts>/` (from `make api-test`)"
     if report_dir is None:
@@ -423,7 +448,25 @@ def curate_rbac_dynamic(report_dir: Path | None) -> tuple[str, dict]:
     results = json.loads(results_p.read_text()).get("results", [])
     totals = meta.get("totals", {})
     hard = totals.get("hard_fail", 0)
-    gate = "PASS ✅" if hard == 0 else f"FAIL ❌ ({hard} hard failures)"
+    # A published snapshot must not print "PASS" over a run that established
+    # nothing. Older report.json files carry no `outcome` field, so fall back to
+    # the detail text the harness writes for an inconclusive cell — a snapshot
+    # curated from a pre-fix report should still say what it could not conclude.
+    inconclusive = [r for r in results if _row_is_inconclusive(r)]
+    skipped = [
+        r
+        for r in results
+        if r.get("outcome") == "SKIP" or r.get("http_status") == "SKIP"
+    ]
+    if hard:
+        gate = f"FAIL ❌ ({hard} hard failures)"
+    elif inconclusive:
+        gate = (
+            f"PASS with reservations ⚠️ — {len(inconclusive)} check"
+            f"{'s' if len(inconclusive) != 1 else ''} could not be run"
+        )
+    else:
+        gate = "PASS ✅"
 
     # Classify every check into a named suite (mapped to the AppSec mandatory
     # API test-case checklist), so the doc enumerates WHAT was tested.
@@ -455,10 +498,26 @@ def curate_rbac_dynamic(report_dir: Path | None) -> tuple[str, dict]:
         name, item = suite_of(r.get("principal", ""))
         s = suites.setdefault(
             name,
-            {"item": item, "total": 0, "pass": 0, "hard_fail": 0, "warn": 0},  # nosec B105 - "pass" is a passing-test counter, not a credential; Bandit's hardcoded-password heuristic fires on the dict-key substring.
+            {  # nosec B105 - "pass" is a passing-test counter, not a credential; Bandit's hardcoded-password heuristic fires on the dict-key substring.
+                "item": item,
+                "total": 0,
+                "pass": 0,
+                "hard_fail": 0,
+                "warn": 0,
+                "inconclusive": 0,
+                "skip": 0,
+            },
         )
         s["total"] += 1
-        if r["passed"]:
+        # A check that could not be run is counted in its own column. Folding it
+        # into "pass" is how 43 cells reading `500` appeared as passes in the 0.6.9
+        # snapshot; folding it into "hard fail" would be just as wrong, because it
+        # is not a statement that the API misbehaved.
+        if r in inconclusive:
+            s["inconclusive"] += 1
+        elif r in skipped:
+            s["skip"] += 1
+        elif r["passed"]:
             s["pass"] += 1
         elif r.get("known_gap"):
             s["warn"] += 1
@@ -479,8 +538,13 @@ def curate_rbac_dynamic(report_dir: Path | None) -> tuple[str, dict]:
         f"- **Gate (hard failures):** {gate}",
         f"- **Checks:** {totals.get('checks', len(results))} "
         f"({totals.get('passed', '?')} passed, {hard} hard fail, "
+        f"{len(inconclusive)} could not be run, {len(skipped)} skipped, "
         f"{totals.get('gap_warn', 0)} known-gap "
         f"warning{'s' if totals.get('gap_warn', 0) != 1 else ''})",
+        "",
+        "> A check that **could not be run** — a timeout, a dead connection, an "
+        "unreadable body, a 5xx — establishes nothing, and a **skipped** check "
+        "asserted nothing. Neither is counted as a pass anywhere on this page.",
         f"- **Ran against:** stack `<REDACTED>` in region "
         f"`{redact(meta.get('region', '?'))}` (account `<ACCOUNT_ID>`)",
         f"- **Source git SHA:** `{redact(meta.get('git_sha', 'unknown'))}`",
@@ -495,19 +559,49 @@ def curate_rbac_dynamic(report_dir: Path | None) -> tuple[str, dict]:
         'Cases for APIs" checklist item (see the '
         "[api-rbac-test skill](../../../.claude/skills/api-rbac-test.md)).",
         "",
-        "| Suite | Checklist | Checks | Pass | Hard fail | Known-gap |",
-        "|-------|:---------:|-------:|-----:|----------:|----------:|",
+        "| Suite | Checklist | Checks | Pass | Hard fail | Not run | Skipped "
+        "| Known-gap |",
+        "|-------|:---------:|-------:|-----:|----------:|--------:|--------:"
+        "|----------:|",
     ]
     for name in sorted(suites, key=lambda n: (suites[n]["item"], n)):
         s = suites[name]
         mark = "✅" if s["hard_fail"] == 0 else "❌"
+        if s["hard_fail"] == 0 and s["inconclusive"]:
+            mark = "⚠️"
         lines.append(
             f"| {name} | {s['item']} | {s['total']} | {s['pass']} "
-            f"| {s['hard_fail']} {mark} | {s['warn']} |"
+            f"| {s['hard_fail']} {mark} | {s['inconclusive']} | {s['skip']} "
+            f"| {s['warn']} |"
         )
     lines.append("")
 
-    hard_fails = [r for r in results if not r["passed"] and not r.get("known_gap")]
+    if inconclusive:
+        lines += [
+            "## 🛑 Checks that could not be run",
+            "",
+            "These establish nothing about the API's behaviour. A refusal and an "
+            "inconclusive result are different outcomes, and this section exists "
+            "because they used to be counted together.",
+            "",
+            "| Op | Principal | Status | Detail |",
+            "|----|-----------|-------:|--------|",
+        ]
+        for r in inconclusive:
+            lines.append(
+                f"| `{redact(r.get('op', ''))}` | {redact(r.get('principal', ''))} "
+                f"| {r.get('http_status', '')} | {redact(r.get('detail', ''))} |"
+            )
+        lines.append("")
+
+    hard_fails = [
+        r
+        for r in results
+        if not r["passed"]
+        and not r.get("known_gap")
+        and r not in inconclusive
+        and r not in skipped
+    ]
     gap_fails = [r for r in results if not r["passed"] and r.get("known_gap")]
 
     if hard_fails:
@@ -564,6 +658,12 @@ def curate_rbac_dynamic(report_dir: Path | None) -> tuple[str, dict]:
                 r = by_op[op].get(role)
                 if r is None:
                     cells.append("—")
+                elif r in inconclusive:
+                    # Was rendered "500 ✅" — 43 times in the 0.6.9 snapshot.
+                    mark = "🛑"
+                    cells.append(f"{r.get('http_status', '?')} {mark}")
+                elif r in skipped:
+                    cells.append("⏭️")
                 else:
                     mark = "✅" if r["passed"] else "❌"
                     cells.append(f"{r.get('http_status', '?')} {mark}")
@@ -583,7 +683,17 @@ def curate_rbac_dynamic(report_dir: Path | None) -> tuple[str, dict]:
         "hard_fail": hard,
         "gap_warn": totals.get("gap_warn", 0),
         "suites": len(suites),
-        "gate": "pass" if hard == 0 else "fail",
+        # Reported so the MANIFEST cannot claim an unqualified pass over a run
+        # that did not establish what it set out to.
+        "inconclusive": len(inconclusive),
+        "skipped": len(skipped),
+        "gate": (
+            "fail"
+            if hard
+            else "pass-with-reservations"
+            if inconclusive
+            else "pass"
+        ),
     }
 
 
@@ -618,9 +728,19 @@ def curate_rbac_static(stdout_path: Path | None) -> tuple[str, dict]:
     else:
         gate_key = "unknown"
         gate = "SEE OUTPUT"
-    # The scan runs a fixed battery of checks (S1–S5); enumerate them so the
-    # doc records WHAT was verified, not only the gap warnings.
+    # The scan runs a fixed battery of checks; enumerate them so the doc records
+    # WHAT was verified, not only the gap warnings. S6–S9 (the Lambda Function
+    # URL routes) are summarised in the dynamic report rather than repeated here.
     checks = [
+        (
+            "S0",
+            "Declaration integrity",
+            "every `groups:` value is a list of real "
+            "Cognito group names or one of `ANY` / `ANY_GROUP` / `IAM_ONLY`, and "
+            "every gap id is defined in the register — an unrecognised policy "
+            "sentinel fails rather than being read by the later checks as the "
+            "most permissive branch they have",
+        ),
         (
             "S1",
             "Manifest completeness",
@@ -639,7 +759,9 @@ def curate_rbac_static(stdout_path: Path | None) -> tuple[str, dict]:
             "Resolver enforcement",
             "each op's `enforced_in` source contains "
             "a recognized enforcement pattern (group check, ownership, or IAM-only "
-            "rejection); ANY-auth ops without one must carry a known_gap",
+            "rejection); `ANY`/`ANY_GROUP` ops without one must carry a known_gap "
+            "or declare ownership, their group floor being the dispatcher's "
+            "generated manifest rather than the resolver",
         ),
         (
             "S4",
@@ -930,7 +1052,14 @@ def write_manifest(out_dir: Path, version: str, date: str, per_test: dict) -> No
         if m.get("status") == "not-run":
             return "not run"
         g = m.get("gate", "?")
-        return {"pass": "PASS ✅", "fail": "FAIL ❌"}.get(g, str(g))  # nosec B105 - "pass"/"fail" are gate-status labels, not credentials; Bandit's hardcoded-password heuristic fires on the dict-key substring.
+        return {  # nosec B105 - "pass"/"fail" are gate-status labels, not credentials; Bandit's hardcoded-password heuristic fires on the dict-key substring.
+            "pass": "PASS ✅",
+            "fail": "FAIL ❌",
+            # No hard failure, but some checks did not establish anything. The
+            # snapshot is a published audit artifact, so it must not put an
+            # unqualified PASS over a run with checks that could not be run.
+            "pass-with-reservations": "PASS with reservations ⚠️",
+        }.get(g, str(g))
 
     lines = [
         f"# Security Test Snapshot — {version}",
@@ -961,7 +1090,8 @@ def write_manifest(out_dir: Path, version: str, date: str, per_test: dict) -> No
         f"{per_test.get('rbac_static', {}).get('warn', '?')} known-gap warn |",
         f"| [RBAC — dynamic](./rbac-dynamic.md) | {gate_of('rbac_dynamic')} | "
         f"{per_test.get('rbac_dynamic', {}).get('checks', '?')} checks, "
-        f"{per_test.get('rbac_dynamic', {}).get('hard_fail', '?')} hard fail |",
+        f"{per_test.get('rbac_dynamic', {}).get('hard_fail', '?')} hard fail, "
+        f"{per_test.get('rbac_dynamic', {}).get('inconclusive', '?')} not run |",
         f"| [ZAP DAST](./zap-dast.md) | {gate_of('zap')} | "
         f"High={per_test.get('zap', {}).get('alerts', {}).get('High', '?')} |",
         "",

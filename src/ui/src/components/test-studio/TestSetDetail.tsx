@@ -39,9 +39,11 @@ import { ConsoleLogger } from 'aws-amplify/utils';
 import { generateClient } from '../../api/client-shim';
 import {
   getTestSetDocuments,
+  getTestSetVersions,
   generateDraftLabels,
   getDraftLabelJob,
   clearDraftLabels,
+  publishTestSetVersion,
   resetTestSetLabels,
   removeDocumentsFromTestSet,
 } from '../../graphql/generated';
@@ -58,6 +60,7 @@ import ReviewEffortModal from './ReviewEffortModal';
 import GenerateDraftLabelsModal from './GenerateDraftLabelsModal';
 import GenerateSyntheticDataModal from './GenerateSyntheticDataModal';
 import AddDocumentsModals, { type AddDocumentsMode } from './AddDocumentsModals';
+import PublishVersionModal, { type PublishVersionInput } from './PublishVersionModal';
 import RemoveDocumentsModal from './RemoveDocumentsModal';
 import type { TestSetDocumentSectionRef } from './GroundTruthVisualEditor';
 
@@ -382,6 +385,8 @@ const TestSetDetail = (): React.JSX.Element => {
   const [hasMore, setHasMore] = useState(false);
   // The set's size, from the server. The page length is not the total.
   const [totalCount, setTotalCount] = useState<number | null>(null);
+  /** The set's own status, carried on the documents page. `null` until it is read. */
+  const [setStatus, setSetStatus] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [filterText, setFilterText] = useState('');
@@ -395,7 +400,23 @@ const TestSetDetail = (): React.JSX.Element => {
   const [isStartingLabels, setIsStartingLabels] = useState(false);
   const [showEffortModal, setShowEffortModal] = useState(false);
   const [showLabelModal, setShowLabelModal] = useState(false);
-  const { isAdmin } = useUserRole();
+  // `canWrite` is Admin-or-Author, the two groups `publishTestSetVersion` is
+  // declared for in scripts/api_rbac_expectations.yaml. The server is the
+  // authority; this only stops offering a control that would come back 403.
+  const { isAdmin, canWrite } = useUserRole();
+  const [showPublishModal, setShowPublishModal] = useState(false);
+  const [isPublishing, setIsPublishing] = useState(false);
+  /**
+   * A publish failure, shown inside the dialog rather than on the page. The dialog stays
+   * open so a retry keeps the user's inputs, and an error behind a modal reaches nobody.
+   */
+  const [publishError, setPublishError] = useState<string | null>(null);
+  const [publishedMessage, setPublishedMessage] = useState<string | null>(null);
+  /**
+   * Highest version this set has published, for the publish dialog. Read when the
+   * dialog opens rather than on page load, and `null` until then.
+   */
+  const [latestVersion, setLatestVersion] = useState<number | null>(null);
   const [showClearDraftsModal, setShowClearDraftsModal] = useState(false);
   const [resetConfirmText, setResetConfirmText] = useState('');
   const [isResetting, setIsResetting] = useState(false);
@@ -434,6 +455,7 @@ const TestSetDetail = (): React.JSX.Element => {
         setDocuments((page?.documents ?? []) as TestSetDocumentItem[]);
         setHasMore(Boolean(page?.nextToken));
         setTotalCount(page?.totalCount ?? null);
+        setSetStatus(page?.status ?? null);
         setPageTokens((prev) => {
           const next = [...prev];
           next[pageIndex] = page?.nextToken ?? null;
@@ -555,6 +577,90 @@ const TestSetDetail = (): React.JSX.Element => {
       setError(`Could not remove the documents: ${getErrorMessage(err)}`);
     } finally {
       setIsRemoving(false);
+    }
+  };
+
+  /**
+   * Open the publish dialog, and read the set's existing versions so it can name the
+   * number it is about to create.
+   *
+   * Read here rather than on page load because `getTestSetVersions` is Admin-or-Author
+   * while this page is also reachable by an Annotator, and because nobody who never
+   * opens the dialog needs it. A failure is logged and leaves the number unknown with
+   * the dialog still usable — the server assigns the real number either way.
+   */
+  const openPublishDialog = async () => {
+    setError(null);
+    setPublishedMessage(null);
+    setLatestVersion(null);
+    setShowPublishModal(true);
+    try {
+      const response = await client.graphql({
+        query: getTestSetVersions,
+        variables: { testSetId: testSetId ?? '' },
+      });
+      const numbers = (response.data?.getTestSetVersions ?? []).map((v) => v?.version ?? 0);
+      setLatestVersion(numbers.length > 0 ? Math.max(...numbers) : 0);
+    } catch (err) {
+      logger.error('Error loading test set versions:', err);
+    }
+  };
+
+  /**
+   * Identifies one publish *attempt*, across however many tries it takes.
+   *
+   * Publishing copies the set's labels, and the dispatcher gives up at 20s while the
+   * resolver runs on — so an error here does not mean nothing happened. Retrying under the
+   * same token replays the version the first try created, or is told that try is still
+   * running, instead of making a second version and a second full copy. Retired on success
+   * and on dismissal, so a deliberate second publish is a new attempt.
+   */
+  const publishAttemptToken = useRef<string | null>(null);
+
+  const dismissPublishDialog = () => {
+    // Closing the dialog abandons the attempt, so the token goes with it. Keeping it would
+    // make the next, deliberate publish replay this one's version instead of creating a new
+    // version.
+    publishAttemptToken.current = null;
+    setPublishError(null);
+    setShowPublishModal(false);
+  };
+
+  const handlePublishVersion = async (input: PublishVersionInput) => {
+    if (!testSetId) return;
+    if (!publishAttemptToken.current) {
+      publishAttemptToken.current = globalThis.crypto?.randomUUID?.() ?? `publish-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+    }
+    setIsPublishing(true);
+    setPublishError(null);
+    setError(null);
+    try {
+      const response = await client.graphql({
+        query: publishTestSetVersion,
+        variables: { input: { testSetId, ...input, clientToken: publishAttemptToken.current } },
+      });
+      const published = response.data?.publishTestSetVersion;
+      publishAttemptToken.current = null;
+      setShowPublishModal(false);
+      // Read from the response, not from `input`: a retry replays whatever the first try
+      // published, which may have made a different choice about the active reference — and
+      // the dialog's own inputs reset to their defaults each time it opens. Reporting the
+      // request would announce a pointer move that never happened.
+      const movedReference = published?.version != null && published.activeReference === published.version;
+      setPublishedMessage(
+        movedReference
+          ? `Published version ${published?.version ?? ''} and made it this set's active reference.`
+          : `Published version ${published?.version ?? ''}. The set's active reference is unchanged.`,
+      );
+    } catch (err) {
+      logger.error('Error publishing test set version:', err);
+      // The dialog stays open, holding the label, notes and active-reference choice the user
+      // entered, so a retry sends the same token *and* the same input. Closing it would
+      // reset those to their defaults, and the retry would publish something the user never
+      // chose if the first try had genuinely failed.
+      setPublishError(getErrorMessage(err));
+    } finally {
+      setIsPublishing(false);
     }
   };
 
@@ -686,6 +792,40 @@ const TestSetDetail = (): React.JSX.Element => {
 
   const filteredDocs = filterText ? documents.filter((d) => d.objectKey.toLowerCase().includes(filterText.toLowerCase())) : documents;
 
+  /**
+   * Why a version cannot be published right now, or `null` when it can. Passed to the
+   * button as `disabledReason`, so every condition that dims the control also says
+   * why — including the transient one, since a control that is dim for a reason it
+   * does not give is the outcome this is meant to avoid.
+   *
+   * A version copies the labels as they stand, so the conditions are about whether the
+   * set has settled: a copy taken while something is still writing freezes a half-written
+   * set, permanently and under a version number. Permission is a separate check on the
+   * control itself.
+   *
+   * The status branch comes before the empty check because a set still being copied
+   * into has no documents *yet*, and "still copying" is the more useful of the two
+   * true statements. `totalCount` is also `null` when the document read failed, which
+   * is not the same as an empty set: checking it alone would leave the control live on
+   * a page showing a load error and no documents.
+   *
+   * ⚠️ `null` status does not block. It has to be permitted — the field is unknown
+   * until the first documents read returns — so this guard fails open by
+   * construction, and the resolver returning `status` is what makes it bite. That is
+   * asserted in `test_test_set_resolver.py`, not here.
+   */
+  const publishBlockedReason = isLoading
+    ? 'Loading this test set'
+    : labelJob?.status === 'RUNNING'
+      ? 'Wait for draft labeling to finish, so the version records a settled set of labels'
+      : setStatus === 'FAILED'
+        ? 'This test set failed to build, so there is nothing settled to record'
+        : setStatus && setStatus !== 'COMPLETED'
+          ? `This test set is ${setStatus.toLowerCase()}. Wait for it to finish before recording a version.`
+          : totalCount === 0 || (totalCount === null && documents.length === 0)
+            ? 'This test set has no documents to publish'
+            : null;
+
   const hasConfidence = documents.some((d) => d.minConfidence !== null && d.minConfidence !== undefined);
   // Sorts the current page only: pagination is server-side and opaque, so a
   // set-wide ranking is not available here.
@@ -716,7 +856,30 @@ const TestSetDetail = (): React.JSX.Element => {
                   { text: testSetId ?? '', href: '' },
                 ]}
               />
-              <Header variant="h1" description="Browse this test set's documents and view or edit their ground truth">
+              <Header
+                variant="h1"
+                description="Browse this test set's documents and view or edit their ground truth"
+                actions={
+                  // Set-level, so it belongs on the page header rather than in the
+                  // Documents table's action row, which acts on rows. It sits here
+                  // rather than on the table page because publishing completes the
+                  // pass that Generate draft labels and Annotate below begin.
+                  canWrite ? (
+                    // `disabledReason` rather than a wrapper's `title`: Cloudscape
+                    // wires it as the button's own accessible description, and a
+                    // disabled button is not focusable, so an ancestor tooltip reaches
+                    // nobody using a keyboard or a screen reader.
+                    <Button
+                      onClick={openPublishDialog}
+                      disabled={publishBlockedReason !== null}
+                      disabledReason={publishBlockedReason ?? undefined}
+                      loading={isPublishing}
+                    >
+                      Publish version
+                    </Button>
+                  ) : undefined
+                }
+              >
                 Test Set: {testSetId}
               </Header>
             </SpaceBetween>
@@ -746,6 +909,12 @@ const TestSetDetail = (): React.JSX.Element => {
             {removedMessage && (
               <Alert type="success" dismissible onDismiss={() => setRemovedMessage(null)}>
                 {removedMessage}
+              </Alert>
+            )}
+
+            {publishedMessage && (
+              <Alert type="success" dismissible onDismiss={() => setPublishedMessage(null)}>
+                {publishedMessage}
               </Alert>
             )}
 
@@ -795,6 +964,7 @@ const TestSetDetail = (): React.JSX.Element => {
                       )}
                       <ButtonDropdown
                         items={[
+                          { id: 'add-processed', text: 'From processed documents' },
                           { id: 'add-pattern', text: 'From files in a bucket', disabled: !isAdmin, disabledReason: 'Administrators only' },
                           { id: 'add-upload', text: 'From a zip upload' },
                           {
@@ -805,7 +975,8 @@ const TestSetDetail = (): React.JSX.Element => {
                           },
                         ]}
                         onItemClick={({ detail }) => {
-                          if (detail.id === 'add-pattern') setAddDocsMode('pattern');
+                          if (detail.id === 'add-processed') setAddDocsMode('documents');
+                          else if (detail.id === 'add-pattern') setAddDocsMode('pattern');
                           else if (detail.id === 'add-upload') setAddDocsMode('upload');
                           else if (detail.id === 'add-generate') setShowGenerateModal(true);
                         }}
@@ -968,7 +1139,7 @@ const TestSetDetail = (): React.JSX.Element => {
                   <Box variant="p" color="inherit">
                     {filterText
                       ? 'This test set has no documents matching the filter.'
-                      : 'This test set has no documents. Use Add documents to bring some in: files in a bucket, a zip upload, or generated documents.'}
+                      : 'This test set has no documents. Use Add documents to bring some in: processed documents, files in a bucket, a zip upload, or generated documents.'}
                   </Box>
                 </Box>
               }
@@ -981,6 +1152,17 @@ const TestSetDetail = (): React.JSX.Element => {
               submitting={isStartingLabels}
               onDismiss={() => setShowLabelModal(false)}
               onSubmit={handleGenerateDraftLabels}
+            />
+
+            <PublishVersionModal
+              visible={showPublishModal}
+              testSetId={testSetId ?? ''}
+              documentCount={totalCount}
+              latestVersion={latestVersion}
+              submitting={isPublishing}
+              error={publishError}
+              onDismiss={dismissPublishDialog}
+              onConfirm={handlePublishVersion}
             />
 
             <RemoveDocumentsModal

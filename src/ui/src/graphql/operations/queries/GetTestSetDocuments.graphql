@@ -20,5 +20,6 @@ query GetTestSetDocuments($testSetId: String!, $limit: Int, $nextToken: String, 
     nextToken
     totalCount
     activeLabelJobId
+    status
   }
 }

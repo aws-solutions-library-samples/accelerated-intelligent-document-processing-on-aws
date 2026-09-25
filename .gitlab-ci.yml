@@ -85,11 +85,12 @@ workflow:
 code_checks:
   stage: fast_checks
   interruptible: true
-  # Larger runner (4 vCPU / 16 GB, same as SRT): the Vite production build and
+  # Larger runner (16 vCPU / 64 GB, size:2xlarge): the Vite production build
   # tsc/eslint are CPU-bound and ran ~6 min on the default small runner vs
   # seconds locally; more cores also make `pytest -n auto` worthwhile.
   tags:
-    - size:large
+    - size:2xlarge
+    - arch:arm64
   # Cheap, no-AWS checks — run on EVERY push (any branch) and every MR, so
   # developers get lint/typecheck/unit feedback (emailed by GitLab on failure)
   # without waiting for an MR, and this gates the expensive deploy.
@@ -112,12 +113,8 @@ code_checks:
     - python --version
     - apt-get update -y
     - apt-get install make curl git -y
-    # Fetch target branch for comparison in typecheck-pr. On an MR, compare
-    # against its target; on a bare branch push (no MR), compare against develop
-    # (this repo's integration branch), not main.
-    - export TARGET_BRANCH="${CI_MERGE_REQUEST_TARGET_BRANCH_NAME:-develop}"
-    - echo "MR target branch (CI_MERGE_REQUEST_TARGET_BRANCH_NAME):$TARGET_BRANCH"
-    - git fetch origin $TARGET_BRANCH:$TARGET_BRANCH || echo "Could not fetch $TARGET_BRANCH branch"
+    # No gate in this job diffs against the MR target branch, so no target-branch
+    # fetch is needed. The type gate is `make typecheck`, over the whole tree.
     # Install uv
     - pip install uv
     # Create virtual environment
@@ -161,19 +158,27 @@ code_checks:
     # Makefile.
     - pip install 'cfn-lint==1.51.0'
     - make lint-cicd SKIP_NPM_CI=1
-    - echo "=== Type Checking Configuration ==="
-    - echo "MR target branch:$TARGET_BRANCH"
-    - echo "Comparing:$TARGET_BRANCH...HEAD"
-    - echo "===================================="
-    - echo ""
-    - make typecheck-pr TARGET_BRANCH=$TARGET_BRANCH
+    # The WHOLE tree, not just the files this MR touched. `make typecheck-pr` was
+    # what ran here, and it narrows basedpyright to the changed files — so it
+    # cannot see a break the change caused in a file the diff did not include,
+    # which is the ordinary shape of a type error. It also meant nothing ever ran
+    # the check that pyrightconfig.json's `include` closure is a closure OF.
+    # A full run is ~1 minute over the whole tracked tree.
+    - make typecheck
     # Static API RBAC/authorization scan (no AWS needed; catches op/schema/
     # expectations drift and missing server-side group checks).
     - make api-test-static
     # SKIP_INSTALL=1: idp_common[test] already installed via uv above (avoids a
-    # redundant plain-pip resolve that recompiled numpy from source). PYTEST_ARGS
-    # `-n auto` parallelizes the suite across the runner's cores (pytest-xdist).
-    - make test-cicd -C lib/idp_common_pkg SKIP_INSTALL=1 PYTEST_ARGS="-n auto"
+    # redundant plain-pip resolve that recompiled numpy from source).
+    #
+    # `-n auto` is no longer passed here: it is the Makefile's own default
+    # (PYTEST_PARALLEL), so GitHub gets it too. Passing it again would put `-n auto`
+    # on the command line twice, which pytest answers by collecting NOTHING and
+    # exiting 5 -- loud rather than silent, but a broken job either way.
+    - make test-cicd -C lib/idp_common_pkg SKIP_INSTALL=1
+    # Ratchet per-file coverage against scripts/coverage_debt.json. Must follow the
+    # line above: it reads the coverage report that step writes.
+    - make check-coverage-debt
     # Package/Lambda suites not covered by idp_common_pkg (idp_cli, idp_sdk,
     # idp_feature_sdk, feature-platform, capacity, circuit-breaker, chat,
     # config_library) — all green headless, previously CI-untested.
@@ -181,6 +186,12 @@ code_checks:
     # UI unit tests (Vitest + jsdom, no browser). Node 22 installed above.
     - cd src/ui && npm ci --prefer-offline --no-audit && npx vitest run && cd ../..
 
+  # COVERAGE IS REPORTED, NOT ENFORCED. There is deliberately no `coverage:`
+  # minimum here, for the same reason GitHub's report sets fail_below_min: false:
+  # the only coverage.xml produced is lib/idp_common_pkg's, one of the ~64 test
+  # roots scripts/run_all_tests.py discovers, so a repo-wide minimum from it would
+  # be a number about one package presented as a number about the repository. See
+  # the "Coverage is reported, not enforced" section in CONTRIBUTING.md.
   artifacts:
     paths:
       - lib/idp_common_pkg/test-reports/coverage.xml
@@ -534,4 +545,166 @@ dep_audit:
       - dep-audit-report.json
       - dist/manifests/python-packages.txt
       - dist/manifests/node-packages.txt
+    expire_in: 1 week
+
+# Advisory AI code review. Runs Claude Code (via Amazon Bedrock) over the MR diff
+# with .claude/skills/pr-review.md and posts the result as an MR note.
+#
+# ⚠️ NOT A GATE, and `allow_failure: true` says so in the one place a reader will
+# look. A model's opinion must not decide whether code merges — the fast_checks
+# gates above do that. A Bedrock throttle, a token expiry or an empty response
+# must therefore not red-line an MR, and this job is excluded from
+# scripts/tests/test_ci_gate_parity.py's SHARED_GATES on the same basis (it is
+# GitLab-only because the AWS credentials are here; the GitHub side would need
+# its own OIDC role).
+#
+# ⚠️ AUTOMATIC on every push to a non-Draft MR targeting develop, and the thing to
+# understand about that is the cost. A review is a real Bedrock spend — $3.42
+# measured in CI on a 5,400-line MR, $6.12 for the same MR locally — and reviews
+# are idempotent per HEAD SHA, so a NEW push means a NEW paid review. Three
+# properties bound it, and all three have to stay:
+#   - `interruptible: true` — a push while a review is running cancels it, so a
+#     burst of pushes costs roughly one review rather than one per push. This is
+#     the main protection and it is easy to delete by accident.
+#   - idempotent per HEAD SHA — a re-run of the same pipeline posts nothing.
+#   - Draft MRs are excluded, so the WIP phase (where pushes are frequent) is free.
+# What is NOT bounded: pushes spaced further apart than a review takes (~9 min in
+# CI, of which ~3.5 is installing Node and the CLI). An MR revised over a week
+# pays per revision. If that becomes the dominant cost, the cheapest fix is a
+# cooldown in ai_mr_review.py (skip if the last review note is younger than N
+# hours) rather than going back to a manual button.
+#
+# The other consequence of automatic: no human is in the loop before a model reads
+# author-controlled text. That is why the tool sandbox is enforced by
+# --permission-mode in the argv rather than by a settings file — see the comment on
+# PERMISSION_MODE in ai_mr_review.py.
+#
+# NO SCHEDULED SWEEP, deliberately. The script supports one (`--all-open`, which
+# is what `make ai-mr-review` runs locally) and the script: block below still
+# dispatches to it, but no `$CI_PIPELINE_SOURCE == "schedule"` rule exists, so in
+# CI it is unreachable. To turn it on later: add
+# `- if: $CI_PIPELINE_SOURCE == "schedule"` above the terminal `never`, then
+# create the schedule in Build -> Pipeline schedules. Read the cost note above
+# first — a daily sweep of 10 MRs is the case that gets expensive.
+#
+# Requires two CI variables:
+#   GITLAB_REVIEW_TOKEN  project access token, `api` scope, MASKED. The review is
+#                        posted as this token's identity. CI_JOB_TOKEN cannot
+#                        create notes, so there is no fallback — without this the
+#                        job prints SKIPPED and exits 0.
+#   AWS credentials      the same ones integration_tests uses, plus
+#                        bedrock:InvokeModel. See the script's --help for how to
+#                        scope this job down to a Bedrock-only role.
+ai_mr_review:
+  stage: fast_checks
+  interruptible: true
+  # One review is a few minutes; --max-mrs 10 bounds the sweep. 45m leaves room
+  # for a slow sweep without letting a wedged run hold a runner for hours.
+  timeout: 45m
+  allow_failure: true
+
+  # Reviewing is read-only, but it reads the whole checkout at the MR head and a
+  # large diff wants memory for the model client + git worktree.
+  tags:
+    - size:large
+
+  rules:
+    # Non-Draft MRs targeting develop, automatically. Ordered before the catch-all
+    # so a Draft falls through to `never` — a review posted on somebody's WIP is
+    # noise they did not ask for, and the Draft phase is where pushes are
+    # frequent, so excluding it is a cost control as well as a courtesy.
+    - if: $CI_MERGE_REQUEST_TARGET_BRANCH_NAME == "develop" && $CI_MERGE_REQUEST_TITLE !~ /^Draft:/
+      when: on_success
+    - when: never
+
+  # Nothing to wait for: it reads the MR, not another job's artifacts. In
+  # particular it does NOT wait for code_checks — a lint failure is exactly when
+  # a review is most useful, and gating the review on the gates would mean the
+  # MRs most in need of one never get it.
+  needs: []
+
+  variables:
+    # Pinned for the same reason CFN_LINT_VERSION is: an unpinned tool on a
+    # scheduled job changes behaviour with no commit here.
+    CLAUDE_CODE_VERSION: "2.1.281"
+    # Bedrock inference-profile id. Must be one this account has model access to.
+    ANTHROPIC_MODEL: "us.anthropic.claude-opus-5"
+    AWS_REGION: "us-east-1"
+    # Full history: the review diffs the MR head against its merge base with
+    # develop, which a shallow clone does not have.
+    GIT_DEPTH: 0
+
+  before_script:
+    - apt-get update -y
+    - apt-get install curl git -y
+    # Node 22: @anthropic-ai/claude-code declares `engines: {node: ">=22.0.0"}`, and
+    # an older major fails in the quietest way available — npm's EBADENGINE is only a
+    # warning, `npm install` and `claude --version` both succeed on 20, and the CLI
+    # then exits 1 with an empty stderr on the first real session.
+    #
+    # ⚠️ `curl ... | bash -` exits with BASH's status, not curl's, which is why
+    # .github/workflows/developer-tests.yml replaced this same pattern with
+    # actions/setup-node: a NodeSource 403 there left the repo unregistered, the
+    # apt-get below installed Debian's own nodejs, and the job failed several steps
+    # later with an unrelated error. GitLab has no equivalent first-party action
+    # and this image ships no Node, so the install stays — but the RUNTIME is now
+    # asserted rather than the intent, because a check on the pattern stays green
+    # in exactly that scenario.
+    - curl -fsSL https://deb.nodesource.com/setup_22.x | bash -
+    - apt-get install -y nodejs
+    - node --version
+    - >-
+      node -e 'const m=+process.versions.node.split(".")[0];
+      if (m < 22) { console.error("FATAL: node "+process.versions.node+
+      " but @anthropic-ai/claude-code needs >=22. The NodeSource install did not"+
+      " take (a `curl | bash` failure is silent) and Debian nodejs is in use.");
+      process.exit(1); }'
+    - npm install -g "@anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}"
+    - claude --version
+
+  script:
+    # ⚠️ PIN THE HARNESS TO THE TARGET BRANCH BEFORE RUNNING IT.
+    #
+    # This checkout is the MR head, so without this the reviewer is the MR's own
+    # copy of itself: the permission mode, both tool lists, the secret-stripping
+    # list and the prompt are all author-controlled, and the script's internal
+    # pinning of instruction files runs too late to matter because the code doing
+    # the pinning is also the MR's. The blast radius is this job's environment,
+    # which holds an AWS credential and GITLAB_REVIEW_TOKEN.
+    #
+    # So the harness comes from the target branch and only the DIFF comes from the
+    # MR. The tradeoff is explicit: an MR that improves the reviewer is not
+    # exercised by its own pipeline — it takes effect once merged. That is the same
+    # trade the instruction-file pinning makes, for the same reason.
+    #
+    # The `||` arm covers the first landing, when the target branch has no copy
+    # yet. It says so loudly rather than proceeding silently, because "no pinned
+    # copy" and "pinned successfully" must not look alike in a log.
+    - |
+      TARGET="${CI_MERGE_REQUEST_TARGET_BRANCH_NAME:-develop}"
+      git fetch -q origin "$TARGET"
+      HARNESS="scripts/sdlc/ai_mr_review.py .claude/skills/pr-review.md .claude/skills/pr-review-ci.md CLAUDE.md"
+      if git checkout FETCH_HEAD -- $HARNESS 2>/dev/null; then
+        echo "Harness pinned to origin/$TARGET: $HARNESS"
+      else
+        echo "⚠️  Could not pin the harness to origin/$TARGET — it does not carry"
+        echo "    all of: $HARNESS"
+        echo "    Running the MR's own copy. Expected only on the MR that adds this."
+      fi
+    - |
+      if [ -n "$CI_MERGE_REQUEST_IID" ]; then
+        python3 scripts/sdlc/ai_mr_review.py --mr "$CI_MERGE_REQUEST_IID"
+      else
+        # --max-mrs 3, not the script's default of 10: at --timeout 1200 a batch of
+        # ten has a 200-minute worst case against this job's 45m timeout, so the
+        # sweep's own bound would never be the one that fires and the job would
+        # truncate the batch silently. Three fits. (Unreachable today — no schedule
+        # rule exists, so CI always takes the --mr branch above.)
+        python3 scripts/sdlc/ai_mr_review.py --all-open --max-mrs 3
+      fi
+
+  artifacts:
+    when: always
+    paths:
+      - ai-reviews/
     expire_in: 1 week

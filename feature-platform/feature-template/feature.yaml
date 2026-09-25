@@ -57,6 +57,11 @@ ui:
                                       # own each; the post* step points hold a list.
                                       # The feature stack registers these with the host via
                                       # registerFeatureHooks at install — see the Developer Guide.
+                                      # postOcr/postClassification/postExtraction exist only in
+                                      # PIPELINE mode: BDA does those three steps in one call, so
+                                      # a hook there never runs under use_bda: true (and with
+                                      # onError: fail the registration is refused). Use
+                                      # preprocessing for anything that must gate.
 
 defaultParameters:
   LogLevel: WARN

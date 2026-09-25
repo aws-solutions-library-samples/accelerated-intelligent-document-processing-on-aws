@@ -2560,7 +2560,6 @@ def build_parameters(
     admin_email: Optional[str] = None,
     max_concurrent: Optional[int] = None,
     log_level: Optional[str] = None,
-    enable_hitl: Optional[str] = None,
     custom_config: Optional[str] = None,
     additional_params: Optional[Dict[str, str]] = None,
     region: Optional[str] = None,
@@ -2580,7 +2579,6 @@ def build_parameters(
         admin_email: Admin user email - optional for updates
         max_concurrent: Maximum concurrent workflows - optional
         log_level: Logging level - optional
-        enable_hitl: Enable HITL (true/false) - optional
         custom_config: Custom configuration (local file path or S3 URI) - optional
         additional_params: Additional parameters as dict - optional
         region: AWS region (auto-detected if not provided)
@@ -2601,8 +2599,15 @@ def build_parameters(
     if log_level is not None:
         parameters["LogLevel"] = log_level
 
-    if enable_hitl is not None:
-        parameters["EnableHITL"] = enable_hitl
+    # No EnableHITL here. The root template declared it until v0.4.11, when HITL
+    # became a configuration setting; this function kept emitting it for every
+    # release since, so `idp-cli deploy --enable-hitl true` failed at
+    # CreateStack/UpdateStack with "Parameters: [EnableHITL] do not exist in the
+    # template" and reached no resource. Nothing caught it because the tests
+    # asserted the name this function produced instead of the names the template
+    # accepts — see
+    # scripts/tests/test_script_deployed_template_parameters.py, which now derives
+    # the expectation from template.yaml and covers lib/ as well as scripts/.
 
     # Handle custom config - support both local files and S3 URIs
     if custom_config:

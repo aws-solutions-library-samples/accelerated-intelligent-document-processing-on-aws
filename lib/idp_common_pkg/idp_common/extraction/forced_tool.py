@@ -28,6 +28,10 @@ What it costs, and why the caller must handle both:
 
 * Not every route reaches Converse. `LambdaHook` and the GPT-5.x Responses path
   cannot carry a `toolConfig` at all, so this must be skipped for them.
+* Reaching Converse is not enough either. Claude Opus 5.5 accepts a `toolConfig`
+  and answers `toolChoice: auto`, but rejects `any` and `tool` with a 400 — so
+  forcing is unavailable on a model that is otherwise fully tool-capable, and this
+  is skipped for it too.
 * A model can accept a `toolConfig` and still answer in prose. That is a normal
   outcome, not an error, so the caller keeps the text path as a fallback.
 * Bedrock rejects property names outside `^[a-zA-Z0-9_.-]{1,64}$`, which four
@@ -196,9 +200,21 @@ def should_force_tool(
     if not class_schema or not class_schema.get("properties"):
         return False, "the class declares no properties, so there is no schema to force"
 
-    from idp_common.bedrock.client import tool_config_unsupported_reason
+    from idp_common.bedrock.client import (
+        forced_tool_choice_unsupported_reason,
+        tool_config_unsupported_reason,
+    )
 
     reason = tool_config_unsupported_reason(model_id)
     if reason:
         return False, f"model does not reach the Converse API: {reason}"
+    # Reaching Converse is necessary but no longer sufficient. Claude Opus 5.5
+    # carries a toolConfig and emits a toolUse under ``toolChoice: auto``, but
+    # rejects both forcing modes with a 400 — and an unforced tool call gives up
+    # the one guarantee this module exists for (that the declared fields cannot
+    # fail to parse), so the honest answer is to fall back to the prose schema
+    # rather than send a tool the model may simply decline to call.
+    forced_reason = forced_tool_choice_unsupported_reason(model_id)
+    if forced_reason:
+        return False, f"model rejects a forced toolChoice: {forced_reason}"
     return True, None

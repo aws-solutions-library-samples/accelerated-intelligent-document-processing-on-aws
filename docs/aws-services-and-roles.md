@@ -20,7 +20,7 @@ This document outlines the AWS services used by the GenAI Intelligent Document P
 | **Amazon S3** | Stores input documents, processed outputs, and web UI assets | ✓ | ✓ |
 | **Amazon DynamoDB** | Tracks document processing, manages configurations and concurrency | ✓ | ✓ |
 | **AWS Lambda** | Executes document processing functions and business logic | ✓ | ✓ |
-| **AWS Step Functions** | Orchestrates document processing workflows | ✓ | ✓ |
+| **AWS Step Functions** | Orchestrates document processing workflows and the data-mart rollup schema-migration (`DataMartMigrationStateMachine`, retry-safe/chunked/resumable — see [reporting-sql-layer.md](./reporting-sql-layer.md) §Track A and [data-mart-migration-runbook.md](./data-mart-migration-runbook.md)) | ✓ | ✓ |
 | **Amazon SQS** | Queues documents for processing and handles throttling | ✓ | ✓ |
 | **Amazon EventBridge** | Triggers document processing workflows when files are uploaded | ✓ | ✓ |
 | **Amazon CloudFront** | Delivers the web UI with global distribution (default hosting mode) | ✓ | ✓ |
@@ -56,6 +56,7 @@ This document outlines the AWS services used by the GenAI Intelligent Document P
 | Service | Usage | Deployment | Runtime |
 |---------|-------|------------|---------|
 | **Amazon CloudWatch** | Provides monitoring, logging, and alerting | ✓ | ✓ |
+| **AWS X-Ray** | Distributed tracing for the Lambda functions and state machines, controlled by `EnableXRayTracing` (default `true`). Traced functions need `xray:PutTraceSegments` / `xray:PutTelemetryRecords`: SAM attaches its X-Ray managed policy to any execution role it generates, and the roles declared explicitly in the templates carry `AWSXrayWriteOnlyAccess`. Billed per trace recorded — see [monitoring.md](./monitoring.md#x-ray-tracing), which also covers what `EnableXRayTracing=false` does not reach | — | ✓ |
 | **AWS SNS** | Delivers operational alerts and notifications | ✓ | ✓ |
 | **AWS KMS** | Manages encryption keys for secure data storage | ✓ | ✓ |
 
@@ -245,8 +246,8 @@ The solution creates various IAM roles to run different components of the system
 
 * **Cognito Authentication Role** (the Identity Pool's authenticated role, assumed by the browser):
   * `lambda:InvokeFunction` on the chat streaming function — the browser SigV4-signs its Function URL directly (a Function URL invocation needs `InvokeFunction`, *not* `InvokeFunctionUrl`). The REST API itself is reached with the Cognito **ID token**, not IAM, so no `execute-api:Invoke` grant is required.
-  * `s3:GetObject` (for UI assets and buckets)
-  * `ssm:GetParameter` (for settings)
+  * `s3:GetObject`, `s3:GetObjectVersion` and `s3:ListBucket` on the Input and Output buckets, plus `kms:Decrypt` on the customer-managed key. This is the browser reading document bytes with the signed-in user's own credentials — the file viewer, the page thumbnails, the page-image viewer and the document export all sign S3 GETs client-side. ⚠️ A single `authenticated` role is attached with no `RoleMappings`, so **every** signed-in user holds this regardless of Cognito group, with no resolver in the path to apply one. The buckets partitioned **per user** — Configuration (configuration-profile revisions) and Test Set — are deliberately **absent**, because no IAM grant on one shared role can express `allowedConfigVersions` or `allowedTestSets`; those objects are served only through `getFileContents` / `getFilePresignedUrl`, which check the key against the caller's scope. Narrowing what remains is [issue #1033](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/1033); see [RBAC](./rbac.md) for the boundary this leaves.
+  * `ssm:GetParameter` (for settings — the UI reads its runtime settings blob, which includes the stack's bucket names, directly from Parameter Store)
 
 * **Knowledge Base Query Role**:
   * `bedrock:InvokeModel`
@@ -291,9 +292,12 @@ The solution creates various IAM roles to run different components of the system
   * `s3:GetObject`, `s3:PutObject`, `s3:ListBucket` (reporting/Athena results buckets)
   * `logs:*`
 
-* **Data-Mart Rollup Lambda Role** (`DataMartRollupFunction`, scheduled hourly + daily):
+* **Data-Mart Rollup Lambda Role** (`DataMartRollupFunction`, scheduled hourly + daily + reconciler + migration state-machine task-mode invocations):
   * `athena:StartQueryExecution`, `athena:GetQueryExecution`, `athena:GetQueryResults`, `athena:StopQueryExecution` (writes rollup tables via `INSERT INTO`)
   * `glue:GetDatabase`, `glue:GetTable`, `glue:GetPartitions`, `glue:CreatePartition`, `glue:BatchCreatePartition` (partition management on rollup tables)
+  * `glue:GetDatabases`, `glue:GetTables` — required by the rollup Lambda's direct Glue-catalog scan of `document_sections_*` tables (used to build the `doc_class` CTE that fills in `document_class` for historical metering rows). On a missing grant, `get_tables` raises `AccessDeniedException` and the discovery function re-raises it so the invocation errors and the DLQ alarm fires — a permissions regression here surfaces immediately rather than degrading every historical row to `'unknown'` in the rollup output
+  * `ssm:GetParameter`, `ssm:PutParameter` on `/idp/<stack-name>/data-mart-rollup/*` — the state machine's two-phase migration marker (`state=in_progress` after purge, `state=completed` on success). Read by `_check_marker_state`, written by `_write_marker` — both are task-mode invocations of this Lambda
+  * `s3:DeleteObject` on the four rollup prefixes (`metering_hourly/*`, `metering_daily/*`, `metering_docs_hourly/*`, `metering_docs_daily/*`) under the reporting bucket — used by the migration state machine's `InitialPurge` task, scoped to date= partitions inside the migration window so older aggregates outside the window are preserved
   * `cloudwatch:GetMetricData`, `cloudwatch:ListMetrics` (`*` — API doesn't support resource-level scoping) for reading `AWS/Lambda/Duration`, `AWS/Lambda/Invocations`, `IDPControlPlane/AthenaBytesScanned`, `IDPControlPlane/BedrockInputTokens`, `IDPControlPlane/BedrockOutputTokens`
   * `tag:GetResources` (`*` — account-scoped API) for tag-based Lambda discovery
   * `cloudformation:ListStackResources` (scoped to this stack + its nested stacks) to walk the stack tree
@@ -302,6 +306,16 @@ The solution creates various IAM roles to run different components of the system
   * `s3:AbortMultipartUpload`, `s3:ListBucketMultipartUploads`, `s3:ListMultipartUploadParts` (reporting bucket only) — part of AWS's reference policy for Athena `INSERT INTO`, which switches to a multipart upload once a result part exceeds its buffer
   * `sqs:SendMessage` on its DLQ (async-failure destination)
   * KMS on the stack CMK
+
+* **Data-Mart Migration State-Machine Role** (`DataMartMigrationStateMachine`, invoked by the CFN custom-resource dispatcher on every `MigrationVersion` change):
+  * `lambda:InvokeFunction` on `DataMartRollupFunction` only — the state machine drives every migration step by invoking that Lambda in task modes (`check_marker_state`, `check_lake_state`, `purge_rollup_prefixes`, `write_marker`, `plan_migration_chunks`, `backfill`, `backfill_daily_range`, `check_hours_failed`)
+  * CloudWatch Logs delivery — `logs:CreateLogDelivery`, `logs:GetLogDelivery`, `logs:UpdateLogDelivery`, `logs:DeleteLogDelivery`, `logs:ListLogDeliveries`, `logs:PutResourcePolicy`, `logs:DescribeResourcePolicies`, `logs:DescribeLogGroups` (`*` resource — the SFN service creates the delivery, not the state machine itself)
+  * X-Ray write permissions — `xray:PutTraceSegments`, `xray:PutTelemetryRecords`, `xray:GetSamplingRules`, `xray:GetSamplingTargets`. Granted **unconditionally** in the template — `EnableXRayTracing` gates whether the function's `Tracing` mode is `Active` or `PassThrough`, not the permissions themselves
+
+* **Data-Mart Migration Dispatcher Role** (`DataMartMigrationDispatcherFunction`, CFN custom-resource entry point):
+  * `states:StartExecution` on `DataMartMigrationStateMachine` only — starts the state machine asynchronously and returns SUCCESS to CFN immediately; the migration continues after the CustomResource completes
+  * `ssm:DeleteParameter` on `/idp/<stack-name>/data-mart-rollup/*` — deletes the SSM migration marker on `ForceFresh=true` (so the state machine's `CheckMarker` sees `ParameterNotFound` and takes the full-flow branch), and cleans it up on stack Delete so a same-name recreate starts clean. Read access is deliberately NOT granted here — the marker is read from the rollup Lambda's own role, not this one
+  * No KMS grant on the dispatcher role. The dispatcher does not encrypt or decrypt any customer data — its only writes are `states:StartExecution` (no customer-data payload beyond `days` / `chunk_hours` / `version` / `anchor`) and `ssm:DeleteParameter`; the SSM parameter's own encryption is handled by SSM's service-owned key, not the stack CMK
 
 * **Metering Hour Migration Lambda Role** (`MeteringHourMigrationFunction`, one-shot CFN custom resource):
   * `s3:ListBucket` (reporting bucket) for listing pre-migration parquet files

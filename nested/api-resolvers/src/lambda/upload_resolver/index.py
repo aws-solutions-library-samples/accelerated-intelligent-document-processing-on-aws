@@ -8,6 +8,7 @@ import logging
 import os
 
 import boto3
+import s3_targets
 from botocore.config import Config
 from log_sanitizer import sanitize_event_for_logging
 
@@ -61,6 +62,14 @@ s3_config = Config(
     **_S3_DATAPLANE_BOUNDS,
 )
 s3_client = boto3.client("s3", config=s3_config)
+
+# Which bucket and key an upload may target. `bucket` and `prefix` are request
+# arguments and this function's role holds write on every bucket the deployment uses,
+# so the request is bounded here or not at all. One allow-list shared byte-for-byte
+# with the read path in get_file_contents_resolver and the write path in
+# discovery_upload_resolver — see s3_targets, and test_s3_targets_vendored.py, which
+# fails if a copy diverges.
+ALLOWED_BUCKETS = s3_targets.resolve_allowed_buckets()
 
 def _caller_in_groups(event, allowed):
     """Defense-in-depth RBAC check against the caller's Cognito groups.
@@ -134,7 +143,16 @@ def _handle_upload_document(event):
             object_key = f"{prefix}/{sanitized_file_name}"
         else:
             object_key = sanitized_file_name
-        
+
+        # Constrain the target. `bucket` and `prefix` both come from the request, and
+        # this function's role holds write on every bucket the deployment uses, so the
+        # request is bounded here or not at all. Same allow-list the read path uses,
+        # plus the write-once key rule, which only write paths consult.
+        # Raises PermissionError -> HTTP 403.
+        s3_targets.assert_write_target_allowed(
+            bucket_name, object_key, ALLOWED_BUCKETS, logger=logger
+        )
+
         # Generate a presigned POST URL for uploading
         logger.info(f"Generating presigned POST data for: {object_key} with content type: {content_type}")
         
@@ -283,6 +301,11 @@ def _handle_upload_sample_document(event):
         for source_key in source_keys:
             base_name = os.path.basename(source_key)
             target_key = f"{prefix}/{base_name}" if prefix else base_name
+            # `prefix` is caller-supplied here too, so the copy destination is bounded
+            # the same way as the presigned upload above.
+            s3_targets.assert_write_target_allowed(
+                input_bucket, target_key, ALLOWED_BUCKETS, logger=logger
+            )
             s3_client.copy_object(
                 CopySource={"Bucket": config_bucket, "Key": source_key},
                 Bucket=input_bucket,

@@ -108,7 +108,7 @@ This folder contains detailed documentation on various aspects of the GenAI Inte
 
 ## Blogs, Customer Stories & Research
 
-- [Blogs, Customer Stories & Research](./references.md) - AWS blog deep-dives into the accelerator, customer references with real-world metrics, and peer-reviewed research papers
+- [Blogs, Customer Stories & Research](./references.md) - AWS blog deep-dives into the accelerator, independent analyst reports, customer references with real-world metrics, and peer-reviewed research papers
 
 ## Screenshots and Diagrams
 

@@ -13,6 +13,7 @@ import strands
 
 from idp_common.config import get_config
 
+from ..common.config import DEFAULT_AGENT_MODEL_ID
 from ..common.cost_metrics import with_cost_hook
 from ..common.strands_bedrock_model import create_strands_bedrock_model
 from .config import get_error_analyzer_model_id
@@ -69,9 +70,7 @@ def create_error_analyzer_agent(
         model_id = get_error_analyzer_model_id()
     except Exception as e:
         logger.warning(f"Failed to get chat companion model ID, using default: {e}")
-        model_id = config.get(
-            "default_model_id", "us.anthropic.claude-3-7-sonnet-20250219-v1:0"
-        )
+        model_id = config.get("default_model_id", DEFAULT_AGENT_MODEL_ID)
     logger.info(f"Model ID: {model_id}")
     bedrock_model = create_strands_bedrock_model(
         model_id=model_id, boto_session=session

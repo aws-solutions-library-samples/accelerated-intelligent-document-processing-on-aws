@@ -43,7 +43,7 @@ describe('the set detail page', () => {
     expect(remove).toMatch(/disabled=\{selectedItems\.length === 0 \|\| isLoading \|\| labelJob\?\.status === 'RUNNING'\}/);
   });
 
-  it('offers all three add sources, gating generation on the extension', () => {
+  it('offers all four add sources, gating generation on the extension', () => {
     expect(DETAIL).toMatch(/text: 'From files in a bucket'/);
     expect(DETAIL).toMatch(/text: 'From a zip upload'/);
     const generate = DETAIL.slice(
@@ -86,6 +86,20 @@ describe('the shared Add documents dialogs', () => {
   });
 });
 
+describe('adding processed documents', () => {
+  it('is a source on both the set page and the table page, open to every role that can add', () => {
+    expect(DETAIL).toMatch(/\{ id: 'add-processed', text: 'From processed documents' \}/);
+    expect(DETAIL).toMatch(/detail\.id === 'add-processed'\) setAddDocsMode\('documents'\)/);
+    expect(TEST_SETS).toMatch(/\{ id: 'docs-processed', text: 'From processed documents' \}/);
+    expect(TEST_SETS).toMatch(/setAddDocsMode\('documents'\)/);
+  });
+
+  it('routes to the resolver and is declared for Admins and Authors', () => {
+    expect(ALIASES).toMatch(/"addDocumentsToTestSetByKey": "addDocumentsToTestSet"/);
+    expect(RBAC).toMatch(/addDocumentsToTestSetByKey:\n(?:\s+#.*\n)*?\s+groups: \[Admin, Author\]/);
+  });
+});
+
 describe('importing by file pattern', () => {
   // Matching a pattern searches a whole bucket, so it is Admin-only end to end:
   // the resolver refuses Authors, and no surface offers them the source.
@@ -120,9 +134,12 @@ describe('an empty set', () => {
     expect(RUNNER).toMatch(/disabled=\{Boolean\(runDisabledReason\)\}/);
   });
 
-  it('cannot be published or annotated from the table', () => {
-    const publish = TEST_SETS.slice(TEST_SETS.indexOf("id: 'publish'"), TEST_SETS.indexOf('},', TEST_SETS.indexOf("id: 'publish'")));
-    expect(publish).toMatch(/!selectedItems\[0\]\?\.fileCount/);
+  it('cannot be published from its own page', () => {
+    const reason = DETAIL.slice(DETAIL.indexOf('const publishBlockedReason ='), DETAIL.indexOf('const hasConfidence ='));
+    expect(reason).toMatch(/totalCount === 0/);
+  });
+
+  it('cannot be annotated from the table', () => {
     expect(TEST_SETS).toMatch(
       /id: 'annotate', text: 'Annotate ground truth', disabled: selectedItems\.length !== 1 \|\| !selectedItems\[0\]\?\.fileCount/,
     );

@@ -240,6 +240,8 @@ def _make_fixture(
     the dispatcher stubs are empty, so S1-S5 contribute nothing and the S6-S9
     findings under test stand alone.
     """
+    # Tolerate a subdirectory of tmp_path, so one test can build two fixture trees.
+    tmp_path.mkdir(parents=True, exist_ok=True)
     (tmp_path / "scripts").mkdir()
     nested = tmp_path / "nested" / "api-resolvers"
     disp = nested / "src" / "lambda" / "http_api_dispatcher"
@@ -259,8 +261,23 @@ def _make_fixture(
     proc.mkdir(parents=True)
     (proc / "index.py").write_text(gate_src)
 
+    # The Cognito groups are part of the minimum tree, not decoration: S0 reads
+    # the group vocabulary from this template to resolve ANY_GROUP and to reject a
+    # group name the stack does not create, and reports a FAIL when it finds none.
     (tmp_path / "template.yaml").write_text(
         "Resources:\n"
+        "  AdminGroup:\n"
+        "    Type: AWS::Cognito::UserPoolGroup\n"
+        "    Properties:\n"
+        "      GroupName: Admin\n"
+        "  AuthorGroup:\n"
+        "    Type: AWS::Cognito::UserPoolGroup\n"
+        "    Properties:\n"
+        "      GroupName: Author\n"
+        "  ViewerGroup:\n"
+        "    Type: AWS::Cognito::UserPoolGroup\n"
+        "    Properties:\n"
+        "      GroupName: Viewer\n"
         "  StreamUrl:\n"
         "    Type: AWS::Lambda::Url\n"
         "    Properties:\n"
@@ -310,8 +327,288 @@ def _levels(tmp_path: Path, check: str, strict: bool = False) -> list[str]:
 def test_fixture_baseline_is_clean(tmp_path):
     """The fixture must pass before each mutation, or nothing below means anything."""
     repo = _make_fixture(tmp_path)
-    for check in ("S6", "S7", "S8", "S9"):
+    for check in ("S0", "S6", "S7", "S8", "S9"):
         assert not _fails(repo, check)
+
+
+# --- S0: the policy vocabulary -----------------------------------------------
+#
+# Without S0 THIS SCANNER reads an unrecognised `groups:` string as the most
+# permissive branch it has: S2 compares a set of the string's characters against
+# the schema directive, and S3's `else` branch — written for `ANY` — accepts a
+# resolver with no enforcement at all, so `groups: ANYGROUP` scans at 0 FAIL. The
+# generator's --check, which `make api-test-static` runs immediately afterwards,
+# does reject it (exit 2) for an `operations:` entry — so S0's own coverage is the
+# scanner being sound on its own plus the route policies, which the generator never
+# reads. These drive `run_checks` over a tree that CONTAINS the typo, for the reason
+# given above `_GOOD_APP`: asserting on a re-implemented predicate here would stay
+# green if the S0 block were deleted.
+
+
+def _with_operation(tmp_path: Path, entry: str) -> Path:
+    tmp_path.mkdir(parents=True, exist_ok=True)
+    repo = _make_fixture(tmp_path)
+    path = repo / "scripts" / "api_rbac_expectations.yaml"
+    path.write_text(
+        path.read_text().replace(
+            "operations: {}\n",
+            "operations:\n"
+            "  someOp:\n"
+            f"{entry}"
+            "    kind: read\n"
+            "    enforced_in: src/lambda/proc/index.py\n",
+        )
+    )
+    return repo
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("policy", ("ANY", "ANY_GROUP", "IAM_ONLY", "[Admin]"))
+def test_s0_accepts_every_known_policy(tmp_path, policy):
+    repo = _with_operation(tmp_path, f"    groups: {policy}\n")
+    assert not _fails(repo, "S0")
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("policy", ("ANYGROUP", "ANY_GROUPS", "any_group", "EVERYONE"))
+def test_s0_fails_on_an_unrecognised_policy_sentinel(tmp_path, policy):
+    """A near-miss spelling of ANY_GROUP must fail, not default to permissive."""
+    repo = _with_operation(tmp_path, f"    groups: {policy}\n")
+    assert any("not a group list" in m for m in _fails(repo, "S0")), (
+        f"groups: {policy} was accepted"
+    )
+
+
+@pytest.mark.unit
+def test_s0_fails_on_a_group_the_stack_does_not_create(tmp_path):
+    """An unmatchable group name denies the operation to everyone."""
+    repo = _with_operation(tmp_path, "    groups: [Admn]\n")
+    assert any("unmatchable group name" in m for m in _fails(repo, "S0"))
+
+
+@pytest.mark.unit
+def test_s0_fails_when_the_group_vocabulary_cannot_be_read(tmp_path):
+    """No UserPoolGroup means ANY_GROUP cannot be resolved and names are unchecked."""
+    repo = _with_operation(tmp_path, "    groups: ANY_GROUP\n")
+    template = repo / "template.yaml"
+    template.write_text(
+        template.read_text().replace("AWS::Cognito::UserPoolGroup", "AWS::IAM::Role")
+    )
+    assert any("group vocabulary" in m for m in _fails(repo, "S0"))
+
+
+@pytest.mark.unit
+def test_s0_fails_on_an_unrecognised_policy_on_a_function_url_route(tmp_path):
+    """The route policies go through the same vocabulary check as the operations."""
+    repo = _make_fixture(
+        tmp_path,
+        route_policy=(
+            "        groups: ANYGROUP\n"
+            "        enforced_in: src/lambda/proc/index.py\n"
+        ),
+    )
+    assert any("not a group list" in m for m in _fails(repo, "S0"))
+
+
+@pytest.mark.unit
+def test_s0_is_not_downgraded_by_a_known_gap(tmp_path):
+    """A gap records weak enforcement, not an unreadable declaration."""
+    repo = _with_operation(
+        tmp_path, "    groups: EVERYONE\n    known_gap: GAP-99\n"
+    )
+    assert _fails(repo, "S0"), "a known_gap must not downgrade an S0 finding"
+
+
+# --- S9: declared policy vs what the transport can enforce -------------------
+#
+# `groups` is the route's policy and S9 requires it to equal the equivalent REST
+# operation's. `transport_enforces` records that this transport cannot apply it.
+# Without the key the only way to satisfy the equivalent_op comparison was to
+# weaken the declared policy, which made the true divergence vanish from the
+# report — so the point of these is that declaring the divergence PRODUCES a
+# finding rather than removing one.
+
+
+def _route(extra: str) -> str:
+    return (
+        "        groups: [Admin, Author, Viewer]\n"
+        "        enforced_in: src/lambda/proc/index.py\n"
+        "        equivalent_op: someOp\n" + extra
+    )
+
+
+def _with_route_and_op(tmp_path: Path, extra: str) -> Path:
+    """A fixture whose route has an `equivalent_op` declaring the same groups."""
+    tmp_path.mkdir(parents=True, exist_ok=True)
+    repo = _make_fixture(tmp_path, route_policy=_route(extra))
+    path = repo / "scripts" / "api_rbac_expectations.yaml"
+    path.write_text(
+        path.read_text().replace(
+            "operations: {}\n",
+            "operations:\n"
+            "  someOp:\n"
+            "    groups: [Admin, Author, Viewer]\n"
+            "    kind: read\n"
+            "    enforced_in: src/lambda/proc/index.py\n",
+        )
+    )
+    return repo
+
+
+@pytest.mark.unit
+def test_s9_reports_a_transport_that_cannot_enforce_the_declared_policy(tmp_path):
+    repo = _with_route_and_op(
+        tmp_path, "        transport_enforces: ANY\n        residual_gap: GAP-99\n"
+    )
+    messages = [
+        f.message
+        for f in scanner.run_checks(strict=False, repo=repo)
+        if f.check == "S9"
+    ]
+    assert any("can only enforce 'ANY'" in m for m in messages), messages
+    # WARN normally so the gate stays green on a recorded limitation, FAIL under
+    # --strict so the scan can be used to verify it has been closed.
+    assert _levels(repo, "S9") == ["WARN"]
+    assert _levels(repo, "S9", strict=True) == ["FAIL"]
+
+
+@pytest.mark.unit
+def test_s9_requires_a_gap_id_for_an_unenforceable_declared_policy(tmp_path):
+    """Recording the divergence is not optional — otherwise it is just a comment."""
+    repo = _with_route_and_op(tmp_path, "        transport_enforces: ANY\n")
+    assert any("no residual_gap/known_gap" in m for m in _fails(repo, "S9"))
+
+
+@pytest.mark.unit
+def test_s9_rejects_a_transport_enforces_that_asserts_no_divergence(tmp_path):
+    """The key means "weaker than `groups`"; equal to it is noise that reads as rigour."""
+    repo = _with_route_and_op(
+        tmp_path,
+        "        transport_enforces: [Admin, Author, Viewer]\n"
+        "        residual_gap: GAP-99\n",
+    )
+    assert any("equals its groups" in m for m in _fails(repo, "S9"))
+
+
+@pytest.mark.unit
+def test_s0_validates_transport_enforces_as_a_policy_value(tmp_path):
+    """A typo in it would otherwise surface only as an S9 WARN printing it back."""
+    repo = _with_route_and_op(
+        tmp_path, "        transport_enforces: ANYY\n        residual_gap: GAP-99\n"
+    )
+    assert any("not a group list" in m for m in _fails(repo, "S0"))
+
+
+@pytest.mark.unit
+def test_s9_rejects_a_transport_enforces_that_is_stronger_than_the_policy(tmp_path):
+    """The key records what the transport CANNOT apply, so it must be weaker.
+
+    Without this, `groups: ANY` with `transport_enforces: ANY_GROUP` scanned clean and
+    printed "declares 'ANY' but can only enforce 'ANY_GROUP'" — a self-contradiction
+    accepted as a recorded gap.
+    """
+    tmp_path.mkdir(parents=True, exist_ok=True)
+    repo = _make_fixture(
+        tmp_path,
+        route_policy=(
+            "        groups: ANY\n"
+            "        transport_enforces: ANY_GROUP\n"
+            "        residual_gap: GAP-99\n"
+        ),
+    )
+    assert any("restricts MORE" in m for m in _fails(repo, "S9"))
+
+
+@pytest.mark.unit
+def test_s9_requires_a_weaker_group_list_to_be_a_strict_superset(tmp_path):
+    """Between two group lists, weaker means admitting more callers."""
+    # A narrower list is not weaker.
+    repo = _with_route_and_op(
+        tmp_path / "narrower",
+        "        transport_enforces: [Admin]\n        residual_gap: GAP-99\n",
+    )
+    assert any("not a strict superset" in m for m in _fails(repo, "S9"))
+
+    # A strict superset is weaker, and is reported as the recorded divergence.
+    # The handler's own group constant has to match the DECLARED policy, or the
+    # pre-existing code-vs-declaration arm of S9 fires instead.
+    repo2 = _make_fixture(
+        tmp_path / "wider",
+        gate_src=(
+            '_AGENT_CHAT_GROUPS = ("Admin", "Author")\n\n\n'
+            "def _enforce_agent_chat_groups(event):\n"
+            '    groups = (event.get("identity") or {}).get("claims", {}).get("cognito:groups")\n'
+            "    if groups is not None and not set(groups) & set(_AGENT_CHAT_GROUPS):\n"
+            '        raise PermissionError("Unauthorized")\n'
+        ),
+        route_policy=(
+            "        groups: [Admin, Author]\n"
+            "        transport_enforces: [Admin, Author, Viewer]\n"
+            "        enforced_in: src/lambda/proc/index.py\n"
+            "        residual_gap: GAP-99\n"
+        ),
+    )
+    assert not _fails(repo2, "S9")
+    assert _levels(repo2, "S9") == ["WARN"]
+
+
+@pytest.mark.unit
+def test_s9_is_silent_when_the_transport_can_enforce_the_policy(tmp_path):
+    repo = _with_route_and_op(tmp_path, "")
+    assert not [f for f in scanner.run_checks(strict=False, repo=repo) if f.check == "S9"]
+
+
+@pytest.mark.unit
+def test_s2_resolves_any_group_against_the_template_vocabulary(tmp_path):
+    """ANY_GROUP must match a directive naming every group, and only that.
+
+    GraphQL cannot say "any group", so the faithful directive is the vocabulary
+    written out — and a group added to the template must fail this check until the
+    directive names it too, which is the whole reason the comparison is resolved
+    from the template rather than from a list in the scanner.
+    """
+    repo = _with_operation(tmp_path, "    groups: ANY_GROUP\n")
+    schema = repo / "nested" / "api-resolvers" / "src" / "api" / "schema.graphql"
+
+    schema.write_text(
+        "type Query @aws_cognito_user_pools {\n"
+        "  someOp: String\n"
+        '    @aws_cognito_user_pools(\n'
+        '      cognito_groups: ["Admin", "Author", "Viewer"]\n'
+        "    )\n"
+        "}\n"
+    )
+    assert not _fails(repo, "S2")
+
+    # One group short of the vocabulary is drift, and must be reported.
+    schema.write_text(
+        "type Query @aws_cognito_user_pools {\n"
+        "  someOp: String\n"
+        '    @aws_cognito_user_pools(cognito_groups: ["Admin", "Author"])\n'
+        "}\n"
+    )
+    assert _fails(repo, "S2")
+
+
+@pytest.mark.unit
+def test_s3_does_not_demand_a_resolver_group_check_for_any_group(tmp_path):
+    """ANY_GROUP's enforcement point is the dispatcher manifest, not the resolver.
+
+    An explicit group list names groups the resolver has to tell apart, so S3
+    requires the check to be visible there. ANY_GROUP names no particular group —
+    the policy is "an administrator onboarded this caller", a field-level fact the
+    generated manifest already carries for every routable operation. Asserting the
+    difference here keeps it a decision rather than an accident of the branch
+    ANY_GROUP happens to fall into.
+    """
+    repo = _with_operation(tmp_path, "    groups: ANY_GROUP\n")
+    (repo / "src" / "lambda" / "proc" / "index.py").write_text("def handler(e):\n    return {}\n")
+    assert not _fails(repo, "S3")
+
+    # The same resolver under an explicit group list IS an S3 failure.
+    repo2 = _with_operation(tmp_path / "explicit", "    groups: [Admin]\n")
+    (repo2 / "src" / "lambda" / "proc" / "index.py").write_text("def handler(e):\n    return {}\n")
+    assert _fails(repo2, "S3")
 
 
 @pytest.mark.unit
@@ -622,3 +919,86 @@ def test_live_scan_has_no_function_url_failures():
         f for f in findings if f.check in ("S6", "S7", "S8", "S9") and f.level == "FAIL"
     ]
     assert not fails, [f"[{f.check}] {f.op}: {f.message}" for f in fails]
+
+
+# --- S7: an unparseable handler is a finding, not a silent skip ---------------
+#
+# `_route_function_nodes` used to answer `{}` for a `SyntaxError`, so
+# `route_nodes.get(route)` was `None`, S7's identity-rebinding check took its
+# "nothing to inspect" branch, and an unparseable handler produced a clean scan.
+# A check that cannot be run is not a check that passed — the sibling
+# `op_scope_source` already turns the same SyntaxError into a finding.
+
+
+def test_an_unparseable_handler_raises_rather_than_returning_no_routes():
+    with pytest.raises(scanner.HandlerUnparseable):
+        scanner._route_function_nodes("def broken(:\n    pass\n")
+
+
+def test_a_parseable_handler_still_yields_its_routes():
+    """The control: without it, "always raises" would satisfy the test above."""
+    nodes = scanner._route_function_nodes(
+        '@app.post("/chat/agent")\n'
+        "async def chat_agent(request):\n"
+        "    return {}\n"
+    )
+
+    assert "POST /chat/agent" in nodes
+
+
+# --- S0: a known_gap the dynamic harness assigns has no operation to name it --
+#
+# The orphan check ("defined but nothing references it") assumes every gap is
+# declared on an operation. That is false for a gap assigned from an observed
+# RESPONSE, so such a gap declares `assigned_by:` — and the orphan check then
+# applies where the reference actually is, rather than being switched off.
+
+
+def _expectations():
+    import yaml
+
+    path = _SDLC_DIR.parents[0] / "api_rbac_expectations.yaml"
+    return yaml.safe_load(path.read_text())
+
+
+def test_a_runtime_assigned_gap_names_a_file_that_mentions_it():
+    """The exemption's own premise. An `assigned_by` pointing at a file that never
+    mentions the gap id would be a gap registered and assigned by nothing."""
+    spec = _expectations()
+    gaps = spec["known_gaps"]
+    runtime_gaps = {
+        gid: g
+        for gid, g in gaps.items()
+        if isinstance(g, dict) and g.get("assigned_by")
+    }
+
+    assert runtime_gaps, (
+        "no runtime-assigned gap is declared, so this test is asserting nothing — "
+        "delete it, or the assigned_by branch in scan_api_rbac's S0 check"
+    )
+    repo = _SDLC_DIR.parents[1]
+    for gid, g in runtime_gaps.items():
+        assigner = repo / g["assigned_by"]
+        assert assigner.is_file(), f"{gid}: assigned_by {g['assigned_by']} missing"
+        assert gid in assigner.read_text(), (
+            f"{gid}: {g['assigned_by']} does not mention it"
+        )
+
+
+def test_every_other_gap_is_still_referenced_by_an_operation():
+    """The exemption must not have widened into "gaps need no reference"."""
+    spec = _expectations()
+    gaps = spec["known_gaps"]
+    referenced = {
+        o["known_gap"] for o in spec["operations"].values() if o.get("known_gap")
+    }
+    for ep in (spec.get("function_url_endpoints") or {}).values():
+        for rc in (ep.get("routes") or {}).values():
+            for key in ("known_gap", "residual_gap"):
+                if rc.get(key):
+                    referenced.add(rc[key])
+
+    for gid, g in gaps.items():
+        if isinstance(g, dict) and g.get("assigned_by"):
+            continue
+        assert gid in referenced, f"{gid} is declared but nothing references it"

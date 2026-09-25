@@ -15,6 +15,7 @@ import click
 from rich.console import Console
 
 from .manifest import ManifestError, load_manifest
+from .parameters import parse_parameters
 from .publisher import FeaturePublisher
 from .scaffold import ScaffoldError, ScaffoldOptions, scaffold_feature
 from .seller_service import (
@@ -68,28 +69,6 @@ def _resolve_bucket(
     except RuntimeError as exc:
         console.print(f"[red]✗ {exc}[/red]")
         sys.exit(1)
-
-
-def _parse_parameters(parameters: Optional[str]) -> dict[str, str]:
-    """Parse a `--parameters key=value,key2=value2` string into a dict.
-
-    Mirrors `idp-cli deploy`'s parser: splits on commas that precede a
-    ``key=`` token, so values may themselves contain commas (e.g. subnet
-    lists). Returns an empty dict for ``None``/empty input.
-    """
-    if not parameters:
-        return {}
-    import re
-
-    parsed: dict[str, str] = {}
-    for match in re.finditer(
-        r"([A-Za-z][A-Za-z0-9]*)=((?:(?![A-Za-z][A-Za-z0-9]*=).)*)",
-        parameters,
-    ):
-        key = match.group(1).strip()
-        value = match.group(2).strip().rstrip(",")
-        parsed[key] = value
-    return parsed
 
 
 @click.group(context_settings={"help_option_names": ["-h", "--help"]})
@@ -488,7 +467,14 @@ def deploy_pack_cmd(
         )
         sys.exit(1)
 
-    extras = _parse_parameters(extra_params)
+    # Anything the parser could not read is printed rather than dropped: a
+    # wrapper parameter that never reached CloudFormation is indistinguishable
+    # afterwards from one submitted at its publish-time default. See
+    # idp_feature_sdk/parameters.py for the grammar.
+    extras = parse_parameters(
+        extra_params,
+        on_warning=lambda message: console.print(f"[yellow]⚠ {message}[/yellow]"),
+    )
 
     # ----- --from-code branch: publish first, derive wrapper_url -----
     if from_code:
@@ -1242,6 +1228,16 @@ def seller_service_preflight_cmd(
     default=None,
     help="Activation token lifetime (template default: 3600).",
 )
+@click.option(
+    "--agreement-region",
+    default=DEFAULT_MARKETPLACE_REGION,
+    show_default=True,
+    help=(
+        "Region the DEPLOYED function calls the Marketplace Agreement API in. "
+        "Separate from --region (where the stack goes) because the Agreement API "
+        "exists only in us-east-1; change this only if that stops being true."
+    ),
+)
 @click.option("--guided", is_flag=True, help="Pass --guided to `sam deploy`.")
 @click.option(
     "--yes", is_flag=True, help="Skip the confirmation prompt after preflight."
@@ -1254,6 +1250,7 @@ def seller_service_deploy_cmd(
     stack_name: str,
     allowed_accounts: str,
     token_ttl_seconds: Optional[int],
+    agreement_region: str,
     guided: bool,
     yes: bool,
 ) -> None:
@@ -1283,6 +1280,19 @@ def seller_service_deploy_cmd(
         console.print(f"    account    {result.account_id}")
         console.print(f"    region     {region}")
         console.print(f"    stack      {stack_name}")
+        if agreement_region != DEFAULT_MARKETPLACE_REGION:
+            # Warned rather than refused: this is an explicit request, and pinning an
+            # allowed value in code would block a region AWS may add later. But the
+            # failure it invites is silent and remote — a host that does not resolve,
+            # discovered at activation in a buyer's account — so it is worth saying so
+            # before the deploy rather than after.
+            console.print(
+                f"    [yellow]agreement  {agreement_region} — the Marketplace "
+                f"Agreement API is only reachable in {DEFAULT_MARKETPLACE_REGION}. "
+                f"Unless that has changed, agreement-marketplace.{agreement_region}"
+                ".amazonaws.com will not resolve and EVERY activation will fail."
+                "[/yellow]"
+            )
         if version:
             console.print(f"    version    {version}")
         if allowed_accounts:
@@ -1305,6 +1315,7 @@ def seller_service_deploy_cmd(
                 product_registry_json=product_registry,
                 allowed_accounts=allowed_accounts,
                 token_ttl_seconds=token_ttl_seconds,
+                agreement_region=agreement_region,
                 guided=guided,
             ),
             cwd=service_dir,

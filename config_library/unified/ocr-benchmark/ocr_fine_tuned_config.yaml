@@ -2,6 +2,19 @@
 # SPDX-License-Identifier: MIT-0
 
 # All settings not explicitly defined here are inherited from system defaults.
+
+# ⚠️ This is the FINE-TUNED arm of the OCR benchmark, and the fine-tuned model
+# it was authored against cannot be shipped. A fine-tuned Nova model is reached through
+# a Bedrock custom-model-deployment ARN, and such an ARN resolves only in the account
+# that owns the deployment — from anywhere else Bedrock answers AccessDeniedException
+# ("the provided resource ARN is from a different account"), so the stage fails rather
+# than degrading.
+#
+# Every `model` below therefore ships as us.amazon.nova-2-lite-v1:0, the base model this
+# benchmark's fine-tune was derived from and the value its base-model sibling uses. The
+# preset runs as-is on any account. To run the fine-tuned arm, fine-tune that base
+# model, deploy it, and substitute your own deployment ARN at each `model` marked
+# below. See README.md in this directory.
 notes: Pattern-2 default configuration - Bedrock LLM-based processing
 classes:
 - $schema: https://json-schema.org/draft/2020-12/schema
@@ -832,7 +845,9 @@ ocr:
     preprocessing:
 classification:
   classificationMethod: multimodalPageLevelClassification
-  model: arn:aws:bedrock:us-east-1:364791462985:custom-model-deployment/p5byhttv7ubw
+  # Replace with your own deployment to run the fine-tuned arm:
+  #   model: arn:aws:bedrock:<region>:<your-account-id>:custom-model-deployment/<deployment-id>
+  model: us.amazon.nova-2-lite-v1:0
   maxPagesForClassification: ALL
   contextPagesCount: '0'
   sectionSplitting: llm_determined
@@ -891,10 +906,11 @@ extraction:
   image:
     target_width: ''
     target_height: ''
-  model: arn:aws:bedrock:us-east-1:364791462985:custom-model-deployment/p5byhttv7ubw
+  # Replace with your own deployment to run the fine-tuned arm:
+  #   model: arn:aws:bedrock:<region>:<your-account-id>:custom-model-deployment/<deployment-id>
+  model: us.amazon.nova-2-lite-v1:0
   temperature: '0.0'
   top_p: '0.0'
-  max_tokens: '65535'
   top_k: '5'
   system_prompt: You are a document assistant. Respond only with JSON. Never make up data, only provide data found in the document being provided.
   task_prompt: "<background> You are an expert in document analysis and information extraction.  You can understand and extract key information from documents classified as type: \n{DOCUMENT_CLASS}. </background>\n<task> Your task is to take the unstructured text provided and convert it into a well-organized table format using JSON. Identify the main entities, attributes, or categories mentioned in the attributes list below and use them as keys in the JSON object.  Then, extract the relevant information from the text and populate the corresponding values in the JSON object. </task>\n<extraction-guidelines> Guidelines:\n    1. Ensure that the data is accurately represented and properly formatted within\n    the JSON structure\n    2. Include double quotes around all keys and values\n    3. Do not make up data - only extract information explicitly found in the\n    document\n    4. Do not use /n for new lines, use a space instead\n    5. If a field is not found or if unsure, return null\n    6. All dates should be in YYYY-MM-DD format (e.g., 2025-01-15)\n    7. Do not perform calculations or summations unless totals are explicitly given\n    8. If an alias is not found in the document, return null\n    9. Guidelines for checkboxes:\n     9.A. CAREFULLY examine each checkbox, radio button, and selection field:\n        - Look for marks like ✓, ✗, x, filled circles (●), darkened areas, or handwritten checks indicating selection\n        - For checkboxes and multi-select fields, ONLY INCLUDE options that show clear visual evidence of selection\n        - DO NOT list options that have no visible selection mark\n     9.B. For ambiguous or overlapping tick marks:\n        - If a mark overlaps between two or more checkboxes, determine which option contains the majority of the mark\n        - Consider a checkbox selected if the mark is primarily inside the check box or over the option text\n        - When a mark touches multiple options, analyze which option was most likely intended based on position and density. For handwritten checks, the mark typically flows from the selected checkbox outward.\n        - Carefully analyze visual cues and contextual hints. Think from a human perspective, anticipate natural tendencies, and apply thoughtful reasoning to make the best possible judgment.\n    10. Think step by step first and then answer.\n</extraction-guidelines>\nIf the attributes section below contains a list of attribute names and descriptions, then output only those attributes, using the provided descriptions as guidance for finding the correct values. \n<attributes> {ATTRIBUTE_NAMES_AND_DESCRIPTIONS} </attributes>\n<<CACHEPOINT>>\n<document-text> {DOCUMENT_TEXT} </document-text>\n<document_image> {DOCUMENT_IMAGE} </document_image>\n<final-instructions> Extract key information from the document and return a JSON object with the following key steps: 1. Carefully analyze the document text to identify the requested attributes 2. Extract only information explicitly found in the document - never make up data 3. Format all dates as YYYY-MM-DD and replace newlines with spaces 4. For checkboxes, only include options with clear visual selection marks 5. Use null for any fields not found in the document 6. Ensure the output is properly formatted JSON with quoted keys and values 7. Think step by step before finalizing your answer </final-instructions>"
@@ -921,20 +937,6 @@ evaluation:
     task_prompt: "I need to evaluate attribute extraction for a document of class: {DOCUMENT_CLASS}. For the attribute named \"{ATTRIBUTE_NAME}\" described as \"{ATTRIBUTE_DESCRIPTION}\": - Expected value: {EXPECTED_VALUE} - Actual value: {ACTUAL_VALUE} Do these values match in meaning, taking into account formatting differences, word order, abbreviations, and semantic equivalence? Provide your assessment as a JSON with three fields: - \"match\": boolean (true if they match, false if not) - \"score\": number between 0 and 1 representing the confidence/similarity score - \"reason\": brief explanation of your decision Respond ONLY with the JSON and nothing else. Here's the exact format: {\n  \"match\": true or false,\n  \"score\": 0.0 to 1.0,\n  \"reason\": \"Your explanation here\"\n}"
     temperature: '0.0'
     model: us.amazon.nova-2-lite-v1:0
-criteria_validation:
-  model: us.anthropic.claude-3-5-sonnet-20240620-v1:0
-  temperature: 0.0
-  top_k: 20
-  top_p: 0.01
-  max_tokens: 4096
-  semaphore: 3
-  max_chunk_size: 180000
-  token_size: 4
-  overlap_percentage: 10
-  response_prefix: <response>
-  system_prompt: ''
-  task_prompt: ''
-  criteria: []
 agents:
   chat_companion:
     model_id: us.anthropic.claude-haiku-4-5-20251001-v1:0

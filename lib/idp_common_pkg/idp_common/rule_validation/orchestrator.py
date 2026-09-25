@@ -8,18 +8,118 @@ Contains only existing summarization methods, no new functionality.
 
 import json
 import logging
+import numbers
 from datetime import datetime
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 from idp_common import bedrock, s3, utils
 from idp_common.models import Document, RuleValidationResult
+from idp_common.rule_validation.concurrency import resolve_semaphore
 from idp_common.rule_validation.models import LLMResponse
+from idp_common.utils.transient_errors import reraise_if_transient
 
 logger = logging.getLogger(__name__)
+
+#: Sort key for a page reference that is not a decimal integer. Non-numeric
+#: references sort after every numeric one, and among themselves by their own text,
+#: so the order is total and does not depend on set iteration order.
+_NON_NUMERIC_PAGE_RANK = 1
+_NUMERIC_PAGE_RANK = 0
+
+
+def _normalize_page_reference(page: Any) -> Optional[Tuple[str, Tuple[int, int, str]]]:
+    """Canonicalise one ``supporting_pages`` element, or reject it.
+
+    Returns ``(canonical_text, sort_key)``, or ``None`` for a value that is not a
+    page reference at all.
+
+    Page references reach the consolidated summary from two engines. The solver
+    path builds them with ``str(citation).split(",")`` and so always yields ``str``;
+    the model path passes a JSON array through unchanged and can yield ``int``. A
+    document routing some rules to each therefore mixes the two shapes by
+    construction, and a set holding both counts page 1 twice. Canonicalising to
+    ``str`` here — once, where the set is populated — is what makes the members
+    comparable, and it agrees with ``LLMResponse.supporting_pages``, which is
+    declared ``List[str]`` and already coerces its own elements.
+
+    The ordering integer is parsed here as well, rather than in the sort key, for
+    two reasons. ``str.isdigit()`` is true for characters ``int()`` refuses —
+    ``'²'``, ``'₂'``, ``'②'`` — and a decimal string longer than CPython's
+    conversion limit raises even though ``str.isdecimal()`` is true, so the parse
+    needs a guard wherever it happens; doing it once at populate time means a
+    rejected value is reported next to the response it came from, and leaves the
+    sort with nothing left to raise on.
+
+    A value that is not text and not a number (a list, a dict) is **not** silently
+    stringified into the report: the raw per-rule list is preserved verbatim under
+    ``rule_details[...]["rules"][...]["supporting_pages"]``, so dropping it from the
+    aggregate loses nothing a reader cannot recover, whereas ``"{'page': 1}"``
+    sitting in a page list is indistinguishable from a real reference.
+    """
+    if isinstance(page, str):
+        text = page.strip()
+    elif isinstance(page, bool):
+        # bool is an int subclass, so it would otherwise render as "True".
+        logger.warning(
+            "Ignoring boolean supporting_pages entry %r: not a page reference", page
+        )
+        return None
+    elif isinstance(page, numbers.Number):
+        text = str(page).strip()
+    else:
+        logger.warning(
+            "Ignoring supporting_pages entry of type %s (%.80r): not a page "
+            "reference. The rule's own supporting_pages is unchanged.",
+            type(page).__name__,
+            page,
+        )
+        return None
+
+    if not text:
+        return None
+
+    if text.isdecimal():
+        try:
+            return text, (_NUMERIC_PAGE_RANK, int(text), text)
+        except ValueError:
+            # A decimal string above sys.get_int_max_str_digits(). Orderable as
+            # text, which is all this key is for.
+            logger.warning(
+                "supporting_pages entry of %d digits is too long to read as a "
+                "number; ordering it as text.",
+                len(text),
+            )
+
+    return text, (_NON_NUMERIC_PAGE_RANK, 0, text)
+
+
+def is_section_results_key(key: str) -> bool:
+    """Is ``key`` one of the per-section rule-validation result objects?
+
+    One predicate rather than one per call site. The loader required both halves —
+    ``_responses.json`` **and** ``section_`` — while the section count checked only the
+    suffix, so a key the loader skipped was still counted: measured with two keys under
+    the right prefix where one lacked ``section_``, one object was read and the count
+    came back 2, taking the LLM summarization branch for a single-section document.
+    That is the same wrong-branch cost #1143 was about, arriving through a different
+    dropped key.
+
+    Not reachable from the pipeline, which always writes
+    ``section_<id>_responses.json``. It is reachable through ``section_uris``, which is
+    a documented parameter, and a count that disagrees with what was read is worth
+    removing rather than documenting.
+    """
+    return key.endswith("_responses.json") and "section_" in key
 
 
 class RuleValidationOrchestratorService:
     """Service containing existing summarization methods from service.py."""
+
+    # Declared on the class so the `semaphore` property below resolves on an
+    # instance built without __init__ as well: several suites construct one with
+    # `__new__` and assign `_semaphore` themselves to pin a limit.
+    _semaphore = None
+    _semaphore_loop = None
 
     def __init__(self, config: Dict[str, Any] = None):
         # Convert dict to IDPConfig if needed (same as extraction/service pattern)
@@ -40,52 +140,68 @@ class RuleValidationOrchestratorService:
         # Initialize semaphore for async concurrency control (Pydantic already converted string to int)
         self.semaphore_limit = self.config.rule_validation.semaphore
         self._semaphore = None
+        self._semaphore_loop = None
 
     @property
     def semaphore(self):
-        """Lazy initialization of semaphore in current event loop."""
-        import asyncio
+        """
+        The one semaphore bounding this service's concurrent Bedrock calls.
 
-        try:
-            loop = asyncio.get_running_loop()
-            # Reset semaphore if bound to different event loop (notebook rerun scenario)
-            if (
-                self._semaphore is not None
-                and hasattr(self._semaphore, "_loop")
-                and self._semaphore._loop != loop
-            ):
-                self._semaphore = None
-        except RuntimeError:
-            pass
-
-        if self._semaphore is None:
-            self._semaphore = asyncio.Semaphore(self.semaphore_limit)
+        Built lazily so it binds to the loop that runs the work, and cached, so
+        that the ``async with self.semaphore:`` at both call sites contends a
+        single semaphore rather than one per task. See
+        :mod:`idp_common.rule_validation.concurrency`, which both rule-validation
+        services share.
+        """
+        self._semaphore, self._semaphore_loop = resolve_semaphore(
+            self._semaphore, self._semaphore_loop, lambda: self.semaphore_limit
+        )
         return self._semaphore
 
     def _generate_consolidated_summary(
         self, all_responses: Dict[str, Any]
     ) -> Dict[str, Any]:
         """
-        EXISTING METHOD: Generate a consolidated summary from all criteria validation responses.
-        Extracted from service.py without changes.
-        """
-        try:
-            summary = {
-                "document_id": None,  # Will be set when we have access to document
-                "overall_status": "COMPLETE",
-                "total_policy_types": len(all_responses),
-                "rule_summary": {},
-                "overall_statistics": {
-                    "total_rules": 0,
-                    "recommendation_counts": {},
-                },
-                "supporting_pages": [],
-                "rule_details": {},
-            }
+        Generate a consolidated summary from all rule validation responses.
 
-            all_supporting_pages = set()
-            total_rules = 0
-            recommendation_counts = {}
+        This method does not raise: the caller writes whatever it returns to S3 as
+        the document's compliance report. It therefore keeps a broad ``except``, but
+        what that ``except`` returns is the summary built **so far** with the error
+        attached, not a summary stripped of its statistics — a report showing zero
+        rules is indistinguishable from a document where nothing was evaluated,
+        which is what made the page-sort crash in issue #1052 expensive to diagnose.
+        Nothing re-raises here, so no ``ProcessingIssue`` is recorded either (the
+        ``rule_validation_not_consolidated`` code is attached by the orchestration
+        Lambda, and only when the handler itself raises); the surviving statistics,
+        the ``error`` field, the banner ``_format_summary_as_markdown`` renders from
+        it and a logged traceback are what make an instance visible.
+        """
+        # Built before the `try` so the failure path below has something to return,
+        # and deliberately with nothing in it that can raise: `all_responses` is
+        # measured as the first statement *inside* the try, because it is caller
+        # input and `len()` of the wrong type must be caught like any other defect
+        # here rather than escaping a method that does not raise.
+        summary = {
+            "document_id": None,  # Will be set when we have access to document
+            "overall_status": "COMPLETE",
+            "total_policy_types": 0,
+            "rule_summary": {},
+            "overall_statistics": {
+                "total_rules": 0,
+                "recommendation_counts": {},
+            },
+            "supporting_pages": [],
+            "rule_details": {},
+        }
+
+        # Canonical page text -> sort key, so a page is deduplicated by its
+        # canonical form and the ordering is decided once, where the value arrives.
+        all_supporting_pages: Dict[str, Tuple[int, int, str]] = {}
+        total_rules = 0
+        recommendation_counts = {}
+
+        try:
+            summary["total_policy_types"] = len(all_responses)
 
             # Process each policy type
             for policy_type, responses in all_responses.items():
@@ -107,15 +223,27 @@ class RuleValidationOrchestratorService:
                         else:
                             response_list.append(rule_responses)
 
+                # Registered before the per-response loop and mutated in place
+                # below, so a failure part way through one policy type's responses
+                # still leaves the rules already read in the report rather than
+                # dropping the whole policy type.
+                summary["rule_details"][policy_type] = rule_stats
+
                 # Process each response
                 for response in response_list:
-                    rule_stats["total_rules"] += 1
-                    total_rules += 1
-
+                    # Read the response first, and count it only once it has been
+                    # read: incrementing above these four meant a response that
+                    # raised here was counted while contributing no recommendation
+                    # and no rule, so the report claimed more rules than it
+                    # detailed and understated `pass_percentage` against the
+                    # inflated denominator.
                     recommendation = response.get("recommendation", "Unknown")
                     rule = response.get("rule", "Unknown rule")
                     supporting_pages = response.get("supporting_pages", [])
                     reasoning = response.get("reasoning", "No reasoning provided")
+
+                    rule_stats["total_rules"] += 1
+                    total_rules += 1
 
                     # Count recommendations dynamically
                     recommendation_counts[recommendation] = (
@@ -125,9 +253,30 @@ class RuleValidationOrchestratorService:
                         rule_stats["recommendation_counts"].get(recommendation, 0) + 1
                     )
 
-                    # Collect supporting pages
-                    for page in supporting_pages:
-                        all_supporting_pages.add(page)
+                    # Collect supporting pages, canonicalised on the way in.
+                    # `supporting_pages` is model output, so its own shape is not
+                    # guaranteed either: a bare int is not iterable and a bare
+                    # string iterates into characters, and neither should decide
+                    # what the rest of this report contains.
+                    if isinstance(supporting_pages, (list, tuple, set, frozenset)):
+                        page_values = supporting_pages
+                    elif not supporting_pages:
+                        # None, "", or another empty value: nothing to collect.
+                        page_values = []
+                    else:
+                        logger.warning(
+                            "Ignoring supporting_pages of type %s for rule %.80r: "
+                            "expected a list of page references.",
+                            type(supporting_pages).__name__,
+                            rule,
+                        )
+                        page_values = []
+
+                    for page in page_values:
+                        normalized = _normalize_page_reference(page)
+                        if normalized is not None:
+                            text, sort_key = normalized
+                            all_supporting_pages[text] = sort_key
 
                     # Add rule summary
                     rule_stats["rules"].append(
@@ -139,26 +288,8 @@ class RuleValidationOrchestratorService:
                         }
                     )
 
-                # Add explicit count fields for easier access in UI
-                rule_stats["pass_count"] = rule_stats["recommendation_counts"].get(
-                    "Pass", 0
-                )
-                rule_stats["fail_count"] = rule_stats["recommendation_counts"].get(
-                    "Fail", 0
-                )
-                rule_stats["information_not_found_count"] = rule_stats[
-                    "recommendation_counts"
-                ].get("Information Not Found", 0)
-
-                # Calculate pass percentage for this rule type
-                if rule_stats["total_rules"] > 0:
-                    rule_stats["pass_percentage"] = round(
-                        (rule_stats["pass_count"] / rule_stats["total_rules"]) * 100, 2
-                    )
-                else:
-                    rule_stats["pass_percentage"] = 0.0
-
-                summary["rule_details"][policy_type] = rule_stats
+                # Derived counts for this policy type
+                self._apply_derived_counts(rule_stats)
 
                 # Create rule summary
                 summary["rule_summary"][policy_type] = {
@@ -168,33 +299,12 @@ class RuleValidationOrchestratorService:
                 }
 
             # Calculate overall statistics
-            summary["overall_statistics"]["total_rules"] = total_rules
-            summary["overall_statistics"]["recommendation_counts"] = (
-                recommendation_counts
-            )
+            self._apply_overall_statistics(summary, total_rules, recommendation_counts)
 
-            # Add explicit count fields for easier access in UI
-            summary["overall_statistics"]["pass_count"] = recommendation_counts.get(
-                "Pass", 0
-            )
-            summary["overall_statistics"]["fail_count"] = recommendation_counts.get(
-                "Fail", 0
-            )
-            summary["overall_statistics"]["information_not_found_count"] = (
-                recommendation_counts.get("Information Not Found", 0)
-            )
-
-            # Calculate pass percentage
-            if total_rules > 0:
-                summary["overall_statistics"]["pass_percentage"] = round(
-                    (summary["overall_statistics"]["pass_count"] / total_rules) * 100, 2
-                )
-            else:
-                summary["overall_statistics"]["pass_percentage"] = 0.0
-
-            # Convert supporting pages set to sorted list
+            # Order the pages. Both the canonical text and its ordering key were
+            # decided when the value was collected, so nothing here can raise.
             summary["supporting_pages"] = sorted(
-                list(all_supporting_pages), key=lambda x: int(x) if x.isdigit() else 0
+                all_supporting_pages, key=all_supporting_pages.__getitem__
             )
 
             # Add generation timestamp
@@ -207,15 +317,70 @@ class RuleValidationOrchestratorService:
             return summary
 
         except Exception as e:
-            logger.error(f"Error generating consolidated summary: {str(e)}")
-            # Return basic summary on error
-            return {
-                "document_id": None,
-                "overall_status": "ERROR",
-                "error": str(e),
-                "total_policy_types": len(all_responses) if all_responses else 0,
-                "generated_at": datetime.now().isoformat(),
-            }
+            # Keep every statistic that was computed before the failure. Returning a
+            # five-key stub instead reads exactly like a document on which no rule
+            # was ever evaluated, which is the difference between a defect that is
+            # noticed and one that is not.
+            logger.error(
+                f"Error generating consolidated summary: {str(e)}", exc_info=True
+            )
+            summary["overall_status"] = "ERROR"
+            summary["error"] = str(e)
+            self._apply_overall_statistics(summary, total_rules, recommendation_counts)
+            # A policy type interrupted part way through has counted rules but no
+            # derived counts yet, and the markdown formatter reads those with a
+            # default of 0 — which would render "5 rules, 0 pass" for a policy type
+            # whose counts are right there in recommendation_counts.
+            for rule_stats in summary["rule_details"].values():
+                self._apply_derived_counts(rule_stats)
+            summary["supporting_pages"] = sorted(
+                all_supporting_pages, key=all_supporting_pages.__getitem__
+            )
+            summary["generated_at"] = datetime.now().isoformat()
+            return summary
+
+    @staticmethod
+    def _apply_derived_counts(statistics: Dict[str, Any]) -> None:
+        """Fill the explicit count fields from ``recommendation_counts``.
+
+        Used for both the document-level statistics and each policy type's, and
+        called from the success and failure paths alike, so the counts a report
+        shows always agree with the responses it actually counted: the denominator
+        of ``pass_percentage`` is the number of rules counted, not the number seen.
+        """
+        counts = statistics.get("recommendation_counts") or {}
+        total_rules = statistics.get("total_rules", 0)
+
+        # Explicit count fields, for easier access in the UI
+        statistics["pass_count"] = counts.get("Pass", 0)
+        statistics["fail_count"] = counts.get("Fail", 0)
+        statistics["information_not_found_count"] = counts.get(
+            "Information Not Found", 0
+        )
+
+        statistics["pass_percentage"] = (
+            round((statistics["pass_count"] / total_rules) * 100, 2)
+            if total_rules > 0
+            else 0.0
+        )
+
+    def _apply_overall_statistics(
+        self,
+        summary: Dict[str, Any],
+        total_rules: int,
+        recommendation_counts: Dict[str, int],
+    ) -> None:
+        """Write the document-level counts into ``summary["overall_statistics"]``.
+
+        Shared by the success and failure paths of
+        ``_generate_consolidated_summary`` so a report that failed part way through
+        still carries the same statistics fields, filled from however many responses
+        had been counted.
+        """
+        statistics = summary["overall_statistics"]
+        statistics["total_rules"] = total_rules
+        statistics["recommendation_counts"] = recommendation_counts
+        self._apply_derived_counts(statistics)
 
     async def _summarize_responses(
         self, responses: Dict[str, Any], config: Dict[str, Any]
@@ -298,6 +463,12 @@ class RuleValidationOrchestratorService:
             for i, result in enumerate(results):
                 if isinstance(result, Exception):
                     logger.error(f"Error in summarization task: {str(result)}")
+                    # #1101: `return_exceptions=True` turns a failed rule into an
+                    # object in this list, and `continue` drops that rule from
+                    # `final_responses` entirely — it gets no verdict and no error,
+                    # it simply is not in the consolidated summary. For a transient
+                    # fault the rule's answer is recoverable, so surface it.
+                    reraise_if_transient(result, where="rule validation summarization")
                     continue
 
                 metadata = task_metadata[i]
@@ -317,6 +488,11 @@ class RuleValidationOrchestratorService:
 
         except Exception as e:
             logger.error(f"Error in summarization: {str(e)}")
+            # #1101: returning `responses` substitutes the raw per-section
+            # fact-extraction dicts for the orchestrator's verdicts, which is a
+            # plausible degradation for a deterministic fault and a recoverable one
+            # for a throttle.
+            reraise_if_transient(e, where="rule validation summarization")
             return responses
 
     async def _summarize_single_rule(
@@ -328,9 +504,12 @@ class RuleValidationOrchestratorService:
         top_p: float = 0.01,
         top_k: float = 20.0,
         max_tokens: int = 4096,
-    ) -> dict:
+    ) -> Optional[dict]:
         """
         Summarize a single rule with semaphore control.
+
+        Returns None when the model's response cannot be parsed. The caller
+        gathers these and skips anything that is not a dict.
         """
         async with self.semaphore:
             response = await self._invoke_model_async(
@@ -420,24 +599,85 @@ class RuleValidationOrchestratorService:
 
         return response
 
+    @staticmethod
+    def _section_keys_from_uris(
+        section_uris: List[str], output_bucket: str
+    ) -> List[str]:
+        """Convert this run's section URIs to keys in ``output_bucket``.
+
+        A URI naming a DIFFERENT bucket is dropped with a warning rather than
+        stripped down to something that happens to parse. Blind prefix-stripping
+        would leave ``s3://other/key`` unchanged, and the loader would then read
+        ``s3://<output_bucket>/s3://other/key`` -- a miss that looks exactly like a
+        section this run never wrote, which is the failure mode this whole change is
+        about not having.
+        """
+        keys: List[str] = []
+        for uri in section_uris:
+            if not uri.startswith("s3://"):
+                # Already a key.
+                keys.append(uri)
+                continue
+            bucket, _, key = uri[len("s3://") :].partition("/")
+            if bucket != output_bucket or not key:
+                logger.warning(
+                    "Skipping section result %s: it does not name a key in the "
+                    "document's output bucket %s",
+                    uri,
+                    output_bucket,
+                )
+                continue
+            keys.append(key)
+        return keys
+
     def load_section_results(
-        self, document_input_key: str, output_bucket: str
+        self,
+        document_input_key: str,
+        output_bucket: str,
+        section_uris: Optional[List[str]] = None,
     ) -> tuple[Dict[str, Any], bool]:
         """
-        Load all section results from S3.
+        Load this run's section results from S3.
         Returns: (all_responses, chunking_occurred)
+
+        ``section_uris`` are the objects THIS run wrote, as reported by the
+        per-section Map. Pass them. Globbing the prefix instead reads whatever is
+        there, and on a reprocessed document that includes the previous run's
+        verdicts for the same document — plausible enough to be consolidated and
+        acted on, so a rule whose verdict changed from ``Fail`` to ``Pass`` between
+        runs can be reported as ``Fail`` (#1143).
+
+        The glob survives for callers that genuinely have no list — a notebook, a
+        manual re-consolidation of an existing prefix — so the distinction is
+        ``None`` (no list available, read the prefix) versus ``[]`` (this run wrote
+        nothing, so there is nothing to consolidate). Those two must not collapse:
+        treating an empty list as "fall back to the prefix" would read the previous
+        run's objects in a case where this run produced none of its own, which is the
+        defect at its worst rather than an edge of it.
+
+        The reachable shape of that case is a **Map over zero sections**. It is not a
+        run whose sections all failed: ``ProcessRuleValidationSections`` carries no
+        ``Catch`` and no tolerated-failure setting, and neither does
+        ``RuleValidationStep`` inside it, so one failed iteration fails the Map and
+        ``RuleValidationOrchestration`` never runs at all.
         """
         try:
-            # List all section result files in sections subfolder
-            prefix = f"{document_input_key}/rule_validation/sections/"
-            pattern = f"{prefix}section_*_responses.json"
-            section_files = s3.find_matching_files(output_bucket, pattern)
+            if section_uris is None:
+                # No caller-supplied list: read the prefix. See the note above for
+                # what this cannot distinguish.
+                prefix = f"{document_input_key}/rule_validation/sections/"
+                pattern = f"{prefix}section_*_responses.json"
+                section_files = s3.find_matching_files(output_bucket, pattern)
+            else:
+                section_files = self._section_keys_from_uris(
+                    section_uris, output_bucket
+                )
 
             all_responses = {}
             chunking_occurred = False
 
             for file_key in section_files:
-                if file_key.endswith("_responses.json") and "section_" in file_key:
+                if is_section_results_key(file_key):
                     logger.debug(f"Loading section results from: {file_key}")
 
                     # Load section responses
@@ -467,6 +707,11 @@ class RuleValidationOrchestratorService:
 
         except Exception as e:
             logger.error(f"Error loading section results: {str(e)}")
+            # #1101: an empty mapping here is indistinguishable from "there was
+            # nothing to consolidate" — the caller logs exactly that and returns the
+            # document unchanged, so a transient S3 fault finishes the document with
+            # no rule-validation verdicts at all and no error recorded.
+            reraise_if_transient(e, where="rule validation section results")
             return {}, False
 
     def _get_rule_json_from_config(
@@ -865,6 +1110,12 @@ class RuleValidationOrchestratorService:
                 f"Unhandled error processing Z3 rule_id='{rule_id}': {e}",
                 exc_info=True,
             )
+            # #1101: the `try` above includes `_extract_z3_values_from_facts`, which
+            # invokes Bedrock, so a throttle lands here and is answered with the
+            # verdict below — one of the configured `recommendation_options`, written
+            # to S3 and counted in the summary as though the solver had run.
+            # Deterministic faults (an unsolvable rule, missing parameters) keep it.
+            reraise_if_transient(e, where=f"rule validation z3 rule '{rule_id}'")
             return {
                 "policy_type": policy_type,
                 "rule": rule_description,
@@ -1144,6 +1395,27 @@ tr:hover {
         doc_id = consolidated_summary.get("document_id", "Document")
         md_parts.append(f"# Rule Validation Summary: {doc_id}\n\n")
 
+        # A consolidation that failed part way through still has statistics worth
+        # showing, but they describe only the rules counted before the failure. Say
+        # so here: this markdown is the report an operator reads, and without the
+        # banner a partial count is indistinguishable from a complete one.
+        error = consolidated_summary.get("error")
+        if error:
+            escaped_error = (
+                str(error)
+                .replace("&", "&amp;")
+                .replace("<", "&lt;")
+                .replace(">", "&gt;")
+                .replace('"', "&quot;")
+                .replace("\n", " ")
+            )
+            md_parts.append(
+                "> ⚠️ **Consolidation did not complete.** The statistics below cover "
+                "only the rules counted before it failed, so they may be "
+                "incomplete. Each policy type's own section is unaffected.\n>\n"
+                f"> Reason: {escaped_error}\n\n"
+            )
+
         # Overall Statistics as compact table with color coding
         overall_stats = consolidated_summary.get("overall_statistics", {})
         total = overall_stats.get("total_rules", 0)
@@ -1350,14 +1622,29 @@ tr:hover {
         document: Document,
         config: Dict[str, Any],
         multiple_sections: bool = None,
+        section_uris: Optional[List[str]] = None,
     ) -> Document:
         """
         Complete consolidation workflow: load, merge, summarize, and save all results.
+
+        ``section_uris`` is this run's section output list; see
+        :meth:`load_section_results` for why passing it matters.
         """
         try:
+            # Resolved ONCE, here, and used for both the load and the section count.
+            # `_section_keys_from_uris` logs a warning per URI it drops, so calling it
+            # twice reported the same bad URI twice and read as two bad objects.
+            # `load_section_results` passes a bare key through unchanged, so handing
+            # it keys rather than URIs is idempotent.
+            section_keys = (
+                None
+                if section_uris is None
+                else self._section_keys_from_uris(section_uris, document.output_bucket)
+            )
+
             # Load all section results and check if chunking occurred
             all_responses, chunking_occurred = self.load_section_results(
-                document.input_key, document.output_bucket
+                document.input_key, document.output_bucket, section_keys
             )
 
             if not all_responses:
@@ -1372,13 +1659,30 @@ tr:hover {
                 all_responses, config
             )
 
-            # Determine if summarization is needed: multiple sections OR chunking occurred
-            prefix = f"{document.input_key}/rule_validation/sections/"
-            pattern = f"{prefix}section_*_responses.json"
-            section_files = s3.find_matching_files(document.output_bucket, pattern)
-            num_sections = len(
-                [f for f in section_files if f.endswith("_responses.json")]
-            )
+            # Determine if summarization is needed: multiple sections OR chunking
+            # occurred. This counts THIS run's sections; the prefix is only listed
+            # when the caller supplied no list, for the same reason as in
+            # `load_section_results` -- a stale object left by a previous run would
+            # otherwise push the count past 1 and route a single-section document
+            # through LLM summarization, which is a cost and latency difference on
+            # top of the wrong verdicts (#1143).
+            if section_keys is None:
+                prefix = f"{document.input_key}/rule_validation/sections/"
+                pattern = f"{prefix}section_*_responses.json"
+                section_files = s3.find_matching_files(document.output_bucket, pattern)
+                num_sections = len(
+                    [f for f in section_files if is_section_results_key(f)]
+                )
+            else:
+                # Counted from the keys the loader actually READ, not from the raw
+                # list. A URI naming another bucket is dropped, so counting the raw
+                # list reads one object and reports two — which takes the LLM
+                # summarization branch for a single-section document. That is the same
+                # defect this change exists to remove, reintroduced on the defensive
+                # path.
+                num_sections = len(
+                    [key for key in section_keys if is_section_results_key(key)]
+                )
 
             needs_summarization = (num_sections > 1) or chunking_occurred
 
@@ -1498,6 +1802,16 @@ tr:hover {
 
         except Exception as e:
             logger.error(f"Error in consolidation workflow: {str(e)}")
+            # #1101: this is the swallow that made the orchestration handler's own
+            # failure path nearly unreachable. It wraps the whole consolidation —
+            # loading every section's results, the cross-section Z3 rules, the
+            # summarization LLM calls, both S3 writes — and then returns the document
+            # NORMALLY carrying an empty result. So the handler saw success, wrote
+            # the document, and returned a success response: a transient Bedrock or
+            # S3 fault finished the document with no verdicts, no failed status and
+            # no diagnosis anywhere, which is a worse outcome than the failure this
+            # issue was raised about.
+            reraise_if_transient(e, where="rule validation consolidation")
             # Store error result in document
             document.rule_validation_result = RuleValidationResult.for_consolidation(
                 document.id, [], "", 0
@@ -1509,10 +1823,13 @@ tr:hover {
         document: Document,
         config: Dict[str, Any],
         multiple_sections: bool = None,
+        section_uris: Optional[List[str]] = None,
     ) -> Document:
         """
         Synchronous wrapper for consolidate_and_save_all.
         Handles both regular Python scripts and Jupyter notebook environments.
+
+        ``section_uris`` is forwarded unchanged; see :meth:`load_section_results`.
         """
         import asyncio
         import concurrent.futures
@@ -1529,6 +1846,7 @@ tr:hover {
                             document,
                             config,
                             multiple_sections,
+                            section_uris,
                         ),
                     )
                     return future.result()
@@ -1539,6 +1857,7 @@ tr:hover {
                         document,
                         config,
                         multiple_sections,
+                        section_uris,
                     )
                 )
         except RuntimeError:
@@ -1551,6 +1870,7 @@ tr:hover {
                         document,
                         config,
                         multiple_sections,
+                        section_uris,
                     )
                 )
             finally:

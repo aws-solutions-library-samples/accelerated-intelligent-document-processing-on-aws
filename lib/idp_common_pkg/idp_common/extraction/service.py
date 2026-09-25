@@ -27,6 +27,7 @@ from idp_common.config.schema_constants import (
     SCHEMA_TYPE,
     TYPE_ARRAY,
     TYPE_OBJECT,
+    UNCLASSIFIED_CLASS,
     X_AWS_IDP_ALLOW_INTEGRATED_LISTS,
     X_AWS_IDP_DOCUMENT_TYPE,
     X_AWS_IDP_EXTRACTION_ESCALATION_MODEL,
@@ -35,6 +36,12 @@ from idp_common.config.schema_constants import (
     X_AWS_IDP_EXTRACTION_TASK_PROMPT,
     X_AWS_IDP_INSTANCE_ARRAY,
     X_AWS_IDP_SOURCE_PAGE_TYPES,
+)
+from idp_common.empty_schema import (
+    EMPTY_SCHEMA_CLASS_NOT_CONFIGURED,
+    EMPTY_SCHEMA_NO_ATTRIBUTES,
+    EMPTY_SCHEMA_REASON_KEY,
+    EMPTY_SCHEMA_UNCLASSIFIED,
 )
 from idp_common.extraction.page_type_resolver import (
     PageTypePresence,
@@ -77,6 +84,7 @@ try:
     from idp_common.schema import (
         create_pydantic_model_from_json_schema,
         nullable_leaves_for_transport,
+        nullable_required_containers_for_shard,
     )
 
     AGENTIC_AVAILABLE = True
@@ -108,6 +116,29 @@ class ExtractionImageRejected(Exception):
     Advanced mode does not help, and #994 shows what happens when the two are
     conflated — users tune budgets that cannot fix it. Deterministic, so like
     ``ExtractionInputTooLarge`` the class name is NOT in any retry list.
+    """
+
+
+class ExtractionOutputIncomplete(Exception):
+    """Extraction returned far fewer list rows than the section's OCR evidences.
+
+    Raised AFTER the partial result, the processing issue and the processing
+    report have been persisted, so the data and the diagnosis survive and only
+    the section's *outcome* changes. That ordering is the whole point: a
+    consumer reading status alone must not be told a document completed when
+    most of a list is missing (#1032), but the rows that were extracted are
+    still worth keeping and the issue names exactly what was lost.
+
+    Distinct from :class:`ExtractionInputTooLarge`, which is Bedrock refusing a
+    request that never ran. This one is the model *accepting* a request that fits
+    the window and then stopping early — the two need different remedies and,
+    measured on the 25-page case in #1032, an input-size gate cannot see this one
+    at all (~146K estimated input against a 200K window).
+
+    Deterministic: the class name is deliberately in no ``Retry.ErrorEquals``
+    list in ``patterns/unified/statemachine/workflow.asl.json``, and
+    ``is_transient_error`` returns False for it, so the same request is not sent
+    again to stop early again.
     """
 
 
@@ -1822,6 +1853,56 @@ class ExtractionService:
 
         return class_schema, attribute_descriptions
 
+    def _empty_schema_reason(self, class_label: str) -> str:
+        """Why this section's effective extraction schema is empty.
+
+        ``_get_class_schema`` returns ``{}`` both for a class the configuration
+        contains but gave no attributes, and for a label the configuration does
+        not contain at all — and ``_prepare_section_context`` routes both here.
+        Collapsing them into one flag made three different situations
+        indistinguishable downstream, and the one that is an operator fault was
+        the one that went unreported: a class **renamed or deleted while
+        documents were in flight**, or an old document reprocessed under a
+        configuration that no longer has its class, produces a section with no
+        fields that completes green.
+
+        The three are told apart by what the label is, not by how it got here:
+
+        * the label resolves to a class in configuration →
+          ``EMPTY_SCHEMA_NO_ATTRIBUTES``;
+        * the label is the ``unclassified`` sentinel (or the configured
+          ``classification.invalidClassFallback``, which defaults to it) →
+          ``EMPTY_SCHEMA_UNCLASSIFIED``. Classification determined no class,
+          which is an ordinary outcome for a blank page and a reportable failure
+          for a page whose classification errored — a distinction only
+          classification can draw, and it draws it at its own stage;
+        * anything else → ``EMPTY_SCHEMA_CLASS_NOT_CONFIGURED``.
+
+        A fallback set to one of the deployment's real classes lands in the first
+        case, correctly: that class has a schema, so this method is not reached
+        for it at all.
+
+        ⚠️ ``EMPTY_SCHEMA_CLASS_NOT_CONFIGURED`` is NOT reached only by a
+        configuration edit. Two supported classification configurations store a
+        model-invented class name verbatim, so its rate follows model output rather
+        than operator action: ``textbasedHolisticClassification``, which has no
+        vocabulary-enforcement loop at all (the loop lives in
+        ``classify_page_bedrock``), and ``multimodalPageLevelClassification`` with
+        ``enforceValidClasses: false``, which logs "using anyway" and stores the
+        prediction. Both are documented configurations, and small classification
+        models are the ones most prone to out-of-vocabulary predictions — so on
+        those two paths the reported section count can reach
+        ``ConfidenceUnavailableThreshold``, and that parameter is the lever. The
+        signal is still correct (the section really does hold no data); it is the
+        volume bound that does not hold there.
+        """
+        if self._get_class_schema(class_label):
+            return EMPTY_SCHEMA_NO_ATTRIBUTES
+        fallback = self.config.classification.invalidClassFallback
+        if class_label in {UNCLASSIFIED_CLASS, fallback}:
+            return EMPTY_SCHEMA_UNCLASSIFIED
+        return EMPTY_SCHEMA_CLASS_NOT_CONFIGURED
+
     def _handle_empty_schema(
         self,
         document: Document,
@@ -1833,6 +1914,17 @@ class ExtractionService:
         """
         Handle case when schema has no attributes - skip LLM and return empty result.
 
+        The stub records WHY the schema was empty
+        (``metadata.empty_schema_reason``, see :meth:`_empty_schema_reason`),
+        because the three causes are not equivalent and the confidence pass keys
+        on the difference: it stays silent for a deliberately attribute-less class
+        and for a section classification never resolved, and reports the section
+        as unscored when the class is simply absent from the configuration.
+
+        For that last case — a fault nothing else in the pipeline reports — this
+        also records an error-severity ``extraction_class_not_configured`` issue
+        on the section, at the stage that discovered it and can name the remedy.
+
         Args:
             document: Document being processed
             section: Section being processed
@@ -1843,8 +1935,12 @@ class ExtractionService:
         Returns:
             Updated document
         """
+        class_label = section_info.class_label
+        reason = self._empty_schema_reason(class_label)
         logger.info(
-            f"No attributes defined for class {section_info.class_label}, skipping LLM extraction"
+            "No attributes defined for class %s (%s), skipping LLM extraction",
+            class_label,
+            reason,
         )
 
         # Create empty result structure
@@ -1858,16 +1954,78 @@ class ExtractionService:
         total_duration = 0.0
         parsing_succeeded = True
 
+        metadata: dict[str, Any] = {
+            "parsing_succeeded": parsing_succeeded,
+            "extraction_time_seconds": total_duration,
+            # Kept unconditionally: it is the flag existing readers and stored
+            # result files already use for "extraction wrote no fields without
+            # calling a model", and it is true in all three cases. The reason
+            # below refines it rather than replacing it, so a result written by an
+            # earlier version still reads back as the attribute-less case.
+            "skipped_due_to_empty_attributes": True,
+            EMPTY_SCHEMA_REASON_KEY: reason,
+        }
+
+        if reason == EMPTY_SCHEMA_CLASS_NOT_CONFIGURED:
+            from idp_common.models import ProcessingIssue
+
+            issue = ProcessingIssue(
+                stage="extraction",
+                severity="error",
+                code="extraction_class_not_configured",
+                message=(
+                    f"No fields were extracted from this section: the class it was "
+                    f"classified as ('{class_label}') does not exist in the "
+                    f"configuration this document was processed under, so there was "
+                    f"no schema to extract against. The section completed with no "
+                    f"data rather than with incorrect data."
+                ),
+                root_cause=(
+                    f"Section class '{class_label}' has no matching entry in "
+                    f"configuration classes"
+                    + (
+                        f" (version {document.config_version})"
+                        if getattr(document, "config_version", None)
+                        else ""
+                    )
+                    + ". Three causes: a class renamed or deleted while documents "
+                    "were in flight; a document reprocessed under a configuration "
+                    "that no longer defines its class; or the classifier returned a "
+                    "class outside the configured vocabulary and the "
+                    "classification path in use does not enforce one "
+                    "(textbasedHolisticClassification, or "
+                    "multimodalPageLevelClassification with "
+                    "enforceValidClasses: false). Add the class to the "
+                    "configuration, reclassify the document under the current one, "
+                    "or turn vocabulary enforcement on."
+                ),
+                section_id=section_id,
+            )
+            logger.error(
+                "Section %s is classified '%s', which is not in the configuration; "
+                "no fields could be extracted. Recorded %s.",
+                section_id,
+                class_label,
+                issue.code,
+            )
+            # Replace only the issues this stage owns, for the same reason
+            # _save_results does: the DynamoDB writer replaces the whole section
+            # map, so issues from other stages must survive.
+            section.processing_issues = [
+                pi
+                for pi in (section.processing_issues or [])
+                if getattr(pi, "stage", None) != "extraction"
+            ] + [issue]
+            metadata["processing_issues"] = [
+                pi.to_dict() for pi in section.processing_issues
+            ]
+
         # Write to S3
         output = {
-            "document_class": {"type": section_info.class_label},
+            "document_class": {"type": class_label},
             "split_document": {"page_indices": section_info.page_indices},
             "inference_result": extracted_fields,
-            "metadata": {
-                "parsing_succeeded": parsing_succeeded,
-                "extraction_time_seconds": total_duration,
-                "skipped_due_to_empty_attributes": True,
-            },
+            "metadata": metadata,
         }
         s3.write_content(
             output,
@@ -2154,6 +2312,24 @@ class ExtractionService:
         _flush(cur_rows, cur_cols)
         return tables
 
+    #: The ``ProcessingIssue.code`` whose severity and consequence
+    #: ``extraction.row_shortfall_action`` governs. Named once so the issue
+    #: builder and the ``_save_results`` tail cannot drift apart.
+    ROW_SHORTFALL_CODE = "extraction_rows_below_ocr_estimate"
+
+    def _row_shortfall_action(self) -> str:
+        """``extraction.row_shortfall_action`` — ``"fail"`` or ``"warn"``.
+
+        Read through ``getattr`` with the shipped default so a config object
+        built by an older release (or a test fixture that predates the field)
+        still resolves, rather than raising and taking extraction down with it.
+        The default is ``warn``, so a config that has never heard of this field
+        behaves exactly as it did before the field existed.
+        """
+        return str(
+            getattr(self.config.extraction, "row_shortfall_action", "warn") or "warn"
+        ).lower()
+
     @classmethod
     def _expected_rows_for_width(
         cls, n_props: int, tables: list[dict[str, int]]
@@ -2170,22 +2346,81 @@ class ExtractionService:
         return sum(tb["rows"] for tb in tables if tb["cols"] == n_props)
 
     @staticmethod
+    def _declared_max_items(spec: Any) -> int | None:
+        """A usable ``maxItems`` on one array spec, as a row ceiling, or ``None``.
+
+        ``None`` means "this schema declares no bound I can read", and every value
+        this reader does not fully understand resolves to it. That direction is not
+        arbitrary: the ceiling is only ever used to SHRINK the OCR evidence
+        (``_expected_rows_for_width``), so misreading a value low silences the
+        shortfall check for a whole width group, while declining to read it leaves
+        the pre-existing behaviour exactly in place.
+
+        ``maxItems`` can arrive as a **string**: ``ConfigurationRecord._stringify_values``
+        stringifies every numeric scalar on the way into the Configuration table and
+        nothing converts ``classes`` back on read. That rule is not re-implemented
+        here — five separate copies of it had accumulated before #797, and
+        ``coerce_numeric_schema_keywords`` exists so there is one. It is applied to
+        the value on the way in, which also means an unreadable constraint is logged
+        rather than silently ignored (#823), and what is left for this method is the
+        question that is actually its own: is this number a usable row ceiling?
+
+        ``bool`` is refused before anything else, because ``True`` is an ``int`` in
+        Python and would read as a ceiling of 1 — silencing the check for the whole
+        width group. Everything else is decided by ``int()`` rather than by ``float()``:
+        a ``Decimal`` (the shape a DynamoDB number takes) and an integral float
+        (``15.0``) convert, a fractional one does not equal its truncation and is
+        refused, and a value ``int()`` cannot read at all resolves to ``None``.
+
+        The ``except`` is deliberately broad, and that breadth is the contract rather
+        than laziness. This method is called from ``_build_extraction_issues``, which
+        ``_save_results`` invokes with no enclosing ``try``, so an exception raised
+        over a schema constraint costs the section its entire processing-issue list —
+        precisely the #797 failure. Enumerating exception types is how that happens:
+        ``float()`` raises ``OverflowError`` (outside ``TypeError``/``ValueError``) on
+        an integer too large to convert, which the Web-UI round trip above can
+        produce, and an object with a raising ``__float__`` can raise anything at all.
+        A very large ceiling needs no special case either: it is above any OCR row
+        count, so ``min`` leaves the evidence untouched.
+        """
+        raw = spec.get("maxItems") if isinstance(spec, dict) else None
+        if raw is None or isinstance(raw, bool):
+            return None
+        raw = coerce_numeric_schema_keywords({"maxItems": raw}).get("maxItems")
+        try:
+            as_int = int(raw)  # type: ignore[call-overload]
+            exact = as_int == raw
+        except Exception:  # noqa: BLE001 - see the contract in the docstring
+            return None
+        return as_int if exact and as_int >= 0 else None
+
+    @classmethod
     def _object_list_targets(
-        schema: dict[str, Any], values: Any
-    ) -> list[tuple[str, int, list[Any]]]:
-        """``(label, item_property_count, rows)`` for every list of OBJECTS the
-        schema declares at the top level — ``items`` resolved through ``$ref``
+        cls, schema: dict[str, Any], values: Any
+    ) -> list[tuple[str, int, list[Any], int | None]]:
+        """``(label, item_property_count, rows, max_rows)`` for every list of OBJECTS
+        the schema declares at the top level — ``items`` resolved through ``$ref``
         (every shipped preset defines its rows in ``$defs``), descending one level
         into an array of instances (the multi-instance wrapper, or any list whose
         items carry their own lists) so the inner lists are compared as rows
         across all instances. A wrapper whose instances carry no lists is skipped
         — instances are documents, not table rows. Lists of scalars are not
         targets: their items are not table rows.
+
+        ``max_rows`` is the schema's declared ceiling on the row count this target
+        contributes, or ``None`` when it declares none (#1046, item 4). For a
+        top-level list that is its own ``maxItems``. For an inner list the compared
+        rows are the CONCATENATION over the outer list's instances, so a
+        per-instance ``maxItems`` is not a bound on them: the declared bound is the
+        product of the outer and inner ceilings, and is ``None`` unless both are
+        declared. Multiplying by the number of instances actually extracted would
+        instead shrink the evidence in proportion to how many instances extraction
+        lost, which is the case the check exists to catch.
         """
         from idp_common.config.schema_utils import deref_schema
 
         root = schema or {}
-        out: list[tuple[str, int, list[Any]]] = []
+        out: list[tuple[str, int, list[Any], int | None]] = []
         props = root.get("properties") or {}
 
         def _items_props(spec: dict[str, Any]) -> dict[str, Any] | None:
@@ -2204,26 +2439,32 @@ class ExtractionService:
                 continue  # scalars, or an untyped list
             rows = values.get(name) if isinstance(values, dict) else None
             rows = rows if isinstance(rows, list) else []
-            inner: dict[str, dict[str, Any]] = {}
+            outer_max = cls._declared_max_items(spec)
+            inner: dict[str, tuple[dict[str, Any], int | None]] = {}
             for k, v in iprops.items():
                 v = deref_schema(v, root) if isinstance(v, dict) else v
                 if isinstance(v, dict) and v.get("type") == "array":
                     ip = _items_props(v)
                     if ip:
-                        inner[k] = ip
+                        inner[k] = (ip, cls._declared_max_items(v))
             if inner:
-                for iname, ip in inner.items():
+                for iname, (ip, inner_max) in inner.items():
                     concat = [
                         r
                         for inst in rows
                         if isinstance(inst, dict) and isinstance(inst.get(iname), list)
                         for r in inst[iname]
                     ]
-                    out.append((f"{name}[].{iname}", len(ip), concat))
+                    bound = (
+                        None
+                        if outer_max is None or inner_max is None
+                        else outer_max * inner_max
+                    )
+                    out.append((f"{name}[].{iname}", len(ip), concat, bound))
             elif root.get(X_AWS_IDP_INSTANCE_ARRAY) == name:
                 continue  # bare multi-instance wrapper: instances are documents
             else:
-                out.append((name, len(iprops), rows))
+                out.append((name, len(iprops), rows, outer_max))
         return out
 
     def _simple_mode_input_preflight(
@@ -2770,7 +3011,21 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
                     if not tool_used
                     else "The table parsing tool ran but produced no rows."
                 )
-                + " Set minItems on the list field to make this a hard constraint."
+                # This summary is written on the AGENTIC path only (its caller is
+                # inside the `extraction_method == "agentic"` branch), where
+                # `minItems` is not advisory: the generated Pydantic model carries
+                # it into the `extraction_tool` boundary, so a list under the floor
+                # is REJECTED, the agent spends its correction rounds, and
+                # `structured_output_async` then raises. Recommending it here
+                # without saying so would trade a warning for a failed section
+                # that keeps no rows (#1048).
+                + " Setting minItems on this list field would make the floor "
+                "binding rather than advisory on this path: it is enforced at the "
+                "agent's tool boundary, the agent gets a bounded number of "
+                "correction rounds, and a floor the section cannot reach fails the "
+                "extraction and keeps no rows. Set a floor you are willing to fail "
+                "on, or use extraction.row_shortfall_action, which saves the rows "
+                "and this diagnosis first."
             )
         else:
             summary = "All schema constraints satisfied"
@@ -2869,8 +3124,8 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
     ) -> dict[str, Any]:
         """Heuristic: how much of the schema actually got populated.
 
-        Unlike ``_check_completeness_detailed`` (which only flags hard
-        ``minItems`` constraint violations), this flags *suspiciously sparse*
+        Unlike ``_check_completeness_detailed`` (which reports a declared
+        ``minItems`` floor the result is under), this flags *suspiciously sparse*
         extractions — e.g. an agentic run that returned a correct top-level
         object but null for nearly every nested field. It cannot know a field
         *should* have had a value, so it is advisory (a warning signal), not a
@@ -3453,7 +3708,7 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
         # 0) Integrated confidence downgraded to a separate pass for this
         # list-bearing class (see _simple_integrated_list_downgrade). Recorded in
         # metadata and the Processing Flow, deliberately NOT as a ProcessingIssue:
-        # the document-level HasProcessingIssues flag and the list-view badge are
+        # the list view's badge counts ProcessingIssueCount and is therefore
         # severity-blind, so even an `info` issue would mark every document of a
         # Simple + integrated deployment "Processing Issues: 1" for a routing
         # decision that produced a complete, scored section.
@@ -3528,20 +3783,41 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
             # judged as a GROUP: total rows extracted across the width vs total
             # matched OCR rows. Judging each against the shared sum warned on
             # every complete statement with sibling tables.
-            groups: dict[int, list[tuple[str, list[Any]]]] = {}
-            for label, n_props, rows in self._object_list_targets(
+            groups: dict[int, list[tuple[str, list[Any], int | None]]] = {}
+            for label, n_props, rows, max_rows in self._object_list_targets(
                 self._class_schema or {}, extracted_fields
             ):
-                groups.setdefault(n_props, []).append((label, rows))
+                groups.setdefault(n_props, []).append((label, rows, max_rows))
             for n_props, members in sorted(groups.items()):
                 labels = [
-                    lb for lb, rows in members if any(isinstance(r, dict) for r in rows)
+                    lb
+                    for lb, rows, _mx in members
+                    if any(isinstance(r, dict) for r in rows)
                 ]
                 if not labels:
                     continue  # every list of this width is empty: extraction_incomplete
-                expected = self._expected_rows_for_width(n_props, tables)
+                ocr_rows = self._expected_rows_for_width(n_props, tables)
+                # A declared `maxItems` is the config author's own statement of how
+                # many rows this group can legitimately hold, so OCR evidence above
+                # it is not evidence of a shortfall: `maxItems: 15` over a 40-row
+                # table, correctly capped at 15, used to score 15/41 (#1046 item 4),
+                # and `extraction/validation.py` already treats trimming to
+                # `maxItems` as a CORRECTION rather than a loss. The cap is the SUM
+                # over the group's members, because `extracted` is summed over them
+                # and `expected` is shared — and it applies only when EVERY member
+                # declares one, since a single undeclared member leaves the group's
+                # legitimate total unbounded. Declining to cap is the safe direction:
+                # a cap can only ever suppress a firing.
+                caps = [mx for _lb, _rows, mx in members]
+                group_cap = (
+                    sum(c for c in caps if c is not None)
+                    if caps and None not in caps
+                    else None
+                )
+                expected = ocr_rows if group_cap is None else min(ocr_rows, group_cap)
+                capped = expected < ocr_rows
                 extracted = sum(
-                    1 for _lb, rows in members for r in rows if isinstance(r, dict)
+                    1 for _lb, rows, _mx in members for r in rows if isinstance(r, dict)
                 )
                 if (
                     expected < self._OCR_ROW_ESTIMATE_MIN
@@ -3549,44 +3825,107 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
                 ):
                     continue
                 fields_str = ", ".join(labels)
-                rec = (
+                # What `minItems` buys is MODE-DEPENDENT, and recommending it
+                # without the split is how a reader trades a warning for a lost
+                # document (#1048):
+                #
+                # * Simple — visibility only. It adds
+                #   `extraction_list_truncated` (a warning) and, when
+                #   `validation.enabled` is on, a JSON-Schema violation whose worst
+                #   outcome under `fail_action: reject` is
+                #   `parsing_succeeded=False`, read by the processing report and
+                #   the UI's report tab and by nothing in the status path. So
+                #   `extraction.row_shortfall_action` decides the outcome.
+                # * Advanced — a HARD floor. `_transport_model` keeps `minItems`
+                #   (`nullable_leaves_for_transport` nulls scalar leaves only), so
+                #   a short list is rejected at the `extraction_tool` boundary, the
+                #   agent spends its correction rounds, and
+                #   `structured_output_async` raises "Failed to generate valid
+                #   structured output" — failing the section with no rows kept.
+                mode_rec = (
                     " Simple extraction returns one response per section and "
                     "stops early on long lists; for documents this size use "
-                    "Advanced (agentic) extraction, which shards, or set minItems "
-                    "on the list field to make the shortfall a hard constraint."
+                    "Advanced (agentic) extraction, which shards."
                     if not is_agentic
-                    else " Set minItems on the list field to make this a hard "
-                    "constraint, and check the table-parsing tool was used."
+                    else " Check that the table-parsing tool was used."
+                )
+                minitems_rec = (
+                    " Setting minItems on the list field adds a second signal for "
+                    "the same shortfall; in Simple extraction it makes the loss "
+                    "visible without changing the outcome, and "
+                    "extraction.row_shortfall_action is what decides that."
+                    if not is_agentic
+                    else " Note that minItems is NOT advisory on this path: it is "
+                    "enforced at the agent's tool boundary, so a floor this "
+                    "section cannot reach spends the agent's correction rounds and "
+                    "then fails the extraction with no rows kept. Prefer "
+                    "extraction.row_shortfall_action, which saves the rows and "
+                    "this diagnosis first."
+                )
+                rec = mode_rec + minitems_rec
+                # What the shortfall COSTS follows extraction.row_shortfall_action,
+                # the way extraction_validation_failed's severity follows
+                # validation.fail_action: 'fail' means the section fails once this
+                # result and this issue are persisted, so the document's status
+                # cannot say COMPLETED over a list that lost most of its rows
+                # (#1032); 'warn' leaves the advisory-only behaviour in place.
+                # The DETECTION is identical either way — same floor, same ratio.
+                shortfall_action = self._row_shortfall_action()
+                # Only present when the ceiling actually binds, so the wording and
+                # the root cause are byte-identical to before for every schema that
+                # declares no `maxItems` — which is every shipped preset.
+                cap_clause = (
+                    f" (bounded to {expected} by the declared maxItems of the "
+                    f"list field(s))"
+                    if capped
+                    else ""
+                )
+                cap_note = f" (capped at maxItems {group_cap})" if capped else ""
+                outcome = (
+                    " The section is therefore marked FAILED (extraction."
+                    "row_shortfall_action is 'fail'); the rows that were extracted "
+                    "and this issue are still saved."
+                    if shortfall_action == "fail"
+                    else " The run still reports success and scalar fields are "
+                    "unaffected, so no other signal flags this."
                 )
                 issues.append(
                     ProcessingIssue(
                         stage="extraction",
-                        severity="warning",
-                        code="extraction_rows_below_ocr_estimate",
+                        severity="error" if shortfall_action == "fail" else "warning",
+                        code=self.ROW_SHORTFALL_CODE,
                         message=(
                             f"Extracted {extracted} row(s) for list field(s) "
                             f"{fields_str}, but the section's OCR text contains about "
-                            f"{expected} rows in {n_props}-column table(s) of that "
-                            f"shape — the list is likely truncated. The run still "
-                            f"reports success and scalar fields are unaffected, so no "
-                            f"other signal flags this.{rec}"
+                            f"{ocr_rows} rows in {n_props}-column table(s) of that "
+                            f"shape{cap_clause} — the list is likely truncated."
+                            f"{outcome}{rec}"
                         ),
                         root_cause=(
                             f"{'agentic' if is_agentic else 'traditional'} extraction "
                             f"with model "
                             f"{self._pending_extraction_model or self.config.extraction.model}; "
                             f"{extracted} extracted rows vs ~{expected} matching OCR "
-                            f"table rows for {fields_str}"
+                            f"table rows{cap_note} for {fields_str}"
                         ),
                         section_id=section_id,
                         details={
                             "list_fields": labels,
                             "item_property_count": n_props,
                             "extracted_rows": extracted,
+                            # The figure the ratio is taken against, so
+                            # `extracted / ocr_estimated_rows == ratio` still holds.
+                            # `ocr_matched_table_rows` is the unbounded OCR evidence
+                            # and `declared_max_items` the ceiling that shrank it
+                            # (None when the group declares none), so the capping is
+                            # visible in the processing report rather than implicit.
                             "ocr_estimated_rows": expected,
+                            "ocr_matched_table_rows": ocr_rows,
+                            "declared_max_items": group_cap,
                             "ratio": round(extracted / expected, 3),
                             "ocr_tables": tables,
                             "agentic": is_agentic,
+                            "row_shortfall_action": shortfall_action,
                         },
                     )
                 )
@@ -3824,8 +4163,10 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
         #
         # Applies to BOTH modes (agentic writes the same metadata block). Severity
         # follows fail_action, because that is what the deployment decided the
-        # outcome MEANS: `reject` already failed the section, so `error`; `warn`
-        # and `escalate` leave the data in place, so `warning`.
+        # outcome MEANS: `reject` recorded the result as unparsed, so `error`;
+        # `warn` and `escalate` left it standing as a valid result, so `warning`.
+        # None of the three changes the section's or the document's outcome — see
+        # the consequence clause below.
         validation = metadata.get("validation")
         if isinstance(validation, dict) and validation.get("valid") is False:
             failed = [str(f) for f in (validation.get("failed_fields") or [])]
@@ -3836,8 +4177,15 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
             if len(failed) > 8:
                 named += f", +{len(failed) - 8} more"
             if fail_action == "reject":
+                # `reject` records the result as unparsed and makes the processing
+                # report read FAILED. It does not change the section's or the
+                # document's outcome — nothing in the status path reads
+                # `parsing_succeeded` — so the message says what it does (#1048).
                 consequence = (
-                    " The section is marked FAILED because Fail Action is 'reject'."
+                    " Fail Action is 'reject', so the result is recorded as not "
+                    "parsed and this section's processing report reads FAILED. The "
+                    "values are stored as extracted and the document's status is "
+                    "unchanged."
                 )
             elif escalated:
                 consequence = (
@@ -4095,8 +4443,23 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
         # table) is not misreported as a clean SUCCESS.
         issues_for_status = metadata.get("processing_issues") or []
         severities = {str(i.get("severity", "")).lower() for i in issues_for_status}
+        # A row shortfall under row_shortfall_action='fail' is the one issue that
+        # fails the section outright (_fail_on_row_shortfall raises immediately
+        # after this report is written into the section output). So the report
+        # must not say COMPLETED: this artifact is the thing the reader opens to
+        # find out what happened, and it would have contradicted the outcome it
+        # was written to explain. Narrow on purpose — for every OTHER
+        # error-severity issue the section really did complete, and
+        # COMPLETED WITH ERRORS is the right line.
+        fails_section = any(
+            str(i.get("code", "")) == self.ROW_SHORTFALL_CODE
+            and str(i.get("severity", "")).lower() == "error"
+            for i in issues_for_status
+        )
         if not metadata.get("parsing_succeeded"):
             status_line = "FAILED"
+        elif fails_section:
+            status_line = "FAILED — EXTRACTION MATERIALLY INCOMPLETE"
         elif "error" in severities:
             status_line = "COMPLETED WITH ERRORS"
         elif "warning" in severities:
@@ -4369,6 +4732,43 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
             clean_schema=False,
         )
 
+    def _shard_transport_model(self, schema: dict[str, Any], class_label: str) -> Any:
+        """The Pydantic model handed to ONE SHARD's extraction agent for ``schema``.
+
+        :meth:`_transport_model`, plus: a **required array or nested object also
+        accepts null** (``schema.nullable_required_containers_for_shard``). That is
+        what makes the shard instruction — "if a field does not appear in your pages,
+        leave it null — another shard will provide it" — satisfiable for a declared
+        list or group. Without it the instruction names the one answer the shard's
+        own ``extraction_tool`` rejects, and a shard covering pages that genuinely
+        contain none of a required list spends a correction round discovering it must
+        emit ``[]`` rather than ``null``, with the in-loop feedback validator
+        reporting the payload as satisfying every constraint (#1078).
+
+        This is the tool-boundary half of the shard relaxation;
+        :meth:`_shard_schema_validator` is the feedback half. Both are shard-scoped
+        and they now agree about presence. ``required`` is still KEPT in both, so an
+        omitted key, an empty tool call and a misspelled key set still fail per shard
+        — the structural guard #782 deliberately preserved — and ``minItems`` still
+        reaches the tool boundary unchanged.
+
+        Presence is enforced once on the MERGED section: ``extraction.validation``
+        validates the merged result against the real schema, treats a null property
+        as absent, and reports ``'X' is a required property``. A required list or
+        group that no shard saw is therefore reported rather than forced, which is
+        the treatment a null required scalar already gets. Note the merge itself
+        normalises a list field to ``[]`` whatever the shards returned
+        (``runtime._merge_shard_results``), so for a list the merged value is
+        unchanged by this; it is the per-shard round that is saved.
+        """
+        return create_pydantic_model_from_json_schema(
+            schema=nullable_required_containers_for_shard(
+                nullable_leaves_for_transport(schema)
+            ),
+            class_label=class_label,
+            clean_schema=False,
+        )
+
     def _shard_schema_validator(self):
         """The in-loop validator for ONE shard: types/formats/enums only.
 
@@ -4376,6 +4776,17 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
         and a cover-page shard has no rows — and no OCR table evidence. Both
         fan-out sites (in-process and SFN) use this, so the shard rule has one
         home and one test. See ``_build_schema_validator(shard_scoped=True)``.
+
+        ⚠️ This relaxation reaches the agent's **self-correction feedback** only. It
+        is passed as ``schema_validator``, which ``structured_output_async`` consults
+        after a tool call; the ``extraction_tool`` itself is built from
+        ``data_format``, which is the **shard** transport model
+        (:meth:`_shard_transport_model`). That model relaxes *presence* for a required
+        container and carries every **row-count bound** unchanged, so a ``minItems``
+        floor IS enforced per shard at the tool boundary and a section-sized floor is
+        unsatisfiable by any shard. ``row_shortfall_action`` is the shard-aware
+        completeness lever. See the ``extraction_list_truncated`` entry in this
+        package's README.
         """
         return self._build_schema_validator(shard_scoped=True)
 
@@ -4572,8 +4983,10 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
           Validation is on by default precisely because this combination is free;
           a default that quietly spent money on every schema violation would be a
           cost surprise rather than a safety net.
-        - ``reject`` — same, plus ``parsing_succeeded=False`` so downstream/HITL
-          treats the section as failed. Also free.
+        - ``reject`` — same, plus ``parsing_succeeded=False``, which makes the
+          section's processing report and the UI's report tab read FAILED. Also
+          free. It does **not** change the section's or the document's outcome:
+          nothing in the status path reads ``parsing_succeeded``.
         - ``escalate`` — one scoped re-extraction of ONLY the failing top-level
           fields with the stronger ``escalation_model``, merged back over the
           fields that already validated. This is the opt-in that costs money.
@@ -4877,7 +5290,9 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
                 section_info=section_info,
             )
 
-        # reject: surface the failure so downstream/HITL can act on it.
+        # reject: record the result as unparsed, which makes the processing report
+        # and the UI's report tab read FAILED. The section and the document still
+        # complete — nothing in the status path reads `parsing_succeeded`.
         if not report.valid and vcfg.fail_action == "reject":
             parsing_succeeded = False
 
@@ -5521,20 +5936,26 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
                     preflight_parse_result,
                     scope_note=self._SHARD_SCOPE_NOTE,
                 )
+                # SHARD transport model: as `dynamic_model`, plus a required array or
+                # nested object may be null, because a shard covering none of its
+                # pages has no other representable answer and `_run_shard_agent`
+                # explicitly asks for null (#1078). Used for the shard tools and for
+                # the merge; `dynamic_model` stays the whole-section model and is what
+                # escalation and the completeness check below read.
+                shard_model = self._shard_transport_model(
+                    self._class_schema, section_info.class_label
+                )
                 structured_data, response_with_metering = _asyncio.run(
                     concurrent_structured_output_async(
                         model_id=model_id,
-                        data_format=dynamic_model,
+                        data_format=shard_model,
                         shard_payloads=shard_payloads,
                         max_parallelism=num_batches,
                         config=self.config,
                         context="Extraction",
                         checkpoint_callback=self._checkpoint_callback,
                         custom_instruction=shard_custom_instruction,
-                        section_id=(
-                            f"{section_info.class_label}_"
-                            f"{section_info.start_page}_{section_info.end_page}"
-                        ),
+                        section_id=self._persist_section_id(section_info),
                         persistence=self._shard_persistence,
                         runtime=runtime,
                         assess_runner=self._build_assess_runner(
@@ -6878,6 +7299,49 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
             f"Total extraction time for section {section_id}: {t3 - t0:.2f} seconds"
         )
 
+        # LAST thing this method does, and deliberately so (#1032). Everything a
+        # reader needs is already durable by this point — the partial
+        # inference_result and the error-severity issue are in the section's S3
+        # output, the section and the document's metering are updated — so the
+        # only thing left to decide is what the section's OUTCOME was, and a
+        # section that lost most of a list did not succeed.
+        #
+        # ONE site for both call sites of _save_results (the in-process
+        # process_document_section path and the Step Functions shard-merge entry
+        # point), which is why it lives here rather than in either caller: the
+        # two modes cannot drift apart on it.
+        self._fail_on_row_shortfall(document, section, section_id)
+
+    def _fail_on_row_shortfall(
+        self, document: Document, section: Any, section_id: str
+    ) -> None:
+        """Raise :class:`ExtractionOutputIncomplete` for a persisted row shortfall.
+
+        Fires only on an ``error``-severity ``ROW_SHORTFALL_CODE`` issue, which
+        ``_build_extraction_issues`` produces only when
+        ``extraction.row_shortfall_action`` is ``fail``. Reading the severity back
+        off the issue rather than re-testing the action keeps ONE decision: if the
+        issue a consumer can see says ``warning``, nothing here fails, and the
+        message the exception carries is the message that was persisted.
+        """
+        blocking = [
+            issue
+            for issue in (section.processing_issues or [])
+            if getattr(issue, "code", None) == self.ROW_SHORTFALL_CODE
+            and str(getattr(issue, "severity", "")).lower() == "error"
+        ]
+        if not blocking:
+            return
+        detail = "; ".join(issue.message for issue in blocking)
+        msg = (
+            f"Section {section_id} extraction is materially incomplete: {detail} "
+            f"Set extraction.row_shortfall_action to 'warn' to accept a partial "
+            f"list as success."
+        )
+        logger.error(msg)
+        document.errors.append(msg)
+        raise ExtractionOutputIncomplete(msg)
+
     def process_document_section(
         self,
         document: Document,
@@ -6969,6 +7433,14 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
             # Save results
             self._save_results(document, section, result, section_info, section_id, t0)
 
+        except ExtractionOutputIncomplete:
+            # Already logged, already appended to document.errors, and already
+            # persisted as an error-severity issue by _fail_on_row_shortfall.
+            # Re-raised untouched so the two Bedrock-error matchers below cannot
+            # reclassify a row-shortfall message as an input overflow or an image
+            # rejection on some future wording change, and so the Step Functions
+            # cause stays the sentence a reader can act on.
+            raise
         except Exception as e:
             from idp_common.utils.bedrock_utils import (
                 is_image_request_rejection,
@@ -7511,11 +7983,18 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
     ) -> tuple[str, type, list[dict[str, Any]], str | None]:
         """Build the agentic shard plan for the SFN runtime.
 
-        Returns ``(model_id, dynamic_model, shard_payloads, custom_instruction)``
+        Returns ``(model_id, shard_model, shard_payloads, custom_instruction)``
         mirroring the construction in ``_invoke_extraction_model``'s agentic
         branch, but standalone so the per-shard SFN Lambda (and the merge step)
         can each rebuild the identical plan deterministically. Requires
         ``_prepare_section_context`` to have populated the per-section state.
+
+        The model is the SHARD transport model (``_shard_transport_model``), which is
+        what both consumers of this plan need: it is the shard Lambda's
+        ``extraction_tool``, and it is what the merge step re-hydrates each shard's
+        persisted fields with. The whole-section model is a different object — the
+        merge step builds it separately for the validation/escalation and
+        completeness passes, which must see the real presence and row-count rules.
 
         The returned ``custom_instruction`` is ONE instruction for **all** of the
         section's shards (the in-process runtime shares it the same way), so it
@@ -7526,9 +8005,11 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
         class_model_override = self._class_schema.get(X_AWS_IDP_EXTRACTION_MODEL)
         model_id = class_model_override or self.config.extraction.model
 
-        # TRANSPORT model — scalar leaves nullable so the agent can abstain on a
-        # cell; `required` is KEPT so structure is still enforced (#782).
-        dynamic_model = self._transport_model(
+        # SHARD transport model — scalar leaves nullable so the agent can abstain on
+        # a cell (#782), and a required array or nested object nullable too because a
+        # shard is told to leave an out-of-shard field null (#1078). `required` is
+        # KEPT in both, so an omitted key or an empty tool call still fails.
+        shard_model = self._shard_transport_model(
             self._class_schema, section_info.class_label
         )
 
@@ -7596,13 +8077,19 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
             send_images=send_images,
             max_shards=self.config.extraction.agentic.max_concurrent_batches,
         )
-        return model_id, dynamic_model, shard_payloads, custom_instruction
+        return model_id, shard_model, shard_payloads, custom_instruction
 
     def _persist_section_id(self, section_info: SectionInfo) -> str:
-        """Deterministic per-section id used for shard persistence keys."""
-        return (
-            f"{section_info.class_label}_"
-            f"{section_info.start_page}_{section_info.end_page}"
+        """Deterministic per-section id used for shard persistence keys.
+
+        Delegates to ``runtime.shard_persistence_section_id`` so this value and the
+        prefix ``_cleanup_shards`` / ``delete_shard_results`` list have exactly one
+        definition between them.
+        """
+        from idp_common.extraction.runtime import shard_persistence_section_id
+
+        return shard_persistence_section_id(
+            section_info.class_label, section_info.sorted_page_ids
         )
 
     def run_one_section_shard(
@@ -7643,7 +8130,7 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
         if self._prepare_section_context(document, section, section_info) is None:
             return {"status": "empty_schema", "shard_index": shard_index}
 
-        model_id, dynamic_model, shard_payloads, custom_instruction = (
+        model_id, shard_model, shard_payloads, custom_instruction = (
             self._build_agentic_shard_plan(section_info)
         )
         if not shard_payloads or shard_index >= len(shard_payloads):
@@ -7660,7 +8147,7 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
                 total_shards=len(shard_payloads),
                 payload=payload,
                 model_id=model_id,
-                data_format=dynamic_model,
+                data_format=shard_model,
                 config=self.config,
                 section_id=self._persist_section_id(section_info),
                 custom_instruction=custom_instruction,
@@ -7806,8 +8293,15 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
                 document, section, section_info, section_id, t0
             )
 
-        model_id, dynamic_model, shard_payloads, _ci = self._build_agentic_shard_plan(
+        model_id, shard_model, shard_payloads, _ci = self._build_agentic_shard_plan(
             section_info
+        )
+        # The merge re-hydrates each shard with the model that produced it, then hands
+        # the validation/escalation and completeness passes the WHOLE-SECTION model,
+        # whose presence and row-count rules are the ones that apply to the merged
+        # result (#1078).
+        dynamic_model = self._transport_model(
+            self._class_schema, section_info.class_label
         )
         persist_section_id = self._persist_section_id(section_info)
 
@@ -7829,9 +8323,9 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
             )
 
         merged_dict, merged_metering, conflicts = merge_shard_dicts(
-            shard_dicts, dynamic_model
+            shard_dicts, shard_model
         )
-        structured_data = dynamic_model(**merged_dict)
+        structured_data = shard_model(**merged_dict)
         extracted_fields = structured_data.model_dump(mode="json")
         if conflicts:
             merged_metering["_shard_scalar_conflicts"] = conflicts

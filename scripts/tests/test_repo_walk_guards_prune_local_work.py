@@ -27,35 +27,62 @@ The per-gate fix was applied five times and drifted five ways: two gates had no
 That is the shape this file exists to stop — the fix belongs to the class, so the
 assertion does too.
 
-There are two acceptable ways for a gate to satisfy this. The better one is to reuse
-``scripts/run_all_tests.PRUNE_DIR_MARKERS``, which has carried both names all along
-and is what ``test_testing_doc.py`` uses — one list to maintain. The other is a local
-prune set naming them directly, which is what the six template/source gates do. Those
-are not converted to the shared list here because they match on *directory names*
-(``set(path.parts)``) while ``PRUNE_DIR_MARKERS`` matches on *path substrings*
-(``"/scratch/"``), so the conversion is a behaviour change in six working gates and
-belongs in its own commit rather than riding along with a release validation.
+There are three acceptable ways for a gate to satisfy this. The best is to discover
+through ``repo_files.tracked_paths``, which asks git and so cannot be defeated by
+where the checkout happens to sit — see below, and see ``repo_files.py``. The second
+is to reuse ``scripts/run_all_tests.PRUNE_DIR_MARKERS``, which has carried both names
+all along and is what ``test_testing_doc.py`` uses — one list to maintain. The third
+is a local prune set naming them directly, which is what the remaining template and
+source gates do. Those are not converted to the shared list here because they match on
+*directory names* (``set(path.parts)``) while ``PRUNE_DIR_MARKERS`` matches on *path
+substrings* (``"/scratch/"``), so the conversion is a behaviour change in working
+gates and belongs in its own commit rather than riding along with a release
+validation.
 
 The per-gate half is therefore a *textual* check on each gate's source rather than an
 import-and-inspect: the constants are spelled differently on purpose (`_SKIP_DIRS`,
 `PRUNED_DIRS`, `PRUNE`, a local `skip_dirs`, an inline set literal), and normalising
-them would mean changing five working gates to suit their test. What matters is that
-the two names appear in the discovery code, which is what a reader checking "does this
+them would mean changing working gates to suit their test. What matters is that the
+two names appear in the discovery code, which is what a reader checking "does this
 gate scan my worktree?" would look for.
+
+Pruning fails in one direction the textual check cannot see
+---------------------------------------------------------
+A prune set is only correct when it is matched against a file's **repo-relative**
+path. Matched against the absolute path, the same set matches a directory name
+*above* the repository root — and an agent worktree is a real checkout at
+``<main checkout>/.claude/worktrees/agent-*``, so from inside one, ``.claude``
+appears in every absolute path and the gate discards its entire input. Three gates
+were in that state. Two of them have a "discovery found nothing, so this proves
+nothing" self-guard and failed loudly, on every task in a batch; the third has none
+and passed **vacuously**, which is the worse of the two outcomes and the reason a
+textual check is not enough on its own.
+
+``test_discovery_survives_a_checkout_under_a_local_work_dir`` is the half that
+catches it: it builds a real one-file checkout at
+``<tmp>/.claude/worktrees/agent-probe`` and asserts each registered gate's discovery
+still finds the file. A gate whose prune set is applied to the absolute path returns
+nothing there and fails this test in CI, where no ``.claude`` path is involved at all.
 """
 
 from __future__ import annotations
 
+import importlib
 import importlib.util
+import subprocess
 from pathlib import Path
 
 import pytest
+import repo_files
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 HERE = Path(__file__).resolve().parent
 
 #: The shared list a gate may use instead of its own prune set.
 SHARED_PRUNE_CONST = "PRUNE_DIR_MARKERS"
+
+#: The git-backed discovery helper a gate may use instead of walking at all.
+TRACKED_HELPER = "tracked_paths"
 
 
 def _run_all_tests_module():
@@ -83,6 +110,11 @@ REPO_WALKING_GATES = (
     "test_log_group_encryption.py",
     "test_testing_doc.py",
     "test_well_architected_doc.py",
+    # Outside this directory: it globs *.yaml from the repo root to check that every
+    # alarm names a real metric. Found by the gate-exemption registry's discovery, not
+    # by this file's own sweep, which only looks at scripts/tests/ -- so the sweep below
+    # is narrower than the class and that is recorded in its docstring.
+    "../../lib/idp_sdk/tests/unit/test_cloudwatch_alarms.py",
 )
 
 
@@ -95,6 +127,14 @@ def test_gate_prunes_local_work(gate: str, local_dir: str) -> None:
     source = path.read_text(encoding="utf-8")
     if SHARED_PRUNE_CONST in source:
         # Delegates to the shared list, which is pinned by the test below.
+        return
+    if TRACKED_HELPER in source:
+        # Discovers through git, which excludes both directories because both are
+        # gitignored — a stronger guarantee than any name list, and the one route
+        # that also survives the checkout itself living under one of them. Named
+        # here so a gate that takes the better route is not then required to keep
+        # a prune set it no longer needs; the three that do keep one keep it as a
+        # second filter for their non-git fallback, and say so.
         return
     assert f'"{local_dir}"' in source or f"'{local_dir}'" in source, (
         f"{gate} walks the whole repository but never names {local_dir!r}, so it "
@@ -114,6 +154,200 @@ def test_shared_prune_list_covers_local_work(local_dir: str) -> None:
         f"run_all_tests.{SHARED_PRUNE_CONST} does not prune {local_dir!r}, so every "
         f"gate that delegates to it — and `make test`'s own root discovery — walks "
         f"gitignored local work. Markers: {markers}"
+    )
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("local_dir", LOCAL_WORK_DIRS)
+def test_the_tracked_helpers_fallback_walk_prunes_local_work(
+    local_dir: str, tmp_path: Path
+) -> None:
+    """The other shared mechanism must carry both names too, and apply them.
+
+    ``repo_files.tracked_paths`` is the route this file recommends, and a gate that
+    takes it is excused above from naming the two directories itself. That excuse is
+    only sound if the helper covers them on BOTH of its paths. Asking git covers them
+    because both are gitignored; the fallback walk — taken when the root is not the
+    top of a checkout, which is how every gate's own synthetic-tree test drives its
+    discovery — has nothing but ``repo_files.FALLBACK_PRUNE_DIRS``. That set stands in
+    for five per-gate prune sets and was the only one with no assertion behind it.
+
+    Driven against a real tree rather than read out of the module, because membership
+    is not the property that failed five times: the set has to be matched against the
+    REPO-RELATIVE path, and matching it against the absolute path is what discarded
+    whole checkouts. Both halves are asserted here for the same reason they are below —
+    "prunes everything" would satisfy the exclusion half on its own.
+    """
+    root = tmp_path.resolve()
+    assert local_dir in repo_files.FALLBACK_PRUNE_DIRS, (
+        f"repo_files.FALLBACK_PRUNE_DIRS does not name {local_dir!r}, so every gate "
+        f"that discovers through repo_files.{TRACKED_HELPER} walks gitignored local "
+        f"work whenever its root is not a checkout. Set: "
+        f"{sorted(repo_files.FALLBACK_PRUNE_DIRS)}"
+    )
+
+    (root / "svc").mkdir()
+    (root / "svc" / "handler.py").write_text("x = 1\n", encoding="utf-8")
+    buried = root / local_dir / "worktrees" / "agent-probe" / "svc"
+    buried.mkdir(parents=True)
+    (buried / "handler.py").write_text("x = 1\n", encoding="utf-8")
+
+    assert repo_files._git_toplevel(root) != root, (
+        "this probe tree is itself a checkout, so tracked_paths would ask git and the "
+        "fallback walk — the thing under test — would not run at all"
+    )
+    found = {
+        p.relative_to(root).as_posix()
+        for p in repo_files.tracked_paths(root, "*.py")
+    }
+
+    assert "svc/handler.py" in found, (
+        f"the fallback walk found {sorted(found) or 'nothing'} and not the probe at "
+        f"the root of the tree, so its prune set is being matched against something "
+        f"other than the repo-relative path"
+    )
+    leaked = sorted(rel for rel in found if rel.startswith(f"{local_dir}/"))
+    assert not leaked, (
+        f"the fallback walk returned {leaked} from {local_dir}/, which holds whole "
+        f"copies of this tree: a stale one fails the gate while describing nothing "
+        f"that ships"
+    )
+
+
+#: Gates whose discovery takes a root and can therefore be driven against a
+#: synthetic checkout. Each entry is
+#: ``gate filename -> (discovery function, probe file, expected result)``.
+#:
+#: Hand-kept, like ``REPO_WALKING_GATES`` above, because there is no way to call an
+#: arbitrary gate's discovery without knowing its entry point. The three here are the
+#: three that had the absolute-path defect. Of the five other registered gates, four
+#: cannot be defeated by where the checkout sits — two match their prune set against
+#: the repo-relative path (``test_asl_placeholder_substitution.py``,
+#: ``test_well_architected_doc.py``), one prunes during an ``os.walk`` descent from
+#: the repository root (``test_iam_privilege_escalation.py``), and one asks git
+#: (``test_classification_prompt_copies_in_sync.py``) — and none of the four exposes
+#: a root parameter to drive. The fifth, ``test_testing_doc.py``, relativises before
+#: matching as well.
+_PROBE_TEMPLATE = """AWSTemplateFormatVersion: '2010-09-09'
+Resources:
+  ProbeFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: ./
+      Handler: index.handler
+  ProbeLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      RetentionInDays: 30
+"""
+
+TRACKED_DISCOVERY_GATES: dict[str, tuple[str, str, str]] = {
+    "test_api_adapter_identity_provenance.py": (
+        "_python_sources",
+        "svc/handler.py",
+        "x = 1\n",
+    ),
+    "test_log_group_encryption.py": (
+        "_discover_log_group_templates",
+        "svc/template.yaml",
+        _PROBE_TEMPLATE,
+    ),
+    "test_lambda_log_groups.py": (
+        "_discover_unlisted_templates",
+        "svc/template.yaml",
+        _PROBE_TEMPLATE,
+    ),
+}
+
+
+def _gate_module(gate: str):
+    """The already-collected gate module, by its pytest import name."""
+    return importlib.import_module(Path(gate).stem)
+
+
+def _relative_results(root: Path, results) -> set[str]:
+    """Normalise a discovery result to repo-relative posix strings.
+
+    The three functions differ: one yields absolute ``Path``s, two return
+    repo-relative strings. Normalising here rather than requiring one shape keeps
+    this test from dictating the gates' internal signatures.
+    """
+    out = set()
+    for item in results:
+        path = Path(item)
+        out.add(
+            path.relative_to(root).as_posix() if path.is_absolute() else path.as_posix()
+        )
+    return out
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("gate", sorted(TRACKED_DISCOVERY_GATES))
+def test_discovery_survives_a_checkout_under_a_local_work_dir(
+    gate: str, tmp_path: Path
+) -> None:
+    """A checkout that *lives* under ``.claude/`` must still be discovered.
+
+    The mirror image of the pruning rule above, and the direction the textual check
+    cannot see. An agent worktree is a real ``git worktree`` checkout at
+    ``<main checkout>/.claude/worktrees/agent-*``. A prune set matched against the
+    absolute path matches ``.claude`` there and discards every file, so the gate
+    proves nothing — loudly if it has a self-guard, silently if it does not.
+
+    Both halves are asserted, because on its own the first half is satisfied by a
+    gate that has stopped pruning altogether: the probe at the checkout root must be
+    **found**, and identical probes under ``<root>/scratch/`` and
+    ``<root>/.claude/worktrees/`` must be **excluded**. That pair is also why the
+    three converted gates keep a prune set at all — git lists an un-ignored
+    ``scratch/`` inside a checkout perfectly happily, so the relative-path filter is
+    still doing work.
+    """
+    function_name, probe_rel, probe_body = TRACKED_DISCOVERY_GATES[gate]
+
+    root = tmp_path / ".claude" / "worktrees" / "agent-probe"
+    local_work = ["scratch", ".claude/worktrees/agent-nested"]
+    for prefix in ["", *local_work]:
+        target = root / prefix / probe_rel
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(probe_body, encoding="utf-8")
+    subprocess.run(
+        ["git", "-c", "init.defaultBranch=main", "init", "-q", str(root)],
+        check=True,
+        capture_output=True,
+    )
+    assert ".claude" in root.parts, "the probe root must sit under a local-work dir"
+
+    discover = getattr(_gate_module(gate), function_name)
+    try:
+        results = discover(root)
+    except TypeError as exc:  # pragma: no cover - only on an unconverted gate
+        pytest.fail(
+            f"{gate}: {function_name}() does not accept a root to discover from "
+            f"({exc}), so this test cannot drive it against a synthetic checkout. "
+            f"Give it a `root` parameter defaulting to the repository root — the "
+            f"other two gates in TRACKED_DISCOVERY_GATES already have one."
+        )
+    found = _relative_results(root, results)
+
+    assert probe_rel in found, (
+        f"{gate}: {function_name}() found {sorted(found) or 'nothing'} in a checkout "
+        f"at {root}, which contains a '.claude' path component above its root. A "
+        f"prune set naming '.claude' must be matched against the REPO-RELATIVE path, "
+        f"or discovery returns nothing whenever the checkout itself lives under one "
+        f"of the local-work directories — which is where every agent worktree lives. "
+        f"Prefer discovering through repo_files.{TRACKED_HELPER}, which asks git and "
+        f"so cannot be defeated by the checkout's location."
+    )
+
+    leaked = sorted(f"{prefix}/{probe_rel}" for prefix in local_work)
+    leaked = sorted(rel for rel in leaked if rel in found)
+    assert not leaked, (
+        f"{gate}: {function_name}() returned file(s) from a local-work directory "
+        f"INSIDE the checkout: {leaked}. Those directories hold whole copies of this "
+        f"tree, so a stale one fails the gate while describing nothing that ships. "
+        f"Discovering through git is not enough on its own here — an un-ignored "
+        f"`scratch/` in a checkout is listed by `git ls-files --others` — so keep the "
+        f"relative-path prune set as a second filter."
     )
 
 

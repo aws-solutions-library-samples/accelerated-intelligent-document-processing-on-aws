@@ -92,6 +92,7 @@ from typing import Any
 
 import pytest
 import yaml
+from repo_files import tracked_paths
 
 
 def _is_no_value(node: Any) -> bool:
@@ -759,37 +760,6 @@ Outputs:
         path.unlink()
 
 
-def walk_yaml(pattern: str, root: Path):
-    """Yield repo files matching ``pattern``, pruning heavy directories.
-
-    ``Path.rglob`` descends into ``.aws-sam``, ``node_modules`` and friends and
-    then discards the results, which cost about 22 seconds — a third of the whole
-    ``scripts/tests`` run. Pruning during the walk makes it near-instant.
-
-    Public because ``test_log_group_encryption.py``'s own discovery sweep reuses
-    it; the pruning list is the part worth having in one place, since a directory
-    missing from it costs seconds rather than correctness and so would never be
-    noticed in a second copy.
-    """
-    import fnmatch
-    import os
-
-    pruned = {
-        ".aws-sam",
-        "node_modules",
-        ".venv",
-        "build",
-        "dist",
-        ".git",
-        "__pycache__",
-    }
-    for current, dirs, files in os.walk(root):
-        dirs[:] = [d for d in dirs if d not in pruned]
-        for name in files:
-            if fnmatch.fnmatch(name, pattern):
-                yield Path(current) / name
-
-
 def _discover_unlisted_templates(root: Path | None = None) -> list[str]:
     """Every Lambda-declaring template in the repo that TEMPLATES omits.
 
@@ -797,11 +767,17 @@ def _discover_unlisted_templates(root: Path | None = None) -> list[str]:
     ``template.yaml`` — ``notebooks/examples/demo-lambda/template.yml`` was
     invisible to an earlier ``template.yaml``-only sweep.
     """
-    root = root or REPO_ROOT
+    root = (root or REPO_ROOT).resolve()
     listed = {root / rel for rel in TEMPLATES}
     # `scratch/` and `.claude/` are the repo's gitignored local-work directories; both
     # hold whole git worktrees (`scratch/wt-*/`, `.claude/worktrees/agent-*/`), which
-    # are full copies of every template. Keep in step with the sibling gates.
+    # are full copies of every template. `tracked_paths` excludes them by asking git,
+    # which is also what lets this sweep run from *inside* one of those worktrees:
+    # matching these names against a file's ABSOLUTE path discards the whole checkout,
+    # because the worktree itself lives under `.claude/`. This sweep has no self-guard,
+    # so that discarded everything and passed VACUOUSLY — a registration check that
+    # registers nothing. See repo_files.py. The set is kept as a second filter on the
+    # repo-RELATIVE path so the fallback walk and the git listing agree.
     skip_dirs = {
         ".aws-sam",
         "node_modules",
@@ -813,27 +789,28 @@ def _discover_unlisted_templates(root: Path | None = None) -> list[str]:
         ".claude",
     }
     unlisted = []
-    for pattern in ("*.yaml", "*.yml"):
-        for path in walk_yaml(pattern, root):
-            # The meta-tests below write synthetic probe templates INSIDE the repo
-            # and delete them in a `finally`. Skip them, for two reasons: under a
-            # parallel run (`pytest -n auto`) this sweep otherwise sees another
-            # worker's probe and fails; and if a run is hard-killed between write
-            # and unlink, a leaked probe would fail every later run.
-            if path.name.startswith("_") and path.name.endswith(
-                ("_probe.yaml", "_probe.yml")
-            ):
-                continue
-            if any(part in skip_dirs for part in path.parts) or path in listed:
-                continue
-            try:
-                doc = _load_text(path.read_text())
-            except (yaml.YAMLError, UnicodeDecodeError):
-                continue
-            if not isinstance(doc, dict):
-                continue
-            if _functions(doc.get("Resources") or {}):
-                unlisted.append(str(path.relative_to(root)))
+    for path in tracked_paths(root, "*.yaml", "*.yml"):
+        # The meta-tests below write synthetic probe templates INSIDE the repo
+        # and delete them in a `finally`. Skip them, for two reasons: under a
+        # parallel run (`pytest -n auto`) this sweep otherwise sees another
+        # worker's probe and fails; and if a run is hard-killed between write
+        # and unlink, a leaked probe would fail every later run.
+        if path.name.startswith("_") and path.name.endswith(
+            ("_probe.yaml", "_probe.yml")
+        ):
+            continue
+        if path in listed:
+            continue
+        if any(part in skip_dirs for part in path.relative_to(root).parts):
+            continue
+        try:
+            doc = _load_text(path.read_text())
+        except (yaml.YAMLError, UnicodeDecodeError):
+            continue
+        if not isinstance(doc, dict):
+            continue
+        if _functions(doc.get("Resources") or {}):
+            unlisted.append(str(path.relative_to(root)))
     return sorted(unlisted)
 
 

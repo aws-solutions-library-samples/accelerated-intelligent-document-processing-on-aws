@@ -18,6 +18,15 @@ against two explicit registries — ``RUN_ROOTS`` (run in the gate) and
 is a hard error, so adding tests in a new location forces a conscious decision
 here.
 
+It also decides the verdict on the **standing-failure baseline** declared in
+``.claude/skills/full-test-battery.md``, because this is the process that has the
+results. A failure nobody declared is red, as before; a declared failure that did
+not occur is now red too, so a row cannot outlive its cause and become a waiver
+over a passing test. Each root's results are written as JUnit XML under
+``test-reports/``, alongside a ``run_all_tests.json`` summary, for a reader to
+inspect — the verdict never reads them back, so there is no stale-artifact path
+through it. See ``scripts/standing_failures.py``.
+
 Usage:
     python scripts/run_all_tests.py            # run the gate (unit-level suites)
     python scripts/run_all_tests.py --list     # print the plan, run nothing
@@ -27,12 +36,28 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import subprocess
 import sys
+import xml.etree.ElementTree as ET
+from datetime import datetime, timezone
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from first_party_paths import pinned_environment  # noqa: E402
+from standing_failures import (  # noqa: E402
+    BaselineError,
+    compare,
+    declared_failures,
+    describe,
+)
+
 REPO_ROOT = Path(__file__).resolve().parent.parent
+
+# Where each root's JUnit XML and the run summary land. Gitignored: it is a
+# record of one machine's run, not a repository fact.
+REPORT_DIR = REPO_ROOT / "test-reports"
 
 # Directories that are NOT source test roots (build output, deps, vendored copies).
 PRUNE_DIR_MARKERS = (
@@ -46,8 +71,16 @@ PRUNE_DIR_MARKERS = (
     # scratch/ is gitignored (local benchmarks, cloned tools, throwaway work);
     # never part of the gate. CI never sees it, so prune it locally too.
     "/scratch/",
-    # idp_common ships fixture-style helper "tests" that are not a suite.
-    "/idp_common/agents/testing/",
+    # Two gitignored, locally-staged copies of lib/idp_common_pkg that the
+    # idp-data-generator feature's build drops next to its Lambda sources. They
+    # hold library code only (no tests/ dir), so every test_*.py they contain is
+    # a duplicate of one in lib/idp_common_pkg. CI never sees them; a developer
+    # machine that has built that feature does. They cannot be matched by a
+    # shared substring -- `/idp-data-generator/` would also prune
+    # feature-platform/idp-data-generator/feature-api/tests, which is a real
+    # registered suite -- so each copy root is named.
+    "/idp-data-generator/idp_common_pkg/",
+    "/idp-data-generator/bootstrap-processor/idp_common_pkg/",
     # Agent worktrees: `git worktree` checkouts of this same repo, created under
     # .claude/worktrees/ when work is delegated to a subagent. Every test file in
     # the repo therefore appears once per live worktree, so without this the guard
@@ -103,16 +136,41 @@ RUN_ROOTS = [
     # exactly what happened at v0.6.5. Pure dict/YAML logic, no AWS.
     "benchmarks/tests",
     "nested/multi-doc-discovery/docker_build_lambda/tests",
+    # S3 Vectors custom resource. The directory root, not its `tests` subdirectory:
+    # `test_handler.py` sits beside `handler.py` and the nested suite is reached by
+    # nesting under this entry. `conftest.py` here stubs `cfnresponse` and supplies
+    # a region and placeholder credentials, which is what makes the handler
+    # importable outside Lambda.
+    "nested/bedrockkb/src/s3_vectors_manager",
     # Configuration Profile revision operations: group gate + profile-level scope.
     "nested/api-resolvers/src/lambda/configuration_resolver",
     "nested/api-resolvers/src/lambda/get_file_contents_resolver",
+    # listFinetuningJobs is an ANY operation that runs a sparse filtered scan of
+    # the whole TrackingTable, so its page/time bound is the only thing between an
+    # authenticated caller and a full-history read.
+    "nested/api-resolvers/src/lambda/finetuning_jobs_resolver",
+    # Chat-session ownership: the refusal must reach the caller as an
+    # authorization denial rather than being laundered into a 500 by the
+    # handler's catch-all.
+    # The discovery upload path's bucket/key constraint: `bucket` and `prefix` are
+    # request arguments and this function's role holds write on the discovery bucket.
+    "nested/api-resolvers/src/lambda/discovery_upload_resolver",
+    "nested/api-resolvers/src/lambda/get_agent_chat_messages_resolver",
     "nested/api-resolvers/src/lambda/get_sample_document_resolver",
     "nested/api-resolvers/src/lambda/get_stepfunction_execution_resolver",
     "nested/api-resolvers/src/lambda/list_agent_chat_sessions_resolver/tests",
     # Guards the vendored config_scope copies against drifting from the canonical
     # idp_common module — a scope matcher that differs per call site is a
-    # privilege-escalation bug.
+    # privilege-escalation bug — plus the fail-closed scope lookup and the
+    # getDocumentCount filtering that makes its `scope_filtered` declaration true.
     "nested/api-resolvers/src/lambda/list_documents_gsi_resolver",
+    # Sibling of the above: the same fail-closed scope-lookup contract on the
+    # date-range list, and the reviewer-owner matching that an absent email claim
+    # would otherwise widen.
+    "nested/api-resolvers/src/lambda/list_documents_range_resolver",
+    # syncBdaIdp mutates the BDA project linked to a Configuration Profile, so a
+    # caller whose scope cannot be resolved must be refused in-band.
+    "nested/api-resolvers/src/lambda/sync_bda_idp_resolver",
     "nested/api-resolvers/src/lambda/send_chat_document_message_resolver/tests",
     # Configuration-revision pinning on a test run.
     "nested/api-resolvers/src/lambda/test_runner",
@@ -144,6 +202,7 @@ RUN_ROOTS = [
     "src/lambda/circuit_breaker_manager",
     "src/lambda/complete_section_review",
     "src/lambda/external_idp_group_mapping",
+    "src/lambda/finetuning_deployment_handler",
     "src/lambda/finetuning_job_creator/tests",
     "src/lambda/job_tracker",
     "src/lambda/queue_processor",
@@ -187,24 +246,26 @@ QUARANTINE = {
     "src/lambda/ocr_benchmark_deployer": (
         "Requires huggingface_hub, which is not a test dependency."
     ),
-    "nested/bedrockkb/src/s3_vectors_manager": (
-        "Requires the Lambda-runtime-only 'cfnresponse' module."
-    ),
     "samples/lambda-hook-inference/GENAIIDP-chandra-ocr-hook": (
         "test_local.py is a manual local-run script; collects zero pytest tests."
-    ),
-    # nested/bedrockkb/src/s3_vectors_manager/tests is named explicitly now that
-    # nesting under a QUARANTINE entry no longer inherits the exclusion. It is
-    # not skipped in practice: `make test-packages-cicd` runs it directly, in
-    # both CI systems, so the asymmetry is in the safe direction -- CI runs more
-    # than `make test` does.
-    "nested/bedrockkb/src/s3_vectors_manager/tests": (
-        "Run directly by `make test-packages-cicd` in both CI systems instead; "
-        "the parent dir is quarantined for its cfnresponse dependency."
     ),
     # Vendored/internal helper trees that contain test_*.py but are not suites.
     "lib/idp_sdk/idp_sdk/_core": (
         "Source tree, not a test root (contains helper modules named test_*)."
+    ),
+    # Operator-run agent scripts. Every one drives real Bedrock, Athena or
+    # DynamoDB against a deployed stack, so they are run by hand, never in a gate,
+    # and `norecursedirs` in lib/idp_common_pkg/pytest.ini keeps pytest from
+    # collecting them. Registered here rather than pruned above so that the
+    # exclusion carries the registry's ratchets: the directory appears in
+    # `--list`, it has to be named in docs/testing.md, and -- because nesting
+    # under a QUARANTINE entry deliberately does not inherit the exclusion -- a
+    # NEW subdirectory of manual_tests/ fails this guard instead of being
+    # silently accepted, which a substring prune marker would have allowed.
+    "lib/idp_common_pkg/manual_tests/agents": (
+        "Operator-run scripts that call real Bedrock/Athena against a deployed "
+        "stack; run by hand, excluded from pytest collection by "
+        "lib/idp_common_pkg/pytest.ini's norecursedirs."
     ),
 }
 
@@ -281,6 +342,108 @@ def _xdist_available() -> bool:
         return False
 
 
+def _junit_path(root: str) -> Path:
+    """One XML per root, named after the root so the file says what it covers."""
+    return REPORT_DIR / f"{root.strip('/').replace('/', '_')}.xml"
+
+
+def _display_path(path: Path) -> str:
+    """Repo-relative if it is inside the tree, absolute otherwise."""
+    try:
+        return path.relative_to(REPO_ROOT).as_posix()
+    except ValueError:
+        return path.as_posix()
+
+
+def _report_bases(root: str) -> list[Path]:
+    """Directories a JUnit ``file`` attribute could be relative to, deepest first.
+
+    pytest writes paths relative to the *rootdir* it computed for that
+    invocation, which is an ancestor-or-self of the root we passed (several
+    packages here carry their own ``pytest.ini``, so it is rarely the repo root).
+    The XML does not record which, so resolve by trying each candidate and taking
+    the one that names a file that exists.
+    """
+    bases: list[Path] = []
+    base = (REPO_ROOT / root).resolve()
+    while True:
+        bases.append(base)
+        if base == REPO_ROOT or REPO_ROOT not in base.parents:
+            break
+        base = base.parent
+    return bases
+
+
+def _node_id(file_attr: str, classname: str, name: str, root: str) -> str:
+    """Rebuild a repo-relative pytest node id from one JUnit ``testcase``.
+
+    ``classname`` is the dotted module path plus any enclosing classes, so the
+    classes are whatever it holds beyond the module. If it does not start with
+    the module (an unusual importmode, or a collection error whose testcase
+    carries no module at all) fall back to ``path::name``, which still names the
+    file and so still reports something a reader can act on.
+    """
+    resolved = None
+    for base in _report_bases(root):
+        candidate = base / file_attr
+        if candidate.is_file():
+            resolved = candidate.relative_to(REPO_ROOT).as_posix()
+            break
+    path = resolved or file_attr
+    module = file_attr[:-3].replace("/", ".") if file_attr.endswith(".py") else ""
+    parts = [path]
+    if module and classname.startswith(module + "."):
+        parts += classname[len(module) + 1 :].split(".")
+    parts.append(name)
+    return "::".join(parts)
+
+
+def failing_node_ids(xml_path: Path, root: str) -> list[str]:
+    """The node ids of every failing or erroring test in one root's JUnit XML.
+
+    A missing or unparseable file yields nothing, which the caller treats as an
+    *unexplained* failure for a root that exited non-zero rather than as a pass —
+    "no findings" and "could not read the findings" must not look alike.
+    """
+    if not xml_path.is_file():
+        return []
+    try:
+        tree = ET.parse(xml_path)  # noqa: S314 - pytest's own output, not input
+    except ET.ParseError:
+        return []
+    found: list[str] = []
+    for case in tree.iter("testcase"):
+        if case.find("failure") is None and case.find("error") is None:
+            continue
+        found.append(
+            _node_id(
+                case.get("file", ""),
+                case.get("classname", ""),
+                case.get("name", ""),
+                root,
+            )
+        )
+    return found
+
+
+def _write_summary(payload: dict[str, object]) -> None:
+    REPORT_DIR.mkdir(parents=True, exist_ok=True)
+    (REPORT_DIR / "run_all_tests.json").write_text(
+        json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+    )
+
+
+def _head_commit() -> str:
+    result = subprocess.run(
+        ["git", "rev-parse", "HEAD"],
+        cwd=REPO_ROOT,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    return result.stdout.strip() if result.returncode == 0 else "unknown"
+
+
 def run_gate(roots: list[str], integration: bool) -> int:
     marker = "integration" if integration else "not integration"
     python = os.environ.get("PYTHON") or sys.executable
@@ -291,9 +454,25 @@ def run_gate(roots: list[str], integration: bool) -> int:
         parallel = ["-n", _PYTEST_WORKERS]
     elif _PYTEST_WORKERS not in ("0", "1", "") and not _xdist_available():
         print("⚠️ pytest-xdist not installed — running serially", flush=True)
+
+    # Pin this checkout's own first-party packages onto every child's PYTHONPATH.
+    # Without it `import idp_common` follows the editable-install pointer in the
+    # interpreter's site-packages, which on a host sharing one interpreter between
+    # checkouts names whichever tree last ran an install — so the gate reports on
+    # that tree, and reports green while doing it, because the package it imported
+    # is a real revision of this one (#1094). Built once: the value is absolute and
+    # identical for every root.
+    child_env = pinned_environment(REPO_ROOT)
+
+    REPORT_DIR.mkdir(parents=True, exist_ok=True)
     failures: list[str] = []
+    unexplained: list[str] = []
+    observed: set[str] = set()
+    per_root: list[dict[str, object]] = []
     for root in roots:
         print(f"\n=== pytest -m '{marker}' {root} ===", flush=True)
+        xml_path = _junit_path(root)
+        xml_path.unlink(missing_ok=True)
         result = subprocess.run(
             [
                 python,
@@ -305,20 +484,117 @@ def run_gate(roots: list[str], integration: bool) -> int:
                 "-q",
                 "-p",
                 "no:cacheprovider",
+                # xunit1 is what carries the `file` attribute on each testcase;
+                # xunit2 drops it, leaving only a dotted classname that cannot be
+                # turned back into a path when two suites share a module name.
+                "-o",
+                "junit_family=xunit1",
+                f"--junitxml={xml_path}",
                 root,
             ],
             cwd=REPO_ROOT,
+            env=child_env,
         )
+        root_failures = failing_node_ids(xml_path, root)
+        observed.update(root_failures)
         # Exit code 5 == "no tests collected for this marker", which is fine.
-        if result.returncode not in (0, 5):
+        failed = result.returncode not in (0, 5)
+        if failed:
             failures.append(root)
+            if not root_failures:
+                unexplained.append(root)
+        per_root.append(
+            {
+                "root": root,
+                "exitCode": result.returncode,
+                "failed": failed,
+                "failing": sorted(root_failures),
+                "junit": _display_path(xml_path),
+            }
+        )
+
     print("\n" + "=" * 70)
     if failures:
-        print(f"❌ {len(failures)} test root(s) FAILED:")
+        print(f"{len(failures)} test root(s) reported failures:")
         for f in failures:
             print(f"  - {f}")
+
+    if integration:
+        # The declared baseline describes the non-integration battery, so an
+        # integration run has nothing to compare against: every declared row
+        # would read as "did not fail here" for the trivial reason that it was
+        # never run. Report and exit on the roots themselves.
+        _write_summary(
+            {
+                "schemaVersion": 1,
+                "generated": datetime.now(timezone.utc).isoformat(),
+                "commit": _head_commit(),
+                "marker": marker,
+                "roots": per_root,
+                "baselineCompared": False,
+                "verdict": "red" if failures else "green",
+            }
+        )
+        if failures:
+            return 1
+        print(f"✅ All {len(roots)} test roots passed.")
+        return 0
+
+    try:
+        declared = declared_failures()
+    except BaselineError as exc:
+        print(f"\n❌ the standing-failure baseline cannot be read: {exc}")
+        _write_summary(
+            {
+                "schemaVersion": 1,
+                "generated": datetime.now(timezone.utc).isoformat(),
+                "commit": _head_commit(),
+                "marker": marker,
+                "roots": per_root,
+                "baselineError": str(exc),
+            }
+        )
         return 1
-    print(f"✅ All {len(roots)} test roots passed.")
+
+    verdict = compare(observed, {row.node_id for row in declared})
+    print()
+    print(describe(verdict))
+    for root in unexplained:
+        print(
+            f"❌ {root} exited non-zero but its JUnit XML names no failing test — "
+            "a crash, an internal pytest error, or a failure before anything could "
+            "be collected. Read the output above; this is the one kind of failure "
+            "the baseline cannot cover, because it keys on test node ids and there "
+            "is none. (A module that fails to *import* does produce an entry, under "
+            "a synthetic name, so that case is declarable like any other.)"
+        )
+
+    _write_summary(
+        {
+            "schemaVersion": 1,
+            "generated": datetime.now(timezone.utc).isoformat(),
+            "commit": _head_commit(),
+            "marker": marker,
+            "roots": per_root,
+            "observed": list(verdict.observed),
+            "declared": list(verdict.declared),
+            "unexpected": list(verdict.unexpected),
+            "resolved": list(verdict.resolved),
+            "unexplainedRoots": unexplained,
+            "baselineCompared": True,
+            "verdict": "green" if verdict.agrees and not unexplained else "red",
+        }
+    )
+
+    if not verdict.agrees or unexplained:
+        return 1
+    if verdict.declared:
+        print(
+            f"✅ {len(roots)} test roots ran; the only failures are the "
+            f"{len(verdict.declared)} declared standing failure(s)."
+        )
+    else:
+        print(f"✅ All {len(roots)} test roots passed.")
     return 0
 
 

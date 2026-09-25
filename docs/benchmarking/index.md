@@ -26,7 +26,7 @@ separate — they answer different questions and are regenerated on different ca
 |----------|--------------------|---------|
 | **This guide** (`index.md`) | *How does the suite work and what do the numbers mean?* | Evergreen; edit when the harness changes. |
 | [Configuration Guidance](./config-guidance.md) | *Which config (OCR / mode / assessment / model) should I pick?* — cross-config at one release | Refreshed per release. |
-| [Classification Confidence](./studies/classification-confidence.md) | *When classification reports a confidence, is it worth acting on — and does that depend on the classifier?* | Re-run when the classifier default or the confidence mode changes. |
+| [Benchmark Studies](./studies/) | *One question each*, asked once during development and not regenerated per release — prompt caching, classification confidence, multi-instance sections, the seven advanced-extraction refinements, schema restatement, greedy decoding on tool use | Added when a one-off question is measured; the [index](./studies/) lists each study's verdict. |
 | [Release Audit Trail](./releases/) | *Is upgrading from the last published release safe / cheaper / faster?* — release-vs-release | **One new entry per release** (never overwritten). |
 
 The release audit trail is the durable history: `docs/benchmarking/releases/vX.Y.Z.md`
@@ -56,6 +56,16 @@ wrong conclusions here before:
 | `typed_accuracy` | The schema-**typed** target (`685.5`) | Whether values came back correctly typed. Populated only for truth files declaring `fields_typed`. |
 | `cell_accuracy` | Per-cell typed match on list rows, matched by `SEQ` tag | Value fidelity *inside* lists. Completeness answers "did the row come back"; this answers "with the right value". |
 | `sections_correct` | Section count vs `expected_sections`, as 1.0/0.0 | Boundary detection. Nothing else can see an over-split: a document split into 3 sections still reports `completeness_recall` 1.0 and status `COMPLETED`. The mean over repeats **is** the pass rate. |
+| `n_gaps` | Truth `SEQ` ids **absent** from the extraction | Completeness. It is an *extraction* metric and says nothing about confidence — a document can have `n_gaps` 0 and every recovered row unscored. |
+| `conf_coverage` | Extracted list rows carrying a confidence, over all extracted list rows | Whether the confidence surface covers the data. This is the quantity the `assessment_coverage_incomplete` guard fires on, computed by the same function (`idp_common.assessment.batching.confidence_coverage`) so the measurement and the guard cannot drift apart. |
+| `mean_confidence` | The mean of the confidence values that **exist** | The calibration question. It is silent about rows that have no confidence at all — that is `conf_coverage`'s job, and the two move independently. |
+
+`conf_coverage` is `None`, not `1.0`, for a document with no list attribute: coverage
+is undefined there, and `cell_stats` drops it rather than averaging it in. The cell
+roll-up carries min, max, stdev and CV as well as the mean, because a mean of 0.99 is
+equally consistent with every document at 0.99 and with one document at 0. The
+per-field breakdown (`conf_unscored_by_field`) is in `summary.json` only — the CSV
+carries the four scalars.
 
 **Did the feature under test actually engage?** `analyze.py` also reads the audit block
 each section records about itself, because a delta of zero is uninterpretable without
@@ -135,6 +145,7 @@ reference test sets to reference, with each doc's ground-truth pointer and confi
 | `advverify` | advanced × integrated + separate × 1 list doc, repeats=4 | Re-verifies the **tool-decline** list-loss hazard (an agent that declines the table tool returning the whole list as `null`). Run with `--set extraction_model=sonnet5` |
 | `astravalue` | Sonnet 5 vs OpenAI GPT-6 Astra, simple + advanced, 4 docs (3–26 pages) × **5 repeats** (100 runs) | **Does a ~4× more expensive frontier model earn its price for IDP?** See below |
 | `astracap` | The same pair plus the 25-page-shard arms on `scale_3200` (66 pages, ~790K tokens), repeats=2 | The **ceiling** arm: a document too large for *both* models in simple mode, so the finding is where the 1.05M window stops helping and sharding takes over. Expensive — opt in deliberately |
+| `opus55value` | Claude Opus 5.5 vs Claude Opus 5, simple + advanced, 2 docs (3–9 pages) × **5 repeats** (40 runs) | **Is the newer Opus actually cheaper for the same result?** The comparator is Opus 5 rather than the default, because the claim is a ratio and a ratio needs its denominator on the same documents. See below |
 | `full` | core + all one-axis sweeps — including the **extraction-model sweep**, which is what puts a model in the published guide | The deep study for the paper (expensive) |
 
 **Feature A/B suites.** Each pairs two cells that differ on exactly **one** config knob,
@@ -160,20 +171,22 @@ it skipped and why).
 
 "Selectable in the product" and "covered by the published guidance" are different
 things, and the difference is the **`extraction_model` sweep** — the one-axis sweep
-`full` runs (or, as for v0.6.8, `coresynth --set extraction_model=<m>` once per model),
+`full` runs (or, as for v0.6.8 and v0.6.9, `coresynth --set extraction_model=<m>` once per model),
 which is what the [Configuration Guidance](./config-guidance.md) §5 is computed from. A
 model only appears there if it has been swept, and the table records when:
 
 | Model | In the sweep | Measured | Note |
 |---|---|---|---|
-| Nova Lite | ✅ | **2026-09-12, v0.6.8** (full `coresynth`, 133 runs, 32 failed) | simple mode ≤100 rows only; cannot run the agentic path ([#895](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/895)) — [guide §5](./config-guidance.md#5-which-model-for-which-documents--the-model-axis-measured) |
-| Nova Pro | ✅ | **2026-09-12, v0.6.8** (`simplegrid`, 63 runs; full grid abandoned after 36 launches — advanced cells stuck in stream-error retries) | simple mode ≤100 rows only |
-| Claude Sonnet 4.6 | held as the sweep's control | 2026-09-12, v0.6.8 (`core`, 893 runs incl. both reference corpora) | the fixed baseline every sweep varies against; **best value in the v0.6.8 grid** |
-| **Claude Sonnet 5** (default), Sonnet 5 `:1m` | ✅ | **2026-09-12, v0.6.8** (133 runs each; Sonnet 5 also `core` with both corpora, `scaling`, `cost`, `intconf`, `advverify`, `astravalue`, `astracap`) | the shipped default; `:1m` matched its accuracy at every size that fits and rescued no request on this corpus (its reported +10% / +51% cost predates the #899 pricing fix and overstates the variant — the two are billed at identical rates, the 1M window carrying no premium) |
-| **Claude Opus 5** | ✅ | **2026-09-12, v0.6.8** (133 runs) | most complete model in the grid (0.993) at +23% / +41% over Sonnet 5; accuracy identical |
-| **OpenAI GPT-6 Astra** | ✅ | **2026-09-12, v0.6.8** (133 runs + `astravalue` 100 + `astracap` 12) | at ceiling on the agentic path at 1.6× Sonnet 5; in simple mode returns an empty response on the 17-page document (13 of 13 draws) and rewrites descriptions on the 26-page one — [guide §5.2](./config-guidance.md#52-is-a-premium-model-worth-it-astravalue-astracap) |
+| Nova Lite | ✅ | 2026-09-12, **v0.6.8** (full `coresynth`, 133 runs, 32 failed) — not re-measured on v0.6.9 | simple mode ≤100 rows only; cannot run the agentic path ([#895](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/895)) — [guide §5](./config-guidance.md#5-which-model-for-which-documents--the-model-axis-measured) |
+| Nova Pro | ✅ | 2026-09-12, **v0.6.8** (`simplegrid`, 63 runs; not re-measured on v0.6.9; full grid abandoned after 36 launches — advanced cells stuck in stream-error retries) | simple mode ≤100 rows only |
+| Claude Sonnet 4.6 | held as the sweep's control | **2026-09-19, v0.6.9** (`core`, 893 runs incl. both reference corpora) | the fixed baseline every sweep varies against; cheapest of the three measured on v0.6.9 ($0.537/doc) and the only one that failed runs (4 of 133) |
+| **Claude Sonnet 5** (default) | ✅ | **2026-09-19, v0.6.9** (133 runs, plus `scaling`, `scalingsimple`, `cost`, `advverify`, `astravalue`, `astracap`) | the shipped default; 0 failures of 133 at $0.676/doc, no confidence leaf below 0.9 anywhere in the grid |
+| Sonnet 5 `:1m` | ✅ | 2026-09-12, **v0.6.8** (133 runs) — not re-measured on v0.6.9 | matched Sonnet 5's accuracy at every size that fits and rescued no request on this corpus (its reported +10% / +51% cost predates the #899 pricing fix and overstates the variant — the two are billed at identical rates, the 1M window carrying no premium) |
+| **Claude Opus 5** | ✅ | 2026-09-12, **v0.6.8** (133 runs) — not re-measured on v0.6.9 | most complete model in the grid (0.993) at +23% / +41% over Sonnet 5; accuracy identical |
+| **Claude Opus 5.5** | ✅ (`extraction_model` sweep + the `opus55value` pair) | ❌ **not yet measured** — added to the matrix on 2026-09-23, no run behind it | Its rate card is cheaper than Opus 5 in every category ($4/$20 per 1M vs $5/$25, and a cache read at 0.05x input rather than 0.1x), and its launch claim adds "fewer tokens for the same task" on top — three multipliers that compound, so **no cost figure for it should be quoted until `opus55value` has run**. Two behaviours also differ from Opus 5 in ways a run will show: thinking cannot be disabled (effort is the only spend lever, and its default is `medium` where Opus 5's is `high` — per the model card; a default is not observable from a response, so it is cited rather than measured), and a forced `toolChoice` is rejected, so the `forcing` axis cannot be `on` for it |
+| **OpenAI GPT-6 Astra** | ✅ | **2026-09-19, v0.6.9** (133 runs + `astravalue` 100 + `astracap` 12) | the only model at recall 1.000 **and** scalar accuracy 1.000 on all 19 v0.6.9 grid cells (documents ≤400 rows), at 2.6× Sonnet 5's cost and marginally behind on per-row cell accuracy (0.977 vs 0.999); in simple mode returns an empty response on the 17-page document (13 of 13 draws) and rewrites descriptions on the 26-page one — [guide §5.2](./config-guidance.md#52-is-a-premium-model-worth-it-astravalue-astracap-opus55value) |
 | `global.openai.gpt-6-astra` | ❌ deliberately; measured in `astravalue` only | 2026-09-12 (20 runs) | same weights ~10% cheaper (measured $0.94 vs $1.10 on the 9-page document); same simple-mode failure shape |
-| Claude Haiku 4.5 (classification only) | ✅ `classification_model` axis | **2026-09-12, v0.6.8** (133 runs) | see the guide §5.3 |
+| Claude Haiku 4.5 (classification only) | ✅ `classification_model` axis | 2026-09-12, **v0.6.8** (133 runs) — not re-measured on v0.6.9 | see the guide §5.3 |
 | xAI Grok 4.6 | ❌ | — | not yet measured — see `docs/grok-models.md` for its documented capabilities |
 
 The classification-model axis (Nova 2 Lite default · Sonnet 5 · Haiku 4.5) and the
@@ -238,6 +251,54 @@ Two things to know before reading the output:
 cost. A premium model earns its price only where the accuracy gap is large enough that
 the cheaper model would need human review to close it. If accuracy ties, the answer is
 the cheaper model.
+
+### Is the newer Opus cheaper for the same result? (`opus55value`)
+
+The same method, one generation apart: Claude Opus 5.5 against Claude Opus 5, with only
+`extraction.model` differing. The comparator is Opus 5 rather than the shipped default
+because the claim under test names it — Opus 5.5 is cheaper per token, has cheaper cache
+reads, and is said to use fewer tokens for the same task — and a ratio needs its
+denominator run on the same documents, on the same stack, in the same window.
+
+**Three multipliers compound, so the rate card cannot predict the answer.** Input and
+output are 0.8× Opus 5's ($4/$20 per 1M against $5/$25). A cache read is 0.05× input
+rather than the 0.1× every other model in `config_library/pricing.yaml` uses, so cached
+reads are 0.4× Opus 5's per-token cost, not 0.8×. And "fewer tokens" is a third factor
+the price list says nothing about. The rate card alone predicts about −20%; anything
+beyond that is the token claim, and anything short of it is worth explaining before it
+is published.
+
+| Doc | Size | What it isolates |
+|---|---|---|
+| `small_narrow` | 3 pages, ~35K | **Control.** Both models are already at ceiling, so a cost delta here is the rate card and nothing else |
+| `med_narrow` | 9 pages, ~108K | 3× the size, still one request in simple mode: where a per-token difference is large enough to read |
+
+Three things to know before reading the output:
+
+- **The documents are a deliberate subset of `astra_docs`.** `large_narrow` (17 pages)
+  and `dense_250` (26 pages) are in that set because Astra's window reaches them and
+  Sonnet 5's does not — that asymmetry *is* the Astra finding. Opus 5 and Opus 5.5
+  share one window and one sizing budget, so both simple-mode arms would be refused on
+  both documents: an A/B whose two arms fail identically measures nothing and is still
+  billed. The ceiling question belongs to `astracap`, which already owns it.
+- ⚠️ **This suite measures the switch, not the model.** Opus 5.5 defaults to `medium`
+  reasoning effort where Opus 5 defaults to `high`, and neither cell sets
+  `reasoning_effort` — so the two arms differ by model *and* by default effort. That is
+  what a user who changes the model and nothing else actually gets, which is the
+  decision the guide has to inform, but it is not a model-for-model comparison. To
+  separate the two, re-run with `--set reasoning_effort=high` on both arms and read the
+  difference between the two runs.
+- **`repeats: 5` is what makes a cost claim sayable at all**, for the same reason
+  `astravalue` uses it: agentic cost is non-deterministic (turn-count spreads around 4×
+  have been observed), so a single draw per cell cannot resolve a cost *difference*.
+  It also exercises the cache-read rate that is half of the price story — runs 2–5
+  re-send an identical prefix, so read the per-run series rather than the mean.
+
+**Forcing cannot be part of this comparison.** Opus 5.5 rejects a forced `toolChoice`,
+so with `extraction.forced_tool.enabled` on it falls back to the prose schema and
+records the reason in the section metadata, while Opus 5 forces normally. A `forcing`
+A/B built on Opus 5.5 would show a delta of zero for a reason that has nothing to do
+with forcing.
 
 > **Picking the extraction model.** The committed `default_cell` holds `extraction_model` at
 > a **cross-version control** so the release A/B runs on a model every compared release can

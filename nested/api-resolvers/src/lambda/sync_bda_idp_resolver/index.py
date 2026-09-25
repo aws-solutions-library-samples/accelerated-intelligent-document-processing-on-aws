@@ -3,16 +3,20 @@
 
 import logging
 import os
-import time
 from typing import Any, Dict
 
 import boto3
-from boto3.dynamodb.conditions import Key as DDBKey
 from idp_common.bda.bda_blueprint_service import (
     BdaBlueprintService,  # type: ignore[import-untyped]
 )
 from idp_common.config import ConfigurationManager
-from idp_common.config_scope import scope_allows
+from idp_common.config_scope import (
+    ScopeLookupError,
+    caller_email_from_claims,
+    caller_sub_from_claims,
+    resolve_allowed_config_versions,
+    scope_allows,
+)
 
 logger = logging.getLogger()
 logger.setLevel(os.environ.get("LOG_LEVEL", "INFO"))
@@ -31,49 +35,53 @@ _dynamodb = boto3.resource("dynamodb")
 _user_scope_cache: dict = {}
 _USER_SCOPE_CACHE_TTL = 60  # seconds
 
+# How many orphaned blueprint ARNs to name in the response message. The rest are
+# counted and left to the log line, which carries all of them.
+ORPHAN_ARNS_IN_MESSAGE = 10
+
 
 def _get_caller_info(event: Dict[str, Any]) -> Dict[str, Any]:
+    """The caller's identity from the resolver event.
+
+    ``email`` is the config-version scope lookup key and comes from the ``email``
+    claim alone — see ``caller_email_from_claims``. ``username`` keeps its
+    fallback chain: it is not a scope key.
+    """
     identity = event.get("identity") or {}
     claims = identity.get("claims") or {}
     groups = claims.get("cognito:groups") or []
     if isinstance(groups, str):
         groups = [groups]
     username = claims.get("cognito:username") or claims.get("sub") or ""
-    email = claims.get("email") or identity.get("username") or username
+    email = caller_email_from_claims(claims)
+    # The immutable Cognito sub, the config-version scope lookup's PREFERRED key.
+    # It is not a fallback for the email: the two go to disjoint key spaces on the
+    # UsersTable. See caller_sub_from_claims.
+    caller_sub = caller_sub_from_claims(claims)
     return {
         "email": email,
+        "sub": caller_sub,
         "username": username,
         "groups": groups,
         "is_admin": "Admin" in groups,
     }
 
 
-def _get_user_allowed_config_versions(caller_email: str):
-    """Look up the caller's `allowedConfigVersions` with a per-container TTL cache."""
-    users_table_name = os.environ.get("USERS_TABLE_NAME", "")
-    if not users_table_name or not caller_email:
-        return None
-    now = time.time()
-    cached = _user_scope_cache.get(caller_email)
-    if cached and (now - cached["timestamp"]) < _USER_SCOPE_CACHE_TTL:
-        return cached["scope"]
-    try:
-        users_table = _dynamodb.Table(users_table_name)
-        resp = users_table.query(
-            IndexName="EmailIndex",
-            KeyConditionExpression=DDBKey("email").eq(caller_email),
-        )
-        items = resp.get("Items", [])
-        if items:
-            scope = items[0].get("allowedConfigVersions")
-            result = list(scope) if scope and len(scope) > 0 else None
-        else:
-            result = None
-    except Exception as e:
-        logger.warning(f"Failed to look up user scope for {caller_email}: {e}")
-        result = None
-    _user_scope_cache[caller_email] = {"scope": result, "timestamp": now}
-    return result
+def _get_user_allowed_config_versions(caller_email: str, caller_sub: str = ""):
+    """The caller's `allowedConfigVersions`, or None for an unrestricted caller.
+
+    Thin wrapper over the shared fail-closed lookup so every consumer of this
+    rule resolves it identically. Raises `ScopeLookupError` when the scope cannot
+    be evaluated; the caller must deny rather than proceed unrestricted.
+    """
+    return resolve_allowed_config_versions(
+        caller_email,
+        caller_sub=caller_sub,
+        users_table_name=os.environ.get("USERS_TABLE_NAME", ""),
+        dynamodb=_dynamodb,
+        cache=_user_scope_cache,
+        cache_ttl=_USER_SCOPE_CACHE_TTL,
+    )
 
 
 def handler(event: Dict[str, Any], context) -> Dict[str, Any]:
@@ -91,6 +99,12 @@ def handler(event: Dict[str, Any], context) -> Dict[str, Any]:
     - "bidirectional": Sync both directions (default for backward compatibility)
     - "cleanup_orphaned": Delete orphaned BDA blueprints not in current IDP config
     """
+    # Bound before the try so the handler of last resort can still ask the service
+    # whether the sync left a blueprint behind. The deletes run before the last two
+    # steps of a sync, both of which can raise, so "the sync raised" does not mean
+    # "nothing was removed from the project".
+    bda_service = None
+
     try:
         logger.info("Starting BDA/IDP sync")
         # NOTE: do NOT log full event — it contains identity.claims which
@@ -134,7 +148,32 @@ def handler(event: Dict[str, Any], context) -> Dict[str, Any]:
         # against a version (and its linked BDA project) outside their
         # scope. Admins are unrestricted.
         if not caller["is_admin"]:
-            allowed_versions = _get_user_allowed_config_versions(caller["email"])
+            # Fails CLOSED: a scope that cannot be *evaluated* is not a caller
+            # without restrictions (AUTH.T07). The denial uses this resolver's
+            # in-band Unauthorized shape, the same one an out-of-scope version
+            # gets, so the UI renders it identically.
+            try:
+                allowed_versions = _get_user_allowed_config_versions(
+                    caller["email"], caller.get("sub", "")
+                )
+            except ScopeLookupError as e:
+                logger.error(
+                    "Denying syncBdaIdp: config-version scope could not be "
+                    "resolved: %s",
+                    e,
+                )
+                return {
+                    "success": False,
+                    "error": {
+                        "type": "Unauthorized",
+                        "message": (
+                            "Access denied: your configuration scope could not "
+                            "be verified"
+                        ),
+                    },
+                    "processedClasses": [],
+                    "direction": sync_direction,
+                }
             if not scope_allows(allowed_versions, versionName):
                 logger.warning(
                     "Rejecting syncBdaIdp: caller %s is scoped to %s but requested "
@@ -276,6 +315,38 @@ def handler(event: Dict[str, Any], context) -> Dict[str, Any]:
 
         logger.info(f"BDA Service results: {result}")
 
+        # A replace-mode sync removes a blueprint from the project before deleting it,
+        # so a delete that fails leaves one in the account that no project-scoped read
+        # can see and only the account-wide cleanup will find. It belongs to no
+        # document class, so it is absent from the per-class result above; without
+        # this it reached CloudWatch and nowhere the user looks.
+        #
+        # Carried on `message` rather than as a new response field because that is what
+        # the UI already renders, and the literal "WARNING" is load-bearing there: a
+        # sync message containing it is left on screen instead of being auto-dismissed
+        # after five seconds.
+        orphaned_arns = list(bda_service.orphaned_blueprint_arns)
+        orphan_detail = ""
+        if orphaned_arns:
+            # Named individually up to a limit. A sync that left dozens produces one
+            # unreadable multi-kilobyte alert otherwise, and the count plus the remedy
+            # is what the reader acts on; every ARN is in the log line below.
+            shown = orphaned_arns[:ORPHAN_ARNS_IN_MESSAGE]
+            listed = ", ".join(shown)
+            if len(orphaned_arns) > len(shown):
+                listed += f", and {len(orphaned_arns) - len(shown)} more (see the logs)"
+            orphan_detail = (
+                f". WARNING: {len(orphaned_arns)} blueprint(s) were removed from the "
+                f"BDA project but could not be deleted, so they remain in the account, "
+                f"count against the blueprint limit and can still be matched by name "
+                f"prefix. They are removed by the orphaned-blueprint cleanup — this "
+                f"same operation with direction 'cleanup_orphaned'. Affected: "
+                f"{listed}"
+            )
+            logger.error(
+                f"Sync left {len(orphaned_arns)} orphaned blueprint(s): {orphaned_arns}"
+            )
+
         # Extract processed class names and warnings for response
         sync_failed_classes = []
         sync_succeeded_classes = []
@@ -322,7 +393,7 @@ def handler(event: Dict[str, Any], context) -> Dict[str, Any]:
                 manager.set_bda_sync_status(versionName, "error")
             return {
                 "success": False,
-                "message": f"Synchronization failed for all {len(sync_failed_classes)} document classes.{failure_detail}",
+                "message": f"Synchronization failed for all {len(sync_failed_classes)} document classes.{failure_detail}{orphan_detail}",
                 "processedClasses": [],
                 "direction": sync_direction,
                 "bdaProjectArn": bda_project_arn,
@@ -332,15 +403,24 @@ def handler(event: Dict[str, Any], context) -> Dict[str, Any]:
                     # to a short shape so a UI rendering both fields doesn't
                     # duplicate the same failure-reasons text twice.
                     # Round-7 review fix.
+                    #
+                    # The orphan warning is the exception, and deliberately appears in
+                    # both fields on this branch: the web UI's failure path renders
+                    # `error.message` and falls back to `message` only when it is
+                    # absent, so text that is only on `message` here is in the response
+                    # and invisible. `message` keeps it as the complete record.
                     "type": "SYNC_ERROR",
-                    "message": f"Failed to sync classes: {', '.join(sync_failed_classes)}",
+                    "message": (
+                        f"Failed to sync classes: "
+                        f"{', '.join(sync_failed_classes)}{orphan_detail}"
+                    ),
                 },
             }
         elif len(sync_failed_classes) > 0:
             # Partial failure
             return {
                 "success": True,  # Partial success
-                "message": f"Successfully synchronized {len(sync_succeeded_classes)} document classes. Failed to sync {len(sync_failed_classes)} classes: {', '.join(sync_failed_classes)}{failure_detail}",
+                "message": f"Successfully synchronized {len(sync_succeeded_classes)} document classes. Failed to sync {len(sync_failed_classes)} classes: {', '.join(sync_failed_classes)}{failure_detail}{orphan_detail}",
                 "processedClasses": sync_succeeded_classes,
                 "direction": sync_direction,
                 "bdaProjectArn": bda_project_arn,
@@ -373,12 +453,22 @@ def handler(event: Dict[str, Any], context) -> Dict[str, Any]:
                 for cls, props in warnings_by_class.items():
                     warning_details.append(f"{cls}: {', '.join(props)}")
 
+                # The per-property reason is on each entry of the `warnings` array.
+                # This summary covers all of them, which is why it no longer names
+                # only the definition-level nesting limit: a property nested at the
+                # top level, and one whose value is not a schema object at all, are
+                # also dropped and are also reported here.
                 message += (
-                    f". WARNING: Some properties were skipped due to a current BDA limitation - "
-                    f"nested arrays and objects within schema definitions are not yet supported. "
-                    f"To include these properties, flatten your schema by moving nested structures to top-level $defs. "
+                    f". WARNING: Some properties were skipped and are not part of "
+                    f"the extraction contract. Most are a current BDA limitation - "
+                    f"objects and arrays nested inside objects are not yet "
+                    f"supported - and can be included by flattening the schema so "
+                    f"the nested structures sit in top-level $defs. See the "
+                    f"warnings list for the reason per property. "
                     f"Skipped: {'; '.join(warning_details)}"
                 )
+
+            message += orphan_detail
 
             response = {
                 "success": True,
@@ -397,11 +487,29 @@ def handler(event: Dict[str, Any], context) -> Dict[str, Any]:
 
     except Exception as e:
         logger.error(f"BDA/IDP sync failed: {str(e)}", exc_info=True)
+        # Guarded on `bda_service` rather than on the attribute. A `getattr` default
+        # covers the `None` case too, but it also covers an attribute that has gone
+        # missing — which would report no orphans, silently and forever, and that is the
+        # exact failure this change exists to remove.
+        failed_orphans = (
+            list(bda_service.orphaned_blueprint_arns) if bda_service is not None else []
+        )
+        orphan_note = ""
+        if failed_orphans:
+            logger.error(
+                f"The failed sync left {len(failed_orphans)} orphaned "
+                f"blueprint(s): {failed_orphans}"
+            )
+            orphan_note = (
+                f" WARNING: it also left {len(failed_orphans)} blueprint(s) removed "
+                f"from the BDA project but not deleted. Run this operation with "
+                f"direction 'cleanup_orphaned' to remove them."
+            )
         return {
             "success": False,
             "error": {
                 "type": "SYNC_ERROR",
-                "message": f"Sync operation failed: {str(e)}",
+                "message": f"Sync operation failed: {str(e)}.{orphan_note}",
             },
             "processedClasses": [],
             "direction": arguments.get("direction", "bidirectional")

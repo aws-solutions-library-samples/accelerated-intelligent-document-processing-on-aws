@@ -19,9 +19,8 @@ anything:
 
 import json
 
-import pytest
-
 import codebuild_deployment as cbd
+import pytest
 import transform_deploy_test as tdt
 
 pytestmark = pytest.mark.unit

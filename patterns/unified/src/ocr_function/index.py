@@ -54,7 +54,12 @@ logger.setLevel(os.environ.get("LOG_LEVEL", "INFO"))
 logging.getLogger('idp_common.bedrock.client').setLevel(os.environ.get("BEDROCK_LOG_LEVEL", "INFO"))
 
 # Initialize settings
-region = os.environ['AWS_REGION']
+# AWS_REGION is read in the handler, not here: importing this module must not
+# require a region. Every sibling handler under patterns/unified/src already
+# behaves this way, and patterns/unified/tests/test_handler_imports_are_region_free.py
+# enforces it for each handler some test_*.py in the tree names. The lookup is
+# still unguarded at the point of use, so a genuinely absent AWS_REGION is as
+# loud as before — just at invoke time, where Lambda always sets it.
 METRIC_NAMESPACE = os.environ.get('METRIC_NAMESPACE')
 MAX_WORKERS = int(os.environ.get('MAX_WORKERS', 20))
 
@@ -176,7 +181,7 @@ def discover_existing_ocr_pages(output_bucket, input_key):
 
     return completed_pages
 
-@xray_recorder.capture('ocr_function')
+@xray_recorder.capture('ocr_function')  # pyright: ignore[reportCallIssue] - aws-xray-sdk types capture() as the wrapped function, not the decorator factory
 def handler(event, context): 
     """
     Lambda handler for OCR processing.
@@ -252,7 +257,7 @@ def handler(event, context):
     
     logger.info(f"Initializing OCR with backend: {backend}")
     service = ocr.OcrService(
-        region=region,
+        region=os.environ['AWS_REGION'],
         config=config,
         backend=backend
     )

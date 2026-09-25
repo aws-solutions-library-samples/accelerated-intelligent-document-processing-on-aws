@@ -924,6 +924,12 @@ type TestSetDocumentsPage @aws_cognito_user_pools @aws_iam {
   # while something polls: without this a browser refresh mid-run dropped the
   # poll and the set showed "Labeling" indefinitely.
   activeLabelJobId: String
+  # The set's own status (COMPLETED, UPDATING, COPYING, GENERATING, FAILED, …).
+  # Carried here because the set's page has no other source for it: there is no
+  # per-set query, and getTestSets is Admin-or-Author (this page is reachable by an
+  # Annotator) and repairs stale state as a side effect, so it cannot go on a page
+  # load. A control that must not act on a set still being written reads this.
+  status: String
 }
 
 type TestSetVersion @aws_cognito_user_pools @aws_iam {
@@ -933,6 +939,27 @@ type TestSetVersion @aws_cognito_user_pools @aws_iam {
   notes: String
   fileCount: Int
   activeReference: Int
+  """
+  How many baseline objects publishing copied into `{testSetId}/versions/{version}/baseline/`.
+
+  `null` means the version was published before publishing copied anything, so its content
+  was captured — if at all — when annotation next opened a draft, which is not necessarily
+  the state that was published. `0` means the set genuinely had no labels yet. This is
+  provenance; for what a run pinned to the version will score against, read
+  `hasStoredLabels`.
+  """
+  snapshotObjectCount: Int
+  """
+  Whether this version has labels stored under `{testSetId}/versions/{version}/baseline/`.
+
+  The only field that answers what a run pinned to this version scores against: the file
+  copier stages that prefix when it is non-empty and falls back to the set's **current**
+  labels when it is not. It is not derivable from `snapshotObjectCount` in either
+  direction — a version published before publishing copied anything has no count and yet
+  does have labels once annotation backfilled them, and a version published from a set with
+  no labels yet has a count of `0` and no stored labels at all.
+  """
+  hasStoredLabels: Boolean
   createdAt: AWSDateTime
   createdBy: String
 }
@@ -940,10 +967,14 @@ type TestSetVersion @aws_cognito_user_pools @aws_iam {
 """
 The version transition an annotation session commits to.
 
-`baseVersion` is the state being left, snapshotted to
-`{testSetId}/versions/{baseVersion}/baseline/` so the number refers to bytes rather than
+`baseVersion` is the state being left. Publishing it copied its baselines to
+`{testSetId}/versions/{baseVersion}/baseline/`, so the number refers to bytes rather than
 to whatever the labels happen to be later. `draftVersion` is what the session is working
 toward, and what the queue link carries so a link identifies its transition.
+
+`snapshotObjectCount` is what *this call* copied: 0 whenever `baseVersion` was already
+frozen by its publish, non-zero when it published the arriving state itself or backfilled
+a version published before publishing copied anything.
 """
 type TestSetAnnotationDraft @aws_cognito_user_pools @aws_iam {
   testSetId: String!
@@ -965,6 +996,14 @@ input PublishTestSetVersionInput {
   label: String
   notes: String
   setAsActiveReference: Boolean
+  """
+  Makes a retry safe. Publishing copies the set's labels, and the dispatcher abandons the
+  request at 20s while the resolver runs on — so a caller can be told the publish failed
+  after it in fact succeeded. Publishing again would then create a second version and a
+  second full copy. Send the same token on a retry and the version already recorded under it
+  is returned instead. Omit it and every call publishes.
+  """
+  clientToken: String
 }
 
 # An async draft-labeling job: runs the active config over a test set's
@@ -1377,11 +1416,19 @@ type CircuitBreakerStatus @aws_cognito_user_pools @aws_iam {
 # =============================================================================
 # RBAC: Role-Based Access Control via @aws_cognito_user_pools(cognito_groups: [...])
 #
-# Roles (Cognito Groups):
+# Roles (Cognito Groups) — five, and the five `AWS::Cognito::UserPoolGroup`
+# resources in template.yaml are the vocabulary of record:
 #   - Admin: Full access to all operations
 #   - Author: Can create/modify configurations, upload documents, run tests
 #   - Reviewer: Can review documents and perform HITL operations
-#   - Viewer: Read-only access (default for authenticated users)
+#   - Annotator: Annotates ground truth for its assigned test sets only, and
+#     nothing else — the one role scoped per object (allowedTestSets)
+#   - Viewer: Read-only access to documents, configuration and agent chat
+#
+# A caller in NO group is not a Viewer. Self-service sign-up (when
+# AllowedSignUpEmailDomain is set) produces a valid token with an empty
+# cognito:groups claim, and the operations that must refuse that caller name all
+# five groups here.
 #
 # Note: @aws_cognito_user_pools (no args) allows any authenticated user
 #       @aws_cognito_user_pools(cognito_groups: [...]) restricts to specific groups
@@ -1560,6 +1607,10 @@ type Mutation {
     @aws_cognito_user_pools(cognito_groups: ["Admin", "Author"])
   addDocumentsToTestSet(testSetId: String!, filePattern: String!, bucketType: String!, fileCount: Int!, modifiedAfter: String): TestSet
     @aws_cognito_user_pools(cognito_groups: ["Admin"])
+  # Add processed documents the caller picked, by input-bucket key. A document
+  # with no ground truth is added unlabeled rather than skipped.
+  addDocumentsToTestSetByKey(testSetId: String!, objectKeys: [String!]!): TestSet
+    @aws_cognito_user_pools(cognito_groups: ["Admin", "Author"])
   addDocumentsToTestSetFromUpload(input: TestSetDocumentsUploadInput!): TestSetUploadResponse
     @aws_cognito_user_pools(cognito_groups: ["Admin", "Author"])
   updateTestSet(input: UpdateTestSetInput!): TestSet
@@ -1659,7 +1710,13 @@ type Mutation {
     @aws_cognito_user_pools(cognito_groups: ["Admin", "Reviewer", "Annotator"])
 
   # All authenticated users (creates state but read-like operations)
-  deleteAgentJob(jobId: ID!): Boolean @aws_cognito_user_pools
+  # A mutation, so an assigned group is required (the five names are how
+  # `ANY_GROUP` is spelled in a schema that cannot express it — see the note on
+  # `type Query`). The caller's own PK is enforced in ddb_direct on top of it.
+  deleteAgentJob(jobId: ID!): Boolean
+    @aws_cognito_user_pools(
+      cognito_groups: ["Admin", "Annotator", "Author", "Reviewer", "Viewer"]
+    )
   # Agent Chat operations. Reviewer is excluded from Agent Chat: the group
   # restriction is declared here AND enforced server-side in each resolver's
   # _caller_in_groups check (the single REST route's authorizer only
@@ -1679,7 +1736,14 @@ type Mutation {
   updateAgentChatMessage(sessionId: ID!, content: String!): AgentChatMessage
     @aws_cognito_user_pools
     @aws_iam
-  deleteChatSession(sessionId: ID!): Boolean @aws_cognito_user_pools @aws_iam
+  # A mutation, so an assigned group is required. Own-session ownership scope is
+  # enforced in the resolver on top of it; @aws_iam stays for the processor's
+  # backend calls, which carry no Cognito identity.
+  deleteChatSession(sessionId: ID!): Boolean
+    @aws_cognito_user_pools(
+      cognito_groups: ["Admin", "Annotator", "Author", "Reviewer", "Viewer"]
+    )
+    @aws_iam
   updateChatSessionTitle(sessionId: ID!, title: String!): ChatSession
     @aws_cognito_user_pools
     @aws_iam
@@ -1688,6 +1752,13 @@ type Mutation {
   # initiate; the processor Lambda calls it via IAM with method="assistant_*"
   # to publish status/delta/final events. All calls broadcast via
   # onChatDocumentMessageUpdate.
+  #
+  # An assigned group is required: this sends document content to a model and
+  # bills inference. ⚠️ The directive and the dispatcher's floor both apply to the
+  # REST route only. The streaming Lambda Function URL (POST /chat/document)
+  # reaches the same processor and forwards no cognito:groups claim at all, so a
+  # caller in no group is refused here and is not refused there — GAP-07 in
+  # scripts/api_rbac_expectations.yaml.
   sendChatDocumentMessage(
     sessionId: String!
     prompt: String!
@@ -1699,7 +1770,11 @@ type Mutation {
     content: String           # used by processor publishes (delta/final/error/status)
     role: String
     isProcessing: Boolean
-  ): ChatDocumentMessage @aws_cognito_user_pools @aws_iam
+  ): ChatDocumentMessage
+    @aws_cognito_user_pools(
+      cognito_groups: ["Admin", "Annotator", "Author", "Reviewer", "Viewer"]
+    )
+    @aws_iam
 
   # Circuit Breaker admin controls — Admin only.
   pauseCircuitBreaker(reason: String!): CircuitBreakerStatus
@@ -1804,13 +1879,27 @@ type DocumentCount @aws_cognito_user_pools @aws_iam {
 }
 
 # RBAC for Queries:
-# Most queries are open to all authenticated users, with server-side filtering in Lambda resolvers
-# (e.g., reviewer document filtering, config-version scoping). Feature-specific queries that should
-# not be accessible to Reviewer role are restricted via @aws_cognito_user_pools(cognito_groups) directives at the field level.
-# Document queries remain open to all roles (filtering is done server-side in resolvers).
+# A field with no directive inherits the type default below — any authenticated
+# Cognito caller, which includes a self-registered user in NO group. Fields that
+# must not be reachable that way carry an explicit
+# @aws_cognito_user_pools(cognito_groups) directive, and the static scan's check
+# S2 fails if one disagrees with scripts/api_rbac_expectations.yaml.
+#
+# Document-content reads name ALL FIVE groups. That is how "the caller must hold
+# an assigned group, whichever one" is written here, because GraphQL has no way
+# to say it: the expectations file declares `ANY_GROUP` and the dispatcher's
+# generated manifest resolves it against the AWS::Cognito::UserPoolGroup
+# resources in template.yaml, so the enforced set follows the template
+# automatically. These directives do not — adding a sixth group to the template
+# makes S2 fail until it is named here as well, which is the intended way to be
+# told. Row filtering (reviewer scope, allowedConfigVersions) still happens in
+# the resolvers on top of this.
 type Query @aws_cognito_user_pools @aws_iam {
-  # Document queries - all authenticated users (reviewer filtering done in resolver)
+  # Document queries - an assigned group required; reviewer/scope filtering in resolver
   getDocument(ObjectKey: ID!): Document
+    @aws_cognito_user_pools(
+      cognito_groups: ["Admin", "Annotator", "Author", "Reviewer", "Viewer"]
+    )
   listDocuments(
     startDateTime: AWSDateTime
     endDateTime: AWSDateTime
@@ -1823,35 +1912,87 @@ type Query @aws_cognito_user_pools @aws_iam {
     # filter: an unrecognised value would otherwise silently return PRODUCTION.
     view: DocumentView = PRODUCTION
   ): DocumentPage
+    @aws_cognito_user_pools(
+      cognito_groups: ["Admin", "Annotator", "Author", "Reviewer", "Viewer"]
+    )
+  # The header figure for listDocuments, so it takes the same access model. The two
+  # filters it shares with that list (config-version scope, reviewer-only) narrow
+  # nothing for a caller in no group, so the count such a caller would receive is
+  # the deployment's whole tally.
   getDocumentCount(
     startDateTime: AWSDateTime
     endDateTime: AWSDateTime
     # Must match the listDocuments view or the header count contradicts the rows.
     view: DocumentView = PRODUCTION
   ): DocumentCount
+    @aws_cognito_user_pools(
+      cognito_groups: ["Admin", "Annotator", "Author", "Reviewer", "Viewer"]
+    )
+  # Raw TrackingTable index rows for one date partition, each carrying ObjectKey
+  # and no filtering — a source of document keys, so an assigned group is required.
+  # Neither is called by the web UI; the timeline pages through listDocuments.
   listDocumentsDateHour(date: AWSDate, hour: Int): DocumentList
+    @aws_cognito_user_pools(
+      cognito_groups: ["Admin", "Annotator", "Author", "Reviewer", "Viewer"]
+    )
   listDocumentsDateShard(date: AWSDate, shard: Int): DocumentList
+    @aws_cognito_user_pools(
+      cognito_groups: ["Admin", "Annotator", "Author", "Reviewer", "Viewer"]
+    )
   listDocumentsByDateRange(
     startDateTime: AWSDateTime!
     endDateTime: AWSDateTime!
     limit: Int
     nextToken: String
   ): DocumentPage
+    @aws_cognito_user_pools(
+      cognito_groups: ["Admin", "Annotator", "Author", "Reviewer", "Viewer"]
+    )
   getFileContents(s3Uri: String!, versionId: String): FileContentsResponse
+    @aws_cognito_user_pools(
+      cognito_groups: ["Admin", "Annotator", "Author", "Reviewer", "Viewer"]
+    )
   getSampleDocumentUrl(s3Key: String!): SampleDocumentUrl
     @aws_cognito_user_pools(cognito_groups: ["Admin", "Author", "Viewer"])
   # Returns a short-lived presigned GET URL so the browser can fetch a file's
   # bytes directly from S3 — used for files too large to proxy through
   # getFileContents (Lambda's 6 MB synchronous response cap). Same access model
-  # as getFileContents: any authenticated user, bucket allow-list enforced.
+  # as getFileContents: an assigned group, bucket allow-list enforced. This one
+  # issues a capability — the URL carries its own authorization for the lifetime
+  # of the signature — so it is the least able to rely on a later check.
   getFilePresignedUrl(s3Uri: String!, versionId: String): FilePresignedUrlResponse
+    @aws_cognito_user_pools(
+      cognito_groups: ["Admin", "Annotator", "Author", "Reviewer", "Viewer"]
+    )
+  # The execution input and step history name the document and the S3 location of
+  # its full state, so an assigned group is required. The resolver's two per-object
+  # checks (the ARN must name this deployment's state machine; the caller's
+  # allowedConfigVersions must cover the execution's config version) stay on top of
+  # it — the second one is inert for a caller no UsersTable row matches, who is
+  # deliberately unrestricted on that axis.
   getStepFunctionExecution(executionArn: String!): StepFunctionExecutionResponse
+    @aws_cognito_user_pools(
+      cognito_groups: ["Admin", "Annotator", "Author", "Reviewer", "Viewer"]
+    )
 
-  # Document version history (processing runs). All authenticated users may
-  # view/list/compare; deleteDocumentVersion (a Mutation) is Admin-only.
+  # Document version history (processing runs). All three require an assigned
+  # group: listDocumentVersions shapes every run through the same helper as
+  # getDocumentVersion, so it returns the same section and page URIs, the same
+  # confidence-alert list naming every extracted attribute, and the same
+  # model-written page classification reasons — for all runs rather than one.
+  # deleteDocumentVersion (a Mutation) is Admin-only.
   listDocumentVersions(objectKey: ID!): [DocumentVersion]
+    @aws_cognito_user_pools(
+      cognito_groups: ["Admin", "Annotator", "Author", "Reviewer", "Viewer"]
+    )
   getDocumentVersion(objectKey: ID!, runId: String!): DocumentVersion
+    @aws_cognito_user_pools(
+      cognito_groups: ["Admin", "Annotator", "Author", "Reviewer", "Viewer"]
+    )
   compareDocumentVersions(objectKey: ID!, runIdA: String!, runIdB: String!): AWSJSON
+    @aws_cognito_user_pools(
+      cognito_groups: ["Admin", "Annotator", "Author", "Reviewer", "Viewer"]
+    )
 
   # Configuration & pricing queries - Admin, Author, Viewer (not Reviewer)
   getConfigVersions: ConfigurationVersionsResponse
@@ -1902,11 +2043,27 @@ type Query @aws_cognito_user_pools @aws_iam {
     @aws_cognito_user_pools(cognito_groups: ["Admin", "Author", "Viewer"])
     @aws_iam
   getAgentChatMessages(sessionId: ID!): [AgentChatMessage] @aws_cognito_user_pools @aws_iam
+  # listChatSessions reads the caller's own partition by key condition, so a caller
+  # in no group can only ever address an empty one. getChatMessages reads by
+  # sessionId and relies on a separate ownership verification that an operator can
+  # stand down, so it takes an assigned group as well — the messages can quote
+  # document content.
   listChatSessions(limit: Int, nextToken: String, surface: String): ChatSessionConnection @aws_cognito_user_pools @aws_iam
-  getChatMessages(sessionId: ID!): [AgentChatMessage] @aws_cognito_user_pools @aws_iam
+  getChatMessages(sessionId: ID!): [AgentChatMessage]
+    @aws_cognito_user_pools(
+      cognito_groups: ["Admin", "Annotator", "Author", "Reviewer", "Viewer"]
+    )
+    @aws_iam
 
-  # Knowledge base query
+  # Knowledge base query. An assigned group is required: the knowledge base is
+  # built from processed document content, so an answer returns that content in
+  # synthesised form, and the call bills Bedrock inference. The resolver itself
+  # still carries no group check (GAP-02), which makes the dispatcher's floor the
+  # only group gate on it.
   queryKnowledgeBase(input: String!, sessionId: String): String
+    @aws_cognito_user_pools(
+      cognito_groups: ["Admin", "Annotator", "Author", "Reviewer", "Viewer"]
+    )
 
   # NOTE: The legacy `chatWithDocument` query has been removed. Chat with
   # Document now uses the async `sendChatDocumentMessage` mutation +
@@ -1985,8 +2142,16 @@ type Query @aws_cognito_user_pools @aws_iam {
   validateTestSetForFinetuning(testSetId: ID!): TestSetValidationResult @aws_cognito_user_pools
   listAvailableModels: AvailableModelsResult @aws_cognito_user_pools
 
-  # Circuit Breaker status — any authenticated user can read.
+  # Circuit Breaker status. An assigned group is required: `lastError` carries
+  # `Manual pause by <administrator email>: <reason>` after a manual pause. The floor
+  # costs nothing because the badge's only render site is the documents table header,
+  # which a groupless session never reaches — AuthRoutes returns the no-role notice
+  # in place of the router, so no route mounts at all. Such a session can still sign
+  # in; it just cannot get to the badge.
   getCircuitBreakerStatus: CircuitBreakerStatus
+    @aws_cognito_user_pools(
+      cognito_groups: ["Admin", "Annotator", "Author", "Reviewer", "Viewer"]
+    )
 
   # === Feature Platform (optional) — queries =============================
   # These fields are only wired up server-side when EnableFeaturePlatform=true
@@ -2101,6 +2266,11 @@ type TestSetValidationResult @aws_cognito_user_pools @aws_iam {
 type FinetuningJobConnection @aws_cognito_user_pools @aws_iam {
   items: [FinetuningJob]
   nextToken: String
+  # False when the resolver stopped on its read-capacity budget, so `items` is a
+  # partial answer and `nextToken` continues it. Declared rather than left to the log:
+  # a truncated list of jobs is indistinguishable from a short one to whoever is
+  # looking at it.
+  complete: Boolean
 }
 
 input CreateFinetuningJobInput {

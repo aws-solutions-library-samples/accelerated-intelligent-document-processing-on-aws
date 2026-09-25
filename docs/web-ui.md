@@ -42,6 +42,12 @@ The default page lists processed documents, over a scope chosen with the **Load*
 
 Your choice is remembered, so changing it once sticks for later visits.
 
+**The date picker will not accept a custom range longer than 365 days.** That bound
+is in the picker only. The list itself is served by a single indexed query over the
+chosen window, so its cost tracks the *number of documents it returns* rather than
+the length of the window — a quiet year costs no more to page through than a quiet
+week.
+
 ### Production vs Test Studio documents
 
 Test Studio submits its documents through the same pipeline as ordinary uploads — deliberately, so confidence and cost figures match what real runs produce. Because it makes them indistinguishable once processed, they are recorded on a separate index partition and the Document List shows one partition at a time, selected with the **Production / Test Studio** control beside the search box:
@@ -398,7 +404,7 @@ The **Prompt Preview** tab in the Configuration page allows you to see exactly w
 - **Filled Placeholders**: Config-derived values (`{CLASS_NAMES_AND_DESCRIPTIONS}`, `{ATTRIBUTE_NAMES_AND_DESCRIPTIONS}`, `{DOCUMENT_CLASS}`) are replaced with actual values from your configuration
 - **Runtime Markers**: Document-specific placeholders (`{DOCUMENT_TEXT}`, `{DOCUMENT_IMAGE}`, etc.) are shown as highlighted yellow markers indicating where document content will be inserted at processing time
 - **Token Estimates**: Approximate token counts for the system prompt, task prompt and — when Schema Enforcement is on — the tool schema, so the total reflects everything your configuration puts on the wire
-- **Tool Schema**: With Extraction mode Simple and [Schema Enforcement](extraction-and-confidence.md#forced-tool-use-extractionforced_tool) on, a **Tool Schema** tab shows the `toolSpec` (tool name, description, input schema) the model is forced to call
+- **Tool Schema**: With Extraction mode Simple and [Schema Enforcement](extraction-and-confidence.md#forced-tool-use-extractionforced_tool--experimental-off-by-default) on, a **Tool Schema** tab shows the `toolSpec` (tool name, description, input schema) the model is forced to call
 - **Agentic Schema Restatement**: With Extraction mode Advanced, the System Prompt tab includes the `Expected Schema:` block that [`restate_schema_in_system_prompt`](extraction-and-confidence.md#dropping-the-duplicated-schema-restate_schema_in_system_prompt) controls, shown as a labelled approximation of the generated schema
 - **Copy to Clipboard**: Copy rendered or raw prompt templates for use in external tools
 - **Substitution Details**: See the exact formatted class list or cleaned JSON Schema that gets inserted into the prompt
@@ -576,7 +582,7 @@ Chat-with-Document runs as an asynchronous workflow so it can use long-latency l
 1. A **status pill** appears above the input area and transitions as the backend makes progress: **Queued → Loading document text → Querying {model} → Streaming response**.
 2. As soon as the model starts producing output, the assistant bubble appears with a blinking cursor and **tokens stream in** live (throttled to ~200 ms / 200-char batches server-side so the UI stays responsive under heavy throttling).
 3. When generation completes the status pill clears and the bubble finalizes with a timestamp and the model ID used.
-4. Errors (including RBAC scope denials on documents outside your `allowedConfigVersions`) render inline in the assistant bubble in red so you can see what went wrong without losing the context of the conversation.
+4. Errors render inline in the assistant bubble in red so you can see what went wrong without losing the context of the conversation. A configuration-version scope denial — a document outside your `allowedConfigVersions` — is rendered the same way, on deployments where the chat turn reaches the backend through the REST API. Chat streamed from the Lambda Function URL is not restricted by that scope; see [Known Limitations in the RBAC guide](./rbac.md#known-limitations).
 
 The session is scoped to your user — other users cannot subscribe to or continue your chat session even if they know the session ID.
 

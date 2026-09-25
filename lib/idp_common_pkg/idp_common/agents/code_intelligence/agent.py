@@ -13,6 +13,7 @@ from mcp.client.streamable_http import streamablehttp_client
 from strands import Agent
 from strands.tools.mcp import MCPClient
 
+from ..common.config import DEFAULT_AGENT_MODEL_ID
 from ..common.cost_metrics import with_cost_hook
 from ..common.strands_bedrock_model import create_strands_bedrock_model
 
@@ -92,7 +93,7 @@ def create_code_intelligence_agent(
                 logger.warning(
                     f"Failed to get code intelligence model ID, using default: {e}"
                 )
-                model_id = "us.anthropic.claude-3-7-sonnet-20250219-v1:0"
+                model_id = DEFAULT_AGENT_MODEL_ID
 
             # Create Bedrock model
             bedrock_model = create_strands_bedrock_model(

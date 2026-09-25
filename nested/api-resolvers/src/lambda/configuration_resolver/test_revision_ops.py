@@ -61,7 +61,7 @@ def manager(monkeypatch):
     fake.delete_revision.return_value = True
     monkeypatch.setattr(index, "ConfigurationManager", lambda *a, **k: fake)
     # Default to an unscoped caller unless a test says otherwise.
-    monkeypatch.setattr(index, "_get_user_allowed_config_versions", lambda email: None)
+    monkeypatch.setattr(index, "_get_user_allowed_config_versions", lambda email, sub="": None)
     return fake
 
 
@@ -166,7 +166,7 @@ class TestProfileScope:
     @pytest.fixture
     def scoped(self, manager, monkeypatch):
         monkeypatch.setattr(
-            index, "_get_user_allowed_config_versions", lambda email: ["lending"]
+            index, "_get_user_allowed_config_versions", lambda email, sub="": ["lending"]
         )
         return manager
 
@@ -209,7 +209,7 @@ class TestProfileScope:
 
     def test_a_glob_scope_entry_matches_a_lineage(self, manager, monkeypatch):
         monkeypatch.setattr(
-            index, "_get_user_allowed_config_versions", lambda email: ["usecaseA_*"]
+            index, "_get_user_allowed_config_versions", lambda email, sub="": ["usecaseA_*"]
         )
         allowed = index.handler(
             _event(
@@ -229,7 +229,7 @@ class TestProfileScope:
     def test_admin_scope_is_ignored(self, manager, monkeypatch):
         """Admins are always unrestricted; the scope lookup is skipped for them."""
 
-        def explode(email):
+        def explode(email, sub=""):
             raise AssertionError("admin scope must not be looked up")
 
         monkeypatch.setattr(index, "_get_user_allowed_config_versions", explode)
@@ -290,3 +290,54 @@ class TestReservedNames:
         )
         assert result["success"] is False
         assert result["error"]["type"] == "ValidationError"
+
+
+@pytest.mark.unit
+class TestInertGatingHookRefusal:
+    """A save refused because a pipeline hook could never fire (#982).
+
+    The refusal is a deliberate validation outcome with a specific remedy, so it
+    must not reach the generic handler and come back as `UnexpectedError`: an admin
+    reading that concludes the product is broken rather than that there is something
+    for them to change.
+    """
+
+    def test_refusal_is_reported_as_a_validation_error_with_its_message(self, manager):
+        message = (
+            "Configuration rejected: Hook pii-redactor is registered at postOcr "
+            "with onError=fail, but the bda processing mode has no postOcr state"
+        )
+        manager.handle_update_custom_configuration.side_effect = (
+            index.InertGatingHookError(message)
+        )
+
+        result = index.handler(
+            _event(
+                "updateConfiguration",
+                {"versionName": "lending", "customConfig": "{}"},
+            ),
+            None,
+        )
+
+        assert result["success"] is False
+        assert result["error"]["type"] == "ValidationError"
+        assert result["error"]["message"] == message
+
+    def test_a_json_decode_error_still_reports_as_itself(self, manager):
+        """The refusal clause must not swallow a malformed payload.
+
+        `InertGatingHookError` and `json.JSONDecodeError` are sibling ValueError
+        subclasses, so neither can catch the other — this pins the outcome rather
+        than the clause order. Malformed JSON fails in the handler's own `json.loads`
+        before the manager is called, which is why the manager is left un-stubbed.
+        """
+        result = index.handler(
+            _event(
+                "updateConfiguration",
+                {"versionName": "lending", "customConfig": "{not json"},
+            ),
+            None,
+        )
+        assert result["success"] is False
+        assert result["error"]["type"] == "JSONDecodeError"
+        manager.handle_update_custom_configuration.assert_not_called()

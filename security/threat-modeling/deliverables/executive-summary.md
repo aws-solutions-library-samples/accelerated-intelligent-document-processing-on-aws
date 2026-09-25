@@ -4,8 +4,8 @@
 
 | Field | Value |
 |-------|-------|
-| **Document Version** | 3.2 |
-| **Last Updated** | 2026-09-17 |
+| **Document Version** | 3.3 |
+| **Last Updated** | 2026-09-19 |
 | **Applies to release** | v0.6.9 |
 | **Classification** | Internal |
 | **System** | GenAI Intelligent Document Processing (IDP) Accelerator |
@@ -42,10 +42,10 @@ The system includes a web UI, multi-agent AI assistant, SDK/CLI for automation, 
 
 | Category | Count |
 |----------|-------|
-| **Total threats identified** | **98** |
+| **Total threats identified** | **99** |
 | Critical risk (score 8-9) | 9 |
 | High risk (score 6-7) | 31 |
-| Medium risk (score 3-5) | 43 |
+| Medium risk (score 3-5) | 44 |
 | Low risk (score 1-2) | 15 |
 
 ### 3.2 STRIDE Distribution
@@ -54,26 +54,28 @@ The system includes a web UI, multi-agent AI assistant, SDK/CLI for automation, 
 |----------------|-------|-------------|
 | **Tampering** | 39 | Prompt injection, configuration manipulation, data/ground-truth poisoning |
 | **Information Disclosure** | 38 | Data exfiltration via extensibility points, object-read scoping, token/credential exposure |
-| **Elevation of Privilege** | 31 | RBAC bypass, hook/feature privilege escalation, deployment-role breadth, authorization that is opt-in per resolver |
+| **Elevation of Privilege** | 32 | RBAC bypass, hook/feature privilege escalation, deployment-role breadth, authorization that is opt-in per resolver |
 | **Denial of Service** | 17 | Resource exhaustion, cost escalation, redaction loops, service dependency |
-| **Spoofing** | 15 | Token theft, caller-identity spoofing, credential compromise |
+| **Spoofing** | 16 | Token theft, caller-identity spoofing, credential compromise |
 | **Repudiation** | 4 | Insufficient audit trail, BDA opacity |
 
-> Counts sum to more than 98 because a threat may carry multiple STRIDE categories.
+> Counts sum to more than 99 because a threat may carry multiple STRIDE categories.
 
 ### 3.3 Mitigation Status
 
 | Status | Count | Percentage |
 |--------|-------|------------|
-| **Mitigated** | 63 | 64% |
-| **Partially Mitigated** | 25 | 26% |
+| **Mitigated** | 62 | 63% |
+| **Partially Mitigated** | 27 | 27% |
 | **Open** (real gap, needs work) | **6** | **6%** |
 | **Accepted** | 4 | 4% |
 
 The six **Open** items are CHAT.T03 and CHAT.T06 (chat streaming Function URL
 enforces neither RBAC group nor session ownership, and the agent route trusts a
-client-supplied caller identity), UI.T06 (presigned object reads are
-bucket-scoped but not key-scoped, and callable by any authenticated user),
+client-supplied caller identity), UI.T06 (object reads are not scoped
+per document, so any authenticated user holding a group can read any document's
+bytes by key — and the document buckets are readable directly by every
+authenticated user irrespective of group),
 JOB.T02 (the Jobs API sits outside the automated authorization harness),
 HOOK.T07 (`onError: fail` halts the workflow at one of the seven hook points, not
 all seven) and SDK.T05 (the shipped CloudFormation deployment service role is
@@ -90,7 +92,7 @@ so both threats stay Open after it merges; HOOK.T07 is addressed by **issue
 **issue #928** (a default-deny gate at the API dispatcher, AUTH.T16) and **issue
 #921** (consistent log redaction, AUTH.T15). Read every one of those as
 *pending*, and read #920 as *partial even once merged* — see
-[companion-chat CHAT.T06](../feature-threats/companion-chat.md#chatt06-caller-identity-on-the-streaming-transport-is-not-a-verified-subject)
+[companion-chat CHAT.T06](../feature-threats/companion-chat.md#chatt06-client-supplied-caller-identity-on-the-agent-streaming-route)
 for the accounting. The
 status columns in this model deliberately do not credit an unmerged fix, because a
 threat model that counts intentions as controls is worse than one that is merely
@@ -149,8 +151,12 @@ in issue #928** (AUTH.T16).
 4. **Make hook failure containment uniform (HOOK.T07)** — `onError: fail` is
    terminal at the preprocessing hook point only; a deployment relying on a hook
    as a gate elsewhere does not have that guarantee (**issue #919**, pending)
-5. **Scope presigned object reads to the caller (UI.T06)** — today any
-   authenticated user can read any object in the stack's buckets by key
+5. **Scope object reads to the document's owner (UI.T06)** — the two per-user
+   scope axes are enforced on the key, but documents have no owner to scope
+   against, so any authenticated user holding a group can read any document by
+   key — and on the document buckets they can do it with the Identity Pool
+   credentials the browser already holds, with no API call in the path
+   (**issue #1033**, pending)
 6. **Add bundle integrity verification (SRI) to the Feature Platform (FEAT.T01)** —
    installed extension UI code runs unsandboxed in the host origin with the user's session
 7. **Implement VPC egress controls** for MCP Lambda functions to prevent unauthorized data exfiltration
@@ -182,4 +188,4 @@ The threat model has been developed using:
 | [STRIDE Analysis](../threat-analysis/stride-analysis.md) | Full STRIDE analysis across all components |
 | [Risk Matrix](../risk-assessment/risk-matrix.md) | Complete risk register with scoring |
 | [Implementation Guide](implementation-guide.md) | Security controls implementation details |
-| [Threat ID Glossary](../threat-id-glossary.md) | All 98 threat IDs with cross-references |
+| [Threat ID Glossary](../threat-id-glossary.md) | All 99 threat IDs with cross-references |

@@ -447,7 +447,9 @@ classification:
   (`0` = no retries).
 - `invalidClassFallback` — class assigned when all retries are exhausted; the
   resulting `PageClassification.classification.metadata` then carries a
-  `validation_error` string. The document is **not** failed.
+  `validation_error` string, and a warning-severity
+  `classification_invalid_class_fallback` issue is recorded on the section (see
+  below). The document is **not** failed.
 
 > Holistic (`textbasedHolisticClassification`) does not use this loop yet; it
 > still logs a warning and uses an unknown type as-is.
@@ -455,6 +457,86 @@ classification:
 See `notebooks/misc/classification-valid-class-enforcement.ipynb` for a
 deterministic, mock-driven walkthrough of all three scenarios (retry-then-valid,
 retries-exhausted-fallback, and enforcement-disabled).
+
+## Reporting a Page That Could Not Be Classified
+
+`_record_unclassified_page_issues` runs once per document on the
+`multimodalPageLevelClassification` path, immediately after section splitting, and
+turns each page classification that carries an `error` or a `validation_error` into
+a `ProcessingIssue` on the section holding that page.
+
+⚠️ **It has one call site, in `_classify_pages_multimodal`.**
+`holistic_classify_document` does not call it and records none of these: it decides
+per *segment* rather than per page and never builds the `List[PageClassification]`
+this takes, so covering it is real work rather than an extra call. On that method a
+page falling outside every segment's `ordinal_start_page`–`ordinal_end_page` range
+is also appended to no section at all, producing neither data nor a record — both
+are follow-up work, not addressed here.
+
+**Why it exists.** Nothing in this service produced a `ProcessingIssue` before, and
+neither of the two places the reason was written reaches a user:
+
+- `DocumentClassification.metadata` is copied onto the `Page` object with
+  `setattr`, and `Page` has no `metadata` field — so it is absent from
+  `Document.to_dict()` and never survives the Step Functions hop or reaches
+  DynamoDB;
+- the matching `document.errors` line is read only inside
+  `processresults_function`'s `Status.FAILED` branch, which a document that
+  completes never enters.
+
+So a page whose classification failed after retries became `unclassified`, its
+section took extraction's empty-schema route, and the document finished green —
+which is the same defect as `#1006` one stage upstream.
+
+**Why the section and not the document.** `ProcessingIssues` is a field of
+`Section` in the API schema; the document carries only `ProcessingIssueCount`. A
+document-level issue would raise that count and then have no text to show for it.
+
+| `metadata` key | `unclassified_reason` | Issue code | Severity | Reached from |
+|---|---|---|---|---|
+| `error` | `no_content` | `classification_page_no_content` | warning | `classify_page_bedrock` |
+| `error` | `failed` (the default) | `classification_failed` | error | `classify_page_sagemaker` only |
+| `validation_error` | — | `classification_invalid_class_fallback` | warning | `classify_page_bedrock` |
+
+`_create_unclassified_result` sets `unclassified_reason`, defaulting to `failed` so
+a call site added later is loud rather than quiet by omission.
+
+**`classification_failed` does not fire on the Bedrock backend.** All four
+default-reason call sites are in `classify_page_sagemaker`; `classify_page_bedrock`
+re-raises from its `except`, and the thread-pool handler that catches it does not
+append the page to `all_page_results`, so this function never sees it. No signal is
+lost — that path marks the document `FAILED`, and `document.errors` *is* read on a
+failed document — but the error-severity code is a UDOP-backend code in practice.
+Note that a test mocking `classify_page`'s **return value** cannot surface this,
+since a returned unclassified result is SageMaker-shaped by construction.
+
+Severity is what keeps the signal usable: an error indicator on most documents is
+one nobody reads. The fallback case is the commonest of the three, because it is
+where a page the model cannot place ends up, and a class *was* assigned — just not
+the model's. `classification_page_no_content` needs **both** the page's OCR text and
+its page image to be unusable (`classify_page_bedrock` checks both), so a blank page
+that still has an image does not land there.
+
+One issue per (section, cause) with the page IDs listed, so a 50-page run of
+unclassifiable pages does not produce 50 identical rows. The write replaces only
+this stage's issues **of the same code**, because the DynamoDB writer replaces the
+whole section map: a failed page and an unclassifiable page in one section are two
+different facts and neither may evict the other.
+
+Two bounds on the `root_cause`, both because the text is model output or a service
+error message and the issue rides to DynamoDB inside the section map — whose 400 KB
+item ceiling the assessment path guards explicitly while
+`serialize_processing_issues` truncates nothing. Each page's detail is capped at
+`_MAX_ISSUE_DETAIL_CHARS`, and at most `_MAX_ISSUE_DETAILS` **distinct** details are
+rendered, with a count for the remainder. The details are tracked **per page**, not
+per code: two pages can fail the same way for different reasons, and keeping only
+the first detail made every section's `root_cause` blame one of them for all of
+them — which listing the affected page ids beside it turns from a vague message into
+an actively wrong one.
+
+No CloudWatch metric is published from here — see
+[`docs/classification.md`](../../../../docs/classification.md#pages-classification-could-not-classify)
+for the reasoning and the operator-facing table.
 
 ## Usage Example
 

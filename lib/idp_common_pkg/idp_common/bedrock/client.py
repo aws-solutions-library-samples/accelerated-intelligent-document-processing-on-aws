@@ -26,8 +26,21 @@ from botocore.exceptions import (
 )
 from urllib3.exceptions import ReadTimeoutError as Urllib3ReadTimeoutError
 
+# The shard invocation's time budget. Imported rather than restated, because this
+# client's read timeout is one of its terms and a term written in two places is
+# exactly how the budget stopped adding up (#1014). ``timeout_budget`` is a leaf
+# module that imports nothing, which matters here: importing from
+# ``idp_common.utils`` instead would build an SSM client at module scope and make
+# ``import idp_common.config`` — which reaches this module via ``merge_utils`` —
+# require an AWS region before any handler code runs.
+from idp_common.timeout_budget import (
+    BOTOCORE_TOTAL_MAX_ATTEMPTS,
+    CONFIDENCE_READ_TIMEOUT_SECONDS,
+)
+
 from .model_utils import (
     LONG_CONTEXT_SUFFIX,
+    REGION_PREFIXES,
     get_model_max_output_tokens,
     metering_model_id,
     parse_max_tokens_limit_from_error,
@@ -124,6 +137,12 @@ _CLAUDE_4_7_BASE_NAMES = {
     # 4.7/4.8); the Converse path does not send a `thinking` field, so requests
     # run adaptive thinking within max_tokens.
     "anthropic.claude-opus-5",
+    # Claude Opus 5.5 keeps the same surface. Verified live on Bedrock Converse
+    # (us.anthropic.claude-opus-5-5, us-west-2, 2026-09-23): `temperature` is
+    # deprecated for this model, `top_p` is deprecated for this model. Note this
+    # set is matched EXACTLY on the base name, so "claude-opus-5" does not cover
+    # "claude-opus-5-5" — the entry is required, not decorative.
+    "anthropic.claude-opus-5-5",
     # Claude Sonnet 5 shares the Opus-4.7+ request surface: it REJECTS non-default
     # temperature/top_p/top_k (400). IDP's default decoding config sets top_k=5 /
     # top_p=0.0, so Sonnet 5 must be treated like the sampling-param-stripped models
@@ -150,17 +169,13 @@ def is_claude_4_7_model(model_id: str) -> bool:
     Returns:
         True if the model is a Claude 4.7+ variant
     """
-    model_id = resolve_model_id_from_arn(model_id)
-    # Strip region prefix (us., eu., global.)
-    parts = model_id.split(".", 1)
-    if len(parts) == 2 and parts[0] in ("us", "eu", "global"):
-        base = parts[1]
-    else:
-        base = model_id
-    # Strip :1m suffix
-    if base.endswith(":1m"):
-        base = base[:-3]
-    return base in _CLAUDE_4_7_BASE_NAMES
+    # Hand-rolled normalization here would be a second copy of
+    # _strip_region_and_1m's rule, and the copy is what went wrong: this branch
+    # listed three of the five region prefixes, so a `us-gov.` id kept its prefix,
+    # missed the set, and had `temperature` sent to a model that rejects it.
+    return _strip_region_and_1m(resolve_model_id_from_arn(model_id)) in (
+        _CLAUDE_4_7_BASE_NAMES
+    )
 
 
 # Backwards-compatible alias for internal callers that still reference the
@@ -182,8 +197,55 @@ _CLAUDE_EFFORT_BASE_NAMES = {
     "anthropic.claude-opus-4-7",
     "anthropic.claude-opus-4-8",
     "anthropic.claude-opus-5",
+    # Opus 5.5 accepts effort (verified live on Converse at both "low" and
+    # "xhigh", us-west-2, 2026-09-23) and for it effort is the ONLY thinking
+    # control: thinking cannot be disabled at any effort level — see
+    # THINKING_ALWAYS_ON_BASE_NAMES below.
+    #
+    # Its default effort is "medium", one level below the "high" every other model
+    # here defaults to. That one is read off the Bedrock model card ("effort level
+    # configurable - low, medium, high, xhigh, max; default: medium"), NOT measured:
+    # a default cannot be observed from a response, since Converse reports no effort
+    # back. Treat it accordingly - it is the stated reason the opus55value benchmark
+    # pair measures the switch rather than the model, so if that matters to a
+    # decision, set effort explicitly rather than relying on this.
+    #
+    # This entry is also redundant-by-prefix and kept anyway: the lookup is
+    # `base.startswith(name)`, so "anthropic.claude-opus-5-5" already matched via
+    # "anthropic.claude-opus-5". Relying on that would make the set silently
+    # wrong for any future Opus 5.x that does NOT take effort.
+    "anthropic.claude-opus-5-5",
     "anthropic.claude-fable-5",
 }
+
+# Claude models on which extended thinking cannot be turned off. Verified live on
+# Bedrock Converse (us.anthropic.claude-opus-5-5, us-west-2, 2026-09-23):
+# ``additionalModelRequestFields.thinking = {"type": "disabled"}`` is rejected with
+# '"thinking.type.disabled" is not supported for this model. Use
+# "thinking.type.adaptive" and "output_config.effort" to control thinking
+# behavior.' Opus 5 accepts a disabled thinking block; Opus 5.5 does not, at any
+# effort level.
+#
+# This file's Converse path never sends a ``thinking`` field, so nothing here
+# currently constructs the rejected request — the set exists so that a future
+# caller that wants to disable thinking has one place to ask, instead of
+# discovering the 400 in production.
+_THINKING_ALWAYS_ON_BASE_NAMES = {
+    "anthropic.claude-opus-5-5",
+}
+
+
+def thinking_can_be_disabled(model_id: str) -> bool:
+    """False if ``model_id`` rejects ``thinking: {"type": "disabled"}``.
+
+    Lower ``output_config.effort`` is the only way to reduce thinking spend on
+    such a model.
+    """
+    if not model_id:
+        return True
+    return _strip_region_and_1m(resolve_model_id_from_arn(model_id)) not in (
+        _THINKING_ALWAYS_ON_BASE_NAMES
+    )
 
 # Effort levels accepted by Claude models. There are now THREE vocabularies on
 # this file's paths and no two are the same — see GROK_EFFORT_LEVELS and
@@ -194,13 +256,31 @@ _CLAUDE_EFFORT_BASE_NAMES = {
 CLAUDE_EFFORT_LEVELS = ("low", "medium", "high", "xhigh", "max")
 
 
+#: Region / geo prefixes Bedrock cross-region inference profiles use. All five,
+#: deliberately — ``us-gov`` and ``apac`` used to be missing here, and their absence
+#: was silent in the worst possible direction: a ``us-gov.`` id fell through to the
+#: else-branch unchanged, so every base-name gate below reported the PERMISSIVE
+#: answer for it. ``is_claude_4_7_model("us-gov.anthropic.claude-opus-5")``
+#: returned False, which sends ``temperature`` to a model that rejects it, and
+#: ``supports_forced_tool_choice`` returned True for Opus 5.5, which forces a tool
+#: call the model refuses. GovCloud is precisely where this matters, because an
+#: account-scoped inference-profile ARN is the only way to name a model there —
+#: ``resolve_model_id_from_arn`` reduces such an ARN to a ``us-gov.`` id, which is
+#: then the input to this function.
+#:
+#: Imported from ``model_utils`` rather than restated, because a restated copy is
+#: exactly what went wrong: four sites hand-rolled this rule and three of them
+#: listed only three of the five prefixes.
+_REGION_PREFIXES = REGION_PREFIXES
+
+
 def _strip_region_and_1m(model_id: str) -> str:
-    """Normalize a model ID to its base name: strip us./eu./global. prefix and
-    the :1m suffix. Also tolerates Opus 4.5/4.6 dated/`-v1` foundation IDs by
+    """Normalize a model ID to its base name: strip the region/geo prefix and the
+    ``:1m`` suffix. Also tolerates Opus 4.5/4.6 dated/`-v1` foundation IDs by
     matching on a prefix in is_claude_effort_model."""
     parts = model_id.split(".", 1)
     base = (
-        parts[1] if len(parts) == 2 and parts[0] in ("us", "eu", "global") else model_id
+        parts[1] if len(parts) == 2 and parts[0] in _REGION_PREFIXES else model_id
     )
     if base.endswith(":1m"):
         base = base[:-3]
@@ -250,10 +330,19 @@ def is_claude_effort_model(model_id: str) -> bool:
 
     Handles region prefixes, :1m, and dated/versioned foundation IDs
     (e.g. anthropic.claude-opus-4-6-v1, ...-4-5-20250514-v1:0) by prefix match.
+
+    Inference-profile ARNs are resolved first, for the same reason
+    :func:`is_claude_4_7_model` does it: an account-scoped inference-profile ARN is
+    the form ``docs/configuration.md`` recommends for cost allocation and the
+    **only** form available in GovCloud, so without this an ARN-named model would
+    silently lose its effort setting. That matters most on Claude Opus 5.5, where
+    effort is the only thinking control there is — thinking cannot be disabled — so
+    dropping it is not a small degradation. Opaque
+    ``application-inference-profile`` ARNs still cannot be resolved offline.
     """
     if not model_id:
         return False
-    base = _strip_region_and_1m(model_id)
+    base = _strip_region_and_1m(resolve_model_id_from_arn(model_id))
     return any(base.startswith(name) for name in _CLAUDE_EFFORT_BASE_NAMES)
 
 
@@ -478,7 +567,6 @@ _CACHEPOINT_BASE_MODELS = set()
 # only break requests, not unlock a discount.
 CACHEPOINT_SUPPORTED_MODELS = [
     "us.anthropic.claude-haiku-4-5-20251001-v1:0",
-    "us.anthropic.claude-3-7-sonnet-20250219-v1:0",
     "us.anthropic.claude-opus-4-5-20251101-v1:0",
     "us.anthropic.claude-opus-4-6-v1",
     "us.anthropic.claude-opus-4-6-v1:1m",
@@ -488,8 +576,9 @@ CACHEPOINT_SUPPORTED_MODELS = [
     "us.anthropic.claude-opus-4-8:1m",
     "us.anthropic.claude-opus-5",
     "us.anthropic.claude-opus-5:1m",
+    "us.anthropic.claude-opus-5-5",
+    "us.anthropic.claude-opus-5-5:1m",
     "us.anthropic.claude-opus-4-1-20250805-v1:0",
-    "us.anthropic.claude-opus-4-20250514-v1:0",
     "us.anthropic.claude-sonnet-4-20250514-v1:0",
     "us.anthropic.claude-sonnet-4-5-20250929-v1:0",
     "us.anthropic.claude-sonnet-4-6",
@@ -501,7 +590,6 @@ CACHEPOINT_SUPPORTED_MODELS = [
     "us.amazon.nova-pro-v1:0",
     "us.amazon.nova-2-lite-v1:0",
     "eu.anthropic.claude-haiku-4-5-20251001-v1:0",
-    "eu.anthropic.claude-3-7-sonnet-20250219-v1:0",
     "eu.anthropic.claude-sonnet-4-20250514-v1:0",
     "eu.anthropic.claude-sonnet-4-5-20250929-v1:0",
     "eu.anthropic.claude-sonnet-4-6",
@@ -518,6 +606,8 @@ CACHEPOINT_SUPPORTED_MODELS = [
     "eu.anthropic.claude-opus-4-8:1m",
     "eu.anthropic.claude-opus-5",
     "eu.anthropic.claude-opus-5:1m",
+    "eu.anthropic.claude-opus-5-5",
+    "eu.anthropic.claude-opus-5-5:1m",
     "eu.amazon.nova-lite-v1:0",
     "eu.amazon.nova-pro-v1:0",
     "eu.amazon.nova-2-lite-v1:0",
@@ -541,18 +631,27 @@ CACHEPOINT_SUPPORTED_MODELS = [
     "global.anthropic.claude-opus-4-8:1m",
     "global.anthropic.claude-opus-5",
     "global.anthropic.claude-opus-5:1m",
+    "global.anthropic.claude-opus-5-5",
+    "global.anthropic.claude-opus-5-5:1m",
 ]
 
 # Converse tool-use (``toolConfig`` / ``toolChoice``) capability gate.
 #
-# Verified live across every currently selectable family (Claude 3.5/3.7/4.x/5
-# and Nova Lite / Pro / 2-Lite): all of them accept a ``toolConfig`` AND all
-# three ``toolChoice`` modes (``auto`` / ``any`` / ``tool``) on the Converse API,
-# and actually emit the ``toolUse`` block. So — unlike CACHEPOINT_SUPPORTED_MODELS
-# above — there is no per-family allow-list to maintain here. The only real
-# question is "does this model reach Converse at all", and exactly two routes in
-# invoke_model do not. They are named here so the exclusions are discoverable
-# and testable rather than buried in an `if`.
+# ⚠️ These are now TWO questions, not one, and a model can answer them
+# differently: "can this model carry a ``toolConfig`` at all" (this gate) and "can
+# the ``toolChoice`` be FORCED to ``any``/``tool``" (FORCED_TOOL_CHOICE_UNSUPPORTED
+# below). Claude Opus 5.5 is the model that split them — it takes a toolConfig and
+# emits ``toolUse`` under ``toolChoice: auto``, and rejects both forcing modes with
+# a 400. Before it, every Converse-reachable family accepted all three modes, so
+# one gate covered both and this comment said so.
+#
+# Verified live across the other currently selectable families (Claude
+# 3.5/3.7/4.x/5 and Nova Lite / Pro / 2-Lite): all of them accept a ``toolConfig``
+# AND all three ``toolChoice`` modes (``auto`` / ``any`` / ``tool``) on the
+# Converse API, and actually emit the ``toolUse`` block. So for THIS gate the only
+# real question remains "does this model reach Converse at all", and exactly two
+# routes in invoke_model do not. They are named here so the exclusions are
+# discoverable and testable rather than buried in an `if`.
 #
 # NOTE: OpenAI GPT-6 Astra is deliberately NOT one of them. It reaches Converse
 # and emits ``toolUse`` under a forced ``toolChoice`` (verified live), so it is
@@ -599,8 +698,64 @@ def supports_tool_config(model_id: str) -> bool:
     the prompt) should check this first; passing a ``tool_config`` for a model
     that returns False raises a ValueError rather than silently dropping the
     schema.
+
+    A True answer here does NOT mean the tool call can be FORCED — see
+    :func:`forced_tool_choice_unsupported_reason`.
     """
     return tool_config_unsupported_reason(model_id) is None
+
+
+# Models that accept a Converse ``toolConfig`` but REJECT a forced ``toolChoice``.
+#
+# Keyed on the base name (region prefix and ``:1m`` stripped) so the us./eu./global.
+# profiles and the extended-context variant all resolve to one entry.
+#
+# Claude Opus 5.5, verified live on Bedrock Converse (us.anthropic.claude-opus-5-5,
+# us-west-2, 2026-09-23):
+#
+#   * ``toolChoice: {"auto": {}}``           -> stopReason ``tool_use``, toolUse emitted.
+#   * ``toolChoice: {"any": {}}``            -> ValidationException: 'tool_choice: type
+#     "tool" and "any" are not supported for this model.'
+#   * ``toolChoice: {"tool": {"name": ...}}`` -> the same ValidationException.
+#
+# This matters beyond the error message because a forced ``toolChoice`` is the
+# strongest schema enforcement bedrock-runtime offers (``toolSpec.strict``,
+# ``output_config.format`` and ``response_format`` are all rejected on Converse and
+# InvokeModel alike). So on this model the extraction forced-tool path has no
+# equivalent and must fall back to the prose schema — which
+# ``forced_tool.should_force_tool`` already knows how to do, recording the reason in
+# the section's audit metadata rather than skipping silently.
+FORCED_TOOL_CHOICE_UNSUPPORTED: Dict[str, str] = {
+    "anthropic.claude-opus-5-5": (
+        "Claude Opus 5.5 accepts a Converse toolConfig but rejects a forced "
+        'toolChoice: \'tool_choice: type "tool" and "any" are not supported for '
+        "this model.' Use toolChoice auto and steer from the prompt"
+    ),
+}
+
+
+def forced_tool_choice_unsupported_reason(model_id: str) -> Optional[str]:
+    """Explain why ``model_id`` cannot take a forced ``toolChoice``.
+
+    Returns None when ``any``/``tool`` forcing is available — including for every
+    model this function knows nothing about, because a model that does not reach
+    Converse at all is already refused by
+    :func:`tool_config_unsupported_reason` and would otherwise be reported twice
+    with two different reasons.
+    """
+    if not model_id:
+        return None
+    base = _strip_region_and_1m(resolve_model_id_from_arn(model_id))
+    return FORCED_TOOL_CHOICE_UNSUPPORTED.get(base)
+
+
+def supports_forced_tool_choice(model_id: str) -> bool:
+    """True if ``model_id`` accepts ``toolChoice`` ``any`` or ``tool``.
+
+    ``toolChoice: auto`` is unaffected and available wherever
+    :func:`supports_tool_config` is True.
+    """
+    return forced_tool_choice_unsupported_reason(model_id) is None
 
 
 # Build set of base model names (without region/tier prefixes) for inference profile resolution.
@@ -653,9 +808,31 @@ class BedrockClient:
     @property
     def client(self):
         """Lazy-loaded Bedrock client."""
+        # ``read_timeout`` is generous because ``converse`` here is NON-streaming:
+        # it bounds the whole response, not a gap between events, so a large
+        # extraction or assessment inference legitimately occupies it. That makes it
+        # the LARGEST single stall a shard invocation can absorb — in ``separate``
+        # confidence mode this client runs inside the 900 s shard Lambda — so the
+        # value is named in the shard time budget rather than written here (#1014).
+        #
+        # The attempt count is pinned to one. botocore treats a read timeout as
+        # transient and retries it itself, and with no ``retries`` override this
+        # client ran in legacy mode, whose default multiplied the timeout above by
+        # five inside ONE call to ``_invoke_with_retry`` — which already has its own
+        # ladder over exactly the same errors. Two stacked retry layers is what put
+        # 600 + 300 = 900 s inside a 900 s function in the first place.
+        #
+        # Spelled ``total_max_attempts``: in client config botocore's
+        # ``max_attempts`` is a RETRY count and is normalised to that key plus one,
+        # so ``max_attempts=1`` would still permit two attempts and two read
+        # timeouts. See the note in ``idp_common.timeout_budget``.
         config = Config(
             connect_timeout=10,
-            read_timeout=300,  # allow plenty of time for large extraction or assessment inferences
+            read_timeout=CONFIDENCE_READ_TIMEOUT_SECONDS,
+            retries={
+                "total_max_attempts": BOTOCORE_TOTAL_MAX_ATTEMPTS,
+                "mode": "standard",
+            },
         )
         if self._client is None:
             self._client = get_bedrock_session(self.region).client(
@@ -692,10 +869,19 @@ class BedrockClient:
             # surfaces as an error inside the caller, which can log it and fail
             # the page cleanly. A hook is expected to keep its own timeout (and
             # therefore its internal retry budget) below this.
+            #
+            # ``total_max_attempts``, not ``max_attempts``: the latter is a RETRY
+            # count in client config and normalises to one more than it says, so
+            # ``max_attempts=1`` permitted a SECOND 840 s invocation — 1,680 s inside
+            # a 900 s caller, re-running the hook's paid work, which is precisely
+            # what this block exists to prevent.
             config = Config(
                 connect_timeout=10,
                 read_timeout=840,
-                retries={"max_attempts": 1, "mode": "standard"},
+                retries={
+                    "total_max_attempts": BOTOCORE_TOTAL_MAX_ATTEMPTS,
+                    "mode": "standard",
+                },
                 # OCR fans pages out across worker threads that share this
                 # client; the default pool of 10 would serialize them.
                 max_pool_connections=50,
@@ -1042,8 +1228,9 @@ class BedrockClient:
             The effective ``toolConfig`` to put on the wire, or None.
 
         Raises:
-            ValueError: If the model does not reach the Converse API, or if
-                ``tool_choice`` was given without ``tool_config``.
+            ValueError: If the model does not reach the Converse API, if the
+                model rejects a forced ``toolChoice``, or if ``tool_choice`` was
+                given without ``tool_config``.
         """
         if tool_config is None and tool_choice is None:
             return None
@@ -1066,6 +1253,34 @@ class BedrockClient:
 
         BedrockClient._reject_invalid_tool_property_names(tool_config)
 
+        # A forced choice (``any``/``tool``) is a separate capability from carrying a
+        # toolConfig at all, and Claude Opus 5.5 has the first without the second.
+        # Refuse rather than let Bedrock answer with a ValidationException: the 400
+        # arrives only after the retry budget has been spent on a request that can
+        # never succeed, and its message does not say what to do instead.
+        # ``auto`` is always allowed.
+        #
+        # Checked against the EFFECTIVE choice, before the `tool_choice is None`
+        # return below, because a ``toolChoice`` may arrive either as the parameter
+        # or embedded in ``tool_config`` — the conflict warning further down exists
+        # precisely because both shapes are supported. Guarding only the parameter
+        # would leave the embedded form going to the wire unchecked, which is the
+        # shape a caller outside this repository is most likely to use, since
+        # ``toolChoice`` is a member of ``toolConfig`` in the Converse API itself.
+        effective_choice = (
+            tool_choice if tool_choice is not None else tool_config.get("toolChoice")
+        )
+        if effective_choice and not {"any", "tool"}.isdisjoint(effective_choice):
+            forced_reason = forced_tool_choice_unsupported_reason(model_id)
+            if forced_reason:
+                raise ValueError(
+                    f"A forced toolChoice ({sorted(effective_choice)}) is not "
+                    f"supported for model '{model_id}': {forced_reason}. Check "
+                    f"supports_forced_tool_choice(model_id) first — "
+                    f"toolChoice {{'auto': {{}}}} works on this model, and the "
+                    f"extraction forced-tool path falls back to the prose schema."
+                )
+
         if tool_choice is None:
             return tool_config
 
@@ -1081,6 +1296,7 @@ class BedrockClient:
                 existing_choice,
                 tool_choice,
             )
+
         merged["toolChoice"] = tool_choice
         return merged
 

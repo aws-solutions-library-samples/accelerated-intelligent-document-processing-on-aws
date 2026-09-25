@@ -27,7 +27,7 @@ exclude = [
 
 [project]
 name = "idp_common"
-version = "0.6.9"
+version = "0.6.10"
 description = "Common utilities for GenAI IDP Accelerator patterns"
 authors = [{ name = "AWS", email = "noreply@amazon.com" }]
 requires-python = ">=3.12,<3.14"
@@ -217,6 +217,25 @@ test = [
   "pytest>=9.0.3",
   "pytest-cov>=4.1.0",
   "pytest-xdist>=3.3.1",            # For parallel test execution
+  # Optional dependencies the SUITE asserts the present-path behaviour of. Declared
+  # here rather than guarded with importorskip, because a skipped test reads as green:
+  # `conftest.py`'s _stub_if_absent carries the history of 42 agentic tests that skipped
+  # permanently, in every environment including CI, and looked covered the whole time.
+  #
+  # Each of these failed in GitLab CI while passing in GitHub CI, because the two install
+  # different extras: GitHub does `[all,dev,test]` (make install-first-party) and GitLab
+  # does `[test,evaluation]`. Anything a test needs therefore has to be in `[test]`, not
+  # merely in `[all]`.
+  "psutil>=5.9",                    # OCR memory sampler: production treats it as optional
+                                    # (import inside try/except), so the tests that assert
+                                    # the sampling path need it present to assert anything.
+  "amazon-textract-textractor[pandas]==1.9.2",  # Real response parser, pinned to match
+                                    # [ocr]. Without it the parser is a MagicMock and a
+                                    # `"Sample line one" in result` assertion compares
+                                    # against a mock repr rather than parsed text.
+  "strands-agents-tools==0.2.22; python_version>='3.10'",  # sample_calculator/agent.py
+                                    # imports strands_tools at MODULE scope, so its test
+                                    # module cannot even be collected without it.
   "requests (>=2.32.3,<3.0.0)",
   "pyarrow==23.0.1",
   "PyYAML==6.0.2",
