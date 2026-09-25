@@ -6,6 +6,17 @@ import json
 import os
 import time
 import boto3
+
+# `Attr` is imported by name rather than reached as
+# `boto3.dynamodb.conditions.Attr`. That attribute path exists only because
+# creating a `dynamodb` *resource* imports the subpackage as a side effect, so the
+# metering scan's filter expression was relying on a neighbouring line having run
+# first, and would raise `AttributeError` if that resource were replaced by a
+# cached client. Kept in this first import block deliberately: the imports further
+# down sit below module-level statements and are pinned at four `E402` findings in
+# `scripts/lint_debt.json`, so adding a fifth there would fail
+# `make check-lint-debt`.
+from boto3.dynamodb.conditions import Attr
 from datetime import datetime, timedelta
 from log_sanitizer import sanitize_event_for_logging
 from validation import (
@@ -1303,7 +1314,7 @@ def build_simple_quota_requirements(
 
                 while len(items) < MAX_METERING_ITEMS and pages_scanned < max_pages:
                     scan_kwargs = {
-                        'FilterExpression': boto3.dynamodb.conditions.Attr('Metering').exists(),
+                        'FilterExpression': Attr('Metering').exists(),
                         'Limit': PAGE_SIZE
                     }
 

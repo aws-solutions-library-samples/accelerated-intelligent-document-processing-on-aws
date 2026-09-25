@@ -2752,3 +2752,66 @@ def test_the_invocation_event_is_logged_with_its_identity_redacted(wired, capsys
     assert "Received event:" in printed
     assert "operator@example.com" not in printed
     assert "abc.def" not in printed
+
+
+# --------------------------------------------------------------------------
+# Module-level invariants that no behaviour reveals
+# --------------------------------------------------------------------------
+
+
+def dotted_name(node):
+    """`a.b.c` for an attribute chain rooted in a plain name, else None."""
+    parts = []
+    while isinstance(node, ast.Attribute):
+        parts.append(node.attr)
+        node = node.value
+    if isinstance(node, ast.Name):
+        parts.append(node.id)
+        return ".".join(reversed(parts))
+    return None
+
+
+@pytest.mark.unit
+def test_dynamodb_conditions_are_reached_by_import_not_through_the_boto3_attribute():
+    """`Attr` is imported by name; no expression reaches it through `boto3`.
+
+    `boto3.dynamodb.conditions` becomes an attribute of `boto3` only because
+    creating a `dynamodb` **resource** imports that subpackage as a side effect. The
+    metering scan's filter expression used that path while sitting a few lines below
+    the resource call, so it worked by adjacency: replacing the resource with a
+    cached client — the ordinary thing to do to a helper called once per request —
+    would leave `boto3.dynamodb` undefined and the scan raising `AttributeError`.
+
+    There is no behaviour to invert here, so this is asserted on the source, in
+    three parts that close each other's gaps. The import is at **module scope**, not
+    merely present somewhere — searched over `tree.body` rather than `ast.walk`,
+    because an import inside a never-called function is still an `ImportFrom` node
+    and satisfied a walk. The name is **bound at runtime**, which no source check
+    can establish and which a non-executing import cannot fake. And nothing reaches
+    into `boto3.dynamodb`, matched over the parsed tree rather than the text so the
+    comment explaining the import cannot satisfy it.
+
+    Those three together refuse the combination that passed the first version of
+    this test with the defect fully restored: the import moved inside a function and
+    the call spelled `getattr(boto3, 'dynamodb').conditions.Attr(...)`, which is
+    rooted in a `Call` and so has no dotted name for the walker to see.
+    """
+    tree = ast.parse(Path(index.__file__).read_text(encoding="utf-8"))
+
+    imported = {
+        alias.name
+        for node in tree.body
+        if isinstance(node, ast.ImportFrom)
+        and node.module == "boto3.dynamodb.conditions"
+        for alias in node.names
+    }
+    assert "Attr" in imported
+
+    assert hasattr(index, "Attr")
+
+    reached_through_boto3 = sorted(
+        name
+        for name in (dotted_name(node) for node in ast.walk(tree))
+        if name is not None and name.startswith("boto3.dynamodb")
+    )
+    assert reached_through_boto3 == []
