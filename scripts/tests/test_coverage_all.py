@@ -35,6 +35,7 @@ from __future__ import annotations
 import importlib.util
 import subprocess
 import sys
+import xml.etree.ElementTree as ET
 from pathlib import Path
 
 import coverage
@@ -408,16 +409,27 @@ def _probe_tree(tmp_path: Path, name: str = "probe"):
     which is what makes it a probe for subprocess collection rather than for coverage in
     general.
 
+    Two things about its shape, each of which a simpler probe cannot see.
+
     **Two children rather than one, because one child cannot tell whether the children are
     writing over each other.** Without `parallel` in the configuration
     ``COVERAGE_PROCESS_START`` names, every child writes to the single path
     ``COVERAGE_FILE`` gives, so the last one wins and the earlier one's lines are simply
     gone -- and with a single child the report still reads 100%, which is the measurement
     that makes this shape necessary.
+
+    **Each child also imports a module from outside the measured tree** (``outside/far.py``,
+    reached by putting its directory on `sys.path`), because a child with no source bound
+    measures everything it imports and the parent's `combine()` then merges all of it. That
+    is invisible to any assertion about `pkg/mod.py`'s own rate: it shows up as files in the
+    report that are not in the tree, so the test asserts the report's **file set** as well as
+    that rate.
     """
     root = tmp_path / name
     (root / "pkg").mkdir(parents=True, exist_ok=True)
     (root / "tests").mkdir(parents=True, exist_ok=True)
+    (tmp_path / "outside").mkdir(parents=True, exist_ok=True)
+    (tmp_path / "outside" / "far.py").write_text("REACHED = True\n", encoding="utf-8")
     (root / "pkg" / "__init__.py").write_text("", encoding="utf-8")
     (root / "pkg" / "mod.py").write_text(
         "import sys\n"
@@ -436,8 +448,11 @@ def _probe_tree(tmp_path: Path, name: str = "probe"):
         "\n"
         "\n"
         'if __name__ == "__main__":\n'
+        "    sys.path.insert(0, sys.argv[2])\n"
+        "    import far\n"
+        "\n"
         '    which = first_child if sys.argv[1] == "first" else second_child\n'
-        "    sys.exit(0 if which() else 1)\n",
+        "    sys.exit(0 if which() and far.REACHED else 1)\n",
         encoding="utf-8",
     )
     (root / "tests" / "test_probe.py").write_text(
@@ -446,11 +461,12 @@ def _probe_tree(tmp_path: Path, name: str = "probe"):
         "from pathlib import Path\n"
         "\n"
         'MOD = Path(__file__).resolve().parents[1] / "pkg" / "mod.py"\n'
+        'OUTSIDE = Path(__file__).resolve().parents[2] / "outside"\n'
         "\n"
         "\n"
         "def _run(which, cwd):\n"
         "    return subprocess.run(\n"
-        "        [sys.executable, str(MOD), which], cwd=cwd, check=False\n"
+        "        [sys.executable, str(MOD), which, str(OUTSIDE)], cwd=cwd, check=False\n"
         "    ).returncode\n"
         "\n"
         "\n"
@@ -471,6 +487,20 @@ def _probe_rate(report: Path) -> float:
     return rates.get("pkg/mod.py", 0.0)
 
 
+def _probe_files(report: Path) -> set[str]:
+    """Every file the report describes, named the way the report names it.
+
+    Read from the XML rather than through `read_report`, because the question here is
+    whether the report reaches **outside** the tree and `read_report`'s keys are
+    tree-relative -- it would have to fail to relativise the very files this is looking
+    for.
+    """
+    return {
+        cls.get("filename", "")
+        for cls in ET.parse(report).iter("class")  # pyright: ignore[reportUnknownMemberType]
+    }
+
+
 @pytest.mark.unit
 class TestASubprocessOfAMeasuredSuiteCannotRunUninstrumented:
     """The capability, measured end to end: a child process's coverage is collected.
@@ -484,10 +514,12 @@ class TestASubprocessOfAMeasuredSuiteCannotRunUninstrumented:
     started with a working directory of its own, so the number is 0.00% unless collection
     genuinely works.
 
-    Both directions are asserted, because only the pair is evidence: with the wiring the
-    probe reads 100.00%, and with either variable withheld it reads 0.00%. The second half
-    is what would fail if the assertion had been written against something the mechanism
-    does not need.
+    Both directions are asserted for each of the three variables, because only the pair is
+    evidence: with the wiring the probe reads 100.00% over the tree's own files alone;
+    without ``COVERAGE_PROCESS_START`` or ``COVERAGE_FILE`` it reads 0.00%; and without
+    ``COVERAGE_SUBPROCESS_SOURCE`` the rate is unaffected while the report grows past the
+    tree. The negative halves are what would fail if an assertion had been written against
+    something the mechanism does not need.
 
     These run a nested pytest, which the rest of this module deliberately does not: what
     is asserted here is a property of the environment a child process inherits, and no
@@ -504,6 +536,10 @@ class TestASubprocessOfAMeasuredSuiteCannotRunUninstrumented:
         assert (name, code) == ("probe", 0)
         assert total is not None
         assert _probe_rate(ccd.report_path(tree)) == 100.0
+        # And the report describes this tree and nothing else: the children imported
+        # `outside/far.py`, which is measurable and must not be measured.
+        files = _probe_files(ccd.report_path(tree))
+        assert not any("far.py" in f for f in files), files
 
     @pytest.mark.parametrize(
         "withheld", ["COVERAGE_PROCESS_START", "COVERAGE_FILE", "both"]
@@ -539,6 +575,34 @@ class TestASubprocessOfAMeasuredSuiteCannotRunUninstrumented:
         name, code, _ = cov_all.run(tree, sys.executable, parallel=False)
         assert (name, code) == ("probe", 0)
         assert _probe_rate(ccd.report_path(tree)) == 0.0
+
+    def test_withholding_the_source_bound_grows_the_report_past_the_tree(
+        self, monkeypatch, tmp_path
+    ):
+        """The third variable, and it fails in a way no rate can show.
+
+        ``COVERAGE_SUBPROCESS_SOURCE`` does not decide whether a child measures -- it
+        decides *what*. Withheld, each child measures every file it imports, `combine()`
+        merges all of it, and the report stops describing one tree: `pkg/mod.py` still
+        reads 100.00% while `outside/far.py` joins the report and the whole-tree total
+        moves. A ratchet cannot use such a report and `--write` would record every one of
+        those files, so the assertion is about the report's **file set**.
+        """
+        complete = cov_all.subprocess_coverage_env
+
+        def crippled(data_dir, source_dir, env=None):
+            out = complete(data_dir, source_dir, env)
+            out.pop("COVERAGE_SUBPROCESS_SOURCE", None)
+            return out
+
+        tree = _probe_tree(tmp_path)
+        monkeypatch.setattr(ccd, "REPO_ROOT", tmp_path)
+        monkeypatch.setattr(cov_all, "REPO_ROOT", tmp_path)
+        monkeypatch.setattr(cov_all, "subprocess_coverage_env", crippled)
+        name, code, _ = cov_all.run(tree, sys.executable, parallel=False)
+        assert (name, code) == ("probe", 0)
+        files = _probe_files(ccd.report_path(tree))
+        assert any("far.py" in f for f in files), files
 
     def test_the_configuration_the_variable_names_makes_children_write_their_own_data(
         self,

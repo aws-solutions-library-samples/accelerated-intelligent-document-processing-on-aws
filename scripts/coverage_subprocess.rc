@@ -28,8 +28,9 @@
 #    alone, 100.00% with COVERAGE_FILE absolute as well.
 #  * COVERAGE_SUBPROCESS_SOURCE is the tree under measurement. Without it a child
 #    measures every file it imports, the parent's `combine()` merges all of it, and the
-#    report stops describing one tree: measured on `scripts`, 1,189 files at 31.52%
-#    rather than 51 files at 82%.
+#    report stops describing one tree: measured over the whole `scripts` tree, 1,189 files
+#    at 31.52% rather than 51 files at 82%. A single test file does not show it, because
+#    its children import nothing from outside.
 #
 # `scripts/coverage_all.py` sets all three together, so a subprocess either has the whole
 # mechanism or none of it.

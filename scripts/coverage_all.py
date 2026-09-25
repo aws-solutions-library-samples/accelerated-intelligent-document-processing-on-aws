@@ -78,10 +78,14 @@ def subprocess_coverage_env(
       directory is the answer. `process_startup` builds its Coverage from the rc file
       alone, so a child given no source measures every file it imports, the parent's
       `combine()` merges all of it, and the report grows from one tree to whatever the
-      children touched: measured on `scripts`, 1,189 files and a whole-tree total of
-      31.52% instead of 51 files and 82%. A ratchet cannot use that, and `--write` would
-      record every one of those files. The path has to be **absolute** for the same reason
-      the data file does.
+      children touched. Measured over the **whole** `scripts` tree (4,906 tests): 1,189
+      files and a whole-tree total of 31.52%, against 51 files and 82% with the bound. One
+      test file does not show it -- the children of most of these suites import nothing
+      outside the tree -- which is why the probe in
+      `scripts/tests/test_coverage_all.py` makes its children import a module that is
+      outside it on purpose. A ratchet cannot use such a report, and `--write` would record
+      every one of those files. The path has to be **absolute** for the same reason the
+      data file does.
 
     Measured on a probe whose only execution is a subprocess with a `cwd` of its own:
     0.00% with neither of the first two variables, 0.00% with ``COVERAGE_PROCESS_START``
