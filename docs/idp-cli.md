@@ -1203,9 +1203,11 @@ The command returns exit codes for scripting:
 - `1` - Document(s) failed
 - `2` - Document(s) still processing, or the outcome could not be established
 
-⚠️ **`--wait` answers the same way as the polled form, and did not always.** Both
-now derive the code from the same place, so a batch that finished with failures exits
-`1` whether you polled it or waited on it. Before this change `--wait` exited `0` on
+⚠️ **`--wait` and the polled table form now derive their code from the same place.** A
+batch that finished with failures exits `1` whether you polled it or waited on it; it
+used to exit `0` when waited on. (`--format json` is a third implementation of the rule
+and still disagrees with both on two document states — see the `CHANGELOG` entry for
+#1230.) Before this change `--wait` exited `0` on
 that batch while the poll exited `1`, which meant `idp-cli status --wait && deploy`
 proceeded after a batch in which every document failed. If you have a script that
 relied on `--wait` always exiting `0`, it will now stop on a failed batch — that is
@@ -3198,11 +3200,18 @@ prompt, which is what a script wants. `--mode` is not read. The command reports 
 blueprints it deleted and exits non-zero if any deletion failed, naming the ARNs that
 are still orphaned afterwards.
 
-It also **refuses to run at all** when it cannot resolve a profile — you named none and
-none is active on the stack. That case would otherwise produce an empty set of classes
-to keep, which is indistinguishable from "keep nothing", so every prefixed blueprint in
-the account would be deleted. Name the profile explicitly on a stack with no active
-configuration.
+⚠️ **It refuses to run unless the profile exists.** A name that is not a profile — a
+typo in `--config-profile`, or a whitespace-only value — is refused with exit 1 and
+nothing is deleted, and so is having no profile at all (you named none and none is
+active). Either way the set of classes to keep would come out empty, which is
+indistinguishable from "keep nothing", so every prefixed blueprint in the account would
+be deleted — and the typo is the worse of the two, because those include the live
+blueprints of the profile you meant. Name the profile explicitly on a stack with no
+active configuration.
+
+A profile that exists and declares **no classes** is not refused: keeping nothing is a
+real instruction, and every prefixed blueprint is deleted. That is the one case where
+the account-wide sweep is the whole point.
 
 The same operation is available as `config.sync_bda(direction="cleanup_orphaned")` in
 the SDK and as the `syncBdaIdp` API operation with direction `cleanup_orphaned`. The Web

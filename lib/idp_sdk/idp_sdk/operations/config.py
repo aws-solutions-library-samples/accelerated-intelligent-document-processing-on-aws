@@ -4,7 +4,7 @@
 """Configuration operations for IDP SDK."""
 
 import logging
-from typing import Optional
+from typing import TYPE_CHECKING, Optional
 
 from idp_sdk._core.naming import resolve_config_profile
 from idp_sdk.exceptions import IDPProcessingError, IDPResourceNotFoundError
@@ -21,6 +21,16 @@ from idp_sdk.models import (
     ConfigValidationResult,
     ConfigVersionInfo,
 )
+
+if TYPE_CHECKING:
+    # Type-only. `idp_common` is imported lazily inside every method that needs it —
+    # the CLI pays that import cost per command — so this must not become a runtime
+    # import. It is here so the ONE call that decides whether an account-wide
+    # destructive operation proceeds is checkable: with `manager` inferred as Unknown,
+    # a wrong argument shape at that call site produced a `TypeError` the outer
+    # handler turned into `success=False`, i.e. a false refusal of *every* cleanup,
+    # and both the suite and basedpyright were silent.
+    from idp_common.config.configuration_manager import ConfigurationManager
 
 logger = logging.getLogger(__name__)
 
@@ -1029,7 +1039,10 @@ class ConfigOperation:
             )
 
     def _refuse_cleanup_without_a_real_profile(
-        self, manager, config_version: Optional[str], mode: str
+        self,
+        manager: "ConfigurationManager",
+        config_version: Optional[str],
+        mode: str,
     ) -> Optional[ConfigSyncBdaResult]:
         """Refuse an orphaned-blueprint cleanup whose profile does not exist.
 

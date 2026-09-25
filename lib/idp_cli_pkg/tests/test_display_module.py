@@ -1159,3 +1159,54 @@ def test_both_exit_code_paths_agree_on_every_batch_shape(
     from_json, from_summary = _both_codes(_status_data(total=4), stats)
 
     assert from_json == from_summary == expected
+
+
+@pytest.mark.unit
+def test_derive_exit_code_equals_show_final_status_summary_over_the_whole_input_space():
+    """The two must never drift, and a sampled comparison would not say that.
+
+    `derive_exit_code` was extracted from `show_final_status_summary` so that
+    `_monitor_progress` can have the code without the printed "FINAL STATUS" line —
+    two of its three callers discard the value, and printing "Exit Code: 1" there
+    would state a code contradicting `$?` for `process --monitor`. The extraction is
+    only safe while the two agree, and the whole reason the extraction was worth doing
+    rather than re-deriving the rule from `stats` is that two implementations of one
+    rule is how the polled and waited forms of `status` came to disagree (#1230).
+
+    So this is exhaustive over the space the rule reads rather than a sample: every
+    combination of the four buckets being empty or not, crossed with `total` in
+    {0, 1, 2}, `all_complete` in {True, False} and `failed` in {0, 1}. A table of
+    hand-picked cases is what let the original divergence sit unnoticed.
+    """
+    import itertools
+
+    checked = 0
+    for pattern in itertools.product([0, 1], repeat=4):
+        for total in (0, 1, 2):
+            for all_complete in (True, False):
+                for failed_count in (0, 1):
+                    status_data = {
+                        "total": total,
+                        "completed": [_doc(status="COMPLETED")] * pattern[0],
+                        "running": [_doc(status="RUNNING")] * pattern[1],
+                        "failed": [_doc(status="FAILED")] * pattern[2],
+                        "queued": [_doc(status="QUEUED")] * pattern[3],
+                    }
+                    stats = _stats(
+                        total=total,
+                        completed=pattern[0],
+                        failed=failed_count,
+                        running=pattern[1],
+                        queued=pattern[3],
+                        all_complete=all_complete,
+                    )
+                    checked += 1
+                    assert display.derive_exit_code(
+                        status_data, stats
+                    ) == display.show_final_status_summary(status_data, stats), (
+                        f"drift at buckets={pattern} total={total} "
+                        f"all_complete={all_complete} failed={failed_count}"
+                    )
+
+    # The loop has to have run; a generator that produced nothing would pass.
+    assert checked == 192

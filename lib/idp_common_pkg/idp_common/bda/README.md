@@ -291,12 +291,19 @@ which is what stops the UI auto-dismissing the message), and the SDK returns it 
 `config-activate` print.
 
 ⚠️ **`cleanup_orphaned_blueprints` is reached by a direction that is not a sync, and it
-has three callers now rather than one.** `ConfigOperation.sync_bda` takes
+has two callers now rather than one.** `ConfigOperation.sync_bda` takes
 `direction="cleanup_orphaned"` and branches to it *in process*, the same way it reaches
 the three sync directions — it does not invoke the `syncBdaIdp` resolver, which has its
-own branch to the same method, and `idp-cli config-sync-bda --direction
-cleanup-orphaned` goes through the SDK. So a change to this method's return shape has to
-be read against all three. The keys the callers subscript are `success`, `message`,
+own branch to the same method. `idp-cli config-sync-bda --direction cleanup-orphaned` is
+not a third caller: it goes through the SDK. So a change to this method's return shape
+has to be read against both.
+
+⚠️ **The two callers do not validate the profile the same way.** The SDK refuses a
+`version` that names no configuration profile before calling this method, because this
+method reduces a `get_configuration` answering `None` to an empty expected-prefix set
+and then deletes every prefixed blueprint in the account while returning
+`success=True`. The resolver has no such check. Do not read the SDK's refusal as a
+property of this method. The keys the callers subscript are `success`, `message`,
 `deleted_count` and `failed_count`; the SDK reports the last two on
 `ConfigSyncBdaResult.cleanup_deleted_count` / `cleanup_failed_count` and deliberately
 not on `classes_synced` / `classes_failed`, since the cleanup processes no classes and a

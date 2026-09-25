@@ -23,7 +23,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from idp_sdk.operations.config import ConfigOperation
+from idp_sdk.operations.config import ConfigOperation, _failed_cleanup_arns
 
 PROJECT_ARN = "arn:aws:bedrock:us-west-2:123456789012:data-automation-project/p1"
 ORPHAN = "arn:aws:bedrock:us-west-2:123456789012:blueprint/idp-Receipt-aaaa"
@@ -304,8 +304,15 @@ class TestTheProfileMustExist:
     """The profile name is the only thing standing between this and a mass deletion.
 
     These tests drive the **real** `BdaBlueprintService.cleanup_orphaned_blueprints`
-    and the **real** `ConfigurationManager` through `sync_bda`, with only the AWS
-    clients doubled. Everything above this class doubles the service, which means it
+    through `sync_bda`, with the blueprint creator and the configuration manager
+    doubled. The manager being a double is a real limit and is stated rather than
+    glossed: the key construction the guard's own docstring reasons about —
+    `_read_record` building `Config#<version>` only when the version is truthy, and
+    reading the bare `Config` key otherwise — is *not* exercised here. What is
+    exercised is the service's own reduction of a `None` configuration to an empty
+    class list, which is the step that turns a bad profile name into a mass deletion.
+
+    Everything above this class doubles the service too, which means it
     cannot see what the service does with a profile that does not exist — and what it
     does is reduce `get_configuration(...) is None` to `current_classes = []`, so the
     expected-prefix set comes out empty, every blueprint carrying the stack's prefix
@@ -553,3 +560,53 @@ class TestTheProfileMustExist:
 
         assert len(deleted) == 3
         assert result.success is True
+
+
+@pytest.mark.unit
+class TestFailedCleanupArnsToleratesTheShapesItCanBeGiven:
+    """`_failed_cleanup_arns` reads the error path of a destructive operation.
+
+    A `KeyError` or a `TypeError` raised while reporting a partial failure replaces
+    the report with a stack trace, and the report is the only place the still-orphaned
+    ARNs appear. So the reader is defensive about the shape — and each of those
+    defences gets a test here, because three of them survived every mutation when they
+    were first written, which is the same standard by which a redundant `.strip()` was
+    deleted from the guard in the same commit. A defence with no test is
+    indistinguishable from a redundant one.
+    """
+
+    def test_a_details_list_that_is_none_reports_no_arns(self):
+        """The outer handler in `cleanup_orphaned_blueprints` returns `details: []`,
+        but a future `None` there must not raise inside the failure report."""
+        assert _failed_cleanup_arns({"details": None, "failed_count": 1}) == []
+
+    def test_a_details_entry_that_is_not_a_dict_is_skipped(self):
+        assert _failed_cleanup_arns(
+            {"details": ["just a message", {"arn": ORPHAN, "status": "failed"}]}
+        ) == [ORPHAN]
+
+    def test_a_failed_entry_with_no_arn_is_dropped_rather_than_reported_as_none(self):
+        """A `None` in this list renders as the word `None` beside real ARNs, which
+        reads as a blueprint the operator should go and find."""
+        assert _failed_cleanup_arns(
+            {
+                "details": [
+                    {"name": "nameless", "status": "failed"},
+                    {"name": "real", "arn": ORPHAN, "status": "failed"},
+                ]
+            }
+        ) == [ORPHAN]
+
+    def test_only_the_failures_are_reported(self):
+        """Non-vacuity for all three above: the filter is on `status`."""
+        assert _failed_cleanup_arns(
+            {
+                "details": [
+                    {"name": "a", "arn": f"{ORPHAN}-ok", "status": "deleted"},
+                    {"name": "b", "arn": ORPHAN, "status": "failed"},
+                ]
+            }
+        ) == [ORPHAN]
+
+    def test_a_cleanup_with_no_details_key_at_all_reports_no_arns(self):
+        assert _failed_cleanup_arns({"failed_count": 0}) == []
