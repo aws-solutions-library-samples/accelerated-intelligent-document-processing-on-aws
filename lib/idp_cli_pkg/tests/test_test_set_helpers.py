@@ -51,6 +51,7 @@ the batching of the deletes is asserted from the recorded request parameters ins
 
 import io
 import json
+import sys
 from types import SimpleNamespace
 from unittest.mock import patch
 
@@ -1404,7 +1405,11 @@ def test_create_test_set_removes_the_marker_on_every_failure_path(
         (doc.format(tmp=tmp_path), baseline.format(tmp=tmp_path))
         for doc, baseline in rows
     ]
-    manifest = _manifest_with(tmp_path, resolved, name=f"{abs(hash(label))}.csv")
+    # A per-case file name, from the label rather than from `hash()`: `str.__hash__` is
+    # salted per process, so a hash-derived name is different on every run and a failure
+    # cannot be reproduced from the reported id.
+    safe = "".join(character if character.isalnum() else "-" for character in label)
+    manifest = _manifest_with(tmp_path, resolved, name=f"{safe}.csv")
 
     with mock_aws():
         s3 = boto3.client("s3", region_name="us-east-1")
@@ -1423,6 +1428,47 @@ def test_create_test_set_removes_the_marker_on_every_failure_path(
     assert "set1/.uploading" not in keys, (
         f"the marker outlived {label} and would hide the test set"
     )
+
+
+@pytest.mark.unit
+def test_create_test_set_removes_the_marker_when_the_body_raises_systemexit():
+    """`SystemExit` is not an `Exception`, and the marker must not survive one either.
+
+    `_uploading_marker` catches `BaseException` rather than `Exception`, and its docstring
+    gives `sys.exit` as the reason. Nothing inside either `with` window calls `sys.exit`
+    today, so no invocation of either command reaches this -- which means the claim was
+    asserted in three places (the docstring, the commit message and the changelog) and
+    measured nowhere: narrowing the catch to `Exception` left the whole suite green.
+
+    The context manager is therefore driven directly with a `SystemExit` from its body.
+    That is the narrowest thing that makes the claim real, and it is the shape a future
+    refusal placed inside the upload would take.
+    """
+    from idp_cli.cli import _uploading_marker
+
+    with mock_aws():
+        s3 = boto3.client("s3", region_name="us-east-1")
+        s3.create_bucket(Bucket=TEST_SET_BUCKET)
+
+        with pytest.raises(SystemExit) as failure:
+            with _uploading_marker(s3, TEST_SET_BUCKET, "set1"):
+                assert "set1/.uploading" in {
+                    obj["Key"]
+                    for obj in s3.list_objects_v2(Bucket=TEST_SET_BUCKET).get(
+                        "Contents", []
+                    )
+                }, (
+                    "the marker must be in place inside the window, or this proves nothing"
+                )
+                sys.exit(3)
+
+        keys = {
+            obj["Key"]
+            for obj in s3.list_objects_v2(Bucket=TEST_SET_BUCKET).get("Contents", [])
+        }
+
+    assert failure.value.code == 3, "the exit code must pass through unchanged"
+    assert keys == set(), "the marker did not survive the SystemExit"
 
 
 @pytest.mark.unit

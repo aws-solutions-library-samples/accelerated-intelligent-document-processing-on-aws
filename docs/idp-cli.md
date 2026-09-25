@@ -307,12 +307,15 @@ For evaluation workflows with accuracy metrics, see the [Complete Evaluation Wor
 > (`--document-ids`, `--test-run-ids`, `--file-types`, `--check-stack-regions`,
 > `--features`, `--tags`) parses through one shared helper that **drops blank
 > segments**, so a trailing or doubled comma is
-> harmless — `--document-ids "a,b,"` names two documents, not three. A value that
-> contains **no** non-blank segment is **refused** with exit 1 rather than treated as
-> one value that is the empty string, which matters most for a list a script built
-> from a variable that turned out to be empty: `--document-ids ""` used to ask about a
-> document whose S3 object key was `""`, and `--document-ids ","` used to announce
-> "Selected 2 document(s) for deletion".
+> harmless — `--document-ids "a,b,"` names two documents, not three.
+>
+> For all of them **except `--tags`**, a value containing **no** non-blank segment is
+> **refused** with exit 1 rather than treated as one value that is the empty string.
+> That matters most for a list a script built from a variable that turned out to be
+> empty: `--document-ids ""` used to ask about a document whose S3 object key was `""`,
+> and `--document-ids ","` used to announce "Selected 2 document(s) for deletion".
+> `--tags ","` is **not** refused — it sets no tags and proceeds, which is exactly what
+> omitting `--tags` does, so there is no wrong action for a refusal to prevent.
 
 ### `deploy`
 
@@ -1573,13 +1576,27 @@ Case folding covers the whole pattern rather than an extension picked out of it,
 whose case is deliberate — distinguishing an `Invoice-*.pdf` family from an
 `invoice-*.pdf` one, say. A pattern containing a directory component
 (`--file-pattern "sub/*.pdf"`) is **refused**: point `--dir` or `--s3-uri` at the
-directory and use `--recursive` / `--no-recursive` to choose the depth. Hidden files
-follow the usual shell rule and are excluded unless the pattern itself starts with a
-dot.
+directory and use `--recursive` / `--no-recursive` to choose the depth.
+
+On the `--dir` path, hidden files follow the usual shell rule and are excluded unless
+the pattern itself starts with a dot. The `--s3-uri` path has **no** such rule — it
+filters keys by base name only — so `--file-pattern "*"` against a test-set prefix
+selects the `.uploading` marker object as though it were a document. Name the extension
+you want rather than relying on `*` when scanning a bucket.
 
 ⚠️ `--file-pattern` on `process` and `run-inference` is a **different** scan, in
 `idp_sdk`, and it is still case-sensitive. Pass the extension's actual case there, or
 generate a manifest with this command and process that.
+
+**How `--baseline-dir` is matched:** a baseline sub-directory must be named after the
+document file it labels, **extension included** (`invoice.pdf/`, not `invoice/`). The
+match uses the same rule as `--file-pattern`, so it ignores case unless
+`--case-sensitive` is given, and `W2-A.PDF` is therefore labelled by `w2-a.pdf/`. Two
+baseline directories differing only in case are **refused** as ambiguous. A baseline
+directory matching no document is named and skipped rather than uploaded; if **no**
+document matched a baseline, `--test-set` refuses before anything is cleared or
+uploaded, and a manifest-only run warns and leaves `baseline_source` empty for you to
+fill in.
 
 **Test Set Creation:**
 When using `--test-set`, the command:
@@ -1594,8 +1611,17 @@ places under the test set's prefix is removed before it exits. That marker is wh
 stops the Test Studio resolver registering a folder that is still being filled, so a
 marker left behind makes a folder invisible to the backend — and re-running the upload
 does not clear it, because the new run writes it again. The command exits non-zero and
-names what went wrong; the test set is either registered or absent, never complete and
-hidden. In the one case where the marker itself cannot be deleted (an IAM policy with
+names what went wrong.
+
+Be precise about what that leaves behind, because it is not nothing: the objects
+uploaded before the failure **stay**, and with the marker gone the resolver may
+register them as a partial, unlabeled set (a set with documents and no baselines is a
+legitimate shape, so the backend cannot tell the two apart). That is deliberate —
+re-running clears the prefix first, so the state is recoverable, whereas a surviving
+marker made the folder invisible *permanently*. If you do not want the partial set
+visible, delete the prefix before retrying.
+
+In the one case where the marker itself cannot be deleted (an IAM policy with
 `s3:PutObject` but not `s3:DeleteObject` on the test set bucket) the command **fails**
 rather than reporting success, and the error names the S3 object to delete by hand.
 

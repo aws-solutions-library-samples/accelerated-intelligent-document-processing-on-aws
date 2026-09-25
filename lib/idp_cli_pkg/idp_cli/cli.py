@@ -3103,6 +3103,16 @@ def _file_pattern_matches(
       naming a directory component is refused by the caller, so the local path's
       loss of that spelling is a message rather than an empty result.
 
+    Two ways folding can **narrow** rather than widen, stated because narrowing is the
+    failure mode this exists to prevent. A **negated** character class inverts:
+    `[!A-Z]*.pdf` means "does not start with an uppercase letter", and folded against a
+    lowered name it now rejects `report.pdf`, which it used to select. And `str.lower()`
+    can change a string's *length* for a few characters (`"İ"` lowers to `i` plus a
+    combining dot), so a `?` counting one character stops lining up: `?nvoice.pdf`
+    matches `Invoice.pdf` but not `İnvoice.pdf`. Both are one-way, both are obscure, and
+    both have `--case-sensitive` as the exact route -- special-casing either would make
+    the rule harder to state than it is worth.
+
     Args:
         filename: One file's base name, with no directory components.
         file_pattern: The `--file-pattern` value, a glob.
@@ -3251,7 +3261,11 @@ def generate_manifest(
         # nothing there and the only report was "No documents found" -- true, and no
         # help at all in working out why. Say which option does the thing being asked
         # for instead, on both paths, rather than leaving an empty scan to explain it.
-        if "/" in file_pattern or os.sep in file_pattern:
+        # On POSIX all three of these collapse to `/`, so the extra terms are
+        # unreachable here and no test on this platform can pin them; they are what
+        # refuses a Windows backslash, where `os.sep` is `\\` and `os.altsep` is `/`.
+        path_separators = {"/", os.sep, os.altsep} - {None}
+        if any(separator in file_pattern for separator in path_separators):
             console.print(
                 "[red]✗ Error: --file-pattern matches a file name, not a path, so "
                 f"'{file_pattern}' selects nothing. Point --dir or --s3-uri at the "
@@ -3371,7 +3385,24 @@ def generate_manifest(
 
         console.print(f"Found {len(documents)} documents")
 
-        # Match baselines if baseline_dir provided
+        # Match baselines if baseline_dir provided.
+        #
+        # `baseline_map` is keyed on the **document's** base name, not on the baseline
+        # directory's, and that is load-bearing rather than cosmetic. Two reasons.
+        #
+        # Selecting documents ignores case (see `_file_pattern_matches`), so matching
+        # them to baselines has to ignore case by the same rule or the two disagree:
+        # a `W2-A.PDF` corpus beside a `w2-a.pdf/` baseline directory would select both
+        # and pair neither, producing a test set with a full `input/`, baselines under
+        # keys nothing references, and every manifest row's `baseline_source` empty --
+        # at exit 0, with `Matched 0/2` as the only sign. Before case folding that
+        # combination could not arise, because the documents were never selected.
+        #
+        # And the backend pairs a baseline to its document by the exact prefix
+        # `baseline/<input file name>/` (`src/lambda/test_file_copier`), so a baseline
+        # uploaded under the directory's spelling rather than the document's is a
+        # baseline nothing scores against. Keying on the document is what keeps that
+        # convention true when the two spellings differ only in case.
         baseline_map = {}
         if baseline_dir:
             if s3_uri:
@@ -3387,24 +3418,80 @@ def generate_manifest(
 
                 baseline_path = os.path.abspath(baseline_dir)
 
-                # Scan for baseline subdirectories
-                for item in os.listdir(baseline_path):
+                # Scan for baseline subdirectories, indexed by the same rule that
+                # selected the documents.
+                baseline_dirs = {}
+                for item in sorted(os.listdir(baseline_path)):
                     item_path = os.path.join(baseline_path, item)
-                    if os.path.isdir(item_path):
-                        baseline_map[item] = item_path
+                    if not os.path.isdir(item_path):
+                        continue
+                    index_key = item if case_sensitive else item.lower()
+                    if index_key in baseline_dirs:
+                        # Two directories that differ only in case are two candidate
+                        # ground truths for one document, and picking either would be
+                        # arbitrary. Refuse before anything is uploaded or cleared.
+                        console.print(
+                            f"[red]✗ Error: baseline directories "
+                            f"'{baseline_dirs[index_key][0]}' and '{item}' differ only "
+                            "in case, so which one a document should be scored against "
+                            "is ambiguous. Rename one, or pass --case-sensitive to "
+                            "match baselines exactly as named.[/red]"
+                        )
+                        sys.exit(1)
+                    baseline_dirs[index_key] = (item, item_path)
 
-                console.print(f"Found {len(baseline_map)} baseline directories")
+                console.print(f"Found {len(baseline_dirs)} baseline directories")
 
-                # Show matching statistics
-                matched = 0
+                # Resolve each document to a baseline directory, keyed by the document.
                 for doc in documents:
                     filename = os.path.basename(doc["document_path"])
-                    if filename in baseline_map:
-                        matched += 1
+                    index_key = filename if case_sensitive else filename.lower()
+                    if index_key in baseline_dirs:
+                        baseline_map[filename] = baseline_dirs[index_key][1]
 
+                matched = len(baseline_map)
                 console.print(
                     f"Matched {matched}/{len(documents)} documents to baselines"
                 )
+
+                # A baseline directory matching no document cannot be scored against
+                # anything. It used to be uploaded anyway, inflating the object count
+                # reported at the end; now it is named and skipped.
+                matched_paths = set(baseline_map.values())
+                unmatched_dirs = sorted(
+                    item
+                    for item, item_path in baseline_dirs.values()
+                    if item_path not in matched_paths
+                )
+                if unmatched_dirs:
+                    console.print(
+                        f"[yellow]Warning: {len(unmatched_dirs)} baseline director"
+                        f"{'y' if len(unmatched_dirs) == 1 else 'ies'} matched no "
+                        f"document and will not be uploaded: "
+                        f"{', '.join(unmatched_dirs)}[/yellow]"
+                    )
+
+                if baseline_dirs and not baseline_map:
+                    # Baselines were supplied and none of them matched. On the
+                    # `--test-set` path `--baseline-dir` is mandatory, so this is
+                    # unambiguously a mistake rather than a deliberately unlabeled set,
+                    # and continuing would clear an existing test set and upload one
+                    # that cannot score. Refuse before either happens. Without
+                    # `--test-set` the result is a manifest the user can still edit --
+                    # which the command's own "Next steps" text tells them to do -- so
+                    # that stays a warning.
+                    message = (
+                        f"{len(baseline_dirs)} baseline director"
+                        f"{'y' if len(baseline_dirs) == 1 else 'ies'} were found and "
+                        "none matched a document. A baseline directory must be named "
+                        "after the document file it labels, extension included "
+                        f"(for example '{os.path.basename(documents[0]['document_path'])}')."
+                    )
+                    if test_set:
+                        console.print(f"[red]✗ Error: {message}[/red]")
+                        sys.exit(1)
+                    console.print(f"[yellow]Warning: {message}[/yellow]")
+
                 console.print()
 
         # Upload to test set bucket if test_set is specified

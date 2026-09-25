@@ -425,6 +425,245 @@ def test_an_uppercase_extension_is_selected_by_a_lowercase_pattern(runner, tmp_p
 
 
 @pytest.mark.unit
+def test_an_uppercase_corpus_still_gets_its_lowercase_baselines_attached(
+    runner, tmp_path
+):
+    """Selecting documents case-insensitively is useless if baselines still match exactly.
+
+    This is the corpus the case-folding fix exists for -- documents exported from a
+    system that uppercases extensions -- and folding only the *selection* moved the
+    silent loss one layer down instead of removing it. `.PDF` documents beside
+    lowercase baseline directories were selected, matched nothing, and produced a test
+    set with a full `input/`, baselines under keys nothing referenced, and every
+    manifest row's `baseline_source` empty, at exit 0 with `Matched 0/2` mid-output as
+    the only sign. Before folding, that combination exited 1 with "No documents found",
+    so the fix replaced a refusal the user cannot miss with a success report over a test
+    set an evaluation cannot score.
+
+    The S3 keys are asserted, not just the match count, because the backend pairs a
+    baseline to its document by the exact prefix `baseline/<input file name>/`
+    (`src/lambda/test_file_copier`). A baseline uploaded under the *directory's*
+    spelling would satisfy a count-based check and still score nothing, so the upload
+    has to land under the document's name.
+    """
+    from idp_cli.cli import generate_manifest
+
+    docs = tmp_path / "docs"
+    _write(docs / "W2-A.PDF")
+    _write(docs / "W2-B.PDF")
+    baselines = tmp_path / "baselines"
+    _write(baselines / "w2-a.pdf" / "expected.json", '{"a": 1}')
+    _write(baselines / "w2-b.pdf" / "expected.json", '{"b": 2}')
+    output = tmp_path / "m.csv"
+
+    with mock_aws():
+        boto3.client("s3", region_name="us-east-1").create_bucket(
+            Bucket=TEST_SET_BUCKET
+        )
+        with _patched_stack_resources({"TestSetBucket": TEST_SET_BUCKET}):
+            result = runner.invoke(
+                generate_manifest,
+                [
+                    "--dir",
+                    str(docs),
+                    "--baseline-dir",
+                    str(baselines),
+                    "--test-set",
+                    "set1",
+                    "--stack-name",
+                    "IDP",
+                    "--output",
+                    str(output),
+                ],
+            )
+
+        keys = {
+            obj["Key"]
+            for obj in boto3.client("s3", region_name="us-east-1")
+            .list_objects_v2(Bucket=TEST_SET_BUCKET)
+            .get("Contents", [])
+        }
+
+    assert result.exit_code == 0, result.output
+    assert "Matched 2/2 documents to baselines" in result.output
+    assert "none matched a document" not in result.output
+
+    # The baseline objects sit under the *document's* name, which is the prefix the
+    # backend pairs on -- not under `w2-a.pdf/`, the directory's spelling.
+    assert keys == {
+        "set1/input/W2-A.PDF",
+        "set1/input/W2-B.PDF",
+        "set1/baseline/W2-A.PDF/expected.json",
+        "set1/baseline/W2-B.PDF/expected.json",
+    }, keys
+
+    rows = {
+        row["document_path"]: row["baseline_source"]
+        for row in _read_manifest_rows(output)
+    }
+    assert rows == {
+        f"s3://{TEST_SET_BUCKET}/set1/input/W2-A.PDF": f"s3://{TEST_SET_BUCKET}/set1/baseline/W2-A.PDF/",
+        f"s3://{TEST_SET_BUCKET}/set1/input/W2-B.PDF": f"s3://{TEST_SET_BUCKET}/set1/baseline/W2-B.PDF/",
+    }, rows
+    assert "" not in rows.values(), "every row must name a baseline prefix"
+
+
+@pytest.mark.unit
+def test_case_sensitive_governs_baseline_matching_too(runner, tmp_path):
+    """One flag, one rule: `--case-sensitive` narrows selection and matching together.
+
+    A flag that folded the selection but not the matching, or the reverse, would give an
+    invocation that selects a document and then cannot label it -- which is the defect
+    this pair of assertions exists to prevent. With the flag the uppercase document is
+    not selected at all, so the run refuses; without it both selection and matching
+    fold and the run succeeds.
+    """
+    from idp_cli.cli import generate_manifest
+
+    docs = tmp_path / "docs"
+    _write(docs / "W2-A.PDF")
+    baselines = tmp_path / "baselines"
+    _write(baselines / "w2-a.pdf" / "expected.json", '{"a": 1}')
+    output = tmp_path / "m.csv"
+
+    exact = runner.invoke(
+        generate_manifest,
+        [
+            "--dir",
+            str(docs),
+            "--baseline-dir",
+            str(baselines),
+            "--output",
+            str(output),
+            "--case-sensitive",
+        ],
+    )
+    assert exact.exit_code == 1, exact.output
+    assert "No documents found" in exact.output
+
+    folded = runner.invoke(
+        generate_manifest,
+        ["--dir", str(docs), "--baseline-dir", str(baselines), "--output", str(output)],
+    )
+    assert folded.exit_code == 0, folded.output
+    assert "Matched 1/1 documents to baselines" in folded.output
+    assert [row["baseline_source"] for row in _read_manifest_rows(output)] == [
+        str(baselines / "w2-a.pdf")
+    ]
+
+
+@pytest.mark.unit
+def test_two_baseline_directories_differing_only_in_case_are_refused(runner, tmp_path):
+    """Two candidate ground truths for one document is ambiguous, so it is refused.
+
+    Folding the baseline index makes `gt.pdf/` and `GT.PDF/` collide, and either choice
+    would be arbitrary -- the document would be scored against labels nobody chose. The
+    refusal lands before any upload or clear, and it names both directories and the flag
+    that matches them exactly.
+    """
+    from idp_cli.cli import generate_manifest
+
+    docs = tmp_path / "docs"
+    _write(docs / "gt.pdf")
+    baselines = tmp_path / "baselines"
+    _write(baselines / "gt.pdf" / "a.json", "{}")
+    _write(baselines / "GT.PDF" / "b.json", "{}")
+    output = tmp_path / "m.csv"
+
+    result = runner.invoke(
+        generate_manifest,
+        ["--dir", str(docs), "--baseline-dir", str(baselines), "--output", str(output)],
+    )
+
+    assert result.exit_code == 1, result.output
+    assert "differ only in case" in result.output
+    assert "GT.PDF" in result.output and "gt.pdf" in result.output
+    assert "--case-sensitive" in result.output
+    assert not output.exists(), "nothing is written when the baselines are ambiguous"
+
+    # `--case-sensitive` is the stated route out, so it must actually work.
+    exact = runner.invoke(
+        generate_manifest,
+        [
+            "--dir",
+            str(docs),
+            "--baseline-dir",
+            str(baselines),
+            "--output",
+            str(output),
+            "--case-sensitive",
+        ],
+    )
+    assert exact.exit_code == 0, exact.output
+    assert [row["baseline_source"] for row in _read_manifest_rows(output)] == [
+        str(baselines / "gt.pdf")
+    ]
+
+
+@pytest.mark.unit
+def test_a_test_set_whose_baselines_all_miss_is_refused_before_anything_is_cleared(
+    runner, tmp_path, api_calls
+):
+    """`--test-set` with baselines that match nothing refuses, and writes nothing at all.
+
+    `--baseline-dir` is mandatory with `--test-set`, so baselines that match no document
+    are unambiguously a mistake rather than a deliberately unlabeled set. Continuing
+    would **clear the existing test set** and then upload one whose every
+    `baseline_source` is empty, so the refusal has to come before the clear -- which is
+    asserted from the recorded API calls, not from the exit code, because an exit 1
+    after the clear destroys the previous test set's baselines just the same.
+    """
+    from idp_cli.cli import generate_manifest
+
+    docs = tmp_path / "docs"
+    _write(docs / "invoice.pdf")
+    baselines = tmp_path / "baselines"
+    _write(baselines / "unrelated.pdf" / "expected.json", "{}")
+
+    with mock_aws():
+        s3 = boto3.client("s3", region_name="us-east-1")
+        s3.create_bucket(Bucket=TEST_SET_BUCKET)
+        s3.put_object(Bucket=TEST_SET_BUCKET, Key="set1/input/old.pdf", Body=b"old")
+
+        with _patched_stack_resources({"TestSetBucket": TEST_SET_BUCKET}):
+            result = runner.invoke(
+                generate_manifest,
+                [
+                    "--dir",
+                    str(docs),
+                    "--baseline-dir",
+                    str(baselines),
+                    "--test-set",
+                    "set1",
+                    "--stack-name",
+                    "IDP",
+                    "--force",
+                ],
+            )
+
+        keys = {
+            obj["Key"]
+            for obj in s3.list_objects_v2(Bucket=TEST_SET_BUCKET).get("Contents", [])
+        }
+
+    assert result.exit_code == 1, result.output
+    assert "none matched a document" in result.output
+    assert "invoice.pdf" in result.output, (
+        "the message shows the naming that is expected"
+    )
+
+    assert api_calls.of("DeleteObjects") == [], (
+        "the existing test set must not be cleared"
+    )
+    # The only recorded PutObject is this test's own seeding of the previous test set,
+    # so the command wrote nothing -- not the marker, not an input, not a baseline.
+    assert {call.params["Key"] for call in api_calls.of("PutObject")} == {
+        "set1/input/old.pdf"
+    }, [call.params["Key"] for call in api_calls.of("PutObject")]
+    assert keys == {"set1/input/old.pdf"}, "the previous test set survives untouched"
+
+
+@pytest.mark.unit
 def test_case_sensitive_restores_exact_matching_locally(runner, tmp_path):
     """`--case-sensitive` is the route for a pattern whose case is deliberate.
 
@@ -519,6 +758,16 @@ def test_a_file_pattern_naming_a_directory_is_refused(runner, tmp_path):
     )
     assert s3_result.exit_code == 1, s3_result.output
     assert "--file-pattern matches a file name, not a path" in s3_result.output
+
+    # Where the new check sits in the validation order is observable, and this file
+    # pins that order elsewhere, so pin this one too: with no `--output` the message
+    # must still be about `--output`, not about the pattern.
+    ordered = runner.invoke(
+        generate_manifest, ["--dir", str(docs), "--file-pattern", "sub/*.pdf"]
+    )
+    assert ordered.exit_code == 1, ordered.output
+    assert "--output is required" in ordered.output
+    assert "--file-pattern matches a file name" not in ordered.output
 
 
 @pytest.mark.unit
@@ -2397,16 +2646,22 @@ def test_next_steps_guidance_differs_by_what_was_produced(runner, tmp_path):
 
 
 @pytest.mark.unit
-def test_an_unmatched_baseline_dir_still_takes_the_baseline_branch(runner, tmp_path):
-    """`baseline_map` is non-empty even when nothing matched, so the guidance misleads.
+def test_an_unmatched_baseline_dir_does_not_claim_the_manifest_is_ready_to_evaluate(
+    runner, tmp_path
+):
+    """A baseline directory that matched nothing warns, and the closing guidance is right.
 
-    The closing branch is chosen on `elif baseline_map:` — whether any baseline
-    *directory was found*, not whether any document *matched one*. With a baseline
-    directory present but named so that nothing matches, every row's `baseline_source`
-    is empty and yet the command still prints "Ready to process with evaluations!".
-    Recorded as a wrong-guidance defect rather than a functional one: the manifest is
-    correct, the advice about it is not, and the `Matched 0/1` line just above is the
-    only contradicting evidence on screen.
+    The closing branch is `elif baseline_map:`, and `baseline_map` is now keyed on the
+    documents that *matched* rather than on the directories that were *found*, so a
+    baseline directory named so that nothing matches no longer reaches it. It used to:
+    every row's `baseline_source` was empty and the command still printed "Ready to
+    process with evaluations!", with the `Matched 0/1` line above as the only
+    contradicting evidence on screen.
+
+    Both warnings are asserted, because they say different things — one names the
+    directory that will not be uploaded, the other says no document got a baseline at
+    all — and a user who supplied baselines needs the second to know the manifest is
+    unlabeled.
     """
     from idp_cli.cli import generate_manifest
 
@@ -2423,8 +2678,15 @@ def test_an_unmatched_baseline_dir_still_takes_the_baseline_branch(runner, tmp_p
 
     assert result.exit_code == 0, result.output
     assert "Matched 0/1 documents to baselines" in result.output
-    assert "Ready to process with evaluations!" in result.output
+    assert "matched no document and will not be uploaded: unrelated" in result.output
+    assert "none matched a document" in result.output
+    assert "Ready to process with evaluations!" not in result.output, (
+        "nothing is ready to evaluate: every baseline_source is empty"
+    )
     assert [row["baseline_source"] for row in _read_manifest_rows(output)] == [""]
+    # Without --test-set the manifest is still written, because the user can edit it --
+    # which is what the guidance that does print tells them to do.
+    assert "Edit manifest to add baseline_source" in result.output
 
 
 @pytest.mark.unit

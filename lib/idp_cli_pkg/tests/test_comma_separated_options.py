@@ -54,37 +54,71 @@ def runner():
     return CliRunner()
 
 
+# The string-splitting methods that can take a separator, and the module-level
+# splitters. All of them are matched, because "the next comma-separated option" is not
+# guaranteed to be spelled `.split(",")`.
+_SPLIT_METHODS = frozenset({"split", "rsplit", "partition", "rpartition"})
+
+
 def _comma_split_sites():
-    """Every `X.split(",")` in `cli.py`, as `(enclosing function name, line, source)`.
+    """Every comma-splitting call in `cli.py`, as `(line, source)`.
 
     Read out of the AST rather than by matching text, so a reformatting of the call or a
-    different variable name cannot hide one.
+    different variable name cannot hide one. Four things this deliberately does *not*
+    restrict, each of which was a hole when this walked only function bodies looking for
+    a positional `.split(",")`:
+
+    - The walk is over the **whole module**, so a split at module scope (a constant
+      built at import) or inside an `ast.Lambda` is seen. Neither is inside a
+      `FunctionDef`.
+    - The separator is read from the **positional or the `sep=` keyword** argument, so
+      `value.split(sep=",")` is seen.
+    - `partition` and `rpartition` count as splitting on a comma, because they are how
+      somebody would write "the part before the first comma".
+    - `re.split` with a comma in its pattern counts too.
+
+    No enclosing-function name is returned, because filtering on one is what let a
+    *second* bare split inside `_comma_separated_values` pass. The caller pins the count
+    instead.
     """
     from idp_cli import cli as cli_module
 
     source = inspect.getsource(cli_module)
     tree = ast.parse(source)
 
+    def comma_separator(call):
+        """The separator constant this call splits on, or None if it is not one."""
+        candidates = list(call.args)
+        candidates += [
+            keyword.value
+            for keyword in call.keywords
+            if keyword.arg in {"sep", "pattern"}
+        ]
+        for node in candidates:
+            if isinstance(node, ast.Constant) and isinstance(node.value, str):
+                if "," in node.value:
+                    return node.value
+        return None
+
     sites = []
     for node in ast.walk(tree):
-        if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+        if not isinstance(node, ast.Call):
             continue
-        for inner in ast.walk(node):
-            if not isinstance(inner, ast.Call):
-                continue
-            func = inner.func
-            if not isinstance(func, ast.Attribute) or func.attr not in {
-                "split",
-                "rsplit",
-            }:
-                continue
-            if not inner.args or not isinstance(inner.args[0], ast.Constant):
-                continue
-            separator = inner.args[0].value
-            if not isinstance(separator, str) or "," not in separator:
-                continue
-            sites.append((node.name, inner.lineno, ast.unparse(inner)))
-    return sites
+        func = node.func
+        if not isinstance(func, ast.Attribute):
+            continue
+        is_str_split = func.attr in _SPLIT_METHODS
+        is_re_split = (
+            func.attr == "split"
+            and isinstance(func.value, ast.Name)
+            and func.value.id == "re"
+        )
+        if not (is_str_split or is_re_split):
+            continue
+        if comma_separator(node) is None:
+            continue
+        sites.append((node.lineno, ast.unparse(node)))
+    return sorted(sites)
 
 
 @pytest.mark.unit
@@ -95,27 +129,34 @@ def test_every_comma_split_in_cli_goes_through_the_shared_parser():
     test was written -- which is the whole point, because five sites carried this defect
     through the release in which two others were fixed.
 
-    Read the assertions in order. The universe must be non-empty, or every claim below
-    it is vacuously true and the test passes against a `cli.py` with no splits in it at
-    all -- or against an AST walk that has quietly stopped finding them. Then every site
-    must be inside `_comma_separated_values`, with nothing carved out.
+    The assertion is a **count pin**: `cli.py` contains exactly one comma-splitting
+    call, and it is the one inside `_comma_separated_values`. Counting rather than
+    filtering by the enclosing function's name is deliberate -- a name filter exempts
+    *any* split inside the helper, so a second bare split added there passed, and it
+    says nothing at all about a split at module scope or inside a lambda, neither of
+    which is inside a `FunctionDef`.
+
+    The count also gives the non-vacuity guard for free: an AST walk that quietly stopped
+    matching would report zero, not one, and fail here rather than passing over an empty
+    universe.
     """
     sites = _comma_split_sites()
 
-    assert sites, (
-        "no comma-splitting call site found in cli.py at all; the AST walk has stopped "
-        "matching and every assertion below it would pass vacuously"
+    assert len(sites) == 1, (
+        "cli.py must contain exactly one comma-splitting call, inside "
+        "`_comma_separated_values`. Anything else is an option parser splitting for "
+        "itself, so a blank segment reaches it as a value that is the empty string. "
+        f"Found {len(sites)}: {sites}"
     )
 
-    offenders = [
-        (function, lineno, src)
-        for function, lineno, src in sites
-        if function != "_comma_separated_values"
-    ]
-    assert offenders == [], (
-        "these comma-separated option parsers split on the comma themselves instead of "
-        "calling _comma_separated_values, so a blank segment reaches them as a value "
-        f"that is the empty string: {offenders}"
+    from idp_cli.cli import _comma_separated_values
+
+    helper_source, helper_first_line = inspect.getsourcelines(_comma_separated_values)
+    helper_lines = range(helper_first_line, helper_first_line + len(helper_source))
+    (lineno, src) = sites[0]
+    assert lineno in helper_lines, (
+        f"the one comma split is at line {lineno} ({src}), which is outside "
+        f"_comma_separated_values (lines {helper_lines.start}-{helper_lines.stop - 1})"
     )
 
 
