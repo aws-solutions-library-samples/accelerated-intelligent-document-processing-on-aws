@@ -1454,6 +1454,22 @@ nothing, and that is all it means. A failure while finding the documents — a t
 rejected table scan, a table that is not there — prints the cause and exits 1 instead of
 reporting that there was nothing to delete.
 
+**A delete that could not finish says so.** Each document's cleanup has several steps —
+the input object, every output version, the tracking-list row, the run records, the
+tracking record — and a step that fails is reported per document rather than being
+reported as a completed delete. A transient throttle is retried first — four attempts, and no
+further attempt starts once five seconds of retrying is spent — so what is reported is a
+sustained failure rather than a momentary one.
+
+Two things to expect when a delete is reported as failed:
+
+- **The document's tracking record is kept on purpose** if its tracking-list row could
+  not be cleared, because that record is what a retry needs to find the row. The document
+  therefore still appears in the document list, while its input file and outputs may
+  already be gone — so the entry can open a document whose content is no longer there.
+  Run the same delete again: the retry picks up where the first attempt stopped.
+- **`--dry-run` is unaffected** and still issues no delete of any kind.
+
 A run in which **every** deletion failed also exits 1; it used to exit 0 after printing
 "Deleted 0/2 document(s)", so an automated cleanup step reported success having deleted
 nothing.

@@ -715,6 +715,62 @@ Callers need not add their own handling to stay safe, but should expect to see t
 `idp_sdk`'s `batch.delete_documents()` re-raises as `IDPProcessingError` and
 `idp-cli delete-documents` prints the cause and exits 1.
 
+## 🧹 Reporting a delete that did not finish
+
+The same rule the selectors follow now holds inside the cleanup itself: **a value that
+means "there was nothing there" cannot also mean "the call failed".**
+`_query_shard_for_object_key` returns `[]` for a shard holding no entry for the document,
+`_try_exact_list_deletion` returns `False` for a key that was not there, and
+`delete_single_document` records `False` as `list_entries: False` **with no error** — so a
+throttled shard query used to be reported as a completed delete while the row stayed in
+the document list, with nothing anywhere saying so.
+
+- **A fault in the list-entry cleanup propagates** to `delete_single_document`, which
+  records it in `errors` and answers `success=False`. The three fallback strategies swallow
+  nothing except a `ValueError` from `calculate_shard`: an unparseable `QueuedTime` is a
+  property of the record, cannot be got past by retrying, and must not abort the rest of
+  the document's cleanup.
+- **A throttle is retried before it becomes a failure.** `_call_with_retry` wraps every
+  DynamoDB and S3 call on this path: four attempts, exponential backoff from 0.2 s capped
+  at 2 s, no further attempt started once `RETRY_MAX_ELAPSED_SECONDS` of retrying is
+  spent, and the final attempt's exception raised unchanged so a caller can still read
+  the error code. Read that budget precisely: it gates attempt *starts*, so what the
+  ladder adds is the budget **plus at most one more attempt** — and under sustained
+  throttling with a bare client, whose own legacy ladder spends 25 s inside the first
+  attempt, this layer contributes one attempt and no sleeps. Its value there is that it
+  stops rather than multiplies. Which faults are worth another attempt comes from botocore's own
+  `ThrottledRetryableChecker` and `TransientRetryableChecker` rather than a list written
+  here — throttles, 5xx and connection failures are retried; `ValidationException`,
+  `AccessDeniedException` and `ResourceNotFoundException` are not.
+- ⚠️ **The retry is deliberately small, because it is not the only one.** A client built
+  as `boto3.resource("dynamodb")` with no `Config` runs botocore's `legacy` retry mode,
+  whose DynamoDB entry allows 10 attempts — so the two layers multiply. This one lives in
+  the module rather than at each caller's client construction for one reason: the module
+  is handed a `Table` and cannot configure the client underneath it, and a ladder here
+  cannot be bypassed by a new caller that forgets to pass a `Config`.
+- **The document record is kept when list-entry cleanup failed.** Every list-entry
+  strategy is reached through that record's `QueuedTime`, so deleting it after a failed
+  cleanup left the orphaned row unreachable — the retry the reported failure asks for
+  found no metadata, ran no strategy, and answered `success=True` with the row still
+  listed. An S3 failure does not hold the record back; only a list-entry failure does.
+- ⚠️ **The record is kept when cleanup *raises*, which is narrower than "whenever a row
+  is left behind".** The three strategies can also simply find nothing — a row more than
+  one shard away, a `QueuedTime` differing from the one the row was written under, or the
+  swallowed `ValueError` path — and that is `list_entries: False` with no error, so the
+  record is deleted and the row becomes unreachable exactly as before. That case is
+  unchanged by this and is not reported as a failure.
+- ⚠️ **A failed delete leaves the document visible with its content already gone.** The
+  kept `doc#` record is what the UI's document list reads (`ItemType="document"` on
+  `TypeDateIndex`), while the input object and the output versions are deleted earlier in
+  the same attempt — so the row remains and opens a document whose bytes are no longer
+  there. That is the honest state for a delete that did not finish, and re-running the
+  delete is what clears it, but it is worth knowing before reading the list.
+- **Retrying a delete is safe, and the residual is in the reporting.** `DeleteItem` here
+  carries no condition expression, so re-issuing it cannot delete twice or corrupt
+  anything; what a retry can lose is the *evidence*, since a row removed by an attempt
+  whose response was lost returns no `ALL_OLD` attributes and reads as "there was nothing
+  to delete". That understates the cleanup and never overstates it.
+
 ## 📝 Best Practices
 
 1. **Always use the Document.load_document() method** to handle input data in Lambda functions
