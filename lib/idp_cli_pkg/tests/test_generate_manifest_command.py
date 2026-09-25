@@ -23,11 +23,13 @@ because a validation that is skipped or reordered turns a clear refusal into a
 confusing failure much further into the run — after files have already been uploaded,
 in the `--test-set` case.
 
-Local scanning goes through `glob.glob` and S3 scanning through `fnmatch.fnmatch`,
-both of which are case-sensitive on Linux. `test_an_uppercase_extension_is_silently_skipped`
-and its S3 counterpart pin that a `.PDF` file is dropped with no warning and no
-non-zero exit; see the module docstring note there for why that is recorded as a
-defect rather than fixed.
+Local scanning and S3 scanning now apply the same predicate, `cli._file_pattern_matches`,
+which matches the whole pattern against a file's base name and ignores case unless
+`--case-sensitive` is given. Both directions are pinned on both paths --
+`test_an_uppercase_extension_is_selected_by_a_lowercase_pattern` and its S3 twin for
+the default, `test_case_sensitive_restores_exact_matching_locally` and its twin for
+the opt-out -- because the case that produced the defect (a corpus of `.PDF` against
+the default `*.pdf`) exits 0 either way, so only the row set distinguishes them.
 
 AWS is either `moto` or absent. The `--test-set` path needs a stack lookup, and that
 one call (`IDPClient._get_stack_resources`) is patched because it reads a real
@@ -374,24 +376,25 @@ def test_no_recursive_excludes_subdirectories(runner, tmp_path):
 
 
 @pytest.mark.unit
-def test_an_uppercase_extension_is_silently_skipped(runner, tmp_path):
-    """DEFECT (pinned, not fixed): `--file-pattern` is case-sensitive on Linux.
+def test_an_uppercase_extension_is_selected_by_a_lowercase_pattern(runner, tmp_path):
+    """The default `*.pdf` selects `.PDF` too, on the local scan (issue #1231 item 4).
 
-    The local scan is `glob.glob(os.path.join(dir, "**", file_pattern))`, and glob is
-    case-sensitive on a case-sensitive filesystem. A directory of documents scanned
-    with the default `*.pdf` therefore drops every `.PDF` file with no warning. Here
-    only the lowercase file reaches the manifest and the command still exits 0, so a
-    user who exported documents from a system that uppercases extensions gets a
-    silently short test set and an evaluation over fewer documents than they supplied.
+    This is the case that produced the defect: a corpus exported from a system that
+    uppercases extensions, scanned with the default pattern, produced a manifest
+    missing every document at exit 0 and with no warning. The exit code cannot tell
+    the two behaviours apart, so the row set is what is asserted, in both directions
+    -- the lowercase file is still selected and the uppercase one now is as well.
 
-    The test pins the current behaviour. `--file-pattern "*.PDF"` is the workaround,
-    and `--file-pattern "*"` picks up both at the cost of also matching non-documents.
+    `*.PDF` is asserted as well, because the fix has to be symmetric: folding case on
+    only one side of the comparison would make an uppercase pattern the new silent
+    filter.
     """
     from idp_cli.cli import generate_manifest
 
     docs = tmp_path / "docs"
     lower = _write(docs / "lower.pdf")
     upper = _write(docs / "UPPER.PDF")
+    mixed = _write(docs / "Mixed.Pdf")
     output = tmp_path / "manifest.csv"
 
     result = runner.invoke(
@@ -400,22 +403,236 @@ def test_an_uppercase_extension_is_silently_skipped(runner, tmp_path):
 
     assert result.exit_code == 0, result.output
     rows = _read_manifest_rows(output)
-    assert [row["document_path"] for row in rows] == [str(lower)]
-    assert str(upper) not in output.read_text()
-    assert "UPPER" not in result.output, (
-        "the dropped file is not mentioned anywhere in the output"
-    )
+    assert {row["document_path"] for row in rows} == {
+        str(lower),
+        str(upper),
+        str(mixed),
+    }
+    assert "Found 3 documents" in result.output
 
-    # The workaround, asserted so the claim above is not just prose.
+    # An uppercase pattern has to select the same three, or the fold is one-sided.
     upper_output = tmp_path / "upper.csv"
     upper_result = runner.invoke(
         generate_manifest,
         ["--dir", str(docs), "--output", str(upper_output), "--file-pattern", "*.PDF"],
     )
     assert upper_result.exit_code == 0, upper_result.output
-    assert [row["document_path"] for row in _read_manifest_rows(upper_output)] == [
-        str(upper)
+    assert {row["document_path"] for row in _read_manifest_rows(upper_output)} == {
+        str(lower),
+        str(upper),
+        str(mixed),
+    }
+
+
+@pytest.mark.unit
+def test_case_sensitive_restores_exact_matching_locally(runner, tmp_path):
+    """`--case-sensitive` is the route for a pattern whose case is deliberate.
+
+    Folding case by default is the safe direction for the reported defect, but it
+    takes a capability away from a user who cased a pattern on purpose -- a corpus
+    holding both `Invoice-*.pdf` and `invoice-*.pdf` as different document families
+    is the shape. The flag gives that back, and it is asserted here on a *prefix*
+    rather than an extension, since the prefix is the part a user is most likely to
+    have meant literally.
+    """
+    from idp_cli.cli import generate_manifest
+
+    docs = tmp_path / "docs"
+    capitalised = _write(docs / "Invoice-01.pdf")
+    _write(docs / "invoice-02.pdf")
+    output = tmp_path / "manifest.csv"
+
+    result = runner.invoke(
+        generate_manifest,
+        [
+            "--dir",
+            str(docs),
+            "--output",
+            str(output),
+            "--file-pattern",
+            "Invoice-*.pdf",
+            "--case-sensitive",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert [row["document_path"] for row in _read_manifest_rows(output)] == [
+        str(capitalised)
     ]
+
+    # Without the flag the same pattern takes both, which is the behaviour the flag
+    # exists to opt out of. Asserted here so the contrast is one test's worth of fact.
+    both_output = tmp_path / "both.csv"
+    both = runner.invoke(
+        generate_manifest,
+        [
+            "--dir",
+            str(docs),
+            "--output",
+            str(both_output),
+            "--file-pattern",
+            "Invoice-*.pdf",
+        ],
+    )
+    assert both.exit_code == 0, both.output
+    assert len(_read_manifest_rows(both_output)) == 2
+
+
+@pytest.mark.unit
+def test_a_file_pattern_naming_a_directory_is_refused(runner, tmp_path):
+    """`--file-pattern "sub/*.pdf"` is refused, on both scan paths.
+
+    The pattern applies to a base name, which is what the S3 scan always did: a
+    pattern with a directory component matched nothing there and the only report was
+    "No documents found", which is true and explains nothing. The local scan used to
+    honour it, by joining the pattern onto the directory before globbing. Unifying the
+    two on base-name matching costs that spelling, so the loss is a message naming the
+    option that does the job rather than an empty scan the user has to diagnose.
+    """
+    from idp_cli.cli import generate_manifest
+
+    docs = tmp_path / "docs"
+    _write(docs / "sub" / "nested.pdf")
+    output = tmp_path / "manifest.csv"
+
+    result = runner.invoke(
+        generate_manifest,
+        ["--dir", str(docs), "--output", str(output), "--file-pattern", "sub/*.pdf"],
+    )
+
+    assert result.exit_code == 1, result.output
+    assert "--file-pattern matches a file name, not a path" in result.output
+    assert "--recursive" in result.output
+    assert not output.exists(), "nothing is written when the options are refused"
+
+    # Same refusal on the S3 path, where no client should even be built.
+    s3_result = runner.invoke(
+        generate_manifest,
+        [
+            "--s3-uri",
+            "s3://docs-bucket/prefix/",
+            "--output",
+            str(output),
+            "--file-pattern",
+            "sub/*.pdf",
+        ],
+    )
+    assert s3_result.exit_code == 1, s3_result.output
+    assert "--file-pattern matches a file name, not a path" in s3_result.output
+
+
+@pytest.mark.unit
+def test_a_hidden_file_is_still_excluded_unless_the_pattern_asks_for_one(
+    runner, tmp_path
+):
+    """The dotfile rule survives the change from globbing the pattern to filtering.
+
+    `glob` never matches a leading-dot name unless the pattern's own base name starts
+    with one, and the scan now enumerates with `*` and filters afterwards, which would
+    have thrown that rule away in both directions: `*.pdf` would start selecting
+    editor droppings and lock files, and a pattern that deliberately names hidden
+    files would stop finding them. Both halves are asserted, because each is a
+    different line of the fix.
+    """
+    from idp_cli.cli import generate_manifest
+
+    docs = tmp_path / "docs"
+    visible = _write(docs / "visible.pdf")
+    hidden = _write(docs / ".hidden.pdf")
+    output = tmp_path / "manifest.csv"
+
+    result = runner.invoke(
+        generate_manifest, ["--dir", str(docs), "--output", str(output)]
+    )
+    assert result.exit_code == 0, result.output
+    assert [row["document_path"] for row in _read_manifest_rows(output)] == [
+        str(visible)
+    ]
+
+    hidden_output = tmp_path / "hidden.csv"
+    hidden_result = runner.invoke(
+        generate_manifest,
+        [
+            "--dir",
+            str(docs),
+            "--output",
+            str(hidden_output),
+            "--file-pattern",
+            ".hidden*",
+        ],
+    )
+    assert hidden_result.exit_code == 0, hidden_result.output
+    assert [row["document_path"] for row in _read_manifest_rows(hidden_output)] == [
+        str(hidden)
+    ]
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("filename", "pattern", "folded", "exact"),
+    [
+        # (name, pattern, result with the default, result with --case-sensitive).
+        # Both columns are written out rather than derived from `fnmatch`, because a
+        # test that computes its expectation with the same library call as the code
+        # under test agrees with that code however wrong both are.
+        ("lower.pdf", "*.pdf", True, True),
+        ("UPPER.PDF", "*.pdf", True, False),
+        ("Mixed.Pdf", "*.pdf", True, False),
+        ("lower.pdf", "*.PDF", True, False),
+        ("notes.txt", "*.pdf", False, False),
+        ("INVOICE01.PDF", "Invoice*.pdf", True, False),
+        ("Invoice01.pdf", "Invoice*.pdf", True, True),
+        ("W2-2024.pdf", "W2*.pdf", True, True),
+        ("invoice-2024.pdf", "W2*.pdf", False, False),
+        # A bracket class keeps working, because both sides are folded rather than the
+        # pattern being rewritten into classes.
+        ("doc.PDF", "*.[pP]df", True, False),
+        ("doc.Pdf", "*.[pP]df", True, True),
+        ("lending_package.pdf", "lending_package.pdf", True, True),
+    ],
+)
+def test_the_file_pattern_predicate_folds_case_on_both_sides(
+    filename, pattern, folded, exact
+):
+    """The rule, stated as cases: whole pattern against base name, case ignored."""
+    from idp_cli.cli import _file_pattern_matches
+
+    assert _file_pattern_matches(filename, pattern) is folded
+    assert _file_pattern_matches(filename, pattern, case_sensitive=True) is exact
+
+
+@pytest.mark.unit
+def test_the_predicate_calls_fnmatchcase_and_not_fnmatch():
+    """`fnmatch.fnmatch` and `fnmatch.fnmatchcase` are the same function on Linux.
+
+    `fnmatch.fnmatch` routes through `os.path.normcase`, which is the identity on
+    POSIX and lowercases on Windows. So on the host these tests run on, no input at
+    all distinguishes the two calls, and a behavioural test of the difference is one
+    that cannot fail here -- it would go green against either spelling and quietly
+    make the predicate's result depend on the operating system that generated the
+    manifest.
+
+    The call site is therefore asserted directly, by reading the predicate's own
+    source: `fnmatchcase` must be the attribute called, and `fnmatch.fnmatch` must
+    not appear. That is the only shape of this assertion that discriminates.
+    """
+    import ast
+    import inspect
+
+    from idp_cli.cli import _file_pattern_matches
+
+    tree = ast.parse(inspect.cleandoc(inspect.getsource(_file_pattern_matches)))
+    called = {
+        node.func.attr
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+    }
+
+    assert called, "no attribute call found at all, so this assertion proves nothing"
+    assert "fnmatchcase" in called, called
+    assert "fnmatch" not in called, (
+        "fnmatch.fnmatch is normcase-dependent, so the result would differ by host"
+    )
 
 
 @pytest.mark.unit
@@ -752,13 +969,48 @@ def test_s3_no_recursive_keeps_only_keys_directly_under_the_prefix(runner, tmp_p
 
 
 @pytest.mark.unit
-def test_an_uppercase_extension_is_silently_skipped_in_s3_too(runner, tmp_path):
-    """DEFECT (pinned, not fixed): the S3 scan drops `.PDF` keys as well.
+def test_an_uppercase_extension_is_selected_in_s3_too(runner, tmp_path):
+    """The S3 scan takes `.PDF` keys as well, through the same predicate.
 
-    The S3 filter is `fnmatch.fnmatch(filename, file_pattern)`, which case-folds via
-    `os.path.normcase` — a no-op on POSIX. So the same silent omission as the local
-    scan applies to a bucket, and with the same consequence: no warning, exit 0, and a
-    manifest shorter than the bucket.
+    The two scans are the reason `_file_pattern_matches` exists rather than two
+    parallel filters: the S3 filter was `fnmatch.fnmatch`, which case-folds via
+    `os.path.normcase` and so is a no-op on POSIX, giving a bucket the same silent
+    omission as a directory. Both paths are asserted separately because they select
+    from different sources and a fix to one says nothing about the other.
+    """
+    from idp_cli.cli import generate_manifest
+
+    output = tmp_path / "manifest.csv"
+
+    with mock_aws():
+        s3 = boto3.client("s3", region_name="us-east-1")
+        s3.create_bucket(Bucket="docs-bucket")
+        s3.put_object(Bucket="docs-bucket", Key="prefix/lower.pdf", Body=b"pdf")
+        s3.put_object(Bucket="docs-bucket", Key="prefix/UPPER.PDF", Body=b"pdf")
+        s3.put_object(Bucket="docs-bucket", Key="prefix/Mixed.Pdf", Body=b"pdf")
+
+        result = runner.invoke(
+            generate_manifest,
+            ["--s3-uri", "s3://docs-bucket/prefix/", "--output", str(output)],
+        )
+
+    assert result.exit_code == 0, result.output
+    rows = _read_manifest_rows(output)
+    assert {row["document_path"] for row in rows} == {
+        "s3://docs-bucket/prefix/lower.pdf",
+        "s3://docs-bucket/prefix/UPPER.PDF",
+        "s3://docs-bucket/prefix/Mixed.Pdf",
+    }
+
+
+@pytest.mark.unit
+def test_case_sensitive_restores_exact_matching_in_s3_too(runner, tmp_path):
+    """`--case-sensitive` has to reach the S3 scan, not only the local one.
+
+    The flag is one option feeding one predicate, but it is threaded through two call
+    sites, and a flag honoured on one path and dropped on the other is worse than no
+    flag at all -- it would mean the same invocation selects different documents from
+    a bucket and from a directory.
     """
     from idp_cli.cli import generate_manifest
 
@@ -772,15 +1024,19 @@ def test_an_uppercase_extension_is_silently_skipped_in_s3_too(runner, tmp_path):
 
         result = runner.invoke(
             generate_manifest,
-            ["--s3-uri", "s3://docs-bucket/prefix/", "--output", str(output)],
+            [
+                "--s3-uri",
+                "s3://docs-bucket/prefix/",
+                "--output",
+                str(output),
+                "--case-sensitive",
+            ],
         )
 
     assert result.exit_code == 0, result.output
-    rows = _read_manifest_rows(output)
-    assert [row["document_path"] for row in rows] == [
+    assert [row["document_path"] for row in _read_manifest_rows(output)] == [
         "s3://docs-bucket/prefix/lower.pdf"
     ]
-    assert "UPPER" not in result.output
 
 
 @pytest.mark.unit

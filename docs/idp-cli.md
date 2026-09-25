@@ -1506,6 +1506,7 @@ idp-cli generate-manifest [OPTIONS]
 - `--baseline-dir`: Baseline directory for automatic matching (only with --dir)
 - `--output`: Output manifest file path (CSV) - optional when using --test-set
 - `--file-pattern`: File pattern (default: `*.pdf`)
+- `--case-sensitive/--no-case-sensitive`: Match `--file-pattern` exactly as written (default: `--no-case-sensitive`)
 - `--recursive/--no-recursive`: Include subdirectories (default: recursive)
 - `--region`: AWS region (optional)
 - **Test Set Creation:**
@@ -1550,6 +1551,24 @@ idp-cli generate-manifest \
     --stack-name IDP \
     --force
 ```
+
+**How `--file-pattern` selects documents:** the pattern is matched against each
+file's **base name**, on both the `--dir` and the `--s3-uri` path, and the match
+**ignores case**. So the default `*.pdf` selects `statement.PDF` and `Statement.Pdf`
+as well, which is the point — a corpus exported from a system that uppercases
+extensions used to produce a valid-looking manifest with no rows in it, at exit 0.
+Case folding covers the whole pattern rather than an extension picked out of it, so
+`Invoice*.pdf` also selects `INVOICE01.PDF`. Pass `--case-sensitive` for a pattern
+whose case is deliberate — distinguishing an `Invoice-*.pdf` family from an
+`invoice-*.pdf` one, say. A pattern containing a directory component
+(`--file-pattern "sub/*.pdf"`) is **refused**: point `--dir` or `--s3-uri` at the
+directory and use `--recursive` / `--no-recursive` to choose the depth. Hidden files
+follow the usual shell rule and are excluded unless the pattern itself starts with a
+dot.
+
+⚠️ `--file-pattern` on `process` and `run-inference` is a **different** scan, in
+`idp_sdk`, and it is still case-sensitive. Pass the extension's actual case there, or
+generate a manifest with this command and process that.
 
 **Test Set Creation:**
 When using `--test-set`, the command:

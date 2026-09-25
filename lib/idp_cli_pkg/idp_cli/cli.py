@@ -7,6 +7,7 @@ IDP CLI - Main Command Line Interface
 Command-line tool for batch document processing with the IDP Accelerator.
 """
 
+import fnmatch
 import json
 import logging
 import os
@@ -2971,6 +2972,52 @@ def list_versions(stack_name: str, document_id: str, region: Optional[str]):
         sys.exit(1)
 
 
+def _file_pattern_matches(
+    filename: str, file_pattern: str, *, case_sensitive: bool = False
+) -> bool:
+    """Decide whether one file name is selected by a `--file-pattern` value.
+
+    One predicate serves both of `generate-manifest`'s scan paths on purpose. The
+    local scan handed the pattern to `glob.glob` and the S3 scan to
+    `fnmatch.fnmatch`, and on Linux both are case-sensitive, so a corpus exported
+    from a system that uppercases extensions produced a manifest missing *every*
+    document -- at exit 0, with no warning, and valid-looking -- because the pattern
+    was the default `*.pdf` and every name ended `.PDF`. Two parallel filters can
+    drift apart; there is one rule here instead, and it is stated in this docstring.
+
+    The rule: the **whole pattern** is matched against the **base name**, ignoring
+    case unless `case_sensitive` is set.
+
+    Three parts of that are deliberate choices rather than side effects.
+
+    - Case is folded over the whole pattern, not over an extension the pattern is
+      first parsed out of, so `Invoice*.pdf` also selects `INVOICE01.PDF`. Folding
+      only an extension would leave the reported defect in place for the prefix --
+      a corpus that is uppercase throughout would still yield an empty manifest --
+      and there is no general way to say which part of a glob is an extension
+      (`W2*.pdf`, `*.[pP]df`, `lending_package.pdf`). A pattern whose case really is
+      meant literally has `--case-sensitive`.
+    - `fnmatch.fnmatchcase` is used, not `fnmatch.fnmatch`: the latter routes
+      through `os.path.normcase`, which makes it case-sensitive on POSIX and
+      case-insensitive on Windows. Which documents a manifest names must not depend
+      on the host that generated it.
+    - Only the base name is matched, which is what the S3 scan always did. A pattern
+      naming a directory component is refused by the caller, so the local path's
+      loss of that spelling is a message rather than an empty result.
+
+    Args:
+        filename: One file's base name, with no directory components.
+        file_pattern: The `--file-pattern` value, a glob.
+        case_sensitive: Match exactly as written instead of ignoring case.
+
+    Returns:
+        True if the name is selected by the pattern.
+    """
+    if case_sensitive:
+        return fnmatch.fnmatchcase(filename, file_pattern)
+    return fnmatch.fnmatchcase(filename.lower(), file_pattern.lower())
+
+
 @cli.command()
 @click.option(
     "--dir",
@@ -2990,6 +3037,14 @@ def list_versions(stack_name: str, document_id: str, region: Optional[str]):
     help="Output manifest file path (CSV) - optional when using --test-set",
 )
 @click.option("--file-pattern", default="*.pdf", help="File pattern (default: *.pdf)")
+@click.option(
+    "--case-sensitive/--no-case-sensitive",
+    default=False,
+    help=(
+        "Match --file-pattern exactly as written. The default ignores case, so "
+        "*.pdf also selects .PDF (default: --no-case-sensitive)"
+    ),
+)
 @click.option(
     "--recursive/--no-recursive",
     default=True,
@@ -3015,6 +3070,7 @@ def generate_manifest(
     baseline_dir: Optional[str],
     output: Optional[str],
     file_pattern: str,
+    case_sensitive: bool,
     recursive: bool,
     region: Optional[str],
     test_set: Optional[str],
@@ -3039,8 +3095,11 @@ def generate_manifest(
       # Generate from S3 URI
       idp-cli generate-manifest --s3-uri s3://bucket/prefix/ --output manifest.csv
 
-      # With file pattern
+      # With file pattern. The pattern ignores case, so this also selects W2-2024.PDF
       idp-cli generate-manifest --dir ./docs/ --output manifest.csv --file-pattern "W2*.pdf"
+
+      # Take the pattern's case literally (only lowercase .pdf is selected here)
+      idp-cli generate-manifest --dir ./docs/ --output manifest.csv --file-pattern "*.pdf" --case-sensitive
 
       # Create test set and upload files (output optional) - use test set name
       idp-cli generate-manifest --dir ./documents/ --baseline-dir ./baselines/ --test-set "fcc example test" --stack-name IDP
@@ -3089,6 +3148,20 @@ def generate_manifest(
             console.print("[red]✗ Error: Cannot specify both --dir and --s3-uri[/red]")
             sys.exit(1)
 
+        # `--file-pattern` selects on a file's base name, on both scan paths. The S3
+        # scan has always matched base names, so a pattern naming a directory matched
+        # nothing there and the only report was "No documents found" -- true, and no
+        # help at all in working out why. Say which option does the thing being asked
+        # for instead, on both paths, rather than leaving an empty scan to explain it.
+        if "/" in file_pattern or os.sep in file_pattern:
+            console.print(
+                "[red]✗ Error: --file-pattern matches a file name, not a path, so "
+                f"'{file_pattern}' selects nothing. Point --dir or --s3-uri at the "
+                "directory and use --recursive/--no-recursive to choose the "
+                "depth.[/red]"
+            )
+            sys.exit(1)
+
         # Import here to avoid circular dependency during scanning
 
         documents = []
@@ -3118,13 +3191,36 @@ def generate_manifest(
             import glob as glob_module
 
             dir_path = os.path.abspath(directory)
-            if recursive:
-                search_pattern = os.path.join(dir_path, "**", file_pattern)
-            else:
-                search_pattern = os.path.join(dir_path, file_pattern)
 
-            for file_path in glob_module.glob(search_pattern, recursive=recursive):
-                if os.path.isfile(file_path):
+            # `glob` still does the walking, but the pattern is applied afterwards by
+            # `_file_pattern_matches` rather than handed to glob, because glob is
+            # case-sensitive on a case-sensitive filesystem and there is no way to ask
+            # it not to be -- which is one half of the defect this is fixing, the
+            # other half being the S3 scan's `fnmatch`.
+            #
+            # Enumerating with `*` inherits glob's own rule that `*` does not match a
+            # leading dot, so hidden files stay out exactly as they did before. The
+            # one case a bare `*` would newly miss is a pattern that deliberately
+            # names hidden files, and `.*` is added to the enumeration for it.
+            enumerated_leaves = ["*"]
+            if file_pattern.startswith("."):
+                enumerated_leaves.append(".*")
+
+            for leaf in enumerated_leaves:
+                if recursive:
+                    search_pattern = os.path.join(dir_path, "**", leaf)
+                else:
+                    search_pattern = os.path.join(dir_path, leaf)
+
+                for file_path in glob_module.glob(search_pattern, recursive=recursive):
+                    if not os.path.isfile(file_path):
+                        continue
+                    if not _file_pattern_matches(
+                        os.path.basename(file_path),
+                        file_pattern,
+                        case_sensitive=case_sensitive,
+                    ):
+                        continue
                     documents.append({"document_path": file_path})
         else:  # s3_uri
             console.print(f"[bold blue]Scanning S3 URI: {s3_uri}[/bold blue]")
@@ -3139,8 +3235,6 @@ def generate_manifest(
             prefix = uri_parts[1] if len(uri_parts) > 1 else ""
 
             # List S3 objects
-            import fnmatch
-
             import boto3
 
             s3 = boto3.client("s3", region_name=region)
@@ -3164,7 +3258,9 @@ def generate_manifest(
                             continue
 
                     filename = os.path.basename(key)
-                    if not fnmatch.fnmatch(filename, file_pattern):
+                    if not _file_pattern_matches(
+                        filename, file_pattern, case_sensitive=case_sensitive
+                    ):
                         continue
 
                     full_uri = f"s3://{bucket}/{key}"
