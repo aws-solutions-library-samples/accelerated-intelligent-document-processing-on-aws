@@ -3403,7 +3403,10 @@ def _timestamp_for_display(value) -> str:
     if not value:
         return ""
     isoformat = getattr(value, "isoformat", None)
-    return isoformat() if callable(isoformat) else str(value)
+    # `str(...)` around the call, not just around the fallback: `getattr` is untyped,
+    # so without it this function's return type is `object | str` and every consumer
+    # -- the sort key, `json.dumps` -- is back to not knowing what it has.
+    return str(isoformat()) if callable(isoformat) else str(value)
 
 
 def _batch_status_to_display_dicts(batch_status):

@@ -1013,6 +1013,7 @@ class TestConfigurationDifferences:
             ]
         )
 
+        assert differences is not None
         assert [d["setting"] for d in differences] == ["a", "m", "z"]
 
     def test_a_run_whose_captured_object_is_missing_its_body_contributes_nothing(self):
