@@ -25,6 +25,28 @@ from typing import Any, Dict
 import boto3
 from botocore.exceptions import ClientError
 
+# Latency spread past which the plan advises queuing or load balancing, as a
+# multiple of the typical processing time. Deliberately a fixed constant rather
+# than one of the `RECOMMENDATION_*` environment variables, for two reasons.
+#
+# It gates advice, not arithmetic: crossing it appends one sentence to the
+# recommendation list and moves no quota figure, so a reader who disagrees with
+# the threshold loses a suggestion rather than getting a wrong number. Every
+# `RECOMMENDATION_*` variable in this module is by contrast *required* and
+# raises when unset (see the page-threshold read below), because each of those
+# does feed a reported figure. Making this one configurable in that style would
+# add a required variable that has to be wired in `template.yaml` before any
+# deployed stack could generate recommendations at all; giving it a default
+# instead would make it the only soft one of the group.
+#
+# The value is a judgement, not a measurement. `calculate_latency_distribution`
+# derives the factor as `complexity * (1 + max(0, utilization - 1) * 0.5)`, so
+# with ordinary complexity it reaches 3.0 only once demand is several times
+# capacity — by which point the tail, not the mean, is what an operator feels,
+# and queuing is the response that helps. Below it the spread is generally
+# covered by the 10% buffer already applied to every quota figure.
+HIGH_LATENCY_VARIANCE_FACTOR = 3.0
+
 # Prose for the `dataSource` a plan was built from, used in the headline
 # recommendation. Every value this module can put into that field has an entry,
 # and the set is closed by a test rather than by inspection: the derivation in
@@ -469,8 +491,11 @@ def generate_adaptive_recommendations(
     document_configs,
 ):
     """Generate adaptive recommendations based on enhanced analysis.
-    
-    Uses default thresholds if environment variables are not set.
+
+    Every `RECOMMENDATION_*` threshold is required and raises `ValueError` when
+    unset; none of them defaults. The two pattern-specific volume thresholds and
+    `HIGH_LATENCY_VARIANCE_FACTOR` are fixed values in the code instead — see that
+    constant for why.
     """
     recommendations = []
 
@@ -603,7 +628,7 @@ def generate_adaptive_recommendations(
         variance_factor = float(
             latency_distribution.get("varianceFactor", "1.0").rstrip("x")
         )
-        if variance_factor > 3.0:
+        if variance_factor > HIGH_LATENCY_VARIANCE_FACTOR:
             recommendations.append(
                 "📈 High latency variance detected - consider implementing request queuing or load balancing"
             )

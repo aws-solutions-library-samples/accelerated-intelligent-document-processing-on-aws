@@ -1172,17 +1172,31 @@ def test_the_document_advice_counts_how_many_types_are_affected(monkeypatch):
 
 @pytest.mark.unit
 @pytest.mark.parametrize("factor", ["3.00x", "3.01x"])
-def test_the_variance_advice_uses_a_literal_three_not_a_configured_threshold(
-    monkeypatch, factor
-):
-    """Unlike every other band here, this threshold is hardcoded in the function.
+def test_the_variance_advice_fires_just_past_a_threefold_spread(monkeypatch, factor):
+    """The boundary is strictly above 3.0, asserted from both sides of it.
 
-    Pinned so the inconsistency is visible: an operator who tunes the
-    `RECOMMENDATION_*` variables cannot move this one, and the value is asserted at
-    and past 3.0 rather than at any configured value.
+    `3.00x` is at the threshold and not over it, so it must stay quiet; `3.01x` is
+    over and must speak. Those two strings are written here rather than derived
+    from `index.HIGH_LATENCY_VARIANCE_FACTOR`, so retuning the constant reddens
+    this test instead of moving its expectation along with the code. Unlike the
+    `RECOMMENDATION_*` bands this one is a fixed constant on purpose — it gates a
+    sentence of advice and no reported figure, and the reasoning is recorded where
+    it is defined.
     """
     text = " ".join(recommend(monkeypatch, {"varianceFactor": factor}))
     assert ("High latency variance" in text) is (factor == "3.01x")
+
+
+@pytest.mark.unit
+def test_the_variance_threshold_is_a_named_constant_at_three():
+    """Names the value independently of the behaviour asserted above.
+
+    The pair is what makes either useful: this one fails if the constant is
+    retuned, the boundary test fails if the comparison stops honouring it, and a
+    rename that left a stray literal `3.0` behind in the comparison would fail the
+    boundary test while this one still passed.
+    """
+    assert index.HIGH_LATENCY_VARIANCE_FACTOR == 3.0
 
 
 @pytest.mark.unit
