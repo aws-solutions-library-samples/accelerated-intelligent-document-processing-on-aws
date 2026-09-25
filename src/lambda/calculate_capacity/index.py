@@ -6,6 +6,17 @@ import json
 import os
 import time
 import boto3
+
+# `Attr` is imported by name rather than reached as
+# `boto3.dynamodb.conditions.Attr`. That attribute path exists only because
+# creating a `dynamodb` *resource* imports the subpackage as a side effect, so the
+# metering scan's filter expression was relying on a neighbouring line having run
+# first, and would raise `AttributeError` if that resource were replaced by a
+# cached client. Kept in this first import block deliberately: the imports further
+# down sit below module-level statements and are pinned at four `E402` findings in
+# `scripts/lint_debt.json`, so adding a fifth there would fail
+# `make check-lint-debt`.
+from boto3.dynamodb.conditions import Attr
 from datetime import datetime, timedelta
 from log_sanitizer import sanitize_event_for_logging
 from validation import (
@@ -24,6 +35,28 @@ from typing import Any, Dict
 
 import boto3
 from botocore.exceptions import ClientError
+
+# Latency spread past which the plan advises queuing or load balancing, as a
+# multiple of the typical processing time. Deliberately a fixed constant rather
+# than one of the `RECOMMENDATION_*` environment variables, for two reasons.
+#
+# It gates advice, not arithmetic: crossing it appends one sentence to the
+# recommendation list and moves no quota figure, so a reader who disagrees with
+# the threshold loses a suggestion rather than getting a wrong number. Every
+# `RECOMMENDATION_*` variable in this module is by contrast *required* and
+# raises when unset (see the page-threshold read below), because each of those
+# does feed a reported figure. Making this one configurable in that style would
+# add a required variable that has to be wired in `template.yaml` before any
+# deployed stack could generate recommendations at all; giving it a default
+# instead would make it the only soft one of the group.
+#
+# The value is a judgement, not a measurement. `calculate_latency_distribution`
+# derives the factor as `complexity * (1 + max(0, utilization - 1) * 0.5)`, so
+# with ordinary complexity it reaches 3.0 only once demand is several times
+# capacity — by which point the tail, not the mean, is what an operator feels,
+# and queuing is the response that helps. Below it the spread is generally
+# covered by the 10% buffer already applied to every quota figure.
+HIGH_LATENCY_VARIANCE_FACTOR = 3.0
 
 # Prose for the `dataSource` a plan was built from, used in the headline
 # recommendation. Every value this module can put into that field has an entry,
@@ -88,11 +121,22 @@ def retry_with_backoff(func, max_retries=3, base_delay=1):
     return None
 
 
-def get_real_latency_metrics(pattern):
+def get_real_latency_metrics(pattern, latency_metrics_hours=None):
     """Get processing times from recent processed documents' metering data.
-    
+
     Uses the actual metering data structure from DynamoDB with Metering attribute.
     Estimates processing time from gb_seconds (Lambda GB-seconds = memory_gb * time_seconds).
+
+    Args:
+        latency_metrics_hours: How far back to look, in hours. Passed down from the
+            UI's time-range selector for the current request. ``None`` means the
+            request did not choose one, and the deployed default in
+            ``LATENCY_METRICS_HOURS`` applies. It arrives as an argument rather
+            than through the environment because a Lambda container is reused: a
+            request that wrote its choice into ``os.environ`` set the default for
+            every later invocation served by that container, so one user's
+            six-hour view silently became everybody's until the container aged
+            out.
     """
     global _processing_times_cache, _cache_expiry
     
@@ -114,9 +158,12 @@ def get_real_latency_metrics(pattern):
         # Query recent documents with pagination support
         # Use attribute_exists with correct attribute name (Metering, not meteringData)
         # Time filter: only use recent documents for latency metrics (default 24 hours)
-        # Read latencyMetricsHours from input if provided (passed from UI time range selector)
-        # Falls back to environment variable, then default 24 hours
-        latency_metrics_hours = int(os.environ.get("LATENCY_METRICS_HOURS", "24"))
+        # The per-request value threaded down from the UI time range selector wins;
+        # otherwise the deployed default, otherwise 24 hours.
+        if latency_metrics_hours is None:
+            latency_metrics_hours = int(os.environ.get("LATENCY_METRICS_HOURS", "24"))
+        else:
+            latency_metrics_hours = int(latency_metrics_hours)
         min_recent_docs = int(os.environ.get("LATENCY_METRICS_MIN_DOCS", "5"))
         cutoff_time = datetime.utcnow() - timedelta(hours=latency_metrics_hours)
         cutoff_iso = cutoff_time.strftime('%Y-%m-%dT%H:%M:%S')
@@ -469,8 +516,11 @@ def generate_adaptive_recommendations(
     document_configs,
 ):
     """Generate adaptive recommendations based on enhanced analysis.
-    
-    Uses default thresholds if environment variables are not set.
+
+    Every `RECOMMENDATION_*` threshold is required and raises `ValueError` when
+    unset; none of them defaults. The two pattern-specific volume thresholds and
+    `HIGH_LATENCY_VARIANCE_FACTOR` are fixed values in the code instead — see that
+    constant for why.
     """
     recommendations = []
 
@@ -603,7 +653,7 @@ def generate_adaptive_recommendations(
         variance_factor = float(
             latency_distribution.get("varianceFactor", "1.0").rstrip("x")
         )
-        if variance_factor > 3.0:
+        if variance_factor > HIGH_LATENCY_VARIANCE_FACTOR:
             recommendations.append(
                 "📈 High latency variance detected - consider implementing request queuing or load balancing"
             )
@@ -827,10 +877,14 @@ def calculate_latency_distribution(
     max_allowed_latency,
     quotas,
     document_configs=None,
+    latency_metrics_hours=None,
 ):
     """
     Calculate latency distribution using simplified approach.
     Quota capacity determines processing speed - insufficient quota causes throttling and delays.
+
+    ``latency_metrics_hours`` is the request's own history window, forwarded to
+    ``get_real_latency_metrics``; see that function for why it is an argument.
     """
 
     # max_allowed_latency is in seconds (from frontend), convert to minutes for internal calculations
@@ -931,7 +985,7 @@ def calculate_latency_distribution(
 
     # Get ACTUAL processing time and queue delays from real documents
     try:
-        latency_data = get_real_latency_metrics(pattern)
+        latency_data = get_real_latency_metrics(pattern, latency_metrics_hours)
         base_times = latency_data["base_times"]
         
         # Use total_processing_time if available (from timestamps), otherwise sum of steps
@@ -1134,8 +1188,15 @@ def build_simple_quota_requirements(
     # Add 10% buffer to base demand for safety margin
     BUFFER_FACTOR = 1.1  # 10% buffer
     
+    # Every per-step token key is indexed, OCR included. The sole producer of this
+    # breakdown is the handler below, whose initialiser writes all five for every
+    # hour of the day, so an absent key means the caller assembled a shape this
+    # function cannot plan from. Defaulting one of them to zero silently plans no
+    # quota at all for that stage, and the failure mode of an under-provisioned
+    # quota is production throttling that points nowhere near here; a KeyError
+    # names the missing key at the point it is needed.
     for hour_data in hourly_breakdown:
-        ocr_tpm = hour_data.get("ocrTokensPerHour", 0) / 60 * BUFFER_FACTOR
+        ocr_tpm = hour_data["ocrTokensPerHour"] / 60 * BUFFER_FACTOR
         classification_tpm = hour_data["classificationTokensPerHour"] / 60 * BUFFER_FACTOR
         extraction_tpm = hour_data["extractionTokensPerHour"] / 60 * BUFFER_FACTOR
         assessment_tpm = hour_data["assessmentTokensPerHour"] / 60 * BUFFER_FACTOR
@@ -1226,6 +1287,18 @@ def build_simple_quota_requirements(
         metering_table_name = os.environ.get('METERING_TABLE_NAME')
         
         requests_per_doc = 0  # Average requests per document for this step
+        # One measured page count per sampled metering record, averaged after the
+        # scan. Accumulated rather than folded in as it goes: the running form this
+        # replaced was `(running + next) / 2`, which halves the weight of
+        # everything already seen at every step, so page counts of 1, 10 and 100
+        # reported 52.8 instead of their mean of 37.
+        #
+        # "Record" rather than "document" because the scan filters the whole table
+        # on `Metering` existing, and a document's run snapshots carry that
+        # attribute alongside its live item, so a document processed several times
+        # contributes a sample each time. That sampling is what the request-rate
+        # average above does too and is not changed here.
+        measured_page_counts = []
         actual_pages_per_doc = None
         metering_data_available = False
         # True once a recorded Bedrock request for this step has been left out
@@ -1253,7 +1326,7 @@ def build_simple_quota_requirements(
 
                 while len(items) < MAX_METERING_ITEMS and pages_scanned < max_pages:
                     scan_kwargs = {
-                        'FilterExpression': boto3.dynamodb.conditions.Attr('Metering').exists(),
+                        'FilterExpression': Attr('Metering').exists(),
                         'Limit': PAGE_SIZE
                     }
 
@@ -1293,17 +1366,26 @@ def build_simple_quota_requirements(
                     # Convert Decimal types to float/int for math operations
                     metering_data = convert_decimal_to_float(metering_data)
                     
-                    # Extract actual page count from metering data
-                    if 'number_of_pages' in item:
-                        # float() so the running average below is well-typed:
-                        # convert_decimal_to_float() is recursive and so is inferred
-                        # as returning a scalar/dict/list union, which the "+" and "/"
-                        # below cannot accept. A page count is always scalar.
-                        pages = float(convert_decimal_to_float(item['number_of_pages']))
-                        if actual_pages_per_doc is None:
-                            actual_pages_per_doc = pages
-                        else:
-                            actual_pages_per_doc = (actual_pages_per_doc + pages) / 2  # Running average
+                    # This document's page count, as the tracking table stores it.
+                    # `PageCount` is the attribute both of its writers set, on the
+                    # line next to the `Metering` payload this scan filters on;
+                    # `number_of_pages` — read here previously — is a column of the
+                    # Athena reporting table and is never an attribute here, so the
+                    # measured figure was silently unavailable on every stack and
+                    # the report always fell back to the configured page values.
+                    # Both writers omit the attribute for a zero page count rather
+                    # than storing a zero, but the positive test is made here too:
+                    # a document contributing no pages is not a measurement of a
+                    # document's length, and resting that on what two files
+                    # elsewhere happen to do makes it their property rather than
+                    # this function's.
+                    if 'PageCount' in item:
+                        # float() because convert_decimal_to_float() is recursive and
+                        # so is inferred as returning a scalar/dict/list union, which
+                        # sum() below cannot accept. A page count is always scalar.
+                        pages = float(convert_decimal_to_float(item['PageCount']))
+                        if pages > 0:
+                            measured_page_counts.append(pages)
                     
                     # Requests this document contributes to this step. A step can
                     # issue several Bedrock calls under distinct metering keys —
@@ -1374,6 +1456,13 @@ def build_simple_quota_requirements(
                 if doc_count > 0:
                     requests_per_doc = total_requests / doc_count
                     print(f"✅ {step_name}: Average {requests_per_doc:.1f} requests/doc from {doc_count} documents")
+
+                # Mean pages per document over the sampled records, which is the
+                # figure an operator checks against their own corpus.
+                if measured_page_counts:
+                    actual_pages_per_doc = sum(measured_page_counts) / len(
+                        measured_page_counts
+                    )
                         
             except Exception as e:
                 print(f"⚠️ Could not read metering data for {step_name}: {e}")
@@ -1448,7 +1537,7 @@ def build_simple_quota_requirements(
         
         # Log actual page count if found
         if actual_pages_per_doc is not None:
-            print(f"📄 Actual pages per document from metering: {actual_pages_per_doc:.1f}")
+            print(f"📄 Actual pages per document from metering: {actual_pages_per_doc:.1f} (mean of {len(measured_page_counts)} metering records)")
         else:
             print("ℹ️ Using configured page values (no metering data)")
 
@@ -1927,11 +2016,17 @@ def lambda_handler(event: Dict[str, Any], context) -> Dict[str, Any]:
             total_pages_per_hour += docs_per_hour_config * avg_pages
             total_tokens_per_hour += doc_total_tokens * docs_per_hour_config
 
-        # Override LATENCY_METRICS_HOURS from UI input if provided
+        # Per-request latency history window from the UI time range selector.
+        # Held as a local and passed down rather than written into os.environ: the
+        # container outlives the request, so an environment write made this
+        # request's choice the default for every later invocation the same
+        # container served.
         latency_metrics_hours_input = input_data.get("latencyMetricsHours")
+        latency_metrics_hours = None
         if latency_metrics_hours_input:
-            os.environ["LATENCY_METRICS_HOURS"] = str(int(latency_metrics_hours_input))
-            # Clear cache so new time range takes effect
+            latency_metrics_hours = int(latency_metrics_hours_input)
+            # The cache is keyed by pattern alone, so entries computed over the
+            # previous window would otherwise be returned for this one.
             global _processing_times_cache, _cache_expiry
             _processing_times_cache = {}
             _cache_expiry = 0
@@ -1946,6 +2041,7 @@ def lambda_handler(event: Dict[str, Any], context) -> Dict[str, Any]:
             max_allowed_latency,
             quotas,
             document_configs,
+            latency_metrics_hours,
         )
 
         # Build quota requirements using Applied account-level quota values
