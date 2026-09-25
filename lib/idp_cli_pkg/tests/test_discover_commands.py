@@ -1324,22 +1324,63 @@ def test_auto_detect_finding_no_sections_exits_zero_having_produced_nothing(
 
 
 @pytest.mark.unit
-def test_auto_detect_silently_discards_ground_truth_and_the_class_hint(
-    runner, sdk, tmp_path
+@pytest.mark.parametrize(
+    "extra, named",
+    [
+        (["-g", "GT"], ["--ground-truth/-g"]),
+        (["--class-hint", "Lending Package"], ["--class-hint"]),
+        (
+            ["-g", "GT", "--class-hint", "Lending Package"],
+            ["--ground-truth/-g", "--class-hint"],
+        ),
+    ],
+    ids=["ground-truth", "class-hint", "both"],
+)
+def test_auto_detect_refuses_ground_truth_and_the_class_hint(
+    runner, sdk, tmp_path, extra, named
 ):
-    """DEFECT: `-g` and `--class-hint` are accepted with `--auto-detect` and dropped.
+    """Neither can be applied under `--auto-detect`, so neither is accepted.
 
-    The auto-detect arm calls `client.discovery.run` with only
-    `document_path`, `config_version`, `auto_detect` and `model_id`
-    (`cli.py:5438-5443`). A ground truth file and a class-name hint the user
-    supplied on the same command line are never passed on, and nothing is printed
-    about it — the header does not mention either.
+    The SDK's auto-detect arm calls
+    `_run_auto_detect_and_discover(doc, config_version, stack_name, model_id)` and
+    forwards neither a ground truth nor a class-name hint, so there is nowhere for
+    either to take effect — a wiring fix is not available and the choice is between
+    refusing and charging for a run that disregards them. Discovery is paid, and its
+    output is written to disk and consumed as configuration, so it refuses.
 
-    The consequence is a schema inferred without the ground truth the user
-    explicitly provided, which is the exact failure issue #310 was filed about for
-    the standard path: measurably worse extraction quality, with no signal in the
-    output that the ground truth was ignored. Click accepts the combination, so
-    there is not even a usage error to notice.
+    Each option is exercised on its own as well as together, because a guard that
+    only fired when both were present would pass a single-option test written the
+    other way round. The refusal must also happen before a client exists: `-g` on
+    the standard path is what issue #310 was filed about, and the cost of getting
+    this wrong is a Bedrock charge, not a wasted keystroke.
+    """
+    from idp_cli.cli import discover
+
+    gt = tmp_path / "package.json"
+    gt.write_text("{}", encoding="utf-8")
+    args = [str(gt) if a == "GT" else a for a in extra]
+
+    result = runner.invoke(
+        discover,
+        ["-d", _doc(tmp_path, "package.pdf"), "--auto-detect", *args],
+    )
+
+    assert result.exit_code == 1, result.output
+    for option in named:
+        assert option in result.output
+    for option in ("--ground-truth/-g", "--class-hint"):
+        if option not in named:
+            assert option not in result.output
+    assert "--auto-detect cannot apply" in result.output
+    sdk.assert_never_constructed()
+
+
+@pytest.mark.unit
+def test_auto_detect_alone_is_unaffected_by_that_refusal(runner, sdk, tmp_path):
+    """The guard is conditional on the two options, not on `--auto-detect`.
+
+    Without this, a guard that refused every `--auto-detect` run would satisfy every
+    assertion in the test above.
     """
     from idp_cli.cli import discover
 
@@ -1349,28 +1390,14 @@ def test_auto_detect_silently_discards_ground_truth_and_the_class_hint(
         failed=0,
         results=[DiscoveryResult(status="SUCCESS", json_schema=SCHEMA_A)],
     )
-    gt = tmp_path / "package.json"
-    gt.write_text("{}", encoding="utf-8")
 
     result = runner.invoke(
-        discover,
-        [
-            "-d",
-            _doc(tmp_path, "package.pdf"),
-            "-g",
-            str(gt),
-            "--class-hint",
-            "Lending Package",
-            "--auto-detect",
-        ],
+        discover, ["-d", _doc(tmp_path, "package.pdf"), "--auto-detect"]
     )
 
     assert result.exit_code == 0, result.output
-    passed = sdk.client.discovery.run.call_args.kwargs
-    assert "ground_truth_path" not in passed
-    assert "class_name_hint" not in passed
-    assert "Ground truth" not in result.output
-    assert "Class hint" not in result.output
+    assert sdk.client.discovery.run.call_args.kwargs["auto_detect"] is True
+    assert "cannot apply" not in result.output
 
 
 @pytest.mark.unit

@@ -5752,6 +5752,50 @@ def discover(
     import json
     from pathlib import Path
 
+    # Contradictory or unusable option combinations are refused here, ahead of the
+    # `try` block and therefore ahead of `IDPClient(...)`, so a refusal costs no
+    # client construction and no Bedrock call. Each of these was previously accepted
+    # and then ignored, and discovery is paid work whose output is written to disk and
+    # consumed as configuration — so the wrong answer is not a degraded one, and a
+    # warning the user reads after the charge is not a remedy.
+
+    # `--auto-detect` cannot apply `-g` or `--class-hint`. The SDK's auto-detect arm
+    # calls `_run_auto_detect_and_discover(doc, config_version, stack_name, model_id)`
+    # and forwards neither, so there is nowhere for either to be applied — a wiring
+    # fix is not available here. `--class-hint` is additionally a contradiction in
+    # this mode: auto-detect infers one class per detected section, so a single class
+    # name does not describe what the command produces.
+    if auto_detect:
+        _unusable = []
+        if ground_truth:
+            _unusable.append("--ground-truth/-g")
+        if class_hint:
+            _unusable.append("--class-hint")
+        if _unusable:
+            console.print(
+                f"[red]✗ Error: --auto-detect cannot apply {' or '.join(_unusable)}."
+                "[/red]"
+            )
+            console.print(
+                "  Auto-detect infers one class per detected section and applies "
+                "neither, so the run would cost the same and disregard them."
+            )
+            console.print(
+                "[yellow]Drop --auto-detect to discover the whole document, where "
+                "both apply:[/yellow]"
+            )
+            _rerun = f"idp-cli discover -d {escape(document[0])}"
+            if ground_truth:
+                _rerun += f" -g {escape(ground_truth[0])}"
+            if class_hint:
+                _rerun += f' --class-hint "{escape(class_hint)}"'
+            console.print(f"   [cyan]{_rerun}[/cyan]")
+            console.print(
+                "[yellow]Or name each section yourself with --page-range and "
+                "--page-label, whose labels are the per-section class names.[/yellow]"
+            )
+            sys.exit(1)
+
     try:
         from idp_sdk import IDPClient
 
