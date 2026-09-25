@@ -86,7 +86,7 @@ The capacity calculation system provides sophisticated analysis through GraphQL 
 **Latency Distribution Modeling**:
 - Statistical analysis of processing times from **actual processed documents** (P50, P75, P90, P95, P99)
 - Queue delay calculation from **real QueuedTime/WorkflowStartTime timestamps**
-- SLA compliance checking against configured maximum latency (in seconds)
+- SLA compliance checking of the **P99** against configured maximum latency (in seconds)
 - Performance warning alerts for quota exceedances
 
 **RPM (Requests Per Minute) Calculation**:
@@ -294,6 +294,53 @@ Navigate to the Web UI and select the "Capacity Planning" section:
 - Queue delay: Actual queue delays from QueuedTime/WorkflowStartTime timestamps
 - **Quota Status**: Shows "✅ Within Quota" or "⚠️ Quota Exceeded" based on all model quotas
 - **SLA Target**: Configured maximum latency in seconds
+
+**Which statistic the SLA is judged on**:
+
+The SLA breach flag behind the performance warning compares the **P99** total
+latency against the SLA target, not the median. An SLA is a promise about the documents
+that go slowly, and the median is insensitive to those by construction: a plan
+whose typical document finishes comfortably inside the limit while one document in
+a hundred takes many times as long is not meeting the SLA. The warning quotes both
+figures in the function's log, because the gap between them is what says whether to
+chase a slow tail — a few unusually large packets, or a step that occasionally
+retries — or a uniformly slow pipeline.
+
+If your deployment reported "within SLA" before release 0.6.10 and reports a breach
+afterwards with no change to your documents or configuration, this is why: the
+comparison was previously made against the median. The reported percentiles and the
+SLA target itself are unchanged, so the P99 row of the latency chart already showed
+the value the flag now reads.
+
+**Where the derived throughput comes from**:
+
+The planner derives a throughput figure — the smaller of a token-limited and a
+request-limited rate — which it does not display as a field of its own. It reaches
+you through the load and bottleneck **recommendations**, and it is printed in full
+in the function's CloudWatch log, so that log is where to look when a
+recommendation about system load is not the one you expected.
+
+The **token**-limited half is taken from the **most constrained model your plan's
+steps actually call**, resolved from the models selected in View/Edit Configuration,
+not from an account-wide figure and not from every model the stack supports. Both
+halves of that matter. A document is throttled at the narrowest token limit any of
+its steps touches, so a model with generous headroom cannot raise the token-limited
+rate; and a model your pipeline never calls cannot lower it, however little TPM
+quota your account has for that model. The log names the model that is binding,
+which is the one to name in a quota increase request. Models with no quota at all,
+and models absent from the stack's quota-code mapping, are skipped rather than
+allowed to bind the figure — the per-step quota table below is where a single
+model's shortfall is reported, against that model's own limit. If none of your
+plan's models can be priced, the estimate falls back to the narrowest TPM limit in
+the account's mapping and says so in the log.
+
+⚠️ **The request-limited half is not narrowed this way.** It is the smallest RPM
+quota across *every* model in the stack's quota-code mapping, whether or not your
+plan calls it, so a model you never invoke with a low RPM limit still caps the
+derived throughput — and because the figure is the smaller of the two halves, it can
+cap it regardless of how much token headroom your plan's own models have. Read the
+`Request-limited capacity` line in the function's log alongside the token-limited
+one to see which of the two is deciding.
 
 **Latency Bar Colors**:
 - **Green/Blue**: When all model quotas are within limits (regardless of SLA)

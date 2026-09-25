@@ -23,9 +23,18 @@ from the SDK model, and the truncation they apply to timestamps.
 The `status` tests here are deliberately narrow: `tests/test_status_command.py` already
 covers the search, the two refusals, `--get-time`, `--show-details`, `--document-id` and
 the JSON format. What was left was the interaction between `--wait` and the other
-options, and the one thing that combination exposes — `status --wait` reports a batch
-that finished with failures as a success, because `_monitor_progress` has no return
-value for the command to exit with. That is pinned below.
+options, and the one thing that combination used to expose: `status --wait` reported a
+batch that finished with failures as a success, because `_monitor_progress` had no
+return value for the command to exit with, while the polled form of the same command
+exited 1. `_monitor_progress` now returns the code `display.derive_exit_code` answers
+and `--wait` exits on it, so the two forms agree — asserted in both directions below,
+since agreement on one batch could be a property of the fixture.
+
+`derive_exit_code` rather than `show_final_status_summary`, which answers the same code
+but also **prints** it. Two of `_monitor_progress`'s three callers discard the value, so
+printing "Exit Code: N" from there would have `process --monitor` and `rerun --monitor`
+state a code contradicting `$?`. So `--wait` prints no FINAL STATUS line, and that is
+asserted rather than left to drift.
 """
 
 from __future__ import annotations
@@ -126,7 +135,7 @@ class TestStatusWait:
             patch(
                 "idp_cli.search_tracking_table.TrackingTableSearcher"
             ) as searcher_cls,
-            patch("idp_cli.cli._monitor_progress") as monitor,
+            patch("idp_cli.cli._monitor_progress", return_value=0) as monitor,
         ):
             searcher_cls.return_value.search_by_pk_and_status.return_value = search_hit(
                 "batch-1/a.pdf"
@@ -168,7 +177,7 @@ class TestStatusWait:
             patch(
                 "idp_cli.search_tracking_table.TrackingTableSearcher"
             ) as searcher_cls,
-            patch("idp_cli.cli._monitor_progress") as monitor,
+            patch("idp_cli.cli._monitor_progress", return_value=0) as monitor,
         ):
             searcher_cls.return_value.search_by_pk_and_status.return_value = search_hit(
                 "batch-1/a.pdf", "batch-1/b.pdf"
@@ -196,7 +205,7 @@ class TestStatusWait:
 
     def test_wait_monitors_a_single_document_by_its_own_id(self, runner):
         """With `--document-id` there is no search, and the document id is the identifier."""
-        with patch("idp_cli.cli._monitor_progress") as monitor:
+        with patch("idp_cli.cli._monitor_progress", return_value=0) as monitor:
             result = runner.invoke(
                 cli,
                 [
@@ -226,7 +235,7 @@ class TestStatusWait:
             patch(
                 "idp_cli.search_tracking_table.TrackingTableSearcher"
             ) as searcher_cls,
-            patch("idp_cli.cli._monitor_progress") as monitor,
+            patch("idp_cli.cli._monitor_progress", return_value=0) as monitor,
         ):
             searcher = searcher_cls.return_value
             searcher.search_by_pk_and_status.return_value = search_hit("batch-1/a.pdf")
@@ -259,7 +268,7 @@ class TestStatusWait:
             patch(
                 "idp_cli.search_tracking_table.TrackingTableSearcher"
             ) as searcher_cls,
-            patch("idp_cli.cli._monitor_progress") as monitor,
+            patch("idp_cli.cli._monitor_progress", return_value=0) as monitor,
             patch("idp_sdk.operations.batch.BatchOperation.get_status") as get_status,
         ):
             searcher = searcher_cls.return_value
@@ -284,19 +293,19 @@ class TestStatusWait:
         assert get_status.called is False
         assert "FINAL STATUS" not in result.output
 
-    def test_wait_exits_zero_even_when_documents_failed(self, runner, monkeypatch):
-        """DEFECT, pinned as it behaves today (`cli.py:2515-2531`).
+    def test_wait_exits_non_zero_when_documents_failed(self, runner, monkeypatch):
+        """The guarantee: the two forms of `status` agree on the same batch (#1230).
 
         Without `--wait`, `status` ends at `display.show_final_status_summary`, which
         returns 1 for a batch that finished with failures, and the command exits with
-        that code. With `--wait` it ends at `_monitor_progress`, which returns
-        nothing, and the command falls off the end of the `try` block and exits 0.
+        that code. With `--wait` it used to end at `_monitor_progress`, which returned
+        nothing, so the command fell off the end of the `try` block and exited 0 —
+        and `--wait` is the natural form to use in a script, which is exactly where
+        the exit code is the only thing read. `_monitor_progress` now derives the code
+        through that same function and `status --wait` exits on it.
 
-        So the same batch — one document completed, one failed — reports 1 when
-        polled and 0 when waited on. `--wait` is the natural form to use in a script
-        or a pipeline, which is exactly where the exit code is the only thing read,
-        and the failure is invisible there. This test asserts both halves in one
-        place so the discrepancy cannot be read as a property of the fixture.
+        Both halves are asserted in one place so that agreement cannot be read as a
+        property of the fixture, and so that a regression in either form shows here.
         """
         mixed = batch_status(
             [
@@ -333,9 +342,91 @@ class TestStatusWait:
         assert polled.exit_code == 1
         assert "COMPLETED WITH FAILURES (1 failed)" in polled.output
 
-        assert waited.exit_code == 0
+        assert waited.exit_code == 1
         assert "Batch Processing Complete" in waited.output
         assert "Textract threw" in waited.output
+        # `--wait` deliberately does NOT print the polled form's "FINAL STATUS"
+        # line: `_monitor_progress` derives the code without printing it, because
+        # `process --monitor` and `rerun --monitor` discard the value and would
+        # otherwise state an exit code contradicting `$?`. The failure is visible in
+        # the summary panel instead.
+        assert "FINAL STATUS" not in waited.output
+        assert "Exit Code" not in waited.output
+
+    def test_wait_still_exits_zero_on_a_clean_batch(self, runner, monkeypatch):
+        """Non-vacuity for the test above: the code tracks the batch, not the flag."""
+        # Two documents, so the batch branch of `show_final_status_summary` is the one
+        # exercised -- the same branch the failing case above goes through. A
+        # single-document fixture would take the per-document branch instead and
+        # compare two different rules.
+        clean = batch_status(
+            [
+                doc_status("batch-1/a.pdf", "COMPLETED", duration_seconds=3.0),
+                doc_status("batch-1/b.pdf", "COMPLETED", duration_seconds=4.0),
+            ],
+        )
+        with (
+            patch(
+                "idp_cli.search_tracking_table.TrackingTableSearcher"
+            ) as searcher_cls,
+            patch(
+                "idp_sdk.operations.batch.BatchOperation.get_status", return_value=clean
+            ),
+        ):
+            searcher_cls.return_value.search_by_pk_and_status.return_value = search_hit(
+                "batch-1/a.pdf", "batch-1/b.pdf"
+            )
+            monkeypatch.setattr(cli_module, "time", Clock())
+            waited = runner.invoke(
+                cli,
+                [
+                    "status",
+                    "--stack-name",
+                    "my-stack",
+                    "--batch-id",
+                    "batch-1",
+                    "--object-status",
+                    "COMPLETED",
+                    "--wait",
+                ],
+            )
+
+        assert waited.exit_code == 0, waited.output
+        assert "Batch Processing Complete" in waited.output
+
+    def test_wait_exits_two_when_the_watch_reached_no_verdict(self, runner):
+        """The end-to-end half of the exit-2 contract, which nothing pinned.
+
+        `_monitor_progress` returning 2 on a monitoring error or a Ctrl-C is tested
+        directly in `test_monitor_and_display_mapping.py`, but every other test here
+        patches it with `return_value=0` — so collapsing the 2 into a 1 at this call
+        site left the whole suite green while three documents claimed the behaviour.
+        This asserts the command propagates whatever the monitor answered, unaltered.
+        """
+        with (
+            patch(
+                "idp_cli.search_tracking_table.TrackingTableSearcher"
+            ) as searcher_cls,
+            patch("idp_cli.cli._monitor_progress", return_value=2),
+        ):
+            searcher_cls.return_value.search_by_pk_and_status.return_value = search_hit(
+                "batch-1/a.pdf"
+            )
+            result = runner.invoke(
+                cli,
+                [
+                    "status",
+                    "--stack-name",
+                    "my-stack",
+                    "--batch-id",
+                    "batch-1",
+                    "--object-status",
+                    "COMPLETED",
+                    "--wait",
+                ],
+            )
+
+        assert result.exit_code == 2, result.output
 
     def test_show_details_is_suppressed_when_json_was_asked_for(self, runner):
         """`--show-details` renders a Rich table on stdout, which would precede the payload.

@@ -653,6 +653,12 @@ The `--force-delete-all` flag performs a comprehensive cleanup AFTER CloudFormat
    - CloudWatch Log Groups (matching stack name pattern)
    - S3 buckets (regular buckets first, LoggingBucket last)
 
+⚠️ **A CloudFormation deletion that failed exits 1 even under `--force-delete-all`.** The
+cleanup phase still runs — that is what the flag is for — and the non-zero exit comes
+after it, so you get both. Before this, `--force-delete-all` printed "Stack deletion
+failed!" and exited 0, so a CI teardown job could not tell a stack that failed to delete
+from one that deleted cleanly.
+
 **Resources Always Cleaned Up (with `--wait` or `--force-delete-all`):**
 - IAM custom policies (containing stack name)
 - IAM permissions boundary policies
@@ -1195,7 +1201,27 @@ Processing Time (WorkflowStartTime → CompletionTime):
 The command returns exit codes for scripting:
 - `0` - Document(s) completed successfully
 - `1` - Document(s) failed
-- `2` - Document(s) still processing
+- `2` - Document(s) still processing, or the outcome could not be established
+
+⚠️ **`--wait` and the polled table form now derive their code from the same place.** A
+batch that finished with failures exits `1` whether you polled it or waited on it; it
+used to exit `0` when waited on. (`--format json` is a third implementation of the rule
+and still disagrees with both on two document states — see the `CHANGELOG` entry for
+#1230.) Before this change `--wait` exited `0` on
+that batch while the poll exited `1`, which meant `idp-cli status --wait && deploy`
+proceeded after a batch in which every document failed. If you have a script that
+relied on `--wait` always exiting `0`, it will now stop on a failed batch — that is
+the intended behaviour, but it is a change.
+
+`--wait` also exits `2` when the watch ended without a verdict: a monitoring error, or
+Ctrl-C. Nothing about the batch was measured on those paths, so `0` would assert a
+success and `1` would report failures that may not exist.
+
+`process --monitor` and `rerun --monitor` deliberately still exit `0` regardless of
+what the monitored batch did. Their work is the submission, which succeeded; exiting
+non-zero because 1 of 100 documents failed would stop `process --monitor &&
+download-results` from collecting the 99 that worked. Ask for the batch's verdict with
+`idp-cli status --batch-id <id>`, which answers exactly that.
 
 **JSON Output Format:**
 
@@ -1427,6 +1453,29 @@ idp-cli delete-documents [OPTIONS]
 nothing, and that is all it means. A failure while finding the documents — a throttled or
 rejected table scan, a table that is not there — prints the cause and exits 1 instead of
 reporting that there was nothing to delete.
+
+**A delete that could not finish says so.** Each document's cleanup has several steps —
+the input object, every output version, the tracking-list row, the run records, the
+tracking record — and a step that fails is reported per document rather than being
+reported as a completed delete. A transient throttle is retried first — four attempts, and no
+further attempt starts once five seconds of retrying is spent — so what is reported is a
+sustained failure rather than a momentary one.
+
+Two things to expect when a delete is reported as failed:
+
+- **The document's tracking record is kept on purpose** if its tracking-list row could
+  not be cleared, because that record is what a retry needs to find the row. The document
+  therefore still appears in the document list, while its input file and outputs may
+  already be gone — so the entry can open a document whose content is no longer there.
+  Run the same delete again: the retry picks up where the first attempt stopped.
+- **`--dry-run` is unaffected** and still issues no delete of any kind.
+
+A run in which **every** deletion failed also exits 1; it used to exit 0 after printing
+"Deleted 0/2 document(s)", so an automated cleanup step reported success having deleted
+nothing.
+
+⚠️ A **partial** failure still exits 0. Read the per-document "Failed deletions:" list
+rather than the exit code when some documents may have survived.
 
 **Examples:**
 
@@ -2485,6 +2534,15 @@ idp-cli config-download --stack-name my-stack --config-profile lending \
     --config-revision 7 --output r7.yaml
 ```
 
+⚠️ **A profile that does not exist is refused.** A typo in
+`--config-profile` used to exit 0 having written the YAML null document — so
+`config-download --config-profile lendnig > config.yaml` left a file every downstream
+step reads as an *empty* configuration, under an exit code that said it worked. All
+three spellings (stdout, `--output`, `--format minimal`) now exit 1, name the profile
+they could not find, and write no file. A script that swallowed the exit code and
+carried on with the downloaded file will now be handed nothing instead of an empty
+configuration.
+
 ---
 
 ### `config-upload`
@@ -2502,7 +2560,7 @@ idp-cli config-upload [OPTIONS]
 - `--stack-name` (required): CloudFormation stack name
 - `--config-file`, `-f` (required): Path to configuration file (YAML or JSON)
 - `--validate/--no-validate`: Validate config before uploading (default: validate)
-- `--config-profile` (alias: `--config-version`) **(required)**: Configuration profile to update (e.g., `default`, `v1`, `v2`). If the profile doesn't exist, it will be created automatically.
+- `--config-profile` (alias: `--config-version`) **(required)**: Configuration profile to update (e.g., `default`, `v1`, `v2`). If the profile doesn't exist, it will be created automatically. An **empty** value is refused with exit 1 and nothing is written; it used to land the configuration on a key no profile listing can see, reported as "Configuration is now active!" with exit 0
 - `--version-description`: Description for the configuration **profile** (persisted on the profile and overwritten by every save)
 - `--revision-notes`: What this upload changed, recorded on the **revision** it cuts and shown as *Notes* in the revision history (e.g. `'raised topK to 20'`). Per-revision and immutable, unlike `--version-description`
 - `--region`: AWS region (optional)
@@ -2671,9 +2729,9 @@ command runs is the same replace-mode sync as
 from the BDA project that could not then be deleted. The deletes happen whatever became
 of the document classes, which makes an aborted activation the outcome most likely to
 have left one. Those ARNs are printed whether the activation succeeded or failed, and
-they are not counted as failed classes — the remedy is the orphaned-blueprint cleanup
-(the `syncBdaIdp` API operation with direction `cleanup_orphaned`), not a re-run of this
-command. See the `config-sync-bda` section for the full explanation.
+they are not counted as failed classes — the remedy is the orphaned-blueprint cleanup,
+[`config-sync-bda --direction cleanup-orphaned`](#--direction-cleanup-orphaned), not a
+re-run of this command. See the `config-sync-bda` section for the full explanation.
 
 **Notes:**
 - Sets the specified profile as active for all new document processing
@@ -2768,6 +2826,18 @@ idp-cli test-result \
   --test-run-id fake-w2-20260409-123456 \
   --wait --output-dir ./results
 ```
+
+**Exit codes:** `1` when the run's `status` is `FAILED`, or when any file failed
+whatever the status is (a `PARTIAL_COMPLETE` run with failures exits `1`). `0`
+otherwise, which includes the in-flight states — `EVALUATING`, `IN_PROGRESS`, `QUEUED` —
+and, for now, `ABORTED` with no failed files. Read the printed `Status:` line rather
+than the exit code if you need to distinguish "passed" from "has not finished". The
+results are printed before the exit either way, so you still get the accuracy figures
+for a failed run.
+
+⚠️ This command used to exit `0` for a run with `status="FAILED"` and every file
+failed, exactly like a clean pass, so `idp-cli test-result ... && deploy` proceeded on a
+failed evaluation. A CI job that relied on that will now stop, which is the point.
 
 **Output:**
 - Overall accuracy, precision, recall, F1 score
@@ -3067,9 +3137,10 @@ idp-cli config-sync-bda [OPTIONS]
 
 **Options:**
 - `--stack-name` (required): CloudFormation stack name
-- `--direction`: Sync direction — `bidirectional` (default), `bda-to-idp`, or `idp-to-bda`
-- `--mode`: Sync mode — `replace` (default, full alignment) or `merge` (additive, don't delete)
+- `--direction`: Sync direction — `bidirectional` (default), `bda-to-idp`, `idp-to-bda`, or `cleanup-orphaned` (not a sync — see [below](#--direction-cleanup-orphaned))
+- `--mode`: Sync mode — `replace` (default, full alignment) or `merge` (additive, don't delete). Not read by `cleanup-orphaned`
 - `--config-profile` (alias: `--config-version`): Configuration profile to sync (default: active profile)
+- `--force`: Skip the confirmation prompt. Only `cleanup-orphaned` prompts
 - `--region`: AWS region (optional)
 
 **Examples:**
@@ -3119,9 +3190,48 @@ fails leaves a blueprint that is already out of the project. It is invisible to
 everything that reads the project, it still counts against the account's blueprint
 limit, and a name-prefix match can still pick it up. Those ARNs are printed beside the
 result, and they do **not** count as failed classes: the classes may all have synced,
-and the outstanding work is a cleanup rather than a re-sync. Remove them with the
-orphaned-blueprint cleanup — the `syncBdaIdp` API operation with direction
-`cleanup_orphaned`.
+and the outstanding work is a cleanup rather than a re-sync. Remove them with
+`--direction cleanup-orphaned`, described next.
+
+#### `--direction cleanup-orphaned`
+
+Not a sync. It deletes every BDA blueprint carrying the stack's name prefix that the
+named configuration profile's classes do not account for. That is an **account-wide**
+scan rather than a project-scoped one, which is exactly why it is the only thing that
+can reach a blueprint a replace-mode sync disassociated but could not delete — such a
+blueprint is invisible to every read that goes through the project.
+
+```bash
+idp-cli config-sync-bda --stack-name my-stack \
+    --direction cleanup-orphaned --config-profile v2
+```
+
+⚠️ **The profile decides what survives, and the scope is the whole account.** Blueprints
+belonging to a *different* profile of the same stack are orphans as far as this command
+is concerned, so naming the wrong profile — or letting it fall back to the active one
+when you meant another — deletes live blueprints. There is no dry run.
+
+It prompts for confirmation and will not proceed on an empty answer; `--force` skips the
+prompt, which is what a script wants. `--mode` is not read. The command reports how many
+blueprints it deleted and exits non-zero if any deletion failed, naming the ARNs that
+are still orphaned afterwards.
+
+⚠️ **It refuses to run unless the profile exists.** A name that is not a profile — a
+typo in `--config-profile`, or a whitespace-only value — is refused with exit 1 and
+nothing is deleted, and so is having no profile at all (you named none and none is
+active). Either way the set of classes to keep would come out empty, which is
+indistinguishable from "keep nothing", so every prefixed blueprint in the account would
+be deleted — and the typo is the worse of the two, because those include the live
+blueprints of the profile you meant. Name the profile explicitly on a stack with no
+active configuration.
+
+A profile that exists and declares **no classes** is not refused: keeping nothing is a
+real instruction, and every prefixed blueprint is deleted. That is the one case where
+the account-wide sweep is the whole point.
+
+The same operation is available as `config.sync_bda(direction="cleanup_orphaned")` in
+the SDK and as the `syncBdaIdp` API operation with direction `cleanup_orphaned`. The Web
+UI has no control for it.
 
 ---
 

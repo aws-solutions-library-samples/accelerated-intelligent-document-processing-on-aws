@@ -44,24 +44,24 @@ Third, **a config command that operates on the wrong version is the recurring
 defect in this repository.** So wherever a command takes a profile or a revision,
 there is a test that the value the user named is the value that reached the service
 — asserted by content, from two profiles whose configurations differ — and a test
-for a value that does not exist. That second kind found a live defect:
-`config-download` does not refuse an unknown profile, it exits 0 having emitted the
-YAML null document. See `test_download_of_an_unknown_profile_is_not_refused` and
-the three tests around it, all of which pin current behaviour and say plainly that
-it is wrong.
+for a value that does not exist. That second kind found a live defect and the fix
+landed under #1230: `config-download` used not to refuse an unknown profile, exiting 0
+having emitted the YAML null document, which every downstream reader takes for an
+*empty* configuration. All three spellings now refuse and name the profile — see
+`test_download_of_an_unknown_profile_is_refused` and the two tests around it, each of
+which asserts that no configuration document and no file is produced, not merely that
+the code is non-zero.
 
 Defects pinned here rather than fixed
 -------------------------------------
 Each of these has a test whose docstring states the consequence:
 
-- `config-download` accepts a profile that does not exist (exit 0, `null`).
-- `config-upload --config-profile ""` writes an unreachable record and reports
-  the configuration active.
 - `config-upload --config-profile DEFAULT` warns that it will update the default
   profile and then creates a different one.
 - `config-validate` reports and refuses unknown fields only at the top level, so
-  `--strict` passes a mistyped nested key.
-- Two diagnostics are raw `AttributeError` text.
+  `--strict` passes a mistyped nested key. This one is a **decision**, not a backlog
+  item: failing on a nested unknown key would reject configurations that pass today
+  in the flag built for pipelines, and it was deliberately excluded from #1230.
 - `config-create --features "a,typo"` drops the unknown section silently.
 """
 
@@ -1062,25 +1062,24 @@ def test_upload_to_a_profile_named_DEFAULT_warns_about_a_profile_it_does_not_tou
 
 
 @pytest.mark.unit
-def test_upload_with_an_empty_profile_name_writes_an_unreachable_record():
+def test_upload_with_an_empty_profile_name_is_refused_before_anything_is_written():
     """
-    DEFECT (`idp_cli/cli.py:4616-4635` with `idp_sdk/operations/config.py:443`).
+    The guarantee (#1230): an empty `--config-profile` is refused, and nothing is
+    written.
 
     `--config-profile` is `required=True`, but click only requires the option to be
-    PRESENT, and `""` is present. An empty value survives
-    `resolve_config_profile(..., required=True)` — which tests for `None` — and then
+    PRESENT, and `""` is present. An empty value survived
+    `resolve_config_profile(..., required=True)` — which tests for `None` — and
     `ConfigurationManager` builds its key as `f"Config#{version}"` only when the
-    version is truthy, so the configuration lands on the bare `Config` key.
-
-    Consequence, and it is the bad kind: the command exits 0 and prints
+    version is truthy, so the configuration landed on the bare `Config` key: a record
+    `config-list` cannot see (it filters on `begins_with(Configuration, "Config#")`),
+    that nothing reads, and that left the active profile unchanged — reported as
     "Configuration is now active! New documents will use this configuration
-    immediately." Nothing reads that record. `config-list` filters on
-    `begins_with(Configuration, "Config#")` so it never appears, and the active
-    profile is unchanged. A write was reported as a live configuration change and it
+    immediately." with exit 0. A write announced as a live configuration change that
     changed nothing.
 
-    Reaching `cli.py:4634-4635` at all requires this bug: every other invocation has
-    a truthy profile. Pinned, not fixed.
+    The assertion that carries this is on the table, not on the message: a refusal
+    printed after the write would satisfy the exit code and leave the stray record.
     """
     with config_stack() as stack:
         stack.seed("lending", class_name="lending-class", active=True)
@@ -1100,13 +1099,49 @@ def test_upload_with_an_empty_profile_name_writes_an_unreachable_record():
                     REGION,
                 ],
             )
-        assert result.exit_code == 0, result.output
-        assert "Configuration is now active!" in result.output
+        assert result.exit_code == 1, result.output
+        assert "--config-profile is empty" in result.output
+        assert "Configuration is now active!" not in result.output
 
-        # The record exists, under a key that is not a profile.
-        assert "Config" in stack.keys()
-        assert "Config#" not in stack.keys()
-        # And the profile listing cannot see it.
+        # Nothing was written: no bare `Config` record, and the seeded profile is
+        # still the only one the listing knows about.
+        assert "Config" not in stack.keys()
+        assert [v["versionName"] for v in stack.manager.list_config_versions()] == [
+            "lending"
+        ]
+
+
+@pytest.mark.unit
+def test_upload_with_a_whitespace_only_profile_name_is_refused_too():
+    """The `.strip()` in the guard, which nothing else reaches.
+
+    `"   "` is truthy, so click's `required=True` accepts it and a bare falsy check
+    does not catch it. `ConfigurationManager` builds `Config#   ` -- a key that is
+    *not* the bare `Config` the empty string produced, but is equally a profile no
+    listing will show and nothing will read. Removing the `.strip()` left the whole
+    suite green.
+    """
+    with config_stack() as stack:
+        stack.seed("lending", class_name="lending-class", active=True)
+        with write_config("classes:\n  - name: went-nowhere\n") as runner:
+            result = runner.invoke(
+                cli,
+                [
+                    "config-upload",
+                    "--stack-name",
+                    STACK,
+                    "--config-file",
+                    "config.yaml",
+                    "--config-profile",
+                    "   ",
+                    "--no-validate",
+                    "--region",
+                    REGION,
+                ],
+            )
+        assert result.exit_code == 1, result.output
+        assert "--config-profile is empty" in result.output
+        assert "Config#   " not in stack.keys()
         assert [v["versionName"] for v in stack.manager.list_config_versions()] == [
             "lending"
         ]
@@ -1296,24 +1331,21 @@ def test_download_refuses_a_revision_that_is_not_retained():
 
 
 @pytest.mark.unit
-def test_download_of_an_unknown_profile_is_not_refused():
+def test_download_of_an_unknown_profile_is_refused():
     """
-    DEFECT (`idp_sdk/operations/config.py:346`, surfacing at
-    `idp_cli/cli.py:4725-4736`).
+    The guarantee (#1230): an unknown profile raises instead of emitting YAML null.
 
-    `ConfigurationReader.get_configuration` returns `None` for a profile that does
-    not exist and `download()` never checks — unlike its own revision branch twelve
-    lines above, which raises `IDPResourceNotFoundError` for exactly this reason.
-    `yaml.dump(None)` is the string `"null\\n...\\n"`, and the CLI emits it.
+    `ConfigurationReader.get_configuration` answers `None` for a profile that does
+    not exist and `download()` used not to check — unlike its own revision branch
+    twelve lines above, which raises `IDPResourceNotFoundError` for exactly this
+    reason. `yaml.dump(None)` is the string `"null\\n...\\n"`, so
+    `config-download --config-profile lendnig > config.yaml` exited 0 and left a file
+    `yaml.safe_load` reads as `None` — an *empty configuration* to every downstream
+    step, under an exit code that said it worked.
 
-    Consequence: `config-download --config-profile lendnig > config.yaml` exits 0,
-    prints a success-shaped progress line on stderr, and leaves a file that
-    `yaml.safe_load` reads as `None`. Every downstream step then operates on an
-    empty configuration, and the exit code said it worked. This is the exact failure
-    mode the revision branch was written to prevent.
-
-    Pinned, not fixed. If this starts exiting non-zero, the defect is fixed and this
-    test should be replaced by the refusal assertion, not loosened.
+    Both halves are asserted: the code is non-zero, and no YAML document reaches
+    stdout. A refusal that still printed `null` would be half a fix, because the
+    redirect in the spelling above happens whatever the exit code is.
     """
     with config_stack() as stack:
         stack.seed("lending", class_name="lending-only", active=True)
@@ -1321,20 +1353,20 @@ def test_download_of_an_unknown_profile_is_not_refused():
             ["config-download", "--stack-name", STACK, "--config-profile", "lendnig"]
         )
 
-    assert result.exit_code == 0, "the defect: an unknown profile is not refused"
-    assert yaml.safe_load(result.stdout) is None
-    assert "lendnig" not in result.output, (
-        "and it does not even name the profile it failed to find"
-    )
+    assert result.exit_code == 1, result.output
+    assert result.stdout.strip() == "", "no configuration document reaches the file"
+    assert "lendnig" in result.output, "and it names the profile it could not find"
 
 
 @pytest.mark.unit
-def test_download_of_an_unknown_profile_to_a_file_reports_success():
+def test_download_of_an_unknown_profile_to_a_file_writes_no_file():
     """
-    The same defect through `--output`, which is worse because it leaves an artifact.
-    The file is written, the command prints "✓ Configuration saved to", and the
-    content is the YAML null document under a header claiming provenance from the
-    stack.
+    The same guarantee through `--output`, where the stakes are higher: this spelling
+    used to leave an artifact behind — the file written, "✓ Configuration saved to"
+    printed, and the YAML null document inside it under a header claiming provenance
+    from the stack. The assertion is that no file exists, not merely that the exit
+    code is non-zero: a refusal that had already written the file would leave the next
+    step reading an empty configuration.
     """
     with config_stack() as stack:
         stack.seed("lending", class_name="lending-only", active=True)
@@ -1354,25 +1386,28 @@ def test_download_of_an_unknown_profile_to_a_file_reports_success():
                     REGION,
                 ],
             )
-            written = open("out.yaml", encoding="utf-8").read()
+            file_exists = os.path.exists("out.yaml")
 
-    assert result.exit_code == 0
-    assert "Configuration saved to: out.yaml" in result.output
-    assert yaml.safe_load(written) is None
-    assert "Configuration downloaded from stack" in written
+    assert result.exit_code == 1, result.output
+    assert file_exists is False, "no artifact is left behind"
+    assert "Configuration saved to" not in result.output
+    assert "no-such-profile" in result.output
 
 
 @pytest.mark.unit
-def test_download_of_an_unknown_profile_in_minimal_format_leaks_an_attributeerror():
+def test_download_of_an_unknown_profile_in_minimal_format_names_the_profile():
     """
-    The third shape of the same defect. `--format minimal` diffs the downloaded
-    config against the defaults, so `get_diff_dict(defaults, None)` raises
-    `AttributeError: 'NoneType' object has no attribute 'items'` and the CLI's
-    generic handler prints it verbatim.
+    The third spelling, and the one that used to fail for the wrong reason.
 
-    Consequence: the exit code is at least non-zero here, which makes `--format
-    minimal` the only one of the three spellings that fails — but the user is shown
-    an internal type error instead of "that profile does not exist".
+    `--format minimal` diffs the downloaded config against the defaults, so
+    `get_diff_dict(defaults, None)` raised `AttributeError: 'NoneType' object has no
+    attribute 'items'` and the CLI's generic handler printed it verbatim: non-zero,
+    but by accident, and the user was shown an internal type error instead of "that
+    profile does not exist". The refusal now happens before the diff, so all three
+    spellings answer the same way.
+
+    The `AttributeError` is asserted *absent*, which is what says the refusal comes
+    first rather than the message merely having improved.
     """
     with config_stack() as stack:
         stack.seed("lending", class_name="lending-only", active=True)
@@ -1388,8 +1423,8 @@ def test_download_of_an_unknown_profile_in_minimal_format_leaks_an_attributeerro
             ]
         )
     assert result.exit_code == 1
-    assert "'NoneType' object has no attribute 'items'" in result.output
-    assert "no-such-profile" not in result.output
+    assert "'NoneType' object has no attribute 'items'" not in result.output
+    assert "no-such-profile" in result.output
 
 
 # --------------------------------------------------------------------------- #

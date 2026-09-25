@@ -61,7 +61,7 @@ pytestmark = pytest.mark.unit
 
 # Two operations in one module: the first enforces the scope, the second does not.
 # This is the exact shape of the false declaration S4 failed to see.
-_TWO_OPS = '''
+_TWO_OPS = """
 def handler(event, context):
     field = event["info"]["fieldName"]
     if field == "listThings":
@@ -87,7 +87,7 @@ def _caller_scope(event):
 
 def _query():
     return []
-'''
+"""
 
 
 def _reaches_scope(text: str, op: str, *, sole_op: bool = False) -> bool:
@@ -169,9 +169,7 @@ class TestDispatchRecognition:
             ('f == "countThings" and not stale', True),
         ],
     )
-    def test_only_a_positive_comparison_selects_a_branch(
-        self, test_source, expected
-    ):
+    def test_only_a_positive_comparison_selects_a_branch(self, test_source, expected):
         """A negated comparison names the operation but selects the OTHER branch."""
         node = ast.parse(f"if {test_source}:\n    pass\n").body[0]
 
@@ -186,7 +184,7 @@ class TestDispatchRecognition:
 
     def test_all_branches_naming_the_operation_are_unioned(self):
         """The revision ops dispatch twice: an outer scope check, an inner pick."""
-        source = '''
+        source = """
 def handler(event):
     op = event["op"]
     if op in ("alpha", "beta"):
@@ -196,7 +194,7 @@ def handler(event):
             return handle_alpha()
         if op == "beta":
             return handle_beta()
-'''
+"""
         tree = ast.parse(source)
         reachable = "\n".join(
             ast.unparse(s) for s in scanner._dispatch_branches(tree, "alpha")
@@ -240,8 +238,12 @@ class TestSoleOpCountsEveryDeclaredOperation:
         flagged_counts: dict[str, int] = {}
         for cfg in ops.values():
             enforced_in = cfg.get("enforced_in")
-            if enforced_in and (
-                cfg.get("scope_checked") or cfg.get("scope_filtered")
+            # An operation naming its own entry point never reaches the fallback:
+            # op_scope_source returns entries=[declared] and never reads sole_op.
+            if (
+                enforced_in
+                and (cfg.get("scope_checked") or cfg.get("scope_filtered"))
+                and not cfg.get("scope_enforced_in")
             ):
                 flagged_counts[enforced_in] = flagged_counts.get(enforced_in, 0) + 1
 

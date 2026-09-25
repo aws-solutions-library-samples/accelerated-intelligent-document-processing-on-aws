@@ -2248,20 +2248,55 @@ Nine fields of this shape ship in the config library — `account_summary`,
 `Medical-Insurance-Invoice.Charges`, `PA-Procedure-Log.codes_without_documentation`
 (a declared *subset* by definition), `PA-Medical-History.chronic_conditions` — and
 of the narrow arrays in presets with `TABLES` on, only `Transactions` genuinely
-models table rows. Four further shapes produce the same spurious failure and are
+models table rows. Three further shapes produce the same spurious failure and are
 tracked for narrowing: sibling lists whose property counts *differ* (the
 same-width grouping that stops Deposits and Withdrawals accusing each other keys
 on equality, so one extra property on one sibling disables it); a nested optional
 sub-list, which replaces its parent as the compared target so the parent's own
-completeness supplies the evidence that fails it; a list with `maxItems`, which
-`expected` does not consult; and any list nested under a plain object property,
-which is never compared at all.
+completeness supplies the evidence that fails it; and any list nested under a
+plain object property, which is never compared at all.
+
+##### `maxItems` bounds the evidence, and is the per-field remedy
+
+A declared `maxItems` on a list field is a ceiling on `expected`. If the schema
+says a list holds at most fifteen rows and extraction returned fifteen, the
+extraction is complete by the config author's own definition, so OCR evidence
+above the ceiling is not evidence of a shortfall: a `maxItems: 15` list beside a
+40-row table is compared against 15 rather than against the table's 41.
+`extraction.validation` already treats trimming a list to its `maxItems` as a
+*correction* rather than a loss; this is the same reading.
+
+Three properties of the bound are worth knowing before you rely on it:
+
+- **A width group is bounded only when every list in it declares a ceiling.**
+  Lists of the same item-property count share the OCR evidence and are judged as
+  one group, so a single undeclared sibling leaves the group's legitimate total
+  unbounded and the evidence is used as-is. When every member declares one, the
+  group's ceiling is their **sum**.
+- ⚠️ **A ceiling below 30 rows takes the field out of the check entirely,** because
+  the check only applies where the compared figure is at least 30 rows. Be clear
+  about what that costs: it is not only that a small list cannot lose 30 rows, it is
+  that a shortfall *relative to the ceiling* also goes unreported — 2 rows extracted
+  against a declared `maxItems: 15` is silent, and it was reported before. That is
+  the price of `maxItems` being able to take a field out of the check at all, which
+  is what makes it a usable per-field opt-out for a group-shaped array such as
+  `account_summary`, alongside the sibling protection above. Use it deliberately
+  rather than as a side effect of declaring a small bound.
+- ⚠️ **A ceiling lower than the rows a document really holds weakens the check in
+  proportion, at every size,** because the ceiling *is* the denominator — this is
+  not confined to the sub-30 case above. On an 800-row statement, 43 extracted rows
+  are a shortfall against the OCR evidence and are *not* a shortfall against a
+  declared `maxItems: 80`; with `maxItems: 100`, 50 rows of 500 are silent. So
+  declare a ceiling your longest expected document can actually reach, and treat
+  `maxItems` as a statement about the data rather than as a tuning knob for this
+  check.
 
 **So before setting `fail`:** confirm every array-of-object field in your classes
 models table rows rather than an entity group, and that no unrelated table in the
-same section shares a width with one of them. It is the right setting for a
-corpus of long transaction lists, which is the case it was built for. Narrowing
-the attribution — which is what would let `fail` be the default — is tracked in
+same section shares a width with one of them; where one does, declaring `maxItems`
+on the group-shaped field bounds it. `fail` is the right setting for a corpus of
+long transaction lists, which is the case it was built for. The remaining
+narrowing — which is what would let `fail` be the default — is tracked in
 [issue #1046](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/1046).
 
 ##### `fail` does not cover a list that lost *every* row

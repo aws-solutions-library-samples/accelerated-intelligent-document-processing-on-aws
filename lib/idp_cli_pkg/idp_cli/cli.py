@@ -460,8 +460,11 @@ def _print_orphaned_blueprints(arns: Optional[List[str]]) -> None:
     for arn in arns:
         console.print(f"    • {arn}")
     console.print(
-        "  [yellow]They are removed by the orphaned-blueprint cleanup: the syncBdaIdp "
-        "API operation with direction 'cleanup_orphaned'.[/yellow]"
+        "  [yellow]They are removed by the orphaned-blueprint cleanup: run "
+        "`idp-cli config-sync-bda --stack-name <stack> --direction cleanup-orphaned` "
+        "(or the syncBdaIdp API operation with direction 'cleanup_orphaned'). The "
+        "cleanup is account-wide and deletes every prefixed blueprint the profile "
+        "does not account for, so pass the same --config-profile.[/yellow]"
     )
 
 
@@ -1368,6 +1371,9 @@ def delete(
         # CloudFormation was still deleting, with "Status: INITIATED" as the only
         # hint, and never saw the console path or the `--force --wait` command below.
         initiated_only = result.status == "INITIATED"
+        # Set when --force-delete-all suppresses the early exit so the cleanup phase
+        # can run; exited on at the end of the command.
+        deletion_failed = False
 
         if result.success and not initiated_only:
             console.print("\n[green]✓ Stack deleted successfully![/green]")
@@ -1399,6 +1405,13 @@ def delete(
             if not force_delete_all:
                 sys.exit(1)
             else:
+                # The early exit is skipped on purpose so the cleanup phase below
+                # still runs — that is what --force-delete-all is for. But nothing
+                # then set a failing code, so a stack that failed to delete was
+                # indistinguishable to a caller from one that deleted cleanly
+                # (#1230). Recorded here and exited on at the end, after the
+                # cleanup has had its run.
+                deletion_failed = True
                 console.print()
                 console.print(
                     "[yellow]Stack deletion failed, but continuing with force cleanup...[/yellow]"
@@ -1481,6 +1494,13 @@ def delete(
             console.print("Delete it manually if no longer needed:")
             console.print("  [cyan]aws s3 rb s3://<logging-bucket-name> --force[/cyan]")
             console.print()
+
+        if deletion_failed:
+            console.print(
+                "[red]✗ The stack was not deleted. The force cleanup above ran "
+                "anyway; check the AWS Console for what remains.[/red]"
+            )
+            sys.exit(1)
 
     except Exception as e:
         logger.error(f"Error deleting stack: {e}", exc_info=True)
@@ -1730,6 +1750,17 @@ def delete_documents_cmd(
 
         console.print()
 
+        # A run that deleted nothing at all must not report success: an automated
+        # cleanup step otherwise proceeds having removed no documents (#1230). The
+        # reporting branch above had no `sys.exit`, so "⚠ Deleted 0/2 document(s)"
+        # and "2 failed" were followed by exit 0.
+        #
+        # Scoped to the total failure the issue names. A *partial* failure still
+        # exits 0, which is a residual rather than a decision anyone would defend:
+        # see `test_a_partial_failure_still_exits_zero_and_that_is_the_residual`.
+        if not dry_run and result["deleted_count"] == 0 and result["failed_count"] > 0:
+            sys.exit(1)
+
     except Exception as e:
         logger.error(f"Error deleting documents: {e}", exc_info=True)
         console.print(f"[red]✗ Error: {e}[/red]")
@@ -1895,6 +1926,13 @@ def _process_impl(
 
         # Monitor if requested
         if monitor and result_queued > 0:
+            # The returned exit code is deliberately not propagated, and the
+            # asymmetry with `status --wait` is the point. This command's work is
+            # the submission, which succeeded; `--monitor` is a view of what
+            # happens next. Exiting non-zero because 1 of 100 documents failed
+            # would stop `process --monitor && download-results` from collecting
+            # the 99 that worked. Ask for the batch's verdict with
+            # `idp-cli status --batch-id <id>`, which answers exactly that.
             _monitor_progress(
                 client=client,
                 batch_id=result_batch_id,
@@ -2441,6 +2479,7 @@ def _rerun_inference_impl(
         console.print()
 
         if monitor and result.documents_queued > 0:
+            # Not propagated, for the reason given at the `process --monitor` call.
             _monitor_progress(
                 client=client,
                 batch_id=batch_id or "rerun",
@@ -2680,11 +2719,17 @@ def status(
             from idp_sdk import IDPClient as _IDPClient
 
             _client = _IDPClient(stack_name=stack_name, region=region)
-            # Monitor until completion
-            _monitor_progress(
-                client=_client,
-                batch_id=identifier,
-                refresh_interval=refresh_interval,
+            # Monitor until completion, and exit on what it found. `status` is a
+            # query, so its exit code is its answer — and the polled branch below
+            # has always exited on that answer. This branch discarded it, so the
+            # same batch reported 1 when polled and 0 when waited on, and `--wait`
+            # is the form a pipeline uses (#1230).
+            sys.exit(
+                _monitor_progress(
+                    client=_client,
+                    batch_id=identifier,
+                    refresh_interval=refresh_interval,
+                )
             )
         else:
             # Show current status once via IDPClient
@@ -3900,7 +3945,7 @@ def _monitor_progress(
     document_ids: Optional[list] = None,
     region: Optional[str] = None,
     resources: Optional[dict] = None,
-):
+) -> int:
     """
     Monitor batch progress with live updates using IDPClient.
 
@@ -3912,6 +3957,22 @@ def _monitor_progress(
         document_ids: (legacy, unused) kept for signature compatibility
         region: (legacy) AWS region
         resources: (legacy, unused) kept for signature compatibility
+
+    Returns:
+        The exit code the batch's outcome implies, on the same scale
+        ``display.show_final_status_summary`` uses: 0 every document completed,
+        1 at least one failed, 2 the outcome was not established.
+
+        This function used to return nothing, so a caller had no value to
+        propagate and `status --wait` exited 0 on a batch in which every document
+        failed — while the *polled* form of the same command exited 1 (#1230). The
+        exit code is frequently the only thing a pipeline reads, so 0 there was a
+        confidently wrong success rather than a missing signal.
+
+        2, not 0, for a watch that ended without a verdict — a monitoring error or
+        a Ctrl-C. Nothing about the batch was measured on those paths, and 2 is
+        already this CLI's code for "not established"; answering 1 would report
+        documents as failed that may all have succeeded.
     """
     from idp_sdk import IDPClient as _IDPClient
 
@@ -3986,7 +4047,7 @@ def _monitor_progress(
             else getattr(idp_client, "_stack_name", batch_id)
         )
         display.show_monitoring_instructions(_sn or batch_id, batch_id)
-        return
+        return 2
     except Exception as e:
         logger.error(f"Monitoring error: {e}", exc_info=True)
         console.print()
@@ -3994,12 +4055,22 @@ def _monitor_progress(
         console.print("[yellow]You can check status later with:[/yellow]")
         _sn = stack_name or batch_id
         display.show_monitoring_instructions(_sn, batch_id)
-        return
+        return 2
 
     # Show final summary
     logger.info("Showing final summary")
     elapsed_time = time.time() - start_time
     display.show_final_summary(status_data, stats, elapsed_time)
+    # Derived by the same function the polled form of `status` reads, rather than
+    # re-derived from `stats` here. Two implementations of one rule is how the two
+    # forms of `status` came to disagree in the first place.
+    #
+    # `derive_exit_code` rather than `show_final_status_summary`, which also PRINTS
+    # "FINAL STATUS: ... | Exit Code: N". Two of this function's three callers discard
+    # the value it returns, so printing that line here would have
+    # `process --monitor` and `rerun --monitor` state an exit code that contradicts
+    # $?. The panel above already reports the failures.
+    return display.derive_exit_code(status_data, stats)
 
 
 def _process_test_set(
@@ -5271,6 +5342,22 @@ def config_upload(
     try:
         from idp_sdk import IDPClient
 
+        # `--config-profile ""` is *present* as far as click is concerned, so
+        # `required=True` passes it and `resolve_config_profile(..., required=True)`
+        # — which tests for None — passes it too. `ConfigurationManager` then builds
+        # its key as f"Config#{version}" only when the version is truthy, so the
+        # configuration landed on the bare `Config` key: a record `config-list` cannot
+        # see (it filters on begins_with(Configuration, "Config#")) and nothing reads,
+        # reported as "Configuration is now active!" with exit 0 (#1230). Refuse here,
+        # before anything is written.
+        if config_version is not None and not config_version.strip():
+            console.print(
+                "[red]✗ Error: --config-profile is empty. Name the profile to "
+                "update or create; `idp-cli config-list` shows the existing "
+                "ones.[/red]"
+            )
+            sys.exit(1)
+
         console.print(f"[bold blue]Uploading config to stack: {stack_name}[/bold blue]")
         console.print(f"Config file: {config_file}")
         console.print()
@@ -5321,9 +5408,12 @@ def config_upload(
                 console.print(
                     "Use --config-profile to process documents with this profile."
                 )
-        else:
-            console.print("[bold]Configuration is now active![/bold]")
-            console.print("New documents will use this configuration immediately.")
+        # There is deliberately no `else` here. `--config-profile` is `required=True`
+        # and the blank-value guard above rejects the only other way `config_version`
+        # could be falsy, so this branch is always taken. The `else` that used to sit
+        # here printed "Configuration is now active!" and was reachable *only* through
+        # the #1230 defect the guard closes — an empty profile name writing to a key
+        # nothing reads. Keeping it would leave a message that can only ever be wrong.
 
     except Exception as e:
         logger.error(f"Error uploading config: {e}", exc_info=True)
@@ -5837,9 +5927,15 @@ def config_delete(
 )
 @click.option(
     "--direction",
-    type=click.Choice(["bidirectional", "bda-to-idp", "idp-to-bda"]),
+    type=click.Choice(
+        ["bidirectional", "bda-to-idp", "idp-to-bda", "cleanup-orphaned"]
+    ),
     default="bidirectional",
-    help="Sync direction (default: bidirectional)",
+    help=(
+        "Sync direction (default: bidirectional). 'cleanup-orphaned' is not a sync: "
+        "it deletes every blueprint carrying the stack's prefix that the profile's "
+        "classes do not account for, account-wide"
+    ),
 )
 @click.option(
     "--mode",
@@ -5853,12 +5949,21 @@ def config_delete(
     "config_version",
     help="Configuration profile to sync (default: active profile); --config-version is the former name and still works",
 )
+@click.option(
+    "--force",
+    is_flag=True,
+    help=(
+        "Skip the confirmation prompt. Only --direction cleanup-orphaned prompts, "
+        "because only it deletes account-wide"
+    ),
+)
 @click.option("--region", help="AWS region (optional)")
 def config_sync_bda(
     stack_name: str,
     direction: str,
     mode: str,
     config_version: Optional[str],
+    force: bool,
     region: Optional[str],
 ):
     """
@@ -5868,13 +5973,27 @@ def config_sync_bda(
     configuration's document classes and BDA (Bedrock Data Automation) blueprints.
 
     Sync directions:
-      bidirectional: Full two-way sync (default)
-      bda-to-idp:    Import BDA blueprints into IDP config
-      idp-to-bda:    Push IDP classes to BDA blueprints
+      bidirectional:    Full two-way sync (default)
+      bda-to-idp:       Import BDA blueprints into IDP config
+      idp-to-bda:       Push IDP classes to BDA blueprints
+      cleanup-orphaned: Delete orphaned blueprints (see below)
 
     Sync modes:
       replace: Target is aligned to match source exactly (default)
       merge:   Source items are added without removing existing items
+
+    \b
+    Orphaned-blueprint cleanup:
+      A replace-mode sync removes a blueprint from the BDA project before deleting
+      it, so a delete that fails leaves one that no project-scoped read can see,
+      that still counts against the account's blueprint limit, and that a
+      name-prefix match can still pick up. --direction cleanup-orphaned is the only
+      thing that removes those.
+      It is DESTRUCTIVE and ACCOUNT-WIDE: it deletes every blueprint carrying the
+      stack's name prefix that the named profile's classes do not account for, not
+      just the ones a sync reported. So the profile decides what survives -- naming
+      the wrong one deletes live blueprints. It prompts for confirmation unless
+      --force is given, and --mode is not read.
 
     Examples:
 
@@ -5889,28 +6008,94 @@ def config_sync_bda(
 
       # Sync specific config profile
       idp-cli config-sync-bda --stack-name my-stack --config-profile v2
+
+      # Delete blueprints a previous sync left orphaned
+      idp-cli config-sync-bda --stack-name my-stack --direction cleanup-orphaned \\
+          --config-profile v2
     """
     try:
         from idp_sdk import IDPClient
 
         # Normalize direction for SDK (CLI uses dashes, SDK uses underscores)
         sdk_direction = direction.replace("-", "_")
+        is_cleanup = sdk_direction == "cleanup_orphaned"
 
-        console.print(f"[bold blue]BDA Sync for stack: {stack_name}[/bold blue]")
-        console.print(f"Direction: {direction}")
-        console.print(f"Mode: {mode}")
-        if config_version:
-            console.print(f"Config profile: {config_version}")
-        console.print()
+        if is_cleanup:
+            console.print(
+                f"[bold blue]Orphaned blueprint cleanup for stack: "
+                f"{stack_name}[/bold blue]"
+            )
+            console.print(
+                "[bold red]⚠️  This deletes every BDA blueprint carrying this "
+                "stack's prefix that the configuration profile below does not "
+                "account for, account-wide.[/bold red]"
+            )
+            console.print(
+                f"Profile deciding what survives: "
+                f"{config_version or 'the active profile'}"
+            )
+            console.print("[bold red]This action cannot be undone.[/bold red]")
+            console.print()
+            if not force:
+                try:
+                    confirmed = click.confirm(
+                        "Delete the orphaned blueprints?", default=False
+                    )
+                except click.Abort:
+                    # No terminal to prompt on -- a CI runner, or stdin closed.
+                    # `click.confirm` raises `Abort`, which carries no message, so the
+                    # command's generic handler printed a bare "✗ Error: " and logged a
+                    # traceback. Nothing was deleted, which is right; what was missing
+                    # was saying how to proceed.
+                    console.print(
+                        "[yellow]Cleanup cancelled: there is no terminal to confirm "
+                        "on. Pass --force to run it without a prompt.[/yellow]"
+                    )
+                    sys.exit(1)
+                if not confirmed:
+                    console.print("[yellow]Cleanup cancelled[/yellow]")
+                    sys.exit(1)
+        else:
+            console.print(f"[bold blue]BDA Sync for stack: {stack_name}[/bold blue]")
+            console.print(f"Direction: {direction}")
+            console.print(f"Mode: {mode}")
+            if config_version:
+                console.print(f"Config profile: {config_version}")
+            console.print()
 
         client = IDPClient(stack_name=stack_name, region=region)
 
-        with console.status("[cyan]Synchronizing with BDA...[/cyan]"):
+        status_message = (
+            "[cyan]Deleting orphaned blueprints...[/cyan]"
+            if is_cleanup
+            else "[cyan]Synchronizing with BDA...[/cyan]"
+        )
+        with console.status(status_message):
             result = client.config.sync_bda(
                 direction=sdk_direction,
                 mode=mode,
                 config_version=config_version,
             )
+
+        if is_cleanup:
+            deleted = result.cleanup_deleted_count or 0
+            failed = result.cleanup_failed_count or 0
+            if result.success:
+                console.print(
+                    f"[green]✓ Orphaned blueprint cleanup completed: "
+                    f"{deleted} deleted[/green]"
+                )
+            else:
+                console.print(
+                    "[yellow]⚠ Orphaned blueprint cleanup did not complete[/yellow]"
+                )
+                console.print(f"  Blueprints deleted: {deleted}")
+                console.print(f"  Blueprints failed:  {failed}")
+                if result.error:
+                    console.print(f"  [red]Error: {result.error}[/red]")
+                _print_orphaned_blueprints(result.orphaned_blueprint_arns)
+                sys.exit(1)
+            return
 
         if result.success:
             console.print("[green]✓ BDA sync completed successfully[/green]")
@@ -7277,6 +7462,25 @@ def test_result(
             console.print(f"[dim]Created: {test_result.created_at}[/dim]")
         if test_result.completed_at:
             console.print(f"[dim]Completed: {test_result.completed_at}[/dim]")
+
+        # The run's outcome has to reach the shell. This command reported the status
+        # and never let it influence the exit code, so a run with status="FAILED"
+        # and every file failed exited 0 exactly like a clean pass, and
+        # `idp-cli test-result ... && deploy` proceeded on a failed evaluation
+        # (#1230).
+        #
+        # Two conditions, because either alone leaves a real failure at 0: a run can
+        # carry a terminal FAILED status with no per-file count, and a run whose
+        # status is not FAILED can still have failed files (a partial run reports
+        # COMPLETED). Reading the printed text was the only route before this, which
+        # is what having an exit code is for.
+        if str(test_result.status).upper() == "FAILED" or test_result.failed_files > 0:
+            console.print(
+                f"[red]✗ Test run {test_result.test_run_id} did not pass: "
+                f"status {test_result.status}, "
+                f"{test_result.failed_files} failed file(s)[/red]"
+            )
+            sys.exit(1)
 
     except Exception as e:
         logger.error(f"Error getting test results: {e}", exc_info=True)
