@@ -495,10 +495,10 @@ advisory: `build-docs.yml` and `generate-dep-manifest.yml` are path-filtered, an
 `Test Results` is an action-created check run behind an `if:`, so requiring any of
 them would leave a check pending forever and block every merge.
 
-Three things about what it reads. Eight of the ten shared gates are *steps* in one
-job (`developer_tests`), so those eight are **one** requireable context sharing one
+Three things about what it reads. Ten of the twelve shared gates are *steps* in one
+job (`developer_tests`), so those ten are **one** requireable context sharing one
 red mark rather than one per gate; the SRT scan and the dependency audit are jobs of
-their own in `security-checks.yml`, so the ten shared gates produce three
+their own in `security-checks.yml`, so the twelve shared gates produce three
 requireable contexts in total. It reads classic branch protection **and** rulesets,
 because a branch can be governed entirely by a ruleset while the classic endpoint
 reports nothing. And it separates "not protected" from "cannot see": the classic

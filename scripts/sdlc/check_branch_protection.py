@@ -36,11 +36,11 @@ defect class this repo has hit repeatedly (see the parity gaps listed in
 
 A GitHub Actions status-check *context* is the job's ``name:`` if it declares
 one, otherwise the job **id**. So the mapping is per job, not per workflow and
-not per step. That matters here: eight of the ten gates asserted by
+not per step. That matters here: ten of the twelve gates asserted by
 ``test_ci_gate_parity.py``'s ``SHARED_GATES`` are *steps* inside a **single**
-job — ``developer_tests`` in ``.github/workflows/developer-tests.yml`` — and
+job -- ``developer_tests`` in ``.github/workflows/developer-tests.yml`` -- and
 GitHub can only require job-level contexts, never individual steps. So those
-eight collapse to exactly **one** requireable context rather than one per gate.
+ten collapse to exactly **one** requireable context rather than one per gate.
 The practical consequence is worth stating: because they share one
 context they also share one red mark, so a required-check failure does not say
 *which* of the eight failed — that needs the job log. The remaining two shared

@@ -610,9 +610,9 @@
         "Makefile::ARN_PARTITION_EXEMPT"
       ],
       "predicateConsidered": {
-        "not_a_nested_stack_of_parent": "True of all nine paths and irrelevant to the premise. None is a template the parent stack instantiates — they are a CI configuration, two deployment helpers, two of their tests, a credential-vendor template and three configuration presets — and nothing claims otherwise. What makes a line unredactable is that the id on it is read as a value, which is a fact about the surrounding code rather than about stack topology.",
+        "not_a_nested_stack_of_parent": "True of all nine paths and irrelevant to the premise. None is a template the parent stack instantiates \u2014 they are a CI configuration, two deployment helpers, two of their tests, a credential-vendor template and three configuration presets \u2014 and nothing claims otherwise. What makes a line unredactable is that the id on it is read as a value, which is a fact about the surrounding code rather than about stack topology.",
         "built_separately_from_main_stack": "True for the SDLC paths and the presets, and irrelevant for the same reason: whether one publish run builds a path says nothing about whether an account id inside it is consulted at run time. The count pin bounds the entry instead.",
-        "file_absent_or_untracked": "False for all nine — every path is tracked and present. The gate re-measures that on every run, because an entry whose line has moved or been redacted shields nothing and is failed as stale."
+        "file_absent_or_untracked": "False for all nine \u2014 every path is tracked and present. The gate re-measures that on every run, because an entry whose line has moved or been redacted shields nothing and is failed as stale."
       },
       "memberKind": "deployable path",
       "ratchetEvidence": "scripts/check_account_ids.py",
@@ -1179,12 +1179,12 @@
     },
     "scripts/srt/ci_paths.py::NAME_HEURISTIC_EXEMPT": {
       "kind": "exemption",
-      "turnsOff": "the SRT security gate for Bandit B105/B106 only, and only where is_test_only_path() answers true for the finding's path — test-shaped AND outside every directory a deployment artifact is built from; both checks still gate in shipped code",
+      "turnsOff": "the SRT security gate for Bandit B105/B106 only, and only where is_test_only_path() answers true for the finding's path \u2014 test-shaped AND outside every directory a deployment artifact is built from; both checks still gate in shipped code",
       "premise": [
         "JUDGEMENT"
       ],
       "ratchet": "universe-closure",
-      "reason": "What is ratcheted is the classification of every tracked Python file as test code or shipped code, not a count of demoted findings: the members are derived by is_test_only_path() rather than written down, so there is no entry that could go stale. The closure assertion is stated against the CodeUri/ContentUri directories parsed from the templates rather than against the classifier, so it is not satisfied by construction — it fails on a classifier that reads path shape alone, which demoted 99 files that `sam build` copies into a deployment artifact. B105/B106 match an identifier's NAME against a password wordlist, so `pass_count` and `next_token` arrive as HIGH; whether a constant in a test fixture is a real credential is the judgement, and it is not computable. No Bandit RULE can express this scope: SRT's promotion of the two checks is compiled into its binary, and Bandit's config keys are one flat namespace where `skips` applies to the whole run and `exclude_dirs` drops the file from every check. Its `baseline` key does distinguish paths, but it is a frozen list of findings matched on the literal value, so it cannot cover a finding that does not exist yet.",
+      "reason": "What is ratcheted is the classification of every tracked Python file as test code or shipped code, not a count of demoted findings: the members are derived by is_test_only_path() rather than written down, so there is no entry that could go stale. The closure assertion is stated against the CodeUri/ContentUri directories parsed from the templates rather than against the classifier, so it is not satisfied by construction \u2014 it fails on a classifier that reads path shape alone, which demoted 99 files that `sam build` copies into a deployment artifact. B105/B106 match an identifier's NAME against a password wordlist, so `pass_count` and `next_token` arrive as HIGH; whether a constant in a test fixture is a real credential is the judgement, and it is not computable. No Bandit RULE can express this scope: SRT's promotion of the two checks is compiled into its binary, and Bandit's config keys are one flat namespace where `skips` applies to the whole run and `exclude_dirs` drops the file from every check. Its `baseline` key does distinguish paths, but it is a frozen list of findings matched on the literal value, so it cannot cover a finding that does not exist yet.",
       "memberKind": "check id + path scope",
       "ratchetEvidence": "scripts/srt/tests/test_name_heuristic_scope.py",
       "crossReferences": [
@@ -1340,7 +1340,7 @@
     },
     "scripts/tests/test_api_policy_counts_in_docs.py::ALL_DOCS": {
       "kind": "enforced-universe",
-      "turnsOff": "nothing. It is SCANNED_DOCS plus the partially-excluded documents, and it exists so the per-document comparison runs over an excluded page too — for the measures its exclusion does not name. A member adds coverage. Discovery matches it on the prose of the comment above it, which explains that an excluded document is still compared.",
+      "turnsOff": "nothing. It is SCANNED_DOCS plus the partially-excluded documents, and it exists so the per-document comparison runs over an excluded page too \u2014 for the measures its exclusion does not name. A member adds coverage. Discovery matches it on the prose of the comment above it, which explains that an excluded document is still compared.",
       "memberKind": "repo-relative path to a Markdown document",
       "premise": [
         "JUDGEMENT"
@@ -1508,7 +1508,7 @@
         "JUDGEMENT"
       ],
       "ratchet": "universe-closure",
-      "reason": "Whether a target CAN be a CI gate is a property of what it does — mutates the tree, prompts a human, needs AWS credentials, needs a deployed stack, reports rather than asserts — and none of that is readable from the Makefile. So one sentence per target, naming that target's own obstacle.",
+      "reason": "Whether a target CAN be a CI gate is a property of what it does \u2014 mutates the tree, prompts a human, needs AWS credentials, needs a deployed stack, reports rather than asserts \u2014 and none of that is readable from the Makefile. So one sentence per target, naming that target's own obstacle.",
       "ratchetGap": "The reasons themselves are unchecked prose. What is mechanical: no target IN THE UNIVERSE may be absent from both this list and CI; a listed target CI has since started running fails; a listed target that no longer exists fails. Read 'in the universe' precisely -- it is every target in the 5 sections GATE_SECTION_PREFIXES names, plus any check-shaped-by-name target in any other section except Stack tests. It is NOT every Makefile target, and the residual is stated on the GATE_SECTION_PREFIXES entry.",
       "memberKind": "make target",
       "crossReferences": [
@@ -1523,7 +1523,7 @@
         "JUDGEMENT"
       ],
       "ratchet": "staleness",
-      "reason": "Two of `make lint`'s prerequisites auto-fix, so `lint-cicd` cannot invoke them — it runs the check-only command instead, and that command's spelling is not derivable from the target's name. The substituted command must still be present in the recipe, so this relaxes how the gate is spelled and not whether it runs.",
+      "reason": "Two of `make lint`'s prerequisites auto-fix, so `lint-cicd` cannot invoke them \u2014 it runs the check-only command instead, and that command's spelling is not derivable from the target's name. The substituted command must still be present in the recipe, so this relaxes how the gate is spelled and not whether it runs.",
       "memberKind": "make target",
       "ratchetEvidence": "scripts/tests/test_ci_gate_parity.py"
     },
@@ -2643,6 +2643,20 @@
       "crossReferences": [
         "scripts/sdlc/ai_mr_review.py::ALLOWED_TOOLS"
       ]
+    },
+    "Makefile::COVERAGE_CICD_SKIP": {
+      "kind": "exemption",
+      "memberKind": "the name of one registry tree in check_coverage_debt.TREES whose coverage report the CI coverage-producer step does not generate",
+      "turnsOff": "nothing, for the one member it has. It removes `idp_common` from the trees `make coverage-all-cicd` measures, because the CI step immediately before it -- `make test-cicd -C lib/idp_common_pkg` -- already writes that tree's report to the path `check_coverage_debt.LEGACY_IDP_COMMON_REPORT` names. The ratchet step after it runs `--require-all-trees`, which requires `idp_common` BY NAME like every other tree, so the coverage of this tree is enforced exactly as it was; what is skipped is the second measurement of it, not the check.",
+      "premise": [
+        "JUDGEMENT"
+      ],
+      "ratchet": "universe-closure",
+      "ratchetEvidence": "scripts/check_coverage_debt.py",
+      "issues": [
+        1256
+      ],
+      "reason": "Discovered by name: the fragment `SKIP` is in the discovery vocabulary, and it matching here is the mechanism working rather than a false positive -- a variable that removes a tree from a coverage producer is exactly the shape this registry governs, whatever its intent. The judgement is bounded to one member because the variable holds one: `--skip idp_common`. Why it is JUDGEMENT rather than a computed premise: the fact that would have to be computed is 'an earlier step in the same CI job already wrote this tree's report', and that is a property of the ORDER of steps in two CI configuration files, not of a path or a file on disk, so none of the predicates in gate_premises.py can express it and a new one would have to parse and order both configs to answer for a single member. What makes the entry safe without that is the ratchet, and it is stronger than the premise would have been: `check-coverage-debt-cicd` passes `--require-all-trees`, whose required set is derived from `TREES` inside `check_coverage_debt.py` rather than written out anywhere a skip could be mirrored. So a tree named here and produced by nobody is not quietly unmeasured -- it is named in a refusal and the gate exits 2. That closure is what `test_coverage_debt.py`'s TestRequireAllTreesIsDerivedFromTheRegistry asserts, including against a tree invented by the test so the derivation cannot be satisfied by hardcoding today's names, and `test_coverage_all.py`'s test_the_cicd_makefile_target_skips_exactly_the_tree_CI_already_measured pins the membership of this variable to exactly `idp_common` and pins that the recipe still invokes the producer -- deleting the recipe body was a measured mutation that this registry entry's own gate did not catch and that assertion now does. The residual a reviewer should check is the one thing neither asserts: that the earlier CI step really still writes that report. It is not unprotected, it is protected one layer out -- if that step stops writing it, `--require-all-trees` fails naming `idp_common`, which is the loud direction."
     }
   }
 }
