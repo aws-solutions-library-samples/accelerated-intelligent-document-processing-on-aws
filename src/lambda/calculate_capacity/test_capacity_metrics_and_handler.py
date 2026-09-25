@@ -1691,8 +1691,10 @@ def test_a_step_below_one_request_a_minute_still_appears_in_the_report(tracking)
 
     Nothing here asserts the absence of a skip message, although that is the usual
     way of showing which branch produced a result. With the threshold at zero the
-    drop branch is unreachable — the two skips above it already guarantee a positive
-    request rate — so "no skip line was printed" is implied by the rows existing
+    drop branch is unreachable — not because the request rate is always positive,
+    which the withheld-RPM path makes false, but because the two skips between them
+    guarantee that at least one of the two terms is; see the comment at the
+    inclusion rule. So "no skip line was printed" is implied by the rows existing
     rather than evidence about them, and asserting it would read as coverage of a
     branch no input can reach.
     """
@@ -1717,6 +1719,39 @@ def test_a_step_below_one_request_a_minute_still_appears_in_the_report(tracking)
     tpm = requirements[("Assessment", "TPM")]
     assert tpm["requiredQuota"] == "0"
     assert tpm["statusText"] == "✅ No Demand"
+
+
+@pytest.mark.unit
+def test_the_lowest_request_rate_the_planner_can_derive_still_gets_a_row(tracking):
+    """The threshold is pinned at zero, not merely somewhere below one a minute.
+
+    The case above runs at 0.183 RPM, so it is satisfied by any floor under that —
+    the symmetry the inclusion rule is built on would still be unpinned against a
+    floor of, say, 0.05, which was measured to leave the suite green. This pins the
+    smallest rate the planner can actually derive instead.
+
+    That smallest rate is a property of the counting code rather than an arbitrary
+    small number: a document only joins the per-document average if it recorded at
+    least one request for the step, so `requests_per_doc` cannot fall below 1.0,
+    and the peak hour cannot schedule fewer than one document. One request in the
+    one document processed in the busiest hour is therefore the floor, and it is
+    the case a threshold would silence first.
+    """
+    metering = {}
+    metering.update(bedrock("Extraction", 3))
+    metering.update(bedrock("Assessment", 1))
+    put_metered(tracking, "doc-1", metering)
+    hourly = hours(**{"9": {"docsPerHour": 1, "extractionTokensPerHour": 60000}})
+    requirements = by_type(
+        build(
+            hourly, config=model_config(extraction_model=MODEL, assessment_model=MODEL)
+        )
+    )
+    # 1 req/doc x 1 doc / 60 x 1.1 = 0.01833 RPM against the 200 RPM quota.
+    rpm = requirements[("Assessment", "RPM")]
+    assert rpm["requiredQuota"] == "0"
+    assert rpm["statusText"] == "✅ Sufficient"
+    assert rpm["utilizationPercent"] == pytest.approx(0.009167, rel=1e-3)
 
 
 @pytest.mark.unit

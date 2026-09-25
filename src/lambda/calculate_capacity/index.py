@@ -1468,19 +1468,27 @@ def build_simple_quota_requirements(
         # itself; silence does not, and `requiredQuota` carries the magnitude
         # either way.
         #
-        # Both skips above have in fact already decided this. The second one
-        # either continues or raises on every path, and its condition is the
-        # first conjunct of the first one's, so reaching this line at all
-        # requires `actual_requests_per_hour > 0` and therefore `peak_rpm > 0`.
-        # With the threshold at zero this is a floor rather than a filter, and
-        # it cannot fire: replacing the `else` below with an unconditional
-        # `raise` leaves every test in this directory passing, so there is
-        # deliberately no test for that branch — there is no input that reaches
-        # it, and a test asserting its message would be pinning nothing. It is
-        # kept so that a step carrying no demand of either kind cannot acquire a
-        # row of zeroes if those skips change, and its message names both terms
-        # because naming only the token figure described a step dropped for its
-        # request rate as having "no demand".
+        # The skips above have in fact already decided this, and with the
+        # threshold at zero this is a floor rather than a filter: it cannot fire.
+        # Note that it is *not* true that `peak_rpm > 0` here — the withheld-RPM
+        # fall-through above reaches this line with `actual_requests_per_hour`
+        # at zero, and so with `peak_rpm` at 0.0. What holds is the disjunction,
+        # by two different routes:
+        #
+        #   * on the ordinary path the second skip's condition was false, so
+        #     `actual_requests_per_hour > 0` and therefore `peak_rpm > 0`;
+        #   * on the withheld-RPM path `peak_rpm` is 0.0, but the *first* skip
+        #     has already continued for any step with `peak_tpm == 0` — its
+        #     condition is the second's plus that conjunct — so `peak_tpm > 0`.
+        #
+        # Either way one term is positive. Replacing the `else` below with an
+        # unconditional `raise` leaves every test in this directory passing, so
+        # there is deliberately no test for that branch: no input reaches it, and
+        # a test asserting its message would be pinning nothing. It is kept so
+        # that a step carrying no demand of either kind cannot acquire a row of
+        # zeroes if those skips change, and its message names both terms because
+        # naming only the token figure described a step dropped for its request
+        # rate as having "no demand".
         should_include = peak_tpm > 0 or peak_rpm > 0
 
         if should_include:
@@ -1505,14 +1513,21 @@ def build_simple_quota_requirements(
             # exists and how large it is; capping this made the one field
             # expressing it as a ratio the only one that hid it.
             #
-            # Nothing downstream constrains it to 100. The UI does not read this
-            # field at all — `QuotaRequirement` in
-            # `src/ui/src/components/capacity-planning/CapacityPlanningLayout.tsx`
-            # does not declare it — and the per-model figures it does render are
-            # recomputed there from `requiredQuota` and `currentQuota` with no
-            # cap of their own, so an uncapped value here agrees with what the
-            # operator is already shown rather than contradicting it. There is
-            # no bar or fixed-width gauge to overflow.
+            # Nothing downstream constrains it to 100, and in fact nothing
+            # downstream reads it: `sanitize_quota_requirements` in
+            # `src/lambda/calculate_capacity_resolver/index.py` rebuilds every row
+            # from the five fields the GraphQL type declares, so this one does not
+            # cross the API boundary at all. That, rather than the UI's TypeScript
+            # interface, is the durable reason — an interface is one line away
+            # from declaring the field, whereas the resolver actively strips it.
+            #
+            # So this is an internal figure today. It is still worth being a true
+            # ratio: the percentages the UI displays are recomputed in the browser
+            # from `requiredQuota` and `currentQuota` and have never been capped,
+            # so a capped value here disagreed with what the operator was shown
+            # for the same quantity, and would have carried that disagreement
+            # into whatever surfaces this field next. There is no bar or
+            # fixed-width gauge anywhere that a value above 100 could overflow.
             tpm_utilization_percent = (
                 (peak_tpm / model_quota_tpm) * 100
                 if peak_tpm > 0 and model_quota_tpm > 0
@@ -1537,9 +1552,12 @@ def build_simple_quota_requirements(
             requirements.append(tpm_requirement)
 
             # RPM requirement. Withheld, rather than reported as zero, when the
-            # request rate has no measurement behind it: a "0 RPM" row would be a
-            # figure the planner made up, and the TPM row above is the half of
-            # this step that is genuinely known.
+            # request rate has no measurement behind it: a "0 RPM" row would read
+            # as a measured absence of requests rather than as an absence of
+            # measurement, and the TPM row above is the half of this step that is
+            # genuinely known. The `peak_rpm` of 0.0 that the log above prints for
+            # this step is the arithmetic on an unmeasured zero, which is why it
+            # is not published as a row.
             if rpm_measurable:
                 rpm_quota_display = f"{model_quota_rpm:,}"
                 rpm_status = "success" if peak_rpm <= model_quota_rpm else "warning"
