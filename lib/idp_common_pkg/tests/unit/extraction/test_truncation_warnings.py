@@ -2294,3 +2294,607 @@ class TestOverflowFailure:
         )
         assert is_transient_error(exc) is False
         assert type(exc).__name__ == "ExtractionInputTooLarge"
+
+
+class TestMaxItemsBoundsTheEvidence:
+    """A declared ``maxItems`` is a ceiling on the OCR evidence (#1046, item 4).
+
+    ``maxItems: 15`` over a 40-row table, correctly capped at 15, used to score
+    ``15/41`` — the schema said the list holds at most fifteen rows, extraction
+    obeyed it, and the check called the result truncated. The ceiling now bounds
+    ``expected``, so that case is quiet while every schema that declares no
+    ``maxItems`` behaves exactly as before.
+
+    Only item 4 is addressed here. The section-wide sum, siblings of differing
+    width, the nested-sub-list target, declared subsets, and both under-attribution
+    items are unchanged, and ``TestWhyFailIsOptIn`` above still pins the default.
+
+    Two invariants these tests exist to hold:
+
+    * The ceiling can only ever SHRINK the evidence, so every value this reader
+      cannot read must resolve to "no ceiling" rather than to a small number. The
+      parametrised cases below probe that with twelve spellings, four of which
+      (``True``, ``False``, ``"0"``, ``0``) would read as a ceiling of 0 or 1 under
+      a naive ``int()`` and silence the check for the whole width group.
+    * The ceiling applies to a width GROUP only when every member declares one,
+      because ``extracted`` is summed over the group and ``expected`` is shared.
+    """
+
+    #: Item 4's own numbers: a 40-row 3-column table renders as 41 OCR rows
+    #: (`_ocr_tables` counts the heading), and `maxItems: 15` correctly obeyed
+    #: scored 15/41 = 0.366, under the 0.5 ratio.
+    OCR_ROWS_FOR_40 = 41
+
+    @staticmethod
+    def _schema(max_items: Any = ..., *, second: Any = ...) -> dict:
+        """``SCHEMA`` with a ``maxItems`` on ``Transactions``, and optionally a
+        same-width sibling. ``...`` means the keyword is absent, which is the shape
+        every shipped preset has."""
+        txns: dict[str, Any] = {"type": "array", "items": ROW}
+        if max_items is not ...:
+            txns["maxItems"] = max_items
+        props: dict[str, Any] = {"Account Number": {"type": "string"}}
+        props["Transactions"] = txns
+        if second is not ...:
+            sib: dict[str, Any] = {"type": "array", "items": ROW}
+            if second is not None:
+                sib["maxItems"] = second
+            props["Withdrawals"] = sib
+        return {"type": "object", "properties": props}
+
+    @staticmethod
+    def _instance_schema(outer: Any = ..., inner: Any = ...) -> dict:
+        """An array of INSTANCES whose items carry their own list — the shape
+        ``_object_list_targets`` descends into, where the compared rows are the
+        concatenation across instances."""
+        inner_spec: dict[str, Any] = {"type": "array", "items": ROW}
+        if inner is not ...:
+            inner_spec["maxItems"] = inner
+        outer_spec: dict[str, Any] = {
+            "type": "array",
+            "items": {"type": "object", "properties": {"Txns": inner_spec}},
+        }
+        if outer is not ...:
+            outer_spec["maxItems"] = outer
+        return {"type": "object", "properties": {"Accounts": outer_spec}}
+
+    # ---- the case the issue names -----------------------------------------
+
+    def test_a_list_correctly_capped_at_its_maxitems_is_not_flagged(self):
+        svc = _svc(schema=self._schema(15))
+        svc._document_text = _table(40)
+        assert CODE not in _codes(_issues(svc, {"Transactions": _rows(15)}))
+
+    def test_the_same_extraction_without_the_ceiling_is_still_flagged(self):
+        """The control that makes the test above mean something: identical OCR and
+        identical rows, and the only difference is the declared ceiling."""
+        svc = _svc(schema=self._schema())
+        svc._document_text = _table(40)
+        issue = next(
+            i for i in _issues(svc, {"Transactions": _rows(15)}) if i.code == CODE
+        )
+        assert issue.details["ocr_estimated_rows"] == self.OCR_ROWS_FOR_40
+        assert issue.details["declared_max_items"] is None
+        assert issue.details["ratio"] == round(15 / self.OCR_ROWS_FOR_40, 3)
+
+    def test_under_fail_the_capped_extraction_no_longer_loses_the_document(self):
+        """The user-visible point of the change, driven through the same tail that
+        `TestRowShortfallOutcome` uses: opted in to `fail`, a list extracted to its
+        declared ceiling neither reports the issue nor raises."""
+        svc = _svc(schema=self._schema(15), row_shortfall_action="fail")
+        svc._document_text = _table(40)
+        issues = _issues(svc, {"Transactions": _rows(15)})
+        assert CODE not in _codes(issues)
+        doc = Document(
+            id="d",
+            input_key="d.pdf",
+            input_bucket="in",
+            output_bucket="out",
+            status=Status.EXTRACTING,
+        )
+        # No raise: _fail_on_row_shortfall has no error-severity shortfall to act on.
+        svc._fail_on_row_shortfall(doc, SimpleNamespace(processing_issues=issues), "1")
+
+    # ---- the ceiling does not weaken a real detection ----------------------
+
+    def test_a_ceiling_above_the_evidence_changes_nothing(self):
+        """`maxItems: 5000` over an 800-row statement: the check that #726 exists
+        for still fires, on the unbounded figure, with no cap wording."""
+        svc = _svc(schema=self._schema(5000))
+        svc._document_text = _table(800, pages=17)
+        issue = next(
+            i for i in _issues(svc, {"Transactions": _rows(43)}) if i.code == CODE
+        )
+        assert 800 <= issue.details["ocr_estimated_rows"] <= 800 + 17
+        assert (
+            issue.details["ocr_estimated_rows"]
+            == issue.details["ocr_matched_table_rows"]
+        )
+        assert issue.details["declared_max_items"] == 5000
+        assert "maxItems of the" not in issue.message
+
+    def test_a_binding_ceiling_that_still_leaves_a_shortfall_fires_on_it(self):
+        """The ceiling moves the denominator; it does not switch the check off.
+        200 OCR rows, a declared ceiling of 100, 20 rows extracted."""
+        svc = _svc(schema=self._schema(100))
+        svc._document_text = _table(200)
+        issue = next(
+            i for i in _issues(svc, {"Transactions": _rows(20)}) if i.code == CODE
+        )
+        assert issue.details["ocr_matched_table_rows"] == 201
+        assert issue.details["ocr_estimated_rows"] == 100
+        assert issue.details["declared_max_items"] == 100
+        assert issue.details["ratio"] == 0.2
+        # Both figures are stated, so the message is not read as an OCR count.
+        assert "about 201 rows" in issue.message
+        assert "bounded to 100 by the declared maxItems" in issue.message
+        assert "(capped at maxItems 100)" in issue.root_cause
+
+    @pytest.mark.parametrize(
+        "ceiling,fires",
+        [(..., True), (5000, True), (100, True), (15, False), (0, False)],
+        ids=["absent", "above-evidence", "binding-but-live", "below-floor", "zero"],
+    )
+    def test_the_ceiling_never_raises_the_expected_figure(self, ceiling, fires):
+        """The direction, over every class of ceiling: absent, above the evidence,
+        binding-but-live, below the floor, and zero.
+
+        Whether each class fires is parametrised rather than left to a loop that may
+        not execute. It was written as `for issue in ...: if code: assert`, and for
+        the last two rows that body ran zero times — a parametrisation whose two most
+        interesting cases asserted nothing. Measured, not reasoned: the count of
+        matching issues is 1, 1, 1, 0, 0 across these five rows.
+        """
+        svc = _svc(schema=self._schema(ceiling))
+        svc._document_text = _table(200)
+        matching = [
+            i for i in _issues(svc, {"Transactions": _rows(20)}) if i.code == CODE
+        ]
+        assert bool(matching) is fires
+        for issue in matching:
+            assert (
+                issue.details["ocr_estimated_rows"]
+                <= issue.details["ocr_matched_table_rows"]
+            )
+
+    def test_a_ceiling_below_the_floor_drops_the_group_rather_than_clamping(self):
+        """The sub-30 consequence, pinned where a shortfall against the CEILING is
+        severe: 2 rows of a declared 15 over a 40-row table.
+
+        Clamping the denominator up to `_OCR_ROW_ESTIMATE_MIN` instead of letting the
+        group fall below the floor leaves every other test in this class green, and it
+        would report "bounded to 30" — a figure no schema declares. So the cost of the
+        opt-out is asserted here rather than only described: a 13-of-15 loss relative
+        to the ceiling is invisible, which is the price of `maxItems` being able to
+        take a group-shaped field out of the check at all.
+        """
+        svc = _svc(schema=self._schema(15))
+        svc._document_text = _table(40)
+        issues = _issues(svc, {"Transactions": _rows(2)})
+        assert CODE not in _codes(issues)
+        assert all(str(self.OCR_ROWS_FOR_40) not in (i.message or "") for i in issues)
+        assert all("bounded to" not in (i.message or "") for i in issues)
+        # And the control: without the ceiling the same 2-of-40 loss is reported.
+        bare = _svc(schema=self._schema())
+        bare._document_text = _table(40)
+        assert CODE in _codes(_issues(bare, {"Transactions": _rows(2)}))
+
+    # ---- what counts as a declared ceiling --------------------------------
+
+    @pytest.mark.parametrize(
+        "ceiling",
+        [15, "15", " 15 ", 15.0, "15.0", "1.5e1"],
+        ids=["int", "web-ui-string", "padded", "integral-float", "float-string", "sci"],
+    )
+    def test_the_forms_a_config_round_trip_produces_are_read(self, ceiling):
+        """`ConfigurationRecord._stringify_values` stringifies every numeric scalar
+        into the Configuration table, so a class authored in the Web UI arrives with
+        `maxItems: "15"`. `_get_class_schema` coerces at that entry point, but
+        `_class_schema` is reachable without it — as it is here — so the reader takes
+        the string form itself."""
+        svc = _svc(schema=self._schema(ceiling))
+        svc._document_text = _table(40)
+        assert CODE not in _codes(_issues(svc, {"Transactions": _rows(15)}))
+
+    def test_a_decimal_is_read(self):
+        """The shape a DynamoDB number takes on the way back out."""
+        from decimal import Decimal
+
+        svc = _svc(schema=self._schema(Decimal("15")))
+        svc._document_text = _table(40)
+        assert CODE not in _codes(_issues(svc, {"Transactions": _rows(15)}))
+
+    @pytest.mark.parametrize(
+        "ceiling",
+        [
+            True,
+            False,
+            "abc",
+            "",
+            "   ",
+            15.5,
+            "15.5",
+            -1,
+            "-5",
+            float("inf"),
+            float("nan"),
+            [40],
+            {"maxItems": 40},
+            None,
+        ],
+        ids=[
+            "true",
+            "false",
+            "words",
+            "empty",
+            "blank",
+            "fractional",
+            "fractional-string",
+            "negative",
+            "negative-string",
+            "infinity",
+            "nan",
+            "list",
+            "dict",
+            "null",
+        ],
+    )
+    def test_an_unreadable_ceiling_leaves_the_evidence_alone(self, ceiling):
+        """Capability, not pattern-matching: the rule is that a value this reader
+        cannot turn into a finite non-negative whole row count is NOT a ceiling, so
+        the pre-existing behaviour stands.
+
+        Four of these discriminate a real implementation choice rather than a
+        hypothetical. `True`/`False` are `int`s in Python (`int(True) == 1`), and
+        `int(float("nan"))` raises, so a reader that coerces before checking
+        finiteness takes the section's whole issue list down with it — which is
+        exactly the #797 failure mode. Each would show up here as the check going
+        silent (or erroring), so the assertion is that it still fires.
+        """
+        svc = _svc(schema=self._schema(ceiling))
+        svc._document_text = _table(40)
+        issue = next(
+            i for i in _issues(svc, {"Transactions": _rows(15)}) if i.code == CODE
+        )
+        assert issue.details["declared_max_items"] is None
+        assert issue.details["ocr_estimated_rows"] == self.OCR_ROWS_FOR_40
+
+    @pytest.mark.parametrize("ceiling", [0, "0"])
+    def test_a_zero_ceiling_is_honoured_rather_than_discarded(self, ceiling):
+        """`maxItems: 0` says the list holds no rows at all, so no OCR evidence is
+        evidence about it.
+
+        What this pins is the `bool` guard, and it is worth being exact about which
+        half is observable. `False` and `0` are `==` in Python, and the difference
+        between them here IS visible: `False` reads as no ceiling and the check
+        fires, `0` reads as a ceiling and it does not. The precise VALUE of a ceiling
+        under `_OCR_ROW_ESTIMATE_MIN` is not observable through any surface — every
+        ceiling in 0..29 drops the group before a ratio or a `details` dict exists —
+        so this asserts the boundary it can see rather than a number it cannot.
+        """
+        svc = _svc(schema=self._schema(ceiling))
+        svc._document_text = _table(40)
+        assert CODE not in _codes(_issues(svc, {"Transactions": _rows(15)}))
+
+    def test_an_under_declared_ceiling_weakens_the_check_in_proportion(self):
+        """The cost of the ceiling, stated as a test rather than left implicit.
+
+        The ceiling IS the denominator, so a ceiling lower than the rows a document
+        really holds shrinks what counts as a shortfall: 43 rows out of an 800-row
+        statement fire against the OCR evidence and do not fire against a declared
+        `maxItems: 80`. That is the semantics the config author asked for — 43 is
+        more than half of 80 — and it is why the user documentation tells a reader to
+        declare a ceiling their longest expected document can reach rather than to
+        use `maxItems` as a tuning knob for this check.
+        """
+        svc = _svc(schema=self._schema(80))
+        svc._document_text = _table(800, pages=17)
+        assert CODE not in _codes(_issues(svc, {"Transactions": _rows(43)}))
+        # The control: the same OCR and the same rows, no ceiling declared.
+        bare = _svc(schema=self._schema())
+        bare._document_text = _table(800, pages=17)
+        assert CODE in _codes(_issues(bare, {"Transactions": _rows(43)}))
+
+    @pytest.mark.parametrize(
+        "ceiling",
+        [10**400, str(10**400), "9" * 401],
+        ids=["huge-int", "huge-int-string", "401-digit-string"],
+    )
+    def test_an_unconvertibly_large_ceiling_neither_raises_nor_binds(self, ceiling):
+        """`float()` raises `OverflowError` on an integer too large to convert, and
+        `OverflowError` is neither `TypeError` nor `ValueError`.
+
+        That is reachable through the documented Web-UI round trip — the value is
+        stringified into the Configuration table and `coerce_numeric_schema_keywords`
+        turns it back into an unbounded Python `int` — and an exception here costs the
+        section its whole processing-issue list, because `_save_results` calls
+        `_build_extraction_issues` with no enclosing `try`. So the reader decides by
+        `int()`, which has no such limit, and a ceiling far above any OCR row count
+        simply does not bind.
+        """
+        svc = _svc(schema=self._schema(ceiling))
+        svc._document_text = _table(800, pages=17)
+        issue = next(
+            i for i in _issues(svc, {"Transactions": _rows(43)}) if i.code == CODE
+        )
+        assert issue.details["declared_max_items"] == int(ceiling)
+        assert (
+            issue.details["ocr_estimated_rows"]
+            == issue.details["ocr_matched_table_rows"]
+        )
+
+    def test_a_ceiling_whose_conversion_raises_is_not_a_ceiling(self):
+        """Capability, stated as capability: the rule is not a list of known-bad
+        values, it is "can this be read as a whole non-negative row count".
+
+        A schema is JSON in production, so this object is not a shape the
+        Configuration table can hold — it is here because it is the general case the
+        broad `except` exists for, and because an exception escaping this method is
+        the #797 failure mode rather than a lost warning.
+        """
+
+        class Hostile:
+            def __int__(self):
+                raise ZeroDivisionError("no")
+
+            def __float__(self):
+                raise ZeroDivisionError("no")
+
+            def __eq__(self, other):
+                raise ZeroDivisionError("no")
+
+        assert ExtractionService._declared_max_items({"maxItems": Hostile()}) is None
+        svc = _svc(schema=self._schema(Hostile()))
+        svc._document_text = _table(40)
+        issue = next(
+            i for i in _issues(svc, {"Transactions": _rows(15)}) if i.code == CODE
+        )
+        assert issue.details["declared_max_items"] is None
+
+    # ---- the group rule ---------------------------------------------------
+
+    def test_the_group_ceiling_is_the_sum_of_its_members(self):
+        """`extracted` is summed across a width group, so the ceiling must be too:
+        two 20-row-max siblings holding 20 rows each are complete at 40."""
+        svc = _svc(schema=self._schema(20, second=20))
+        svc._document_text = _table(100)
+        assert CODE not in _codes(
+            _issues(svc, {"Transactions": _rows(20), "Withdrawals": _rows(20)})
+        )
+
+    def test_the_summed_ceiling_is_still_a_denominator(self):
+        """Same two ceilings, a real shortfall against them."""
+        svc = _svc(schema=self._schema(20, second=20))
+        svc._document_text = _table(100)
+        issue = next(
+            i
+            for i in _issues(svc, {"Transactions": _rows(5), "Withdrawals": _rows(5)})
+            if i.code == CODE
+        )
+        assert issue.details["declared_max_items"] == 40
+        assert issue.details["ocr_estimated_rows"] == 40
+        assert issue.details["extracted_rows"] == 10
+        assert issue.details["list_fields"] == ["Transactions", "Withdrawals"]
+
+    def test_one_undeclared_sibling_leaves_the_group_unbounded(self):
+        """A group is only bounded if every member is. The undeclared sibling may
+        legitimately hold the rest of the shared table, so shrinking the evidence
+        to the one declared ceiling would hide a real loss in the other."""
+        svc = _svc(schema=self._schema(20, second=None))
+        svc._document_text = _table(100)
+        issue = next(
+            i
+            for i in _issues(svc, {"Transactions": _rows(20), "Withdrawals": _rows(20)})
+            if i.code == CODE
+        )
+        assert issue.details["declared_max_items"] is None
+        assert issue.details["ocr_estimated_rows"] == 101
+
+    def test_an_empty_member_still_decides_whether_the_group_is_bounded(self):
+        """The "every member declares one" rule is about the SCHEMA, not about which
+        members happened to return rows.
+
+        Reading `caps` only from the members that contributed rows leaves this class
+        green everywhere else and masks a total loss: the declared sibling here came
+        back empty, so restricting the ceiling to the contributing member would bound
+        the group at that member's 20 and go silent, where the group is in fact
+        unbounded because the empty member declares nothing.
+        """
+        # The discriminating orientation: the DECLARED member is the one that
+        # contributed rows and the UNDECLARED one came back empty. Reading `caps`
+        # from the contributors alone then sees only the 20, bounds the group there,
+        # and goes silent below the floor — while the group is in fact unbounded,
+        # because the empty sibling may hold the rest of the shared table.
+        svc = _svc(schema=self._schema(20, second=None))
+        svc._document_text = _table(100)
+        issue = next(
+            i
+            for i in _issues(svc, {"Transactions": _rows(20), "Withdrawals": []})
+            if i.code == CODE
+        )
+        assert issue.details["declared_max_items"] is None
+        assert issue.details["ocr_estimated_rows"] == 101
+        assert issue.details["list_fields"] == ["Transactions"]
+        # And the other way round, which is unbounded for a different reason: the
+        # contributor is the undeclared one.
+        other = _svc(schema=self._schema(20, second=None))
+        other._document_text = _table(100)
+        flipped = next(
+            i
+            for i in _issues(other, {"Transactions": [], "Withdrawals": _rows(20)})
+            if i.code == CODE
+        )
+        assert flipped.details["declared_max_items"] is None
+        assert flipped.details["list_fields"] == ["Withdrawals"]
+
+    def test_a_ceiling_on_a_list_of_another_width_does_not_bound_this_group(self):
+        """Widths are separate groups, so a 2-property list's ceiling has nothing to
+        say about a 3-property one."""
+        schema = self._schema()
+        schema["properties"]["Pairs"] = {
+            "type": "array",
+            "maxItems": 1,
+            "items": {
+                "type": "object",
+                "properties": {"k": {"type": "string"}, "v": {"type": "string"}},
+            },
+        }
+        svc = _svc(schema=schema)
+        svc._document_text = _table(40)
+        issue = next(
+            i
+            for i in _issues(svc, {"Transactions": _rows(15), "Pairs": [{"k": "a"}]})
+            if i.code == CODE and i.details["item_property_count"] == 3
+        )
+        assert issue.details["declared_max_items"] is None
+
+    # ---- the instance-array shape -----------------------------------------
+
+    def test_a_per_instance_ceiling_alone_does_not_bound_the_concatenation(self):
+        """The compared rows for `Accounts[].Txns` are every instance's rows
+        concatenated, and nothing declares how many instances there are, so a
+        per-instance `maxItems` is not a bound on that total. Reading it as one — or
+        multiplying it by the instances that happen to have been extracted — shrinks
+        the evidence in proportion to how many instances extraction LOST."""
+        svc = _svc(schema=self._instance_schema(inner=5))
+        svc._document_text = _table(40)
+        fields = {"Accounts": [{"Txns": _rows(5)} for _ in range(3)]}
+        issue = next(i for i in _issues(svc, fields) if i.code == CODE)
+        assert issue.details["list_fields"] == ["Accounts[].Txns"]
+        assert issue.details["extracted_rows"] == 15
+        assert issue.details["declared_max_items"] is None
+        assert issue.details["ocr_estimated_rows"] == self.OCR_ROWS_FOR_40
+
+    def test_both_ceilings_declared_do_bound_the_concatenation(self):
+        """With the instance count bounded as well, the product IS a declared bound
+        on the concatenated rows: at most 3 accounts of at most 5 rows is 15."""
+        svc = _svc(schema=self._instance_schema(outer=3, inner=5))
+        svc._document_text = _table(40)
+        fields = {"Accounts": [{"Txns": _rows(5)} for _ in range(3)]}
+        assert CODE not in _codes(_issues(svc, fields))
+
+    def test_the_targets_carry_the_product_and_the_walk_still_returns_them(self):
+        """The bound is part of `_object_list_targets`' contract, asserted directly
+        so the product rule is pinned at its source rather than only through the
+        ratio."""
+        targets = ExtractionService._object_list_targets(
+            self._instance_schema(outer=3, inner=5), {"Accounts": []}
+        )
+        assert targets == [("Accounts[].Txns", 3, [], 15)]
+        assert ExtractionService._object_list_targets(
+            self._instance_schema(inner=5), {"Accounts": []}
+        ) == [("Accounts[].Txns", 3, [], None)]
+        assert ExtractionService._object_list_targets(
+            self._schema(15), {"Transactions": []}
+        ) == [("Transactions", 3, [], 15)]
+
+    # ---- what ships ------------------------------------------------------
+
+    def test_no_shipped_preset_declares_a_ceiling_so_nothing_shipped_changes(self):
+        """Read from the config library rather than asserted from memory: if a preset
+        ever declares `maxItems`, this change starts altering shipped behaviour and
+        `TestWhyFailIsOptIn`'s account_summary case has to be re-read against it.
+
+        The walk is over every array spec in every class of every tracked YAML file
+        under `config_library`, including the ones behind a `$ref` in `$defs`, so it
+        cannot miss one by looking only at the top level. It is every tracked `.yaml`
+        rather than every `config.yaml`, and the last assertion here is what keeps it
+        that way: the `config.yaml`-only glob a first version used reaches strictly
+        fewer schema-carrying files, so narrowing it back fails. That comparison is
+        relational rather than a count, because a count goes stale the next time a
+        preset is added or removed.
+        """
+        import subprocess
+
+        import yaml
+
+        root = subprocess.run(
+            ["git", "rev-parse", "--show-toplevel"],
+            capture_output=True,
+            text=True,
+            check=True,
+        ).stdout.strip()
+        listed = subprocess.run(
+            [
+                "git",
+                "ls-files",
+                "config_library/*.yaml",
+                "config_library/**/*.yaml",
+            ],
+            cwd=root,
+            capture_output=True,
+            text=True,
+            check=True,
+        ).stdout.split()
+        assert len(listed) >= 28, (
+            "fewer tracked config_library YAML files than the 28 this walk was "
+            f"written against ({len(listed)}): the glob has stopped matching them"
+        )
+
+        def _arrays(node: Any):
+            if isinstance(node, dict):
+                if node.get("type") == "array":
+                    yield node
+                for v in node.values():
+                    yield from _arrays(v)
+            elif isinstance(node, list):
+                for v in node:
+                    yield from _arrays(v)
+
+        declared = []
+        seen = 0
+        classed = 0
+        for rel in listed:
+            cfg = yaml.safe_load((Path(root) / rel).read_text(encoding="utf-8"))
+            if not isinstance(cfg, dict):
+                continue
+            classes = cfg.get("classes") or []
+            if classes:
+                classed += 1
+            for cls in classes:
+                for spec in _arrays(cls):
+                    seen += 1
+                    if ExtractionService._declared_max_items(spec) is not None:
+                        declared.append(f"{rel}:{cls.get('$id')}")
+        assert seen >= 9, (
+            f"only {seen} array field(s) found across {len(listed)} preset file(s); "
+            "the nine group-shaped arrays issue #1046 names are the floor, so this "
+            "walk is no longer reaching the schemas"
+        )
+        assert classed >= 4, (
+            f"only {classed} preset file(s) carry a `classes:` block; the walk is "
+            "reading files without schemas and would pass vacuously"
+        )
+        narrow = subprocess.run(
+            ["git", "ls-files", "config_library/**/config.yaml"],
+            cwd=root,
+            capture_output=True,
+            text=True,
+            check=True,
+        ).stdout.split()
+        narrow_classed = sum(
+            1
+            for rel in narrow
+            if (
+                isinstance(
+                    (
+                        c := yaml.safe_load(
+                            (Path(root) / rel).read_text(encoding="utf-8")
+                        )
+                    ),
+                    dict,
+                )
+                and (c.get("classes") or [])
+            )
+        )
+        assert classed > narrow_classed, (
+            "this walk no longer reaches more schema-carrying preset files than a "
+            f"`config_library/**/config.yaml` glob would ({classed} vs "
+            f"{narrow_classed}), so it has been narrowed back to the form that left "
+            "the non-`config.yaml` presets unwatched"
+        )
+        assert not declared, (
+            "a shipped preset now declares maxItems on an array field, so this "
+            "change is no longer behaviour-neutral on shipped config: "
+            f"{sorted(set(declared))}. Re-read TestWhyFailIsOptIn against it."
+        )

@@ -13,6 +13,15 @@ from typing import Any, Literal, NoReturn
 import boto3
 import yaml
 
+# The free-unit rule, not a copy of it: see price_metering. idp_common is on
+# PYTHONPATH for every harness entry point (benchmarks/matrices/METHODOLOGY.md),
+# and this module is stdlib-only, so importing it costs nothing.
+from idp_common.metering_units import (
+    NOT_CHARGEABLE,
+    classify_absent_unit,
+    pricing_key_service,
+)
+
 REPO = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 PRICING_PATH = os.path.join(REPO, "config_library", "pricing.yaml")
 REGION = os.environ.get("IDP_REGION", "us-west-2")
@@ -399,15 +408,14 @@ def price_metering(metering) -> Priced:
     * a **count that is not a number** (a bool included: a count written as a
       DynamoDB ``BOOL`` prices as 1 or 0, neither of which was metered).
 
-    Miss handling now matches production's, which had already decided it and
-    documented the reasoning: *no entry for the key at all* is unpriced and named,
-    while *a unit absent from an entry that exists* is $0.00. See
-    ``idp_common/reporting/README.md`` — the second is a real price rather than a
-    missing one, because ``pricing.yaml`` omits units that do not apply and **every
-    Bedrock call meters ``totalTokens`` and ``requests``, which Bedrock does not
-    charge for.** Flagging the unit axis would therefore report every Bedrock entry
-    in every row as unpriceable, which is why the exact-match rule is kept as it is
-    and the *key* axis is what this function reports on.
+    Miss handling matches production's on **both** axes. *No entry for the key at
+    all* is unpriced and named. *A unit absent from an entry that exists* is
+    $0.00 only when ``idp_common.metering_units.classify_absent_unit`` says so —
+    the count is zero, or the unit is declared non-chargeable for that service
+    with the AWS price-list reading behind it — and is otherwise unpriced and
+    named too. Reading the absence itself as "free" is what made ``totalTokens``
+    and ``requests`` correct and a newly added Bedrock ``usage`` member cost
+    exactly $0.00 (#1212); the declaration is what separates the two.
     """
     total = 0.0
     by: dict[str, float] = {}
@@ -439,7 +447,23 @@ def price_metering(metering) -> Priced:
         by_meter.setdefault(meter_key, 0.0)
         for unit, count in units.items():
             if unit not in pu:
-                # Not chargeable for this service, not a missing price. See above.
+                # Free, or unpriced? One rule, imported rather than restated, so
+                # this and production cannot answer it differently:
+                # idp_common.metering_units.classify_absent_unit. A zero count is
+                # free arithmetically; a unit declared non-chargeable for the
+                # service on AWS price-list evidence is free by declaration;
+                # anything else is a price this harness does not have, and
+                # dropping it made a new Bedrock usage field cost 0.00 (#1212).
+                if classify_absent_unit(matched, unit, count) == NOT_CHARGEABLE:
+                    continue
+                unpriced.append(
+                    f"{meter_key!r} unit {unit!r}: pricing entry {matched!r} "
+                    f"lists no rate for it and it is not declared "
+                    f"non-chargeable for "
+                    f"{pricing_key_service(matched)!r} (count={count!r}) — add "
+                    f"the rate, or this run's cost is below truth by whatever "
+                    f"it spent on it"
+                )
                 continue
             if isinstance(count, bool) or not isinstance(count, (int, float)):
                 unpriced.append(
