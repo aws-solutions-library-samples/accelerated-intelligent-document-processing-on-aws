@@ -1120,6 +1120,32 @@ class TestMetering:
         assert stats["valid_count"] == 1
         assert stats["missing_data_count"] == 0
 
+    def test_a_boolean_gb_seconds_is_skipped_rather_than_counted_as_one_second(
+        self, monkeypatch
+    ):
+        """`True` is an `int` in Python, so `isinstance(True, (int, float))` passes.
+
+        Without excluding `bool` explicitly, `{"gb_seconds": true}` would satisfy
+        `> 0` and enter the statistics as a one-GB-second reading — a fabricated
+        number in a cost column, which is worse than a missing one.
+        """
+        with mock_aws():
+            searcher, _ = build_searcher(monkeypatch)
+
+        payload = json.dumps(
+            {
+                "OCR/lambda/duration": {"gb_seconds": True},
+                "Summarization/lambda/duration": {"gb_seconds": 2.0},
+            }
+        )
+        stats = searcher.calculate_timing_statistics(
+            results([self._timed("boolean.pdf", "doc#bool", {"S": payload})])
+        )
+
+        assert set(stats["metering"]) == {"Summarization"}
+        assert stats["metering_count"] == 1
+        assert stats["missing_data_count"] == 0
+
     def test_a_metering_blob_that_is_valid_json_but_not_an_object_is_ignored(
         self, monkeypatch
     ):

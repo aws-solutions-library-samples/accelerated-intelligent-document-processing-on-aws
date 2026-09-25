@@ -916,6 +916,23 @@ class TestConfigurationDifferences:
         assert configuration_differences([]) is None
         assert configuration_differences([self._entry("run-1", {"a": 1})]) is None
 
+    def test_the_same_run_named_twice_is_one_run_and_is_unanswered(self):
+        """`--test-run-ids run-a,run-a` must not read as "identical configurations".
+
+        Two entries naming one run collapse to one configuration, which differs from
+        nothing — so a length check on the entry list returns `[]` and the CLI says
+        the configurations match, about a run compared with itself. The count is taken
+        after keying on the run id.
+        """
+        body = {"extraction": {"model": "nova-lite"}}
+
+        assert (
+            configuration_differences(
+                [self._entry("run-1", body), self._entry("run-1", body)]
+            )
+            is None
+        )
+
     def test_identical_configurations_produce_no_differences(self):
         body = {"extraction": {"model": "nova-lite", "temperature": 0}}
         assert (

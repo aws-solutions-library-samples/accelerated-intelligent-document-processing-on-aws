@@ -644,6 +644,121 @@ class TestTestCompareRendering:
         assert "nova-lite-v1:0" in result.output
         assert "nova-pro-v1:0" in result.output
 
+    def test_a_config_value_containing_brackets_is_shown_in_full(self, runner):
+        """Configuration text goes into a Rich table, which reads `[...]` as markup.
+
+        Five shipped `config_library` profiles have a `system_prompt` containing
+        `[full log_group name]`. Unescaped, Rich drops it — so a row whose whole
+        purpose is to say *these two runs differ* displays two identical cells, which
+        is worse than showing nothing.
+        """
+        p, client = _patched_client(
+            compare_test_runs=MagicMock(
+                return_value=_comparison(
+                    TWO_RUNS,
+                    configs=[
+                        {
+                            "setting": "summarization.system_prompt",
+                            "values": {
+                                "run-a": "cite [full log_group name]",
+                                "run-b": "cite [other]",
+                            },
+                        }
+                    ],
+                )
+            )
+        )
+        with p:
+            result = runner.invoke(
+                cli_module.cli,
+                [
+                    "test-compare",
+                    "--stack-name",
+                    "IDP",
+                    "--test-run-ids",
+                    "run-a,run-b",
+                ],
+            )
+
+        assert result.exit_code == 0, result.output
+        assert "[full log_group name]" in result.output
+        assert "[other]" in result.output
+
+    def test_a_config_value_shaped_like_a_closing_tag_does_not_abort_the_command(
+        self, runner
+    ):
+        """`[/INST]` is the Llama and Mistral instruction token, so a prompt has it.
+
+        Unescaped it raises `MarkupError` from inside the table render, which the
+        command's broad handler turns into `✗ Error:` and exit 1 — after the metrics
+        table has already printed, so the user gets half an answer and a failure.
+        """
+        p, client = _patched_client(
+            compare_test_runs=MagicMock(
+                return_value=_comparison(
+                    TWO_RUNS,
+                    configs=[
+                        {
+                            "setting": "extraction.task_prompt",
+                            "values": {
+                                "run-a": "ask [/INST] done",
+                                "run-b": "ask done",
+                            },
+                        }
+                    ],
+                )
+            )
+        )
+        with p:
+            result = runner.invoke(
+                cli_module.cli,
+                [
+                    "test-compare",
+                    "--stack-name",
+                    "IDP",
+                    "--test-run-ids",
+                    "run-a,run-b",
+                ],
+            )
+
+        assert result.exit_code == 0, result.output
+        assert "Error:" not in result.output
+        assert "[/INST]" in result.output
+
+    def test_a_setting_name_containing_brackets_is_shown_in_full(self, runner):
+        """The `setting` column is a dotted path through user-authored keys.
+
+        A class or attribute name with brackets in it reaches the first column, and
+        the same drop applies there.
+        """
+        p, client = _patched_client(
+            compare_test_runs=MagicMock(
+                return_value=_comparison(
+                    TWO_RUNS,
+                    configs=[
+                        {
+                            "setting": "classes.0.attributes.[legacy].description",
+                            "values": {"run-a": "x", "run-b": "y"},
+                        }
+                    ],
+                )
+            )
+        )
+        with p:
+            result = runner.invoke(
+                cli_module.cli,
+                [
+                    "test-compare",
+                    "--stack-name",
+                    "IDP",
+                    "--test-run-ids",
+                    "run-a,run-b",
+                ],
+            )
+
+        assert result.exit_code == 0, result.output
+        assert "[legacy]" in result.output
+
     def test_identical_configurations_are_reported_as_identical(self, runner):
         """`[]` means compared and matched, and the message says exactly that."""
         p, client = _patched_client(

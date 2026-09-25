@@ -53,6 +53,7 @@ try:
     import click
     from rich.console import Console
     from rich.live import Live
+    from rich.markup import escape
     from rich.table import Table
 except ImportError as exc:
     print(_SETUP_HELP, file=sys.stderr)
@@ -6942,31 +6943,48 @@ def test_compare(
             for test_run_id in test_run_id_list:
                 config_table.add_column(test_run_id[:20])
 
+            # Every cell here is user-authored configuration text, and Rich reads
+            # `[...]` in a table cell as markup exactly as it does in a printed
+            # string. Two measured consequences if it is not escaped, both of them
+            # the item this table was written for: a prompt containing
+            # `[full log_group name]` — which five shipped `config_library` profiles
+            # do — renders with that run gone, so a row asserting the two runs
+            # *differ* displays two identical cells; and a value containing
+            # `[/INST]`, the Llama and Mistral instruction token, raises
+            # `MarkupError`, which the broad handler below turns into `✗ Error:` and
+            # exit 1 after the metrics table has already printed. Escaped before the
+            # truncation, so the escape cannot itself be cut in half.
             for diff in configs:
-                setting = diff.get("setting", "")
+                row = [escape(str(diff.get("setting", "")))]
                 values = diff.get("values", {})
-
-                row = [setting]
                 for test_run_id in test_run_id_list:
-                    value = values.get(test_run_id, "<missing>")
-                    # Truncate long values
-                    if len(str(value)) > 50:
-                        value = str(value)[:47] + "..."
-                    row.append(str(value))
+                    value = str(values.get(test_run_id, "<missing>"))
+                    if len(value) > 50:
+                        value = value[:47] + "..."
+                    row.append(escape(value))
 
                 config_table.add_row(*row)
 
             console.print(config_table)
         elif configs is None:
+            # Deliberately says nothing about whether the configurations match, and
+            # does not promise that waiting will produce them. A run records its
+            # configuration when it is created; what is conditional is that
+            # `getTestRun` withholds it until the run's evaluation aggregate has been
+            # written — and two other states land here too, a run this command could
+            # not retrieve at all and one whose stored configuration would not
+            # decompress, for which no amount of waiting helps.
             console.print(
                 "[dim]Configurations not compared: fewer than two of these runs "
-                "recorded the configuration they ran under. A run records it once "
-                "its evaluation results have been aggregated.[/dim]"
+                "returned the configuration they ran under. A run returns it once "
+                "its evaluation results have been aggregated, and not at all if it "
+                "could not be retrieved.[/dim]"
             )
         else:
             console.print(
                 "[dim]Configurations are identical across the compared runs "
-                "(class definitions and save timestamps are not compared).[/dim]"
+                "(metadata such as save timestamps, and the class definitions, are "
+                "not compared).[/dim]"
             )
 
         console.print()
@@ -7187,7 +7205,13 @@ def bootstrap(
         progress.print(
             f"[yellow]Note: document generator unavailable ({reason}).[/yellow]"
         )
-        progress.print(f"[yellow]{synthesis_engine.INSTALL_HINT}[/yellow]")
+        # `escape`, because INSTALL_HINT names the `[synthesis-generator]` pip extra
+        # and Rich would read that as a style tag and drop it -- leaving the user told
+        # to `pip install idp_common`, which is already installed. The constant is
+        # shared with consumers that do not render through Rich (the bootstrap
+        # module, the capability field), so the escape belongs at this call site
+        # rather than in the constant.
+        progress.print(f"[yellow]{escape(synthesis_engine.INSTALL_HINT)}[/yellow]")
 
     request = bootstrap_mod.BootstrapRequest(
         prompt=prompt,

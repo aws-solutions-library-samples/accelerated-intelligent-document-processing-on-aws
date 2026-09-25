@@ -20,9 +20,14 @@ logger = logging.getLogger(__name__)
 #: `Configuration` is the table's own key attribute; `version_name` names the
 #: profile, which the run ids already say; and `classes` is the class schema, whose
 #: every prompt and description would otherwise fill the difference table and bury
-#: the model or threshold change that is the reason to look. Same set the Test
-#: Studio comparison view in the web UI hides, so the two agree about what "no
-#: differences" means.
+#: the model or threshold change that is the reason to look.
+#:
+#: The same seven keys as `_build_config_comparison` in the Test Studio results
+#: resolver, which is what the web UI's comparison view renders. Only the key set is
+#: claimed to match: the two walks differ in detail (this one recurses into a nested
+#: list, the resolver stringifies it), nothing tests them against each other, and a
+#: single implementation would have to live somewhere both a Lambda and the SDK can
+#: import from.
 _CONFIG_KEYS_NOT_COMPARED = frozenset(
     {
         "UpdatedAt",
@@ -90,21 +95,25 @@ def configuration_differences(configs: List[Dict]) -> Optional[List[Dict]]:
             same shape the configuration table stores.
 
     Returns:
-        `None` when fewer than two runs captured a configuration, so a caller can
-        say that rather than claiming the configurations matched — the distinction
-        matters, because "compared and identical" and "never compared" are the same
-        empty table. Otherwise one `{"setting": <dotted path>, "values": {<run id>:
-        <string>}}` per path whose value is not the same in every run, ordered by
-        path. A path absent from one run reads `<missing>` for that run and counts
-        as a difference.
+        `None` when fewer than two *distinct* runs captured a configuration, so a
+        caller can say that rather than claiming the configurations matched — the
+        distinction matters, because "compared and identical" and "never compared"
+        are the same empty table. Otherwise one `{"setting": <dotted path>,
+        "values": {<run id>: <string>}}` per path whose value is not the same in
+        every run, ordered by path. A path absent from one run reads `<missing>` for
+        that run and counts as a difference.
     """
-    if not configs or len(configs) < 2:
-        return None
-
     bodies = {
         entry["testRunId"]: (entry.get("config") or {}).get("Config", {})
-        for entry in configs
+        for entry in (configs or [])
     }
+
+    # Counted after keying on the run id, not before. `--test-run-ids run-a,run-a`
+    # passes two entries naming one run, which collapse to one body here and so
+    # differ from nothing: gating on `len(configs)` would report `[]` and the caller
+    # would say "configurations are identical" about a run compared with itself.
+    if len(bodies) < 2:
+        return None
 
     paths = set()
     for body in bodies.values():
