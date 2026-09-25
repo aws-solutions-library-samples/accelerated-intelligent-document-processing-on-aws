@@ -338,26 +338,25 @@ class TestChatCommandForwarding:
         assert result.exit_code != 0
         assert "--stack-name" in result.output
 
-    def test_defect_the_missing_dependency_message_loses_the_agents_extra(self, runner):
-        """
-        DEFECT (pinned as current behaviour, not fixed). `chat` guards its import of
-        the optional agents dependency tree and prints a remedy, but the remedy is
-        passed through Rich's console markup with the pip extra written as a bare
-        `[agents]`. Rich reads `[agents]` as a style tag, fails to parse it as a
-        style, and drops it silently — so both lines lose the qualifier and the user
-        is told:
+    def test_the_missing_dependency_remedy_keeps_the_agents_extra(self, runner):
+        """The printed remedy has to be the command that fixes the problem.
+
+        `chat` guards its import of the optional agents dependency tree and prints a
+        remedy, and that remedy goes through Rich's console markup. Written as a bare
+        `[agents]`, Rich reads it as a style tag, fails to resolve it as a style and
+        drops it silently, so the user was told:
 
             Chat requires idp_common to be installed.
               Run: pip install -e 'lib/idp_common_pkg'
 
-        The observable consequence is that the printed remedy does not fix the
-        problem: `idp_common` is already installed in the situation that produces
-        this message, and installing it again without the `[agents]` extra changes
-        nothing, so the user runs the suggested command, sees it succeed, retries
-        `idp-cli chat` and gets the same error. The fix is to escape the brackets
-        (`\\[agents]`, as line 1111 already does for `\\[n]`) or to pass
-        `markup=False`; `idp_cli/cli.py:6231-6232` is the only place in this package
-        that prints a pip extra through Rich.
+        — which fixes nothing. `idp_common` is already installed in the situation
+        that produces this message; the missing piece is the extra. The user runs the
+        suggested command, watches it succeed, retries `idp-cli chat` and gets the
+        identical error.
+
+        Asserted on the *rendered* output rather than on the source string, because
+        the defect was entirely in the rendering: the source said `[agents]` and the
+        terminal did not.
 
         Forced by putting `None` at `sys.modules["idp_cli.chat"]`, which the import
         system treats as "this module is known to be unimportable" and turns into an
@@ -369,10 +368,287 @@ class TestChatCommandForwarding:
             result = runner.invoke(cli_module.cli, ["chat", "--stack-name", "IDP"])
 
         assert result.exit_code == 1
-        assert "Chat requires idp_common to be installed." in result.output
-        assert "Run: pip install -e 'lib/idp_common_pkg'" in result.output
-        # The qualifier the user actually needs is absent from both lines.
-        assert "[agents]" not in result.output
+        assert "Chat requires idp_common[agents] to be installed." in result.output
+        assert "Run: pip install -e 'lib/idp_common_pkg[agents]'" in result.output
+        # No stray backslash reached the terminal: the escape is for Rich's parser,
+        # not something the user should read.
+        assert "\\[agents]" not in result.output
+
+
+def _rich_reads_as_a_style(content: str) -> bool:
+    """Would Rich resolve `[<content>]` as a style tag rather than drop it?
+
+    Asked of Rich itself rather than of a list of style names, because a list is the
+    thing that goes stale. A closing tag (`[/red]`, `[/]`) is a tag whatever follows
+    the slash.
+
+    ⚠️ `Style.parse` is **stricter** than what the renderer accepts, in two ways, and
+    the direction is what makes it safe to use here. The renderer resolves a tag
+    through `Console.get_style`, which also consults the active theme, so
+    `[bar.back]` and `[repr.number]` parse as nothing here while rendering fine; and
+    Rich only treats `[...]` as a tag at all when it begins with `[a-z#/@]`, so
+    `[Y/w/n]` and `[Document]` are never tags. Both errors are in the over-reporting
+    direction, which asks for an escape that was not needed — and an escape that was
+    not needed is harmless, because `\\[Y/w/n]` renders as `[Y/w/n]`. So this cannot
+    miss a genuine drop, which is the property the scan needs.
+    """
+    from rich.style import Style
+
+    bare = content.lstrip("/")
+    if not bare:
+        return True
+    try:
+        Style.parse(bare)
+    except Exception:
+        return False
+    return True
+
+
+#: The names this package renders Rich markup through. `progress` is a
+#: `rich.progress.Progress`, whose `print` goes through the same markup parser as a
+#: `Console`'s; scoping the scan to names ending in "console" left its ten call sites
+#: unread, and one of them was dropping a pip extra. Asserted to be the complete set
+#: by `test_the_scan_covers_every_name_this_package_prints_rich_markup_through`, so a
+#: new printer cannot be introduced with its call sites silently unscanned.
+_RICH_PRINTER_NAMES = frozenset({"console", "err_console", "progress"})
+
+
+def _rich_print_receivers():
+    """Every name in the package that `.print(...)` is called on, with a count."""
+    import ast
+    import collections
+    import pathlib
+
+    package = pathlib.Path(cli_module.__file__).parent
+    receivers = collections.Counter()
+    for source in sorted(package.glob("*.py")):
+        tree = ast.parse(source.read_text(encoding="utf-8"))
+        for node in ast.walk(tree):
+            if (
+                isinstance(node, ast.Call)
+                and isinstance(node.func, ast.Attribute)
+                and node.func.attr == "print"
+                and isinstance(node.func.value, ast.Name)
+            ):
+                receivers[node.func.value.id] += 1
+    return receivers
+
+
+def _square_bracket_text_rich_would_drop():
+    """Every `[...]` in a Rich-printed literal that Rich silently removes.
+
+    Yields `"<file>:<line>: [<content>]"`. Rich's markup parser treats any
+    `[...]` as a tag; one it cannot resolve as a style is dropped with no error
+    and no warning, so the text inside it never reaches the terminal and the only
+    way to notice is to read the output and miss it.
+
+    Scoped to **string literals** passed to one of `_RICH_PRINTER_NAMES`. Two
+    boundaries follow from that, both deliberate and neither implied away by a green
+    run:
+
+    * A docstring is not in the set — click renders a command's help with its own
+      formatter, so `[multi_document_discovery]` in `discover-multidoc`'s help is
+      correct as written and escaping it there would print a backslash — and neither
+      is `_SETUP_HELP`, which goes to a plain `print()`. Both are excluded by where
+      they are rather than by being named.
+    * **A string that arrives as a variable is invisible here**, because there is no
+      literal to read. `idp_common.synthesis.engine.INSTALL_HINT` is exactly that
+      case: it names the `[synthesis-generator]` extra, reaches a `progress.print`
+      from another package, and no AST scan of this package can see inside it. It is
+      escaped at its call site and covered by a test that renders the real constant,
+      which is the only thing that works for this shape.
+    """
+    import ast
+    import pathlib
+    import re
+
+    package = pathlib.Path(cli_module.__file__).parent
+    sources = sorted(package.glob("*.py"))
+    assert sources, "found no modules to scan, so this check asserts nothing"
+
+    # Not preceded by a backslash: that is how the escaped form appears in the
+    # runtime string the AST gives us, and it is the form Rich keeps.
+    bracketed = re.compile(r"(?<!\\)\[([^\[\]]*)\]")
+
+    for source in sources:
+        tree = ast.parse(source.read_text(encoding="utf-8"))
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call):
+                continue
+            func = node.func
+            if not (
+                isinstance(func, ast.Attribute)
+                and func.attr == "print"
+                and isinstance(func.value, ast.Name)
+                and func.value.id in _RICH_PRINTER_NAMES
+            ):
+                continue
+            for arg in node.args:
+                literals = []
+                if isinstance(arg, ast.Constant) and isinstance(arg.value, str):
+                    literals.append(arg.value)
+                elif isinstance(arg, ast.JoinedStr):
+                    literals.extend(
+                        part.value
+                        for part in arg.values
+                        if isinstance(part, ast.Constant)
+                        and isinstance(part.value, str)
+                    )
+                for text in literals:
+                    for content in bracketed.findall(text):
+                        if not _rich_reads_as_a_style(content):
+                            yield f"{source.name}:{node.lineno}: [{content}]"
+
+
+def test_the_bracket_scan_finds_an_unescaped_tag_when_there_is_one():
+    """The scan is not vacuous: given a real offender, it reports it.
+
+    Measured by asking the discriminator about the three contents that were
+    unescaped in this package -- a pip extra, a profile-name placeholder and a
+    prompt's answer hint -- rather than by asserting the scan currently finds
+    nothing, which is what a clean tree makes it do and which a broken scan would
+    also do.
+    """
+    assert not _rich_reads_as_a_style("agents")
+    assert not _rich_reads_as_a_style("system default")
+    assert not _rich_reads_as_a_style("y/N")
+    # And the discriminator still recognises the styles this package really uses,
+    # or the scan would report every coloured line in the file.
+    for style in ("red", "bold green", "dim", "/yellow", "/"):
+        assert _rich_reads_as_a_style(style), style
+
+
+def test_the_scan_covers_every_name_this_package_prints_rich_markup_through():
+    """`_RICH_PRINTER_NAMES` is the complete set, derived and compared.
+
+    The scan started out matching names ending in "console", which read 813 call
+    sites and left the 10 on `progress` — a `rich.progress.Progress`, whose `print`
+    goes through the same markup parser — entirely unscanned. One of those was
+    dropping a pip extra. A new printer introduced under a third name would recreate
+    that gap silently, so the set is checked against the tree rather than trusted.
+    """
+    receivers = _rich_print_receivers()
+
+    assert receivers, "found no `.print(...)` calls at all, so the scan reads nothing"
+    assert set(receivers) == _RICH_PRINTER_NAMES, (
+        "a name is printed through that the markup scan does not cover (or a covered "
+        f"name has gone): found {dict(receivers)}, covering {sorted(_RICH_PRINTER_NAMES)}"
+    )
+
+
+def test_no_rich_print_drops_text_through_markup():
+    """No `[...]` in a printed message is silently removed by Rich.
+
+    The class behind the `chat` remedy above, and not only that instance: the same
+    mistake was dropping the profile name from `config-upload`'s "this will update
+    the default [system default] config profile" warning and the `[y/N]` hint from
+    the test-set overwrite prompt, leaving a question with no answers offered.
+    """
+    offenders = sorted(_square_bracket_text_rich_would_drop())
+
+    assert not offenders, (
+        "Rich reads each of these as a style tag, cannot resolve it, and drops it "
+        "along with the text inside -- so the message reaching the terminal is "
+        "missing exactly the part that was put in brackets to stand out. Escape the "
+        f"opening bracket (`\\\\[...]`): {offenders}"
+    )
+
+
+def _rich_printed_install_hint_interpolations():
+    """Every Rich-printed f-string interpolating an `INSTALL_HINT`, and whether it escapes.
+
+    Yields `(location, escaped)`. This is the shape the literal scan above cannot
+    reach: the bracketed text lives in a constant in **another package**, so there is
+    no literal in this tree to read. What *is* readable here is the call site — the
+    expression the f-string interpolates — and whether `escape(...)` wraps it. So the
+    rule is stated over call sites rather than over content.
+    """
+    import ast
+    import pathlib
+
+    package = pathlib.Path(cli_module.__file__).parent
+
+    def escapes(node) -> bool:
+        return (
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Name)
+            and node.func.id == "escape"
+        )
+
+    def mentions_install_hint(node) -> bool:
+        return any(
+            isinstance(inner, ast.Attribute) and inner.attr.endswith("INSTALL_HINT")
+            for inner in ast.walk(node)
+        )
+
+    for source in sorted(package.glob("*.py")):
+        tree = ast.parse(source.read_text(encoding="utf-8"))
+        for node in ast.walk(tree):
+            if not (
+                isinstance(node, ast.Call)
+                and isinstance(node.func, ast.Attribute)
+                and node.func.attr == "print"
+                and isinstance(node.func.value, ast.Name)
+                and node.func.value.id in _RICH_PRINTER_NAMES
+            ):
+                continue
+            for arg in node.args:
+                if not isinstance(arg, ast.JoinedStr):
+                    continue
+                for part in arg.values:
+                    if not isinstance(part, ast.FormattedValue):
+                        continue
+                    if not mentions_install_hint(part.value):
+                        continue
+                    yield (
+                        f"{source.name}:{node.lineno}",
+                        escapes(part.value),
+                    )
+
+
+def test_a_rich_printed_install_hint_is_escaped_at_its_call_site():
+    """`bootstrap` prints an install hint that names a pip extra, from elsewhere.
+
+    `idp_common.synthesis.engine.INSTALL_HINT` names `[synthesis-generator]`, and
+    unescaped Rich dropped it — telling the user to `pip install idp_common`, which
+    is already installed: the identical failure to the `[agents]` one above. It is
+    escaped at the call site rather than in the constant, because the constant is
+    shared with consumers that do not render through Rich (the bootstrap module and
+    the capability field), for which a backslash would be wrong.
+
+    Asserted over the **call site**, because that is what is readable from this
+    package — a test that rendered the constant through `escape` itself would pass
+    with the call site unescaped, which is a test about `rich.markup.escape` rather
+    than about this code. Both halves are asserted: the constant really does carry
+    the extra, and Rich really does drop it unescaped, so neither the rule nor its
+    motivation rests on being read.
+    """
+    from rich.console import Console
+
+    from idp_common.synthesis import engine
+
+    assert "[synthesis-generator]" in engine.INSTALL_HINT, (
+        "the constant no longer names a pip extra, so the rule below is about nothing"
+    )
+
+    console = Console(force_terminal=False, width=400)
+    with console.capture() as unescaped:
+        console.print(f"[yellow]{engine.INSTALL_HINT}[/yellow]")
+    assert "[synthesis-generator]" not in unescaped.get(), (
+        "Rich no longer drops this, so the escape may no longer be needed"
+    )
+
+    interpolations = list(_rich_printed_install_hint_interpolations())
+
+    assert interpolations, (
+        "found no Rich-printed install hint at all, so this test asserts nothing"
+    )
+    unprotected = [where for where, escaped in interpolations if not escaped]
+    assert not unprotected, (
+        "an install hint naming a pip extra is interpolated into Rich markup without "
+        "`escape(...)`, so the extra is dropped and the remedy printed installs a "
+        f"package that is already installed: {unprotected}"
+    )
 
 
 class TestBootstrapLocalMode:
