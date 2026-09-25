@@ -7,6 +7,8 @@ IDP CLI - Main Command Line Interface
 Command-line tool for batch document processing with the IDP Accelerator.
 """
 
+import contextlib
+import fnmatch
 import json
 import logging
 import os
@@ -411,15 +413,17 @@ def _parse_tags(tags: Optional[str]) -> Dict[str, str]:
     . : / + - _, so we split on commas then on the first '=' rather than
     using a key-name regex. Commas are not supported inside tag values.
 
+    The comma split goes through `_comma_separated_values` like every other
+    comma-separated option in this module, which is where the stripping and the
+    dropping of blank segments now happen. That used to be two inlined lines here, and
+    a second implementation of a rule is a second place for it to be wrong.
+
     Raises click.BadParameter on malformed input (missing '=' or empty key).
     """
     result: Dict[str, str] = {}
     if not tags:
         return result
-    for pair in tags.split(","):
-        pair = pair.strip()
-        if not pair:
-            continue
+    for pair in _comma_separated_values(tags):
         if "=" not in pair:
             raise click.BadParameter(
                 f"Invalid tag '{pair}'. Expected key=value,key2=value2.",
@@ -1607,7 +1611,13 @@ def delete_documents_cmd(
 
         # Get document list
         if document_ids:
-            doc_list = [d.strip() for d in document_ids.split(",")]
+            doc_list = _comma_separated_values(document_ids)
+            if not doc_list:
+                console.print(
+                    "[red]✗ Error: --document-ids contains no document IDs. Give one "
+                    "or more S3 object keys, comma-separated.[/red]"
+                )
+                sys.exit(1)
             console.print(f"Selected {len(doc_list)} document(s) for deletion")
         elif pattern:
             console.print(
@@ -2350,7 +2360,13 @@ def _rerun_inference_impl(
 
         # Get document count for confirmation display
         if document_ids:
-            doc_id_list = [doc_id.strip() for doc_id in document_ids.split(",")]
+            doc_id_list = _comma_separated_values(document_ids)
+            if not doc_id_list:
+                console.print(
+                    "[red]✗ Error: --document-ids contains no document IDs. Give one "
+                    "or more document IDs, comma-separated, or use --batch-id.[/red]"
+                )
+                sys.exit(1)
             console.print(f"Processing {len(doc_id_list)} specified documents")
             reprocess_doc_ids = doc_id_list
             reprocess_batch_id = None
@@ -2848,7 +2864,14 @@ def download_results(
         if file_types == "all":
             types_list = ["all"]
         else:
-            types_list = [t.strip() for t in file_types.split(",")]
+            types_list = _comma_separated_values(file_types)
+            if not types_list:
+                console.print(
+                    "[red]✗ Error: --file-types contains no file types. Give one or "
+                    "more of pages, sections, summary, evaluation — comma-separated — "
+                    "or 'all'.[/red]"
+                )
+                sys.exit(1)
 
         # Download results
         result = client.batch.download_results(
@@ -2971,6 +2994,138 @@ def list_versions(stack_name: str, document_id: str, region: Optional[str]):
         sys.exit(1)
 
 
+@contextlib.contextmanager
+def _uploading_marker(s3_client, bucket: str, test_set_prefix: str):
+    """Hold a test set's `.uploading` marker over an upload, and always remove it.
+
+    The marker object exists so the test set resolver's auto-detection skips a folder
+    that is still being filled (issue #193), which makes its *removal* the step that
+    lets a finished test set be seen at all. It used to be removed by a plain statement
+    after the upload loop, and that is the half of the contract that failed: every way
+    out of the upload other than falling off the end left the object behind, and the
+    resolver then skips a folder whose files are all present. The test set is complete
+    in S3 and permanently invisible to the backend -- re-running the upload does not
+    help, because the new run writes the marker again -- so the only recovery is
+    deleting that object by hand, and nothing said so.
+
+    The paths that did this are not interesting individually: a denied `PutObject`
+    partway through the inputs, a baseline file that vanished between the scan and the
+    upload, a manifest row with no `document_path`, a `copy_object` whose source key is
+    gone, an `s3://` baseline source whose bucket does not exist. The point is that the
+    next one added would not have been on the list either, so the marker's lifetime is
+    a `try`/`finally` here rather than a set of failures somebody thought of.
+
+    The two directions are treated differently, on purpose.
+
+    - **The body raised.** The marker is removed and the original exception is
+      re-raised unchanged. A removal that *also* fails is reported and swallowed: the
+      caller needs the exception that caused the failure, not this one.
+    - **The body succeeded.** Every file is uploaded, so a surviving marker is exactly
+      the complete-and-invisible test set above, and reporting success would be false.
+      A failed removal therefore **raises**, naming the object to delete. It used to be
+      a yellow warning printed above a green "✓ Test set created successfully" and an
+      exit 0 -- the one line of evidence, above the message that contradicted it.
+
+    `BaseException` rather than `Exception` is caught, because `sys.exit` raises
+    `SystemExit` and a command that refuses partway through an upload must not be the
+    one case that leaves the marker.
+
+    Args:
+        s3_client: An S3 client for the test set bucket.
+        bucket: The test set bucket's name.
+        test_set_prefix: The test set's folder name, with no trailing slash.
+
+    Yields:
+        The marker object's key.
+
+    Raises:
+        RuntimeError: If the upload succeeded and the marker could not be removed.
+    """
+    marker_key = f"{test_set_prefix}/.uploading"
+    s3_client.put_object(Bucket=bucket, Key=marker_key, Body=b"upload-in-progress")
+
+    try:
+        yield marker_key
+    except BaseException:
+        try:
+            s3_client.delete_object(Bucket=bucket, Key=marker_key)
+        except Exception as cleanup_error:
+            console.print(
+                f"[yellow]Warning: the upload failed and the "
+                f"s3://{bucket}/{marker_key} marker could not be removed either "
+                f"({cleanup_error}); delete that object before retrying, or the "
+                f"test set stays hidden from the backend.[/yellow]"
+            )
+        raise
+
+    try:
+        s3_client.delete_object(Bucket=bucket, Key=marker_key)
+    except Exception as removal_error:
+        raise RuntimeError(
+            f"every file was uploaded, but the upload marker "
+            f"s3://{bucket}/{marker_key} could not be removed ({removal_error}). "
+            "The test set resolver skips any folder carrying that marker, so this "
+            "test set is complete in S3 and invisible to the backend until that "
+            "object is deleted."
+        ) from removal_error
+
+
+def _file_pattern_matches(
+    filename: str, file_pattern: str, *, case_sensitive: bool = False
+) -> bool:
+    """Decide whether one file name is selected by a `--file-pattern` value.
+
+    One predicate serves both of `generate-manifest`'s scan paths on purpose. The
+    local scan handed the pattern to `glob.glob` and the S3 scan to
+    `fnmatch.fnmatch`, and on Linux both are case-sensitive, so a corpus exported
+    from a system that uppercases extensions produced a manifest missing *every*
+    document -- at exit 0, with no warning, and valid-looking -- because the pattern
+    was the default `*.pdf` and every name ended `.PDF`. Two parallel filters can
+    drift apart; there is one rule here instead, and it is stated in this docstring.
+
+    The rule: the **whole pattern** is matched against the **base name**, ignoring
+    case unless `case_sensitive` is set.
+
+    Three parts of that are deliberate choices rather than side effects.
+
+    - Case is folded over the whole pattern, not over an extension the pattern is
+      first parsed out of, so `Invoice*.pdf` also selects `INVOICE01.PDF`. Folding
+      only an extension would leave the reported defect in place for the prefix --
+      a corpus that is uppercase throughout would still yield an empty manifest --
+      and there is no general way to say which part of a glob is an extension
+      (`W2*.pdf`, `*.[pP]df`, `lending_package.pdf`). A pattern whose case really is
+      meant literally has `--case-sensitive`.
+    - `fnmatch.fnmatchcase` is used, not `fnmatch.fnmatch`: the latter routes
+      through `os.path.normcase`, which makes it case-sensitive on POSIX and
+      case-insensitive on Windows. Which documents a manifest names must not depend
+      on the host that generated it.
+    - Only the base name is matched, which is what the S3 scan always did. A pattern
+      naming a directory component is refused by the caller, so the local path's
+      loss of that spelling is a message rather than an empty result.
+
+    Two ways folding can **narrow** rather than widen, stated because narrowing is the
+    failure mode this exists to prevent. A **negated** character class inverts:
+    `[!A-Z]*.pdf` means "does not start with an uppercase letter", and folded against a
+    lowered name it now rejects `report.pdf`, which it used to select. And `str.lower()`
+    can change a string's *length* for a few characters (`"İ"` lowers to `i` plus a
+    combining dot), so a `?` counting one character stops lining up: `?nvoice.pdf`
+    matches `Invoice.pdf` but not `İnvoice.pdf`. Both are one-way, both are obscure, and
+    both have `--case-sensitive` as the exact route -- special-casing either would make
+    the rule harder to state than it is worth.
+
+    Args:
+        filename: One file's base name, with no directory components.
+        file_pattern: The `--file-pattern` value, a glob.
+        case_sensitive: Match exactly as written instead of ignoring case.
+
+    Returns:
+        True if the name is selected by the pattern.
+    """
+    if case_sensitive:
+        return fnmatch.fnmatchcase(filename, file_pattern)
+    return fnmatch.fnmatchcase(filename.lower(), file_pattern.lower())
+
+
 @cli.command()
 @click.option(
     "--dir",
@@ -2990,6 +3145,14 @@ def list_versions(stack_name: str, document_id: str, region: Optional[str]):
     help="Output manifest file path (CSV) - optional when using --test-set",
 )
 @click.option("--file-pattern", default="*.pdf", help="File pattern (default: *.pdf)")
+@click.option(
+    "--case-sensitive/--no-case-sensitive",
+    default=False,
+    help=(
+        "Match --file-pattern exactly as written. The default ignores case, so "
+        "*.pdf also selects .PDF (default: --no-case-sensitive)"
+    ),
+)
 @click.option(
     "--recursive/--no-recursive",
     default=True,
@@ -3015,6 +3178,7 @@ def generate_manifest(
     baseline_dir: Optional[str],
     output: Optional[str],
     file_pattern: str,
+    case_sensitive: bool,
     recursive: bool,
     region: Optional[str],
     test_set: Optional[str],
@@ -3039,8 +3203,11 @@ def generate_manifest(
       # Generate from S3 URI
       idp-cli generate-manifest --s3-uri s3://bucket/prefix/ --output manifest.csv
 
-      # With file pattern
+      # With file pattern. The pattern ignores case, so this also selects W2-2024.PDF
       idp-cli generate-manifest --dir ./docs/ --output manifest.csv --file-pattern "W2*.pdf"
+
+      # Take the pattern's case literally (only lowercase .pdf is selected here)
+      idp-cli generate-manifest --dir ./docs/ --output manifest.csv --file-pattern "*.pdf" --case-sensitive
 
       # Create test set and upload files (output optional) - use test set name
       idp-cli generate-manifest --dir ./documents/ --baseline-dir ./baselines/ --test-set "fcc example test" --stack-name IDP
@@ -3089,6 +3256,24 @@ def generate_manifest(
             console.print("[red]✗ Error: Cannot specify both --dir and --s3-uri[/red]")
             sys.exit(1)
 
+        # `--file-pattern` selects on a file's base name, on both scan paths. The S3
+        # scan has always matched base names, so a pattern naming a directory matched
+        # nothing there and the only report was "No documents found" -- true, and no
+        # help at all in working out why. Say which option does the thing being asked
+        # for instead, on both paths, rather than leaving an empty scan to explain it.
+        # On POSIX all three of these collapse to `/`, so the extra terms are
+        # unreachable here and no test on this platform can pin them; they are what
+        # refuses a Windows backslash, where `os.sep` is `\\` and `os.altsep` is `/`.
+        path_separators = {"/", os.sep, os.altsep} - {None}
+        if any(separator in file_pattern for separator in path_separators):
+            console.print(
+                "[red]✗ Error: --file-pattern matches a file name, not a path, so "
+                f"'{file_pattern}' selects nothing. Point --dir or --s3-uri at the "
+                "directory and use --recursive/--no-recursive to choose the "
+                "depth.[/red]"
+            )
+            sys.exit(1)
+
         # Import here to avoid circular dependency during scanning
 
         documents = []
@@ -3118,13 +3303,36 @@ def generate_manifest(
             import glob as glob_module
 
             dir_path = os.path.abspath(directory)
-            if recursive:
-                search_pattern = os.path.join(dir_path, "**", file_pattern)
-            else:
-                search_pattern = os.path.join(dir_path, file_pattern)
 
-            for file_path in glob_module.glob(search_pattern, recursive=recursive):
-                if os.path.isfile(file_path):
+            # `glob` still does the walking, but the pattern is applied afterwards by
+            # `_file_pattern_matches` rather than handed to glob, because glob is
+            # case-sensitive on a case-sensitive filesystem and there is no way to ask
+            # it not to be -- which is one half of the defect this is fixing, the
+            # other half being the S3 scan's `fnmatch`.
+            #
+            # Enumerating with `*` inherits glob's own rule that `*` does not match a
+            # leading dot, so hidden files stay out exactly as they did before. The
+            # one case a bare `*` would newly miss is a pattern that deliberately
+            # names hidden files, and `.*` is added to the enumeration for it.
+            enumerated_leaves = ["*"]
+            if file_pattern.startswith("."):
+                enumerated_leaves.append(".*")
+
+            for leaf in enumerated_leaves:
+                if recursive:
+                    search_pattern = os.path.join(dir_path, "**", leaf)
+                else:
+                    search_pattern = os.path.join(dir_path, leaf)
+
+                for file_path in glob_module.glob(search_pattern, recursive=recursive):
+                    if not os.path.isfile(file_path):
+                        continue
+                    if not _file_pattern_matches(
+                        os.path.basename(file_path),
+                        file_pattern,
+                        case_sensitive=case_sensitive,
+                    ):
+                        continue
                     documents.append({"document_path": file_path})
         else:  # s3_uri
             console.print(f"[bold blue]Scanning S3 URI: {s3_uri}[/bold blue]")
@@ -3139,8 +3347,6 @@ def generate_manifest(
             prefix = uri_parts[1] if len(uri_parts) > 1 else ""
 
             # List S3 objects
-            import fnmatch
-
             import boto3
 
             s3 = boto3.client("s3", region_name=region)
@@ -3164,7 +3370,9 @@ def generate_manifest(
                             continue
 
                     filename = os.path.basename(key)
-                    if not fnmatch.fnmatch(filename, file_pattern):
+                    if not _file_pattern_matches(
+                        filename, file_pattern, case_sensitive=case_sensitive
+                    ):
                         continue
 
                     full_uri = f"s3://{bucket}/{key}"
@@ -3177,7 +3385,24 @@ def generate_manifest(
 
         console.print(f"Found {len(documents)} documents")
 
-        # Match baselines if baseline_dir provided
+        # Match baselines if baseline_dir provided.
+        #
+        # `baseline_map` is keyed on the **document's** base name, not on the baseline
+        # directory's, and that is load-bearing rather than cosmetic. Two reasons.
+        #
+        # Selecting documents ignores case (see `_file_pattern_matches`), so matching
+        # them to baselines has to ignore case by the same rule or the two disagree:
+        # a `W2-A.PDF` corpus beside a `w2-a.pdf/` baseline directory would select both
+        # and pair neither, producing a test set with a full `input/`, baselines under
+        # keys nothing references, and every manifest row's `baseline_source` empty --
+        # at exit 0, with `Matched 0/2` as the only sign. Before case folding that
+        # combination could not arise, because the documents were never selected.
+        #
+        # And the backend pairs a baseline to its document by the exact prefix
+        # `baseline/<input file name>/` (`src/lambda/test_file_copier`), so a baseline
+        # uploaded under the directory's spelling rather than the document's is a
+        # baseline nothing scores against. Keying on the document is what keeps that
+        # convention true when the two spellings differ only in case.
         baseline_map = {}
         if baseline_dir:
             if s3_uri:
@@ -3193,24 +3418,80 @@ def generate_manifest(
 
                 baseline_path = os.path.abspath(baseline_dir)
 
-                # Scan for baseline subdirectories
-                for item in os.listdir(baseline_path):
+                # Scan for baseline subdirectories, indexed by the same rule that
+                # selected the documents.
+                baseline_dirs = {}
+                for item in sorted(os.listdir(baseline_path)):
                     item_path = os.path.join(baseline_path, item)
-                    if os.path.isdir(item_path):
-                        baseline_map[item] = item_path
+                    if not os.path.isdir(item_path):
+                        continue
+                    index_key = item if case_sensitive else item.lower()
+                    if index_key in baseline_dirs:
+                        # Two directories that differ only in case are two candidate
+                        # ground truths for one document, and picking either would be
+                        # arbitrary. Refuse before anything is uploaded or cleared.
+                        console.print(
+                            f"[red]✗ Error: baseline directories "
+                            f"'{baseline_dirs[index_key][0]}' and '{item}' differ only "
+                            "in case, so which one a document should be scored against "
+                            "is ambiguous. Rename one, or pass --case-sensitive to "
+                            "match baselines exactly as named.[/red]"
+                        )
+                        sys.exit(1)
+                    baseline_dirs[index_key] = (item, item_path)
 
-                console.print(f"Found {len(baseline_map)} baseline directories")
+                console.print(f"Found {len(baseline_dirs)} baseline directories")
 
-                # Show matching statistics
-                matched = 0
+                # Resolve each document to a baseline directory, keyed by the document.
                 for doc in documents:
                     filename = os.path.basename(doc["document_path"])
-                    if filename in baseline_map:
-                        matched += 1
+                    index_key = filename if case_sensitive else filename.lower()
+                    if index_key in baseline_dirs:
+                        baseline_map[filename] = baseline_dirs[index_key][1]
 
+                matched = len(baseline_map)
                 console.print(
                     f"Matched {matched}/{len(documents)} documents to baselines"
                 )
+
+                # A baseline directory matching no document cannot be scored against
+                # anything. It used to be uploaded anyway, inflating the object count
+                # reported at the end; now it is named and skipped.
+                matched_paths = set(baseline_map.values())
+                unmatched_dirs = sorted(
+                    item
+                    for item, item_path in baseline_dirs.values()
+                    if item_path not in matched_paths
+                )
+                if unmatched_dirs:
+                    console.print(
+                        f"[yellow]Warning: {len(unmatched_dirs)} baseline director"
+                        f"{'y' if len(unmatched_dirs) == 1 else 'ies'} matched no "
+                        f"document and will not be uploaded: "
+                        f"{', '.join(unmatched_dirs)}[/yellow]"
+                    )
+
+                if baseline_dirs and not baseline_map:
+                    # Baselines were supplied and none of them matched. On the
+                    # `--test-set` path `--baseline-dir` is mandatory, so this is
+                    # unambiguously a mistake rather than a deliberately unlabeled set,
+                    # and continuing would clear an existing test set and upload one
+                    # that cannot score. Refuse before either happens. Without
+                    # `--test-set` the result is a manifest the user can still edit --
+                    # which the command's own "Next steps" text tells them to do -- so
+                    # that stays a warning.
+                    message = (
+                        f"{len(baseline_dirs)} baseline director"
+                        f"{'y' if len(baseline_dirs) == 1 else 'ies'} were found and "
+                        "none matched a document. A baseline directory must be named "
+                        "after the document file it labels, extension included "
+                        f"(for example '{os.path.basename(documents[0]['document_path'])}')."
+                    )
+                    if test_set:
+                        console.print(f"[red]✗ Error: {message}[/red]")
+                        sys.exit(1)
+                    console.print(f"[yellow]Warning: {message}[/yellow]")
+
                 console.print()
 
         # Upload to test set bucket if test_set is specified
@@ -3274,63 +3555,74 @@ def generate_manifest(
                     f"[yellow]Warning: Could not clear existing files: {e}[/yellow]"
                 )
 
-            # Place .uploading marker to prevent resolver race condition
-            # The test set resolver's auto-detection skips folders with this marker,
-            # preventing premature validation before all files are uploaded.
-            # See: https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/193
-            marker_key = f"{test_set}/.uploading"
-            s3_client.put_object(
-                Bucket=test_set_bucket, Key=marker_key, Body=b"upload-in-progress"
-            )
-
-            # Upload input documents
-            for i, doc in enumerate(documents):
-                doc_path = doc["document_path"]
-                filename = os.path.basename(doc_path)
-                s3_key = f"{test_set}/input/{filename}"
-
-                s3_client.upload_file(doc_path, test_set_bucket, s3_key)
-                doc["document_path"] = f"s3://{test_set_bucket}/{s3_key}"
-                console.print(f"  Uploaded input {i + 1}/{len(documents)}: {filename}")
-
-            # Upload baseline files
+            # The `.uploading` marker stops the test set resolver's auto-detection
+            # validating a folder that is still being filled (issue #193), so removing
+            # it is what makes the finished test set visible. Its whole lifetime is the
+            # context manager's, which is what makes the removal independent of how the
+            # upload ends -- see `_uploading_marker` for the failures that used to
+            # escape past it and leave a complete test set permanently hidden.
+            #
+            # Writing the manifest is deliberately *outside* the window. It touches the
+            # local filesystem only, so by the time it runs the folder in S3 is already
+            # complete and there is nothing left for the resolver to see half-done; an
+            # unwritable `--output` path should not be able to hide a test set whose
+            # files all arrived.
             baseline_objects = 0
-            for filename, baseline_path in baseline_map.items():
-                # Upload all files in the baseline directory recursively
-                import glob as glob_module
-                import os
+            with _uploading_marker(s3_client, test_set_bucket, test_set):
+                # Upload input documents
+                for i, doc in enumerate(documents):
+                    doc_path = doc["document_path"]
+                    filename = os.path.basename(doc_path)
+                    s3_key = f"{test_set}/input/{filename}"
 
-                baseline_files = glob_module.glob(
-                    os.path.join(baseline_path, "**", "*"), recursive=True
-                )
-                uploaded = 0
-                for baseline_file in baseline_files:
-                    if os.path.isfile(baseline_file):
-                        # Preserve directory structure relative to baseline_path
-                        rel_path = os.path.relpath(baseline_file, baseline_path)
-                        s3_key = f"{test_set}/baseline/{filename}/{rel_path}"
-                        s3_client.upload_file(baseline_file, test_set_bucket, s3_key)
-                        uploaded += 1
-
-                # Update baseline_map to point to S3 location
-                baseline_map[filename] = (
-                    f"s3://{test_set_bucket}/{test_set}/baseline/{filename}/"
-                )
-                baseline_objects += uploaded
-
-                # Report the count, not the attempt. A baseline directory holding no
-                # files at its top level — empty, or one level deeper than expected —
-                # left this line claiming an upload that moved nothing, while the
-                # manifest row still named the `baseline/<document>/` prefix. The
-                # result is a test set an evaluation cannot score, described as ready.
-                if uploaded:
-                    console.print(f"  Uploaded baseline: {filename} ({uploaded} files)")
-                else:
+                    s3_client.upload_file(doc_path, test_set_bucket, s3_key)
+                    doc["document_path"] = f"s3://{test_set_bucket}/{s3_key}"
                     console.print(
-                        f"[yellow]  Warning: no baseline files found for {filename} "
-                        f"in {baseline_path} - its baseline_source will name an empty "
-                        f"prefix[/yellow]"
+                        f"  Uploaded input {i + 1}/{len(documents)}: {filename}"
                     )
+
+                # Upload baseline files
+                for filename, baseline_path in baseline_map.items():
+                    # Upload all files in the baseline directory recursively
+                    import glob as glob_module
+                    import os
+
+                    baseline_files = glob_module.glob(
+                        os.path.join(baseline_path, "**", "*"), recursive=True
+                    )
+                    uploaded = 0
+                    for baseline_file in baseline_files:
+                        if os.path.isfile(baseline_file):
+                            # Preserve directory structure relative to baseline_path
+                            rel_path = os.path.relpath(baseline_file, baseline_path)
+                            s3_key = f"{test_set}/baseline/{filename}/{rel_path}"
+                            s3_client.upload_file(
+                                baseline_file, test_set_bucket, s3_key
+                            )
+                            uploaded += 1
+
+                    # Update baseline_map to point to S3 location
+                    baseline_map[filename] = (
+                        f"s3://{test_set_bucket}/{test_set}/baseline/{filename}/"
+                    )
+                    baseline_objects += uploaded
+
+                    # Report the count, not the attempt. A baseline directory holding
+                    # no files at its top level — empty, or one level deeper than
+                    # expected — left this line claiming an upload that moved nothing,
+                    # while the manifest row still named the `baseline/<document>/`
+                    # prefix. The result is a test set an evaluation cannot score,
+                    # described as ready.
+                    if uploaded:
+                        console.print(
+                            f"  Uploaded baseline: {filename} ({uploaded} files)"
+                        )
+                    else:
+                        console.print(
+                            f"[yellow]  Warning: no baseline files found for {filename} "
+                            f"in {baseline_path} - its baseline_source will name an "
+                            f"empty prefix[/yellow]"
+                        )
 
         # Write manifest (2 columns only)
         if output:
@@ -3355,15 +3647,6 @@ def generate_manifest(
             console.print()
 
         if test_set:
-            # Remove .uploading marker now that all files are uploaded
-            marker_key = f"{test_set}/.uploading"
-            try:
-                s3_client.delete_object(Bucket=test_set_bucket, Key=marker_key)
-            except Exception as e:
-                console.print(
-                    f"[yellow]Warning: Could not remove upload marker: {e}[/yellow]"
-                )
-
             # Auto-register test set in tracking table
             _client2 = IDPClient(stack_name=stack_name, region=region)
             resources = _client2._get_stack_resources(stack_name)
@@ -3449,26 +3732,41 @@ def validate_manifest_cmd(manifest: str):
         sys.exit(1)
 
 
-def _test_run_ids_from(option_value: str) -> List[str]:
-    """Split a `--test-run-ids` value on commas, dropping blanks.
+def _comma_separated_values(option_value: str) -> List[str]:
+    """Split a comma-separated option value, dropping blank segments.
 
-    `str.split` never returns an empty list, and that is the whole reason this
-    exists. `"".split(",")` is `[""]` and `"run-a,".split(",")` is
-    `["run-a", ""]`, so a blank segment arrives as an id that is the empty string:
-    `if not ids` after a plain split is unreachable code, and a length check counts
-    a trailing comma as a second run. Both spellings of that mistake were live —
-    `--test-run-ids ""` asked the service to abort a run whose id was `""`, and
-    `--test-run-ids "run-a,"` passed `test-compare`'s "at least 2" check with one
-    real id and then rendered a column for a run that does not exist.
+    **Every comma-separated option in this module parses through this function.**
+    `str.split` never returns an empty list, and that is the whole reason it exists:
+    `"".split(",")` is `[""]` and `"a,".split(",")` is `["a", ""]`, so a blank segment
+    arrives as a *value* that is the empty string. Two consequences, and both have
+    shipped here.
 
-    Dropping the blanks makes the callers' own guards reachable and correct, rather
-    than adding a separate check beside each of them.
+    A `if not values` guard after a plain split is **unreachable code** -- it reads like
+    a check and can never run -- so the empty string went on to be used as if it were a
+    real value: `--test-run-ids ""` asked the service to abort a run whose id was `""`,
+    and `--document-ids ""` asked about a document whose S3 object key was `""`.
+
+    And a length check counts a trailing comma as another value: `--test-run-ids
+    "run-a,"` passed `test-compare`'s "at least 2 ids" check with one real id and then
+    rendered a column for a run that does not exist.
+
+    Dropping the blanks during parsing is what makes each caller's own guard reachable
+    and mean what it says, instead of a separate blank check beside every one of them.
+    That matters more than the individual fix: this was originally corrected at the two
+    `--test-run-ids` sites only, and five others -- `--document-ids` twice,
+    `--file-types`, `--check-stack-regions` and `--features` -- carried the identical
+    bare split for a further release. A shared parser is the form of the fix that does
+    not leave the next one behind, and there is **no** exception: `_parse_tags` splits
+    each segment again on `=`, but its comma split comes through here too, so
+    `str.split(",")` appears exactly once in this module and a test derived from the AST
+    holds it that way.
 
     Args:
-        option_value: The raw `--test-run-ids` value.
+        option_value: The raw option value, as typed.
 
     Returns:
-        The non-empty ids, stripped, in the order given. Possibly empty.
+        The non-blank values, stripped, in the order given. Possibly empty -- which is
+        the point, and which every caller must then refuse.
     """
     return [
         candidate.strip() for candidate in option_value.split(",") if candidate.strip()
@@ -4133,79 +4431,79 @@ def _create_test_set_from_manifest(
     except Exception as e:
         console.print(f"[yellow]Warning: Could not clear existing files: {e}[/yellow]")
 
-    # Place .uploading marker to prevent resolver race condition (issue #193)
-    marker_key = f"{test_set_name}/.uploading"
-    s3_client.put_object(
-        Bucket=test_set_bucket, Key=marker_key, Body=b"upload-in-progress"
-    )
-
-    # Copy input files
     baseline_sources = 0
     baseline_objects = 0
-    for _, row in df.iterrows():
-        source_path = str(row["document_path"])
-        filename = os.path.basename(source_path)
 
-        # Upload to test set input directory
-        s3_key = f"{test_set_name}/input/{filename}"
+    # The `.uploading` marker keeps the resolver away from a half-filled folder
+    # (issue #193), so removing it is what makes the test set visible. Every one of the
+    # failures inside this block used to escape past the removal statement that followed
+    # it, leaving a complete-and-invisible test set: a missing local input file, a
+    # `copy_object` whose source key is gone, a manifest row with no `document_path`
+    # column, a baseline file that vanished between the glob and the upload, and -- since
+    # the `s3://` baseline source became a real copy rather than a glob that silently
+    # matched nothing -- a baseline bucket that does not exist. See `_uploading_marker`.
+    with _uploading_marker(s3_client, test_set_bucket, test_set_name):
+        # Copy input files
+        for _, row in df.iterrows():
+            source_path = str(row["document_path"])
+            filename = os.path.basename(source_path)
 
-        if source_path.startswith("s3://"):
-            # Copy from S3 to S3
-            source_bucket, source_key = source_path[5:].split("/", 1)
-            s3_client.copy_object(
-                CopySource={"Bucket": source_bucket, "Key": source_key},
-                Bucket=test_set_bucket,
-                Key=s3_key,
-            )
-        else:
-            # Upload from local file
-            s3_client.upload_file(source_path, test_set_bucket, s3_key)
+            # Upload to test set input directory
+            s3_key = f"{test_set_name}/input/{filename}"
 
-        # Copy baseline if exists
-        if "baseline_source" in row and pd.notna(row["baseline_source"]):
-            baseline_path = str(row["baseline_source"])
-            baseline_sources += 1
-            copied = 0
-
-            if baseline_path.startswith("s3://"):
-                # An `s3://` baseline is what `generate-manifest --test-set` writes, so
-                # this is the ordinary shape of a manifest fed back in, not an exotic
-                # one. It is copied within S3 rather than globbed on the local disk.
-                copied = _copy_s3_baseline(
-                    s3_client,
-                    baseline_path,
-                    test_set_bucket,
-                    f"{test_set_name}/baseline/{filename}/",
+            if source_path.startswith("s3://"):
+                # Copy from S3 to S3
+                source_bucket, source_key = source_path[5:].split("/", 1)
+                s3_client.copy_object(
+                    CopySource={"Bucket": source_bucket, "Key": source_key},
+                    Bucket=test_set_bucket,
+                    Key=s3_key,
                 )
             else:
-                # Upload all files in the baseline directory recursively
-                import glob as glob_module
+                # Upload from local file
+                s3_client.upload_file(source_path, test_set_bucket, s3_key)
 
-                baseline_files = glob_module.glob(
-                    os.path.join(baseline_path, "**", "*"), recursive=True
-                )
-                for baseline_file in baseline_files:
-                    if os.path.isfile(baseline_file):
-                        # Preserve directory structure relative to baseline_path
-                        rel_path = os.path.relpath(baseline_file, baseline_path)
-                        s3_key = f"{test_set_name}/baseline/{filename}/{rel_path}"
-                        s3_client.upload_file(baseline_file, test_set_bucket, s3_key)
-                        copied += 1
+            # Copy baseline if exists
+            if "baseline_source" in row and pd.notna(row["baseline_source"]):
+                baseline_path = str(row["baseline_source"])
+                baseline_sources += 1
+                copied = 0
 
-            baseline_objects += copied
-            if copied == 0:
-                # A test set whose baselines are missing cannot score anything, and the
-                # row count printed at the end cannot show it, so say so per row.
-                console.print(
-                    f"[yellow]Warning: no baseline files found for {filename} at "
-                    f"{baseline_path} - nothing was uploaded for it[/yellow]"
-                )
+                if baseline_path.startswith("s3://"):
+                    # An `s3://` baseline is what `generate-manifest --test-set` writes,
+                    # so this is the ordinary shape of a manifest fed back in, not an
+                    # exotic one. It is copied within S3 rather than globbed locally.
+                    copied = _copy_s3_baseline(
+                        s3_client,
+                        baseline_path,
+                        test_set_bucket,
+                        f"{test_set_name}/baseline/{filename}/",
+                    )
+                else:
+                    # Upload all files in the baseline directory recursively
+                    import glob as glob_module
 
-    # Remove .uploading marker now that all files are uploaded (issue #193)
-    try:
-        s3_client.delete_object(Bucket=test_set_bucket, Key=marker_key)
-    except Exception as e:
-        console.print(f"[yellow]Warning: Could not remove upload marker: {e}[/yellow]")
+                    baseline_files = glob_module.glob(
+                        os.path.join(baseline_path, "**", "*"), recursive=True
+                    )
+                    for baseline_file in baseline_files:
+                        if os.path.isfile(baseline_file):
+                            # Preserve directory structure relative to baseline_path
+                            rel_path = os.path.relpath(baseline_file, baseline_path)
+                            s3_key = f"{test_set_name}/baseline/{filename}/{rel_path}"
+                            s3_client.upload_file(
+                                baseline_file, test_set_bucket, s3_key
+                            )
+                            copied += 1
+
+                baseline_objects += copied
+                if copied == 0:
+                    # A test set whose baselines are missing cannot score anything, and
+                    # the row count printed at the end cannot show it, so say so per row.
+                    console.print(
+                        f"[yellow]Warning: no baseline files found for {filename} at "
+                        f"{baseline_path} - nothing was uploaded for it[/yellow]"
+                    )
 
     console.print(
         f"[green]✓ Test set '{test_set_name}' created with {len(df)} files[/green]"
@@ -4504,7 +4802,13 @@ def remove_residual_resources_from_deleted_stacks(
     """
     try:
         # Parse regions list
-        regions_list = [r.strip() for r in check_stack_regions.split(",")]
+        regions_list = _comma_separated_values(check_stack_regions)
+        if not regions_list:
+            console.print(
+                "[red]✗ Error: --check-stack-regions contains no regions. Give one or "
+                "more region names, comma-separated.[/red]"
+            )
+            sys.exit(1)
 
         client = IDPClient(region=region)
         cleanup_result = client.stack.cleanup_orphaned(
@@ -4642,9 +4946,19 @@ def config_create(
     try:
         from idp_common.config.merge_utils import generate_config_template
 
-        # Parse features - could be a preset or comma-separated list
+        # Parse features - could be a preset or comma-separated list. The comma is what
+        # decides which of the two it is, so that branch is left alone; only the blank
+        # segments inside a list change, and a list that is all blanks is refused rather
+        # than handed on as a section whose name is the empty string.
         if "," in features:
-            feature_list = [f.strip() for f in features.split(",")]
+            feature_list = _comma_separated_values(features)
+            if not feature_list:
+                console.print(
+                    "[red]✗ Error: --features contains no section names. Give a preset "
+                    "('min', 'core', 'all') or one or more section names, "
+                    "comma-separated.[/red]"
+                )
+                sys.exit(1)
         else:
             feature_list = features  # type: ignore
 
@@ -7010,7 +7324,7 @@ def test_compare(
     try:
         # Parse test run IDs. Blank segments are dropped, so a trailing comma no
         # longer counts as a second run and satisfy this check with one real id.
-        test_run_id_list = _test_run_ids_from(test_run_ids)
+        test_run_id_list = _comma_separated_values(test_run_ids)
 
         if len(test_run_id_list) < 2:
             console.print(
@@ -7255,7 +7569,7 @@ def abort_test_run(
         # guard below reachable: after a plain `split(",")` it never was, because
         # `"".split(",")` is `[""]`, and `--test-run-ids ""` went on to ask the
         # service to abort a run whose id is the empty string.
-        test_run_id_list = _test_run_ids_from(test_run_ids)
+        test_run_id_list = _comma_separated_values(test_run_ids)
 
         if not test_run_id_list:
             console.print("[red]✗ No test run IDs provided[/red]")

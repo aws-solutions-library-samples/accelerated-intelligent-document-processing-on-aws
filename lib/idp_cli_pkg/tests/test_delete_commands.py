@@ -1726,27 +1726,25 @@ class TestDeleteDocumentsRefusals:
 class TestDeleteDocumentsResultReporting:
     """Exit codes and messages when some or all deletions fail."""
 
-    def test_every_deletion_failing_still_exits_zero(self, api_calls):
-        """DEFECT: a run in which nothing was deleted reports success to the shell.
+    def test_a_document_ids_value_of_only_commas_is_refused(self, api_calls):
+        """`--document-ids ","` is refused, rather than read as two empty object keys.
 
-        `--document-ids ","` names two empty keys — a plausible shape for a list
-        built by a script from an empty variable. Each one fails: S3 rejects a
-        zero-length key, so botocore raises before the request is sent (which is
-        also why nothing is destroyed). The command prints
-        "⚠ Deleted 0/2 document(s)" and "2 failed", and then exits 0 (cli.py:1622,
-        which has no `sys.exit`). A caller cannot tell this from a clean deletion,
-        so an automated cleanup step reports success having deleted nothing.
+        That value is a plausible shape for a list a script built from a variable that
+        turned out to be empty, and `",".split(",")` is `["", ""]`, so the command used
+        to announce "Selected 2 document(s) for deletion", show two blank bullets in the
+        confirmation, attempt a `DeleteObject` with a zero-length key twice, print
+        "Deleted 0/2 document(s)" and exit 0. A caller could not tell that from a clean
+        deletion. `--document-ids ""` was worse only in being shorter: a single document
+        whose key is the empty string.
 
-        Two smaller problems are visible in the same run: an empty key passes the
-        selector validation at cli.py:1494 (a non-empty `--document-ids` string is
-        the only requirement), and the confirmation listing shows blank bullets for
-        the documents it is about to delete.
+        Blank segments are dropped during parsing now, which is what makes the command's
+        own emptiness check reachable, and the refusal is the check firing.
 
-        Note what the recorded calls show and do not show. `api_calls` wraps
-        `BaseClient._make_api_call`, which records the request before botocore
-        validates it, so two `DeleteObject` entries with an empty `Key` appear even
-        though neither was ever sent — the read-back of the bucket is what proves
-        nothing was destroyed.
+        `api_calls` wraps `BaseClient._make_api_call`, which records a request *before*
+        botocore validates it, so it sees the two attempts the old path made even though
+        neither was ever sent. That is what makes an empty recording the useful
+        assertion here: it says the command stopped before the S3 layer, not merely that
+        the bucket survived.
         """
         with mock_aws():
             _seed_documents()
@@ -1764,15 +1762,74 @@ class TestDeleteDocumentsResultReporting:
             surviving = _keys("dd-input-bucket")
             surviving_records = _tracked_documents()
 
+        assert result.exit_code == 1, result.output
+        assert "--document-ids contains no document IDs" in result.output
+        assert "Selected" not in result.output, (
+            "no count may be announced for a list that named nothing"
+        )
+        assert surviving == [key for key, _ in SEEDED_DOCUMENTS]
+        assert surviving_records == [key for key, _ in SEEDED_DOCUMENTS]
+        assert api_calls.of("DeleteObject") == [], (
+            "the refusal comes before any delete is attempted"
+        )
+
+    def test_every_deletion_failing_still_exits_zero(self):
+        """DEFECT (pinned, not fixed): nothing deleted still reports success to the shell.
+
+        A run in which every deletion failed prints "⚠ Deleted 0/2 document(s)" and
+        "2 failed" and then exits 0, because the reporting branch has no `sys.exit`. An
+        automated cleanup step therefore reports success having deleted nothing.
+
+        This used to be reached with `--document-ids ","`, whose two empty keys S3
+        rejected; that spelling is refused now, so the failures are injected at the SDK
+        boundary instead. The defect itself is unchanged and is reachable with real
+        document IDs the caller has no permission to delete.
+        """
+        failing_result = {
+            "success": False,
+            "deleted_count": 0,
+            "failed_count": 2,
+            "total_count": 2,
+            "dry_run": False,
+            "results": [
+                {
+                    "success": False,
+                    "object_key": "batch-1/first.pdf",
+                    "errors": ["Error deleting from input bucket: AccessDenied"],
+                },
+                {
+                    "success": False,
+                    "object_key": "batch-1/second.pdf",
+                    "errors": ["Error deleting from input bucket: AccessDenied"],
+                },
+            ],
+        }
+
+        with mock_aws():
+            _seed_documents()
+            with patch(
+                "idp_common.delete_documents.delete_documents",
+                return_value=failing_result,
+            ):
+                result = CliRunner().invoke(
+                    cli,
+                    [
+                        "delete-documents",
+                        "--stack-name",
+                        "dd-stack",
+                        "--document-ids",
+                        "batch-1/first.pdf,batch-1/second.pdf",
+                        "--force",
+                    ],
+                )
+            surviving = _keys("dd-input-bucket")
+
         assert result.exit_code == 0
         assert "Selected 2 document(s) for deletion" in result.output
         assert "Deleted 0/2 document(s)" in result.output
         assert "2 failed" in result.output
         assert "Failed deletions:" in result.output
-        # Nothing was destroyed: the empty key is rejected before the request is sent.
         assert surviving == [key for key, _ in SEEDED_DOCUMENTS]
-        assert surviving_records == [key for key, _ in SEEDED_DOCUMENTS]
-        assert [call.params["Key"] for call in api_calls.of("DeleteObject")] == ["", ""]
 
     def test_a_partial_failure_names_the_documents_that_failed(self):
         """A per-document failure list is the only route to a manual retry."""
