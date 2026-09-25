@@ -24,11 +24,16 @@ DELETE_IN_PROGRESS (moto deletes synchronously, so a stack is never observed
 mid-delete) and a DELETE_FAILED outcome. In those tests the assertions are about the
 command's own logic — which SDK call it makes, what it prints, and its exit code.
 
-One defect found while writing these is pinned by name below, with the consequence
-stated in the test docstring: `delete-documents` exits 0 when every single document
-deletion failed. The other — `delete` announcing "Stack deleted successfully" for a
-deletion it had only initiated — is fixed, and the test that pinned it now asserts
-the guidance a user omitting `--wait` should see.
+Three defects found while writing these are fixed, and the tests that pinned them now
+assert the guarantee instead: `delete-documents` exiting 0 when every single document
+deletion failed, `delete --force-delete-all` exiting 0 after printing "Stack deletion
+failed!" (both #1230), and `delete` announcing "Stack deleted successfully" for a
+deletion it had only initiated — that last one now asserts the guidance a user omitting
+`--wait` should see.
+
+⚠️ One boundary worth knowing before reading an exit code here: a *partial*
+`delete-documents` failure still exits 0. #1230 enumerated only the total failure, and
+`test_a_partial_failure_still_exits_zero_and_that_is_the_residual` says so in its name.
 """
 
 import json
@@ -1011,16 +1016,20 @@ class TestDeleteFailureReporting:
 
         assert "Try again with --empty-buckets" not in result.output
 
-    def test_with_force_delete_all_a_failed_deletion_exits_zero(self):
-        """DEFECT: `--force-delete-all` turns a failed deletion into exit 0.
+    def test_with_force_delete_all_a_failed_deletion_still_runs_cleanup_and_exits_one(
+        self,
+    ):
+        """A failed deletion exits non-zero, and the cleanup phase still runs (#1230).
 
-        cli.py:1318-1324 deliberately skips `sys.exit(1)` so the cleanup phase can
-        still run, and nothing sets a failing exit code afterwards. The consequence
-        is that a caller — a CI job, a teardown script — cannot tell a stack that
-        failed to delete from one that deleted cleanly: the output says
-        "Stack deletion failed!" and the process still reports success. The cleanup
-        phase really should run, so the fix is a non-zero exit at the end rather
-        than an early one; this test pins the current behaviour.
+        The early `sys.exit(1)` is skipped on purpose under `--force-delete-all` so
+        that the cleanup of retained resources happens — that is what the flag is
+        for. Nothing then set a failing code, so a caller (a CI job, a teardown
+        script) could not tell a stack that failed to delete from one that deleted
+        cleanly: the output said "Stack deletion failed!" and the process reported
+        success. The exit is now at the end, after the cleanup has had its run, so
+        both halves hold at once and both are asserted here — an implementation that
+        restored the early exit would satisfy the code assertion and fail the
+        cleanup one.
         """
         client = self._client_returning(
             StackDeletionResult(
@@ -1038,9 +1047,13 @@ class TestDeleteFailureReporting:
                 ["delete", "--stack-name", "stubborn", "--force", "--force-delete-all"],
             )
 
-        assert result.exit_code == 0
+        assert result.exit_code == 1
         assert "Stack deletion failed!" in result.output
         assert "continuing with force cleanup" in result.output
+        # The cleanup phase ran despite the failing code — the flag's whole purpose.
+        assert "Starting force cleanup of retained resources" in result.output
+        assert "Cleanup phase complete!" in result.output
+        assert "The stack was not deleted" in result.output
 
     def test_the_cleanup_phase_reports_what_it_deleted(self):
         """The force-cleanup summary lists each resource it removed, by name."""
@@ -1773,17 +1786,17 @@ class TestDeleteDocumentsResultReporting:
             "the refusal comes before any delete is attempted"
         )
 
-    def test_every_deletion_failing_still_exits_zero(self):
-        """DEFECT (pinned, not fixed): nothing deleted still reports success to the shell.
+    def test_every_deletion_failing_exits_non_zero(self):
+        """Nothing deleted must not report success to the shell (#1230).
 
-        A run in which every deletion failed prints "⚠ Deleted 0/2 document(s)" and
-        "2 failed" and then exits 0, because the reporting branch has no `sys.exit`. An
-        automated cleanup step therefore reports success having deleted nothing.
+        A run in which every deletion failed printed "⚠ Deleted 0/2 document(s)" and
+        "2 failed" and then exited 0, because the reporting branch had no `sys.exit`.
+        An automated cleanup step therefore reported success having deleted nothing.
 
-        This used to be reached with `--document-ids ","`, whose two empty keys S3
-        rejected; that spelling is refused now, so the failures are injected at the SDK
-        boundary instead. The defect itself is unchanged and is reachable with real
-        document IDs the caller has no permission to delete.
+        The failures are injected at the SDK boundary. This used to be reached with
+        `--document-ids ","`, whose two empty keys S3 rejected; that spelling is
+        refused now, and the case is reachable with real document IDs the caller has
+        no permission to delete.
         """
         failing_result = {
             "success": False,
@@ -1824,15 +1837,63 @@ class TestDeleteDocumentsResultReporting:
                 )
             surviving = _keys("dd-input-bucket")
 
-        assert result.exit_code == 0
+        assert result.exit_code == 1
         assert "Selected 2 document(s) for deletion" in result.output
         assert "Deleted 0/2 document(s)" in result.output
         assert "2 failed" in result.output
+        # The per-document failure list is printed *before* the exit, which is the
+        # half an early `sys.exit` would have lost.
         assert "Failed deletions:" in result.output
         assert surviving == [key for key, _ in SEEDED_DOCUMENTS]
 
-    def test_a_partial_failure_names_the_documents_that_failed(self):
-        """A per-document failure list is the only route to a manual retry."""
+    def test_a_dry_run_that_reports_failures_still_exits_zero(self):
+        """`not dry_run` on the exit condition, which nothing else reaches.
+
+        A dry run deletes nothing, so a `failed_count` it reports is a *projection*
+        rather than an outcome, and exiting 1 would make `--dry-run` unusable as a
+        pre-flight check. Dropping the `not dry_run` clause left the whole suite
+        green.
+        """
+        dry = {
+            "success": False,
+            "deleted_count": 0,
+            "failed_count": 2,
+            "total_count": 2,
+            "dry_run": True,
+            "results": [],
+        }
+
+        with mock_aws():
+            _seed_documents()
+            with patch(
+                "idp_common.delete_documents.delete_documents", return_value=dry
+            ):
+                result = CliRunner().invoke(
+                    cli,
+                    [
+                        "delete-documents",
+                        "--stack-name",
+                        "dd-stack",
+                        "--batch-id",
+                        "batch-1",
+                        "--dry-run",
+                        "--force",
+                    ],
+                )
+
+        assert result.exit_code == 0, result.output
+        assert "DRY RUN COMPLETE" in result.output
+
+    def test_a_partial_failure_still_exits_zero_and_that_is_the_residual(self):
+        """A per-document failure list is the only route to a manual retry.
+
+        Also the boundary of the #1230 fix, stated so the next reader does not have
+        to infer it: a run in which *every* deletion failed now exits 1, and a run in
+        which *some* did still exits 0. #1230 enumerated only the total failure, so
+        that is what was changed; a caller cannot distinguish a partial failure from a
+        clean run by exit code, and the per-document list asserted below is the only
+        signal. This is a residual, not a contract worth defending.
+        """
         failing_result = {
             "success": False,
             "deleted_count": 1,

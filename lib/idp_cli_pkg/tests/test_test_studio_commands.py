@@ -27,12 +27,12 @@ What shaped them:
   `Optional[float]` per key on any zero-denominator path, so `.get(k, 0)` does not
   help and `f"{None:.2%}"` raises. There is a dedicated formatter for that and
   both of its branches are covered.
-- **Two `test-result` defects are pinned as current behaviour rather than fixed**,
-  each with its consequence written out: a total cost of exactly `0.0` prints no cost
-  line, and a `FAILED` run still exits 0. See the tests whose names say `defect`. The
-  three that used to sit beside them are fixed — `test-compare` can show
-  configuration differences, and neither `--test-run-ids ""` nor a trailing comma is
-  read as a run id any more.
+- **One `test-result` defect is pinned as current behaviour rather than fixed**, with
+  its consequence written out: a total cost of exactly `0.0` prints no cost line. See
+  the test whose name says `defect`. The four that used to sit beside it are fixed —
+  a `FAILED` run now exits 1 (#1230), `test-compare` can show configuration
+  differences, and neither `--test-run-ids ""` nor a trailing comma is read as a run
+  id any more.
 
 `abort-test-run` is covered by `tests/test_abort_test_runs.py`; only the one
 branch that file leaves unreached is added here.
@@ -282,17 +282,18 @@ class TestTestResultOutput:
         assert result.exit_code == 0, result.output
         assert "Total Cost" not in result.output
 
-    def test_defect_a_failed_test_run_still_exits_zero(self, runner):
+    def test_a_failed_test_run_exits_non_zero(self, runner):
         """
-        DEFECT (pinned as current behaviour, not fixed). `test-result` reports the
-        run's status but never lets it influence the exit code: a run with
-        `status="FAILED"` and every file failed exits 0, exactly like a clean pass.
+        The guarantee (#1230). `test-result` reported the run's status and never let it
+        influence the exit code: a run with `status="FAILED"` and every file failed
+        exited 0, exactly like a clean pass, so `idp-cli test-result ... && deploy`
+        proceeded on a failed evaluation and reading the printed text was the only way
+        a caller could tell. Compare `status`, which has always derived an exit code
+        from the documents' states.
 
-        The observable consequence is that `idp-cli test-result ... && deploy` in a
-        pipeline proceeds on a failed evaluation. Reading the status out of the
-        printed text is the only way a caller can tell, which defeats the purpose of
-        having an exit code. Compare `status`, which does derive an exit code from
-        the documents' states.
+        The results are still printed before the exit — a caller needs the accuracy
+        figures to know *how* it failed — so the output assertions below are as
+        load-bearing as the code.
         """
         p, client = _patched_client(
             get_test_result=MagicMock(
@@ -307,9 +308,76 @@ class TestTestResultOutput:
                 ["test-result", "--stack-name", "IDP", "--test-run-id", "r1"],
             )
 
-        assert result.exit_code == 0
+        assert result.exit_code == 1
         assert "Status: FAILED" in result.output
         assert "Failed Files: 10" in result.output
+        assert "did not pass" in result.output
+
+    def test_a_partial_run_with_failed_files_exits_non_zero(self, runner):
+        """The second half of the condition, and the half no other test reaches.
+
+        A run can carry a non-`FAILED` status and still have failed files: a partial
+        run reports `PARTIAL_COMPLETE`. Checking the status alone would let that exit
+        0. Added because dropping `or test_result.failed_files > 0` from the check
+        left every other test in this file green — the whole of the `status == FAILED`
+        assertion is satisfied by a fixture that also sets `failed_files`.
+        """
+        p, _client = _patched_client(
+            get_test_result=MagicMock(
+                return_value=_test_run_result(
+                    status="PARTIAL_COMPLETE", completed_files=7, failed_files=3
+                )
+            )
+        )
+        with p:
+            result = runner.invoke(
+                cli_module.cli,
+                ["test-result", "--stack-name", "IDP", "--test-run-id", "r1"],
+            )
+
+        assert result.exit_code == 1, result.output
+        assert "Failed Files: 3" in result.output
+        assert "did not pass" in result.output
+
+    def test_a_lowercase_failed_status_is_still_a_failure(self, runner):
+        """`.upper()` on the comparison, which nothing else reaches.
+
+        The status is a free-form string on the SDK model, not an enum, so its casing
+        is the service's choice rather than ours. Dropping the `.upper()` left every
+        other test in this file green while a `"failed"` run exited 0.
+        """
+        p, _client = _patched_client(
+            get_test_result=MagicMock(
+                return_value=_test_run_result(
+                    status="failed", completed_files=0, failed_files=0
+                )
+            )
+        )
+        with p:
+            result = runner.invoke(
+                cli_module.cli,
+                ["test-result", "--stack-name", "IDP", "--test-run-id", "r1"],
+            )
+
+        assert result.exit_code == 1, result.output
+
+    def test_a_clean_run_exits_zero(self, runner):
+        """Non-vacuity for both tests above: the code tracks the run, not the command.
+
+        The default fixture is `status="COMPLETE"` with `failed_files=0`, so a check
+        that always failed would fail here.
+        """
+        p, _client = _patched_client(
+            get_test_result=MagicMock(return_value=_test_run_result())
+        )
+        with p:
+            result = runner.invoke(
+                cli_module.cli,
+                ["test-result", "--stack-name", "IDP", "--test-run-id", "r1"],
+            )
+
+        assert result.exit_code == 0, result.output
+        assert "did not pass" not in result.output
 
 
 class TestTestResultWaitAndExport:

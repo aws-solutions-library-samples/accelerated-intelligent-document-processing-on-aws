@@ -797,18 +797,22 @@ def test_json_bucket_precedence_is_completed_then_running_then_failed_then_queue
 
 
 @pytest.mark.unit
-def test_json_a_single_document_with_no_bucket_entry_falls_through_to_the_batch_shape():
+def test_json_a_single_document_with_no_bucket_entry_reports_an_unknown_outcome():
     """
-    DEFECT (pinned, not fixed): `total == 1` with four empty buckets reports the
-    batch summary, and its exit code comes from `all_complete` -- so a lookup that
-    returned no document at all reports success.
+    The guarantee (#1230): `total == 1` with four empty buckets no longer falls
+    through to the batch summary and answers 0.
 
-    `format_status_json` only takes the single-document branch if one of the four
-    buckets holds something. With `stats["total"] == 1`, `all_complete` true and
-    no failures -- the shape a batch record whose document lookup returned nothing
-    produces -- the caller is handed `exit_code: 0` and a payload with no
-    `document_id` in it. A CI job that checks the exit code concludes the document
-    succeeded.
+    `format_status_json` takes its single-document branch only if one of the four
+    buckets holds something. With `stats["total"] == 1`, `all_complete` true and no
+    failures -- the shape a batch record whose document lookup returned nothing
+    produces -- the caller used to be handed `exit_code: 0` and a payload with no
+    `document_id` in it, so a CI job reading the exit code concluded the document
+    succeeded. It now answers 2, which is this module's code for an outcome that was
+    not established, and names the document as `None` rather than omitting it.
+
+    The batch keys are asserted *absent*: the point is that the batch summary is not
+    what comes back, and a payload carrying `total` would mean the fall-through is
+    still there with a patched code.
     """
     payload = json.loads(
         display.format_status_json(
@@ -816,9 +820,11 @@ def test_json_a_single_document_with_no_bucket_entry_falls_through_to_the_batch_
         )
     )
 
-    assert "document_id" not in payload
-    assert payload["exit_code"] == 0
-    assert payload["total"] == 1
+    assert payload["exit_code"] == 2
+    assert payload["document_id"] is None
+    assert payload["status"] == "UNKNOWN"
+    assert "total" not in payload
+    assert "all_complete" not in payload
 
 
 # ---------------------------------------------------------------------------
@@ -1085,23 +1091,23 @@ def test_an_aborted_document_gets_a_different_exit_code_from_each_output_format(
 
 
 @pytest.mark.unit
-def test_a_single_document_lookup_that_found_nothing_disagrees_too():
+def test_a_single_document_lookup_that_found_nothing_agrees_across_both_paths():
     """
-    DEFECT (pinned, not fixed): with `total == 1` and no bucket entry, the JSON
-    path reports the batch summary and exits 0 while the table path exits 2.
+    The guarantee (#1230): with `total == 1` and no bucket entry, both output paths
+    answer 2.
 
-    The JSON path takes its single-document branch only when a bucket is
-    non-empty, so it falls through to the batch summary and derives the code from
-    `all_complete`; the table path has no such fall-through and answers UNKNOWN /
-    2. Exiting 0 is the worse half: nothing was measured, and the caller is told
-    the document succeeded.
+    The JSON path took its single-document branch only when a bucket was non-empty,
+    so it fell through to the batch summary and derived the code from `all_complete`,
+    answering 0 — nothing was measured and the caller was told the document
+    succeeded. The table path has no such fall-through and has always answered
+    UNKNOWN / 2. Asserted as equality *and* as the value, since two paths that agree
+    on the wrong answer would satisfy equality alone.
     """
     from_json, from_summary = _both_codes(
         _status_data(total=1), _stats(total=1, all_complete=True)
     )
 
-    assert from_json == 0
-    assert from_summary == 2
+    assert from_json == from_summary == 2
 
 
 @pytest.mark.unit
@@ -1153,3 +1159,54 @@ def test_both_exit_code_paths_agree_on_every_batch_shape(
     from_json, from_summary = _both_codes(_status_data(total=4), stats)
 
     assert from_json == from_summary == expected
+
+
+@pytest.mark.unit
+def test_derive_exit_code_equals_show_final_status_summary_over_the_whole_input_space():
+    """The two must never drift, and a sampled comparison would not say that.
+
+    `derive_exit_code` was extracted from `show_final_status_summary` so that
+    `_monitor_progress` can have the code without the printed "FINAL STATUS" line —
+    two of its three callers discard the value, and printing "Exit Code: 1" there
+    would state a code contradicting `$?` for `process --monitor`. The extraction is
+    only safe while the two agree, and the whole reason the extraction was worth doing
+    rather than re-deriving the rule from `stats` is that two implementations of one
+    rule is how the polled and waited forms of `status` came to disagree (#1230).
+
+    So this is exhaustive over the space the rule reads rather than a sample: every
+    combination of the four buckets being empty or not, crossed with `total` in
+    {0, 1, 2}, `all_complete` in {True, False} and `failed` in {0, 1}. A table of
+    hand-picked cases is what let the original divergence sit unnoticed.
+    """
+    import itertools
+
+    checked = 0
+    for pattern in itertools.product([0, 1], repeat=4):
+        for total in (0, 1, 2):
+            for all_complete in (True, False):
+                for failed_count in (0, 1):
+                    status_data = {
+                        "total": total,
+                        "completed": [_doc(status="COMPLETED")] * pattern[0],
+                        "running": [_doc(status="RUNNING")] * pattern[1],
+                        "failed": [_doc(status="FAILED")] * pattern[2],
+                        "queued": [_doc(status="QUEUED")] * pattern[3],
+                    }
+                    stats = _stats(
+                        total=total,
+                        completed=pattern[0],
+                        failed=failed_count,
+                        running=pattern[1],
+                        queued=pattern[3],
+                        all_complete=all_complete,
+                    )
+                    checked += 1
+                    assert display.derive_exit_code(
+                        status_data, stats
+                    ) == display.show_final_status_summary(status_data, stats), (
+                        f"drift at buckets={pattern} total={total} "
+                        f"all_complete={all_complete} failed={failed_count}"
+                    )
+
+    # The loop has to have run; a generator that produced nothing would pass.
+    assert checked == 192
