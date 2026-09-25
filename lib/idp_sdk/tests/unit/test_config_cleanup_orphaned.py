@@ -116,6 +116,49 @@ class TestTheCleanupBranchExists:
         service.cleanup_orphaned_blueprints.assert_not_called()
         assert result.classes_synced == 1
 
+    def test_an_unresolvable_profile_is_refused_before_anything_is_deleted(self, ops):
+        """The safety property of the whole branch, and it is not obvious.
+
+        The cleanup decides what is an orphan by building the expected
+        blueprint-name prefixes from the named profile's classes.
+        `ConfigurationManager.get_configuration("Config", version=None)` reads the
+        *bare* `Config` key, which holds nothing on a normal stack, so an unresolved
+        version yields an empty expected set — and then every blueprint carrying the
+        stack's prefix matches nothing and is deleted. "No classes to keep" and
+        "could not find out which classes to keep" are indistinguishable by the time
+        the service sees them, and their safe actions are opposite.
+
+        This state is ordinary rather than exotic: a stack nobody has activated a
+        configuration on, with no `--config-profile` given.
+
+        The assertion is that the collaborator was never called. A message saying it
+        refused would pass over an implementation that deleted first.
+        """
+        service, manager, p_service, p_manager = _doubles(cleanup=_clean())
+        manager.list_config_versions.return_value = [
+            {"versionName": "lending", "isActive": False}
+        ]
+        with p_service, p_manager:
+            result = ops.sync_bda(direction="cleanup_orphaned")
+
+        service.cleanup_orphaned_blueprints.assert_not_called()
+        assert result.success is False
+        assert "needs a configuration profile" in (result.error or "")
+        assert result.cleanup_deleted_count == 0
+
+    def test_an_active_profile_is_resolved_and_the_cleanup_runs(self, ops):
+        """Non-vacuity for the refusal above: it is the *absence* that refuses."""
+        service, manager, p_service, p_manager = _doubles(cleanup=_clean())
+        manager.list_config_versions.return_value = [
+            {"versionName": "lending", "isActive": False},
+            {"versionName": "claims", "isActive": True},
+        ]
+        with p_service, p_manager:
+            result = ops.sync_bda(direction="cleanup_orphaned")
+
+        service.cleanup_orphaned_blueprints.assert_called_once_with(version="claims")
+        assert result.success is True
+
     def test_the_profile_the_caller_named_is_the_one_passed_through(self, ops):
         """The profile decides which blueprints survive, so it must not be re-resolved.
 

@@ -3194,6 +3194,12 @@ prompt, which is what a script wants. `--mode` is not read. The command reports 
 blueprints it deleted and exits non-zero if any deletion failed, naming the ARNs that
 are still orphaned afterwards.
 
+It also **refuses to run at all** when it cannot resolve a profile — you named none and
+none is active on the stack. That case would otherwise produce an empty set of classes
+to keep, which is indistinguishable from "keep nothing", so every prefixed blueprint in
+the account would be deleted. Name the profile explicitly on a stack with no active
+configuration.
+
 The same operation is available as `config.sync_bda(direction="cleanup_orphaned")` in
 the SDK and as the `syncBdaIdp` API operation with direction `cleanup_orphaned`. The Web
 UI has no control for it.

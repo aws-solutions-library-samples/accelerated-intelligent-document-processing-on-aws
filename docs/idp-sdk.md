@@ -1786,7 +1786,10 @@ is what makes it the only thing that can reach a blueprint no project-scoped rea
 see. Because the scope is the account and the survivors are decided by the profile you
 name, naming the wrong profile deletes live blueprints. It reports
 `cleanup_deleted_count` and `cleanup_failed_count` rather than the class counts: it
-processes no classes. The `syncBdaIdp` API operation with
+processes no classes. It returns `success=False` without deleting anything when no
+profile can be resolved — you passed none and none is active — because an unresolved
+profile yields an empty set of classes to keep, which is indistinguishable from
+"keep nothing" and would delete every prefixed blueprint in the account. The `syncBdaIdp` API operation with
 `direction: "cleanup_orphaned"` is the same operation through the resolver, and
 `idp-cli config-sync-bda --direction cleanup-orphaned` is the same operation on the
 command line.

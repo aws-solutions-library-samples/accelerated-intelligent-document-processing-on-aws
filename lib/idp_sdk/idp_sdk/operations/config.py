@@ -1090,6 +1090,37 @@ class ConfigOperation:
             # disassociates before deleting, which needs a project to disassociate
             # from.
             if direction == "cleanup_orphaned":
+                # Refuse rather than run with an unresolved profile. The cleanup
+                # decides what is an orphan by building the set of expected
+                # blueprint-name prefixes from the named profile's classes, and
+                # `ConfigurationManager.get_configuration("Config", version=None)`
+                # reads the *bare* `Config` key, which on a normal stack holds
+                # nothing. So an unresolved version produces an empty expected set,
+                # every prefixed blueprint in the account matches nothing, and the
+                # cleanup deletes all of them. "No classes to keep" and "could not
+                # find out which classes to keep" are indistinguishable downstream,
+                # and the two have opposite safe actions.
+                #
+                # Reachable without this: the resolution above leaves
+                # `config_version` as `None` when the caller named no profile and no
+                # profile is active, which is an ordinary state for a stack nobody
+                # has activated a configuration on.
+                if not config_version:
+                    return ConfigSyncBdaResult(
+                        success=False,
+                        direction=direction,
+                        mode=mode,
+                        cleanup_deleted_count=0,
+                        cleanup_failed_count=0,
+                        error=(
+                            "Orphaned-blueprint cleanup needs a configuration "
+                            "profile: its classes are what decide which blueprints "
+                            "are orphaned, and no profile is active on this stack. "
+                            "Name one explicitly. Running without one would treat "
+                            "every blueprint carrying the stack's prefix as an "
+                            "orphan."
+                        ),
+                    )
                 cleanup = bda_service.cleanup_orphaned_blueprints(
                     version=config_version
                 )
