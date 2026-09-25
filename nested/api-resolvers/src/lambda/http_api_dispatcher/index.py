@@ -153,6 +153,7 @@ FIELD_ALIASES: Dict[str, str] = {
     "listSampleDocuments": "uploadDocument",
     "uploadSampleDocument": "uploadDocument",
     # addDocumentsToTestSet (TestSetResolverFunction)
+    "addDocumentsToTestSetByKey": "addDocumentsToTestSet",
     "addDocumentsToTestSetFromUpload": "addDocumentsToTestSet",
     "addTestSet": "addDocumentsToTestSet",
     "addTestSetFromUpload": "addDocumentsToTestSet",

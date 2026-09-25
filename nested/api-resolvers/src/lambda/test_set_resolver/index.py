@@ -10,6 +10,13 @@ import boto3
 from botocore.config import Config
 from botocore.exceptions import ClientError
 
+from idp_common.config_scope import (  # type: ignore
+    ScopeLookupError,
+    caller_email_from_claims,
+    caller_sub_from_claims,
+    resolve_allowed_config_versions,
+    scope_allows,
+)
 from idp_common.dynamodb import DynamoDBClient  # type: ignore
 from idp_common.dynamodb.client import DynamoDBError  # type: ignore
 from idp_common.evaluation.confidence_curve import (  # type: ignore
@@ -294,6 +301,8 @@ def handler(event, context):
         return add_test_set_from_upload(event["arguments"])
     elif field_name == "addDocumentsToTestSet":
         return add_documents_to_test_set(event["arguments"])
+    elif field_name == "addDocumentsToTestSetByKey":
+        return add_documents_to_test_set_by_key(event["arguments"], event)
     elif field_name == "addDocumentsToTestSetFromUpload":
         return add_documents_to_test_set_from_upload(event["arguments"])
     elif field_name == "updateTestSet":
@@ -636,15 +645,16 @@ def create_empty_test_set(args):
     return result
 
 
-def add_documents_to_test_set(args):
-    logger.info(f"Adding documents to existing test set: {args}")
+MAX_KEYS_PER_ADD = 500
 
-    test_set_id = args["testSetId"]
-    file_pattern = args["filePattern"]
-    bucket_type = args["bucketType"]
-    file_count = args["fileCount"]
 
-    # Look up existing test set
+def _begin_test_set_append(test_set_id):
+    """Look up a COMPLETED test set and mark it UPDATING for an append job.
+
+    statusUpdatedAt is what makes the job reapable: without it a set whose copier
+    dies sits in UPDATING forever, because _reap_abandoned_test_sets has no way to
+    tell a slow copy from an abandoned one.
+    """
     item = db_client.get_item({"PK": f"testset#{test_set_id}", "SK": "metadata"})
 
     if not item:
@@ -655,9 +665,6 @@ def add_documents_to_test_set(args):
             f"Test set '{test_set_id}' is not in COMPLETED status (current: {item.get('status')})"
         )
 
-    # Update status to UPDATING. statusUpdatedAt is what makes this reapable: without
-    # it a set whose copier dies sits in UPDATING forever, because
-    # _reap_abandoned_test_sets has no way to tell a slow copy from an abandoned one.
     tracking_table = os.environ["TRACKING_TABLE"]
     table = boto3.resource("dynamodb").Table(tracking_table)
     table.update_item(
@@ -671,10 +678,37 @@ def add_documents_to_test_set(args):
             ":now": datetime.utcnow().isoformat() + "Z",
         },
     )
+    return item, tracking_table
 
-    # Send file copying job to SQS queue
+
+def _queue_test_set_copy(message_body):
     sqs = boto3.client("sqs")
-    queue_url = os.environ["TEST_SET_COPY_QUEUE_URL"]
+    sqs.send_message(
+        QueueUrl=os.environ["TEST_SET_COPY_QUEUE_URL"],
+        MessageBody=json.dumps(message_body),
+    )
+
+
+def _updating_test_set_summary(test_set_id, item):
+    return {
+        "id": test_set_id,
+        "name": item["name"],
+        "description": item.get("description", ""),
+        "filePattern": item.get("filePattern", ""),
+        "fileCount": item.get("fileCount"),
+        "status": "UPDATING",
+        "createdAt": item["createdAt"],
+    }
+
+
+def add_documents_to_test_set(args):
+    logger.info(f"Adding documents to existing test set: {args}")
+
+    test_set_id = args["testSetId"]
+    file_pattern = args["filePattern"]
+    bucket_type = args["bucketType"]
+
+    item, tracking_table = _begin_test_set_append(test_set_id)
 
     message_body = {
         "testSetId": test_set_id,
@@ -686,21 +720,135 @@ def add_documents_to_test_set(args):
     if args.get("modifiedAfter"):
         message_body["modifiedAfter"] = args["modifiedAfter"]
 
-    sqs.send_message(QueueUrl=queue_url, MessageBody=json.dumps(message_body))
+    _queue_test_set_copy(message_body)
 
     logger.info(
         f"Queued append job for test set {test_set_id} with pattern '{file_pattern}'"
     )
 
-    return {
-        "id": test_set_id,
-        "name": item["name"],
-        "description": item.get("description", ""),
-        "filePattern": item.get("filePattern", ""),
-        "fileCount": item.get("fileCount"),
-        "status": "UPDATING",
-        "createdAt": item["createdAt"],
-    }
+    return _updating_test_set_summary(test_set_id, item)
+
+
+def _normalize_object_keys(raw_keys):
+    if not isinstance(raw_keys, list) or not raw_keys:
+        raise ValueError("objectKeys must be a non-empty list of document keys")
+    seen = set()
+    keys = []
+    for key in raw_keys:
+        if not isinstance(key, str) or not key.strip():
+            raise ValueError("objectKeys must contain only non-empty strings")
+        key = key.strip()
+        if key.startswith("/") or key.endswith("/") or "/../" in f"/{key}/":
+            raise ValueError(f"Invalid document key: {key}")
+        if key not in seen:
+            seen.add(key)
+            keys.append(key)
+    if len(keys) > MAX_KEYS_PER_ADD:
+        raise ValueError(
+            f"At most {MAX_KEYS_PER_ADD} documents can be added in one request "
+            f"({len(keys)} selected)"
+        )
+    return keys
+
+
+_SELECTION_REFUSED = (
+    "Access denied: one or more of the selected documents cannot be added to a "
+    "test set. Only documents that finished processing, under a configuration "
+    "profile you can access, can be added."
+)
+_BATCH_GET_LIMIT = 100
+
+
+def _caller_config_scope(event):
+    """The caller's ``allowedConfigVersions``, or None when unrestricted.
+
+    Admins and direct IAM invocations (no ``identity``) are unrestricted and never
+    looked up. For everyone else the lookup fails CLOSED: a scope that cannot be
+    evaluated is refused, not treated as unrestricted.
+    """
+    identity = event.get("identity") if event else None
+    if identity is None or _caller_in_groups(event, ("Admin",)):
+        return None
+    claims = identity.get("claims") or {}
+    try:
+        return resolve_allowed_config_versions(
+            caller_email_from_claims(claims),
+            caller_sub=caller_sub_from_claims(claims),
+            users_table_name=os.environ.get("USERS_TABLE_NAME", ""),
+            dynamodb=boto3.resource("dynamodb"),
+        )
+    except ScopeLookupError as e:
+        logger.error(
+            "Denying addDocumentsToTestSetByKey: configuration scope could not be "
+            "resolved: %s",
+            e,
+        )
+        raise PermissionError(
+            "Unauthorized: your configuration scope could not be verified"
+        ) from e
+
+
+def _document_rows(object_keys):
+    rows = {}
+    keys = [{"PK": f"doc#{k}", "SK": "none"} for k in object_keys]
+    for start in range(0, len(keys), _BATCH_GET_LIMIT):
+        for row in db_client.batch_get_items(keys[start : start + _BATCH_GET_LIMIT]):
+            key = row.get("ObjectKey") or str(row.get("PK", "")).removeprefix("doc#")
+            rows[key] = row
+    return rows
+
+
+def _enforce_selection_scope(event, object_keys):
+    """Refuse the whole selection unless every document may be added.
+
+    A document may be added when it has a tracking row, finished processing, and
+    was processed under a profile the caller's ``allowedConfigVersions`` admits
+    (checked with ``scope_allows``, which denies a missing profile name whenever a
+    scope is set). The refusal names no document and no reason, so a scoped caller
+    cannot use it to learn which keys exist or where they sit.
+    """
+    allowed_config_versions = _caller_config_scope(event)
+    rows = _document_rows(object_keys)
+    for key in object_keys:
+        row = rows.get(key)
+        if (
+            row is None
+            or row.get("ObjectStatus") != "COMPLETED"
+            or not scope_allows(allowed_config_versions, row.get("ConfigVersion"))
+        ):
+            logger.warning(
+                "Rejecting addDocumentsToTestSetByKey: a selected document is "
+                "missing, unfinished, or outside the caller's scope"
+            )
+            raise PermissionError(_SELECTION_REFUSED)
+
+
+def add_documents_to_test_set_by_key(args, event=None):
+    test_set_id = args["testSetId"]
+    object_keys = _normalize_object_keys(args.get("objectKeys"))
+    logger.info(
+        f"Adding {len(object_keys)} selected document(s) to test set {test_set_id}"
+    )
+
+    _enforce_selection_scope(event, object_keys)
+
+    item, tracking_table = _begin_test_set_append(test_set_id)
+
+    _queue_test_set_copy(
+        {
+            "testSetId": test_set_id,
+            "objectKeys": object_keys,
+            "bucketType": "input",
+            "trackingTable": tracking_table,
+            "mode": "append",
+        }
+    )
+
+    logger.info(
+        f"Queued append job for test set {test_set_id} with {len(object_keys)} key(s)"
+    )
+
+    return _updating_test_set_summary(test_set_id, item)
 
 
 def add_documents_to_test_set_from_upload(args):

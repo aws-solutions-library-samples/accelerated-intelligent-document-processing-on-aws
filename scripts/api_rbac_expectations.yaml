@@ -690,6 +690,18 @@ operations:
     kind: mutation
     enforced_in: nested/api-resolvers/src/lambda/test_set_resolver/index.py
     args: { testSetId: "__nope__", filePattern: "x", bucketType: "input", fileCount: 0 }
+  # Unlike the pattern import this names exact keys rather than searching the
+  # bucket, and every key is checked server-side before anything is queued: the
+  # document must have finished processing under a profile the caller's
+  # allowedConfigVersions admits. One refusal message covers every failing case, so
+  # the op cannot be used to learn which keys exist.
+  addDocumentsToTestSetByKey:
+    groups: [Admin, Author]
+    kind: mutation
+    scope_checked: true
+    scope_enforced_in: _enforce_selection_scope
+    enforced_in: nested/api-resolvers/src/lambda/test_set_resolver/index.py
+    args: { testSetId: "__nope__", objectKeys: ["__nope__.pdf"] }
   addDocumentsToTestSetFromUpload:
     groups: [Admin, Author]
     kind: mutation

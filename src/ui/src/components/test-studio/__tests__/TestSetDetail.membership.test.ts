@@ -43,7 +43,7 @@ describe('the set detail page', () => {
     expect(remove).toMatch(/disabled=\{selectedItems\.length === 0 \|\| isLoading \|\| labelJob\?\.status === 'RUNNING'\}/);
   });
 
-  it('offers all three add sources, gating generation on the extension', () => {
+  it('offers all four add sources, gating generation on the extension', () => {
     expect(DETAIL).toMatch(/text: 'From files in a bucket'/);
     expect(DETAIL).toMatch(/text: 'From a zip upload'/);
     const generate = DETAIL.slice(
@@ -83,6 +83,20 @@ describe('the shared Add documents dialogs', () => {
     expect(TEST_SETS).not.toMatch(/const handleCheckFiles = /);
     expect(TEST_SETS).not.toMatch(/showAddDocsPatternModal/);
     expect(DETAIL).toMatch(/<AddDocumentsModals/);
+  });
+});
+
+describe('adding processed documents', () => {
+  it('is a source on both the set page and the table page, open to every role that can add', () => {
+    expect(DETAIL).toMatch(/\{ id: 'add-processed', text: 'From processed documents' \}/);
+    expect(DETAIL).toMatch(/detail\.id === 'add-processed'\) setAddDocsMode\('documents'\)/);
+    expect(TEST_SETS).toMatch(/\{ id: 'docs-processed', text: 'From processed documents' \}/);
+    expect(TEST_SETS).toMatch(/setAddDocsMode\('documents'\)/);
+  });
+
+  it('routes to the resolver and is declared for Admins and Authors', () => {
+    expect(ALIASES).toMatch(/"addDocumentsToTestSetByKey": "addDocumentsToTestSet"/);
+    expect(RBAC).toMatch(/addDocumentsToTestSetByKey:\n(?:\s+#.*\n)*?\s+groups: \[Admin, Author\]/);
   });
 });
 

@@ -22,7 +22,7 @@
 > `template.yaml`, `nested/api-resolvers/template.yaml`,
 > `scripts/api_rbac_expectations.yaml` and the dispatcher / queue-processor
 > source rather than edited in place. The main user pool has **five** groups (an
-> `Annotator` group scoped by `allowedTestSets`); **118** operations are routable
+> `Annotator` group scoped by `allowedTestSets`); **119** operations are routable
 > through the dispatcher, with the group distribution in §5 taken from
 > `scripts/api_rbac_expectations.yaml`; §5 names what each layer does *not* cover,
 > including the absence of a default deny at the dispatcher; §5.2 covers the two
@@ -279,13 +279,13 @@ table.
 | In-process handlers (`ddb_direct`, 11 ops) | **Enforces `cognito:groups`** from its own `_REQUIRED_GROUPS` table before touching DynamoDB — the only group check at dispatcher level | Returns without denying for any field absent from that table, so the check is opt-in per field |
 | **Resolver Lambda** (~40 functions) | **Enforces `cognito:groups`, `allowedConfigVersions` scope, and per-object ownership** | Nothing forces a check to exist or to be spelled consistently; three hand-written conventions coexist across resolvers |
 
-**118 operations** are routable at v0.6.9 — 40 mapped directly by the
+**119 operations** are routable at v0.6.10 — 40 mapped directly by the
 `FIELD_FUNCTION_MAP` published to SSM at
-`/${StackName}/http-api/field-function-map`, **68** aliased onto shared
+`/${StackName}/http-api/field-function-map`, **69** aliased onto shared
 resolvers by `FIELD_ALIASES`, and 11 served in process by `ddb_direct`. Those
-three sets sum to 119, not 118, because one field (`getCircuitBreakerStatus`)
+three sets sum to 120, not 119, because one field (`getCircuitBreakerStatus`)
 appears in both `FIELD_FUNCTION_MAP` and `ddb_direct._HANDLED`; the distinct
-union is 118, which is exactly the number of entries in
+union is 119, which is exactly the number of entries in
 `scripts/api_rbac_expectations.yaml`. Their required-group distribution:
 
 | Required groups | Ops |
@@ -316,7 +316,7 @@ Configuration and Test Set — are deliberately not on that role, so the
 configuration-revision store and the test-set documents are reachable only through a
 resolver that applies the caller's scope to the key.
 
-Beyond the group check, **15** operations verify config-version scope, **4** filter
+Beyond the group check, **16** operations verify config-version scope, **4** filter
 their result rows by it, and **9** verify per-object ownership.
 [`scripts/api_rbac_expectations.yaml`](../../../scripts/api_rbac_expectations.yaml)
 is the manifest of record for all of this and is asserted by

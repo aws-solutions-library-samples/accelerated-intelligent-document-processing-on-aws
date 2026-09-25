@@ -174,7 +174,7 @@ regenerate the manifest.
 
 ## Files
 
-- `scripts/api_rbac_expectations.yaml` — single source of truth (118 ops + gap
+- `scripts/api_rbac_expectations.yaml` — single source of truth (119 ops + gap
   register). Entry schema is documented at the top of the file.
 - `scripts/sdlc/scan_api_rbac.py` — static scanner (`--strict` fails on known
   gaps, use to confirm a gap was fixed; `--json PATH` for machine output).
@@ -338,7 +338,7 @@ on an operation, so it declares `assigned_by:` in the register; the static scann
 > widening this warns against: `ANY` means the dispatcher checks authentication
 > only, so a forgotten resolver check on an `ANY` operation is still reachable by
 > any authenticated caller — including one in no group, which self-signup produces.
-> 8 of the 118 declared operations are `ANY`, each with a note in the expectations file
+> 8 of the 119 declared operations are `ANY`, each with a note in the expectations file
 > saying why that is the intended answer for **that operation**, not for the section
 > it sits in. In full: `getMyProfile`, `listChatSessions`,
 > `getLatestPublishedVersion`, `listFinetuningJobs`, `getFinetuningJob`,
