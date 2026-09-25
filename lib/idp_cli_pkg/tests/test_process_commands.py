@@ -754,21 +754,25 @@ class TestTestSetPath:
             client=client,
             number_of_files=6,
             config_version="v2",
+            config_revision=None,
         )
         assert "Batch ID: test-run-42" in result.output
         assert "Documents queued: 6" in result.output
 
-    def test_a_pinned_config_revision_is_dropped_on_the_test_set_path(self, runner):
-        """DEFECT, pinned as it behaves today (`cli.py:1690-1698`).
+    def test_a_pinned_config_revision_reaches_the_test_set_path(self, runner):
+        """`--config-revision` is honoured on `--test-set`, as it is on the others.
 
-        `_process_test_set` takes a `config_revision` parameter and forwards it to the
-        test-runner Lambda payload, and `_process_impl` does not pass it. So
-        `process --test-set ts --config-profile v2 --config-revision 7` runs under
-        whatever v2 currently holds, while the same flags on `--dir`, `--manifest`
-        and `--s3-uri` do pin the revision. The run is then recorded and compared as
-        if it were r7. That is the exact failure mode `test_config_revision.py`'s
-        module docstring describes — "a silently dropped revision is worse than a
-        rejected one" — surviving on the one path it was not checked on.
+        `_process_test_set` has always taken a `config_revision` and forwarded it
+        into the test-runner Lambda payload; the call site in `_process_impl` was the
+        only place it was dropped, so `--test-set --config-profile v2
+        --config-revision 7` ran under whatever v2 currently held while the run was
+        recorded, and later compared, as r7. That is the failure mode
+        `test_config_revision.py`'s module docstring describes — "a silently dropped
+        revision is worse than a rejected one" — on the one path it was not checked
+        on.
+
+        The assertion is on the value rather than on the key's presence, because a
+        call site that passed a literal `None` would satisfy the weaker form.
         """
         patcher, mock_cls, client = patched_client()
         try:
@@ -799,8 +803,58 @@ class TestTestSetPath:
         assert result.exit_code == 0, result.output
         kwargs = process_test_set.call_args.kwargs
         assert kwargs["config_version"] == "v2"
-        assert "config_revision" not in kwargs
-        assert "7" not in result.output
+        assert kwargs["config_revision"] == 7
+
+    def test_the_revision_reaches_the_test_runner_with_the_real_helper_in_between(
+        self, runner
+    ):
+        """The whole chain, because both of its ends were already covered separately.
+
+        `_process_test_set` forwarding its `config_revision` to `_invoke_test_runner`
+        had a test, and `_invoke_test_runner` putting `configRevision` in the payload
+        had a test, and the revision was still dropped — the call site between them
+        was the gap, and no test spanned it. This one runs the command by name with
+        the real `_process_test_set` in place and reads what the runner was handed, so
+        a future break anywhere along that chain fails here.
+        """
+        from idp_cli import cli as cli_module
+
+        captured = {}
+
+        def _runner(*args, **kwargs):
+            captured["args"] = args
+            return {"testRunId": "test-run-9", "filesCount": 2}
+
+        patcher, mock_cls, client = patched_client()
+        try:
+            with (
+                patch.object(cli_module, "_invoke_test_set_resolver", lambda *a: None),
+                patch.object(cli_module, "_invoke_test_runner", _runner),
+                patch.object(
+                    cli_module, "_get_test_set_document_ids", lambda *a: ["a", "b"]
+                ),
+            ):
+                result = runner.invoke(
+                    cli,
+                    [
+                        "process",
+                        "--stack-name",
+                        "my-stack",
+                        "--test-set",
+                        "fcc-example-test",
+                        "--config-profile",
+                        "v2",
+                        "--config-revision",
+                        "7",
+                    ],
+                )
+        finally:
+            patcher.stop()
+
+        assert result.exit_code == 0, result.output
+        # _invoke_test_runner(stack, test_set, context, region, resources,
+        #                     number_of_files, config_version, config_revision)
+        assert captured["args"][6:] == ("v2", 7)
 
     def test_the_test_set_counts_come_from_the_legacy_dict(self, runner):
         """The test-set path returns a dict, so the fields are read by key, not attribute.

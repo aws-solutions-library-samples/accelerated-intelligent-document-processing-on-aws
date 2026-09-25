@@ -1816,6 +1816,12 @@ def _process_impl(
                 client=client,
                 number_of_files=number_of_files,
                 config_version=config_version,
+                # Pin the revision on this path too. `_process_test_set` has always
+                # forwarded it into the test-runner payload; only this call site
+                # dropped it, so `--test-set --config-profile v2 --config-revision 7`
+                # ran under whatever v2 currently held while the run was recorded,
+                # and later compared, as r7.
+                config_revision=config_revision,
             )
             # test_set path returns legacy dict — extract fields
             result_batch_id = batch_result["batch_id"]
