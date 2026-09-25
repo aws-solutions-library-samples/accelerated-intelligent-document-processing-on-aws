@@ -413,15 +413,17 @@ def _parse_tags(tags: Optional[str]) -> Dict[str, str]:
     . : / + - _, so we split on commas then on the first '=' rather than
     using a key-name regex. Commas are not supported inside tag values.
 
+    The comma split goes through `_comma_separated_values` like every other
+    comma-separated option in this module, which is where the stripping and the
+    dropping of blank segments now happen. That used to be two inlined lines here, and
+    a second implementation of a rule is a second place for it to be wrong.
+
     Raises click.BadParameter on malformed input (missing '=' or empty key).
     """
     result: Dict[str, str] = {}
     if not tags:
         return result
-    for pair in tags.split(","):
-        pair = pair.strip()
-        if not pair:
-            continue
+    for pair in _comma_separated_values(tags):
         if "=" not in pair:
             raise click.BadParameter(
                 f"Invalid tag '{pair}'. Expected key=value,key2=value2.",
@@ -1609,7 +1611,13 @@ def delete_documents_cmd(
 
         # Get document list
         if document_ids:
-            doc_list = [d.strip() for d in document_ids.split(",")]
+            doc_list = _comma_separated_values(document_ids)
+            if not doc_list:
+                console.print(
+                    "[red]✗ Error: --document-ids contains no document IDs. Give one "
+                    "or more S3 object keys, comma-separated.[/red]"
+                )
+                sys.exit(1)
             console.print(f"Selected {len(doc_list)} document(s) for deletion")
         elif pattern:
             console.print(
@@ -2352,7 +2360,13 @@ def _rerun_inference_impl(
 
         # Get document count for confirmation display
         if document_ids:
-            doc_id_list = [doc_id.strip() for doc_id in document_ids.split(",")]
+            doc_id_list = _comma_separated_values(document_ids)
+            if not doc_id_list:
+                console.print(
+                    "[red]✗ Error: --document-ids contains no document IDs. Give one "
+                    "or more document IDs, comma-separated, or use --batch-id.[/red]"
+                )
+                sys.exit(1)
             console.print(f"Processing {len(doc_id_list)} specified documents")
             reprocess_doc_ids = doc_id_list
             reprocess_batch_id = None
@@ -2850,7 +2864,14 @@ def download_results(
         if file_types == "all":
             types_list = ["all"]
         else:
-            types_list = [t.strip() for t in file_types.split(",")]
+            types_list = _comma_separated_values(file_types)
+            if not types_list:
+                console.print(
+                    "[red]✗ Error: --file-types contains no file types. Give one or "
+                    "more of pages, sections, summary, evaluation — comma-separated — "
+                    "or 'all'.[/red]"
+                )
+                sys.exit(1)
 
         # Download results
         result = client.batch.download_results(
@@ -3624,26 +3645,41 @@ def validate_manifest_cmd(manifest: str):
         sys.exit(1)
 
 
-def _test_run_ids_from(option_value: str) -> List[str]:
-    """Split a `--test-run-ids` value on commas, dropping blanks.
+def _comma_separated_values(option_value: str) -> List[str]:
+    """Split a comma-separated option value, dropping blank segments.
 
-    `str.split` never returns an empty list, and that is the whole reason this
-    exists. `"".split(",")` is `[""]` and `"run-a,".split(",")` is
-    `["run-a", ""]`, so a blank segment arrives as an id that is the empty string:
-    `if not ids` after a plain split is unreachable code, and a length check counts
-    a trailing comma as a second run. Both spellings of that mistake were live —
-    `--test-run-ids ""` asked the service to abort a run whose id was `""`, and
-    `--test-run-ids "run-a,"` passed `test-compare`'s "at least 2" check with one
-    real id and then rendered a column for a run that does not exist.
+    **Every comma-separated option in this module parses through this function.**
+    `str.split` never returns an empty list, and that is the whole reason it exists:
+    `"".split(",")` is `[""]` and `"a,".split(",")` is `["a", ""]`, so a blank segment
+    arrives as a *value* that is the empty string. Two consequences, and both have
+    shipped here.
 
-    Dropping the blanks makes the callers' own guards reachable and correct, rather
-    than adding a separate check beside each of them.
+    A `if not values` guard after a plain split is **unreachable code** -- it reads like
+    a check and can never run -- so the empty string went on to be used as if it were a
+    real value: `--test-run-ids ""` asked the service to abort a run whose id was `""`,
+    and `--document-ids ""` asked about a document whose S3 object key was `""`.
+
+    And a length check counts a trailing comma as another value: `--test-run-ids
+    "run-a,"` passed `test-compare`'s "at least 2 ids" check with one real id and then
+    rendered a column for a run that does not exist.
+
+    Dropping the blanks during parsing is what makes each caller's own guard reachable
+    and mean what it says, instead of a separate blank check beside every one of them.
+    That matters more than the individual fix: this was originally corrected at the two
+    `--test-run-ids` sites only, and five others -- `--document-ids` twice,
+    `--file-types`, `--check-stack-regions` and `--features` -- carried the identical
+    bare split for a further release. A shared parser is the form of the fix that does
+    not leave the next one behind, and there is **no** exception: `_parse_tags` splits
+    each segment again on `=`, but its comma split comes through here too, so
+    `str.split(",")` appears exactly once in this module and a test derived from the AST
+    holds it that way.
 
     Args:
-        option_value: The raw `--test-run-ids` value.
+        option_value: The raw option value, as typed.
 
     Returns:
-        The non-empty ids, stripped, in the order given. Possibly empty.
+        The non-blank values, stripped, in the order given. Possibly empty -- which is
+        the point, and which every caller must then refuse.
     """
     return [
         candidate.strip() for candidate in option_value.split(",") if candidate.strip()
@@ -4679,7 +4715,13 @@ def remove_residual_resources_from_deleted_stacks(
     """
     try:
         # Parse regions list
-        regions_list = [r.strip() for r in check_stack_regions.split(",")]
+        regions_list = _comma_separated_values(check_stack_regions)
+        if not regions_list:
+            console.print(
+                "[red]✗ Error: --check-stack-regions contains no regions. Give one or "
+                "more region names, comma-separated.[/red]"
+            )
+            sys.exit(1)
 
         client = IDPClient(region=region)
         cleanup_result = client.stack.cleanup_orphaned(
@@ -4817,9 +4859,19 @@ def config_create(
     try:
         from idp_common.config.merge_utils import generate_config_template
 
-        # Parse features - could be a preset or comma-separated list
+        # Parse features - could be a preset or comma-separated list. The comma is what
+        # decides which of the two it is, so that branch is left alone; only the blank
+        # segments inside a list change, and a list that is all blanks is refused rather
+        # than handed on as a section whose name is the empty string.
         if "," in features:
-            feature_list = [f.strip() for f in features.split(",")]
+            feature_list = _comma_separated_values(features)
+            if not feature_list:
+                console.print(
+                    "[red]✗ Error: --features contains no section names. Give a preset "
+                    "('min', 'core', 'all') or one or more section names, "
+                    "comma-separated.[/red]"
+                )
+                sys.exit(1)
         else:
             feature_list = features  # type: ignore
 
@@ -7185,7 +7237,7 @@ def test_compare(
     try:
         # Parse test run IDs. Blank segments are dropped, so a trailing comma no
         # longer counts as a second run and satisfy this check with one real id.
-        test_run_id_list = _test_run_ids_from(test_run_ids)
+        test_run_id_list = _comma_separated_values(test_run_ids)
 
         if len(test_run_id_list) < 2:
             console.print(
@@ -7430,7 +7482,7 @@ def abort_test_run(
         # guard below reachable: after a plain `split(",")` it never was, because
         # `"".split(",")` is `[""]`, and `--test-run-ids ""` went on to ask the
         # service to abort a run whose id is the empty string.
-        test_run_id_list = _test_run_ids_from(test_run_ids)
+        test_run_id_list = _comma_separated_values(test_run_ids)
 
         if not test_run_id_list:
             console.print("[red]✗ No test run IDs provided[/red]")

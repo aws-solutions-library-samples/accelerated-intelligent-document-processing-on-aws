@@ -303,6 +303,17 @@ For evaluation workflows with accuracy metrics, see the [Complete Evaluation Wor
 > `--config-profile`. `--config-revision` is unrelated: it selects a *revision
 > within* a profile. See [configuration-profiles.md](configuration-profiles.md#terminology-which-word-means-what).
 
+> **Comma-separated options:** every option documented below as comma-separated
+> (`--document-ids`, `--test-run-ids`, `--file-types`, `--check-stack-regions`,
+> `--features`, `--tags`) parses through one shared helper that **drops blank
+> segments**, so a trailing or doubled comma is
+> harmless — `--document-ids "a,b,"` names two documents, not three. A value that
+> contains **no** non-blank segment is **refused** with exit 1 rather than treated as
+> one value that is the empty string, which matters most for a list a script built
+> from a variable that turned out to be empty: `--document-ids ""` used to ask about a
+> document whose S3 object key was `""`, and `--document-ids ","` used to announce
+> "Selected 2 document(s) for deletion".
+
 ### `deploy`
 
 Deploy or update an IDP CloudFormation stack.
