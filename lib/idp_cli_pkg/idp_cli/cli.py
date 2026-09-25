@@ -1309,12 +1309,22 @@ def delete(
             )
 
         # Show CloudFormation deletion results.
-        # success=True  → deletion completed (waited to DELETE_COMPLETE)
-        # success=False + status=INITIATED → deletion started but not waited on
-        # success=False + other status    → genuine failure
-        initiated_only = not result.success and result.status == "INITIATED"
+        #   status=INITIATED → deletion started, not waited on (no --wait)
+        #   success=True     → deletion completed (waited to DELETE_COMPLETE)
+        #   otherwise        → genuine failure
+        #
+        # The INITIATED test comes first and does NOT also require `success` to be
+        # false. `StackOperation.delete` computes
+        # `success = result.get("success", status == "INITIATED")` and the underlying
+        # no-wait path sets no `success` key, so an initiated-but-unwaited deletion
+        # arrives as `success=True, status="INITIATED"`: the old
+        # `not result.success and result.status == "INITIATED"` could never be true.
+        # A user omitting `--wait` was told "✓ Stack deleted successfully!" while
+        # CloudFormation was still deleting, with "Status: INITIATED" as the only
+        # hint, and never saw the console path or the `--force --wait` command below.
+        initiated_only = result.status == "INITIATED"
 
-        if result.success:
+        if result.success and not initiated_only:
             console.print("\n[green]✓ Stack deleted successfully![/green]")
             console.print(f"Stack: {stack_name}")
             console.print(f"Status: {result.status}")
@@ -1414,8 +1424,11 @@ def delete(
                 console.print(
                     "[yellow]Some resources may remain - check AWS Console[/yellow]"
                 )
-        elif result.success:
-            # Standard deletion without force-delete-all — stack was fully deleted
+        elif result.success and not initiated_only:
+            # Standard deletion without force-delete-all — stack was fully deleted.
+            # `not initiated_only` matters: this note reads as a post-mortem of a
+            # finished deletion, and it was printing under a deletion that had only
+            # been started, reinforcing the false "deleted successfully" above it.
             console.print()
             console.print(
                 "[bold]Note:[/bold] LoggingBucket (if exists) is retained by design."
