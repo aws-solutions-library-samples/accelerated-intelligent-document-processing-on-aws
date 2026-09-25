@@ -1761,6 +1761,47 @@ def _process_impl(
             console.print("[red]✗ Error: Cannot specify multiple input sources[/red]")
             sys.exit(1)
 
+        # `--config` cannot be honoured on a batch submission, so refuse rather
+        # than submit the batch under a configuration the caller did not ask for.
+        #
+        # Forwarding the value would not honour it either. `batch.process` takes a
+        # `config_path`, hands it to `BatchProcessor(config_path=...)`, which assigns
+        # `self.config_path` and never reads it again — there is no read of that
+        # attribute anywhere in `idp_sdk`. A wiring fix would therefore leave the
+        # batch running under the stack's existing configuration exactly as before,
+        # while making the option look plumbed to the next reader. Applying a local
+        # YAML for real means writing it into the stack's configuration table, which
+        # re-configures the stack for every later run rather than for this batch, and
+        # is not something an unqualified `--config` should do.
+        #
+        # A batch is paid work whose results the caller will compare and act on, so
+        # the wrong configuration is not a degraded outcome. The two-step form below
+        # is the supported way to process under a file, and it is the one the run is
+        # then recorded against.
+        if config:
+            console.print(
+                "[red]✗ Error: --config is not applied to a batch submission.[/red]"
+            )
+            console.print(
+                f"  Nothing in the submission path reads [cyan]{escape(str(config))}"
+                "[/cyan], so the batch would run under the stack's existing "
+                "configuration at full cost."
+            )
+            console.print(
+                "[yellow]Upload the file as a configuration profile, then process "
+                "under that profile:[/yellow]"
+            )
+            console.print(
+                f"   [cyan]idp-cli config-upload --stack-name {escape(stack_name)}"
+                f" --config-file {escape(str(config))}"
+                " --config-profile <name>[/cyan]"
+            )
+            console.print(
+                f"   [cyan]idp-cli process --stack-name {escape(stack_name)} ..."
+                " --config-profile <name>[/cyan]"
+            )
+            sys.exit(1)
+
         from idp_sdk import IDPClient
 
         client = IDPClient(stack_name=stack_name, region=region)
@@ -1775,6 +1816,12 @@ def _process_impl(
                 client=client,
                 number_of_files=number_of_files,
                 config_version=config_version,
+                # Pin the revision on this path too. `_process_test_set` has always
+                # forwarded it into the test-runner payload; only this call site
+                # dropped it, so `--test-set --config-profile v2 --config-revision 7`
+                # ran under whatever v2 currently held while the run was recorded,
+                # and later compared, as r7.
+                config_revision=config_revision,
             )
             # test_set path returns legacy dict — extract fields
             result_batch_id = batch_result["batch_id"]
@@ -1883,9 +1930,15 @@ def _process_impl(
     help="Include subdirectories when scanning (default: recursive)",
 )
 @click.option(
+    # Deliberately untyped. `click.Path(exists=True)` would make a mistyped path
+    # exit 2 on the path before the refusal is reached, so the user would fix the
+    # typo only to be told the option is not applied at all — two round trips for
+    # one mistake. Nothing here opens the file, so its existence is irrelevant.
     "--config",
-    type=click.Path(exists=True),
-    help="Path to configuration YAML file (optional)",
+    help=(
+        "Not applied to a batch, and refused rather than ignored. Upload the file "
+        "with 'config-upload' and process under it with --config-profile."
+    ),
 )
 @click.option(
     "--batch-prefix",
@@ -2120,9 +2173,15 @@ def reprocess(
     help="Include subdirectories when scanning (default: recursive)",
 )
 @click.option(
+    # Deliberately untyped. `click.Path(exists=True)` would make a mistyped path
+    # exit 2 on the path before the refusal is reached, so the user would fix the
+    # typo only to be told the option is not applied at all — two round trips for
+    # one mistake. Nothing here opens the file, so its existence is irrelevant.
     "--config",
-    type=click.Path(exists=True),
-    help="Path to configuration YAML file (optional)",
+    help=(
+        "Not applied to a batch, and refused rather than ignored. Upload the file "
+        "with 'config-upload' and process under it with --config-profile."
+    ),
 )
 @click.option(
     "--batch-prefix",
@@ -5606,17 +5665,27 @@ def config_sync_bda(
 @click.option(
     "--page-label",
     multiple=True,
-    help="Label for corresponding --page-range (e.g., 'W2 Form'). Used as class name hint per range.",
+    help=(
+        "Label for corresponding --page-range (e.g., 'W2 Form'). Used as class name "
+        "hint per range. Optional per range, but a label with no range is refused."
+    ),
 )
 @click.option(
     "--auto-detect",
     is_flag=True,
-    help="Auto-detect document section boundaries using AI, then discover each section.",
+    help=(
+        "Auto-detect document section boundaries using AI, then discover each "
+        "section. Cannot be combined with --page-range, --page-label, -g or "
+        "--class-hint, none of which this mode applies."
+    ),
 )
 @click.option(
     "--detect-only",
     is_flag=True,
-    help="Only detect section boundaries (use with --auto-detect). Prints boundaries without running discovery.",
+    help=(
+        "Only detect section boundaries. Requires --auto-detect, and is refused "
+        "without it. Prints boundaries without running discovery."
+    ),
 )
 @click.option(
     "--model-id",
@@ -5666,6 +5735,16 @@ def discover(
     JSON file per schema; if path is a file, writes all schemas as a
     JSON array.
 
+    Option combinations that cannot be honoured are refused before any Bedrock
+    call rather than resolved silently, since discovery is paid and its output is
+    written to disk and consumed as configuration:
+
+    \b
+      --auto-detect with -g or --class-hint : this mode applies neither
+      --auto-detect with --page-range       : both decide where the sections are
+      --detect-only without --auto-detect   : otherwise a full discovery ran
+      more --page-label than --page-range   : the extra labels had no range
+
     Examples:
 
       # Single document
@@ -5698,6 +5777,139 @@ def discover(
     """
     import json
     from pathlib import Path
+
+    # Contradictory or unusable option combinations are refused here, ahead of the
+    # `try` block and therefore ahead of `IDPClient(...)`, so a refusal costs no
+    # client construction and no Bedrock call. Each of these was previously accepted
+    # and then ignored, and discovery is paid work whose output is written to disk and
+    # consumed as configuration — so the wrong answer is not a degraded one, and a
+    # warning the user reads after the charge is not a remedy.
+
+    # `--auto-detect` cannot apply `-g` or `--class-hint`. The SDK's auto-detect arm
+    # calls `_run_auto_detect_and_discover(doc, config_version, stack_name, model_id)`
+    # and forwards neither, so there is nowhere for either to be applied — a wiring
+    # fix is not available here. `--class-hint` is additionally a contradiction in
+    # this mode: auto-detect infers one class per detected section, so a single class
+    # name does not describe what the command produces.
+    if auto_detect:
+        _unusable = []
+        if ground_truth:
+            _unusable.append("--ground-truth/-g")
+        # `is not None` rather than truthiness: `--class-hint ""` is an option the user
+        # typed, and dropping it because it is empty is the same accepted-then-ignored
+        # shape in miniature. An absent option is `None`.
+        if class_hint is not None:
+            _unusable.append("--class-hint")
+        if _unusable:
+            console.print(
+                f"[red]✗ Error: --auto-detect cannot apply {' or '.join(_unusable)}."
+                "[/red]"
+            )
+            console.print(
+                "  Auto-detect infers one class per detected section and applies "
+                "neither, so the run would cost the same and disregard them."
+            )
+            console.print(
+                "[yellow]Drop --auto-detect to discover the whole document, where "
+                "both apply:[/yellow]"
+            )
+            # Every document and every ground truth, not just the first: the
+            # non-auto-detect form the hint suggests accepts all of them, and a hint
+            # that quietly narrows the user's work to one file is its own small
+            # version of this issue.
+            _rerun = "idp-cli discover"
+            for _doc_path in document:
+                _rerun += f" -d {escape(_doc_path)}"
+            for _gt_path in ground_truth:
+                _rerun += f" -g {escape(_gt_path)}"
+            if class_hint is not None:
+                _rerun += f' --class-hint "{escape(class_hint)}"'
+            console.print(f"   [cyan]{_rerun}[/cyan]")
+            console.print(
+                "[yellow]Or name each section yourself with --page-range and "
+                "--page-label, whose labels are the per-section class names.[/yellow]"
+            )
+            sys.exit(1)
+
+    # `--detect-only` is only consulted inside the auto-detect arm, so on its own it
+    # fell through to standard discovery and ran a full schema inference — a *more*
+    # expensive operation than the boundary detection that was asked for, and the
+    # opposite of what the flag is for. That is why this refuses rather than warns.
+    # The option's own help already says "use with --auto-detect"; this enforces the
+    # dependency it documents instead of leaving it to be discovered from a bill.
+    if detect_only and not auto_detect:
+        console.print("[red]✗ Error: --detect-only requires --auto-detect.[/red]")
+        console.print(
+            "  On its own it was disregarded and a full schema discovery ran instead, "
+            "which costs more than the boundary detection you asked for."
+        )
+        console.print("[yellow]Detect boundaries only:[/yellow]")
+        console.print(
+            f"   [cyan]idp-cli discover -d {escape(document[0])}"
+            " --auto-detect --detect-only[/cyan]"
+        )
+        sys.exit(1)
+
+    # `--auto-detect` and `--page-range` are two alternative answers to one question —
+    # where the sections are. The auto-detect arm returned before the page-range arm
+    # was reached, so hand-pinned ranges were discarded and the user paid for
+    # AI-chosen boundaries while the header said "Auto-Detect Sections" and mentioned
+    # nothing. This is the case a warning serves worst: the command has no basis on
+    # which to pick one of the two, so resolving the contradiction by source order is
+    # a guess, and refusing is what `--auto-detect` and `--page-range` already each do
+    # when given more than one document.
+    if auto_detect and page_range:
+        console.print(
+            "[red]✗ Error: --auto-detect and --page-range both decide where the "
+            "sections are; give one.[/red]"
+        )
+        console.print(
+            f"  {len(page_range)} page range(s) were given and would have been "
+            "disregarded in favour of AI-detected boundaries."
+        )
+        console.print(
+            "[yellow]Drop --page-range to let the model find the boundaries, or drop "
+            "--auto-detect to use the ranges you pinned.[/yellow]"
+        )
+        sys.exit(1)
+
+    # A `--page-label` with no `--page-range` to pair with was dropped by the
+    # index pairing below, so that section lost its class-name hint and took a
+    # model-chosen `$id` — which then becomes the schema's filename on disk. Both
+    # options are repeated and order-dependent, so the usual cause is a missing range
+    # rather than a deliberate extra label, and the run is paid.
+    #
+    # The rule is the comparison, not a list of shapes: *fewer* labels than ranges
+    # stays legitimate, because a label is optional per range, and a label given with
+    # no ranges at all (`--page-label X` on its own) is covered by the same comparison
+    # rather than needing a case of its own.
+    if len(page_label) > len(page_range):
+        console.print(
+            f"[red]✗ Error: {len(page_label)} --page-label(s) were given for "
+            f"{len(page_range)} --page-range(s).[/red]"
+        )
+        console.print("  Labels pair with ranges in order, so these have no range:")
+        for _orphan in page_label[len(page_range) :]:
+            # An empty or whitespace label would otherwise render as a bare bullet,
+            # which names nothing and is the hardest case to spot on a command line.
+            console.print(
+                f"    - {escape(_orphan)}" if _orphan.strip() else "    - (empty label)"
+            )
+        if auto_detect:
+            # "Add the missing --page-range" is the wrong remedy here: the next guard
+            # up refuses --auto-detect together with --page-range, so following it
+            # would land the user on a second refusal.
+            console.print(
+                "[yellow]--auto-detect names each section itself, so drop the "
+                "label.[/yellow]"
+            )
+        else:
+            console.print(
+                "[yellow]Add the missing --page-range, or drop the extra label. A "
+                "range may be given without a label; a label may not be given "
+                "without a range.[/yellow]"
+            )
+        sys.exit(1)
 
     try:
         from idp_sdk import IDPClient
