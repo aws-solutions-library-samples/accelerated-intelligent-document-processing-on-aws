@@ -1603,25 +1603,20 @@ def test_page_ranges_are_parsed_into_start_end_and_label_triples(runner, sdk, tm
 
 
 @pytest.mark.unit
-def test_more_page_labels_than_ranges_drops_the_extra_labels_silently(
+def test_more_page_labels_than_ranges_is_refused_and_the_extras_are_named(
     runner, sdk, tmp_path
 ):
-    """DEFECT: an unmatched `--page-label` is discarded without a word.
+    """A label with no range was dropped by the index pairing, so it is refused.
 
-    Labels are paired to ranges by index (`cli.py:5496`), and a label beyond the
-    last range is simply never read. Since the two options are repeated and
-    order-dependent, a user who adds a label but forgets its range — or who lists
-    them in two separate blocks — loses the class-name hint for that section and
-    gets a model-chosen `$id` instead, which then becomes the schema's filename.
+    Labels pair with ranges by index, and a label beyond the last range was never
+    read. Since both options are repeated and order-dependent, the usual cause is a
+    forgotten range — and the lost value is the class-name hint for that section,
+    which decides the schema's `$id` and therefore the filename it is written under.
+    The run is paid, so the mistake is refused before it is charged for rather than
+    reported afterwards, and each unpaired label is named so the mismatch is visible
+    without counting the command line.
     """
     from idp_cli.cli import discover
-
-    sdk.client.discovery.run_multi_section.return_value = DiscoveryBatchResult(
-        total=1,
-        succeeded=1,
-        failed=0,
-        results=[DiscoveryResult(status="SUCCESS", json_schema=SCHEMA_A)],
-    )
 
     result = runner.invoke(
         discover,
@@ -1637,11 +1632,72 @@ def test_more_page_labels_than_ranges_drops_the_extra_labels_silently(
         ],
     )
 
+    assert result.exit_code == 1, result.output
+    assert "2 --page-label(s) were given for 1 --page-range(s)" in result.output
+    assert "Orphaned Label" in result.output
+    # Only the unpaired one is listed; the paired label is not an error.
+    assert "Cover Letter" not in result.output
+    sdk.assert_never_constructed()
+    sdk.assert_no_discovery()
+
+
+@pytest.mark.unit
+def test_a_page_label_with_no_ranges_at_all_falls_under_the_same_rule(
+    runner, sdk, tmp_path
+):
+    """`--page-label X` on its own is the same mismatch, 1 against 0.
+
+    The guard is a comparison rather than a list of shapes, so this needs no case of
+    its own in the code — and this test is what establishes that it does not have
+    one. Without `--page-range` the command would otherwise have run standard
+    discovery and never looked at the label at all.
+    """
+    from idp_cli.cli import discover
+
+    result = runner.invoke(
+        discover, ["-d", _doc(tmp_path, "package.pdf"), "--page-label", "W2"]
+    )
+
+    assert result.exit_code == 1, result.output
+    assert "1 --page-label(s) were given for 0 --page-range(s)" in result.output
+    sdk.assert_never_constructed()
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "labels", [[], ["Cover Letter"]], ids=["no-labels", "one-label-two-ranges"]
+)
+def test_fewer_labels_than_ranges_stays_legitimate(runner, sdk, tmp_path, labels):
+    """A label is optional per range, so the guard must be `>` and not `!=`.
+
+    This is the half of the rule that a stricter comparison would break, and it is
+    the documented multi-section usage: the second range simply gets no hint.
+    """
+    from idp_cli.cli import discover
+
+    sdk.client.discovery.run_multi_section.return_value = DiscoveryBatchResult(
+        total=2,
+        succeeded=2,
+        failed=0,
+        results=[
+            DiscoveryResult(status="SUCCESS", json_schema=SCHEMA_A),
+            DiscoveryResult(status="SUCCESS", json_schema=SCHEMA_B),
+        ],
+    )
+    args = ["-d", _doc(tmp_path, "package.pdf"), "--page-range", "1-2"]
+    args += ["--page-range", "3-5"]
+    for label in labels:
+        args += ["--page-label", label]
+
+    result = runner.invoke(discover, args)
+
     assert result.exit_code == 0, result.output
-    assert sdk.client.discovery.run_multi_section.call_args.kwargs["page_ranges"] == [
-        {"start": 1, "end": 2, "label": "Cover Letter"}
+    ranges = sdk.client.discovery.run_multi_section.call_args.kwargs["page_ranges"]
+    assert ranges == [
+        {"start": 1, "end": 2, "label": labels[0] if labels else None},
+        {"start": 3, "end": 5, "label": None},
     ]
-    assert "Orphaned Label" not in result.output
+    assert "--page-label(s) were given" not in result.output
 
 
 @pytest.mark.unit

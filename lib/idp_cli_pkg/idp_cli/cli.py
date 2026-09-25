@@ -5838,6 +5838,31 @@ def discover(
         )
         sys.exit(1)
 
+    # A `--page-label` with no `--page-range` to pair with was dropped by the
+    # index pairing below, so that section lost its class-name hint and took a
+    # model-chosen `$id` — which then becomes the schema's filename on disk. Both
+    # options are repeated and order-dependent, so the usual cause is a missing range
+    # rather than a deliberate extra label, and the run is paid.
+    #
+    # The rule is the comparison, not a list of shapes: *fewer* labels than ranges
+    # stays legitimate, because a label is optional per range, and a label given with
+    # no ranges at all (`--page-label X` on its own) is covered by the same comparison
+    # rather than needing a case of its own.
+    if len(page_label) > len(page_range):
+        console.print(
+            f"[red]✗ Error: {len(page_label)} --page-label(s) were given for "
+            f"{len(page_range)} --page-range(s).[/red]"
+        )
+        console.print("  Labels pair with ranges in order, so these have no range:")
+        for _orphan in page_label[len(page_range) :]:
+            console.print(f"    - {escape(_orphan)}")
+        console.print(
+            "[yellow]Add the missing --page-range, or drop the extra label. A range "
+            "may be given without a label; a label may not be given without a "
+            "range.[/yellow]"
+        )
+        sys.exit(1)
+
     try:
         from idp_sdk import IDPClient
 
