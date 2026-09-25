@@ -64,6 +64,7 @@ from __future__ import annotations
 
 import ast
 import json
+import os
 from datetime import datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
@@ -755,6 +756,76 @@ def test_a_large_enough_recent_sample_excludes_older_documents(tracking):
 
 
 @pytest.mark.unit
+@pytest.mark.parametrize(
+    ("window", "expected_count"),
+    [(2, 5), (None, 10)],
+)
+def test_the_history_window_argument_decides_which_documents_are_in_scope(
+    tracking, window, expected_count
+):
+    """The per-request window has to reach the scan, not just be passed around.
+
+    Five documents an hour old and five five hours old, against a configured default
+    of 24 hours. Asking for two hours must see only the recent five; asking for
+    nothing must fall back to the deployed 24 and see all ten. Both directions are
+    needed: a function that ignored its argument entirely would still pass the
+    `None` case, and one that ignored the environment would still pass the `2` case.
+
+    This is the only test that exercises the real function with a window — the
+    handler-level ones assert the value a patched lookup received, which says the
+    argument was threaded but not that it changes anything.
+    """
+    now = datetime.utcnow()
+    for i in range(5):
+        timed_document(
+            tracking,
+            f"recent-{i}",
+            started=(now - timedelta(hours=1, seconds=20)).strftime(
+                "%Y-%m-%dT%H:%M:%S"
+            ),
+            completed=(now - timedelta(hours=1)).strftime("%Y-%m-%dT%H:%M:%S"),
+            metering=durations(OCR=10.0),
+        )
+    for i in range(5):
+        timed_document(
+            tracking,
+            f"older-{i}",
+            started=(now - timedelta(hours=5, seconds=600)).strftime(
+                "%Y-%m-%dT%H:%M:%S"
+            ),
+            completed=(now - timedelta(hours=5)).strftime("%Y-%m-%dT%H:%M:%S"),
+            metering=durations(OCR=10.0),
+        )
+
+    result = index.get_real_latency_metrics("p", window)
+
+    assert result["processing_time_percentiles"]["count"] == expected_count
+
+
+@pytest.mark.unit
+def test_the_history_window_argument_is_reported_in_the_scan_log(tracking, capsys):
+    """The window the scan actually used, named in the line an operator reads.
+
+    Asserted against the configured default as well as the requested value, so a
+    function that logged the argument while scanning on the environment value — or
+    the reverse — is still caught.
+    """
+    timed_document(
+        tracking,
+        "doc-1",
+        started=(datetime.utcnow() - timedelta(seconds=20)).strftime(
+            "%Y-%m-%dT%H:%M:%S"
+        ),
+        completed=datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%S"),
+        metering=durations(OCR=10.0),
+    )
+    index.get_real_latency_metrics("p", 1)
+    printed = capsys.readouterr().out
+    assert "last 1h" in printed
+    assert "last 24h" not in printed
+
+
+@pytest.mark.unit
 def test_too_few_recent_documents_falls_back_to_the_whole_history(tracking):
     """Four recent documents is under the configured minimum of five.
 
@@ -1062,27 +1133,75 @@ def test_the_token_requirement_is_the_busiest_hour_plus_a_ten_percent_buffer(tra
     assert requirements[("Extraction", "TPM")]["requiredQuota"] == "2,420"
 
 
-@pytest.mark.unit
-def test_an_hourly_breakdown_missing_the_ocr_key_is_tolerated_but_not_the_others(
-    tracking,
-):
-    """`ocrTokensPerHour` is read with a default; the other four are not.
+def breakdown_step_token_keys():
+    """The per-step token keys the handler's breakdown initialiser writes.
 
-    A caller assembling the breakdown by hand — the only way to call this function
-    other than through the handler — gets a `KeyError` for four of the five stages
-    and a silent zero for the fifth. Pinned so the asymmetry is visible rather than
-    discovered from a Lambda traceback.
+    Derived from `index.py`, and deliberately from the **producer** rather than
+    from the reader under test. Collecting the reader's subscripts would shrink
+    this universe by exactly the regression the test below guards against — a key
+    that went back to `.get(..., 0)` would stop being a subscript, drop out of the
+    parametrisation, and the suite would pass by testing one stage fewer. The
+    producer keeps listing every stage it populates either way.
+
+    The aggregate `tokensPerHour` is excluded by case: the five per-step keys spell
+    it `TokensPerHour`.
+    """
+    tree = ast.parse(Path(index.__file__).read_text(encoding="utf-8"))
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Dict):
+            continue
+        keys = {
+            key.value
+            for key in node.keys
+            if isinstance(key, ast.Constant) and isinstance(key.value, str)
+        }
+        if "classificationTokensPerHour" in keys:
+            return sorted(key for key in keys if key.endswith("TokensPerHour"))
+    return []
+
+
+STEP_TOKEN_KEYS = breakdown_step_token_keys()
+
+
+@pytest.mark.unit
+def test_the_derived_step_token_key_set_is_the_five_pipeline_stages():
+    """Closes the universe the parametrised test below runs over.
+
+    Written out as literals rather than derived a second way, because an empty or
+    short derivation makes that test collect fewer cases — and a parametrisation
+    with no cases is reported as nothing at all, which reads like a pass. This
+    fails instead, and it also catches a sixth stage being added to the
+    initialiser without being required.
+    """
+    assert STEP_TOKEN_KEYS == [
+        "assessmentTokensPerHour",
+        "classificationTokensPerHour",
+        "extractionTokensPerHour",
+        "ocrTokensPerHour",
+        "summarizationTokensPerHour",
+    ]
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("missing_key", STEP_TOKEN_KEYS)
+def test_every_per_step_token_key_in_the_breakdown_is_required(tracking, missing_key):
+    """All five stages, one rule: an absent key is a `KeyError` naming it.
+
+    OCR used to be the exception, read with a default of zero while the other four
+    were indexed. The asymmetry is the wrong way round for a quota planner — a
+    missing key defaulted to zero plans no quota for that stage, and the operator
+    meets that as Bedrock throttling in production with nothing pointing back here,
+    whereas the four that raised said which key was missing. The sole producer
+    writes all five for every hour, so no caller loses a shape it used to have.
+
+    Stated over the derived key set rather than as five hand-written cases, so a
+    stage added to the pipeline is covered without this test being edited.
     """
     put_metered(tracking, "doc-1", bedrock("Extraction", 4))
     hourly = hours(**{"9": {"docsPerHour": 60, "extractionTokensPerHour": 60000}})
     for entry in hourly:
-        del entry["ocrTokensPerHour"]
-    assert build(hourly)  # tolerated
-
-    hourly = hours(**{"9": {"docsPerHour": 60, "extractionTokensPerHour": 60000}})
-    for entry in hourly:
-        del entry["assessmentTokensPerHour"]
-    with pytest.raises(KeyError, match="assessmentTokensPerHour"):
+        del entry[missing_key]
+    with pytest.raises(KeyError, match=missing_key):
         build(hourly)
 
 
@@ -1839,20 +1958,65 @@ def test_a_metering_table_that_cannot_be_read_does_not_crash_the_scan(
 
 
 @pytest.mark.unit
-def test_the_reported_page_count_is_a_decaying_average_not_the_mean(tracking, capsys):
-    """`(running + next) / 2` weights the last document far above the first.
+def test_the_reported_page_count_is_the_mean_over_the_sampled_documents(
+    tracking, capsys
+):
+    """Page counts of 1, 10 and 100 report their mean of 37, not 52.8.
 
-    Page counts of 1, 10 and 100 give 52.8 rather than the true mean of 37, because
-    each step halves the weight of everything before it.
+    52.8 is what the running form this replaced produced — `(running + next) / 2`
+    halves the weight of everything already seen at every step, so the last document
+    scanned dominated a figure labelled as an average. It is asserted as absent
+    alongside the positive form, because a missing line satisfies the negative one
+    on its own.
 
-    The attribute read is `number_of_pages`, which is a column of the Athena
-    `metering` table and **not** something the tracking table carries — that table
-    stores a page count as `PageCount`, per the test below. So this arithmetic
-    describes a branch no deployed document reaches, and the fixture has to write
-    `number_of_pages` by hand to reach it at all. Pinned rather than deleted because
-    the branch is live code: anything that starts stamping that attribute, or a
-    change of source table, makes it reachable, and then this is the figure an
-    operator reads.
+    The documents are built with `PageCount`, which is the attribute both writers of
+    this table set beside the `Metering` payload the scan filters on. That is what
+    makes this test worth anything: the branch used to read `number_of_pages`, an
+    Athena reporting column that is never an attribute here, so it could only be
+    reached by a fixture that wrote a shape production does not.
+    """
+    for i, pages in enumerate([1, 10, 100]):
+        put_metered(
+            tracking, f"doc-{i}", bedrock("Extraction", 3), PageCount=Decimal(pages)
+        )
+    hourly = hours(**{"9": {"docsPerHour": 60, "extractionTokensPerHour": 60000}})
+    build(hourly)
+    printed = capsys.readouterr().out
+    assert "Actual pages per document from metering: 37.0" in printed
+    assert "52.8" not in printed
+    assert "mean of 3 metering records" in printed
+
+
+@pytest.mark.unit
+def test_a_zero_page_count_does_not_enter_the_mean(tracking, capsys):
+    """A record contributing no pages is not a measurement of a document's length.
+
+    Both writers omit `PageCount` rather than storing a zero, so this shape does not
+    arise from them today; the filter is in this function so that the guarantee is
+    its own rather than theirs. With the zero counted the mean of 1, 10, 100 and 0
+    would be 27.75.
+    """
+    for i, pages in enumerate([1, 10, 100, 0]):
+        put_metered(
+            tracking, f"doc-{i}", bedrock("Extraction", 3), PageCount=Decimal(pages)
+        )
+    hourly = hours(**{"9": {"docsPerHour": 60, "extractionTokensPerHour": 60000}})
+    build(hourly)
+    printed = capsys.readouterr().out
+    assert "Actual pages per document from metering: 37.0" in printed
+    assert "mean of 3 metering records" in printed
+    assert "27.8" not in printed
+
+
+@pytest.mark.unit
+def test_the_athena_spelling_of_the_page_count_is_not_what_is_read(tracking, capsys):
+    """A document carrying only `number_of_pages` contributes no measured pages.
+
+    `number_of_pages` is a column of the Athena `metering` table, not an attribute
+    of the tracking table, and reading it was why the measured page count was
+    unavailable on every stack. Kept as a test in its own right so that restoring
+    that spelling — or accepting both — is a red mark rather than a silent widening,
+    and asserted through the fallback line, which is the only visible consequence.
     """
     for i, pages in enumerate([1, 10, 100]):
         put_metered(
@@ -1860,26 +2024,6 @@ def test_the_reported_page_count_is_a_decaying_average_not_the_mean(tracking, ca
             f"doc-{i}",
             bedrock("Extraction", 3),
             number_of_pages=Decimal(pages),
-        )
-    hourly = hours(**{"9": {"docsPerHour": 60, "extractionTokensPerHour": 60000}})
-    build(hourly)
-    printed = capsys.readouterr().out
-    assert "Actual pages per document from metering: 52.8" in printed
-    assert "37.0" not in printed
-
-
-@pytest.mark.unit
-def test_the_page_count_the_tracking_table_really_stores_is_not_read(tracking, capsys):
-    """`PageCount` is the attribute, and the scan does not look at it.
-
-    This is what a deployed document looks like — `DocumentDynamoDBService` writes
-    `PageCount` — so the measured page count is never available and the report falls
-    back to the configured page values on every stack. Asserted through both printed
-    lines, because the fallback is silent apart from them.
-    """
-    for i, pages in enumerate([1, 10, 100]):
-        put_metered(
-            tracking, f"doc-{i}", bedrock("Extraction", 3), PageCount=Decimal(pages)
         )
     hourly = hours(**{"9": {"docsPerHour": 60, "extractionTokensPerHour": 60000}})
     build(hourly)
@@ -2006,21 +2150,32 @@ HAPPY_INPUT = {
 
 
 @pytest.fixture
-def wired(tracking, monkeypatch):
+def latency_windows():
+    """The history window each `get_real_latency_metrics` call was given.
+
+    One entry per call, in order, so a test can tell "asked for six hours" from
+    "asked for the deployed default" — the latter arrives as `None`.
+    """
+    return []
+
+
+@pytest.fixture
+def wired(tracking, monkeypatch, latency_windows):
     """A handler whose Service Quotas and timing lookups are supplied, not live."""
     monkeypatch.setattr(index, "get_simple_quotas", lambda: quota_set())
-    monkeypatch.setattr(
-        index,
-        "get_real_latency_metrics",
-        lambda _p: {
+
+    def timings(_pattern, latency_metrics_hours=None):
+        latency_windows.append(latency_metrics_hours)
+        return {
             "base_times": {"ocr": 10.0, "extraction": 20.0},
             "total_processing_time": 30.0,
             "processing_time_percentiles": {},
             "actual_queue_delays": {},
             "variance_factor": 1.2,
             "data_source": "document_timestamps",
-        },
-    )
+        }
+
+    monkeypatch.setattr(index, "get_real_latency_metrics", timings)
     for step in ("Classification", "Extraction", "Assessment"):
         put_metered(tracking, f"doc-{step}", bedrock(step, 2))
     return tracking
@@ -2294,9 +2449,9 @@ def test_a_ui_supplied_time_range_overrides_the_configured_one_and_clears_the_ca
     """The UI's range selector has to invalidate the five-minute timing cache.
 
     Without the reset, switching from "last 24 hours" to "last hour" would keep
-    showing the previous range's numbers. The override is written into the process
-    environment, so it also persists for every later invocation on the same warm
-    container — a subsequent request that names no range inherits this one.
+    showing the previous range's numbers: the cache is keyed by pattern alone, so
+    an entry computed over the old window is indistinguishable from one computed
+    over the new.
     """
     monkeypatch.setattr(
         index, "_processing_times_cache", {"pattern-2": {"stale": True}}
@@ -2306,10 +2461,44 @@ def test_a_ui_supplied_time_range_overrides_the_configured_one_and_clears_the_ca
 
     index.lambda_handler(payload, None)
 
-    import os
-
-    assert os.environ["LATENCY_METRICS_HOURS"] == "6"
     assert index._processing_times_cache == {}
+
+
+@pytest.mark.unit
+def test_a_ui_supplied_time_range_reaches_the_lookup_as_an_argument(
+    wired, latency_windows
+):
+    """The chosen window is threaded down the call, not stashed in the environment.
+
+    Asserted on the value the lookup received, because that is the only place the
+    choice has to arrive for the plan to be built over the right history.
+    """
+    payload = json.loads(json.dumps(HAPPY_INPUT))
+    payload["latencyMetricsHours"] = 6
+
+    index.lambda_handler(payload, None)
+
+    assert latency_windows == [6]
+
+
+@pytest.mark.unit
+def test_a_ui_supplied_time_range_does_not_outlive_the_request(wired, latency_windows):
+    """The leak this guards is a warm container, which is the normal case in Lambda.
+
+    A request naming six hours is followed here by one naming nothing, in the same
+    process, exactly as two invocations on one container would be. The second must
+    ask for the deployed default — `None`, meaning "no choice made" — rather than
+    inheriting six. Both halves are needed: asserting only the environment variable
+    would pass if the handler stopped honouring the override altogether.
+    """
+    chose_six = json.loads(json.dumps(HAPPY_INPUT))
+    chose_six["latencyMetricsHours"] = 6
+    index.lambda_handler(chose_six, None)
+
+    index.lambda_handler(json.loads(json.dumps(HAPPY_INPUT)), None)
+
+    assert latency_windows == [6, None]
+    assert os.environ["LATENCY_METRICS_HOURS"] == "24"
 
 
 # --------------------------------------------------------------------------
@@ -2588,3 +2777,66 @@ def test_the_invocation_event_is_logged_with_its_identity_redacted(wired, capsys
     assert "Received event:" in printed
     assert "operator@example.com" not in printed
     assert "abc.def" not in printed
+
+
+# --------------------------------------------------------------------------
+# Module-level invariants that no behaviour reveals
+# --------------------------------------------------------------------------
+
+
+def dotted_name(node):
+    """`a.b.c` for an attribute chain rooted in a plain name, else None."""
+    parts = []
+    while isinstance(node, ast.Attribute):
+        parts.append(node.attr)
+        node = node.value
+    if isinstance(node, ast.Name):
+        parts.append(node.id)
+        return ".".join(reversed(parts))
+    return None
+
+
+@pytest.mark.unit
+def test_dynamodb_conditions_are_reached_by_import_not_through_the_boto3_attribute():
+    """`Attr` is imported by name; no expression reaches it through `boto3`.
+
+    `boto3.dynamodb.conditions` becomes an attribute of `boto3` only because
+    creating a `dynamodb` **resource** imports that subpackage as a side effect. The
+    metering scan's filter expression used that path while sitting a few lines below
+    the resource call, so it worked by adjacency: replacing the resource with a
+    cached client — the ordinary thing to do to a helper called once per request —
+    would leave `boto3.dynamodb` undefined and the scan raising `AttributeError`.
+
+    There is no behaviour to invert here, so this is asserted on the source, in
+    three parts that close each other's gaps. The import is at **module scope**, not
+    merely present somewhere — searched over `tree.body` rather than `ast.walk`,
+    because an import inside a never-called function is still an `ImportFrom` node
+    and satisfied a walk. The name is **bound at runtime**, which no source check
+    can establish and which a non-executing import cannot fake. And nothing reaches
+    into `boto3.dynamodb`, matched over the parsed tree rather than the text so the
+    comment explaining the import cannot satisfy it.
+
+    Those three together refuse the combination that passed the first version of
+    this test with the defect fully restored: the import moved inside a function and
+    the call spelled `getattr(boto3, 'dynamodb').conditions.Attr(...)`, which is
+    rooted in a `Call` and so has no dotted name for the walker to see.
+    """
+    tree = ast.parse(Path(index.__file__).read_text(encoding="utf-8"))
+
+    imported = {
+        alias.name
+        for node in tree.body
+        if isinstance(node, ast.ImportFrom)
+        and node.module == "boto3.dynamodb.conditions"
+        for alias in node.names
+    }
+    assert "Attr" in imported
+
+    assert hasattr(index, "Attr")
+
+    reached_through_boto3 = sorted(
+        name
+        for name in (dotted_name(node) for node in ast.walk(tree))
+        if name is not None and name.startswith("boto3.dynamodb")
+    )
+    assert reached_through_boto3 == []
