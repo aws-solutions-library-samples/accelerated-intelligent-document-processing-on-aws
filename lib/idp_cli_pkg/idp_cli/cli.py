@@ -5659,17 +5659,27 @@ def config_sync_bda(
 @click.option(
     "--page-label",
     multiple=True,
-    help="Label for corresponding --page-range (e.g., 'W2 Form'). Used as class name hint per range.",
+    help=(
+        "Label for corresponding --page-range (e.g., 'W2 Form'). Used as class name "
+        "hint per range. Optional per range, but a label with no range is refused."
+    ),
 )
 @click.option(
     "--auto-detect",
     is_flag=True,
-    help="Auto-detect document section boundaries using AI, then discover each section.",
+    help=(
+        "Auto-detect document section boundaries using AI, then discover each "
+        "section. Cannot be combined with --page-range, -g or --class-hint, none of "
+        "which this mode applies."
+    ),
 )
 @click.option(
     "--detect-only",
     is_flag=True,
-    help="Only detect section boundaries (use with --auto-detect). Prints boundaries without running discovery.",
+    help=(
+        "Only detect section boundaries. Requires --auto-detect, and is refused "
+        "without it. Prints boundaries without running discovery."
+    ),
 )
 @click.option(
     "--model-id",
@@ -5718,6 +5728,16 @@ def discover(
     For --output (-o) in batch mode: if path is a directory, writes one
     JSON file per schema; if path is a file, writes all schemas as a
     JSON array.
+
+    Option combinations that cannot be honoured are refused before any Bedrock
+    call rather than resolved silently, since discovery is paid and its output is
+    written to disk and consumed as configuration:
+
+    \b
+      --auto-detect with -g or --class-hint : this mode applies neither
+      --auto-detect with --page-range       : both decide where the sections are
+      --detect-only without --auto-detect   : otherwise a full discovery ran
+      more --page-label than --page-range   : the extra labels had no range
 
     Examples:
 
