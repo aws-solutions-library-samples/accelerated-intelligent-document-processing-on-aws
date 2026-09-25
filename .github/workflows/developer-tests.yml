@@ -141,8 +141,19 @@ jobs:
         id: run-tests
         run: make test-cicd -C lib/idp_common_pkg
 
-      - name: Coverage ratchet (per-file, reads the report the step above writes)
-        run: make check-coverage-debt
+      # The step above writes ONE of the ratchet's nine trees. Without this step the
+      # other eight resolve to no report at all, so the ratchet named them as
+      # "not checked" and exited 0 — advisory-but-passing over exactly the trees
+      # where coverage had been lost, including this repository's own hook guards
+      # (issue #1256). Trees are measured concurrently and `idp_common` is skipped
+      # because the step above already produced its report; the ratchet below still
+      # requires it by name.
+      - name: Coverage reports for every other measurable tree (concurrent)
+        run: make coverage-all-cicd
+        continue-on-error: false
+
+      - name: Coverage ratchet (per-file, every registry tree required by name)
+        run: make check-coverage-debt-cicd
         continue-on-error: false
 
       # `make test-cicd -C lib/idp_common_pkg` above covers only idp_common_pkg.

@@ -297,8 +297,8 @@ path-filtered, and `Test Results` is a check run an action creates behind an `if
 so none of them reports on every PR and requiring one would leave a check pending
 forever and block every merge.
 
-Three details are worth knowing about what it reads. Eight of the ten shared gates
-are *steps* inside one job, so those eight collapse to a single requireable context
+Three details are worth knowing about what it reads. Ten of the twelve shared gates
+are *steps* inside one job, so those ten collapse to a single requireable context
 and share a single red mark — a required-check failure does not say which of them
 failed. The remaining two, the SRT scan and the dependency audit, are jobs of their
 own, one context each. It reads **both** enforcement mechanisms, classic branch

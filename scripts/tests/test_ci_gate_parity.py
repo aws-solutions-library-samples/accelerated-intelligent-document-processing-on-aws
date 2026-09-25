@@ -86,6 +86,15 @@ SHARED_GATES = [
     "make api-test-static",
     "make test-cicd",
     "make test-packages-cicd",
+    # The two halves of the coverage ratchet's reach. `coverage-all-cicd` is what
+    # produces a report per tree; `check-coverage-debt-cicd` is the ratchet with
+    # `--require-all-trees`, so a tree with no report is red BY NAME rather than
+    # named-and-passed. Before both existed, eight of the nine trees were reported as
+    # "not checked" and the gate exited 0 (#1256), which is why the pair is listed
+    # here rather than left to the universe-closure check: parity is the property
+    # that stops one CI keeping the reports and the other losing them.
+    "make coverage-all-cicd",
+    "make check-coverage-debt-cicd",
     "npx vitest run",
     "scripts/check_first_party_deps.py",
     "scripts/sdlc/validate_service_role_permissions.py",
@@ -228,8 +237,17 @@ GATES_DELIBERATELY_OUT_OF_CI = {
         "its exit status — so there is no verdict for a CI to carry. The ratchet it "
         "reports on does run in both CIs: the aggregate floor inside "
         "`test-cicd -C lib/idp_common_pkg`, and the per-file baseline via "
-        "`make check-coverage-debt`, which both configurations invoke immediately "
-        "after that test step because it reads the report the step writes."
+        "`make check-coverage-debt-cicd`, which both configurations invoke after the "
+        "test steps because it reads the reports those steps write."
+    ),
+    "check-coverage-debt": (
+        "The ratchet with no arguments, which is the LOCAL spelling. It names a tree "
+        "with no report and exits 0, so on a checkout holding one tree's report it "
+        "reports on that tree and passes — correct for a developer who measured one "
+        "tree, and the exact state that left eight of nine trees advisory-but-passing "
+        "in CI (#1256). Both CIs therefore reach `check-coverage-debt-cicd` instead, "
+        "which adds `--require-all-trees` and is in SHARED_GATES. Registered here for "
+        "this one target: the check runs in both CIs, under the other name."
     ),
     "coverage-table": (
         "Reprints the table from the last measurement without re-measuring. Reading "
@@ -241,9 +259,10 @@ GATES_DELIBERATELY_OUT_OF_CI = {
         "Measures every tree and prints each one's figure. Like `coverage` above it has "
         "no threshold and no failure mode of its own -- it exits non-zero only if a "
         "tree's own tests fail, which the test gates already report -- so there is no "
-        "verdict for CI to carry. Its output is the input to `check-coverage-debt`, "
-        "which IS reached by both CIs. Wiring it into CI would re-run nine suites to "
-        "print a table nobody reads there."
+        "verdict for CI to carry. What both CIs run is `coverage-all-cicd`, which is in "
+        "SHARED_GATES: same producer, but with a concurrency budget and skipping the "
+        "tree an earlier CI step already measured. This unbudgeted nine-tree form is "
+        "the local one."
     ),
     "coverage-summary": (
         "Prints the recorded per-tree figures out of scripts/coverage_debt.json without "

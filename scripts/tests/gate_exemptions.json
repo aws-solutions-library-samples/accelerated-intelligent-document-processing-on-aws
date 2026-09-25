@@ -2369,8 +2369,8 @@
       "premise": [
         "JUDGEMENT"
       ],
-      "ratchet": "non-vacuity",
-      "reason": "One member: idp_common/agents/analytics/assets, which holds SQL and prompt data files that happen to sit under a package directory rather than importable modules, so coverage.py reports nothing for them and there is no percentage to ratchet. Deliberately short, and meant to stay short: the honest way to have a module at 0% is to RECORD it at 0% and let the ratchet hold it there, not to exempt it from the baseline. JUDGEMENT rather than a gate_premises predicate because 'coverage.py emits no measurement for this path' is a property of the report, which the owning gate already reads -- a predicate would re-derive it from somewhere less authoritative.",
+      "ratchet": "count-pinned",
+      "reason": "One member: idp_common/agents/analytics/assets, which holds SQL and prompt data files that happen to sit under a package directory rather than importable modules, so coverage.py reports nothing for them and there is no percentage to ratchet. Deliberately short, and meant to stay short: the honest way to have a module at 0% is to RECORD it at 0% and let the ratchet hold it there, not to exempt it from the baseline. JUDGEMENT rather than a gate_premises predicate because 'coverage.py emits no measurement for this path' is a property of the report, which the owning gate already reads -- a predicate would re-derive it from somewhere less authoritative. The ratchet is COUNT-PINNED rather than non-vacuity, changed because this list became load-bearing for a second gate: `UNRECORDED_TRACKED_FILES` in scripts/tests/test_coverage_debt.py derives its universe as tracked minus recorded minus NOT_MEASURED, so from that point a one-line entry here is the documented way to make a brand-new tracked source file invisible to the closure check as well as to the runtime one -- measured: a new file plus a new entry passed both suites, 1328 tests green. Non-vacuity alone could not see it, because the pre-existing member satisfies that ratchet forever whatever else is added beside it, and 'deliberately short, and meant to stay short' was a claim about size that nothing evaluated. The member set is now pinned by test_the_not_measured_list_has_not_grown, so growing this list is a named failure rather than an exemption that takes effect the moment it is written.",
       "ratchetEvidence": "scripts/tests/test_coverage_debt.py",
       "crossReferences": [
         "scripts/coverage_debt.json::coverage_debt.json"
@@ -2722,6 +2722,20 @@
         "lib/idp_common_pkg/tests/unit/reporting/test_non_chargeable_units.py::EXPECTED_SHIELDED_SITES",
         "lib/idp_common_pkg/tests/unit/reporting/test_non_chargeable_units.py::EXPECTED_WRITER_UNITS"
       ]
+    },
+    "Makefile::COVERAGE_CICD_SKIP": {
+      "kind": "exemption",
+      "memberKind": "the name of one registry tree in check_coverage_debt.TREES whose coverage report the CI coverage-producer step does not generate",
+      "turnsOff": "nothing, for the one member it has. It removes `idp_common` from the trees `make coverage-all-cicd` measures, because the CI step immediately before it -- `make test-cicd -C lib/idp_common_pkg` -- already writes that tree's report to the path `check_coverage_debt.LEGACY_IDP_COMMON_REPORT` names. The ratchet step after it runs `--require-all-trees`, which requires `idp_common` BY NAME like every other tree, so the coverage of this tree is enforced exactly as it was; what is skipped is the second measurement of it, not the check.",
+      "premise": [
+        "JUDGEMENT"
+      ],
+      "ratchet": "universe-closure",
+      "ratchetEvidence": "scripts/check_coverage_debt.py",
+      "issues": [
+        1256
+      ],
+      "reason": "Discovered by name: the fragment `SKIP` is in the discovery vocabulary, and it matching here is the mechanism working rather than a false positive -- a variable that removes a tree from a coverage producer is exactly the shape this registry governs, whatever its intent. The judgement is bounded to one member because the variable holds one: `--skip idp_common`. Why it is JUDGEMENT rather than a computed premise: the fact that would have to be computed is 'an earlier step in the same CI job already wrote this tree's report', and that is a property of the ORDER of steps in two CI configuration files, not of a path or a file on disk, so none of the predicates in gate_premises.py can express it and a new one would have to parse and order both configs to answer for a single member. What makes the entry safe without that is the ratchet, and it is stronger than the premise would have been: `check-coverage-debt-cicd` passes `--require-all-trees`, whose required set is derived from `TREES` inside `check_coverage_debt.py` rather than written out anywhere a skip could be mirrored. So a tree named here and produced by nobody is not quietly unmeasured -- it is named in a refusal and the gate exits 2. That closure is what `test_coverage_debt.py`'s TestRequireAllTreesIsDerivedFromTheRegistry asserts, including against a tree invented by the test so the derivation cannot be satisfied by hardcoding today's names, and `test_coverage_all.py`'s test_the_cicd_makefile_target_skips_exactly_the_tree_CI_already_measured pins the membership of this variable to exactly `idp_common` and pins that the recipe still invokes the producer -- deleting the recipe body was a measured mutation that this registry entry's own gate did not catch and that assertion now does. The residual a reviewer should check is the one thing neither asserts: that the earlier CI step really still writes that report. It is not unprotected, it is protected one layer out -- if that step stops writing it, `--require-all-trees` fails naming `idp_common`, which is the loud direction."
     }
   }
 }

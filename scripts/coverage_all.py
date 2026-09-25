@@ -14,6 +14,29 @@ Each tree's report lands at ``<tree>/test-reports/coverage-<name>.xml``, which i
 the run finished: a run whose xdist workers errored writes a well-formed coverage report
 whose numbers are an artefact, and nothing inside the report itself says so.
 
+## Trees run concurrently, and the concurrency is across them rather than inside them
+
+Both CI configurations now run this before the ratchet, which is what lets the ratchet
+reach more than one tree (issue #1256). Sequentially that is a wall clock nobody would
+accept: `scripts` alone takes about 16 minutes (measured twice, 959 s and 989 s on
+different hosts) and it is one of nine.
+
+The concurrency has to be **across** trees because it cannot be inside all of them.
+:attr:`check_coverage_debt.Tree.serial` forbids ``-n auto`` for a tree whose suite drives
+the code under test as a subprocess — xdist under-collects it, and the symptom is a
+confident-looking fall in a file whose own suite is green. So `scripts` is stuck being one
+process, and the only way to hide those 16 minutes is to measure the other eight while it
+runs.
+
+That makes the **worker budget** the thing to get right. ``-n auto`` asks xdist for one
+worker per CPU, so N concurrent trees each passing it oversubscribe the host by a factor of
+N — which on a CI runner turns a wall-clock win into a loss. Each parallel tree is
+therefore given an explicit ``-n <k>`` with ``k`` a share of the host, never ``-n auto``;
+:func:`worker_share` is that division and a serial tree is given nothing at all.
+
+Output is captured per tree and printed in one block when that tree finishes, because
+interleaved pytest output from several trees is unreadable, and unreadable output on the
+producer for a gate is how a failed run gets mistaken for a slow one.
 Several of the files these suites cover are executed as **subprocesses** — a gate script
 run the way a developer runs it, a git hook run the way git runs it — and the coverage of
 a subprocess is collected only if that process starts coverage for itself.
@@ -24,13 +47,28 @@ this script makes goes through it.
 from __future__ import annotations
 
 import argparse
+import functools
 import importlib.util
+import json
 import os
+import shlex
 import subprocess
 import sys
+import threading
+import time
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
+
+#: How many trees to measure at once when ``--jobs`` is not given.
+#:
+#: Bounded in :func:`main` by the number of trees there are **and** by the host: concurrent
+#: trees share one machine, and because :func:`worker_share` floors at 2 workers, N jobs ask
+#: for at least 2N workers. More than half the CPUs' worth of jobs is therefore
+#: oversubscription, which is a slowdown dressed up as parallelism — so the value here is a
+#: ceiling a small host lowers, not a number every host obeys.
+DEFAULT_JOBS = 4
 
 _spec = importlib.util.spec_from_file_location(
     "check_coverage_debt", REPO_ROOT / "scripts" / "check_coverage_debt.py"
@@ -39,6 +77,172 @@ assert _spec and _spec.loader
 _ccd = importlib.util.module_from_spec(_spec)
 sys.modules["check_coverage_debt"] = _ccd
 _spec.loader.exec_module(_ccd)
+
+
+#: `subprocess.run` as it was at import, before anything could replace it.
+#:
+#: `scripts/tests/test_coverage_all.py` substitutes `subprocess.run` wholesale to record the
+#: pytest command lines this script builds, which is the right thing for it to intercept and
+#: the wrong thing for :func:`_hermetic_expansion` to go through: asking `make` what
+#: `$(HERMETIC_AWS)` expands to is not one of the calls under test, and routing it through
+#: the fake returned `None` and turned the safety mechanism into an exception. Holding the
+#: original here keeps the two uses of `subprocess` separable without the test having to
+#: know about this one.
+_REAL_RUN = subprocess.run
+
+#: The makefile that defines the hermetic environment every gated pytest run uses.
+HERMETIC_MK = REPO_ROOT / "make" / "hermetic_aws.mk"
+
+
+@functools.lru_cache(maxsize=8)
+def _hermetic_expansion(mk: Path) -> str:
+    """``$(HERMETIC_AWS)`` as `make` expands it, which is the only authoritative reading.
+
+    Asking `make` rather than re-parsing the file is the same move the recipe assertions in
+    `scripts/tests/test_coverage_debt.py` make, and for the same reason: a second reader of
+    a makefile is a second grammar, and the one that diverges is the one making the safety
+    decision.
+    """
+    out = _REAL_RUN(
+        [
+            "make",
+            "-s",
+            "-f",
+            str(mk),
+            "--eval=__print_hermetic:;@echo $(HERMETIC_AWS)",
+            "__print_hermetic",
+        ],
+        capture_output=True,
+        text=True,
+    )
+    assert out.returncode == 0, (
+        f"could not expand $(HERMETIC_AWS) from {mk}: {out.stderr[-400:]}"
+    )
+    return out.stdout.strip()
+
+
+def hermetic_env(env: dict[str, str] | None = None) -> dict[str, str]:
+    """Strip the machine's real AWS configuration, the way `$(HERMETIC_AWS)` does.
+
+    This script is invoked from a **gated** recipe (`coverage-all-cicd`, which both CI
+    configurations run), and it spawns `python -m pytest` itself rather than through
+    `$(PYTEST_HERMETIC)`. Without this, the nine suites it measures would run with the
+    developer's real region, real credentials and real `AWS_CONFIG_FILE` — so a suite that
+    reaches a live endpoint would quietly transact against whichever account the developer
+    is signed in to instead of failing loudly, which is the whole point of that wrapper.
+
+    ⚠️ **The environment is obtained by RUNNING the wrapper over the very environment it is
+    being asked about.** There is no parsing here, and three successive attempts to read the
+    wrapper instead of running it each failed one level deeper, which is why:
+
+    * restating the variable list was a second copy of the **list**;
+    * parsing `$(HERMETIC_AWS)` out of the makefile was a second copy of the **grammar**, and
+      it let `--unset=NAME` through;
+    * asking `make` for the expansion fixed the list but kept the grammar — `env` accepts
+      `-u NAME`, `--unset=NAME`, `--unset NAME` **and** the attached `-uNAME`, and a reader
+      that knows three of the four drops credentials into the measured suites while every
+      assertion about its output stays green, because the test checking it is the same reader.
+
+    So `env` is handed this exact environment and a child that prints what it received, and
+    what the child received **is** the answer. `env` decides what `env` means, for any
+    spelling anyone writes, and there is no grammar left to get wrong.
+    """
+    base = dict(os.environ if env is None else env)
+    # `env` and the interpreter have to be findable. A caller-supplied dict may have no PATH;
+    # borrow one for the probe and take it back out.
+    borrowed_path = "PATH" not in base
+    if borrowed_path:
+        base["PATH"] = os.environ.get("PATH", "/usr/bin:/bin")
+    # A control, so "the wrapper removed everything" and "the probe never ran" stay
+    # distinguishable: this must come back.
+    base["__HERMETIC_CONTROL__"] = "1"
+    expansion = _hermetic_expansion(HERMETIC_MK)
+    # Probed TWICE: through the wrapper, and without it. The interpreter adds variables of
+    # its own (`LC_CTYPE` on this platform), so a single probe cannot tell a wrapper's
+    # assignment from the child's own -- and it silently satisfied the non-vacuity check for a
+    # wrapper reduced to a bare `env`. Two probes cancel the child, and what is left is
+    # exactly what the wrapper does.
+    wrapped = _probe_environment(shlex.split(expansion), base)
+    direct = _probe_environment([], base)
+    assert wrapped.get("__HERMETIC_CONTROL__") == "1", (
+        f"the probe did not come back through $(HERMETIC_AWS), so what it reports is not "
+        f"this environment. Expansion was: {expansion!r}"
+    )
+    assert wrapped != direct, (
+        f"running $(HERMETIC_AWS) changed nothing — it removed no variable and set none — so "
+        f"it would strip nothing while every assertion about the result still passed on a "
+        f"machine that happened to carry no AWS configuration. Expansion was: {expansion!r}"
+    )
+    # Keys the child adds identically in both runs are the child's, not the wrapper's.
+    out = {
+        key: value
+        for key, value in wrapped.items()
+        if key in base or direct.get(key) != value
+    }
+    out.pop("__HERMETIC_CONTROL__", None)
+    if borrowed_path:
+        out.pop("PATH", None)
+    return out
+
+
+def _probe_environment(prefix: list[str], env: dict[str, str]) -> dict[str, str]:
+    """What a child sees when started as ``prefix + [python -c 'print(os.environ)']``."""
+    out = _REAL_RUN(
+        [
+            *prefix,
+            sys.executable,
+            "-c",
+            "import json, os; print(json.dumps(dict(os.environ)))",
+        ],
+        capture_output=True,
+        text=True,
+        env=env,
+    )
+    assert out.returncode == 0, (
+        f"could not run {prefix or ['(no wrapper)']} to find what it produces: "
+        f"{out.stderr[-400:]}"
+    )
+    return json.loads(out.stdout)
+
+
+def first_party_pythonpath() -> str:
+    """This checkout's first-party package roots, absolute, colon-joined.
+
+    Same rule and same reason as `FIRST_PARTY_PYTHONPATH` in `make/hermetic_aws.mk`:
+    `import idp_common` follows the editable-install pointer in the interpreter's
+    site-packages, not the checkout a suite lives in, so an unpinned run can measure a
+    different tree and read green while doing it (#1094). Derived from
+    `lib/*/pyproject.toml` rather than listed, so a package added under `lib/` is covered.
+    """
+    roots = sorted(
+        str(pyproject.parent)
+        for pyproject in (REPO_ROOT / "lib").glob("*/pyproject.toml")
+    )
+    return ":".join(roots)
+
+
+def cpu_count() -> int:
+    """CPUs this process may actually use, which on a CI runner is not ``os.cpu_count()``.
+
+    ``sched_getaffinity`` is what xdist's own ``auto`` reads, so deriving the budget from
+    anything else would hand out shares of a machine larger than the one the trees run on.
+    """
+    try:
+        return max(1, len(os.sched_getaffinity(0)))
+    except AttributeError:  # pragma: no cover - non-Linux
+        return max(1, os.cpu_count() or 1)
+
+
+def worker_share(jobs: int, cpus: int | None = None) -> int:
+    """xdist workers to give ONE tree when ``jobs`` trees are measured at once.
+
+    Never ``auto``. ``-n auto`` is per-process, so four concurrent trees each asking for it
+    request four times the host, and the oversubscription costs more than the concurrency
+    wins. At least 2, because a tree reduced to a single worker is slower than the serial
+    run it replaced while still paying xdist's startup.
+    """
+    cpus = cpu_count() if cpus is None else cpus
+    return max(2, cpus // max(1, jobs))
 
 
 #: The configuration a subprocess started by a measured suite runs coverage under.
@@ -100,7 +304,9 @@ def subprocess_coverage_env(
     return out
 
 
-def run(tree, python: str, parallel: bool) -> tuple[str, int, float | None]:
+def run(
+    tree, python: str, parallel: bool, workers: int | None = None
+) -> tuple[str, int, float | None, str]:
     report = _ccd.report_path(tree)
     report.parent.mkdir(parents=True, exist_ok=True)
     # The JUnit XML is what lets the ratchet tell a finished run from one whose workers
@@ -111,7 +317,9 @@ def run(tree, python: str, parallel: bool) -> tuple[str, int, float | None]:
     record = _ccd.run_record_path(report)
     cmd = [python, "-m", "pytest", "-q", "-p", "no:cacheprovider"]
     if parallel:
-        cmd += ["-n", "auto"]
+        # An explicit count, not `auto`: see `worker_share`. `auto` under concurrency asks
+        # for the whole host once per tree.
+        cmd += ["-n", str(workers if workers is not None else worker_share(1))]
     cmd += [
         f"--cov={tree.cov}",
         f"--cov-report=xml:{report}",
@@ -124,21 +332,66 @@ def run(tree, python: str, parallel: bool) -> tuple[str, int, float | None]:
     # absolutely: `--cov=<tree.cov>` is resolved by pytest-cov against this cwd, and a
     # child does not have this cwd.
     source = cwd if tree.cov == "." else cwd / tree.cov
-    result = subprocess.run(cmd, cwd=cwd, env=subprocess_coverage_env(cwd, source))
+    # `subprocess_coverage_env` also names COVERAGE_FILE, absolutely, under this tree's own
+    # cwd -- which is what keeps concurrent trees from interleaving into one data file, as
+    # well as what lets a child's data be found at all. Every Tree has a distinct cwd, so
+    # the per-tree property comes for free from the instrument rather than from a second
+    # mechanism here.
+    # Hermetic first, then the subprocess-coverage variables on top: this recipe is gated,
+    # so it must not hand a measured suite the machine's real AWS configuration. The
+    # PYTHONPATH pin is the other thing `$(PYTEST_HERMETIC)` would have supplied, and
+    # without it a run can measure another checkout entirely (#1094).
+    env = subprocess_coverage_env(cwd, source, env=hermetic_env())
+    pinned = first_party_pythonpath()
+    if pinned:
+        existing = env.get("PYTHONPATH")
+        env["PYTHONPATH"] = f"{pinned}:{existing}" if existing else pinned
+    result = subprocess.run(
+        cmd,
+        cwd=cwd,
+        env=env,
+        capture_output=True,
+        text=True,
+    )
     total = None
     if report.is_file():
         try:
             total = _ccd.report_total(report)
         except Exception:  # pragma: no cover - malformed report
             total = None
+    output = (result.stdout or "") + (result.stderr or "")
     # 5 == no tests collected for the marker, which is not a failure of this script.
-    return tree.name, (0 if result.returncode in (0, 5) else result.returncode), total
+    return (
+        tree.name,
+        (0 if result.returncode in (0, 5) else result.returncode),
+        total,
+        output,
+    )
 
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         "--only", action="append", help="measure just this tree (repeatable)"
+    )
+    parser.add_argument(
+        "--skip",
+        action="append",
+        default=[],
+        help=(
+            "do NOT measure this tree (repeatable) — for a caller whose earlier step "
+            "already wrote that tree's report"
+        ),
+    )
+    parser.add_argument(
+        "--jobs",
+        type=int,
+        default=None,
+        metavar="N",
+        help=(
+            f"measure N trees at once (default {DEFAULT_JOBS}; 1 is fully sequential). "
+            f"Each parallel tree gets a share of the host's CPUs, never -n auto"
+        ),
     )
     parser.add_argument(
         "--serial",
@@ -155,33 +408,94 @@ def main() -> int:
             print(f"unknown tree(s): {missing}. Known: {[t.name for t in trees]}")
             return 2
         trees = tuple(_ccd.TREES_BY_NAME[n] for n in args.only)
+    if args.skip:
+        # A misspelled --skip must not silently measure a tree the caller believes was
+        # skipped, nor silently skip nothing: either way the caller's wall-clock
+        # expectation and the gate's report coverage stop matching, which is the shape of
+        # defect this whole area is about.
+        unknown = [n for n in args.skip if n not in _ccd.TREES_BY_NAME]
+        if unknown:
+            print(
+                f"unknown tree(s) to --skip: {unknown}. "
+                f"Known: {[t.name for t in _ccd.TREES]}"
+            )
+            return 2
+        trees = tuple(t for t in trees if t.name not in set(args.skip))
+        if not trees:
+            print("--skip left no tree to measure, so nothing would be reported")
+            return 2
 
-    failures, results = [], []
-    for tree in trees:
-        print(
-            f"\n=== coverage: {tree.name} ({tree.cwd}, --cov={tree.cov}) ===",
-            flush=True,
-        )
+    jobs = DEFAULT_JOBS if args.jobs is None else args.jobs
+    if jobs < 1:
+        print(f"--jobs must be at least 1, got {jobs}")
+        return 2
+    # Bounded by the trees there are AND by the host, which is what DEFAULT_JOBS claims.
+    # The host half was previously only documented: `worker_share` floors at 2 workers, so
+    # `--jobs 4` asks for 8 xdist workers whatever the machine has, and GitHub's runner is
+    # a 4-CPU container. Oversubscription there is a slowdown dressed up as parallelism —
+    # the precise thing the budget exists to prevent — so the bound is computed rather than
+    # asserted in prose.
+    jobs = max(1, min(jobs, len(trees), cpu_count() // 2))
+    workers = worker_share(jobs)
+
+    print(
+        f"measuring {len(trees)} tree(s), {jobs} at a time, "
+        f"{workers} xdist worker(s) each on {cpu_count()} CPU(s)",
+        flush=True,
+    )
+
+    lock = threading.Lock()
+    failures: list[str] = []
+    totals: dict[str, float | None] = {}
+    started = time.monotonic()
+
+    def measure(tree) -> None:
         # A tree that declares `serial` is never run in parallel, whatever the flag
         # says: for those, `-n auto` does not just cost time, it reports coverage that is
         # wrong in a way nothing downstream can detect. `--serial` can force the rest
         # serial too, but it cannot force a serial tree parallel.
         parallel = not args.serial and not tree.serial
-        name, code, total = run(tree, python, parallel=parallel)
-        results.append((name, total))
-        if code:
-            failures.append(name)
+        began = time.monotonic()
+        name, code, total, output = run(
+            tree, python, parallel=parallel, workers=workers
+        )
+        with lock:
+            # Printed as one block per tree. Several trees' pytest output interleaved line
+            # by line is unreadable, and this is the producer for a gate: a reader who
+            # cannot find the failure summary reads a failed run as a slow one.
+            print(
+                f"\n=== coverage: {tree.name} ({tree.cwd}, --cov={tree.cov}) — "
+                f"{time.monotonic() - began:.0f}s ===",
+                flush=True,
+            )
+            print(output.rstrip(), flush=True)
+            totals[name] = total
+            if code:
+                failures.append(name)
+
+    # Submitted in registry order, which is largest-first, so the longest tree (`scripts`,
+    # serial and ~16 min) starts in the first wave rather than being picked up last when
+    # there is nothing left to overlap it with.
+    if jobs == 1:
+        for tree in trees:
+            measure(tree)
+    else:
+        with ThreadPoolExecutor(max_workers=jobs) as pool:
+            list(pool.map(measure, trees))
 
     print("\n" + "=" * 62)
-    for name, total in results:
+    for tree in trees:
+        total = totals.get(tree.name)
         print(
-            f"  {name:<26} {total:>6.2f}%"
+            f"  {tree.name:<26} {total:>6.2f}%"
             if total is not None
-            else f"  {name:<26}  (no report)"
+            else f"  {tree.name:<26}  (no report)"
         )
+    print(f"\n  wall clock: {time.monotonic() - started:.0f}s for {len(trees)} tree(s)")
     if failures:
         print(
-            f"\n⚠️  tests failed in: {', '.join(failures)} — the reports above may be partial"
+            f"\n⚠️  tests failed in: {', '.join(sorted(failures))} — the reports above "
+            f"may be partial"
         )
     print("\nNow run: python3 scripts/check_coverage_debt.py")
     return 1 if failures else 0

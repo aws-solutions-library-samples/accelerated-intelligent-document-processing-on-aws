@@ -128,19 +128,19 @@ required-but-never-reported (a renamed job) or reported-but-not-required (a new
 gate).
 
 Three contexts cover every gate on this page. `test_ci_gate_parity.py`'s
-`SHARED_GATES` names ten shared gates, and eight of the ten are *steps* inside a
+`SHARED_GATES` names twelve shared gates, and ten of the twelve are *steps* inside a
 **single** job, `developer_tests`; GitHub can only require job-level contexts, never
-individual steps, so those eight collapse to exactly **one** requireable context
+individual steps, so those ten collapse to exactly **one** requireable context
 rather than one per gate. That has a practical consequence worth knowing before you
-read a red check: because the eight share one context, they also share one red mark,
+read a red check: because the ten share one context, they also share one red mark,
 so a required-check failure does not say which of them failed. The remaining two
 shared gates — the SRT scan and the dependency audit — are jobs of their own in
-`security-checks.yml`, one context each, which is how ten gates produce three
+`security-checks.yml`, one context each, which is how twelve gates produce three
 requireable contexts.
 
 | Check context | Workflow / job | Covers |
 |---|---|---|
-| `Lint, Type Check, and Test` | `developer-tests.yml` / `developer_tests` | eight of the ten shared gates: `lint-cicd`, `typecheck`, `api-test-static`, `test-cicd`, `test-packages-cicd`, vitest, first-party dep check, service-role permissions |
+| `Lint, Type Check, and Test` | `developer-tests.yml` / `developer_tests` | ten of the twelve shared gates: `lint-cicd`, `typecheck`, `api-test-static`, `test-cicd`, `coverage-all-cicd`, `check-coverage-debt-cicd`, `test-packages-cicd`, vitest, first-party dep check, service-role permissions |
 | `SRT Security Review` | `security-checks.yml` / `srt_security_review` | `srt-setup`, `srt-scan` |
 | `Dependency Audit (SCA)` | `security-checks.yml` / `dep_audit` | `scripts/security/dep_audit.py` |
 

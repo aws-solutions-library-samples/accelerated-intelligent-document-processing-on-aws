@@ -9,8 +9,7 @@ that fail on different things.
 
 **It covers nine trees, not one.** Measuring them was the point: nobody knew `scripts/`
 was already at 81% across 33,000 statements, or that
-`feature-platform/main-stack-extensions` was at 95%, or that `idp_sdk` (36%) and
-`idp_cli` (27%) were the only genuinely low ones. An unmeasured tree is not a tree at 0%
+`feature-platform/main-stack-extensions` was at 95%. An unmeasured tree is not a tree at 0%
 — it is a tree nobody can make a decision about, and this repository had six of them.
 
 Each tree is a separate pytest invocation, because several packages ship their own
@@ -85,9 +84,14 @@ correct recovery is to re-run that one tree and record again, which depends on t
 eight reports still being accepted an hour later. Freshness therefore has to be something
 a caller asks for, not a deadline the gate imposes.
 
-Partial measurement is still a pass: one tree measured and eight unmeasured exits 0 and
-names the eight, which is the ordinary local case (`make test-cicd -C lib/idp_common_pkg`
-measures `idp_common` alone) and the CI case as well.
+Partial measurement is still a pass **for the default invocation**: one tree measured and
+eight unmeasured exits 0 and names the eight, which is the ordinary local case
+(`make test-cicd -C lib/idp_common_pkg` measures `idp_common` alone).
+
+That is deliberately not what either CI does. Both reach this through
+`make check-coverage-debt-cicd`, which passes `--require-all-trees` and so fails by name on
+any tree this run did not compare — because for a long time CI produced one report of nine
+and a partial pass was indistinguishable in a job log from a complete one. Issue #1256.
 
 ## What it is not
 
@@ -182,7 +186,8 @@ class Tree(NamedTuple):
 #: Measured 2026-09-23, before this registry existed — which is the point of it. Nobody
 #: knew `scripts/` was already at 81% across 33,000 statements, nor that
 #: `feature-platform/main-stack-extensions` was at 96%; and the two genuinely low trees
-#: (`idp_sdk` 36%, `idp_cli` 27%) were not visible as the outliers they are. An
+#: figures recorded for `idp_sdk` and `idp_cli` were stale by tens of points, which
+#: nothing could have noticed while no CI run measured either tree. An
 #: unmeasured tree is not a tree at 0%, it is a tree nobody can make a decision about.
 TREES: tuple[Tree, ...] = (
     Tree("idp_common", "lib/idp_common_pkg", "idp_common", ("-m", "not integration")),
@@ -764,7 +769,26 @@ def main() -> int:
             "saying only that nothing was checked."
         ),
     )
+    parser.add_argument(
+        "--require-all-trees",
+        action="store_true",
+        help=(
+            "Fail unless EVERY tree in the registry was checked. What both CI "
+            "configurations pass, now that they produce a report per tree"
+        ),
+    )
     args = parser.parse_args()
+
+    if args.require_all_trees:
+        # Derived from the registry, never enumerated by the caller. A Makefile or CI
+        # config listing the nine names would be a second copy of the registry, and the
+        # copy that goes stale is the one that decides what this gate is allowed to skip --
+        # so a tree added to TREES and forgotten there would be unratcheted while the gate
+        # reported that every tree was required. Issue #1256.
+        args.require_tree = [
+            *args.require_tree,
+            *(t.name for t in TREES if t.name not in set(args.require_tree)),
+        ]
 
     unknown = [n for n in args.require_tree if n not in TREES_BY_NAME]
     if unknown:
