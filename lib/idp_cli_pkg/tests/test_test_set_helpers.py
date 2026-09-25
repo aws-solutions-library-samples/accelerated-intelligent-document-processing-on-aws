@@ -4,7 +4,7 @@
 """
 Tests for the Test Studio test-set helpers in `idp_cli.cli`.
 
-Six module-level private functions sit between `idp-cli process --test-set` and the
+These module-level private functions sit between `idp-cli process --test-set` and the
 deployed stack:
 
 * `_invoke_test_set_resolver` finds the API-resolver Lambda by name and invokes it to
@@ -14,9 +14,11 @@ deployed stack:
 * `_get_test_set_document_ids` lists the test set's `input/` prefix and synthesises the
   document ids the monitor will watch for.
 * `_manifest_has_baselines` is a predicate over a manifest file.
-* `_create_test_set_from_manifest` builds a test set folder from a manifest.
-* `_process_test_set` chains the first three together and assembles the batch result
-  the monitoring code consumes.
+* `_create_test_set_from_manifest` builds a test set folder from a manifest, with
+  `_clear_s3_prefix` emptying the prefix first and `_copy_s3_baseline` bringing over a
+  baseline held in S3.
+* `_process_test_set` chains the resolver, the runner and the id listing together and
+  assembles the batch result the monitoring code consumes.
 
 Two things shaped these tests. The first is that **the Lambda payload is the contract
 with the deployed backend**: a renamed key, a string where an integer belongs or an
@@ -39,8 +41,12 @@ The Lambda client is a hand-written fake rather than `moto`, because the interes
 thing is the request this code sends and the shape of the response it is handed, and
 `moto` cannot produce a response from function code without running a container.
 Everything S3 (`_get_test_set_document_ids`, `_create_test_set_from_manifest`) runs
-against a real `moto` bucket and the objects are read back off it, except where the
-point of the test is a response `moto` will not generate — a truncated listing.
+against a real `moto` bucket and the objects are read back off it. That includes the
+paginated cases: `moto` truncates a listing at 1000 keys and issues a continuation token
+exactly as S3 does, so a fixture of 1001 real objects is what the over-one-page tests use
+rather than a hand-written double, which would only encode a belief about where the
+ceiling is. Note `moto` does **not** enforce the 1000-key limit on `DeleteObjects`, so
+the batching of the deletes is asserted from the recorded request parameters instead.
 """
 
 import io
@@ -133,6 +139,22 @@ def patched_boto3(fake_lambda=None, fake_s3=None):
         return real_client(service_name, **kwargs)
 
     return patch("idp_cli.cli.boto3.client", side_effect=_client)
+
+
+def all_keys(s3_client, bucket, prefix=""):
+    """Every key under `prefix`, read back through the paginator.
+
+    A bare `list_objects_v2` read-back stops at 1000 keys just as the code under test
+    used to, so a test whose fixture is deliberately larger than one page cannot use one
+    to check its own result: the assertion would be measured through the same ceiling it
+    exists to catch.
+    """
+    paginator = s3_client.get_paginator("list_objects_v2")
+    return {
+        obj["Key"]
+        for page in paginator.paginate(Bucket=bucket, Prefix=prefix)
+        for obj in page.get("Contents", [])
+    }
 
 
 def resources(**overrides):
@@ -832,41 +854,122 @@ def test_document_ids_degrades_to_empty_on_an_s3_error(capsys):
 
 
 @pytest.mark.unit
-def test_document_ids_silently_truncates_a_test_set_over_one_thousand_files():
-    """DEFECT (pinned, not fixed): the listing is not paginated, so it stops at 1000.
+def test_document_ids_covers_a_test_set_over_one_thousand_files(api_calls):
+    """Every input document gets an id, past the 1000-key ceiling on one listing.
 
-    `list_objects_v2` returns at most 1000 keys and sets `IsTruncated` with a
-    `NextContinuationToken`; this helper reads neither. A test set with more than 1000
-    input documents therefore yields document ids for the first 1000 only, and the
-    monitor reports the run complete once those finish while the rest are still being
-    processed — a silently short pass on the largest test sets, which are the ones a
-    regression run cares about most.
+    `list_objects_v2` returns at most 1000 keys per response and reports the rest
+    through `NextContinuationToken`. Reading a single response gave ids for the first
+    1000 documents only, so the monitor reported the run complete once those finished
+    while the remainder were still being processed, and any evaluation computed from it
+    was scored on a subset without saying so — a short pass on exactly the largest test
+    sets, which are the ones a regression run cares about most.
 
-    Proved with a fake S3 client rather than by putting 1001 objects into `moto`: the
-    claim is that the truncation flag is ignored and exactly one listing is made, and a
-    fake is the only way to assert the second half.
+    **The fixture has to exceed one page or it cannot tell the fix from the defect**: at
+    1000 objects or fewer a single listing returns everything and both versions agree.
+    The second page is produced by `moto` itself rather than by a hand-written double —
+    1001 real objects in a real bucket, which is where the truncation semantics are
+    authoritative. Measured on this fixture, `moto` answers an unpaginated
+    `list_objects_v2` with `KeyCount` 1000 and `IsTruncated` true, and the paginator
+    with 1001 keys over two pages.
+
+    Both halves of the property are asserted: the count and the presence of a document
+    that can only come from the second page, *and* — from the recorded API calls — that
+    a second `ListObjectsV2` was actually issued carrying a continuation token. Without
+    the second half a listing that happened to return everything in one response would
+    pass this test while leaving the ceiling in place.
     """
     from idp_cli.cli import _get_test_set_document_ids
 
-    listings = []
+    with mock_aws():
+        s3 = boto3.client("s3", region_name="us-east-1")
+        s3.create_bucket(Bucket=TEST_SET_BUCKET)
+        for i in range(1001):
+            s3.put_object(
+                Bucket=TEST_SET_BUCKET, Key=f"set1/input/doc{i:05d}.pdf", Body=b"x"
+            )
+        before_call = len(api_calls)
 
-    class TruncatingS3:
-        def list_objects_v2(self, **kwargs):
-            listings.append(kwargs)
-            return {
-                "Contents": [{"Key": "set1/input/first.pdf"}],
-                "IsTruncated": True,
-                "NextContinuationToken": "page-2",
-                "KeyCount": 1,
-            }
-
-    with patched_boto3(fake_s3=TruncatingS3()):
         ids = _get_test_set_document_ids("IDP", "set1", "run-9", None, resources())
 
-    assert ids == ["run-9/first.pdf"]
-    assert len(listings) == 1, "the continuation token is never followed"
-    assert "ContinuationToken" not in listings[0]
-    assert listings[0] == {"Bucket": TEST_SET_BUCKET, "Prefix": "set1/input/"}
+        made_by_the_helper = api_calls[before_call:]
+
+    assert len(ids) == 1001
+    # Keys sort lexically, so the last document is only reachable on page two.
+    assert "run-9/doc01000.pdf" in ids
+    assert ids[0] == "run-9/doc00000.pdf"
+
+    listings = [
+        call for call in made_by_the_helper if call.operation == "ListObjectsV2"
+    ]
+    assert len(listings) == 2, [call.operation for call in made_by_the_helper]
+    assert "ContinuationToken" not in listings[0].params
+    assert listings[0].params["Prefix"] == "set1/input/"
+    assert listings[1].params.get("ContinuationToken"), (
+        "the second page must be fetched with the token the first one returned"
+    )
+
+
+# ================================================================================
+# _clear_s3_prefix
+# ================================================================================
+
+
+@pytest.mark.unit
+def test_clear_s3_prefix_counts_what_s3_says_it_deleted(capsys):
+    """A per-key failure inside a 200 response is counted honestly and named.
+
+    `DeleteObjects` answers 200 with a `Deleted` list *and* an `Errors` list: a key a
+    bucket policy denies, or one under a legal hold, fails while the rest of the batch
+    succeeds. Counting the request instead of the response would report a prefix as
+    emptied while objects remain under it — the same harm as the unpaginated listing,
+    reached by another route, and the caller's next act is to upload a new test set on
+    top of whatever survived.
+
+    `moto` deletes whatever it is asked for and never produces a partial failure, so the
+    response here is shaped by a wrapper around a real moto client: the first key is
+    deleted for real and the rest come back as `AccessDenied`, in the shape botocore
+    returns. Everything else, including the listing, is the real client's.
+    """
+    from idp_cli.cli import _clear_s3_prefix
+
+    class PartiallyDenyingS3:
+        def __init__(self, inner):
+            self._inner = inner
+
+        def __getattr__(self, name):
+            return getattr(self._inner, name)
+
+        def delete_objects(self, Bucket, Delete):
+            keys = [obj["Key"] for obj in Delete["Objects"]]
+            allowed, denied = keys[:1], keys[1:]
+            for key in allowed:
+                self._inner.delete_object(Bucket=Bucket, Key=key)
+            return {
+                "Deleted": [{"Key": key} for key in allowed],
+                "Errors": [
+                    {
+                        "Key": key,
+                        "Code": "AccessDenied",
+                        "Message": "Access Denied",
+                    }
+                    for key in denied
+                ],
+            }
+
+    with mock_aws():
+        s3 = boto3.client("s3", region_name="us-east-1")
+        s3.create_bucket(Bucket=TEST_SET_BUCKET)
+        for i in range(3):
+            s3.put_object(Bucket=TEST_SET_BUCKET, Key=f"set1/{i}.json", Body=b"{}")
+
+        cleared = _clear_s3_prefix(PartiallyDenyingS3(s3), TEST_SET_BUCKET, "set1/")
+        remaining = all_keys(s3, TEST_SET_BUCKET)
+
+    assert cleared == 1, "the count must come from the response, not from the request"
+    assert len(remaining) == 2
+    output = capsys.readouterr().out
+    assert "2 object(s) under set1/ could not be deleted" in output
+    assert "AccessDenied" in output
 
 
 # ================================================================================
@@ -1114,7 +1217,68 @@ def test_create_test_set_clears_only_its_own_prefix(tmp_path, capsys):
         }
 
     assert keys == {"set1/input/invoice.pdf", "set2/input/keep.pdf"}
-    assert "Cleared existing test set files" in capsys.readouterr().out
+    assert "Cleared 2 existing test set files" in capsys.readouterr().out
+
+
+@pytest.mark.unit
+def test_create_test_set_clears_every_object_past_the_first_page(
+    tmp_path, capsys, api_calls
+):
+    """Recreating a test set of more than 1000 objects deletes all of them.
+
+    The destructive half of the same unpaginated listing as
+    `test_document_ids_covers_a_test_set_over_one_thousand_files`, and the worse half:
+    the clear read one `list_objects_v2` response, so re-creating a test set larger than
+    one page deleted its first 1000 objects and left the rest in place, orphaned under a
+    prefix the caller was told it had emptied — and the very next thing the caller does
+    is upload a new test set over it, so the survivors become one set's inputs and
+    baselines mixed into another's, which is a wrong evaluation rather than a missing
+    one. Fixing the read and not this would have left the more damaging direction.
+
+    1001 stale objects, one manifest row. The assertions are that **no** stale object
+    survives — named individually for the lexically last one, which a single listing
+    cannot reach — and that every `DeleteObjects` request carried at most 1000 keys,
+    which is the other half of the same ceiling: S3 rejects a larger request outright,
+    and `moto` does not enforce that, so a test asserting only that the objects are gone
+    would pass here against code that fails against the real service.
+    """
+    from idp_cli.cli import _create_test_set_from_manifest
+
+    doc = tmp_path / "invoice.pdf"
+    doc.write_text("pdf")
+    manifest = _manifest_with(tmp_path, [(doc, "")])
+
+    with mock_aws():
+        s3 = boto3.client("s3", region_name="us-east-1")
+        s3.create_bucket(Bucket=TEST_SET_BUCKET)
+        for i in range(1001):
+            s3.put_object(
+                Bucket=TEST_SET_BUCKET, Key=f"set1/stale/{i:05d}.json", Body=b"{}"
+            )
+        s3.put_object(Bucket=TEST_SET_BUCKET, Key="set2/input/keep.pdf", Body=b"keep")
+        before_call = len(api_calls)
+
+        _create_test_set_from_manifest(str(manifest), "set1", "IDP", None, resources())
+
+        keys = all_keys(s3, TEST_SET_BUCKET)
+        deletes = [
+            call
+            for call in api_calls[before_call:]
+            if call.operation == "DeleteObjects"
+        ]
+
+    assert "set1/stale/01000.json" not in keys, (
+        "the object beyond the first listing page survived the clear"
+    )
+    assert not any(key.startswith("set1/stale/") for key in keys)
+    assert keys == {"set1/input/invoice.pdf", "set2/input/keep.pdf"}
+    assert "Cleared 1001 existing test set files" in capsys.readouterr().out
+
+    assert len(deletes) == 2, [len(d.params["Delete"]["Objects"]) for d in deletes]
+    for delete in deletes:
+        assert len(delete.params["Delete"]["Objects"]) <= 1000, (
+            "DeleteObjects takes at most 1000 keys; a larger request is rejected by S3"
+        )
 
 
 @pytest.mark.unit
@@ -1193,22 +1357,22 @@ def test_create_test_set_leaves_the_marker_behind_when_an_upload_fails(
 
 
 @pytest.mark.unit
-def test_create_test_set_silently_uploads_no_baselines_for_an_s3_baseline_source(
-    tmp_path, capsys
-):
-    """DEFECT (pinned, not fixed): an `s3://` baseline_source uploads zero baseline files.
+def test_create_test_set_copies_baselines_from_an_s3_baseline_source(tmp_path, capsys):
+    """An `s3://` baseline_source is copied into the test set, directory shape kept.
 
-    The baseline step is a local `glob.glob(os.path.join(baseline_source, "**", "*"))`,
-    which matches nothing when `baseline_source` is an S3 URI. That is exactly what
-    `generate-manifest --dir ... --test-set ...` writes into its manifest: it rewrites
-    every `baseline_source` to `s3://<test set bucket>/<set>/baseline/<file>/`. So
-    feeding a manifest produced by that command back into this function creates a test
-    set whose `input/` is complete and whose `baseline/` is empty, with no warning and
-    no error — and an evaluation over it has nothing to compare against.
+    That URI is not an exotic input: `generate-manifest --dir ... --test-set ...`
+    rewrites every `baseline_source` it emits to
+    `s3://<test set bucket>/<set>/baseline/<file>/`, so it is what a manifest produced by
+    this CLI and fed back in contains. The baseline step was a local
+    `glob.glob(os.path.join(baseline_source, "**", "*"))`, which matches nothing against
+    such a value, so the result was a test set with a complete `input/` and an empty
+    `baseline/` — nothing for an evaluation to score against — reported as "created with
+    1 files", because that count is manifest rows and not uploaded objects.
 
-    The document itself still copies fine, which is why the failure is invisible: the
-    file count printed at the end counts manifest rows, not uploaded objects, so it
-    reports "created with 1 files" either way.
+    The assertion is therefore that **the baseline objects exist at the destination**,
+    with the nested path below the source prefix preserved, and that their bodies came
+    across. Asserting on the printed output could not tell the two versions apart:
+    printing success is exactly what the broken code did.
     """
     from idp_cli.cli import _create_test_set_from_manifest
 
@@ -1230,22 +1394,150 @@ def test_create_test_set_silently_uploads_no_baselines_for_an_s3_baseline_source
         s3.put_object(
             Bucket=TEST_SET_BUCKET,
             Key="other/baseline/invoice.pdf/result.json",
-            Body=b"{}",
+            Body=b'{"a": 1}',
+        )
+        s3.put_object(
+            Bucket=TEST_SET_BUCKET,
+            Key="other/baseline/invoice.pdf/sections/1/result.json",
+            Body=b'{"b": 2}',
+        )
+        # A zero-byte key ending in a slash: what a console-created "folder" leaves
+        # behind. Copying it would put a key ending in a slash into the test set, so it
+        # is skipped, and the count below is what shows that it was.
+        s3.put_object(
+            Bucket=TEST_SET_BUCKET,
+            Key="other/baseline/invoice.pdf/sections/",
+            Body=b"",
         )
 
         _create_test_set_from_manifest(str(manifest), "set1", "IDP", None, resources())
 
-        keys = {
-            obj["Key"]
-            for obj in s3.list_objects_v2(Bucket=TEST_SET_BUCKET, Prefix="set1/").get(
-                "Contents", []
-            )
-        }
+        keys = all_keys(s3, TEST_SET_BUCKET, prefix="set1/")
+        copied_body = s3.get_object(
+            Bucket=TEST_SET_BUCKET, Key="set1/baseline/invoice.pdf/result.json"
+        )["Body"].read()
+
+    assert keys == {
+        "set1/input/invoice.pdf",
+        "set1/baseline/invoice.pdf/result.json",
+        "set1/baseline/invoice.pdf/sections/1/result.json",
+    }
+    assert copied_body == b'{"a": 1}'
+    output = capsys.readouterr().out
+    assert "Baseline objects uploaded: 2" in output
+    assert "Warning" not in output
+
+
+@pytest.mark.unit
+def test_create_test_set_warns_when_a_baseline_source_yields_no_objects(
+    tmp_path, capsys
+):
+    """A baseline source that resolves to nothing is named, rather than passed over.
+
+    Reported per row because the count printed at the end is manifest rows: a test set
+    whose `baseline/` came out empty is indistinguishable there from one whose baselines
+    all copied, and the consequence — an evaluation with nothing to compare against —
+    does not surface until the run is scored. A misspelled prefix and a baseline source
+    pointing into the very prefix that was just cleared both land here.
+    """
+    from idp_cli.cli import _create_test_set_from_manifest
+
+    manifest = _manifest_with(
+        tmp_path,
+        [("s3://source-bucket/docs/invoice.pdf", f"s3://{TEST_SET_BUCKET}/typo/")],
+    )
+
+    with mock_aws():
+        s3 = boto3.client("s3", region_name="us-east-1")
+        s3.create_bucket(Bucket="source-bucket")
+        s3.create_bucket(Bucket=TEST_SET_BUCKET)
+        s3.put_object(Bucket="source-bucket", Key="docs/invoice.pdf", Body=b"pdf")
+
+        _create_test_set_from_manifest(str(manifest), "set1", "IDP", None, resources())
+
+        keys = all_keys(s3, TEST_SET_BUCKET, prefix="set1/")
 
     assert keys == {"set1/input/invoice.pdf"}
     output = capsys.readouterr().out
-    assert "created with 1 files" in output
-    assert "Warning" not in output, "nothing tells the user the baselines were skipped"
+    assert "Warning: no baseline files found for invoice.pdf" in output
+    assert "Baseline objects uploaded: 0" in output
+
+
+@pytest.mark.unit
+def test_create_test_set_copies_a_baseline_source_naming_a_single_object(
+    tmp_path, capsys
+):
+    """A `baseline_source` naming one object copies that object under its own name.
+
+    The URI may name a prefix or a single key — an operator editing a manifest by hand
+    writes either — and taking the remainder of the key below the prefix gives the empty
+    string in the second case. The basename is used instead, so the baseline lands as
+    `baseline/<document>/<object name>` rather than at a key ending in a slash.
+    """
+    from idp_cli.cli import _create_test_set_from_manifest
+
+    manifest = _manifest_with(
+        tmp_path,
+        [
+            (
+                "s3://source-bucket/docs/invoice.pdf",
+                "s3://source-bucket/gt/invoice.json",
+            )
+        ],
+    )
+
+    with mock_aws():
+        s3 = boto3.client("s3", region_name="us-east-1")
+        s3.create_bucket(Bucket="source-bucket")
+        s3.create_bucket(Bucket=TEST_SET_BUCKET)
+        s3.put_object(Bucket="source-bucket", Key="docs/invoice.pdf", Body=b"pdf")
+        s3.put_object(Bucket="source-bucket", Key="gt/invoice.json", Body=b"{}")
+
+        _create_test_set_from_manifest(str(manifest), "set1", "IDP", None, resources())
+
+        keys = all_keys(s3, TEST_SET_BUCKET, prefix="set1/")
+
+    assert keys == {
+        "set1/input/invoice.pdf",
+        "set1/baseline/invoice.pdf/invoice.json",
+    }
+
+
+@pytest.mark.unit
+def test_create_test_set_does_not_draw_in_a_sibling_prefix(tmp_path, capsys):
+    """A key sharing the leading characters of the source prefix is not a member of it.
+
+    `s3://bucket/gt/inv` listed as a raw `Prefix` also returns `gt/inv2/other.json`,
+    which belongs to a different document — copying it would file another document's
+    baseline under this one and store it at the mangled key `.../inv/2/other.json`. The
+    source prefix is matched at a path boundary, so only the intended document's
+    baseline comes across; an exact object match is still honoured, which is what the
+    single-object case above relies on.
+    """
+    from idp_cli.cli import _create_test_set_from_manifest
+
+    manifest = _manifest_with(
+        tmp_path,
+        [("s3://source-bucket/docs/invoice.pdf", "s3://source-bucket/gt/inv")],
+    )
+
+    with mock_aws():
+        s3 = boto3.client("s3", region_name="us-east-1")
+        s3.create_bucket(Bucket="source-bucket")
+        s3.create_bucket(Bucket=TEST_SET_BUCKET)
+        s3.put_object(Bucket="source-bucket", Key="docs/invoice.pdf", Body=b"pdf")
+        s3.put_object(Bucket="source-bucket", Key="gt/inv/result.json", Body=b"{}")
+        s3.put_object(Bucket="source-bucket", Key="gt/inv2/other.json", Body=b"{}")
+
+        _create_test_set_from_manifest(str(manifest), "set1", "IDP", None, resources())
+
+        keys = all_keys(s3, TEST_SET_BUCKET, prefix="set1/")
+
+    assert keys == {
+        "set1/input/invoice.pdf",
+        "set1/baseline/invoice.pdf/result.json",
+    }
+    assert "Baseline objects uploaded: 1" in capsys.readouterr().out
 
 
 @pytest.mark.unit
