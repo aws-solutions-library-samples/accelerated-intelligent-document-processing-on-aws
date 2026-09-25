@@ -1739,6 +1739,26 @@ class TestRequireAllTreesIsDerivedFromTheRegistry:
                 )
 
 
+#: `on:` of the workflow that holds the coverage gates, pinned.
+#:
+#: Narrowing this leaves both steps present, unconditional and correctly ordered in a job
+#: that never runs on a pull request to the integration branch -- an escape no assertion
+#: about a step can reach. Measured: `branches: ["release/**"]` left every other check here
+#: green. Pinned rather than shape-checked, because `branches`, `branches-ignore`, `paths`
+#: and `types` can each narrow it and enumerating the ways is the denylist mistake again.
+GITHUB_WORKFLOW_TRIGGER = {"pull_request": {"branches": ["**"]}}
+
+#: `rules:` of the GitLab job that holds them, pinned, for that reason and one more.
+#:
+#: A `rules:` list cannot be forbidden the way a step's `if:` can, and a never-true
+#: condition is non-empty and carries no `when`, so neither a presence check nor a
+#: `when: never` check sees it.
+GITLAB_GATE_JOB_RULES = [
+    {"if": '$CI_PIPELINE_SOURCE == "merge_request_event"'},
+    {"if": "$CI_COMMIT_BRANCH"},
+]
+
+
 @pytest.mark.unit
 class TestTheCIStepsAreLiveAndNotMerelyPresent:
     """Present is not running, and this gate's whole subject is a check that read as
@@ -1887,19 +1907,27 @@ class TestTheCIStepsAreLiveAndNotMerelyPresent:
                 "on",
                 "1",
             ), f"job `{name}` sets {key}={value!r}, so its red mark blocks nothing"
-        # `when: never` at job scope, and the same thing expressed through `rules:`.
-        assert str(job.get("when")).lower() != "never", job.get("when")
-        rules = job.get("rules") or []
-        assert rules, (
-            f"job `{name}` has no `rules:`, so this check has nothing to inspect and the "
-            f"`rules: [{{when: never}}]` case would pass vacuously"
+        # `when` is an ALLOWLIST, not a denylist. `never` is the obvious way to stop a job
+        # running and `manual` is the quiet one: the job then exists, reads as skipped, and
+        # waits for a button nobody presses on a merge request.
+        when = job.get("when")
+        assert when in (None, "on_success"), (
+            f"job `{name}` sets when={when!r}. Only `on_success` (or nothing) lets this "
+            f"gate block anything: `never` skips it, `manual` waits for a button press."
         )
-        assert not all(
-            str((r or {}).get("when", "")).lower() == "never"
-            for r in rules
-            if isinstance(r, dict)
-        ), (
-            f"every rule on job `{name}` is `when: never`, so the job never runs: {rules}"
+        # `rules:` cannot be forbidden the way a step's `if:` can, and whether a rule can
+        # ever hold is evaluation rather than reading -- a never-true condition
+        # (`$CI_COMMIT_BRANCH == "a-branch-that-never-exists"`) is non-empty, carries no
+        # `when`, and never runs, so neither a presence check nor a `when: never` check
+        # sees it. The list is PINNED instead: any edit to it is a finding somebody reads,
+        # which is the only reading-based answer that works here.
+        assert job.get("rules") == GITLAB_GATE_JOB_RULES, (
+            f"job `{name}`'s `rules:` no longer match what was recorded. That is not "
+            f"necessarily wrong, but it decides whether this gate runs at all, and a "
+            f"never-true condition is indistinguishable from a live one without "
+            f"evaluating it. Confirm the job still runs on merge requests and on branch "
+            f"pushes, then update GITLAB_GATE_JOB_RULES.\n"
+            f"  recorded: {GITLAB_GATE_JOB_RULES}\n  now:      {job.get('rules')}"
         )
         script = [str(line).strip() for line in job["script"]]
         assert script.index("make coverage-all-cicd") < script.index(
@@ -1911,60 +1939,189 @@ class TestTheCIStepsAreLiveAndNotMerelyPresent:
                     line
                 )
 
-    @pytest.mark.parametrize(
-        "target", ["coverage-all-cicd", "check-coverage-debt-cicd"]
-    )
-    def test_neither_recipe_tells_make_to_ignore_the_exit_status(self, target):
-        """The `-` prefix, which `make -n` cannot show and which defeats everything above.
+    def test_the_github_workflow_still_triggers_on_every_pull_request(self):
+        """The escape that is nowhere near either step: narrow the workflow's own trigger.
 
-        `-@python3 …` makes `make` ignore the command's status, so the recipe runs, prints
-        the refusal, and the target exits 0. Measured: `make check-coverage-debt-cicd` exits
-        0 while printing `🚫 coverage ratchet: no verdict`. `make -n` prints the command
-        unchanged, so this one has to be read off the recipe text — the prefix characters
-        are the one thing the text carries and the expansion does not.
+        `on: pull_request: branches: ["release/**"]` leaves both steps present,
+        unconditional and correctly ordered inside a job that never runs on a pull request
+        to the integration branch. Nothing about a step can see that, so the trigger is
+        pinned and changing it is a finding somebody reads.
         """
-        makefile = (REPO_ROOT / "Makefile").read_text(encoding="utf-8")
-        body = makefile.split(f"\n{target}:")[1].split("\n\n")[0]
-        recipe = [ln for ln in body.splitlines() if ln.startswith("\t")]
-        assert recipe, (
-            f"no recipe lines found for {target}; this check would be vacuous"
+        raw = yaml.safe_load(
+            (REPO_ROOT / ".github/workflows/developer-tests.yml").read_text(
+                encoding="utf-8"
+            )
         )
-        for line in recipe:
-            prefix = line[1:].lstrip()[:2]
-            assert not prefix.startswith("-"), (
-                f"{target} has a recipe line prefixed with `-`, which tells make to ignore "
-                f"its exit status, so the target succeeds however the command fails: "
-                f"{line.strip()!r}"
+        # PyYAML resolves the bare key `on` to the boolean True, so a lookup by the string
+        # silently finds nothing -- which would make this assertion compare None to the
+        # recorded value and fail loudly rather than pass vacuously, but only by luck.
+        trigger = raw.get("on", raw.get(True))
+        assert trigger == GITHUB_WORKFLOW_TRIGGER, (
+            "the workflow holding the coverage gates no longer triggers on what was "
+            "recorded, so both steps can be present and correct in a job that never "
+            f"runs.\n  recorded: {GITHUB_WORKFLOW_TRIGGER}\n  now:      {trigger}\n"
+            "If deliberate, confirm the gates still run on a pull request targeting the "
+            "integration branch, then update GITHUB_WORKFLOW_TRIGGER."
+        )
+
+    #: A deterministic way to make each target's command fail, needing no coverage report.
+    #:
+    #: An unknown tree name: both scripts reject one and exit 2, whatever reports happen to
+    #: be lying around. That matters because the alternative -- run the target and hope the
+    #: ratchet refuses -- depends on the local tree having no reports, which is true in CI
+    #: and false on a developer's machine after `make coverage-all`.
+    FORCED_FAILURE = {
+        "check-coverage-debt-cicd": (
+            "CHECK_COVERAGE_DEBT_ARGS=--require-tree=a_tree_that_does_not_exist"
+        ),
+        "coverage-all-cicd": ("COVERAGE_CICD_SKIP=--skip a_tree_that_does_not_exist"),
+    }
+
+    @pytest.mark.parametrize("target", sorted(FORCED_FAILURE))
+    def test_a_failing_command_makes_the_target_fail(self, target):
+        """RUN the target and require a non-zero exit, rather than reading its recipe.
+
+        Reading cannot close this. Every textual rule invites the next spelling, and three
+        were measured, each making `make check-coverage-debt-cicd` **exit 0** while printing
+        `🚫 coverage ratchet: no verdict`:
+
+        * ``-@python3 …`` — the `-` prefix tells make to ignore the command's status.
+        * ``@-python3 …`` — the same thing with two characters transposed. make strips any
+          leading run of ``@ - +`` in any order, so a rule that checks for one order misses
+          the other.
+        * ``.IGNORE: check-coverage-debt-cicd`` — outside the recipe altogether, so a rule
+          about recipe lines cannot see it at all. ``MAKEFLAGS += -i`` is the same shape, and
+          so is ``|| true`` appended to the line.
+
+        Running the target answers all of them and anything else of the kind, because the
+        property asserted is the one that matters — a failing command makes the target fail —
+        rather than any of the ways of breaking it. It costs one sub-second `make` call: the
+        command is given an unknown tree name, which both scripts refuse without measuring
+        anything.
+        """
+        override = self.FORCED_FAILURE[target]
+        name, _, value = override.partition("=")
+        out = subprocess.run(
+            ["make", "--no-print-directory", target, f"{name}={value}"],
+            cwd=REPO_ROOT,
+            capture_output=True,
+            text=True,
+        )
+        assert out.returncode != 0, (
+            f"`make {target}` exited 0 although its command failed. Its output was:\n"
+            f"{(out.stdout + out.stderr)[-800:]}\n"
+            f"A recipe line prefixed with `-` or `@-`, suffixed with `|| true`, or named in "
+            f"`.IGNORE:`/`MAKEFLAGS += -i` makes the target succeed however the command "
+            f"fails — so this gate would report nothing while both CIs stayed green."
+        )
+
+    def test_the_forced_failure_really_is_the_command_failing(self):
+        """The control for the test above, which would otherwise pass on a target that
+        always fails, or on a `make` that could not find the target at all."""
+        for target in self.FORCED_FAILURE:
+            out = subprocess.run(
+                ["make", "-n", "--no-print-directory", target],
+                cwd=REPO_ROOT,
+                capture_output=True,
+                text=True,
+            )
+            assert out.returncode == 0, (
+                f"`make -n {target}` fails, so the test above would pass for the wrong "
+                f"reason: {out.stderr[-300:]}"
             )
 
 
-#: Tracked source files a tree has that its baseline does not record, per tree, as measured.
+#: The exact tracked source files each tree's baseline does not record, as measured.
 #:
-#: Pinned rather than required to be zero, because zero is not reachable today and a check
-#: that cannot pass gets deleted. The residual is 55 files in three trees and each has the
-#: same cause: **no suite imports them**, so no coverage report mentions them, so there is
-#: no figure to record. `write_baseline` records what a report contains intersected with
-#: what git tracks, which is why they are absent rather than at 0.
+#: The **set**, not the count. A count cancels: adding one unrecorded module while recording
+#: one of the existing ones leaves the number unchanged, and that was measured on `scripts` —
+#: this repository's own gate layer — with a new unratcheted module and every check green. A
+#: set makes the new path a named finding instead of an arithmetic coincidence, and it is no
+#: harder to satisfy.
 #:
-#: * `scripts` — 17 standalone operator scripts (`scripts/model_finetuning/`,
-#:   `scripts/examples/`) that no test imports.
-#: * `main_stack_extensions` — 7, six of them copies of `log_sanitizer.py` vendored into
-#:   individual Lambda directories.
-#: * `pii_anonymizer_hook` — 31, the vendored `vendor/pii_anonymizer/` tree, whose scope
-#:   decision is already recorded against `ruff.toml`'s `extend-exclude`.
+#: Not required to be empty, because empty is not reachable and a check that cannot pass gets
+#: deleted. Every path here has the same cause — **no suite imports it**, so no coverage
+#: report mentions it, so there is no figure to record; `write_baseline` records what a report
+#: contains intersected with what git tracks, which is why these are absent rather than at 0.
+#: Three groups, and the reason is per group rather than one sentence over all three:
 #:
-#: Six trees are at **zero**, and that is the half that does the work: a new module added to
-#: any of them is a finding here the moment it is committed, with no measurement needed.
-UNRECORDED_TRACKED_FILES = {
-    "idp_common": 0,
-    "scripts": 17,
-    "idp_sdk": 0,
-    "main_stack_extensions": 7,
-    "idp_cli": 0,
-    "idp_feature_sdk": 0,
-    "seller_entitlement": 0,
-    "pii_anonymizer_hook": 31,
-    "pii_anonymizer_api": 0,
+#: * `scripts` — standalone operator scripts (`model_finetuning/`, `examples/`,
+#:   `security/live_checks/`, the PyPI name-placeholder packages) that no test imports.
+#: * `main_stack_extensions` — seven copies of `log_sanitizer.py`, one vendored into each
+#:   Lambda directory.
+#: * `pii_anonymizer_hook` — the vendored `vendor/pii_anonymizer/` tree, whose scope decision
+#:   is already recorded against `ruff.toml`'s `extend-exclude`.
+#:
+#: Six trees are **empty**, and that is the half that does the work: a new module in any of
+#: them is a finding here the moment it is committed, with nothing measured.
+UNRECORDED_TRACKED_FILES: dict[str, list[str]] = {
+    "idp_common": [],
+    "scripts": [
+        "scripts/examples/dynamodb_service_example.py",
+        "scripts/model_finetuning/create_finetuning_job.py",
+        "scripts/model_finetuning/create_provisioned_throughput.py",
+        "scripts/model_finetuning/inference_example.py",
+        "scripts/model_finetuning/prepare_nova_finetuning_data.py",
+        "scripts/pypi-placeholders/idp-accelerator-cli/idp_accelerator_cli/__init__.py",
+        "scripts/pypi-placeholders/idp-feature-sdk/idp_feature_sdk/__init__.py",
+        "scripts/pypi-placeholders/idp-mcp-connector/idp_mcp_connector/__init__.py",
+        "scripts/sdlc/generate_api_validation_spec.py",
+        "scripts/sdlc/validate_buildspec.py",
+        "scripts/security/live_checks/cognito_groups.py",
+        "scripts/security/live_checks/oidc_provider/deploy.py",
+        "scripts/security/live_checks/verify_execution_scope.py",
+        "scripts/security/live_checks/verify_federated_signin.py",
+        "scripts/security/live_checks/verify_idp_group_mapping.py",
+        "scripts/srt/fix.py",
+        "scripts/srt/prune_stale_scans.py",
+    ],
+    "idp_sdk": [],
+    "main_stack_extensions": [
+        "lambdas/get_feature_launch_url/log_sanitizer.py",
+        "lambdas/list_catalog_features/log_sanitizer.py",
+        "lambdas/list_installed_features/log_sanitizer.py",
+        "lambdas/register_feature/log_sanitizer.py",
+        "lambdas/register_feature_hooks/log_sanitizer.py",
+        "lambdas/subscribe_feature/log_sanitizer.py",
+        "lambdas/unsubscribe_feature/log_sanitizer.py",
+    ],
+    "idp_cli": [],
+    "idp_feature_sdk": [],
+    "seller_entitlement": [],
+    "pii_anonymizer_hook": [
+        "vendor/pii_anonymizer/__init__.py",
+        "vendor/pii_anonymizer/core/__init__.py",
+        "vendor/pii_anonymizer/core/pii_detector.py",
+        "vendor/pii_anonymizer/core/prompts.py",
+        "vendor/pii_anonymizer/core/synthetic_pii_generator.py",
+        "vendor/pii_anonymizer/core/text_replacer.py",
+        "vendor/pii_anonymizer/core/value_categorizer.py",
+        "vendor/pii_anonymizer/helpers/__init__.py",
+        "vendor/pii_anonymizer/helpers/config_loader.py",
+        "vendor/pii_anonymizer/helpers/font_config.py",
+        "vendor/pii_anonymizer/helpers/model_config_helper.py",
+        "vendor/pii_anonymizer/helpers/model_router.py",
+        "vendor/pii_anonymizer/helpers/page_type_checker.py",
+        "vendor/pii_anonymizer/helpers/pdf_processor.py",
+        "vendor/pii_anonymizer/helpers/text_chunker.py",
+        "vendor/pii_anonymizer/helpers/textract_helper.py",
+        "vendor/pii_anonymizer/helpers/threaded_detector.py",
+        "vendor/pii_anonymizer/helpers/token_tracker.py",
+        "vendor/pii_anonymizer/processors/__init__.py",
+        "vendor/pii_anonymizer/processors/image_processor.py",
+        "vendor/pii_anonymizer/processors/pdf_image_processor.py",
+        "vendor/pii_anonymizer/processors/pdf_text_processor.py",
+        "vendor/pii_anonymizer/processors/tabular_processor.py",
+        "vendor/pii_anonymizer/processors/txt_processor.py",
+        "vendor/pii_anonymizer/processors/word_processor.py",
+        "vendor/pii_anonymizer/redaction/__init__.py",
+        "vendor/pii_anonymizer/redaction/pdf_redactor.py",
+        "vendor/pii_anonymizer/validation/__init__.py",
+        "vendor/pii_anonymizer/validation/document_validator.py",
+        "vendor/pii_anonymizer/validation/model_schemas.py",
+        "vendor/pii_anonymizer/validation/pdf_validator.py",
+    ],
+    "pii_anonymizer_api": [],
 }
 
 
@@ -1990,7 +2147,7 @@ class TestTheBaselineAccountsForEveryTrackedSourceFile:
         assert len(ccd.TREES) >= 9, (
             "registry looks truncated; this would be near-vacuous"
         )
-        grown, shrunk = [], []
+        appeared, resolved = {}, {}
         for tree in ccd.TREES:
             tracked = set(ccd.tracked_source_files(tree))
             assert tracked, (
@@ -1998,39 +2155,39 @@ class TestTheBaselineAccountsForEveryTrackedSourceFile:
                 f"vacuously for it — an empty derived set is a skip, not a failure"
             )
             recorded = set(baseline.get(tree.name, {}).get("files", {}))
-            gap = sorted(
+            gap = {
                 path
                 for path in tracked - recorded
                 if not any(path.startswith(k) for k in ccd.NOT_MEASURED)
-            )
+            }
             expected = UNRECORDED_TRACKED_FILES.get(tree.name)
             assert expected is not None, (
                 f"tree `{tree.name}` is in TREES and not in UNRECORDED_TRACKED_FILES, so "
-                f"nothing pins how many of its files are outside the baseline. Add it with "
-                f"its measured count — 0 if its baseline is complete, which is the "
-                f"answer for six of the nine."
+                f"nothing records which of its files are outside the baseline. Add it with "
+                f"what it measures — an empty list if its baseline is complete, which is "
+                f"the answer for six of the nine."
             )
-            if len(gap) > expected:
-                grown.append((tree.name, expected, len(gap), gap[expected:][:6]))
-            elif len(gap) < expected:
-                shrunk.append((tree.name, expected, len(gap)))
-        assert not grown, (
-            "these trees have MORE tracked source files outside their baseline than when "
-            "this was measured, so a new module is unratcheted and no coverage run is "
+            if new := sorted(gap - set(expected)):
+                appeared[tree.name] = new
+            if gone := sorted(set(expected) - gap):
+                resolved[tree.name] = gone
+        assert not appeared, (
+            "these tracked source files are outside their tree's baseline and were not "
+            "before, so their coverage is ratcheted by nothing — and no coverage run was "
             "needed to see it:\n"
             + "\n".join(
-                f"  {name}: pinned {was}, now {now} — e.g. {', '.join(examples)}"
-                for name, was, now, examples in grown
+                f"  {name}: {', '.join(paths)}" for name, paths in appeared.items()
             )
-            + "\nRecord it: measure that tree and run `check_coverage_debt.py --write`. If "
-            "it genuinely cannot be measured, lower nothing — add it to NOT_MEASURED with "
-            "the reason, which is the only sanctioned way for a file to be out of scope."
+            + "\nRecord them: measure that tree and run `check_coverage_debt.py --write`. If "
+            "a file genuinely cannot be measured, add it to NOT_MEASURED with the reason, "
+            "which is the only sanctioned way for a file to be out of scope. Do not add it "
+            "here to make this pass — this list is the residual, not a suppression list."
         )
-        assert not shrunk, (
-            "these trees have FEWER unrecorded files than pinned, which is progress that "
-            "has to be banked or the pin pre-approves losing it again:\n"
+        assert not resolved, (
+            "these files are now recorded, which is progress that has to be banked or the "
+            "list pre-approves losing it again:\n"
             + "\n".join(
-                f"  {name}: pinned {was}, now {now}" for name, was, now in shrunk
+                f"  {name}: {', '.join(paths)}" for name, paths in resolved.items()
             )
-            + "\nLower the number in UNRECORDED_TRACKED_FILES to what it now measures."
+            + "\nRemove them from UNRECORDED_TRACKED_FILES."
         )

@@ -1029,9 +1029,11 @@ class TestTheMeasuredSuitesRunHermetically:
     ):
         """The one way this whole mechanism could become a no-op: the parse finding nothing.
 
-        An empty derived set would strip nothing and every assertion above would still
-        pass on an environment that happened to carry no AWS variables, which is the
-        "correct authority, empty result" shape. So the parse asserts non-emptiness itself.
+        A wrapper that does nothing would strip nothing, and every assertion above would
+        still pass on an environment that happened to carry no AWS variables — the "correct
+        authority, empty result" shape. So the production path refuses a wrapper that
+        changes neither a removal nor an assignment, which is checkable without knowing
+        anything about `env`'s option grammar.
         """
         fake = tmp_path / "hermetic_aws.mk"
         fake.write_text("HERMETIC_AWS := env\n", encoding="utf-8")
@@ -1039,7 +1041,7 @@ class TestTheMeasuredSuitesRunHermetically:
         # The expansion is memoised per path, so a fresh path is enough; clearing it anyway
         # keeps this independent of whether an earlier test in the file warmed the cache.
         cov_all._hermetic_expansion.cache_clear()
-        with pytest.raises(AssertionError, match="no variables to unset"):
+        with pytest.raises(AssertionError, match="changed nothing"):
             cov_all.hermetic_env({})
         cov_all._hermetic_expansion.cache_clear()
 

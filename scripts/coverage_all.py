@@ -49,7 +49,9 @@ from __future__ import annotations
 import argparse
 import functools
 import importlib.util
+import json
 import os
+import shlex
 import subprocess
 import sys
 import threading
@@ -129,43 +131,78 @@ def hermetic_env(env: dict[str, str] | None = None) -> dict[str, str]:
     reaches a live endpoint would quietly transact against whichever account the developer
     is signed in to instead of failing loudly, which is the whole point of that wrapper.
 
-    The variable list is **obtained by asking `make` to expand `$(HERMETIC_AWS)`**, never
-    restated here and never re-parsed out of the file by hand. A second copy of it is the
-    copy that goes stale, and the one that goes stale is the one deciding which credential
-    reaches a test subprocess — and a hand-rolled parse is a second copy of the *grammar*,
-    which has the same failure mode one level down: a `--unset=NAME` spelling that GNU
-    ``env`` accepts and a `-u NAME` parser does not silently lets three credentials through.
-    `make` is the only reader whose answer cannot disagree with the recipe's.
+    ⚠️ **The environment is obtained by RUNNING the wrapper over the very environment it is
+    being asked about.** There is no parsing here, and three successive attempts to read the
+    wrapper instead of running it each failed one level deeper, which is why:
 
-    Both ``env`` spellings are honoured when reading the expansion, for the same reason.
+    * restating the variable list was a second copy of the **list**;
+    * parsing `$(HERMETIC_AWS)` out of the makefile was a second copy of the **grammar**, and
+      it let `--unset=NAME` through;
+    * asking `make` for the expansion fixed the list but kept the grammar — `env` accepts
+      `-u NAME`, `--unset=NAME`, `--unset NAME` **and** the attached `-uNAME`, and a reader
+      that knows three of the four drops credentials into the measured suites while every
+      assertion about its output stays green, because the test checking it is the same reader.
+
+    So `env` is handed this exact environment and a child that prints what it received, and
+    what the child received **is** the answer. `env` decides what `env` means, for any
+    spelling anyone writes, and there is no grammar left to get wrong.
     """
+    base = dict(os.environ if env is None else env)
+    # `env` and the interpreter have to be findable. A caller-supplied dict may have no PATH;
+    # borrow one for the probe and take it back out.
+    borrowed_path = "PATH" not in base
+    if borrowed_path:
+        base["PATH"] = os.environ.get("PATH", "/usr/bin:/bin")
+    # A control, so "the wrapper removed everything" and "the probe never ran" stay
+    # distinguishable: this must come back.
+    base["__HERMETIC_CONTROL__"] = "1"
     expansion = _hermetic_expansion(HERMETIC_MK)
-    unset, assign = [], {}
-    expect_name = False
-    for token in expansion.split():
-        if token == "-u":
-            expect_name = True
-        elif expect_name:
-            unset.append(token)
-            expect_name = False
-        elif token.startswith("--unset="):
-            unset.append(token[len("--unset=") :])
-        elif token == "--unset":
-            expect_name = True
-        elif "=" in token and not token.startswith("-"):
-            name, _, value = token.partition("=")
-            assign[name] = value
-    assert unset, (
-        f"no variables to unset were found in $(HERMETIC_AWS) as {HERMETIC_MK} expands it. "
-        f"An empty set would strip nothing while every assertion about the result still "
-        f"passed on a machine that happened to carry no AWS variables, so this refuses "
-        f"instead. Expansion was: {expansion!r}"
+    # Probed TWICE: through the wrapper, and without it. The interpreter adds variables of
+    # its own (`LC_CTYPE` on this platform), so a single probe cannot tell a wrapper's
+    # assignment from the child's own -- and it silently satisfied the non-vacuity check for a
+    # wrapper reduced to a bare `env`. Two probes cancel the child, and what is left is
+    # exactly what the wrapper does.
+    wrapped = _probe_environment(shlex.split(expansion), base)
+    direct = _probe_environment([], base)
+    assert wrapped.get("__HERMETIC_CONTROL__") == "1", (
+        f"the probe did not come back through $(HERMETIC_AWS), so what it reports is not "
+        f"this environment. Expansion was: {expansion!r}"
     )
-    out = dict(os.environ if env is None else env)
-    for name in unset:
-        out.pop(name, None)
-    out.update(assign)
+    assert wrapped != direct, (
+        f"running $(HERMETIC_AWS) changed nothing — it removed no variable and set none — so "
+        f"it would strip nothing while every assertion about the result still passed on a "
+        f"machine that happened to carry no AWS configuration. Expansion was: {expansion!r}"
+    )
+    # Keys the child adds identically in both runs are the child's, not the wrapper's.
+    out = {
+        key: value
+        for key, value in wrapped.items()
+        if key in base or direct.get(key) != value
+    }
+    out.pop("__HERMETIC_CONTROL__", None)
+    if borrowed_path:
+        out.pop("PATH", None)
     return out
+
+
+def _probe_environment(prefix: list[str], env: dict[str, str]) -> dict[str, str]:
+    """What a child sees when started as ``prefix + [python -c 'print(os.environ)']``."""
+    out = _REAL_RUN(
+        [
+            *prefix,
+            sys.executable,
+            "-c",
+            "import json, os; print(json.dumps(dict(os.environ)))",
+        ],
+        capture_output=True,
+        text=True,
+        env=env,
+    )
+    assert out.returncode == 0, (
+        f"could not run {prefix or ['(no wrapper)']} to find what it produces: "
+        f"{out.stderr[-400:]}"
+    )
+    return json.loads(out.stdout)
 
 
 def first_party_pythonpath() -> str:
