@@ -5796,6 +5796,25 @@ def discover(
             )
             sys.exit(1)
 
+    # `--detect-only` is only consulted inside the auto-detect arm, so on its own it
+    # fell through to standard discovery and ran a full schema inference — a *more*
+    # expensive operation than the boundary detection that was asked for, and the
+    # opposite of what the flag is for. That is why this refuses rather than warns.
+    # The option's own help already says "use with --auto-detect"; this enforces the
+    # dependency it documents instead of leaving it to be discovered from a bill.
+    if detect_only and not auto_detect:
+        console.print("[red]✗ Error: --detect-only requires --auto-detect.[/red]")
+        console.print(
+            "  On its own it was disregarded and a full schema discovery ran instead, "
+            "which costs more than the boundary detection you asked for."
+        )
+        console.print("[yellow]Detect boundaries only:[/yellow]")
+        console.print(
+            f"   [cyan]idp-cli discover -d {escape(document[0])}"
+            " --auto-detect --detect-only[/cyan]"
+        )
+        sys.exit(1)
+
     try:
         from idp_sdk import IDPClient
 

@@ -1401,17 +1401,41 @@ def test_auto_detect_alone_is_unaffected_by_that_refusal(runner, sdk, tmp_path):
 
 
 @pytest.mark.unit
-def test_detect_only_without_auto_detect_runs_a_full_discovery_instead(
+def test_detect_only_without_auto_detect_is_refused_rather_than_run_as_a_discovery(
     runner, sdk, tmp_path
 ):
-    """DEFECT: `--detect-only` alone is ignored and a paid discovery runs.
+    """`--detect-only` alone asked for the cheap step and got the expensive one.
 
-    `--detect-only` is only consulted inside the `if auto_detect:` block
-    (`cli.py:5397`). Given on its own it falls through to standard discovery, so a
-    user who asked for the cheap boundary-detection step gets a full
-    schema-inference call against Bedrock — the opposite of what the flag is for,
-    at a cost, and with no warning. The help text says "use with --auto-detect"
-    but the command does not enforce it.
+    It is only consulted inside the `if auto_detect:` arm, so on its own it fell
+    through to standard discovery and ran a full schema inference against Bedrock —
+    a *more* expensive operation than the boundary detection requested, which is
+    what puts this in the refusing class rather than the warning class. The help
+    text already documents the dependency; this enforces it.
+
+    `assert_no_discovery` is the assertion that matters: the point is that nothing
+    was charged for, and "printed an error" would not establish that.
+    """
+    from idp_cli.cli import discover
+
+    result = runner.invoke(
+        discover, ["-d", _doc(tmp_path, "package.pdf"), "--detect-only"]
+    )
+
+    assert result.exit_code == 1, result.output
+    assert "--detect-only requires --auto-detect" in result.output
+    assert "--auto-detect --detect-only" in result.output
+    sdk.assert_never_constructed()
+    sdk.assert_no_discovery()
+
+
+@pytest.mark.unit
+def test_a_discovery_without_detect_only_is_unaffected_by_that_refusal(
+    runner, sdk, tmp_path
+):
+    """The guard reads both flags, so plain discovery still runs.
+
+    A guard keyed on `--detect-only` alone, or written unconditionally, would pass
+    the test above; this is what distinguishes them.
     """
     from idp_cli.cli import discover
 
@@ -1419,17 +1443,12 @@ def test_detect_only_without_auto_detect_runs_a_full_discovery_instead(
         status="SUCCESS", document_class="Invoice", json_schema=SCHEMA_A
     )
 
-    result = runner.invoke(
-        discover, ["-d", _doc(tmp_path, "package.pdf"), "--detect-only"]
-    )
+    result = runner.invoke(discover, ["-d", _doc(tmp_path, "package.pdf")])
 
     assert result.exit_code == 0, result.output
-    assert sdk.client.discovery.auto_detect_sections.call_args_list == []
     assert sdk.client.discovery.run.call_count == 1
-    assert sdk.client.discovery.run.call_args.kwargs["document_path"].endswith(
-        "package.pdf"
-    )
     assert "Discovery completed successfully" in result.output
+    assert "requires --auto-detect" not in result.output
 
 
 @pytest.mark.unit
