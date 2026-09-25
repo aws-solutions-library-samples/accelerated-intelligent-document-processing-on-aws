@@ -1083,7 +1083,6 @@ def model_config(**overrides):
 
 def quota_set(tpm=100000, rpm=200, model=MODEL):
     return {
-        "bedrock": tpm,
         "bedrock_models": {model: tpm},
         "bedrock_models_rpm": {model: rpm},
     }
@@ -1363,7 +1362,6 @@ def test_a_one_million_context_variant_is_costed_against_its_base_models_quota(
     hourly = hours(**{"9": {"docsPerHour": 60, "extractionTokensPerHour": 60000}})
     variant = "us.anthropic.claude-sonnet-4-5-20250929-v1:1m"
     quotas = {
-        "bedrock": 400000,
         "bedrock_models": {"us.anthropic.claude-sonnet-4-5-20250929-v1": 400000},
         "bedrock_models_rpm": {"us.anthropic.claude-sonnet-4-5-20250929-v1:0": 250},
     }
@@ -2209,6 +2207,36 @@ def test_a_direct_invocation_returns_a_plan_with_totals_from_the_document_config
         "Assessment",
     }
     assert result["recommendations"]
+
+
+@pytest.mark.unit
+def test_the_handler_costs_throughput_against_the_models_its_own_config_names(
+    wired, monkeypatch
+):
+    """The handler's model configuration reaches the throughput estimate.
+
+    Asserted end to end through `lambda_handler` because the wiring is the thing
+    at risk: `calculate_latency_distribution` reduces the account's per-model TPM
+    mapping over the plan's models, and with the configuration not passed it falls
+    back — correctly, for a caller that has none — to the account-wide minimum. The
+    fallback is silent by design, so dropping the argument produces a plausible
+    wrong number rather than an error, and no test of that function alone can see
+    it.
+
+    The account here holds a second model at 1,000 TPM that this plan never calls.
+    At 6,000 tokens a document the plan's own 100,000 TPM model gives 17 docs/min,
+    while the account-wide minimum gives 0 — so the two readings are not merely
+    different, one of them reports a stack that cannot process anything.
+    """
+    quotas = quota_set()
+    quotas["bedrock_models"]["us.amazon.nova-micro-v1:0"] = 1000
+    quotas["bedrock_models_rpm"]["us.amazon.nova-micro-v1:0"] = 200
+    monkeypatch.setattr(index, "get_simple_quotas", lambda: quotas)
+
+    result = index.lambda_handler(dict(HAPPY_INPUT), None)
+
+    assert result["success"] is True
+    assert result["latencyDistribution"]["processingRate"] == "17 docs/min"
 
 
 @pytest.mark.unit

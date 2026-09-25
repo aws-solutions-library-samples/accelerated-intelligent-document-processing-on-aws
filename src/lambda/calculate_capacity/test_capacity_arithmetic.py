@@ -46,8 +46,10 @@ does *with* measured timings; that one is about how the timings are measured.
 from __future__ import annotations
 
 import ast
+import inspect
 import json
 import pathlib
+import textwrap
 from unittest.mock import MagicMock, patch
 
 import index
@@ -393,16 +395,21 @@ def run_get_simple_quotas(
 
 
 @pytest.mark.unit
-def test_the_account_bedrock_ceiling_is_the_largest_model_quota_not_the_first(
-    monkeypatch,
-):
-    """`quotas["bedrock"]` is the divisor the throughput estimate is built on.
+def test_the_per_model_quotas_are_carried_through_uncollapsed(monkeypatch):
+    """No account-wide scalar is published beside the per-model mappings.
 
-    It is taken as the maximum across the configured models, so the estimate
-    describes the most generously provisioned model rather than the one a given
-    step actually uses. Pinned as a maximum specifically because the three values
-    here are ordered so that `min`, `sum` and "first entry" all give a different
-    answer.
+    This function used to add one, as the *maximum* across the models, and the
+    throughput estimate divided by it — so a plan was costed against the
+    account's most generously provisioned model whatever models its steps
+    actually called. Nothing reduces the mapping here now; the two consumers
+    reduce it themselves, `calculate_latency_distribution` to the binding minimum
+    and `build_simple_quota_requirements` to each step's own model.
+
+    The absence is asserted rather than left implicit because a collapsed scalar
+    is a silent failure: reintroducing one produces a plausible number from real
+    quotas read from a real API, with no error anywhere. The three TPM values are
+    kept ordered so that `min`, `max`, `sum` and "first entry" all give a
+    different answer, so a reintroduction cannot coincide with any of them.
     """
     quotas, _ = run_get_simple_quotas(
         monkeypatch,
@@ -411,9 +418,9 @@ def test_the_account_bedrock_ceiling_is_the_largest_model_quota_not_the_first(
         {"L-A": 100000, "L-B": 900000, "L-C": 400000},
         {"L-RA": 50, "L-RB": 250, "L-RC": 120},
     )
-    assert quotas["bedrock"] == 900000
     assert quotas["bedrock_models"] == {"a": 100000, "b": 900000, "c": 400000}
     assert quotas["bedrock_models_rpm"] == {"a": 50, "b": 250, "c": 120}
+    assert set(quotas) == {"bedrock_models", "bedrock_models_rpm"}
 
 
 @pytest.mark.unit
@@ -645,10 +652,17 @@ def test_a_missing_complexity_variable_names_all_five(monkeypatch):
 # ==========================================================================
 
 
-def quotas(tpm=60000, rpm=50):
+def quotas(tpm=60000, rpm=50, extra_tpm=None):
+    """The shape `get_simple_quotas` returns: per-model mappings and nothing else.
+
+    `extra_tpm` adds further models to the TPM mapping, which is how a fixture
+    makes the reduction over it observable — with one entry every reduction
+    (`min`, `max`, `sum`, "first") returns the same number.
+    """
+    tpm_by_model = {"nova": tpm}
+    tpm_by_model.update(extra_tpm or {})
     return {
-        "bedrock": tpm,
-        "bedrock_models": {"nova": tpm},
+        "bedrock_models": tpm_by_model,
         "bedrock_models_rpm": {"nova": rpm},
     }
 
@@ -687,6 +701,8 @@ def distribution(
     quota=None,
     metrics=None,
     document_configs=None,
+    pattern="pattern-2",
+    model_config=None,
 ):
     if tokens is None:
         tokens = docs_per_hour * 6000
@@ -699,10 +715,12 @@ def distribution(
         docs_per_hour,
         docs_per_hour * 3,
         tokens,
-        "pattern-2",
+        pattern,
         max_latency,
         quota or quotas(),
         document_configs,
+        latency_metrics_hours=None,
+        model_config=model_config,
     )
 
 
@@ -730,6 +748,420 @@ def test_a_low_request_limit_binds_before_the_token_limit_does(monkeypatch):
         monkeypatch, docs_per_hour=60, tokens=60 * 6000, quota=quotas(rpm=3)
     )
     assert result["processingRate"] == "3 docs/min"
+
+
+@pytest.mark.unit
+def test_the_token_limit_is_the_most_constrained_model_not_the_best_provisioned(
+    monkeypatch, capsys
+):
+    """Throughput is capped by the narrowest TPM quota the plan can reach.
+
+    The account here holds three different model limits, and the reported
+    throughput has to come from the smallest of them: a document that touches a
+    60,000 TPM model is throttled there regardless of how much headroom some
+    other model has. The figure an operator compares against their arrival rate
+    is `processingRate`, and `quotaUtilization` is derived from the same capacity,
+    so both are asserted.
+
+    The three values are chosen so that every plausible reduction gives a
+    different answer at 6,000 tokens a document — 60,000 (min) is 10 docs/min,
+    300,000 (the first entry) is 50, 600,000 (max) is 100 and their sum is 160 —
+    which is what makes this test able to fail. Costing the plan against the
+    largest, as an account-wide ceiling amounts to, claims ten times the
+    throughput the account has, and the RPM limit is set far out of the way so
+    that the TPM half is unambiguously what is being measured.
+    """
+    result = distribution(
+        monkeypatch,
+        docs_per_hour=60,
+        tokens=60 * 6000,
+        quota=quotas(
+            tpm=300000, rpm=100000, extra_tpm={"narrow": 60000, "wide": 600000}
+        ),
+    )
+    assert result["processingRate"] == "10 docs/min"
+    assert result["quotaUtilization"] == "10.0%"
+    # Which model binds is the actionable half: the operator's next step is a
+    # quota increase request, and it has to name one model. The number alone does
+    # not say which of the three to ask for.
+    assert "60000 TPM for narrow" in capsys.readouterr().out
+
+
+@pytest.mark.unit
+def test_the_request_limit_is_also_the_most_constrained_model(monkeypatch):
+    """The RPM half of the same `min` is reduced the same way, and is measured.
+
+    Stated because the two halves disagreed for a long time — the token limit was
+    taken from an account-wide ceiling that collapsed the per-model quotas to
+    their *maximum* while this one took the minimum — so "both take the binding
+    model" is a claim worth an assertion rather than a comment. Three RPM values
+    again, ordered so that min, max, sum and first entry differ: 3 (min) is the
+    answer, 40 would be the first entry, 120 the max and 163 their sum, against a
+    token limit held far out of the way at 10,000 documents a minute.
+    """
+    quota = quotas(tpm=60_000_000, rpm=40)
+    quota["bedrock_models_rpm"].update({"narrow": 3, "wide": 120})
+    result = distribution(monkeypatch, docs_per_hour=60, tokens=60 * 6000, quota=quota)
+    assert result["processingRate"] == "3 docs/min"
+
+
+@pytest.mark.unit
+def test_only_the_models_the_plan_calls_constrain_its_throughput(monkeypatch, capsys):
+    """The reduction is over the plan's step models, not the whole account mapping.
+
+    `BEDROCK_MODEL_QUOTA_CODES` lists every model the stack supports — fourteen on
+    a default deployment — so reducing over all of them answers a question nobody
+    asked: it reports the limit of whichever model the account is least
+    provisioned for, whether or not the pipeline ever calls it. That is the mirror
+    image of the account-wide maximum this replaced, understating instead of
+    overstating, and it sends the operator to request an increase for a model that
+    is not in their pipeline.
+
+    The fixture separates the two readings and every plausible variant of each. The
+    account holds three models; the plan calls two of them, and the third —
+    `tiny`, at 6,000 TPM — is the narrowest in the account and is called by no
+    step. At 6,000 tokens a document the answers are: 10 docs/min over the plan's
+    binding model (`narrow`, asserted), 1 over the account's binding model, 100
+    over either maximum *and* over the plan's first step's model, 110 over the
+    plan's sum and 111 over the account's. Classification is given the *generous*
+    model precisely so that the plan's first step and the plan's binding step are
+    different.
+    """
+    quota = quotas(tpm=600000, rpm=100000, extra_tpm={"narrow": 60000, "tiny": 6000})
+    result = distribution(
+        monkeypatch,
+        docs_per_hour=60,
+        tokens=60 * 6000,
+        quota=quota,
+        model_config={"classification_model": "nova", "extraction_model": "narrow"},
+    )
+    assert result["processingRate"] == "10 docs/min"
+    assert "60000 TPM for narrow" in capsys.readouterr().out
+
+
+@pytest.mark.unit
+def test_a_planned_model_with_the_local_1m_suffix_finds_its_base_quota(monkeypatch):
+    """Resolution goes through `_lookup_quota`, as the step-level builder's does.
+
+    The `:1m` suffix is a local convention for a 1M context window and shares the
+    base model's Service Quotas entry, so a plan naming the suffixed id must find
+    the base entry. Failing to would drop the model from the reduction and silently
+    fall back to the whole account mapping, which here would report the 6,000 TPM
+    of a model the plan does not call — a plausible wrong number rather than an
+    error.
+    """
+    quota = quotas(tpm=600000, rpm=100000, extra_tpm={"tiny": 6000})
+    result = distribution(
+        monkeypatch,
+        docs_per_hour=60,
+        tokens=60 * 6000,
+        quota=quota,
+        model_config={"extraction_model": "nova:1m"},
+    )
+    assert result["processingRate"] == "100 docs/min"
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("pattern", "model_config"),
+    [
+        ("pattern-2", None),  # an older caller that passes no configuration
+        ("pattern-1", {"extraction_model": "nova"}),  # a step pattern-1 never runs
+        ("pattern-2", {"ocr_model": "   "}),  # whitespace-only means Textract
+    ],
+)
+def test_a_plan_that_names_no_bedrock_model_falls_back_to_the_full_mapping(
+    monkeypatch, pattern, model_config, capsys
+):
+    """With no step to narrow by, the account-wide binding minimum is the answer.
+
+    Pessimistic rather than wrong, and it is the only answer available without
+    knowing the steps. Asserted at 1 doc/min — the 6,000 TPM `tiny` model — rather
+    than at the 600,000 TPM of `nova`, because the failure worth catching is
+    falling back to something optimistic.
+
+    The absence of the "no usable TPM quota" warning is asserted as well, and it is
+    what separates these three cases from the different one below: a plan that
+    *does* name models, none of which the mapping can price. Both end at the same
+    reduction over the same mapping, so the reported rate alone cannot tell them
+    apart — the OCR case is the one that needs it, since a whitespace-only value
+    treated as a model id would reach the mapping, resolve to nothing, and arrive
+    at this same figure by the other route.
+    """
+    quota = quotas(tpm=600000, rpm=100000, extra_tpm={"tiny": 6000})
+    result = distribution(
+        monkeypatch,
+        docs_per_hour=60,
+        tokens=60 * 6000,
+        quota=quota,
+        pattern=pattern,
+        model_config=model_config,
+    )
+    assert result["processingRate"] == "1 docs/min"
+    assert "No usable TPM quota" not in capsys.readouterr().out
+
+
+@pytest.mark.unit
+def test_planned_models_the_quota_mapping_cannot_price_fall_back_and_say_so(
+    monkeypatch, capsys
+):
+    """A model missing from the mapping is skipped, not a refusal, and it is logged.
+
+    `build_simple_quota_requirements` raises on exactly this case a few steps
+    later, naming the model and the environment variable to add it to, so refusing
+    here would replace a specific message with a vaguer one. The estimate therefore
+    falls back to the account-wide minimum — and says that it did, because a
+    silently pessimistic figure is the harder kind of wrong to notice.
+    """
+    quota = quotas(tpm=600000, rpm=100000, extra_tpm={"tiny": 6000})
+    result = distribution(
+        monkeypatch,
+        docs_per_hour=60,
+        tokens=60 * 6000,
+        quota=quota,
+        model_config={"extraction_model": "a-model-nobody-mapped"},
+    )
+    assert result["processingRate"] == "1 docs/min"
+    printed = capsys.readouterr().out
+    assert "No usable TPM quota" in printed
+    assert "a-model-nobody-mapped" in printed
+
+
+def model_config_keys_the_step_builder_reads():
+    """Every `model_config` key `build_simple_quota_requirements` looks up.
+
+    Read from that function's source rather than from `STEP_MODEL_CONFIG_KEYS`,
+    because it is the independent side of the comparison below: a universe taken
+    from the constant under test cannot notice a key leaving it.
+    """
+    source = textwrap.dedent(inspect.getsource(index.build_simple_quota_requirements))
+    keys = set()
+    for node in ast.walk(ast.parse(source)):
+        if (
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Attribute)
+            and node.func.attr == "get"
+            and isinstance(node.func.value, ast.Name)
+            and node.func.value.id == "model_config"
+            and node.args
+            and isinstance(node.args[0], ast.Constant)
+            and isinstance(node.args[0].value, str)
+        ):
+            keys.add(node.args[0].value)
+    return keys
+
+
+@pytest.mark.unit
+def test_the_divergence_check_actually_consults_the_independent_derivation():
+    """The union is what closes the check; its presence is pinned in source.
+
+    `test_the_plan_model_set_agrees_with_the_step_level_quota_builder` builds its
+    candidate universe as the union of `STEP_MODEL_CONFIG_KEYS`' values and the keys
+    derived from the builder's source, and the derived half is what stops the check
+    reading one dictionary on both sides. Collapsing that union back to the constant
+    alone reopens a live defect — a config key re-pointed at another step's model
+    drops a model from the plan set entirely — with the whole suite green.
+
+    ⚠️ **Asserted against source because no input detects the collapse itself.**
+    The two halves of the union are *equal* on the tree as it stands — the builder
+    reads exactly the five keys the constant names — so a collapse changes no value
+    any assertion can read, and the derived half's present worth is entirely
+    insurance against a divergence that does not exist yet. Insurance that is never
+    consulted is the shape this whole test group exists to catch.
+
+    This does **not** make the behavioural assertion in that test redundant, and the
+    two are deliberately kept side by side: `assert derived <= set(keys)` cannot see
+    a collapse on its own, but it does refuse every form of the collapse once a key
+    mapping is wrong — which is the case the collapse would otherwise let through —
+    whereas this test refuses the collapse and cannot see the union *bypassed*
+    rather than deleted. Neither dominates; do not delete one as covered by the
+    other.
+
+    Delete this test if the two ever genuinely differ, and assert the difference
+    instead — that is the stronger check, and it will be available then.
+    """
+    this_file = pathlib.Path(__file__).read_text(encoding="utf-8")
+    target = "test_the_plan_model_set_agrees_with_the_step_level_quota_builder"
+    body = next(
+        node
+        for node in ast.walk(ast.parse(this_file))
+        if isinstance(node, ast.FunctionDef) and node.name == target
+    )
+
+    # Two conditions, because the chain has two links and each can be broken on its
+    # own: the derivation must be *called*, and its result must *reach* the
+    # universe. Scoped to the two assignments rather than to the whole function,
+    # since a call whose result is discarded, or one parked in a nested helper
+    # nobody invokes, keeps the name present while losing its effect — both measured
+    # green over a live wrong answer before this was scoped. Accepting either
+    # assignment as the site of the call is not enough either: that lets the call
+    # stay in `derived` while `| derived` leaves the universe.
+    def assignment_to(name):
+        return next(
+            (
+                node
+                for node in ast.walk(body)
+                if isinstance(node, ast.Assign)
+                and any(isinstance(t, ast.Name) and t.id == name for t in node.targets)
+            ),
+            None,
+        )
+
+    derivation = assignment_to("derived")
+    universe = assignment_to("keys")
+    assert derivation is not None and universe is not None, (
+        f"{target} no longer assigns both `derived` and `keys`, so this check "
+        "cannot locate the derivation or the universe it must feed"
+    )
+    called = {
+        node.func.id
+        for node in ast.walk(derivation)
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+    }
+    reaches_universe = any(
+        isinstance(node, ast.Name) and node.id == "derived"
+        for node in ast.walk(universe)
+    )
+    assert reaches_universe, (
+        f"{target} assigns `derived` but its candidate universe no longer reads it, "
+        "so the universe comes from the constant the check is meant to be "
+        "independent of"
+    )
+    assert "model_config_keys_the_step_builder_reads" in called, (
+        f"{target} no longer consults the independent derivation of the builder's "
+        "model keys, so its candidate universe comes from the constant it checks"
+    )
+
+
+@pytest.mark.unit
+def test_the_source_derivation_of_the_builders_model_keys_is_not_vacuous():
+    """An empty derivation would make the divergence test below trivially true.
+
+    Pinned as a lower bound rather than an equality, so adding a Bedrock step to
+    the builder does not fail here — it fails in the comparison below, which is
+    where the divergence actually is.
+    """
+    keys = model_config_keys_the_step_builder_reads()
+    assert {"classification_model", "extraction_model", "ocr_model"} <= keys
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("pattern", ["pattern-1", "pattern-2", "pattern-3"])
+def test_the_plan_model_set_agrees_with_the_step_level_quota_builder(pattern):
+    """Two functions now decide which models a plan calls; they must not diverge.
+
+    `plan_model_ids` answers it for the throughput reduction and
+    `build_simple_quota_requirements` answers it for the per-step quota table, and
+    a step added to one and not the other is a silent divergence — the table would
+    report a requirement for a model the throughput estimate ignores.
+
+    The step-level answer is **derived by running that function**, not by reading
+    it: for each candidate model key in turn it is given a configuration setting
+    only that key and an empty quota mapping. A key the pattern uses reaches
+    `_lookup_quota`, finds nothing and raises naming the model; a key it does not
+    use leaves the demand set empty and raises nothing.
+
+    ⚠️ **The empty quota mapping is what keeps this probe free of AWS**, and it is
+    load-bearing rather than incidental: `build_simple_quota_requirements`
+    constructs a `boto3.resource("dynamodb")` once per selected step, before it
+    even reads `METERING_TABLE_NAME`, and the probe never reaches that only because
+    `_lookup_quota` raises first. Giving the probe a real mapping to "improve" it
+    would silently make it need credentials and a table.
+
+    ⚠️ **The candidate universe must not come from the constant under test.** Taking
+    it from `STEP_MODEL_CONFIG_KEYS` alone makes the comparison read one dictionary
+    on both sides, so a key removed from it, or re-pointed at another step's key,
+    leaves the probe's universe at the same moment it leaves the expectation and
+    the test stays green. Measured, on the pattern the handler actually accepts:
+    re-pointing `"Assessment"` at `"extraction_model"` drops the assessment model
+    from the plan set entirely, so it can never constrain the estimate — 5 docs/min
+    becomes 50 — and the whole suite stayed green. The universe is therefore the
+    **union** of the keys that constant names and the keys the builder's own source
+    reads, which closes the comparison in both directions: a key only the builder
+    uses is probed and found missing from the expectation, and a key only the
+    constant names is probed, found unused, and missing from the derived set.
+    """
+    derived = model_config_keys_the_step_builder_reads()
+    keys = sorted(set(index.STEP_MODEL_CONFIG_KEYS.values()) | derived)
+    # The complement of the source assertion above: it refuses *deletion* of the
+    # union and cannot see it *bypassed*, while this refuses every form of the
+    # collapse the moment a key mapping is wrong — which is when it matters. The two
+    # halves become unequal exactly then, so on unmutated source this holds
+    # trivially and its value is entirely in the mutated case.
+    assert derived <= set(keys)
+    used_by_builder = set()
+    for key in keys:
+        config = {key: f"model-for-{key}"}
+        try:
+            index.build_simple_quota_requirements(
+                50000,
+                500000,
+                1000,
+                {"bedrock_models": {}},
+                600.0,
+                pattern,
+                config,
+                [
+                    {
+                        f"{stage}TokensPerHour": 60000
+                        for stage in (
+                            "ocr",
+                            "classification",
+                            "extraction",
+                            "assessment",
+                            "summarization",
+                        )
+                    }
+                ],
+            )
+        except ValueError as exc:
+            assert f"model-for-{key}" in str(exc)
+            used_by_builder.add(key)
+
+    from_plan_helper = {
+        index.STEP_MODEL_CONFIG_KEYS[step]
+        for step in index.PATTERN_BEDROCK_STEPS[pattern]
+    }
+    assert from_plan_helper == used_by_builder
+    # Non-vacuity: a probe that raised for nothing would make the comparison
+    # trivially true between two empty sets.
+    assert used_by_builder
+
+
+@pytest.mark.unit
+def test_one_model_with_no_quota_at_all_does_not_bind_the_whole_plan(monkeypatch):
+    """A zero TPM entry is left out of the reduction rather than allowed to bind it.
+
+    The account's mapping lists every model the deployment can be configured to
+    use, not the ones a given plan calls, so a model the account cannot call at
+    all must not take the capacity report down with it — and the maximum this
+    reduction replaced could not, because a zero never wins a maximum. Preserving
+    that is the point: switching to the minimum without this filter would refuse
+    every plan on such an account, a failure this change has no business
+    introducing.
+
+    The binding value is therefore 60,000 and not 0, and the surviving refusal is
+    the all-zero mapping, asserted below so that "left out" cannot become "never
+    refused".
+    """
+    result = distribution(
+        monkeypatch,
+        docs_per_hour=60,
+        tokens=60 * 6000,
+        quota=quotas(tpm=60000, rpm=100000, extra_tpm={"unavailable": 0}),
+    )
+    assert result["processingRate"] == "10 docs/min"
+
+    with pytest.raises(ValueError, match="TPM quota not available"):
+        index.calculate_latency_distribution(
+            600,
+            1800,
+            3_600_000,
+            "pattern-2",
+            600.0,
+            quotas(tpm=0, rpm=100000, extra_tpm={"unavailable": 0}),
+            [],
+        )
 
 
 @pytest.mark.unit
@@ -872,11 +1304,49 @@ def test_an_empty_percentile_block_is_not_mistaken_for_a_measurement(monkeypatch
 
 @pytest.mark.unit
 def test_a_latency_exactly_at_the_sla_does_not_breach_it(monkeypatch):
-    """Typical latency of 32s against a 32s SLA is inside it, not outside.
+    """32s against a 32s SLA is inside it, not outside: the comparison is `>`.
 
-    The comparison is on the P50 total, so `exceedsLimit` describes the typical
-    document rather than the tail; a plan whose P99 is far past the SLA still
-    reports `False` here.
+    The boundary is the whole subject here, so the distribution is flat — every
+    percentile is 32s — and the test says nothing about which percentile the
+    comparison reads. That separation is deliberate: whichever statistic defines
+    the SLA, landing exactly on the limit must not be reported as a breach, and
+    a fixture with a spread in it would couple the two questions and lose this
+    one the next time the statistic changes.
+
+    The neighbouring one-step-past test does not cover this: it is past the
+    limit, not on it, and an off-by-one that turned `>` into `>=` would leave it
+    green.
+    """
+    metrics = latency_data(
+        total=30.0,
+        percentiles={"p50": 30.0, "p99": 30.0, "count": 40},
+        queue={"p50": 2.0, "p99": 2.0, "count": 40},
+    )
+    result = distribution(monkeypatch, metrics=metrics, max_latency=32.0)
+    assert result["p50"] == result["p99"] == "32.0s"  # flat: no spread to read
+    assert result["exceedsLimit"] is False
+    assert "warningMessage" not in result
+    assert result["maxAllowed"] == "32.0s"
+
+
+@pytest.mark.unit
+def test_a_fast_median_with_a_slow_tail_breaches_the_sla(monkeypatch):
+    """The SLA is judged on P99, so a slow tail breaches it on a fast median.
+
+    An SLA is a promise about the documents that go slowly, and the median cannot
+    express it: comparing the P50 reports a plan as compliant when one document in
+    a hundred takes twenty times the limit, which is the shape of a real
+    deployment with an occasional very large packet.
+
+    The fixture is skewed on purpose — a 32s P50 exactly at the limit against a
+    603s P99 — so the two statistics cannot coincide. With them equal the test
+    could not tell the two comparisons apart. The P50 sits *on* the boundary
+    rather than under it so that the median reading gives `False` here by the
+    boundary rule above, making this the strictest position from which the P99
+    reading can be distinguished.
+
+    The message has to carry both figures: the gap between them is what tells an
+    operator to chase a slow tail rather than a slow pipeline.
     """
     metrics = latency_data(
         total=30.0,
@@ -884,10 +1354,14 @@ def test_a_latency_exactly_at_the_sla_does_not_breach_it(monkeypatch):
         queue={"p50": 2.0, "p99": 3.0, "count": 40},
     )
     result = distribution(monkeypatch, metrics=metrics, max_latency=32.0)
-    assert result["exceedsLimit"] is False
-    assert "warningMessage" not in result
-    assert result["maxAllowed"] == "32.0s"
-    assert result["p99"] == "603.0s"  # the tail is published but does not breach
+    assert result["p50"] == "32.0s"
+    assert result["p99"] == "603.0s"
+    assert result["exceedsLimit"] is True
+    assert (
+        "P99 processing time (10.1min) exceeds SLA (0.5min)"
+        in (result["warningMessage"])
+    )
+    assert "the median is 0.5min" in result["warningMessage"]
 
 
 @pytest.mark.unit
@@ -959,8 +1433,14 @@ def test_a_per_step_token_breakdown_is_summed_before_being_divided(monkeypatch):
 @pytest.mark.parametrize(
     ("broken", "message"),
     [
-        ({"bedrock": None, "bedrock_models_rpm": {"n": 1}}, "TPM quota not available"),
-        ({"bedrock": 1000, "bedrock_models_rpm": {}}, "RPM quotas not available"),
+        (
+            {"bedrock_models": {}, "bedrock_models_rpm": {"n": 1}},
+            "TPM quota not available",
+        ),
+        (
+            {"bedrock_models": {"n": 1000}, "bedrock_models_rpm": {}},
+            "RPM quotas not available",
+        ),
     ],
 )
 def test_a_missing_quota_stops_the_estimate_instead_of_guessing(
@@ -1095,9 +1575,15 @@ def test_the_latency_warning_quotes_the_measured_p99(monkeypatch):
 
 @pytest.mark.unit
 def test_an_sla_breach_is_called_out_separately_from_the_latency_threshold(monkeypatch):
-    """The two are independent: a fast document can still miss a tight SLA."""
+    """The two are independent: a fast document can still miss a tight SLA.
+
+    The advice names the percentile it is about, matched in full here rather than
+    on the bare phrase "exceeds SLA": the flag is set by comparing the P99 and a
+    sentence that does not say so leaves an operator looking at a median that
+    sits comfortably inside their limit with no idea why they are being warned.
+    """
     text = " ".join(recommend(monkeypatch, {"exceedsLimit": True, "p99": "10.0s"}))
-    assert "exceeds SLA" in text
+    assert "P99 processing time exceeds SLA" in text
     assert "High P99 latency" not in text
 
 
