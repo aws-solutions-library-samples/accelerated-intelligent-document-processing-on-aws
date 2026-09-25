@@ -26,9 +26,15 @@ the JSON format. What was left was the interaction between `--wait` and the othe
 options, and the one thing that combination used to expose: `status --wait` reported a
 batch that finished with failures as a success, because `_monitor_progress` had no
 return value for the command to exit with, while the polled form of the same command
-exited 1. `_monitor_progress` now returns the code `show_final_status_summary` derives
+exited 1. `_monitor_progress` now returns the code `display.derive_exit_code` answers
 and `--wait` exits on it, so the two forms agree — asserted in both directions below,
 since agreement on one batch could be a property of the fixture.
+
+`derive_exit_code` rather than `show_final_status_summary`, which answers the same code
+but also **prints** it. Two of `_monitor_progress`'s three callers discard the value, so
+printing "Exit Code: N" from there would have `process --monitor` and `rerun --monitor`
+state a code contradicting `$?`. So `--wait` prints no FINAL STATUS line, and that is
+asserted rather than left to drift.
 """
 
 from __future__ import annotations
@@ -339,8 +345,13 @@ class TestStatusWait:
         assert waited.exit_code == 1
         assert "Batch Processing Complete" in waited.output
         assert "Textract threw" in waited.output
-        # The same verdict line the polled form prints, from the same function.
-        assert "COMPLETED WITH FAILURES (1 failed)" in waited.output
+        # `--wait` deliberately does NOT print the polled form's "FINAL STATUS"
+        # line: `_monitor_progress` derives the code without printing it, because
+        # `process --monitor` and `rerun --monitor` discard the value and would
+        # otherwise state an exit code contradicting `$?`. The failure is visible in
+        # the summary panel instead.
+        assert "FINAL STATUS" not in waited.output
+        assert "Exit Code" not in waited.output
 
     def test_wait_still_exits_zero_on_a_clean_batch(self, runner, monkeypatch):
         """Non-vacuity for the test above: the code tracks the batch, not the flag."""
@@ -381,7 +392,41 @@ class TestStatusWait:
             )
 
         assert waited.exit_code == 0, waited.output
-        assert "ALL COMPLETED" in waited.output
+        assert "Batch Processing Complete" in waited.output
+
+    def test_wait_exits_two_when_the_watch_reached_no_verdict(self, runner):
+        """The end-to-end half of the exit-2 contract, which nothing pinned.
+
+        `_monitor_progress` returning 2 on a monitoring error or a Ctrl-C is tested
+        directly in `test_monitor_and_display_mapping.py`, but every other test here
+        patches it with `return_value=0` — so collapsing the 2 into a 1 at this call
+        site left the whole suite green while three documents claimed the behaviour.
+        This asserts the command propagates whatever the monitor answered, unaltered.
+        """
+        with (
+            patch(
+                "idp_cli.search_tracking_table.TrackingTableSearcher"
+            ) as searcher_cls,
+            patch("idp_cli.cli._monitor_progress", return_value=2),
+        ):
+            searcher_cls.return_value.search_by_pk_and_status.return_value = search_hit(
+                "batch-1/a.pdf"
+            )
+            result = runner.invoke(
+                cli,
+                [
+                    "status",
+                    "--stack-name",
+                    "my-stack",
+                    "--batch-id",
+                    "batch-1",
+                    "--object-status",
+                    "COMPLETED",
+                    "--wait",
+                ],
+            )
+
+        assert result.exit_code == 2, result.output
 
     def test_show_details_is_suppressed_when_json_was_asked_for(self, runner):
         """`--show-details` renders a Rich table on stdout, which would precede the payload.

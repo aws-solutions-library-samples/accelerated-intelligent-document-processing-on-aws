@@ -462,9 +462,41 @@ def format_status_json(status_data: Dict, stats: Dict) -> str:
     return json.dumps(result, indent=2)
 
 
+def derive_exit_code(status_data: Dict, stats: Dict) -> int:
+    """The exit code a status result implies. Derives; prints nothing.
+
+    0 every document completed, 1 at least one failed, 2 the outcome is not
+    established (still running, or nothing was found).
+
+    Split out of `show_final_status_summary` so that a caller can have the code
+    without the "FINAL STATUS:" line. `_monitor_progress` is that caller: it needs
+    the code for `status --wait` to exit on, and it has already printed a summary
+    panel of its own — and two of its three callers discard the code, so printing
+    "Exit Code: 1" from there would state an exit code that contradicts `$?` for
+    `process --monitor` and `rerun --monitor`.
+
+    The rule lives here once. Two implementations of it is how the polled and waited
+    forms of `status` came to disagree in the first place (#1230).
+
+    """
+    if stats["total"] == 1:
+        if status_data["completed"]:
+            return 0
+        if status_data["failed"]:
+            return 1
+        return 2
+
+    if stats["all_complete"]:
+        return 1 if stats["failed"] > 0 else 0
+    return 2
+
+
 def show_final_status_summary(status_data: Dict, stats: Dict) -> int:
     """
     Show final status summary for programmatic use and return exit code
+
+    The code comes from `derive_exit_code`, so this function's printing and the
+    code a caller acts on cannot drift apart.
 
     Args:
         status_data: Status data from progress monitor
@@ -473,17 +505,19 @@ def show_final_status_summary(status_data: Dict, stats: Dict) -> int:
     Returns:
         Exit code (0=success, 1=failure, 2=still processing)
     """
+    # The code is derived once, above, so that the line printed here and the value a
+    # caller exits on cannot drift apart.
+    exit_code = derive_exit_code(status_data, stats)
+
     # For single document
     if stats["total"] == 1:
         doc = None
         if status_data["completed"]:
             doc = status_data["completed"][0]
             status = "COMPLETED"
-            exit_code = 0
         elif status_data["failed"]:
             doc = status_data["failed"][0]
             status = "FAILED"
-            exit_code = 1
         else:
             # Running or queued
             if status_data["running"]:
@@ -491,7 +525,6 @@ def show_final_status_summary(status_data: Dict, stats: Dict) -> int:
             elif status_data["queued"]:
                 doc = status_data["queued"][0]
             status = doc.get("status", "UNKNOWN") if doc else "UNKNOWN"
-            exit_code = 2
 
         duration = doc.get("duration", 0) if doc else 0
         console.print()
@@ -504,14 +537,11 @@ def show_final_status_summary(status_data: Dict, stats: Dict) -> int:
     if stats["all_complete"]:
         if stats["failed"] > 0:
             status = f"COMPLETED WITH FAILURES ({stats['failed']} failed)"
-            exit_code = 1
         else:
             status = "ALL COMPLETED"
-            exit_code = 0
     else:
         finished = stats["completed"] + stats["failed"]
         status = f"IN PROGRESS ({finished}/{stats['total']} finished)"
-        exit_code = 2
 
     console.print()
     console.print(

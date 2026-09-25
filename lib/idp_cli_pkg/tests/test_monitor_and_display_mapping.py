@@ -41,8 +41,10 @@ import json
 from datetime import datetime
 from types import SimpleNamespace
 from typing import Optional
+from unittest.mock import MagicMock, patch
 
 import pytest
+from click.testing import CliRunner
 from rich.console import Console
 
 from idp_cli import cli as cli_module
@@ -944,3 +946,82 @@ class TestMonitorProgress:
 
         assert result == 0
         assert "Batch Processing Complete" in captured.get()
+
+
+@pytest.mark.unit
+class TestTheMonitorCallersThatDiscardTheCode:
+    """`process --monitor` and `rerun --monitor` exit 0 whatever the batch did.
+
+    That is a deliberate narrowing of #1230 and it lived only in a code comment, which
+    is not a place a decision survives. The argument: these commands' work is the
+    *submission*, which succeeded; `--monitor` is a view of what happens afterwards.
+    Exiting non-zero because 1 of 100 documents failed would stop
+    `process --monitor && download-results` from collecting the 99 that worked. The
+    batch's verdict is a separate question and `idp-cli status --batch-id` answers it.
+
+    `status --wait`, by contrast, *is* that question, which is why it exits on the code.
+
+    Pinned here so that "make the helper's return value consistent across its callers"
+    is a decision someone has to revisit rather than a tidy-up they can do by
+    inspection.
+    """
+
+    def _run(self, args, monitor_code):
+        client = MagicMock()
+        client.batch.process.return_value = SimpleNamespace(
+            batch_id="batch-1",
+            documents_queued=2,
+            documents_uploaded=2,
+            documents_failed=0,
+        )
+        client.batch.reprocess.return_value = SimpleNamespace(
+            documents_queued=2,
+            documents_failed=0,
+            failed_documents=[],
+        )
+        with (
+            patch("idp_sdk.IDPClient", return_value=client),
+            patch("idp_cli.cli.IDPClient", return_value=client),
+            patch(
+                "idp_cli.cli._monitor_progress", return_value=monitor_code
+            ) as monitor,
+        ):
+            run = CliRunner().invoke(cli_module.cli, args)
+        return run, monitor
+
+    def test_process_monitor_exits_zero_on_a_batch_that_failed(self, tmp_path):
+        document = tmp_path / "a.pdf"
+        document.write_bytes(b"%PDF-1.4\n")
+        run, monitor = self._run(
+            [
+                "process",
+                "--stack-name",
+                "my-stack",
+                "--dir",
+                str(tmp_path),
+                "--monitor",
+            ],
+            monitor_code=1,
+        )
+
+        monitor.assert_called_once()
+        assert run.exit_code == 0, run.output
+
+    def test_reprocess_monitor_exits_zero_on_a_batch_that_failed(self):
+        run, monitor = self._run(
+            [
+                "reprocess",
+                "--stack-name",
+                "my-stack",
+                "--batch-id",
+                "batch-1",
+                "--step",
+                "extraction",
+                "--force",
+                "--monitor",
+            ],
+            monitor_code=1,
+        )
+
+        monitor.assert_called_once()
+        assert run.exit_code == 0, run.output

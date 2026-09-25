@@ -1112,6 +1112,42 @@ def test_upload_with_an_empty_profile_name_is_refused_before_anything_is_written
 
 
 @pytest.mark.unit
+def test_upload_with_a_whitespace_only_profile_name_is_refused_too():
+    """The `.strip()` in the guard, which nothing else reaches.
+
+    `"   "` is truthy, so click's `required=True` accepts it and a bare falsy check
+    does not catch it. `ConfigurationManager` builds `Config#   ` -- a key that is
+    *not* the bare `Config` the empty string produced, but is equally a profile no
+    listing will show and nothing will read. Removing the `.strip()` left the whole
+    suite green.
+    """
+    with config_stack() as stack:
+        stack.seed("lending", class_name="lending-class", active=True)
+        with write_config("classes:\n  - name: went-nowhere\n") as runner:
+            result = runner.invoke(
+                cli,
+                [
+                    "config-upload",
+                    "--stack-name",
+                    STACK,
+                    "--config-file",
+                    "config.yaml",
+                    "--config-profile",
+                    "   ",
+                    "--no-validate",
+                    "--region",
+                    REGION,
+                ],
+            )
+        assert result.exit_code == 1, result.output
+        assert "--config-profile is empty" in result.output
+        assert "Config#   " not in stack.keys()
+        assert [v["versionName"] for v in stack.manager.list_config_versions()] == [
+            "lending"
+        ]
+
+
+@pytest.mark.unit
 def test_upload_to_a_stack_without_revision_history_prints_no_revision_number():
     """
     A stack deployed before revision history existed has no Configuration bucket, so

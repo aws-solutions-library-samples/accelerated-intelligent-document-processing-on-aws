@@ -339,6 +339,28 @@ class TestTestResultOutput:
         assert "Failed Files: 3" in result.output
         assert "did not pass" in result.output
 
+    def test_a_lowercase_failed_status_is_still_a_failure(self, runner):
+        """`.upper()` on the comparison, which nothing else reaches.
+
+        The status is a free-form string on the SDK model, not an enum, so its casing
+        is the service's choice rather than ours. Dropping the `.upper()` left every
+        other test in this file green while a `"failed"` run exited 0.
+        """
+        p, _client = _patched_client(
+            get_test_result=MagicMock(
+                return_value=_test_run_result(
+                    status="failed", completed_files=0, failed_files=0
+                )
+            )
+        )
+        with p:
+            result = runner.invoke(
+                cli_module.cli,
+                ["test-result", "--stack-name", "IDP", "--test-run-id", "r1"],
+            )
+
+        assert result.exit_code == 1, result.output
+
     def test_a_clean_run_exits_zero(self, runner):
         """Non-vacuity for both tests above: the code tracks the run, not the command.
 

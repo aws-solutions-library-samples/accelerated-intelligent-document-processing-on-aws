@@ -4061,11 +4061,16 @@ def _monitor_progress(
     logger.info("Showing final summary")
     elapsed_time = time.time() - start_time
     display.show_final_summary(status_data, stats, elapsed_time)
-    # The outcome is derived by the same function the polled form of `status` uses,
-    # rather than re-deriving it from `stats` here. Two implementations of one rule
-    # is how the two forms of `status` came to disagree in the first place; this
-    # keeps `--wait` and the poll answering out of one place.
-    return display.show_final_status_summary(status_data, stats)
+    # Derived by the same function the polled form of `status` reads, rather than
+    # re-derived from `stats` here. Two implementations of one rule is how the two
+    # forms of `status` came to disagree in the first place.
+    #
+    # `derive_exit_code` rather than `show_final_status_summary`, which also PRINTS
+    # "FINAL STATUS: ... | Exit Code: N". Two of this function's three callers discard
+    # the value it returns, so printing that line here would have
+    # `process --monitor` and `rerun --monitor` state an exit code that contradicts
+    # $?. The panel above already reports the failures.
+    return display.derive_exit_code(status_data, stats)
 
 
 def _process_test_set(
@@ -5403,9 +5408,12 @@ def config_upload(
                 console.print(
                     "Use --config-profile to process documents with this profile."
                 )
-        else:
-            console.print("[bold]Configuration is now active![/bold]")
-            console.print("New documents will use this configuration immediately.")
+        # There is deliberately no `else` here. `--config-profile` is `required=True`
+        # and the blank-value guard above rejects the only other way `config_version`
+        # could be falsy, so this branch is always taken. The `else` that used to sit
+        # here printed "Configuration is now active!" and was reachable *only* through
+        # the #1230 defect the guard closes — an empty profile name writing to a key
+        # nothing reads. Keeping it would leave a message that can only ever be wrong.
 
     except Exception as e:
         logger.error(f"Error uploading config: {e}", exc_info=True)
@@ -6028,11 +6036,25 @@ def config_sync_bda(
             )
             console.print("[bold red]This action cannot be undone.[/bold red]")
             console.print()
-            if not force and not click.confirm(
-                "Delete the orphaned blueprints?", default=False
-            ):
-                console.print("[yellow]Cleanup cancelled[/yellow]")
-                sys.exit(1)
+            if not force:
+                try:
+                    confirmed = click.confirm(
+                        "Delete the orphaned blueprints?", default=False
+                    )
+                except click.Abort:
+                    # No terminal to prompt on -- a CI runner, or stdin closed.
+                    # `click.confirm` raises `Abort`, which carries no message, so the
+                    # command's generic handler printed a bare "✗ Error: " and logged a
+                    # traceback. Nothing was deleted, which is right; what was missing
+                    # was saying how to proceed.
+                    console.print(
+                        "[yellow]Cleanup cancelled: there is no terminal to confirm "
+                        "on. Pass --force to run it without a prompt.[/yellow]"
+                    )
+                    sys.exit(1)
+                if not confirmed:
+                    console.print("[yellow]Cleanup cancelled[/yellow]")
+                    sys.exit(1)
         else:
             console.print(f"[bold blue]BDA Sync for stack: {stack_name}[/bold blue]")
             console.print(f"Direction: {direction}")

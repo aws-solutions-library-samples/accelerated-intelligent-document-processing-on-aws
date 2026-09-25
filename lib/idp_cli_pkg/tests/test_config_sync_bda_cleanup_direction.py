@@ -209,13 +209,37 @@ class TestTheDestructiveOperationConfirms:
         client.config.sync_bda.assert_not_called()
 
     def test_the_default_answer_is_no(self):
-        """An empty answer -- a bare Enter, or a closed stdin -- must not delete."""
+        """A bare Enter must not delete. `default=False` is the whole assertion.
+
+        A closed stdin is a *different* path -- `click.confirm` raises `Abort` rather
+        than returning False -- and has its own test below. The docstring used to
+        claim both while driving only this one.
+        """
         client = _client(_cleanup_result())
         with patch("idp_sdk.IDPClient", return_value=client):
             run = CliRunner().invoke(cli, CLEANUP_ARGS, input="\n")
 
         assert run.exit_code == 1
         client.config.sync_bda.assert_not_called()
+
+    def test_no_terminal_to_confirm_on_deletes_nothing_and_names_force(self):
+        """A CI runner with no stdin: nothing deleted, and the remedy is printed.
+
+        `click.confirm` raises `click.Abort`, which carries no message, so the
+        command's generic handler printed a bare "✗ Error: " with a logged traceback
+        and never mentioned `--force`. Safe but unactionable.
+        """
+        client = _client(_cleanup_result())
+        with patch("idp_sdk.IDPClient", return_value=client):
+            run = CliRunner().invoke(cli, CLEANUP_ARGS, input="")
+
+        flat = _flat(run)
+        assert run.exit_code == 1
+        client.config.sync_bda.assert_not_called()
+        assert "no terminal to confirm on" in flat
+        assert "--force" in flat
+        # Not the empty generic error this used to produce.
+        assert "Error: " not in flat
 
     def test_accepting_the_prompt_runs_the_cleanup(self):
         """Non-vacuity for the two above: the prompt is answerable."""

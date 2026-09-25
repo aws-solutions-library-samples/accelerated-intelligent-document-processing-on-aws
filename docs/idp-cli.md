@@ -2516,7 +2516,7 @@ idp-cli config-download --stack-name my-stack --config-profile lending \
     --config-revision 7 --output r7.yaml
 ```
 
-⚠️ **A profile that does not exist is refused, and did not always be.** A typo in
+⚠️ **A profile that does not exist is refused.** A typo in
 `--config-profile` used to exit 0 having written the YAML null document — so
 `config-download --config-profile lendnig > config.yaml` left a file every downstream
 step reads as an *empty* configuration, under an exit code that said it worked. All
@@ -2809,9 +2809,13 @@ idp-cli test-result \
   --wait --output-dir ./results
 ```
 
-**Exit codes:** `0` when the run passed, `1` when it did not — `status` is `FAILED`, or
-any file failed. The results are printed before the exit either way, so you still get
-the accuracy figures for a failed run.
+**Exit codes:** `1` when the run's `status` is `FAILED`, or when any file failed
+whatever the status is (a `PARTIAL_COMPLETE` run with failures exits `1`). `0`
+otherwise, which includes the in-flight states — `EVALUATING`, `IN_PROGRESS`, `QUEUED` —
+and, for now, `ABORTED` with no failed files. Read the printed `Status:` line rather
+than the exit code if you need to distinguish "passed" from "has not finished". The
+results are printed before the exit either way, so you still get the accuracy figures
+for a failed run.
 
 ⚠️ This command used to exit `0` for a run with `status="FAILED"` and every file
 failed, exactly like a clean pass, so `idp-cli test-result ... && deploy` proceeded on a

@@ -1846,6 +1846,44 @@ class TestDeleteDocumentsResultReporting:
         assert "Failed deletions:" in result.output
         assert surviving == [key for key, _ in SEEDED_DOCUMENTS]
 
+    def test_a_dry_run_that_reports_failures_still_exits_zero(self):
+        """`not dry_run` on the exit condition, which nothing else reaches.
+
+        A dry run deletes nothing, so a `failed_count` it reports is a *projection*
+        rather than an outcome, and exiting 1 would make `--dry-run` unusable as a
+        pre-flight check. Dropping the `not dry_run` clause left the whole suite
+        green.
+        """
+        dry = {
+            "success": False,
+            "deleted_count": 0,
+            "failed_count": 2,
+            "total_count": 2,
+            "dry_run": True,
+            "results": [],
+        }
+
+        with mock_aws():
+            _seed_documents()
+            with patch(
+                "idp_common.delete_documents.delete_documents", return_value=dry
+            ):
+                result = CliRunner().invoke(
+                    cli,
+                    [
+                        "delete-documents",
+                        "--stack-name",
+                        "dd-stack",
+                        "--batch-id",
+                        "batch-1",
+                        "--dry-run",
+                        "--force",
+                    ],
+                )
+
+        assert result.exit_code == 0, result.output
+        assert "DRY RUN COMPLETE" in result.output
+
     def test_a_partial_failure_still_exits_zero_and_that_is_the_residual(self):
         """A per-document failure list is the only route to a manual retry.
 

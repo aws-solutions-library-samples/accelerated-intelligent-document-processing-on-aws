@@ -25,6 +25,30 @@ from idp_sdk.models import (
 logger = logging.getLogger(__name__)
 
 
+def _failed_cleanup_arns(cleanup: dict) -> list:
+    """The ARNs an orphaned-blueprint cleanup tried and failed to delete.
+
+    `cleanup_orphaned_blueprints` returns one `details` entry per blueprint it
+    attempted, each carrying `name`, `arn` and a `status` of `"deleted"` or
+    `"failed"`. A blueprint it could not delete is still an orphan afterwards, and
+    the ARN is the only way to find it — no project-scoped read will ever show it
+    again, which is the premise #1194 rests on. So the failed entries are the ones
+    a caller needs.
+
+    Defensive about the shape rather than subscripting: this is the error path of a
+    destructive operation, and a `KeyError` raised while reporting a partial failure
+    would replace the report with a stack trace. An entry with no `arn` is dropped
+    rather than rendered as `None`.
+    """
+    return [
+        entry["arn"]
+        for entry in (cleanup.get("details") or [])
+        if isinstance(entry, dict)
+        and entry.get("status") == "failed"
+        and entry.get("arn")
+    ]
+
+
 class ConfigOperation:
     """Configuration management operations."""
 
@@ -1004,6 +1028,81 @@ class ConfigOperation:
                 success=False, deleted_version=config_version, error=str(e)
             )
 
+    def _refuse_cleanup_without_a_real_profile(
+        self, manager, config_version: Optional[str], mode: str
+    ) -> Optional[ConfigSyncBdaResult]:
+        """Refuse an orphaned-blueprint cleanup whose profile does not exist.
+
+        Returns a failing ``ConfigSyncBdaResult`` to return, or ``None`` to proceed.
+
+        The cleanup's only safety mechanism is the class list it reads from the named
+        profile: every blueprint carrying the stack's name prefix that no class
+        accounts for is deleted, account-wide. `cleanup_orphaned_blueprints` turns a
+        `get_configuration` that answers `None` into `current_classes = []` and then
+        deletes everything, reporting `success=True` with a deletion count — an
+        answer no caller can tell apart from a correct one.
+
+        Two inputs reach that state, and they need different checks.
+
+        A name that is not a profile — a typo in `--config-profile`, or a
+        whitespace-only value — finds no record. That is the likelier one and the more
+        destructive, because `--config-profile lendnig` deletes `lending`'s live
+        blueprints along with everything else. A whitespace-only name needs no clause
+        of its own: it is truthy, so it reaches the lookup, and `Config#   ` names
+        nothing. A `.strip()` test was written here and removed as redundant — no
+        input distinguished it from the lookup, and mutating it away left the suite
+        green, which is what a redundant guard looks like from outside.
+
+        `None` is not a failed lookup and so is checked separately: `_read_record`
+        builds the key as `Config#<version>` only when the version is truthy, so
+        `version=None` reads the **bare** `Config` key, which #1230 showed can hold a
+        record nothing else can see. Left to the lookup, that would *succeed* on a
+        record describing no profile. `None` reaches here when the caller named no
+        profile and the resolution above found none active. An empty *string* does not
+        reach either check — the resolution treats it as "not specified" and
+        substitutes the active profile, the same reading `config-download` gives it.
+
+        Deliberately **not** covered: a profile that exists and declares no classes.
+        That is a real instruction to keep nothing, and deleting every prefixed
+        blueprint is the right response. The distinction this method draws is between
+        "keep nothing" and "could not find out what to keep", which arrive at the
+        service identically and have opposite safe actions.
+        """
+        if not config_version:
+            return ConfigSyncBdaResult(
+                success=False,
+                direction="cleanup_orphaned",
+                mode=mode,
+                cleanup_deleted_count=0,
+                cleanup_failed_count=0,
+                error=(
+                    "Orphaned-blueprint cleanup needs a configuration profile: its "
+                    "classes are what decide which blueprints are kept, and no "
+                    "profile is active on this stack. Name one explicitly. Running "
+                    "without one would treat every blueprint carrying the stack's "
+                    "prefix as an orphan and delete it."
+                ),
+            )
+
+        if manager.get_configuration("Config", version=config_version) is None:
+            return ConfigSyncBdaResult(
+                success=False,
+                direction="cleanup_orphaned",
+                mode=mode,
+                cleanup_deleted_count=0,
+                cleanup_failed_count=0,
+                error=(
+                    f"Configuration profile '{config_version}' does not exist on "
+                    f"this stack, so the orphaned-blueprint cleanup cannot tell "
+                    f"which blueprints to keep — it would treat every blueprint "
+                    f"carrying the stack's prefix as an orphan and delete it, "
+                    f"including the ones belonging to profiles that do exist. Run "
+                    f"`idp-cli config-list` to see the profiles that do."
+                ),
+            )
+
+        return None
+
     def sync_bda(
         self,
         direction: str = "bidirectional",
@@ -1069,6 +1168,45 @@ class ConfigOperation:
                         config_version = v.get("versionName")
                         break
 
+            # `cleanup_orphaned` is validated HERE, before the project resolution
+            # below, and the placement is the whole of the check.
+            #
+            # The cleanup decides what is an orphan by building the set of expected
+            # blueprint-name prefixes from the named profile's classes, and
+            # `cleanup_orphaned_blueprints` reduces a `get_configuration` that
+            # answers `None` to `current_classes = []`. An empty expected set means
+            # every blueprint carrying the stack's prefix matches nothing, so all of
+            # them are deleted — and it reports `success=True` with a deletion count,
+            # which is indistinguishable from having done the right thing.
+            #
+            # `get_configuration` answers `None` for two different inputs, and both
+            # reach that state: `version=None` reads the *bare* `Config` key, which
+            # holds nothing on a normal stack; and a `version` naming a profile that
+            # does not exist — a typo in `--config-profile`, or a whitespace-only
+            # value — finds no record. The second is the likelier one in practice and
+            # is the more destructive: `--config-profile lendnig` deletes the live
+            # blueprints of `lending` along with everything else.
+            #
+            # A profile that exists and declares no classes is a different answer and
+            # is allowed through: "keep nothing" is a real instruction, and deleting
+            # every prefixed blueprint is the correct response to it. What must not
+            # happen is "could not find out what to keep" being executed as if it
+            # were that.
+            #
+            # Before the project resolution because that resolution is not
+            # side-effect-free on these inputs: with no ARN recorded it calls
+            # `get_or_create_project_for_version(config_version)`, which **creates a
+            # BDA project** for a valid name and raises `TypeError` out of
+            # `_sanitize_project_name(None)` for `None`. Validating afterwards meant
+            # the useful message never arrived and a cleanup could create a project
+            # on its way to refusing.
+            if direction == "cleanup_orphaned":
+                refusal = self._refuse_cleanup_without_a_real_profile(
+                    manager, config_version, mode
+                )
+                if refusal is not None:
+                    return refusal
+
             # Get or create BDA project ARN
             bda_project_arn = manager.get_bda_project_arn(config_version)
             bda_service = BdaBlueprintService(
@@ -1090,37 +1228,6 @@ class ConfigOperation:
             # disassociates before deleting, which needs a project to disassociate
             # from.
             if direction == "cleanup_orphaned":
-                # Refuse rather than run with an unresolved profile. The cleanup
-                # decides what is an orphan by building the set of expected
-                # blueprint-name prefixes from the named profile's classes, and
-                # `ConfigurationManager.get_configuration("Config", version=None)`
-                # reads the *bare* `Config` key, which on a normal stack holds
-                # nothing. So an unresolved version produces an empty expected set,
-                # every prefixed blueprint in the account matches nothing, and the
-                # cleanup deletes all of them. "No classes to keep" and "could not
-                # find out which classes to keep" are indistinguishable downstream,
-                # and the two have opposite safe actions.
-                #
-                # Reachable without this: the resolution above leaves
-                # `config_version` as `None` when the caller named no profile and no
-                # profile is active, which is an ordinary state for a stack nobody
-                # has activated a configuration on.
-                if not config_version:
-                    return ConfigSyncBdaResult(
-                        success=False,
-                        direction=direction,
-                        mode=mode,
-                        cleanup_deleted_count=0,
-                        cleanup_failed_count=0,
-                        error=(
-                            "Orphaned-blueprint cleanup needs a configuration "
-                            "profile: its classes are what decide which blueprints "
-                            "are orphaned, and no profile is active on this stack. "
-                            "Name one explicitly. Running without one would treat "
-                            "every blueprint carrying the stack's prefix as an "
-                            "orphan."
-                        ),
-                    )
                 cleanup = bda_service.cleanup_orphaned_blueprints(
                     version=config_version
                 )
@@ -1142,9 +1249,17 @@ class ConfigOperation:
                     cleanup_deleted_count=deleted,
                     cleanup_failed_count=failed,
                     # The blueprints the cleanup could not delete are still orphaned
-                    # after it ran, so they are reported for the same reason a sync
-                    # reports them: nothing project-scoped will ever show them again.
-                    orphaned_blueprint_arns=list(bda_service.orphaned_blueprint_arns),
+                    # after it ran, and the ARN is the only way to find one: nothing
+                    # project-scoped will ever show it again, which is the premise
+                    # #1194 rests on.
+                    #
+                    # Read off the cleanup's own `details`, NOT off
+                    # `bda_service.orphaned_blueprint_arns`. That attribute is written
+                    # only by `_synchronize_deletes`, inside
+                    # `create_blueprints_from_custom_configuration`, which this path
+                    # never calls — so it is `[]` here however the cleanup went, and
+                    # reading it reported "0 orphans" beside a non-zero failure count.
+                    orphaned_blueprint_arns=_failed_cleanup_arns(cleanup),
                     error=(
                         cleanup.get("message")
                         or f"{failed} orphaned blueprint(s) could not be deleted"
