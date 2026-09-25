@@ -418,18 +418,27 @@ def _probe_tree(tmp_path: Path, name: str = "probe"):
     gone -- and with a single child the report still reads 100%, which is the measurement
     that makes this shape necessary.
 
-    **Each child also imports a module from outside the measured tree** (``outside/far.py``,
-    reached by putting its directory on `sys.path`), because a child with no source bound
-    measures everything it imports and the parent's `combine()` then merges all of it. That
-    is invisible to any assertion about `pkg/mod.py`'s own rate: it shows up as files in the
-    report that are not in the tree, so the test asserts the report's **file set** as well as
-    that rate.
+    **Each child also imports two modules the report must not contain**, because a child with
+    no source bound measures everything it imports and the parent's `combine()` then merges
+    all of it. That is invisible to any assertion about `pkg/mod.py`'s own rate: it shows up
+    as files in the report that are not in what was asked for, so the test asserts the
+    report's **file set** as well as that rate. The two sit at different distances on
+    purpose, because a bound can be wrong by being absent or by being too wide:
+
+    * ``outside/far.py`` is outside the probe tree altogether, so it is excluded by any bound
+      at all and catches the bound being missing.
+    * ``sibling.py`` is inside the tree root but outside the ``pkg`` subdirectory this tree
+      measures, so only the right bound excludes it. Widening the source from ``<root>/pkg``
+      to ``<root>`` is a one-token simplification that on the real `scripts` tree would point
+      every child at the whole repository, and with `far.py` alone the suite stayed green
+      through it.
     """
     root = tmp_path / name
     (root / "pkg").mkdir(parents=True, exist_ok=True)
     (root / "tests").mkdir(parents=True, exist_ok=True)
     (tmp_path / "outside").mkdir(parents=True, exist_ok=True)
     (tmp_path / "outside" / "far.py").write_text("REACHED = True\n", encoding="utf-8")
+    (root / "sibling.py").write_text("ALSO_REACHED = True\n", encoding="utf-8")
     (root / "pkg" / "__init__.py").write_text("", encoding="utf-8")
     (root / "pkg" / "mod.py").write_text(
         "import sys\n"
@@ -449,10 +458,13 @@ def _probe_tree(tmp_path: Path, name: str = "probe"):
         "\n"
         'if __name__ == "__main__":\n'
         "    sys.path.insert(0, sys.argv[2])\n"
+        "    sys.path.insert(0, sys.argv[3])\n"
         "    import far\n"
+        "    import sibling\n"
         "\n"
         '    which = first_child if sys.argv[1] == "first" else second_child\n'
-        "    sys.exit(0 if which() and far.REACHED else 1)\n",
+        "    reached = far.REACHED and sibling.ALSO_REACHED\n"
+        "    sys.exit(0 if which() and reached else 1)\n",
         encoding="utf-8",
     )
     (root / "tests" / "test_probe.py").write_text(
@@ -462,11 +474,14 @@ def _probe_tree(tmp_path: Path, name: str = "probe"):
         "\n"
         'MOD = Path(__file__).resolve().parents[1] / "pkg" / "mod.py"\n'
         'OUTSIDE = Path(__file__).resolve().parents[2] / "outside"\n'
+        "ROOT = Path(__file__).resolve().parents[1]\n"
         "\n"
         "\n"
         "def _run(which, cwd):\n"
         "    return subprocess.run(\n"
-        "        [sys.executable, str(MOD), which, str(OUTSIDE)], cwd=cwd, check=False\n"
+        "        [sys.executable, str(MOD), which, str(OUTSIDE), str(ROOT)],\n"
+        "        cwd=cwd,\n"
+        "        check=False,\n"
         "    ).returncode\n"
         "\n"
         "\n"
@@ -540,6 +555,7 @@ class TestASubprocessOfAMeasuredSuiteCannotRunUninstrumented:
         # `outside/far.py`, which is measurable and must not be measured.
         files = _probe_files(ccd.report_path(tree))
         assert not any("far.py" in f for f in files), files
+        assert not any("sibling.py" in f for f in files), files
 
     @pytest.mark.parametrize(
         "withheld", ["COVERAGE_PROCESS_START", "COVERAGE_FILE", "both"]
@@ -603,6 +619,7 @@ class TestASubprocessOfAMeasuredSuiteCannotRunUninstrumented:
         assert (name, code) == ("probe", 0)
         files = _probe_files(ccd.report_path(tree))
         assert any("far.py" in f for f in files), files
+        assert any("sibling.py" in f for f in files), files
 
     def test_the_configuration_the_variable_names_makes_children_write_their_own_data(
         self,

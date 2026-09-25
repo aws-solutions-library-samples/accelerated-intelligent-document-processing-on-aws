@@ -84,8 +84,9 @@ def subprocess_coverage_env(
       outside the tree -- which is why the probe in
       `scripts/tests/test_coverage_all.py` makes its children import a module that is
       outside it on purpose. A ratchet cannot use such a report, and `--write` would record
-      every one of those files. The path has to be **absolute** for the same reason the
-      data file does.
+      every one of those files. Like the data file it has to be **absolute**, which `run`
+      guarantees by deriving it from `REPO_ROOT` rather than from `tree.cwd`; the
+      `resolve()` below only normalises what it is given.
 
     Measured on a probe whose only execution is a subprocess with a `cwd` of its own:
     0.00% with neither of the first two variables, 0.00% with ``COVERAGE_PROCESS_START``
