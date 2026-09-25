@@ -13,23 +13,22 @@ from typing import Dict, List
 
 import boto3
 
+from idp_sdk.models.base import (
+    TERMINAL_DOCUMENT_STATES,
+    DocumentBucket,
+    classify_document_state,
+)
+
 logger = logging.getLogger(__name__)
 
 # A document in one of these will never change again, so the monitor can stop
-# polling it. REDACTED_SUPERSEDED is terminal by design: a preprocessing hook
-# replaced the original with a redacted copy, so it never reaches COMPLETED —
-# without it here, monitoring spins until timeout on every redact-and-stop doc.
-_TERMINAL_STATES = frozenset(
-    {"COMPLETED", "FAILED", "ABORTED", "NOT_FOUND", "REDACTED_SUPERSEDED"}
-)
-# Terminal AND not a success. REDACTED_SUPERSEDED is deliberately NOT here: the
-# original was intentionally superseded, which is not a processing failure.
-_FAILED_STATES = frozenset({"FAILED", "ABORTED", "NOT_FOUND"})
-# Terminal and not a failure. REDACTED_SUPERSEDED counts as done so a batch
-# containing one can still reach 100%.
-_SUCCESS_STATES = frozenset({"COMPLETED", "REDACTED_SUPERSEDED"})
-# Accepted but not yet being worked on.
-_NOT_STARTED_STATES = frozenset({"QUEUED", "PENDING_UPLOAD", "UNKNOWN"})
+# polling it. Taken from `idp_sdk.models.base`, where the four progress buckets
+# are defined as a partition of `DocumentState` that an import-time check and an
+# offline test both hold to -- so a state added to the enum cannot reach this
+# module unclassified. REDACTED_SUPERSEDED is terminal by design: a preprocessing
+# hook replaced the original with a redacted copy, so it never reaches COMPLETED,
+# and without it here monitoring spins until timeout on every redact-and-stop doc.
+_TERMINAL_STATES = frozenset(state.value for state in TERMINAL_DOCUMENT_STATES)
 
 
 class ProgressMonitor:
@@ -210,24 +209,14 @@ class ProgressMonitor:
             status_summary: Status summary dictionary to update
         """
         status_value = status["status"]
+        bucket = classify_document_state(status_value)
 
-        if status_value in _SUCCESS_STATES:
-            status_summary["completed"].append(status)
-        elif status_value in _FAILED_STATES:
+        if bucket is DocumentBucket.FAILED and status_value == "NOT_FOUND":
             # NOT_FOUND is treated as failed - document was never tracked in DynamoDB
-            if status_value == "NOT_FOUND":
-                status["error"] = "Document not found in tracking table"
-                status["failed_step"] = "QueueSender"
-            status_summary["failed"].append(status)
-        elif status_value in _NOT_STARTED_STATES:
-            status_summary["queued"].append(status)
-        else:
-            # Anything else is a mid-pipeline step, so default to "running"
-            # rather than enumerating them. The previous explicit list omitted
-            # OCR, PREPROCESSING, POSTPROCESSING and
-            # RULE_VALIDATION_POLICY_CLASSIFICATION, so documents in those very
-            # ordinary states were reported as "Queued".
-            status_summary["running"].append(status)
+            status["error"] = "Document not found in tracking table"
+            status["failed_step"] = "QueueSender"
+
+        status_summary[bucket.value].append(status)
 
     def get_document_status(self, doc_id: str) -> Dict:
         """

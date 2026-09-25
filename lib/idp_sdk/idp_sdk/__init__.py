@@ -75,6 +75,7 @@ from .models import (
     DiscoveredClassResult,
     DiscoveryBatchResult,
     DiscoveryResult,
+    DocumentBucket,
     # Document models
     DocumentDeletionResult,
     DocumentDownloadResult,
@@ -125,6 +126,7 @@ from .models import (
     TestComparisonResult,
     TestRunResult,
     UseAsBaselineResult,
+    classify_document_state,
 )
 
 __version__ = "0.6.9"
@@ -143,8 +145,11 @@ __all__ = [
     # Enums
     "StackState",
     "DocumentState",
+    "DocumentBucket",
     "Pattern",
     "RerunStep",
+    # State classification
+    "classify_document_state",
     # Publish models
     "PublishResult",
     "TemplateTransformResult",

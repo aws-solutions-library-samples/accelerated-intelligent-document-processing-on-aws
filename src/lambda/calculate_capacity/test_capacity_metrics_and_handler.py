@@ -1157,18 +1157,67 @@ def test_a_request_rate_exactly_equal_to_the_rpm_quota_is_sufficient(tracking):
 
 
 @pytest.mark.unit
-def test_utilization_is_capped_at_one_hundred_percent(tracking):
-    """The gauge saturates; `requiredQuota` is where the true shortfall shows.
+def test_a_token_shortfall_reports_its_true_size_not_a_saturated_hundred(tracking):
+    """A near miss and a disaster have to be different numbers.
 
-    Worth knowing when reading the report: a plan needing five times its quota and
-    one needing 1.01 times both render as a full bar.
+    Both cases below are token shortfalls against the same 100,000 TPM quota, and
+    both used to read 100: one needing 10% more headroom and one needing five and
+    a half times the quota rendered identically, so the field that expresses the
+    shortfall as a ratio was the one field that hid its size. An operator decides
+    between "nudge the quota" and "escalate this" on exactly that difference.
+
+    The two are asserted to differ from each other as well as to equal their own
+    values, because that inequality is the property the cap removed and an
+    equality pair alone would also be satisfied by a cap at some other constant.
     """
     put_metered(tracking, "doc-1", bedrock("Extraction", 4))
-    hourly = hours(**{"9": {"docsPerHour": 60, "extractionTokensPerHour": 30_000_000}})
-    requirement = by_type(build(hourly))[("Extraction", "TPM")]
-    assert requirement["utilizationPercent"] == 100
-    assert requirement["requiredQuota"] == "550,000"
-    assert requirement["currentQuota"] == "100,000"
+
+    def utilization(tokens_per_hour):
+        hourly = hours(
+            **{"9": {"docsPerHour": 60, "extractionTokensPerHour": tokens_per_hour}}
+        )
+        return by_type(build(hourly))[("Extraction", "TPM")]
+
+    near_miss = utilization(6_000_000)
+    disaster = utilization(30_000_000)
+
+    assert near_miss["utilizationPercent"] != disaster["utilizationPercent"]
+    # 6,000,000/60 x 1.1 = 110,000 against 100,000, and 30,000,000 gives 550,000.
+    assert near_miss["utilizationPercent"] == pytest.approx(110.0)
+    assert near_miss["requiredQuota"] == "110,000"
+    assert disaster["utilizationPercent"] == pytest.approx(550.0)
+    assert disaster["requiredQuota"] == "550,000"
+    assert disaster["currentQuota"] == "100,000"
+
+
+@pytest.mark.unit
+def test_a_request_shortfall_reports_its_true_size_too(tracking):
+    """The same uncapping on the request side, which is a separate expression.
+
+    The cap was written out once per row, so removing it from the token figure is
+    no evidence about the request figure — and the existing equality cases on
+    both sides land on exactly 100, where a cap and no cap agree, so neither of
+    them can tell the two apart.
+    """
+
+    def utilization(requests_per_doc, docs_per_hour):
+        put_metered(tracking, "doc-1", bedrock("Extraction", requests_per_doc))
+        hourly = hours(
+            **{"9": {"docsPerHour": docs_per_hour, "extractionTokensPerHour": 60000}}
+        )
+        return by_type(build(hourly))[("Extraction", "RPM")]
+
+    # 4 req/doc x 3000 docs / 60 x 1.1 = 220 RPM against a 200 RPM quota.
+    near_miss = utilization(4, 3000)
+    # 10 req/doc x 6000 docs / 60 x 1.1 = 1100 RPM against the same quota.
+    disaster = utilization(10, 6000)
+
+    assert near_miss["utilizationPercent"] != disaster["utilizationPercent"]
+    assert near_miss["utilizationPercent"] == pytest.approx(110.0)
+    assert near_miss["requiredQuota"] == "220"
+    assert disaster["utilizationPercent"] == pytest.approx(550.0)
+    assert disaster["requiredQuota"] == "1,100"
+    assert disaster["currentQuota"] == "200"
 
 
 @pytest.mark.unit
@@ -1317,19 +1366,27 @@ def test_disabling_granular_assessment_excludes_its_recorded_requests(tracking):
 
 
 @pytest.mark.unit
-def test_turning_off_granular_assessment_costs_its_rows_not_the_whole_report(
+def test_turning_off_granular_assessment_costs_its_rpm_row_not_the_whole_report(
     tracking, capsys
 ):
     """A history recorded entirely under granular keys leaves nothing to count.
 
     Assessment then has demand and no countable request data — but because the
     configuration excluded every entry it had rather than because none was recorded,
-    which is a distinction the operator acts on differently. The step's two rows are
-    dropped and every other step is still reported, rather than one configuration
-    change making the whole report unavailable. No request figure is invented for the
-    dropped step.
+    which is a distinction the operator acts on differently. That costs the step its
+    request rate, and every other step is still reported, rather than one
+    configuration change making the whole report unavailable. No request figure is
+    invented for it.
 
-    The absent rows do not say which guard produced them: Assessment here has real
+    The token row survives, and that asymmetry is the point of this test. The TPM
+    figure is the operator's own scheduled token demand measured against the Service
+    Quotas value; it reads no metering at all, so nothing about it is unknown here.
+    Withholding it would have hidden an available answer behind advice to process
+    more documents — advice that cannot change it, because no quantity of documents
+    is what the TPM figure is missing. The RPM figure is the only one with no
+    measurement behind it, and it is the only one withheld.
+
+    The absent RPM row does not say which guard produced it: Assessment here has real
     demand, so the shared no-demand-and-no-metering skip is not the one that could
     have fired, and the printed line is what identifies the branch — it is also the
     only place the cause is stated, so its wording is asserted rather than described.
@@ -1355,7 +1412,12 @@ def test_turning_off_granular_assessment_costs_its_rows_not_the_whole_report(
         )
     )
 
-    assert ("Assessment", "TPM") not in requirements
+    # 60,000 assessment tokens in the peak hour / 60 x 1.1 = 1,100 TPM, which the
+    # 100,000 TPM quota covers. None of that needed a request count.
+    assessment_tpm = requirements[("Assessment", "TPM")]
+    assert assessment_tpm["requiredQuota"] == "1,100"
+    assert assessment_tpm["statusText"] == "✅ Sufficient"
+    assert assessment_tpm["utilizationPercent"] == pytest.approx(1.1)
     assert ("Assessment", "RPM") not in requirements
     # 3 req/doc x 60 docs / 60 x 1.1 = 3.3 -> 3: the rest of the report survives.
     assert requirements[("Extraction", "RPM")]["requiredQuota"] == "3"
@@ -1609,13 +1671,32 @@ def test_a_configured_ocr_model_with_demand_is_planned_for(tracking):
 
 
 @pytest.mark.unit
-def test_a_step_below_one_request_a_minute_disappears_from_the_report(tracking):
-    """`peak_tpm > 0 or peak_rpm > 1.0`, so a low-volume step is dropped silently.
+def test_a_step_below_one_request_a_minute_still_appears_in_the_report(tracking):
+    """A step that runs rarely is in the report; only one that runs at all is.
 
     Assessment here has recorded Bedrock calls and no configured token demand, and
-    its request rate works out below one a minute, so no row is produced at all —
-    not a zero row. An operator reading the report cannot tell the step from one
-    that is switched off.
+    its request rate works out at well under one a minute. A floor of one request
+    a minute dropped it entirely — not to a zero row, to no row — which in a
+    report whose whole purpose is to list the quotas an operator must check reads
+    as "this step is switched off". Nothing distinguished the two, and the step
+    that vanished was by construction the one nobody was watching.
+
+    The inclusion rule is now zero on both terms, so the step is reported with the
+    small figure it actually has. The figure is asserted rather than just the row's
+    presence, because a row carrying an invented number would be worse than the
+    silence it replaced: `requiredQuota` rounds the 0.18 RPM ask to "0" while
+    `utilizationPercent` keeps the unrounded share of the quota, so between them
+    the row says "running, needs no headroom" — which is the distinction the floor
+    destroyed.
+
+    Nothing here asserts the absence of a skip message, although that is the usual
+    way of showing which branch produced a result. With the threshold at zero the
+    drop branch is unreachable — not because the request rate is always positive,
+    which the withheld-RPM path makes false, but because the two skips between them
+    guarantee that at least one of the two terms is; see the comment at the
+    inclusion rule. So "no skip line was printed" is implied by the rows existing
+    rather than evidence about them, and asserting it would read as coverage of a
+    branch no input can reach.
     """
     metering = {}
     metering.update(bedrock("Extraction", 3))
@@ -1628,7 +1709,49 @@ def test_a_step_below_one_request_a_minute_disappears_from_the_report(tracking):
         )
     )
     assert ("Extraction", "TPM") in requirements
-    assert ("Assessment", "TPM") not in requirements
+    # 1 req/doc x 10 docs / 60 x 1.1 = 0.183 RPM, which rounds to a "0" ask but is
+    # not zero: the status text separates it from a step with no demand at all.
+    rpm = requirements[("Assessment", "RPM")]
+    assert rpm["requiredQuota"] == "0"
+    assert rpm["statusText"] == "✅ Sufficient"
+    assert rpm["utilizationPercent"] == pytest.approx(0.0917, rel=1e-3)
+    # No assessment tokens are scheduled, so the token half is a true "No Demand".
+    tpm = requirements[("Assessment", "TPM")]
+    assert tpm["requiredQuota"] == "0"
+    assert tpm["statusText"] == "✅ No Demand"
+
+
+@pytest.mark.unit
+def test_the_lowest_request_rate_the_planner_can_derive_still_gets_a_row(tracking):
+    """The threshold is pinned at zero, not merely somewhere below one a minute.
+
+    The case above runs at 0.183 RPM, so it is satisfied by any floor under that —
+    the symmetry the inclusion rule is built on would still be unpinned against a
+    floor of, say, 0.05, which was measured to leave the suite green. This pins the
+    smallest rate the planner can actually derive instead.
+
+    That smallest rate is a property of the counting code rather than an arbitrary
+    small number: a document only joins the per-document average if it recorded at
+    least one request for the step, so `requests_per_doc` cannot fall below 1.0,
+    and the peak hour cannot schedule fewer than one document. One request in the
+    one document processed in the busiest hour is therefore the floor, and it is
+    the case a threshold would silence first.
+    """
+    metering = {}
+    metering.update(bedrock("Extraction", 3))
+    metering.update(bedrock("Assessment", 1))
+    put_metered(tracking, "doc-1", metering)
+    hourly = hours(**{"9": {"docsPerHour": 1, "extractionTokensPerHour": 60000}})
+    requirements = by_type(
+        build(
+            hourly, config=model_config(extraction_model=MODEL, assessment_model=MODEL)
+        )
+    )
+    # 1 req/doc x 1 doc / 60 x 1.1 = 0.01833 RPM against the 200 RPM quota.
+    rpm = requirements[("Assessment", "RPM")]
+    assert rpm["requiredQuota"] == "0"
+    assert rpm["statusText"] == "✅ Sufficient"
+    assert rpm["utilizationPercent"] == pytest.approx(0.009167, rel=1e-3)
 
 
 @pytest.mark.unit

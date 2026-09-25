@@ -1324,22 +1324,125 @@ def test_auto_detect_finding_no_sections_exits_zero_having_produced_nothing(
 
 
 @pytest.mark.unit
-def test_auto_detect_silently_discards_ground_truth_and_the_class_hint(
+@pytest.mark.parametrize(
+    "extra, named",
+    [
+        (["-g", "GT"], ["--ground-truth/-g"]),
+        (["--class-hint", "Lending Package"], ["--class-hint"]),
+        (
+            ["-g", "GT", "--class-hint", "Lending Package"],
+            ["--ground-truth/-g", "--class-hint"],
+        ),
+    ],
+    ids=["ground-truth", "class-hint", "both"],
+)
+def test_auto_detect_refuses_ground_truth_and_the_class_hint(
+    runner, sdk, tmp_path, extra, named
+):
+    """Neither can be applied under `--auto-detect`, so neither is accepted.
+
+    The SDK's auto-detect arm calls
+    `_run_auto_detect_and_discover(doc, config_version, stack_name, model_id)` and
+    forwards neither a ground truth nor a class-name hint, so there is nowhere for
+    either to take effect — a wiring fix is not available and the choice is between
+    refusing and charging for a run that disregards them. Discovery is paid, and its
+    output is written to disk and consumed as configuration, so it refuses.
+
+    Each option is exercised on its own as well as together, because a guard that
+    only fired when both were present would pass a single-option test written the
+    other way round. The refusal must also happen before a client exists: `-g` on
+    the standard path is what issue #310 was filed about, and the cost of getting
+    this wrong is a Bedrock charge, not a wasted keystroke.
+    """
+    from idp_cli.cli import discover
+
+    gt = tmp_path / "package.json"
+    gt.write_text("{}", encoding="utf-8")
+    args = [str(gt) if a == "GT" else a for a in extra]
+
+    result = runner.invoke(
+        discover,
+        ["-d", _doc(tmp_path, "package.pdf"), "--auto-detect", *args],
+    )
+
+    assert result.exit_code == 1, result.output
+    for option in named:
+        assert option in result.output
+    for option in ("--ground-truth/-g", "--class-hint"):
+        if option not in named:
+            assert option not in result.output
+    assert "--auto-detect cannot apply" in result.output
+    sdk.assert_never_constructed()
+
+
+@pytest.mark.unit
+def test_an_empty_class_hint_is_refused_too(runner, sdk, tmp_path):
+    """`--class-hint ""` is an option the user typed, so it is not quietly dropped.
+
+    The guard tests `class_hint is not None` rather than its truthiness. An empty
+    string is falsy, so a truthiness test would let this through and drop the hint —
+    the same accepted-then-ignored shape in miniature, which is what this issue is
+    about. An absent option arrives as `None`.
+    """
+    from idp_cli.cli import discover
+
+    result = runner.invoke(
+        discover,
+        ["-d", _doc(tmp_path, "package.pdf"), "--auto-detect", "--class-hint", ""],
+    )
+
+    assert result.exit_code == 1, result.output
+    assert "--class-hint" in result.output
+    sdk.assert_never_constructed()
+
+
+@pytest.mark.unit
+def test_the_rerun_hint_names_every_document_and_every_ground_truth(
     runner, sdk, tmp_path
 ):
-    """DEFECT: `-g` and `--class-hint` are accepted with `--auto-detect` and dropped.
+    """The suggested command must not narrow the work the user asked for.
 
-    The auto-detect arm calls `client.discovery.run` with only
-    `document_path`, `config_version`, `auto_detect` and `model_id`
-    (`cli.py:5438-5443`). A ground truth file and a class-name hint the user
-    supplied on the same command line are never passed on, and nothing is printed
-    about it — the header does not mention either.
+    The non-auto-detect form the hint suggests accepts several documents and several
+    ground truth files, so a hint naming only the first would send the user to a run
+    covering one of them — this issue's own shape, in the remedy for it. Two of each
+    are given, and both of each must appear.
+    """
+    from idp_cli.cli import discover
 
-    The consequence is a schema inferred without the ground truth the user
-    explicitly provided, which is the exact failure issue #310 was filed about for
-    the standard path: measurably worse extraction quality, with no signal in the
-    output that the ground truth was ignored. Click accepts the combination, so
-    there is not even a usage error to notice.
+    doc_a = _doc(tmp_path, "alpha.pdf")
+    doc_b = _doc(tmp_path, "beta.pdf")
+    gt_a = tmp_path / "alpha.json"
+    gt_a.write_text("{}", encoding="utf-8")
+    gt_b = tmp_path / "beta.json"
+    gt_b.write_text("{}", encoding="utf-8")
+
+    result = runner.invoke(
+        discover,
+        [
+            "-d",
+            doc_a,
+            "-d",
+            doc_b,
+            "-g",
+            str(gt_a),
+            "-g",
+            str(gt_b),
+            "--auto-detect",
+        ],
+    )
+
+    assert result.exit_code == 1, result.output
+    for path in (doc_a, doc_b, str(gt_a), str(gt_b)):
+        assert Path(path).name in result.output, path
+    sdk.assert_never_constructed()
+
+
+@pytest.mark.unit
+def test_auto_detect_alone_is_unaffected_by_that_refusal(runner, sdk, tmp_path):
+    """The guard is conditional on the two options, not on `--auto-detect`.
+
+    Without this, a guard that refused every `--auto-detect` run would satisfy every
+    assertion in the test above.
     """
     from idp_cli.cli import discover
 
@@ -1349,42 +1452,52 @@ def test_auto_detect_silently_discards_ground_truth_and_the_class_hint(
         failed=0,
         results=[DiscoveryResult(status="SUCCESS", json_schema=SCHEMA_A)],
     )
-    gt = tmp_path / "package.json"
-    gt.write_text("{}", encoding="utf-8")
 
     result = runner.invoke(
-        discover,
-        [
-            "-d",
-            _doc(tmp_path, "package.pdf"),
-            "-g",
-            str(gt),
-            "--class-hint",
-            "Lending Package",
-            "--auto-detect",
-        ],
+        discover, ["-d", _doc(tmp_path, "package.pdf"), "--auto-detect"]
     )
 
     assert result.exit_code == 0, result.output
-    passed = sdk.client.discovery.run.call_args.kwargs
-    assert "ground_truth_path" not in passed
-    assert "class_name_hint" not in passed
-    assert "Ground truth" not in result.output
-    assert "Class hint" not in result.output
+    assert sdk.client.discovery.run.call_args.kwargs["auto_detect"] is True
+    assert "cannot apply" not in result.output
 
 
 @pytest.mark.unit
-def test_detect_only_without_auto_detect_runs_a_full_discovery_instead(
+def test_detect_only_without_auto_detect_is_refused_rather_than_run_as_a_discovery(
     runner, sdk, tmp_path
 ):
-    """DEFECT: `--detect-only` alone is ignored and a paid discovery runs.
+    """`--detect-only` alone asked for the cheap step and got the expensive one.
 
-    `--detect-only` is only consulted inside the `if auto_detect:` block
-    (`cli.py:5397`). Given on its own it falls through to standard discovery, so a
-    user who asked for the cheap boundary-detection step gets a full
-    schema-inference call against Bedrock — the opposite of what the flag is for,
-    at a cost, and with no warning. The help text says "use with --auto-detect"
-    but the command does not enforce it.
+    It is only consulted inside the `if auto_detect:` arm, so on its own it fell
+    through to standard discovery and ran a full schema inference against Bedrock —
+    a *more* expensive operation than the boundary detection requested, which is
+    what puts this in the refusing class rather than the warning class. The help
+    text already documents the dependency; this enforces it.
+
+    `assert_no_discovery` is the assertion that matters: the point is that nothing
+    was charged for, and "printed an error" would not establish that.
+    """
+    from idp_cli.cli import discover
+
+    result = runner.invoke(
+        discover, ["-d", _doc(tmp_path, "package.pdf"), "--detect-only"]
+    )
+
+    assert result.exit_code == 1, result.output
+    assert "--detect-only requires --auto-detect" in result.output
+    assert "--auto-detect --detect-only" in result.output
+    sdk.assert_never_constructed()
+    sdk.assert_no_discovery()
+
+
+@pytest.mark.unit
+def test_a_discovery_without_detect_only_is_unaffected_by_that_refusal(
+    runner, sdk, tmp_path
+):
+    """The guard reads both flags, so plain discovery still runs.
+
+    A guard keyed on `--detect-only` alone, or written unconditionally, would pass
+    the test above; this is what distinguishes them.
     """
     from idp_cli.cli import discover
 
@@ -1392,41 +1505,31 @@ def test_detect_only_without_auto_detect_runs_a_full_discovery_instead(
         status="SUCCESS", document_class="Invoice", json_schema=SCHEMA_A
     )
 
-    result = runner.invoke(
-        discover, ["-d", _doc(tmp_path, "package.pdf"), "--detect-only"]
-    )
+    result = runner.invoke(discover, ["-d", _doc(tmp_path, "package.pdf")])
 
     assert result.exit_code == 0, result.output
-    assert sdk.client.discovery.auto_detect_sections.call_args_list == []
     assert sdk.client.discovery.run.call_count == 1
-    assert sdk.client.discovery.run.call_args.kwargs["document_path"].endswith(
-        "package.pdf"
-    )
     assert "Discovery completed successfully" in result.output
+    assert "requires --auto-detect" not in result.output
 
 
 @pytest.mark.unit
-def test_auto_detect_takes_precedence_over_page_range_without_saying_so(
+def test_auto_detect_together_with_page_range_is_refused_as_a_contradiction(
     runner, sdk, tmp_path
 ):
-    """DEFECT: `--auto-detect` and `--page-range` together silently ignore the ranges.
+    """Two answers to one question, and the command has no basis on which to choose.
 
-    The `if auto_detect:` block returns before the `if page_range:` block is
-    reached (`cli.py:5381` vs `cli.py:5476`), so explicit page ranges are
-    discarded. These two options are alternative ways of deciding the same thing —
-    where the sections are — so giving both is a contradiction the command should
-    refuse rather than resolve by source order. The user gets AI-detected
-    boundaries while believing they pinned them by hand, and the printed header
-    says "Auto-Detect Sections" without mentioning the ranges it dropped.
+    The `if auto_detect:` arm returned before the `if page_range:` arm was reached,
+    so explicit ranges were discarded: the user paid for AI-detected boundaries
+    while believing they had pinned them, and the header said "Auto-Detect Sections"
+    without mentioning the ranges dropped. Resolving that by source order is a
+    guess, so it is refused — which is what each of these two options already does
+    when given more than one document.
+
+    The refusal must precede the run rather than accompany it, so `assert_no_discovery`
+    is asserted as well as the message.
     """
     from idp_cli.cli import discover
-
-    sdk.client.discovery.run.return_value = DiscoveryBatchResult(
-        total=1,
-        succeeded=1,
-        failed=0,
-        results=[DiscoveryResult(status="SUCCESS", json_schema=SCHEMA_A)],
-    )
 
     result = runner.invoke(
         discover,
@@ -1441,11 +1544,42 @@ def test_auto_detect_takes_precedence_over_page_range_without_saying_so(
         ],
     )
 
+    assert result.exit_code == 1, result.output
+    assert "--auto-detect and --page-range" in result.output
+    assert "1 page range(s) were given" in result.output
+    assert "Auto-Detect Sections" not in result.output
+    sdk.assert_never_constructed()
+    sdk.assert_no_discovery()
+
+
+@pytest.mark.unit
+def test_page_range_without_auto_detect_is_unaffected_by_that_refusal(
+    runner, sdk, tmp_path
+):
+    """Each arm still runs on its own; the guard needs both options set.
+
+    Together with `test_auto_detect_alone_is_unaffected_by_that_refusal` this pins
+    both halves of the conjunction, which a guard keyed on either option alone —
+    the shape that would still pass the test above — fails.
+    """
+    from idp_cli.cli import discover
+
+    sdk.client.discovery.run_multi_section.return_value = DiscoveryBatchResult(
+        total=1,
+        succeeded=1,
+        failed=0,
+        results=[DiscoveryResult(status="SUCCESS", json_schema=SCHEMA_A)],
+    )
+
+    result = runner.invoke(
+        discover,
+        ["-d", _doc(tmp_path, "package.pdf"), "--page-range", "1-2"],
+    )
+
     assert result.exit_code == 0, result.output
-    assert "Auto-Detect Sections" in result.output
-    assert sdk.client.discovery.run_multi_section.call_args_list == []
-    assert sdk.client.discovery.run.call_args.kwargs["auto_detect"] is True
-    assert "Page ranges" not in result.output
+    assert "Multi-Section" in result.output
+    assert sdk.client.discovery.run_multi_section.call_count == 1
+    assert "both decide where the" not in result.output
 
 
 # ---------------------------------------------------------------------------
@@ -1531,25 +1665,20 @@ def test_page_ranges_are_parsed_into_start_end_and_label_triples(runner, sdk, tm
 
 
 @pytest.mark.unit
-def test_more_page_labels_than_ranges_drops_the_extra_labels_silently(
+def test_more_page_labels_than_ranges_is_refused_and_the_extras_are_named(
     runner, sdk, tmp_path
 ):
-    """DEFECT: an unmatched `--page-label` is discarded without a word.
+    """A label with no range was dropped by the index pairing, so it is refused.
 
-    Labels are paired to ranges by index (`cli.py:5496`), and a label beyond the
-    last range is simply never read. Since the two options are repeated and
-    order-dependent, a user who adds a label but forgets its range — or who lists
-    them in two separate blocks — loses the class-name hint for that section and
-    gets a model-chosen `$id` instead, which then becomes the schema's filename.
+    Labels pair with ranges by index, and a label beyond the last range was never
+    read. Since both options are repeated and order-dependent, the usual cause is a
+    forgotten range — and the lost value is the class-name hint for that section,
+    which decides the schema's `$id` and therefore the filename it is written under.
+    The run is paid, so the mistake is refused before it is charged for rather than
+    reported afterwards, and each unpaired label is named so the mismatch is visible
+    without counting the command line.
     """
     from idp_cli.cli import discover
-
-    sdk.client.discovery.run_multi_section.return_value = DiscoveryBatchResult(
-        total=1,
-        succeeded=1,
-        failed=0,
-        results=[DiscoveryResult(status="SUCCESS", json_schema=SCHEMA_A)],
-    )
 
     result = runner.invoke(
         discover,
@@ -1565,11 +1694,120 @@ def test_more_page_labels_than_ranges_drops_the_extra_labels_silently(
         ],
     )
 
+    assert result.exit_code == 1, result.output
+    assert "2 --page-label(s) were given for 1 --page-range(s)" in result.output
+    assert "Orphaned Label" in result.output
+    # Only the unpaired one is listed; the paired label is not an error.
+    assert "Cover Letter" not in result.output
+    sdk.assert_never_constructed()
+    sdk.assert_no_discovery()
+
+
+@pytest.mark.unit
+def test_a_page_label_with_no_ranges_at_all_falls_under_the_same_rule(
+    runner, sdk, tmp_path
+):
+    """`--page-label X` on its own is the same mismatch, 1 against 0.
+
+    The guard is a comparison rather than a list of shapes, so this needs no case of
+    its own in the code — and this test is what establishes that it does not have
+    one. Without `--page-range` the command would otherwise have run standard
+    discovery and never looked at the label at all.
+    """
+    from idp_cli.cli import discover
+
+    result = runner.invoke(
+        discover, ["-d", _doc(tmp_path, "package.pdf"), "--page-label", "W2"]
+    )
+
+    assert result.exit_code == 1, result.output
+    assert "1 --page-label(s) were given for 0 --page-range(s)" in result.output
+    # Without --auto-detect, adding the missing range is the correct remedy.
+    assert "Add the missing --page-range" in result.output
+    sdk.assert_never_constructed()
+
+
+@pytest.mark.unit
+def test_an_orphan_label_under_auto_detect_is_not_told_to_add_a_range(
+    runner, sdk, tmp_path
+):
+    """The remedy has to be one the next guard will not refuse.
+
+    `--auto-detect --page-label X` is caught by the label/range comparison, and
+    "add the missing --page-range" would send the user straight into the refusal of
+    `--auto-detect` together with `--page-range`. Two refusals for one mistake is
+    worse than one, so under `--auto-detect` the remedy is to drop the label.
+    """
+    from idp_cli.cli import discover
+
+    result = runner.invoke(
+        discover,
+        ["-d", _doc(tmp_path, "package.pdf"), "--auto-detect", "--page-label", "W2"],
+    )
+
+    assert result.exit_code == 1, result.output
+    assert "1 --page-label(s) were given for 0 --page-range(s)" in result.output
+    assert "--auto-detect names each section itself" in result.output
+    assert "Add the missing --page-range" not in result.output
+    sdk.assert_never_constructed()
+
+
+@pytest.mark.unit
+def test_an_empty_orphan_label_is_named_rather_than_printed_as_a_bare_bullet(
+    runner, sdk, tmp_path
+):
+    """An empty label is the hardest orphan to spot, so it must not render as `- `.
+
+    The listing exists so the user can see which label has no range. A whitespace or
+    empty label interpolated directly produces a bullet with nothing after it, which
+    identifies nothing — so it is named instead.
+    """
+    from idp_cli.cli import discover
+
+    result = runner.invoke(
+        discover, ["-d", _doc(tmp_path, "package.pdf"), "--page-label", "   "]
+    )
+
+    assert result.exit_code == 1, result.output
+    assert "(empty label)" in result.output
+    sdk.assert_never_constructed()
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "labels", [[], ["Cover Letter"]], ids=["no-labels", "one-label-two-ranges"]
+)
+def test_fewer_labels_than_ranges_stays_legitimate(runner, sdk, tmp_path, labels):
+    """A label is optional per range, so the guard must be `>` and not `!=`.
+
+    This is the half of the rule that a stricter comparison would break, and it is
+    the documented multi-section usage: the second range simply gets no hint.
+    """
+    from idp_cli.cli import discover
+
+    sdk.client.discovery.run_multi_section.return_value = DiscoveryBatchResult(
+        total=2,
+        succeeded=2,
+        failed=0,
+        results=[
+            DiscoveryResult(status="SUCCESS", json_schema=SCHEMA_A),
+            DiscoveryResult(status="SUCCESS", json_schema=SCHEMA_B),
+        ],
+    )
+    args = ["-d", _doc(tmp_path, "package.pdf"), "--page-range", "1-2"]
+    args += ["--page-range", "3-5"]
+    for label in labels:
+        args += ["--page-label", label]
+
+    result = runner.invoke(discover, args)
+
     assert result.exit_code == 0, result.output
-    assert sdk.client.discovery.run_multi_section.call_args.kwargs["page_ranges"] == [
-        {"start": 1, "end": 2, "label": "Cover Letter"}
+    ranges = sdk.client.discovery.run_multi_section.call_args.kwargs["page_ranges"]
+    assert ranges == [
+        {"start": 1, "end": 2, "label": labels[0] if labels else None},
+        {"start": 3, "end": 5, "label": None},
     ]
-    assert "Orphaned Label" not in result.output
+    assert "--page-label(s) were given" not in result.output
 
 
 @pytest.mark.unit

@@ -95,3 +95,17 @@ class TestComparisonResult(BaseModel):
     comparison_summary: Optional[dict] = Field(
         default=None, description="Summary comparison data"
     )
+    # `None` and `[]` are different answers and a caller must be able to tell them
+    # apart: `None` means fewer than two of the runs recorded a configuration, so
+    # nothing was compared, while `[]` means the configurations were compared and
+    # matched. Reporting both as "no differences" is a claim about the
+    # configurations that was never checked.
+    configs: Optional[list] = Field(
+        default=None,
+        description=(
+            "Differences between the configurations the runs captured, one "
+            "{'setting': <dotted path>, 'values': {<test run id>: <value>}} per "
+            "differing setting; [] when they are identical and None when fewer "
+            "than two runs captured a configuration to compare"
+        ),
+    )

@@ -7,6 +7,7 @@ Search Tracking Table module for IDP CLI.
 Provides functionality to search the DynamoDB tracking table by PK and ObjectStatus.
 """
 
+import json
 import logging
 import statistics
 from datetime import datetime
@@ -222,41 +223,66 @@ class TrackingTableSearcher:
                 else:
                     missing_data_count += 1
 
-                # Extract metering data if requested
-                if include_metering:
-                    metering_raw = item.get("Metering")
-                    if metering_raw:
-                        # Metering can be stored as JSON string or native DynamoDB map
-                        import json
-
-                        if metering_raw.get("S"):
-                            # JSON string format
-                            try:
-                                metering = json.loads(metering_raw["S"])
-                            except json.JSONDecodeError:
-                                metering = {}
-                        elif metering_raw.get("M"):
-                            # DynamoDB Map format - need to parse nested structure
-                            metering = self._parse_dynamodb_map(metering_raw["M"])
-                        else:
-                            metering = {}
-
-                        # Extract Lambda duration for each stage
-                        for stage in metering_data.keys():
-                            duration_key = f"{stage}/lambda/duration"
-                            if duration_key in metering:
-                                gb_seconds = metering[duration_key].get("gb_seconds", 0)
-                                if gb_seconds > 0:
-                                    metering_data[stage].append(
-                                        (gb_seconds, object_key)
-                                    )
-
-                        if any(metering_data.values()):
-                            metering_count += 1
-
             except Exception as e:
                 logger.debug(f"Error parsing timestamps for item: {e}")
                 missing_data_count += 1
+                continue
+
+            # Extract metering data if requested.
+            #
+            # Deliberately outside the timestamp `try` above. A malformed metering
+            # reading used to raise into that handler, which incremented
+            # `missing_data_count` for an item whose timestamps had parsed fine and
+            # had already incremented `valid_count` — so one document was reported as
+            # both valid and missing, and the two numbers no longer added up to the
+            # search count. A reading this function cannot read says nothing about
+            # whether the document's timestamps were there.
+            if include_metering:
+                metering = self._metering_readings(item)
+
+                # Whether *this* item contributed a reading. The count used to be
+                # `if any(metering_data.values())`, which asks about the accumulator
+                # rather than about this item: once any earlier item had put a
+                # reading in, every later item carrying a `Metering` attribute was
+                # counted even when it contributed nothing — and it was
+                # order-dependent, so the same set of documents gave a different
+                # count depending on which came first.
+                contributed = False
+
+                for stage in metering_data.keys():
+                    reading = metering.get(f"{stage}/lambda/duration")
+                    if not isinstance(reading, dict):
+                        if reading is not None:
+                            # A bare number where an object belongs. Reported rather
+                            # than dropped at debug level, because this is a reading
+                            # the run paid for and nothing else will mention it.
+                            logger.warning(
+                                "Ignoring malformed %s metering reading for %s: "
+                                "expected an object with gb_seconds, got %r",
+                                stage,
+                                object_key,
+                                reading,
+                            )
+                        continue
+
+                    gb_seconds = reading.get("gb_seconds", 0)
+                    if isinstance(gb_seconds, bool) or not isinstance(
+                        gb_seconds, (int, float)
+                    ):
+                        logger.warning(
+                            "Ignoring non-numeric %s gb_seconds for %s: %r",
+                            stage,
+                            object_key,
+                            gb_seconds,
+                        )
+                        continue
+
+                    if gb_seconds > 0:
+                        metering_data[stage].append((gb_seconds, object_key))
+                        contributed = True
+
+                if contributed:
+                    metering_count += 1
 
         if not processing_data:
             return {
@@ -307,6 +333,42 @@ class TrackingTableSearcher:
                     stats["metering"][stage] = calc_stats(data)
 
         return stats
+
+    def _metering_readings(self, item: dict) -> dict:
+        """The `Metering` attribute of one tracking-table item, as a plain dict.
+
+        Two storage shapes are in the same table — a JSON string under `S` on items
+        the pipeline wrote one way and a native DynamoDB map under `M` on the other —
+        and a reader that handles only one silently reports no metering for half the
+        table.
+
+        Returns an empty dict for anything it cannot read, and never raises: a
+        malformed metering blob is a lost reading, not a reason to stop counting the
+        document's timestamps or to abandon the rest of the batch.
+
+        Args:
+            item: One item in DynamoDB attribute-value form.
+
+        Returns:
+            The parsed readings, or `{}`.
+        """
+        metering_raw = item.get("Metering")
+        if not isinstance(metering_raw, dict):
+            return {}
+
+        try:
+            if metering_raw.get("S"):
+                # `json.loads` will happily return a number or a list for a blob that
+                # is valid JSON but not an object, and the caller does `.get` on this.
+                parsed = json.loads(metering_raw["S"])
+                return parsed if isinstance(parsed, dict) else {}
+            if metering_raw.get("M"):
+                return self._parse_dynamodb_map(metering_raw["M"])
+        except Exception as e:
+            logger.warning(f"Could not read the Metering attribute of an item: {e}")
+            return {}
+
+        return {}
 
     def _parse_dynamodb_map(self, dynamodb_map: dict) -> dict:
         """Parse DynamoDB Map format to Python dict.

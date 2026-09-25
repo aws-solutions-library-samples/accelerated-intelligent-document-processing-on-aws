@@ -885,7 +885,7 @@ idp-cli run-inference [OPTIONS]
 - `--file-pattern`: File pattern for directory/S3 scanning (default: `*.pdf`)
 - `--recursive/--no-recursive`: Include subdirectories (default: recursive)
 - `--number-of-files`: Limit number of files to process
-- `--config`: Path to configuration YAML file (optional)
+- `--config`: **Refused.** A configuration file is not applied to a batch submission, so passing one exits non-zero rather than running under the stack's existing configuration. Upload the file as a profile with [`config-upload`](#config-upload), then pass `--config-profile`.
 - `--config-profile` (alias: `--config-version`): Configuration profile to use for processing (e.g., v1, v2)
 - `--context`: Context description for test run (used with --test-set, e.g., "Model v2.1", "Production validation")
 - `--monitor`: Monitor progress until completion
@@ -2887,11 +2887,23 @@ idp-cli discover -d ./invoice.pdf -g ./invoice.json \
 | `-o, --output` | Output path: file (single/JSON array) or directory (one file per schema) |
 | `--class-hint` | Hint for the document class name (e.g., "W2 Form"). The LLM will use this as `$id`. |
 | `--page-range` | Page range to discover (e.g., "1-3"). Repeatable for multi-section. Requires PDF. |
-| `--page-label` | Label for corresponding `--page-range` (e.g., "W2 Form"). Used as class name hint per range. |
-| `--auto-detect` | Auto-detect document section boundaries using AI, then discover each section. |
-| `--detect-only` | Only detect section boundaries (use with `--auto-detect`). Prints boundaries without running discovery. |
+| `--page-label` | Label for corresponding `--page-range` (e.g., "W2 Form"). Used as class name hint per range. Optional per range; a label with no range is refused. |
+| `--auto-detect` | Auto-detect document section boundaries using AI, then discover each section. Cannot be combined with `--page-range`, `--page-label`, `-g` or `--class-hint`. |
+| `--detect-only` | Only detect section boundaries. Requires `--auto-detect`. Prints boundaries without running discovery. |
 | `--model-id` | Override the Bedrock model ID used for discovery (e.g., `us.anthropic.claude-opus-4-6-v1`). When omitted, the discovery model from the stack config (stack mode) or system defaults (local mode) is used. Applies to with-ground-truth, without-ground-truth, `--auto-detect`, and `--page-range` modes. |
 | `--region` | AWS region |
+
+**Combinations that are refused.** Discovery is paid work and its output is
+written to disk and consumed as configuration, so a combination that cannot be
+honoured exits non-zero before any Bedrock call rather than proceeding with part
+of what was asked for:
+
+| Given | Why it is refused |
+|---|---|
+| `--auto-detect` with `-g` / `--class-hint` | This mode infers one class per detected section and applies neither, so the run would cost the same and disregard them. Drop `--auto-detect` to discover the whole document, where both apply. |
+| `--auto-detect` with `--page-range` | Both decide where the sections are, and there is no basis on which to prefer one. Give one. |
+| `--detect-only` without `--auto-detect` | Without it, a full schema inference ran instead of boundary detection — a more expensive operation than the one asked for. |
+| More `--page-label` than `--page-range` | Labels pair with ranges in order, so the extras had no range and their class-name hints were lost. Fewer labels than ranges is fine: a label is optional per range. Under `--auto-detect` the remedy is to drop the label, not to add a range — that mode names each section itself. |
 
 **Filenames in directory mode.** When `-o` names a directory, each schema is
 written as `<class id>.json`, where the class id is the schema's `$id` (falling

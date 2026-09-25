@@ -1488,7 +1488,15 @@ Validate a configuration file against system defaults.
 - `show_merged` (bool, optional): Include merged configuration in result (default: False)
 - `strict` (bool, optional): Report deprecated/unknown fields as errors (default: False)
 
-**Returns:** `ConfigValidationResult` with `valid`, `errors`, `warnings`, `deprecated_fields`, `unknown_fields`, and optional `merged_config`
+**Returns:** `ConfigValidationResult` with `valid`, `validation_available`, `errors`, `warnings`, `deprecated_fields`, `unknown_fields`, and optional `merged_config`
+
+`validation_available` is False when this installation could not run the checks at
+all — `idp_common`, which does the checking, is not importable — and the missing
+component is named in `errors`. The method returns that as a result rather than
+raising, so a caller in a minimal environment still gets an answer; `valid` is False
+in that case too, so code that gates only on `valid` keeps refusing. Branch on
+`validation_available` when you need to tell a configuration that was checked and
+found wrong from an installation that cannot check one.
 
 ```python
 result = client.config.validate(
@@ -2147,7 +2155,23 @@ Compare multiple Test Studio evaluation runs.
 - `test_run_ids` (list[str], required): List of test run identifiers to compare (minimum 2)
 - `stack_name` (str, optional): Stack name override
 
-**Returns:** `TestComparisonResult` with metrics for each test run
+**Returns:** `TestComparisonResult` with `metrics` for each test run and `configs`,
+the differences between the configurations the runs captured.
+
+⚠️ **`configs` has three values and `None` is not `[]`.** A run records the
+configuration it ran under, and the comparison reads it back, so:
+
+| `configs` | Meaning |
+|---|---|
+| a list of `{"setting": "<dotted path>", "values": {"<test run id>": "<value>"}}` | those settings differ between the runs; `<missing>` means a run has no such setting |
+| `[]` | the configurations were compared and are identical |
+| `None` | **nothing was compared** — fewer than two distinct runs returned a configuration |
+
+Treating `None` as "no differences" reports the runs as identically configured
+without having looked, which is the most misleading answer available when two runs
+score differently. A run returns its configuration once its evaluation results have
+been aggregated, and not at all if the run could not be retrieved. Metadata such as
+save timestamps, and the class definitions, are excluded from the comparison.
 
 ```python
 result = client.testing.compare_test_runs(
@@ -2162,6 +2186,16 @@ for test_run_id, metrics in result.metrics.items():
     print(f"  Accuracy: {metrics['overallAccuracy']:.2%}")
     print(f"  Completed: {metrics['completedFiles']}/{metrics['filesCount']}")
     print(f"  Cost: ${metrics['totalCost']:.2f}")
+
+if result.configs is None:
+    print("\nConfigurations were not compared.")
+elif not result.configs:
+    print("\nConfigurations are identical.")
+else:
+    for difference in result.configs:
+        print(f"\n{difference['setting']}")
+        for test_run_id, value in difference["values"].items():
+            print(f"  {test_run_id}: {value}")
 ```
 
 ---
@@ -2259,10 +2293,14 @@ from idp_sdk import (
     TestComparisonResult,
 
     # Enums
+    DocumentBucket,
     DocumentState,
     Pattern,
     RerunStep,
     StackState,
+
+    # State classification
+    classify_document_state,
 
     # Exceptions
     IDPError,

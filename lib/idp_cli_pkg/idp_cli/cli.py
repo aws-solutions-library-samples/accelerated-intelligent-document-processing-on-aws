@@ -53,6 +53,7 @@ try:
     import click
     from rich.console import Console
     from rich.live import Live
+    from rich.markup import escape
     from rich.table import Table
 except ImportError as exc:
     print(_SETUP_HELP, file=sys.stderr)
@@ -71,12 +72,15 @@ except ImportError as exc:
 # real cause.
 try:
     from idp_sdk import IDPClient
+    from idp_sdk.models import DocumentBucket, classify_document_state
 
     from . import display
 except ImportError as exc:
     _IMPORT_ERROR = exc
     if not TYPE_CHECKING:
         IDPClient = None
+        DocumentBucket = None
+        classify_document_state = None
         display = None
 
 # Configure logging
@@ -1346,12 +1350,22 @@ def delete(
             )
 
         # Show CloudFormation deletion results.
-        # success=True  → deletion completed (waited to DELETE_COMPLETE)
-        # success=False + status=INITIATED → deletion started but not waited on
-        # success=False + other status    → genuine failure
-        initiated_only = not result.success and result.status == "INITIATED"
+        #   status=INITIATED → deletion started, not waited on (no --wait)
+        #   success=True     → deletion completed (waited to DELETE_COMPLETE)
+        #   otherwise        → genuine failure
+        #
+        # The INITIATED test comes first and does NOT also require `success` to be
+        # false. `StackOperation.delete` computes
+        # `success = result.get("success", status == "INITIATED")` and the underlying
+        # no-wait path sets no `success` key, so an initiated-but-unwaited deletion
+        # arrives as `success=True, status="INITIATED"`: the old
+        # `not result.success and result.status == "INITIATED"` could never be true.
+        # A user omitting `--wait` was told "✓ Stack deleted successfully!" while
+        # CloudFormation was still deleting, with "Status: INITIATED" as the only
+        # hint, and never saw the console path or the `--force --wait` command below.
+        initiated_only = result.status == "INITIATED"
 
-        if result.success:
+        if result.success and not initiated_only:
             console.print("\n[green]✓ Stack deleted successfully![/green]")
             console.print(f"Stack: {stack_name}")
             console.print(f"Status: {result.status}")
@@ -1451,8 +1465,11 @@ def delete(
                 console.print(
                     "[yellow]Some resources may remain - check AWS Console[/yellow]"
                 )
-        elif result.success:
-            # Standard deletion without force-delete-all — stack was fully deleted
+        elif result.success and not initiated_only:
+            # Standard deletion without force-delete-all — stack was fully deleted.
+            # `not initiated_only` matters: this note reads as a post-mortem of a
+            # finished deletion, and it was printing under a deletion that had only
+            # been started, reinforcing the false "deleted successfully" above it.
             console.print()
             console.print(
                 "[bold]Note:[/bold] LoggingBucket (if exists) is retained by design."
@@ -1744,6 +1761,47 @@ def _process_impl(
             console.print("[red]✗ Error: Cannot specify multiple input sources[/red]")
             sys.exit(1)
 
+        # `--config` cannot be honoured on a batch submission, so refuse rather
+        # than submit the batch under a configuration the caller did not ask for.
+        #
+        # Forwarding the value would not honour it either. `batch.process` takes a
+        # `config_path`, hands it to `BatchProcessor(config_path=...)`, which assigns
+        # `self.config_path` and never reads it again — there is no read of that
+        # attribute anywhere in `idp_sdk`. A wiring fix would therefore leave the
+        # batch running under the stack's existing configuration exactly as before,
+        # while making the option look plumbed to the next reader. Applying a local
+        # YAML for real means writing it into the stack's configuration table, which
+        # re-configures the stack for every later run rather than for this batch, and
+        # is not something an unqualified `--config` should do.
+        #
+        # A batch is paid work whose results the caller will compare and act on, so
+        # the wrong configuration is not a degraded outcome. The two-step form below
+        # is the supported way to process under a file, and it is the one the run is
+        # then recorded against.
+        if config:
+            console.print(
+                "[red]✗ Error: --config is not applied to a batch submission.[/red]"
+            )
+            console.print(
+                f"  Nothing in the submission path reads [cyan]{escape(str(config))}"
+                "[/cyan], so the batch would run under the stack's existing "
+                "configuration at full cost."
+            )
+            console.print(
+                "[yellow]Upload the file as a configuration profile, then process "
+                "under that profile:[/yellow]"
+            )
+            console.print(
+                f"   [cyan]idp-cli config-upload --stack-name {escape(stack_name)}"
+                f" --config-file {escape(str(config))}"
+                " --config-profile <name>[/cyan]"
+            )
+            console.print(
+                f"   [cyan]idp-cli process --stack-name {escape(stack_name)} ..."
+                " --config-profile <name>[/cyan]"
+            )
+            sys.exit(1)
+
         from idp_sdk import IDPClient
 
         client = IDPClient(stack_name=stack_name, region=region)
@@ -1758,6 +1816,12 @@ def _process_impl(
                 client=client,
                 number_of_files=number_of_files,
                 config_version=config_version,
+                # Pin the revision on this path too. `_process_test_set` has always
+                # forwarded it into the test-runner payload; only this call site
+                # dropped it, so `--test-set --config-profile v2 --config-revision 7`
+                # ran under whatever v2 currently held while the run was recorded,
+                # and later compared, as r7.
+                config_revision=config_revision,
             )
             # test_set path returns legacy dict — extract fields
             result_batch_id = batch_result["batch_id"]
@@ -1866,9 +1930,15 @@ def _process_impl(
     help="Include subdirectories when scanning (default: recursive)",
 )
 @click.option(
+    # Deliberately untyped. `click.Path(exists=True)` would make a mistyped path
+    # exit 2 on the path before the refusal is reached, so the user would fix the
+    # typo only to be told the option is not applied at all — two round trips for
+    # one mistake. Nothing here opens the file, so its existence is irrelevant.
     "--config",
-    type=click.Path(exists=True),
-    help="Path to configuration YAML file (optional)",
+    help=(
+        "Not applied to a batch, and refused rather than ignored. Upload the file "
+        "with 'config-upload' and process under it with --config-profile."
+    ),
 )
 @click.option(
     "--batch-prefix",
@@ -2103,9 +2173,15 @@ def reprocess(
     help="Include subdirectories when scanning (default: recursive)",
 )
 @click.option(
+    # Deliberately untyped. `click.Path(exists=True)` would make a mistyped path
+    # exit 2 on the path before the refusal is reached, so the user would fix the
+    # typo only to be told the option is not applied at all — two round trips for
+    # one mistake. Nothing here opens the file, so its existence is irrelevant.
     "--config",
-    type=click.Path(exists=True),
-    help="Path to configuration YAML file (optional)",
+    help=(
+        "Not applied to a batch, and refused rather than ignored. Upload the file "
+        "with 'config-upload' and process under it with --config-profile."
+    ),
 )
 @click.option(
     "--batch-prefix",
@@ -3161,7 +3237,7 @@ def generate_manifest(
                     f"[yellow]Warning: Test set '{test_set}' already exists in bucket[/yellow]"
                 )
                 console.print(
-                    "[yellow]Files will be overwritten. Continue? [y/N][/yellow]",
+                    "[yellow]Files will be overwritten. Continue? \\[y/N][/yellow]",
                     end=" ",
                 )
 
@@ -3373,6 +3449,66 @@ def validate_manifest_cmd(manifest: str):
         sys.exit(1)
 
 
+def _test_run_ids_from(option_value: str) -> List[str]:
+    """Split a `--test-run-ids` value on commas, dropping blanks.
+
+    `str.split` never returns an empty list, and that is the whole reason this
+    exists. `"".split(",")` is `[""]` and `"run-a,".split(",")` is
+    `["run-a", ""]`, so a blank segment arrives as an id that is the empty string:
+    `if not ids` after a plain split is unreachable code, and a length check counts
+    a trailing comma as a second run. Both spellings of that mistake were live —
+    `--test-run-ids ""` asked the service to abort a run whose id was `""`, and
+    `--test-run-ids "run-a,"` passed `test-compare`'s "at least 2" check with one
+    real id and then rendered a column for a run that does not exist.
+
+    Dropping the blanks makes the callers' own guards reachable and correct, rather
+    than adding a separate check beside each of them.
+
+    Args:
+        option_value: The raw `--test-run-ids` value.
+
+    Returns:
+        The non-empty ids, stripped, in the order given. Possibly empty.
+    """
+    return [
+        candidate.strip() for candidate in option_value.split(",") if candidate.strip()
+    ]
+
+
+def _timestamp_for_display(value) -> str:
+    """Render an optional timestamp as a string, always -- never as a `datetime`.
+
+    `BatchStatus` carries `datetime` fields that pydantic leaves as `None` when the
+    tracking table has not written them yet, and the dicts `display.py` consumes are
+    plain data that gets sorted and JSON-encoded. Substituting `""` for the absent
+    case while passing the `datetime` through for the present one puts two types
+    under one key, and both of the things `display.py` then does with that key fail
+    on the mix rather than degrade:
+
+    * `create_recent_completions_table` sorts the completed documents by `end_time`,
+      and Python will not order a `datetime` against a `str`, so a batch holding one
+      completed document with an end time and one without raised
+      `'<' not supported between instances of 'datetime.datetime' and 'str'`. Both
+      callers catch broadly, so `idp-cli status` printed that as an error and exited
+      1 instead of showing the table, and `--monitor` abandoned the watch.
+    * `format_status_json` puts the value straight into `json.dumps`, which has no
+      encoder for `datetime`, so `status --format json` on a single completed
+      document with an end time raised `Object of type datetime is not JSON
+      serializable`.
+
+    ISO 8601 is the representation to normalise to: it is what `json.dumps` would
+    have needed anyway, and lexicographic order over it agrees with chronological
+    order, so the sort is still the sort that was intended.
+    """
+    if not value:
+        return ""
+    isoformat = getattr(value, "isoformat", None)
+    # `str(...)` around the call, not just around the fallback: `getattr` is untyped,
+    # so without it this function's return type is `object | str` and every consumer
+    # -- the sort key, `json.dumps` -- is back to not knowing what it has.
+    return str(isoformat()) if callable(isoformat) else str(value)
+
+
 def _batch_status_to_display_dicts(batch_status):
     """
     Convert a BatchStatus Pydantic model to the legacy dict format expected by display.py.
@@ -3395,32 +3531,30 @@ def _batch_status_to_display_dicts(batch_status):
         doc_dict = {
             "document_id": doc.document_id,
             "status": doc.status,
-            "start_time": doc.start_time or "",
-            "end_time": doc.end_time or "",
+            "start_time": _timestamp_for_display(doc.start_time),
+            "end_time": _timestamp_for_display(doc.end_time),
             "duration": doc.duration_seconds or 0,
             "num_pages": doc.num_pages,
             "num_sections": doc.num_sections,
             "error": doc.error or "",
         }
-        status_upper = (doc.status or "").upper()
-        if status_upper == "COMPLETED":
+        # Bucketed through `idp_sdk.models.classify_document_state`, which is total
+        # over `DocumentState` -- the same authority the SDK's own progress monitor
+        # uses, so the CLI's counts and the SDK's `all_complete` cannot disagree
+        # about whether a state is terminal. The chain this replaced named eleven
+        # members and sent the other twelve to `queued` by falling off the end,
+        # which put `PREPROCESSING` (set for every document whenever a
+        # preprocessing hook is registered) under "Queued" and left the terminal
+        # `ABORTED` reporting "IN PROGRESS" forever.
+        bucket = classify_document_state(doc.status)
+        if bucket is DocumentBucket.COMPLETED:
             completed_docs.append(doc_dict)
             if doc.duration_seconds:
                 total_duration += doc.duration_seconds
                 duration_count += 1
-        elif status_upper == "FAILED":
+        elif bucket is DocumentBucket.FAILED:
             failed_docs.append(doc_dict)
-        elif status_upper in (
-            "RUNNING",
-            "CLASSIFYING",
-            "EXTRACTING",
-            "ASSESSING",
-            "RULE_VALIDATION",
-            "RULE_VALIDATION_ORCHESTRATOR",
-            "SUMMARIZING",
-            "HITL_IN_PROGRESS",
-            "EVALUATING",
-        ):
+        elif bucket is DocumentBucket.RUNNING:
             running_docs.append(doc_dict)
         else:
             queued_docs.append(doc_dict)
@@ -4832,7 +4966,8 @@ def config_upload(
         # Warn for the default profile
         if config_version and config_version.lower() == "default":
             console.print(
-                "[yellow]⚠️  Warning: This will update the default [system default] config profile[/yellow]"
+                "[yellow]⚠️  Warning: This will update the default "
+                "\\[system default] config profile[/yellow]"
             )
 
         result = client.config.upload(
@@ -5530,17 +5665,27 @@ def config_sync_bda(
 @click.option(
     "--page-label",
     multiple=True,
-    help="Label for corresponding --page-range (e.g., 'W2 Form'). Used as class name hint per range.",
+    help=(
+        "Label for corresponding --page-range (e.g., 'W2 Form'). Used as class name "
+        "hint per range. Optional per range, but a label with no range is refused."
+    ),
 )
 @click.option(
     "--auto-detect",
     is_flag=True,
-    help="Auto-detect document section boundaries using AI, then discover each section.",
+    help=(
+        "Auto-detect document section boundaries using AI, then discover each "
+        "section. Cannot be combined with --page-range, --page-label, -g or "
+        "--class-hint, none of which this mode applies."
+    ),
 )
 @click.option(
     "--detect-only",
     is_flag=True,
-    help="Only detect section boundaries (use with --auto-detect). Prints boundaries without running discovery.",
+    help=(
+        "Only detect section boundaries. Requires --auto-detect, and is refused "
+        "without it. Prints boundaries without running discovery."
+    ),
 )
 @click.option(
     "--model-id",
@@ -5590,6 +5735,16 @@ def discover(
     JSON file per schema; if path is a file, writes all schemas as a
     JSON array.
 
+    Option combinations that cannot be honoured are refused before any Bedrock
+    call rather than resolved silently, since discovery is paid and its output is
+    written to disk and consumed as configuration:
+
+    \b
+      --auto-detect with -g or --class-hint : this mode applies neither
+      --auto-detect with --page-range       : both decide where the sections are
+      --detect-only without --auto-detect   : otherwise a full discovery ran
+      more --page-label than --page-range   : the extra labels had no range
+
     Examples:
 
       # Single document
@@ -5622,6 +5777,139 @@ def discover(
     """
     import json
     from pathlib import Path
+
+    # Contradictory or unusable option combinations are refused here, ahead of the
+    # `try` block and therefore ahead of `IDPClient(...)`, so a refusal costs no
+    # client construction and no Bedrock call. Each of these was previously accepted
+    # and then ignored, and discovery is paid work whose output is written to disk and
+    # consumed as configuration — so the wrong answer is not a degraded one, and a
+    # warning the user reads after the charge is not a remedy.
+
+    # `--auto-detect` cannot apply `-g` or `--class-hint`. The SDK's auto-detect arm
+    # calls `_run_auto_detect_and_discover(doc, config_version, stack_name, model_id)`
+    # and forwards neither, so there is nowhere for either to be applied — a wiring
+    # fix is not available here. `--class-hint` is additionally a contradiction in
+    # this mode: auto-detect infers one class per detected section, so a single class
+    # name does not describe what the command produces.
+    if auto_detect:
+        _unusable = []
+        if ground_truth:
+            _unusable.append("--ground-truth/-g")
+        # `is not None` rather than truthiness: `--class-hint ""` is an option the user
+        # typed, and dropping it because it is empty is the same accepted-then-ignored
+        # shape in miniature. An absent option is `None`.
+        if class_hint is not None:
+            _unusable.append("--class-hint")
+        if _unusable:
+            console.print(
+                f"[red]✗ Error: --auto-detect cannot apply {' or '.join(_unusable)}."
+                "[/red]"
+            )
+            console.print(
+                "  Auto-detect infers one class per detected section and applies "
+                "neither, so the run would cost the same and disregard them."
+            )
+            console.print(
+                "[yellow]Drop --auto-detect to discover the whole document, where "
+                "both apply:[/yellow]"
+            )
+            # Every document and every ground truth, not just the first: the
+            # non-auto-detect form the hint suggests accepts all of them, and a hint
+            # that quietly narrows the user's work to one file is its own small
+            # version of this issue.
+            _rerun = "idp-cli discover"
+            for _doc_path in document:
+                _rerun += f" -d {escape(_doc_path)}"
+            for _gt_path in ground_truth:
+                _rerun += f" -g {escape(_gt_path)}"
+            if class_hint is not None:
+                _rerun += f' --class-hint "{escape(class_hint)}"'
+            console.print(f"   [cyan]{_rerun}[/cyan]")
+            console.print(
+                "[yellow]Or name each section yourself with --page-range and "
+                "--page-label, whose labels are the per-section class names.[/yellow]"
+            )
+            sys.exit(1)
+
+    # `--detect-only` is only consulted inside the auto-detect arm, so on its own it
+    # fell through to standard discovery and ran a full schema inference — a *more*
+    # expensive operation than the boundary detection that was asked for, and the
+    # opposite of what the flag is for. That is why this refuses rather than warns.
+    # The option's own help already says "use with --auto-detect"; this enforces the
+    # dependency it documents instead of leaving it to be discovered from a bill.
+    if detect_only and not auto_detect:
+        console.print("[red]✗ Error: --detect-only requires --auto-detect.[/red]")
+        console.print(
+            "  On its own it was disregarded and a full schema discovery ran instead, "
+            "which costs more than the boundary detection you asked for."
+        )
+        console.print("[yellow]Detect boundaries only:[/yellow]")
+        console.print(
+            f"   [cyan]idp-cli discover -d {escape(document[0])}"
+            " --auto-detect --detect-only[/cyan]"
+        )
+        sys.exit(1)
+
+    # `--auto-detect` and `--page-range` are two alternative answers to one question —
+    # where the sections are. The auto-detect arm returned before the page-range arm
+    # was reached, so hand-pinned ranges were discarded and the user paid for
+    # AI-chosen boundaries while the header said "Auto-Detect Sections" and mentioned
+    # nothing. This is the case a warning serves worst: the command has no basis on
+    # which to pick one of the two, so resolving the contradiction by source order is
+    # a guess, and refusing is what `--auto-detect` and `--page-range` already each do
+    # when given more than one document.
+    if auto_detect and page_range:
+        console.print(
+            "[red]✗ Error: --auto-detect and --page-range both decide where the "
+            "sections are; give one.[/red]"
+        )
+        console.print(
+            f"  {len(page_range)} page range(s) were given and would have been "
+            "disregarded in favour of AI-detected boundaries."
+        )
+        console.print(
+            "[yellow]Drop --page-range to let the model find the boundaries, or drop "
+            "--auto-detect to use the ranges you pinned.[/yellow]"
+        )
+        sys.exit(1)
+
+    # A `--page-label` with no `--page-range` to pair with was dropped by the
+    # index pairing below, so that section lost its class-name hint and took a
+    # model-chosen `$id` — which then becomes the schema's filename on disk. Both
+    # options are repeated and order-dependent, so the usual cause is a missing range
+    # rather than a deliberate extra label, and the run is paid.
+    #
+    # The rule is the comparison, not a list of shapes: *fewer* labels than ranges
+    # stays legitimate, because a label is optional per range, and a label given with
+    # no ranges at all (`--page-label X` on its own) is covered by the same comparison
+    # rather than needing a case of its own.
+    if len(page_label) > len(page_range):
+        console.print(
+            f"[red]✗ Error: {len(page_label)} --page-label(s) were given for "
+            f"{len(page_range)} --page-range(s).[/red]"
+        )
+        console.print("  Labels pair with ranges in order, so these have no range:")
+        for _orphan in page_label[len(page_range) :]:
+            # An empty or whitespace label would otherwise render as a bare bullet,
+            # which names nothing and is the hardest case to spot on a command line.
+            console.print(
+                f"    - {escape(_orphan)}" if _orphan.strip() else "    - (empty label)"
+            )
+        if auto_detect:
+            # "Add the missing --page-range" is the wrong remedy here: the next guard
+            # up refuses --auto-detect together with --page-range, so following it
+            # would land the user on a second refusal.
+            console.print(
+                "[yellow]--auto-detect names each section itself, so drop the "
+                "label.[/yellow]"
+            )
+        else:
+            console.print(
+                "[yellow]Add the missing --page-range, or drop the extra label. A "
+                "range may be given without a label; a label may not be given "
+                "without a range.[/yellow]"
+            )
+        sys.exit(1)
 
     try:
         from idp_sdk import IDPClient
@@ -6534,9 +6822,16 @@ def chat(
     try:
         from .chat import run_chat
     except ImportError:
+        # `\[agents]` escapes the bracket for Rich, which otherwise reads
+        # `[agents]` as a style tag, fails to resolve it as a style, and drops it
+        # silently -- leaving the user told to run `pip install -e
+        # 'lib/idp_common_pkg'`, which fixes nothing, because `idp_common` is
+        # already installed in the situation that produces this message and the
+        # missing piece is the extra. They run it, watch it succeed, retry, and get
+        # the identical error. Same idiom as the `\[Y/w/n]` prompts above.
         console.print(
-            "[red]✗ Chat requires idp_common[agents] to be installed.\n"
-            "  Run: pip install -e 'lib/idp_common_pkg[agents]'[/red]"
+            "[red]✗ Chat requires idp_common\\[agents] to be installed.\n"
+            "  Run: pip install -e 'lib/idp_common_pkg\\[agents]'[/red]"
         )
         sys.exit(1)
 
@@ -6713,8 +7008,9 @@ def test_compare(
         region = os.environ.get("AWS_REGION", "us-east-1")
 
     try:
-        # Parse test run IDs
-        test_run_id_list = [tid.strip() for tid in test_run_ids.split(",")]
+        # Parse test run IDs. Blank segments are dropped, so a trailing comma no
+        # longer counts as a second run and satisfy this check with one real id.
+        test_run_id_list = _test_run_ids_from(test_run_ids)
 
         if len(test_run_id_list) < 2:
             console.print(
@@ -6734,8 +7030,13 @@ def test_compare(
         )
 
         metrics = comparison_result.metrics
-        # Note: configs not yet in SDK model, but in raw_data if needed
-        configs = []  # TODO: Add to SDK model if needed
+        # `[]` and `None` are different answers here: `[]` means the captured
+        # configurations were compared and matched, `None` means fewer than two of
+        # the runs recorded one, so nothing was compared. Printing "no configuration
+        # differences" for both is a claim about the configurations that was never
+        # checked, which is exactly the question a user is asking when two runs
+        # score differently.
+        configs = comparison_result.configs
 
         if not metrics:
             console.print("[yellow]⚠ No metrics data available for comparison[/yellow]")
@@ -6842,8 +7143,10 @@ def test_compare(
         console.print(table)
         console.print()
 
-        # Display configuration differences
-        if configs and len(configs) > 0:
+        # Display configuration differences. Three outcomes, kept distinct: some
+        # settings differ, they were compared and matched, or too few runs captured
+        # a configuration for there to be anything to compare.
+        if configs:
             console.print("[bold green]Configuration Differences[/bold green]\n")
 
             config_table = Table(show_header=True, header_style="bold cyan")
@@ -6852,23 +7155,49 @@ def test_compare(
             for test_run_id in test_run_id_list:
                 config_table.add_column(test_run_id[:20])
 
+            # Every cell here is user-authored configuration text, and Rich reads
+            # `[...]` in a table cell as markup exactly as it does in a printed
+            # string. Two measured consequences if it is not escaped, both of them
+            # the item this table was written for: a prompt containing
+            # `[full log_group name]` — which five shipped `config_library` profiles
+            # do — renders with that run gone, so a row asserting the two runs
+            # *differ* displays two identical cells; and a value containing
+            # `[/INST]`, the Llama and Mistral instruction token, raises
+            # `MarkupError`, which the broad handler below turns into `✗ Error:` and
+            # exit 1 after the metrics table has already printed. Escaped before the
+            # truncation, so the escape cannot itself be cut in half.
             for diff in configs:
-                setting = diff.get("setting", "")
+                row = [escape(str(diff.get("setting", "")))]
                 values = diff.get("values", {})
-
-                row = [setting]
                 for test_run_id in test_run_id_list:
-                    value = values.get(test_run_id, "<missing>")
-                    # Truncate long values
-                    if len(str(value)) > 50:
-                        value = str(value)[:47] + "..."
-                    row.append(str(value))
+                    value = str(values.get(test_run_id, "<missing>"))
+                    if len(value) > 50:
+                        value = value[:47] + "..."
+                    row.append(escape(value))
 
                 config_table.add_row(*row)
 
             console.print(config_table)
+        elif configs is None:
+            # Deliberately says nothing about whether the configurations match, and
+            # does not promise that waiting will produce them. A run records its
+            # configuration when it is created; what is conditional is that
+            # `getTestRun` withholds it until the run's evaluation aggregate has been
+            # written — and two other states land here too, a run this command could
+            # not retrieve at all and one whose stored configuration would not
+            # decompress, for which no amount of waiting helps.
+            console.print(
+                "[dim]Configurations not compared: fewer than two of these runs "
+                "returned the configuration they ran under. A run returns it once "
+                "its evaluation results have been aggregated, and not at all if it "
+                "could not be retrieved.[/dim]"
+            )
         else:
-            console.print("[dim]No configuration differences to display[/dim]")
+            console.print(
+                "[dim]Configurations are identical across the compared runs "
+                "(metadata such as save timestamps, and the class definitions, are "
+                "not compared).[/dim]"
+            )
 
         console.print()
 
@@ -6922,8 +7251,11 @@ def abort_test_run(
         region = os.environ.get("AWS_REGION", "us-east-1")
 
     try:
-        # Parse test run IDs
-        test_run_id_list = [tid.strip() for tid in test_run_ids.split(",")]
+        # Parse test run IDs. Blank segments are dropped, which is what makes the
+        # guard below reachable: after a plain `split(",")` it never was, because
+        # `"".split(",")` is `[""]`, and `--test-run-ids ""` went on to ask the
+        # service to abort a run whose id is the empty string.
+        test_run_id_list = _test_run_ids_from(test_run_ids)
 
         if not test_run_id_list:
             console.print("[red]✗ No test run IDs provided[/red]")
@@ -7085,7 +7417,13 @@ def bootstrap(
         progress.print(
             f"[yellow]Note: document generator unavailable ({reason}).[/yellow]"
         )
-        progress.print(f"[yellow]{synthesis_engine.INSTALL_HINT}[/yellow]")
+        # `escape`, because INSTALL_HINT names the `[synthesis-generator]` pip extra
+        # and Rich would read that as a style tag and drop it -- leaving the user told
+        # to `pip install idp_common`, which is already installed. The constant is
+        # shared with consumers that do not render through Rich (the bootstrap
+        # module, the capability field), so the escape belongs at this call site
+        # rather than in the constant.
+        progress.print(f"[yellow]{escape(synthesis_engine.INSTALL_HINT)}[/yellow]")
 
     request = bootstrap_mod.BootstrapRequest(
         prompt=prompt,

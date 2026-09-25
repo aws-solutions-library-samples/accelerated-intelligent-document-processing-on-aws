@@ -37,6 +37,7 @@ assertions here become width-dependent.
 
 from __future__ import annotations
 
+import json
 from datetime import datetime
 from types import SimpleNamespace
 from typing import Optional
@@ -47,38 +48,18 @@ from rich.console import Console
 from idp_cli import cli as cli_module
 from idp_cli import display as display_module
 from idp_sdk import IDPClient
-from idp_sdk.models import BatchStatus
+from idp_sdk.models import BatchStatus, DocumentBucket, classify_document_state
+from idp_sdk.models.base import IN_FLIGHT_DOCUMENT_STATES, DocumentState
 from idp_sdk.models.document import DocumentStatus
 
-#: Every state `_batch_status_to_display_dicts` explicitly treats as in flight.
-RUNNING_STATES = (
-    "RUNNING",
-    "CLASSIFYING",
-    "EXTRACTING",
-    "ASSESSING",
-    "RULE_VALIDATION",
-    "RULE_VALIDATION_ORCHESTRATOR",
-    "SUMMARIZING",
-    "HITL_IN_PROGRESS",
-    "EVALUATING",
-)
+#: Every state in flight, derived from the shared authority in
+#: `idp_sdk.models.base` rather than listed here. A list here is what let the
+#: mapper's own list omit `OCR`, `PREPROCESSING`, `POSTPROCESSING` and
+#: `RULE_VALIDATION_POLICY_CLASSIFICATION` while looking complete.
+RUNNING_STATES = tuple(sorted(s.value for s in IN_FLIGHT_DOCUMENT_STATES))
 
-#: States `DocumentState` defines that the mapper does not name at all. Some are in
-#: flight, two are terminal, and all of them land in the `queued` bucket — see
-#: `test_states_the_mapper_does_not_name_are_all_reported_as_queued`.
-UNNAMED_STATES = (
-    "PENDING_UPLOAD",
-    "STARTED",
-    "PREPROCESSING",
-    "OCR",
-    "RULE_VALIDATION_POLICY_CLASSIFICATION",
-    "POSTPROCESSING",
-    "IN_PROGRESS",
-    "ABORTED",
-    "REDACTED_SUPERSEDED",
-    "NOT_FOUND",
-    "UNKNOWN",
-)
+#: Every member of the enum, so the coverage test below cannot fall behind it.
+ALL_STATES = tuple(sorted(s.value for s in DocumentState))
 
 
 @pytest.fixture(autouse=True)
@@ -225,8 +206,10 @@ class TestDisplayDictMapping:
             {
                 "document_id": "batch-1/invoice.pdf",
                 "status": "COMPLETED",
-                "start_time": started,
-                "end_time": ended,
+                # ISO 8601 strings, never `datetime` -- see
+                # `test_the_timestamps_are_strings_whether_present_or_absent`.
+                "start_time": started.isoformat(),
+                "end_time": ended.isoformat(),
                 "duration": 30.0,
                 "num_pages": 4,
                 "num_sections": 2,
@@ -308,52 +291,108 @@ class TestDisplayDictMapping:
             "batch-1/b.pdf",
         ]
 
-    @pytest.mark.parametrize("state", UNNAMED_STATES)
-    def test_states_the_mapper_does_not_name_are_all_reported_as_queued(self, state):
-        """DEFECT, pinned as it behaves today (`cli.py:3311-3324`).
+    def test_the_state_list_this_file_derives_is_not_empty(self):
+        """Guards the two parametrisations above and below from collecting nothing.
 
-        The bucketing is an `if COMPLETED / elif FAILED / elif <nine in-flight names>
-        / else queued` chain, so the eleven `DocumentState` members it does not name
-        fall through to `queued`. Three consequences, in rising order of severity:
-
-        * `OCR`, `PREPROCESSING`, `STARTED`, `IN_PROGRESS`, `POSTPROCESSING` and
-          `RULE_VALIDATION_POLICY_CLASSIFICATION` are documents actively being worked
-          on, and they are displayed under "Queued". `PREPROCESSING` is set for every
-          document whenever a preprocessing hook is registered, so on a stack with
-          PII anonymization enabled the running count reads 0 for the whole run.
-        * `ABORTED` and `REDACTED_SUPERSEDED` are **terminal**. Reported as queued
-          they never appear in the failed count, so `status` prints
-          "IN PROGRESS (0/1 finished)" and exits 2 for a batch that has stopped.
-        * `NOT_FOUND` — the state for a document id that does not exist — also reads
-          as queued, so a typo in `--document-id` looks like work in progress.
+        Both are derived from `DocumentState`, and a derived list that comes out
+        empty makes a `parametrize`d test report as zero cases — which reads as a
+        green run over an unasserted rule rather than as a failure.
         """
+        assert len(ALL_STATES) >= 20
+        assert len(RUNNING_STATES) >= 10
+
+    @pytest.mark.parametrize("state", ALL_STATES)
+    def test_every_state_lands_in_the_bucket_the_shared_authority_names(self, state):
+        """No `DocumentState` reaches a fallback, and none is lost or duplicated.
+
+        The mapper used to be an `if COMPLETED / elif FAILED / elif <nine in-flight
+        names> / else queued` chain, so the twelve members it did not name fell
+        through to `queued`: `PREPROCESSING`, `OCR`, `STARTED`, `IN_PROGRESS`,
+        `POSTPROCESSING` and `RULE_VALIDATION_POLICY_CLASSIFICATION` were shown under
+        "Queued" while being actively worked on, and the terminal `ABORTED`,
+        `REDACTED_SUPERSEDED` and `NOT_FOUND` were shown there too so a stopped batch
+        reported "IN PROGRESS" and exited 2 forever.
+
+        This is parametrised over the enum rather than over a list of the states that
+        were wrong at the time, so a state added later is covered without an edit
+        here. The bucket *contents* are pinned in
+        `lib/idp_sdk/tests/unit/test_document_state_buckets.py`; what this asserts is
+        that the mapper routes to them and puts each document in exactly one.
+        """
+        expected = classify_document_state(state)
+
         status_data, stats = cli_module._batch_status_to_display_dicts(
             batch([doc("batch-1/d.pdf", state)], all_complete=False)
         )
 
-        assert [d["document_id"] for d in status_data["queued"]] == ["batch-1/d.pdf"]
-        assert stats["queued"] == 1
-        assert stats["running"] == 0
-        assert stats["failed"] == 0
-        assert stats["completed"] == 0
+        assert [d["document_id"] for d in status_data[expected.value]] == [
+            "batch-1/d.pdf"
+        ]
+        assert stats[expected.value] == 1
+        # Exactly one bucket, so nothing is counted twice or dropped.
+        assert sum(stats[b.value] for b in DocumentBucket) == 1
 
-    def test_end_time_is_a_datetime_when_present_and_a_string_when_not(self):
-        """DEFECT, pinned as it behaves today (`cli.py:3297`).
+    def test_a_document_being_preprocessed_is_running_not_queued(self):
+        """`PREPROCESSING` is set for *every* document when a hook is registered.
 
-        `doc.end_time or ""` leaves a `datetime` in place and substitutes `str` when
-        the field is absent, so one batch can produce both types under the same key.
-        `display.create_recent_completions_table` sorts the completed documents by
-        that key, and Python will not order a `datetime` against a `str`: a batch
-        holding one completed document with an end time and one without raises
-        `TypeError` inside the display layer. Both callers catch it broadly, so the
-        observable result is `idp-cli status` printing
-        "✗ Error: '<' not supported between instances of 'datetime.datetime' and
-        'str'" and exiting 1 instead of showing the table, and `--monitor` printing
-        "Monitoring error:" and abandoning the watch.
+        On a PII-anonymization stack that made the running count read 0 for the whole
+        run while every document was in fact being processed — the progress display
+        inverted, not merely imprecise.
+        """
+        _, stats = cli_module._batch_status_to_display_dicts(
+            batch([doc("batch-1/d.pdf", "PREPROCESSING")], all_complete=False)
+        )
 
-        The assertion below is on the mapper, where the mixed types originate; the
-        `TypeError` is then demonstrated through the real display function so the
-        consequence is pinned too, not just described.
+        assert stats["running"] == 1
+        assert stats["queued"] == 0
+
+    def test_an_aborted_document_makes_a_finished_batch_report_its_failure(
+        self, pinned_console
+    ):
+        """The headline defect: ALL COMPLETED and exit 0 for a batch that aborted.
+
+        The SDK treats `ABORTED` as terminal, so `all_complete` is True; the mapper
+        put it in `queued`, so `stats["failed"]` was 0 and
+        `display.show_final_status_summary` printed "ALL COMPLETED" and returned 0
+        for a batch that had aborted half its work. Asserted through the real display
+        function, so the exit code a caller acts on is what is pinned.
+        """
+        status_data, stats = cli_module._batch_status_to_display_dicts(
+            batch(
+                [
+                    doc("batch-1/ok.pdf", "COMPLETED", duration_seconds=5.0),
+                    doc("batch-1/gone.pdf", "ABORTED"),
+                ],
+                all_complete=True,
+                success_rate=0.5,
+            )
+        )
+
+        assert stats["failed"] == 1
+        assert stats["queued"] == 0
+
+        with pinned_console.capture() as captured:
+            exit_code = display_module.show_final_status_summary(status_data, stats)
+
+        assert exit_code == 1
+        assert "COMPLETED WITH FAILURES (1 failed)" in captured.get()
+
+    def test_a_single_aborted_document_stops_a_wait_instead_of_exiting_2_forever(self):
+        """`status --wait` on an aborted document used to never terminate."""
+        status_data, stats = cli_module._batch_status_to_display_dicts(
+            batch([doc("batch-1/gone.pdf", "ABORTED")], all_complete=True)
+        )
+
+        assert display_module.show_final_status_summary(status_data, stats) == 1
+
+    def test_the_timestamps_are_strings_whether_present_or_absent(self):
+        """One type under one key, so the display layer can sort and encode it.
+
+        `doc.end_time or ""` used to leave a `datetime` in place and substitute a
+        `str` when the field was absent, which put two types under the same key and
+        broke both of the things `display.py` does with it. The mapper now renders
+        ISO 8601 in both cases -- lexicographic order over which is chronological
+        order, so the sort still means what it was written to mean.
         """
         status_data, _ = cli_module._batch_status_to_display_dicts(
             batch(
@@ -361,6 +400,7 @@ class TestDisplayDictMapping:
                     doc(
                         "batch-1/with.pdf",
                         "COMPLETED",
+                        start_time=datetime(2025, 1, 2, 3, 4, 0),
                         end_time=datetime(2025, 1, 2, 3, 4, 5),
                         duration_seconds=5.0,
                     ),
@@ -370,11 +410,93 @@ class TestDisplayDictMapping:
             )
         )
 
-        end_times = [d["end_time"] for d in status_data["completed"]]
-        assert end_times == [datetime(2025, 1, 2, 3, 4, 5), ""]
+        entries = status_data["completed"]
+        assert [d["end_time"] for d in entries] == ["2025-01-02T03:04:05", ""]
+        assert [d["start_time"] for d in entries] == ["2025-01-02T03:04:00", ""]
+        for entry in entries:
+            assert isinstance(entry["end_time"], str)
+            assert isinstance(entry["start_time"], str)
 
-        with pytest.raises(TypeError, match="not supported between instances"):
-            display_module.create_recent_completions_table(status_data)
+    def test_a_batch_mixing_a_timed_and_an_untimed_completion_renders_its_table(self):
+        """The crash a user saw: `status` exited 1 with a comparison TypeError.
+
+        `create_recent_completions_table` sorts the completed documents by
+        `end_time`, and Python will not order a `datetime` against the `""`
+        substituted for an absent one. Both callers catch broadly, so the observable
+        result was `✗ Error: '<' not supported between instances of
+        'datetime.datetime' and 'str'` and exit 1 instead of the table, and
+        `--monitor` printing "Monitoring error:" and abandoning the watch. Driven
+        through the real display function, and the timed document must sort first.
+        """
+        status_data, _ = cli_module._batch_status_to_display_dicts(
+            batch(
+                [
+                    doc("batch-1/without.pdf", "COMPLETED", duration_seconds=5.0),
+                    doc(
+                        "batch-1/with.pdf",
+                        "COMPLETED",
+                        end_time=datetime(2025, 1, 2, 3, 4, 5),
+                        duration_seconds=5.0,
+                    ),
+                ],
+                all_complete=True,
+            )
+        )
+
+        table = display_module.create_recent_completions_table(status_data)
+        rendered = [cell for cell in table.columns[0]._cells]
+
+        assert rendered == ["batch-1/with.pdf", "batch-1/without.pdf"]
+
+    def test_a_completed_document_with_an_end_time_can_be_encoded_as_json(self):
+        """`status --format json` raised rather than printing.
+
+        The single-document branch of `format_status_json` puts `end_time` straight
+        into `json.dumps`, which has no encoder for `datetime`: the same root cause
+        as the sort crash, reached by a different command, and the reason the fix
+        belongs in the mapper rather than at the sort.
+        """
+        status_data, stats = cli_module._batch_status_to_display_dicts(
+            batch(
+                [
+                    doc(
+                        "batch-1/with.pdf",
+                        "COMPLETED",
+                        end_time=datetime(2025, 1, 2, 3, 4, 5),
+                        duration_seconds=5.0,
+                    )
+                ],
+                all_complete=True,
+            )
+        )
+
+        payload = json.loads(display_module.format_status_json(status_data, stats))
+
+        assert payload["end_time"] == "2025-01-02T03:04:05"
+        assert payload["exit_code"] == 0
+
+    def test_the_completions_table_cannot_be_crashed_by_a_mixed_key(self):
+        """The sort key is total over whatever a caller put under `end_time`.
+
+        The mapper is the only producer of `status_data` in this repository, so this
+        asserts the display function's own robustness rather than a path a user can
+        currently reach -- a hand-built `status_data`, which is what the legacy
+        callers of these display helpers pass.
+        """
+        status_data = {
+            "completed": [
+                {
+                    "document_id": "a.pdf",
+                    "end_time": datetime(2025, 1, 1),
+                    "duration": 1.0,
+                },
+                {"document_id": "b.pdf", "end_time": "", "duration": 1.0},
+            ]
+        }
+
+        table = display_module.create_recent_completions_table(status_data)
+
+        assert [cell for cell in table.columns[0]._cells] == ["a.pdf", "b.pdf"]
 
     def test_average_duration_counts_only_completed_documents(self):
         """A failed document's duration is excluded, so the average is of successes.

@@ -21,6 +21,16 @@ class ConfigValidationResult(BaseModel):
     """Result of configuration validation."""
 
     valid: bool = Field(description="Whether configuration is valid")
+    validation_available: bool = Field(
+        default=True,
+        description=(
+            "False when this installation could not run the checks, so the "
+            "configuration was not examined and 'errors' names the missing "
+            "component instead of a finding. 'valid' is False as well, so a caller "
+            "that gates only on 'valid' keeps refusing; branch on this to tell a "
+            "wrong configuration from an installation that cannot check one."
+        ),
+    )
     errors: List[str] = Field(default_factory=list, description="Validation errors")
     warnings: List[str] = Field(default_factory=list, description="Validation warnings")
     deprecated_fields: List[str] = Field(

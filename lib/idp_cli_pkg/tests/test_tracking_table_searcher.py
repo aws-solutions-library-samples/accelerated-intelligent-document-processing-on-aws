@@ -982,23 +982,52 @@ class TestMetering:
         assert "metering_count" not in stats
         assert stats["valid_count"] == 1
 
-    def test_metering_count_overcounts_documents_that_contributed_nothing(
+    def test_metering_count_counts_only_documents_that_contributed_a_reading(
         self, monkeypatch
     ):
-        """DEFECT, pinned: `metering_count` counts the wrong thing.
+        """`metering_count` is about this item, not about the accumulator.
 
-        `search_tracking_table.py:254` increments `metering_count` for any item that
-        carries a `Metering` attribute, as long as *some earlier* item has already put
-        a reading into `metering_data` — the `any(metering_data.values())` test is
-        about the accumulator, not about this item. So the second item here
-        contributes no reading at all and is still counted.
+        It used to be `if any(metering_data.values())`, which asks whether *anything
+        so far* has produced a reading, so once one item had contributed every later
+        item carrying a `Metering` attribute was counted whether it contributed or
+        not. That made the "Documents with metering" line report 2 for the single
+        sample below, and made the figure order-dependent: swapping these two items
+        gave a different count for the same set of documents.
+        """
+        with mock_aws():
+            searcher, _ = build_searcher(monkeypatch)
 
-        The observable consequence is the "Documents with metering" line in
-        `display_timing_statistics`, which reports 2 while the only populated stage
-        holds a single sample. It is a reporting error, not a corruption of the
-        statistics: averages and totals stay correct because they are computed from
-        the per-stage lists. The count is also order-dependent, which is why this test
-        puts the contributing item first; swap the two and the count is right.
+        items = [
+            self._timed(
+                "contributes.pdf",
+                "doc#1",
+                {"S": json.dumps({"OCR/lambda/duration": {"gb_seconds": 1.5}})},
+            ),
+            self._timed(
+                "contributes-nothing.pdf",
+                "doc#2",
+                {"S": json.dumps({"OCR/bedrock/input_tokens": {"value": 10}})},
+            ),
+        ]
+
+        stats = searcher.calculate_timing_statistics(results(items))
+
+        assert stats["metering_count"] == 1
+        assert stats["metering"]["OCR"]["total"] == pytest.approx(1.5)
+        assert stats["metering"]["OCR"]["stdev"] == 0  # one sample, not two
+
+        # And the same answer whichever order they arrive in, which is the half a
+        # single-order test cannot see.
+        reversed_stats = searcher.calculate_timing_statistics(
+            results(list(reversed(items)))
+        )
+        assert reversed_stats["metering_count"] == 1
+
+    def test_a_zero_reading_is_not_a_contribution(self, monkeypatch):
+        """Zero means the stage did not run, so the document metered nothing.
+
+        The per-stage lists already skip it; the count has to agree with them or the
+        "Documents with metering" line describes documents that appear in no stage.
         """
         with mock_aws():
             searcher, _ = build_searcher(monkeypatch)
@@ -1007,39 +1036,27 @@ class TestMetering:
             results(
                 [
                     self._timed(
-                        "contributes.pdf",
-                        "doc#1",
-                        {"S": json.dumps({"OCR/lambda/duration": {"gb_seconds": 1.5}})},
-                    ),
-                    self._timed(
-                        "contributes-nothing.pdf",
-                        "doc#2",
-                        {"S": json.dumps({"OCR/bedrock/input_tokens": {"value": 10}})},
-                    ),
+                        "nothing-ran.pdf",
+                        "doc#z",
+                        {"S": json.dumps({"OCR/lambda/duration": {"gb_seconds": 0}})},
+                    )
                 ]
             )
         )
 
-        assert stats["metering_count"] == 2
-        assert stats["metering"]["OCR"]["total"] == pytest.approx(1.5)
-        assert stats["metering"]["OCR"]["stdev"] == 0  # one sample, not two
+        assert "metering_count" not in stats
+        assert "metering" not in stats
 
-    def test_a_malformed_metering_reading_makes_one_document_both_valid_and_missing(
-        self, monkeypatch
-    ):
-        """DEFECT, pinned: the two counters double-count the same document.
+    def test_a_malformed_metering_reading_leaves_the_document_valid(self, monkeypatch):
+        """A reading this code cannot read says nothing about the timestamps.
 
-        If a `<Stage>/lambda/duration` entry is a bare number rather than an object,
-        `search_tracking_table.py:248` calls `.get` on an `int` and raises
-        `AttributeError`. That lands in the broad `except` at line 257, which
-        increments `missing_data_count` — but `valid_count` was already incremented at
-        line 221 for the same item, and its durations are already in the buckets.
-
-        The observable consequence is that `display_timing_statistics` reports one
-        valid document *and* one with missing data for a single document whose
-        timestamps were fine, so the two numbers no longer add up to the search count.
-        The timing figures themselves are unaffected; the metering reading is lost
-        silently, and so is every later stage for that item.
+        A `<Stage>/lambda/duration` entry that is a bare number rather than an object
+        used to raise `AttributeError` into the timestamp handler's broad `except`,
+        which incremented `missing_data_count` — for an item that had already
+        incremented `valid_count` and whose durations were already in the buckets. So
+        one document was reported as both valid and missing and the two numbers no
+        longer added up to the search count. The metering block is now outside that
+        `try`, and a malformed reading is skipped and logged.
         """
         with mock_aws():
             searcher, _ = build_searcher(monkeypatch)
@@ -1055,8 +1072,93 @@ class TestMetering:
         )
 
         assert stats["valid_count"] == 1
-        assert stats["missing_data_count"] == 1
+        assert stats["missing_data_count"] == 0
         assert stats["processing_time"]["total"] == pytest.approx(30.0)
+        assert "metering" not in stats
+
+    def test_a_malformed_reading_does_not_lose_the_stages_after_it(self, monkeypatch):
+        """The bad entry is skipped, not the rest of the item.
+
+        Raising out of the loop abandoned every later stage for that document, so one
+        malformed OCR entry silently dropped a perfectly good Summarization reading.
+        """
+        with mock_aws():
+            searcher, _ = build_searcher(monkeypatch)
+
+        payload = json.dumps(
+            {
+                "OCR/lambda/duration": 5,
+                "Summarization/lambda/duration": {"gb_seconds": 4.0},
+            }
+        )
+        stats = searcher.calculate_timing_statistics(
+            results([self._timed("mixed.pdf", "doc#m", {"S": payload})])
+        )
+
+        assert set(stats["metering"]) == {"Summarization"}
+        assert stats["metering"]["Summarization"]["total"] == pytest.approx(4.0)
+        assert stats["metering_count"] == 1
+        assert stats["missing_data_count"] == 0
+
+    def test_a_non_numeric_gb_seconds_is_skipped_rather_than_raising(self, monkeypatch):
+        """`"1.5" > 0` raises `TypeError`, which used to be counted as missing data."""
+        with mock_aws():
+            searcher, _ = build_searcher(monkeypatch)
+
+        payload = json.dumps(
+            {
+                "OCR/lambda/duration": {"gb_seconds": "1.5"},
+                "Summarization/lambda/duration": {"gb_seconds": 2.0},
+            }
+        )
+        stats = searcher.calculate_timing_statistics(
+            results([self._timed("stringy.pdf", "doc#n", {"S": payload})])
+        )
+
+        assert set(stats["metering"]) == {"Summarization"}
+        assert stats["metering_count"] == 1
+        assert stats["valid_count"] == 1
+        assert stats["missing_data_count"] == 0
+
+    def test_a_boolean_gb_seconds_is_skipped_rather_than_counted_as_one_second(
+        self, monkeypatch
+    ):
+        """`True` is an `int` in Python, so `isinstance(True, (int, float))` passes.
+
+        Without excluding `bool` explicitly, `{"gb_seconds": true}` would satisfy
+        `> 0` and enter the statistics as a one-GB-second reading — a fabricated
+        number in a cost column, which is worse than a missing one.
+        """
+        with mock_aws():
+            searcher, _ = build_searcher(monkeypatch)
+
+        payload = json.dumps(
+            {
+                "OCR/lambda/duration": {"gb_seconds": True},
+                "Summarization/lambda/duration": {"gb_seconds": 2.0},
+            }
+        )
+        stats = searcher.calculate_timing_statistics(
+            results([self._timed("boolean.pdf", "doc#bool", {"S": payload})])
+        )
+
+        assert set(stats["metering"]) == {"Summarization"}
+        assert stats["metering_count"] == 1
+        assert stats["missing_data_count"] == 0
+
+    def test_a_metering_blob_that_is_valid_json_but_not_an_object_is_ignored(
+        self, monkeypatch
+    ):
+        """`json.loads("5")` is an `int`, and the reader calls `.get` on the result."""
+        with mock_aws():
+            searcher, _ = build_searcher(monkeypatch)
+
+        stats = searcher.calculate_timing_statistics(
+            results([self._timed("scalar-blob.pdf", "doc#b", {"S": "5"})])
+        )
+
+        assert stats["valid_count"] == 1
+        assert stats["missing_data_count"] == 0
         assert "metering" not in stats
 
 

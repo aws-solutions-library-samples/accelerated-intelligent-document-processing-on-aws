@@ -27,9 +27,12 @@ What shaped them:
   `Optional[float]` per key on any zero-denominator path, so `.get(k, 0)` does not
   help and `f"{None:.2%}"` raises. There is a dedicated formatter for that and
   both of its branches are covered.
-- **Three guards in this area do not guard.** They are pinned as current behaviour
-  with the consequence written out, not fixed; see the tests whose names say
-  `defect`.
+- **Two `test-result` defects are pinned as current behaviour rather than fixed**,
+  each with its consequence written out: a total cost of exactly `0.0` prints no cost
+  line, and a `FAILED` run still exits 0. See the tests whose names say `defect`. The
+  three that used to sit beside them are fixed — `test-compare` can show
+  configuration differences, and neither `--test-run-ids ""` nor a trailing comma is
+  read as a run id any more.
 
 `abort-test-run` is covered by `tests/test_abort_test_runs.py`; only the one
 branch that file leaves unreached is added here.
@@ -401,10 +404,10 @@ class TestTestResultWaitAndExport:
         assert "test run r9 not found" in result.output
 
 
-def _comparison(metrics):
+def _comparison(metrics, configs=None):
     from idp_sdk.models.testing import TestComparisonResult
 
-    return TestComparisonResult(metrics=metrics)
+    return TestComparisonResult(metrics=metrics, configs=configs)
 
 
 #: Two runs whose every metric differs from the other's, so a defect that reads the
@@ -453,20 +456,14 @@ class TestTestCompareRefusals:
         assert result.exit_code == 1
         assert "No metrics data available for comparison" in result.output
 
-    def test_defect_a_trailing_comma_passes_the_two_id_check_with_one_real_id(
-        self, runner
-    ):
-        """
-        DEFECT (pinned as current behaviour, not fixed). The ids are parsed with a
-        bare `split(",")` and only counted, never validated, so
-        `--test-run-ids "run-a,"` yields `["run-a", ""]`, passes the
-        "at least 2" check, and asks the service to compare `run-a` against a run
-        whose id is the empty string.
+    def test_a_trailing_comma_is_one_id_and_is_refused(self, runner):
+        """A blank segment is not a run, so the "at least 2" check must not count it.
 
-        The observable consequence is a comparison table with a blank column header
-        and `N/A` down every row, presented as a successful comparison with exit 0 —
-        rather than the "at least 2 test run IDs required" message the user should
-        have seen for what is really one id.
+        The ids were parsed with a bare `split(",")` and only counted, so
+        `--test-run-ids "run-a,"` yielded `["run-a", ""]`, passed the check, and asked
+        the service to compare `run-a` against a run whose id is the empty string —
+        producing a comparison table with a blank column header and `N/A` down every
+        row, presented as a success with exit 0.
         """
         p, client = _patched_client(
             compare_test_runs=MagicMock(
@@ -479,11 +476,31 @@ class TestTestCompareRefusals:
                 ["test-compare", "--stack-name", "IDP", "--test-run-ids", "run-a,"],
             )
 
+        assert result.exit_code == 1, result.output
+        assert "At least 2 test run IDs required" in result.output
+        client.testing.compare_test_runs.assert_not_called()
+
+    def test_a_blank_segment_between_two_real_ids_is_dropped(self, runner):
+        """`"run-a,,run-b"` is two runs, and the empty id must not reach the service."""
+        p, client = _patched_client(
+            compare_test_runs=MagicMock(return_value=_comparison(TWO_RUNS))
+        )
+        with p:
+            result = runner.invoke(
+                cli_module.cli,
+                [
+                    "test-compare",
+                    "--stack-name",
+                    "IDP",
+                    "--test-run-ids",
+                    "run-a,,run-b",
+                ],
+            )
+
         assert result.exit_code == 0, result.output
         client.testing.compare_test_runs.assert_called_once_with(
-            test_run_ids=["run-a", ""]
+            test_run_ids=["run-a", "run-b"]
         )
-        assert "At least 2 test run IDs required" not in result.output
 
     def test_an_error_from_the_sdk_exits_one(self, runner):
         p, client = _patched_client(
@@ -585,26 +602,29 @@ class TestTestCompareRendering:
         assert "90.00%" in result.output
         assert "N/A" in result.output
 
-    def test_defect_configuration_differences_can_never_be_shown(self, runner):
-        """
-        DEFECT (pinned as current behaviour, not fixed). The command's help promises
-        "configuration differences between test runs", and there is a whole table
-        builder for them — but `configs` is assigned the literal `[]` with a `TODO`
-        and is never populated from the comparison result, so `if configs and ...`
-        is unreachable and the branch that builds that table is dead code.
+    def test_the_settings_that_differ_are_shown_with_each_runs_value(self, runner):
+        """The table the command's help promises, from the SDK's `configs`.
 
-        The observable consequence is that `test-compare` always prints
-        "No configuration differences to display", including for two runs that
-        differ in model, prompt or confidence settings — which is the single most
-        useful thing to know when two runs score differently. The message reads as
-        "the runs are configured identically", which is a stronger and wrong claim.
-
-        This test therefore asserts the *absence* of the table for input that, were
-        the data wired through, would produce one. It is also why the dead branch is
-        left uncovered rather than reached by a contrived test.
+        `configs` used to be the literal `[]` with a `TODO`, so this whole branch
+        was dead and the command printed "No configuration differences to display"
+        for every input — including two runs that differ in model or prompt, which
+        is the single most useful thing to know when two runs score differently.
         """
         p, client = _patched_client(
-            compare_test_runs=MagicMock(return_value=_comparison(TWO_RUNS))
+            compare_test_runs=MagicMock(
+                return_value=_comparison(
+                    TWO_RUNS,
+                    configs=[
+                        {
+                            "setting": "extraction.model",
+                            "values": {
+                                "run-a": "us.amazon.nova-lite-v1:0",
+                                "run-b": "us.amazon.nova-pro-v1:0",
+                            },
+                        }
+                    ],
+                )
+            )
         )
         with p:
             result = runner.invoke(
@@ -619,8 +639,217 @@ class TestTestCompareRendering:
             )
 
         assert result.exit_code == 0, result.output
-        assert "No configuration differences to display" in result.output
+        assert "Configuration Differences" in result.output
+        assert "extraction.model" in result.output
+        assert "nova-lite-v1:0" in result.output
+        assert "nova-pro-v1:0" in result.output
+
+    def test_a_config_value_containing_brackets_is_shown_in_full(self, runner):
+        """Configuration text goes into a Rich table, which reads `[...]` as markup.
+
+        Five shipped `config_library` profiles have a `system_prompt` containing
+        `[full log_group name]`. Unescaped, Rich drops it — so a row whose whole
+        purpose is to say *these two runs differ* displays two identical cells, which
+        is worse than showing nothing.
+        """
+        p, client = _patched_client(
+            compare_test_runs=MagicMock(
+                return_value=_comparison(
+                    TWO_RUNS,
+                    configs=[
+                        {
+                            "setting": "summarization.system_prompt",
+                            "values": {
+                                "run-a": "cite [full log_group name]",
+                                "run-b": "cite [other]",
+                            },
+                        }
+                    ],
+                )
+            )
+        )
+        with p:
+            result = runner.invoke(
+                cli_module.cli,
+                [
+                    "test-compare",
+                    "--stack-name",
+                    "IDP",
+                    "--test-run-ids",
+                    "run-a,run-b",
+                ],
+            )
+
+        assert result.exit_code == 0, result.output
+        assert "[full log_group name]" in result.output
+        assert "[other]" in result.output
+
+    def test_a_config_value_shaped_like_a_closing_tag_does_not_abort_the_command(
+        self, runner
+    ):
+        """`[/INST]` is the Llama and Mistral instruction token, so a prompt has it.
+
+        Unescaped it raises `MarkupError` from inside the table render, which the
+        command's broad handler turns into `✗ Error:` and exit 1 — after the metrics
+        table has already printed, so the user gets half an answer and a failure.
+        """
+        p, client = _patched_client(
+            compare_test_runs=MagicMock(
+                return_value=_comparison(
+                    TWO_RUNS,
+                    configs=[
+                        {
+                            "setting": "extraction.task_prompt",
+                            "values": {
+                                "run-a": "ask [/INST] done",
+                                "run-b": "ask done",
+                            },
+                        }
+                    ],
+                )
+            )
+        )
+        with p:
+            result = runner.invoke(
+                cli_module.cli,
+                [
+                    "test-compare",
+                    "--stack-name",
+                    "IDP",
+                    "--test-run-ids",
+                    "run-a,run-b",
+                ],
+            )
+
+        assert result.exit_code == 0, result.output
+        assert "Error:" not in result.output
+        assert "[/INST]" in result.output
+
+    def test_a_setting_name_containing_brackets_is_shown_in_full(self, runner):
+        """The `setting` column is a dotted path through user-authored keys.
+
+        A class or attribute name with brackets in it reaches the first column, and
+        the same drop applies there.
+        """
+        p, client = _patched_client(
+            compare_test_runs=MagicMock(
+                return_value=_comparison(
+                    TWO_RUNS,
+                    configs=[
+                        {
+                            "setting": "classes.0.attributes.[legacy].description",
+                            "values": {"run-a": "x", "run-b": "y"},
+                        }
+                    ],
+                )
+            )
+        )
+        with p:
+            result = runner.invoke(
+                cli_module.cli,
+                [
+                    "test-compare",
+                    "--stack-name",
+                    "IDP",
+                    "--test-run-ids",
+                    "run-a,run-b",
+                ],
+            )
+
+        assert result.exit_code == 0, result.output
+        assert "[legacy]" in result.output
+
+    def test_identical_configurations_are_reported_as_identical(self, runner):
+        """`[]` means compared and matched, and the message says exactly that."""
+        p, client = _patched_client(
+            compare_test_runs=MagicMock(return_value=_comparison(TWO_RUNS, configs=[]))
+        )
+        with p:
+            result = runner.invoke(
+                cli_module.cli,
+                [
+                    "test-compare",
+                    "--stack-name",
+                    "IDP",
+                    "--test-run-ids",
+                    "run-a,run-b",
+                ],
+            )
+
+        assert result.exit_code == 0, result.output
+        assert "Configurations are identical" in result.output
         assert "Configuration Differences" not in result.output
+
+    def test_when_no_configuration_was_captured_the_command_says_so(self, runner):
+        """`None` means nothing was compared, which is not "they match".
+
+        This is the distinction the old message erased: it printed "No
+        configuration differences to display" whether the configurations had been
+        compared or never read, and a reader cannot tell those apart. The message
+        for this case must not assert anything about the configurations.
+        """
+        p, client = _patched_client(
+            compare_test_runs=MagicMock(
+                return_value=_comparison(TWO_RUNS, configs=None)
+            )
+        )
+        with p:
+            result = runner.invoke(
+                cli_module.cli,
+                [
+                    "test-compare",
+                    "--stack-name",
+                    "IDP",
+                    "--test-run-ids",
+                    "run-a,run-b",
+                ],
+            )
+
+        assert result.exit_code == 0, result.output
+        assert "Configurations not compared" in result.output
+        assert "identical" not in result.output
+        assert "Configuration Differences" not in result.output
+
+    def test_the_saved_json_carries_the_configuration_differences(
+        self, runner, tmp_path
+    ):
+        """`--output-dir` writes what was displayed, so `configs` must reach the file."""
+        p, client = _patched_client(
+            compare_test_runs=MagicMock(
+                return_value=_comparison(
+                    TWO_RUNS,
+                    configs=[
+                        {
+                            "setting": "extraction.model",
+                            "values": {"run-a": "nova-lite", "run-b": "nova-pro"},
+                        }
+                    ],
+                )
+            )
+        )
+        with p:
+            result = runner.invoke(
+                cli_module.cli,
+                [
+                    "test-compare",
+                    "--stack-name",
+                    "IDP",
+                    "--test-run-ids",
+                    "run-a,run-b",
+                    "--output-dir",
+                    str(tmp_path),
+                ],
+            )
+
+        assert result.exit_code == 0, result.output
+        (written,) = list(tmp_path.glob("comparison-*.json"))
+        payload = json.loads(written.read_text())
+        assert payload["configs"] == [
+            {
+                "setting": "extraction.model",
+                "values": {"run-a": "nova-lite", "run-b": "nova-pro"},
+            }
+        ]
 
     def test_long_run_ids_are_truncated_in_the_table_header(self, runner):
         """Column headers are cut to 20 characters; the CSV uses 30. Both are pinned
@@ -755,9 +984,10 @@ class TestTestCompareExport:
         assert len(json_files) == 1
         payload = json.loads(json_files[0].read_text(encoding="utf-8"))
         assert payload["metrics"] == TWO_RUNS
-        # `configs` is exported as an empty list for the same reason the
-        # configuration-differences table never renders — see the defect test above.
-        assert payload["configs"] == []
+        # `null`, because this comparison carried no captured configurations, which
+        # is a different answer from `[]` ("compared, and identical"). See
+        # `test_when_no_configuration_was_captured_the_command_says_so`.
+        assert payload["configs"] is None
         assert "Comparison JSON saved to" in result.output
         assert "Comparison CSV saved to" in result.output
 
@@ -788,20 +1018,19 @@ class TestTestCompareExport:
 
 
 class TestAbortTestRunGuard:
-    def test_defect_an_empty_test_run_ids_value_is_not_refused(self, runner):
-        """
-        DEFECT (pinned as current behaviour, not fixed). `abort-test-run` guards with
-        `if not test_run_id_list:` after `test_run_ids.split(",")`, but `str.split`
-        never returns an empty list — `"".split(",")` is `[""]`, which is truthy. The
-        guard and its "No test run IDs provided" message are therefore unreachable
-        code, and `--test-run-ids ""` proceeds to ask the service to abort a test run
-        whose id is the empty string.
+    @pytest.mark.parametrize("empty", ["", ",", "  ", " , "])
+    def test_an_empty_test_run_ids_value_is_refused(self, runner, empty):
+        """The guard is reachable now, and nothing is asked of the service.
 
-        The observable consequence is a confirmation prompt listing a blank bullet,
-        followed by an abort request for `[""]` that the service can only answer with
-        a not-found error — where the user should have been told the option was empty.
-        This is also why lines 6622-6623 are left uncovered: there is no input that
-        reaches them.
+        It guards with `if not test_run_id_list:` after splitting, and `str.split`
+        never returns an empty list — `"".split(",")` is `[""]`, which is truthy — so
+        the guard and its message were unreachable code and `--test-run-ids ""` went
+        on to request an abort of a run whose id is the empty string, which the
+        service can only answer with a not-found error. Blank segments are dropped
+        during parsing, which is what makes the guard mean what it says.
+
+        Parametrised over the four ways a user writes "nothing", because a fix that
+        special-cased the empty string alone would let `","` straight through.
         """
         p, client = _patched_client(
             abort_test_run=MagicMock(
@@ -816,14 +1045,39 @@ class TestAbortTestRunGuard:
                     "--stack-name",
                     "IDP",
                     "--test-run-ids",
-                    "",
+                    empty,
+                    "--force",
+                ],
+            )
+
+        assert result.exit_code == 1, result.output
+        assert "No test run IDs provided" in result.output
+        client.testing.abort_test_run.assert_not_called()
+
+    def test_a_blank_segment_is_dropped_from_an_otherwise_valid_abort(self, runner):
+        """The empty id must not reach the service alongside the real ones."""
+        p, client = _patched_client(
+            abort_test_run=MagicMock(
+                return_value={"success": True, "message": "ok", "abortedCount": 2}
+            )
+        )
+        with p:
+            result = runner.invoke(
+                cli_module.cli,
+                [
+                    "abort-test-run",
+                    "--stack-name",
+                    "IDP",
+                    "--test-run-ids",
+                    "run-a, ,run-b,",
                     "--force",
                 ],
             )
 
         assert result.exit_code == 0, result.output
-        assert "No test run IDs provided" not in result.output
-        client.testing.abort_test_run.assert_called_once_with(test_run_ids=[""])
+        client.testing.abort_test_run.assert_called_once_with(
+            test_run_ids=["run-a", "run-b"]
+        )
 
     def test_declining_the_confirmation_aborts_nothing(self, runner):
         """
