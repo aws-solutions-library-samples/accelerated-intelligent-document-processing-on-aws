@@ -290,6 +290,22 @@ which is what stops the UI auto-dismissing the message), and the SDK returns it 
 `ConfigActivateResult.bda_orphaned_blueprint_arns`, which `idp-cli config-sync-bda` and
 `config-activate` print.
 
+⚠️ **`cleanup_orphaned_blueprints` is reached by a direction that is not a sync, and it
+has three callers now rather than one.** `ConfigOperation.sync_bda` takes
+`direction="cleanup_orphaned"` and branches to it *in process*, the same way it reaches
+the three sync directions — it does not invoke the `syncBdaIdp` resolver, which has its
+own branch to the same method, and `idp-cli config-sync-bda --direction
+cleanup-orphaned` goes through the SDK. So a change to this method's return shape has to
+be read against all three. The keys the callers subscript are `success`, `message`,
+`deleted_count` and `failed_count`; the SDK reports the last two on
+`ConfigSyncBdaResult.cleanup_deleted_count` / `cleanup_failed_count` and deliberately
+not on `classes_synced` / `classes_failed`, since the cleanup processes no classes and a
+blueprint counted as a synced class is a wrong answer rather than an imprecise one.
+
+The SDK branch sits *after* the project-ARN resolution, matching the resolver's
+placement, because the cleanup disassociates before deleting and so needs a project to
+disassociate from.
+
 ⚠️ **The failure paths are the ones to get right, and they are the ones that are easy to
 miss.** The deletes run *before* the last two steps of a sync — the AWS-standard-blueprint
 disassociation and the write-back of sanitized classes, both of which can raise — so a

@@ -460,8 +460,11 @@ def _print_orphaned_blueprints(arns: Optional[List[str]]) -> None:
     for arn in arns:
         console.print(f"    • {arn}")
     console.print(
-        "  [yellow]They are removed by the orphaned-blueprint cleanup: the syncBdaIdp "
-        "API operation with direction 'cleanup_orphaned'.[/yellow]"
+        "  [yellow]They are removed by the orphaned-blueprint cleanup: run "
+        "`idp-cli config-sync-bda --stack-name <stack> --direction cleanup-orphaned` "
+        "(or the syncBdaIdp API operation with direction 'cleanup_orphaned'). The "
+        "cleanup is account-wide and deletes every prefixed blueprint the profile "
+        "does not account for, so pass the same --config-profile.[/yellow]"
     )
 
 
@@ -5837,9 +5840,15 @@ def config_delete(
 )
 @click.option(
     "--direction",
-    type=click.Choice(["bidirectional", "bda-to-idp", "idp-to-bda"]),
+    type=click.Choice(
+        ["bidirectional", "bda-to-idp", "idp-to-bda", "cleanup-orphaned"]
+    ),
     default="bidirectional",
-    help="Sync direction (default: bidirectional)",
+    help=(
+        "Sync direction (default: bidirectional). 'cleanup-orphaned' is not a sync: "
+        "it deletes every blueprint carrying the stack's prefix that the profile's "
+        "classes do not account for, account-wide"
+    ),
 )
 @click.option(
     "--mode",
@@ -5853,12 +5862,21 @@ def config_delete(
     "config_version",
     help="Configuration profile to sync (default: active profile); --config-version is the former name and still works",
 )
+@click.option(
+    "--force",
+    is_flag=True,
+    help=(
+        "Skip the confirmation prompt. Only --direction cleanup-orphaned prompts, "
+        "because only it deletes account-wide"
+    ),
+)
 @click.option("--region", help="AWS region (optional)")
 def config_sync_bda(
     stack_name: str,
     direction: str,
     mode: str,
     config_version: Optional[str],
+    force: bool,
     region: Optional[str],
 ):
     """
@@ -5868,13 +5886,27 @@ def config_sync_bda(
     configuration's document classes and BDA (Bedrock Data Automation) blueprints.
 
     Sync directions:
-      bidirectional: Full two-way sync (default)
-      bda-to-idp:    Import BDA blueprints into IDP config
-      idp-to-bda:    Push IDP classes to BDA blueprints
+      bidirectional:    Full two-way sync (default)
+      bda-to-idp:       Import BDA blueprints into IDP config
+      idp-to-bda:       Push IDP classes to BDA blueprints
+      cleanup-orphaned: Delete orphaned blueprints (see below)
 
     Sync modes:
       replace: Target is aligned to match source exactly (default)
       merge:   Source items are added without removing existing items
+
+    \b
+    Orphaned-blueprint cleanup:
+      A replace-mode sync removes a blueprint from the BDA project before deleting
+      it, so a delete that fails leaves one that no project-scoped read can see,
+      that still counts against the account's blueprint limit, and that a
+      name-prefix match can still pick up. --direction cleanup-orphaned is the only
+      thing that removes those.
+      It is DESTRUCTIVE and ACCOUNT-WIDE: it deletes every blueprint carrying the
+      stack's name prefix that the named profile's classes do not account for, not
+      just the ones a sync reported. So the profile decides what survives -- naming
+      the wrong one deletes live blueprints. It prompts for confirmation unless
+      --force is given, and --mode is not read.
 
     Examples:
 
@@ -5889,28 +5921,80 @@ def config_sync_bda(
 
       # Sync specific config profile
       idp-cli config-sync-bda --stack-name my-stack --config-profile v2
+
+      # Delete blueprints a previous sync left orphaned
+      idp-cli config-sync-bda --stack-name my-stack --direction cleanup-orphaned \\
+          --config-profile v2
     """
     try:
         from idp_sdk import IDPClient
 
         # Normalize direction for SDK (CLI uses dashes, SDK uses underscores)
         sdk_direction = direction.replace("-", "_")
+        is_cleanup = sdk_direction == "cleanup_orphaned"
 
-        console.print(f"[bold blue]BDA Sync for stack: {stack_name}[/bold blue]")
-        console.print(f"Direction: {direction}")
-        console.print(f"Mode: {mode}")
-        if config_version:
-            console.print(f"Config profile: {config_version}")
-        console.print()
+        if is_cleanup:
+            console.print(
+                f"[bold blue]Orphaned blueprint cleanup for stack: "
+                f"{stack_name}[/bold blue]"
+            )
+            console.print(
+                "[bold red]⚠️  This deletes every BDA blueprint carrying this "
+                "stack's prefix that the configuration profile below does not "
+                "account for, account-wide.[/bold red]"
+            )
+            console.print(
+                f"Profile deciding what survives: "
+                f"{config_version or 'the active profile'}"
+            )
+            console.print("[bold red]This action cannot be undone.[/bold red]")
+            console.print()
+            if not force and not click.confirm(
+                "Delete the orphaned blueprints?", default=False
+            ):
+                console.print("[yellow]Cleanup cancelled[/yellow]")
+                sys.exit(1)
+        else:
+            console.print(f"[bold blue]BDA Sync for stack: {stack_name}[/bold blue]")
+            console.print(f"Direction: {direction}")
+            console.print(f"Mode: {mode}")
+            if config_version:
+                console.print(f"Config profile: {config_version}")
+            console.print()
 
         client = IDPClient(stack_name=stack_name, region=region)
 
-        with console.status("[cyan]Synchronizing with BDA...[/cyan]"):
+        status_message = (
+            "[cyan]Deleting orphaned blueprints...[/cyan]"
+            if is_cleanup
+            else "[cyan]Synchronizing with BDA...[/cyan]"
+        )
+        with console.status(status_message):
             result = client.config.sync_bda(
                 direction=sdk_direction,
                 mode=mode,
                 config_version=config_version,
             )
+
+        if is_cleanup:
+            deleted = result.cleanup_deleted_count or 0
+            failed = result.cleanup_failed_count or 0
+            if result.success:
+                console.print(
+                    f"[green]✓ Orphaned blueprint cleanup completed: "
+                    f"{deleted} deleted[/green]"
+                )
+            else:
+                console.print(
+                    "[yellow]⚠ Orphaned blueprint cleanup did not complete[/yellow]"
+                )
+                console.print(f"  Blueprints deleted: {deleted}")
+                console.print(f"  Blueprints failed:  {failed}")
+                if result.error:
+                    console.print(f"  [red]Error: {result.error}[/red]")
+                _print_orphaned_blueprints(result.orphaned_blueprint_arns)
+                sys.exit(1)
+            return
 
         if result.success:
             console.print("[green]✓ BDA sync completed successfully[/green]")

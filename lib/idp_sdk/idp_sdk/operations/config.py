@@ -1004,12 +1004,25 @@ class ConfigOperation:
         configuration's document classes and BDA (Bedrock Data Automation)
         blueprints.
 
+        ``'cleanup_orphaned'`` is not a sync: it deletes every blueprint carrying the
+        stack's name prefix that no class in the named profile accounts for. That is an
+        **account-wide** scan rather than a project-scoped one, which is what makes it
+        the only way to remove a blueprint a replace-mode sync disassociated but could
+        not delete — such a blueprint is invisible to every project-scoped read. It
+        reports its outcome in ``cleanup_deleted_count`` and ``cleanup_failed_count``
+        rather than in the class counts, because it processes no classes and reporting
+        a blueprint as a synced class is a wrong answer rather than an imprecise one.
+
         Args:
             direction: Sync direction — ``'bidirectional'`` (default),
-                ``'bda_to_idp'``, or ``'idp_to_bda'``.
+                ``'bda_to_idp'``, ``'idp_to_bda'``, or ``'cleanup_orphaned'``.
             mode: Sync mode — ``'replace'`` (default, full alignment) or
-                ``'merge'`` (additive, don't delete).
+                ``'merge'`` (additive, don't delete). Not read for
+                ``'cleanup_orphaned'``, which deletes by definition.
             config_version: Configuration profile to sync (default: active version).
+                For ``'cleanup_orphaned'`` this is the profile whose classes decide
+                which blueprints are orphaned, so naming the wrong one deletes live
+                blueprints.
             config_profile: Configuration profile (the current name for
                 config_version; either may be given, not both with different values).
             stack_name: Optional stack name override.
@@ -1052,6 +1065,46 @@ class ConfigOperation:
                     config_version
                 )
                 bda_service.dataAutomationProjectArn = bda_project_arn
+
+            # Orphaned-blueprint cleanup is not a sync and shares none of the steps
+            # below: it processes no classes, writes no project blueprint list from the
+            # configuration, and its outcome is a count of deletions. It is placed
+            # after the project-ARN resolution above for the same reason the resolver
+            # places it there (sync_bda_idp_resolver/index.py): the cleanup
+            # disassociates before deleting, which needs a project to disassociate
+            # from.
+            if direction == "cleanup_orphaned":
+                cleanup = bda_service.cleanup_orphaned_blueprints(
+                    version=config_version
+                )
+                deleted = int(cleanup.get("deleted_count", 0))
+                failed = int(cleanup.get("failed_count", 0))
+                succeeded = bool(cleanup.get("success", False)) and failed == 0
+                if not succeeded:
+                    logger.error(
+                        "Orphaned blueprint cleanup did not complete: %d deleted, "
+                        "%d failed. %s",
+                        deleted,
+                        failed,
+                        cleanup.get("message", ""),
+                    )
+                return ConfigSyncBdaResult(
+                    success=succeeded,
+                    direction=direction,
+                    mode=mode,
+                    cleanup_deleted_count=deleted,
+                    cleanup_failed_count=failed,
+                    # The blueprints the cleanup could not delete are still orphaned
+                    # after it ran, so they are reported for the same reason a sync
+                    # reports them: nothing project-scoped will ever show them again.
+                    orphaned_blueprint_arns=list(bda_service.orphaned_blueprint_arns),
+                    error=(
+                        cleanup.get("message")
+                        or f"{failed} orphaned blueprint(s) could not be deleted"
+                    )
+                    if not succeeded
+                    else None,
+                )
 
             # Perform sync
             sync_result = bda_service.create_blueprints_from_custom_configuration(

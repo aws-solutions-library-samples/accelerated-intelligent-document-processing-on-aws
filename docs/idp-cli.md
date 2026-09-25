@@ -2671,9 +2671,9 @@ command runs is the same replace-mode sync as
 from the BDA project that could not then be deleted. The deletes happen whatever became
 of the document classes, which makes an aborted activation the outcome most likely to
 have left one. Those ARNs are printed whether the activation succeeded or failed, and
-they are not counted as failed classes — the remedy is the orphaned-blueprint cleanup
-(the `syncBdaIdp` API operation with direction `cleanup_orphaned`), not a re-run of this
-command. See the `config-sync-bda` section for the full explanation.
+they are not counted as failed classes — the remedy is the orphaned-blueprint cleanup,
+[`config-sync-bda --direction cleanup-orphaned`](#--direction-cleanup-orphaned), not a
+re-run of this command. See the `config-sync-bda` section for the full explanation.
 
 **Notes:**
 - Sets the specified profile as active for all new document processing
@@ -3067,9 +3067,10 @@ idp-cli config-sync-bda [OPTIONS]
 
 **Options:**
 - `--stack-name` (required): CloudFormation stack name
-- `--direction`: Sync direction — `bidirectional` (default), `bda-to-idp`, or `idp-to-bda`
-- `--mode`: Sync mode — `replace` (default, full alignment) or `merge` (additive, don't delete)
+- `--direction`: Sync direction — `bidirectional` (default), `bda-to-idp`, `idp-to-bda`, or `cleanup-orphaned` (not a sync — see [below](#--direction-cleanup-orphaned))
+- `--mode`: Sync mode — `replace` (default, full alignment) or `merge` (additive, don't delete). Not read by `cleanup-orphaned`
 - `--config-profile` (alias: `--config-version`): Configuration profile to sync (default: active profile)
+- `--force`: Skip the confirmation prompt. Only `cleanup-orphaned` prompts
 - `--region`: AWS region (optional)
 
 **Examples:**
@@ -3119,9 +3120,35 @@ fails leaves a blueprint that is already out of the project. It is invisible to
 everything that reads the project, it still counts against the account's blueprint
 limit, and a name-prefix match can still pick it up. Those ARNs are printed beside the
 result, and they do **not** count as failed classes: the classes may all have synced,
-and the outstanding work is a cleanup rather than a re-sync. Remove them with the
-orphaned-blueprint cleanup — the `syncBdaIdp` API operation with direction
-`cleanup_orphaned`.
+and the outstanding work is a cleanup rather than a re-sync. Remove them with
+`--direction cleanup-orphaned`, described next.
+
+#### `--direction cleanup-orphaned`
+
+Not a sync. It deletes every BDA blueprint carrying the stack's name prefix that the
+named configuration profile's classes do not account for. That is an **account-wide**
+scan rather than a project-scoped one, which is exactly why it is the only thing that
+can reach a blueprint a replace-mode sync disassociated but could not delete — such a
+blueprint is invisible to every read that goes through the project.
+
+```bash
+idp-cli config-sync-bda --stack-name my-stack \
+    --direction cleanup-orphaned --config-profile v2
+```
+
+⚠️ **The profile decides what survives, and the scope is the whole account.** Blueprints
+belonging to a *different* profile of the same stack are orphans as far as this command
+is concerned, so naming the wrong profile — or letting it fall back to the active one
+when you meant another — deletes live blueprints. There is no dry run.
+
+It prompts for confirmation and will not proceed on an empty answer; `--force` skips the
+prompt, which is what a script wants. `--mode` is not read. The command reports how many
+blueprints it deleted and exits non-zero if any deletion failed, naming the ARNs that
+are still orphaned afterwards.
+
+The same operation is available as `config.sync_bda(direction="cleanup_orphaned")` in
+the SDK and as the `syncBdaIdp` API operation with direction `cleanup_orphaned`. The Web
+UI has no control for it.
 
 ---
 

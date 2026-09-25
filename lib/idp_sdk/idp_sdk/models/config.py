@@ -244,7 +244,10 @@ class ConfigSyncBdaResult(BaseModel):
 
     success: bool = Field(description="Whether sync succeeded")
     direction: str = Field(
-        description="Sync direction: 'bidirectional', 'bda_to_idp', or 'idp_to_bda'"
+        description=(
+            "Sync direction: 'bidirectional', 'bda_to_idp', 'idp_to_bda', or "
+            "'cleanup_orphaned'"
+        )
     )
     mode: str = Field(
         default="replace",
@@ -268,6 +271,26 @@ class ConfigSyncBdaResult(BaseModel):
             "orphaned-blueprint cleanup. Not a class failure: the classes may all "
             "have synced, so this is reported alongside `success` rather than "
             "instead of it."
+        ),
+    )
+    cleanup_deleted_count: Optional[int] = Field(
+        default=None,
+        description=(
+            "Blueprints the orphaned-blueprint cleanup deleted. `None` for the three "
+            "sync directions, which delete blueprints only as part of aligning a "
+            "class list and report that through the class counts. Kept separate from "
+            "`classes_synced` because a blueprint belongs to no class once it is "
+            "orphaned, so counting one as a synced class would be a wrong answer "
+            "rather than an imprecise one."
+        ),
+    )
+    cleanup_failed_count: Optional[int] = Field(
+        default=None,
+        description=(
+            "Blueprints the orphaned-blueprint cleanup tried and failed to delete. "
+            "`None` for the three sync directions. A non-zero value means the "
+            "blueprints are still in the account and still counting against its "
+            "blueprint limit."
         ),
     )
     error: Optional[str] = Field(default=None, description="Error message if failed")

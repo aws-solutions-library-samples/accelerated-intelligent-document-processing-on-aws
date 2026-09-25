@@ -1774,14 +1774,30 @@ than a re-sync. It is populated on the failure and exception paths too, since th
 deletes run before the last steps of a sync. `config.activate()` reports the same thing
 as `bda_orphaned_blueprint_arns`.
 
-⚠️ The remedy is the **`syncBdaIdp` API operation with `direction: "cleanup_orphaned"`**,
-which deletes account-wide blueprints carrying the stack's name prefix that the active
-configuration no longer describes. Do **not** reach for
-[`stack.cleanup_orphaned()`](#stackcleanup_orphaned): despite the name it is a different
-operation entirely — it removes CloudFront distributions, log groups, IAM policies and S3
-buckets left behind by deleted stacks, and never touches a blueprint. There is no SDK
-method and no CLI subcommand for the blueprint cleanup yet
-([#1207](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/1207)).
+⚠️ The remedy is **`config.sync_bda(direction="cleanup_orphaned")`** — the same call as a
+sync, with a direction that is not one. It deletes every blueprint carrying the stack's
+name prefix that the named profile's classes do not account for, **account-wide**, which
+is what makes it the only thing that can reach a blueprint no project-scoped read can
+see. Because the scope is the account and the survivors are decided by the profile you
+name, naming the wrong profile deletes live blueprints. It reports
+`cleanup_deleted_count` and `cleanup_failed_count` rather than the class counts: it
+processes no classes. The `syncBdaIdp` API operation with
+`direction: "cleanup_orphaned"` is the same operation through the resolver, and
+`idp-cli config-sync-bda --direction cleanup-orphaned` is the same operation on the
+command line.
+
+Do **not** reach for [`stack.cleanup_orphaned()`](#stackcleanup_orphaned): despite the
+name it is a different operation entirely — it removes CloudFront distributions, log
+groups, IAM policies and S3 buckets left behind by deleted stacks, and never touches a
+blueprint.
+
+```python
+result = client.config.sync_bda(
+    direction="cleanup_orphaned", config_profile="v2"
+)
+print(result.cleanup_deleted_count, result.cleanup_failed_count)
+# Anything still in result.orphaned_blueprint_arns is still orphaned.
+```
 
 ```python
 # Bidirectional sync (default)
