@@ -445,7 +445,7 @@ one knob at a time:</p>
 v0.6.7 advanced extraction is <strong>7.4% cheaper</strong> than v0.6.6.</li>
 <li><strong>The over-split is model-dependent.</strong> Sonnet 5 classification gets 1 section in 5 of 5
 runs; the shipped default (Nova 2 Lite) gets 1 in 0 of 5. This reconciles this result
-with <a href="../../../benchmarking/config-guidance/">config-guidance §7</a>, which measured <code dir="auto">llm_determined</code> at
+with <a href="https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/blob/main/config-guidance.md">config-guidance §7</a>, which measured <code dir="auto">llm_determined</code> at
 <code dir="auto">sections_correct</code> <strong>1.00</strong> — that measurement used Sonnet 5 as the classifier.</li>
 <li><strong>Neither mitigation is free.</strong>
 <code dir="auto">sectionSplitting: disabled</code> is the cheapest correct setting <strong>for a single-class
@@ -526,7 +526,7 @@ image-reading backend. Still formally untested; the <code dir="auto">ocr_dpi</co
 <p><strong>The scalar dip is a known defect, not a new one.</strong> Eight of nine runs score 1.000; the
 ninth (<code dir="auto">longdesc_100</code> rep1) scores 0.000 and cost $0.372 against ~$0.145 for its
 siblings. That is the <code dir="auto">bedrock_llm</code> <strong>fixed-width identifier corruption</strong> root-caused in
-the <a href="../../../benchmarking/releases/v0.6.6/">v0.6.6 audit</a> — the backend inserts a digit into an identifier like an
+the <a href="./v0.6.6.md">v0.6.6 audit</a> — the backend inserts a digit into an identifier like an
 account number, page-scoped, with nothing flagging it. It is why this backend should not
 be used where identifiers matter, and it is unrelated to this release.</p>
 <p><strong>Cost is not claimable</strong> at CV 0.95; the mean is dominated by that one outlier run.</p>
