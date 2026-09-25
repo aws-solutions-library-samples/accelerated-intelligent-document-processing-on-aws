@@ -3336,6 +3336,32 @@ def validate_manifest_cmd(manifest: str):
         sys.exit(1)
 
 
+def _test_run_ids_from(option_value: str) -> List[str]:
+    """Split a `--test-run-ids` value on commas, dropping blanks.
+
+    `str.split` never returns an empty list, and that is the whole reason this
+    exists. `"".split(",")` is `[""]` and `"run-a,".split(",")` is
+    `["run-a", ""]`, so a blank segment arrives as an id that is the empty string:
+    `if not ids` after a plain split is unreachable code, and a length check counts
+    a trailing comma as a second run. Both spellings of that mistake were live —
+    `--test-run-ids ""` asked the service to abort a run whose id was `""`, and
+    `--test-run-ids "run-a,"` passed `test-compare`'s "at least 2" check with one
+    real id and then rendered a column for a run that does not exist.
+
+    Dropping the blanks makes the callers' own guards reachable and correct, rather
+    than adding a separate check beside each of them.
+
+    Args:
+        option_value: The raw `--test-run-ids` value.
+
+    Returns:
+        The non-empty ids, stripped, in the order given. Possibly empty.
+    """
+    return [
+        candidate.strip() for candidate in option_value.split(",") if candidate.strip()
+    ]
+
+
 def _timestamp_for_display(value) -> str:
     """Render an optional timestamp as a string, always -- never as a `datetime`.
 
@@ -6713,8 +6739,9 @@ def test_compare(
         region = os.environ.get("AWS_REGION", "us-east-1")
 
     try:
-        # Parse test run IDs
-        test_run_id_list = [tid.strip() for tid in test_run_ids.split(",")]
+        # Parse test run IDs. Blank segments are dropped, so a trailing comma no
+        # longer counts as a second run and satisfy this check with one real id.
+        test_run_id_list = _test_run_ids_from(test_run_ids)
 
         if len(test_run_id_list) < 2:
             console.print(
@@ -6938,8 +6965,11 @@ def abort_test_run(
         region = os.environ.get("AWS_REGION", "us-east-1")
 
     try:
-        # Parse test run IDs
-        test_run_id_list = [tid.strip() for tid in test_run_ids.split(",")]
+        # Parse test run IDs. Blank segments are dropped, which is what makes the
+        # guard below reachable: after a plain `split(",")` it never was, because
+        # `"".split(",")` is `[""]`, and `--test-run-ids ""` went on to ask the
+        # service to abort a run whose id is the empty string.
+        test_run_id_list = _test_run_ids_from(test_run_ids)
 
         if not test_run_id_list:
             console.print("[red]✗ No test run IDs provided[/red]")
