@@ -4,14 +4,18 @@
 
 This module builds the reports the ratchet reads. That makes a silent failure here worse
 than a silent failure in the ratchet: if a tree's pytest invocation is malformed, the run
-produces no report, `check_coverage_debt.py` skips that tree, and the gate reports success
-having checked eight trees out of nine. So the properties asserted are the ones that decide
-*whether a report is produced at all*, and the ones that decide whether a failed run is
-distinguishable from a clean one.
+produces no report and `check_coverage_debt.py` names that tree as unchecked -- and where
+that leaves nothing checked at all it refuses to report a verdict rather than passing
+(#1190). So the properties asserted are the ones that decide *whether a report is produced
+at all*, the ones that decide whether a failed run is distinguishable from a clean one, and
+the one that decides whether a report describes the subprocesses the suite started.
 
-No pytest is actually run: `subprocess.run` is replaced, and what is asserted is the
-command line that would have been issued. Running the nine real suites here would take
-minutes and would assert nothing about the command construction that is the point.
+Most of these tests run no pytest: `subprocess.run` is replaced, and what is asserted is
+the command line that would have been issued. Running the nine real suites here would take
+minutes and would assert nothing about the command construction that is the point. The
+exception is the subprocess-instrumentation class at the end, which runs a real pytest over
+a purpose-built probe package, because the property there is what a child process inherits
+and no command line shows it.
 
 Two behaviours are easy to get wrong and both have a test:
 
@@ -33,6 +37,7 @@ import subprocess
 import sys
 from pathlib import Path
 
+import coverage
 import pytest
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -329,14 +334,17 @@ class TestTreeSelection:
 
 @pytest.mark.unit
 class TestASerialTreeIsNeverRunInParallel:
-    """`Tree.serial` is a correctness property, so the flag cannot override it.
+    """A tree's declaration wins over the command line, in the safe direction.
 
-    A suite that drives the code under test as a subprocess has its coverage
-    under-collected by xdist workers, and the symptom is a large fall in a file whose own
-    suite is green -- measured on `scripts`, two hook modules read 33 and 10 points below
-    their true figures. Recording that is worse than having no ratchet on those files: it
-    pre-approves a real regression down to the recorded floor. So the declaration wins
-    over the command line in the direction that protects the measurement.
+    `--serial` can force a tree that is normally parallel to run serially; nothing can
+    force a tree that declares `serial` to run in parallel. That asymmetry is the point: a
+    tree declares it because its recorded baseline was measured that way, and a flag on one
+    invocation should not silently change the conditions a comparison is made under.
+
+    What the declaration is *not* protecting is the coverage of code a suite runs as a
+    subprocess. That is collected by the environment `coverage_all.subprocess_coverage_env`
+    supplies, and it is unaffected by the worker count -- see the class at the end of this
+    module, and `Tree.serial`.
     """
 
     def test_a_serial_tree_gets_no_n_auto_even_without_the_flag(
@@ -381,10 +389,168 @@ class TestASerialTreeIsNeverRunInParallel:
         assert "-n" in rec.calls[1][0]
 
     def test_the_scripts_tree_is_declared_serial_in_the_real_registry(self):
-        """Not a synthetic tree: the one this was measured on.
+        """Not a synthetic tree: the one whose baseline was measured serially.
 
-        `scripts/tests/test_check_commit_text.py` and `test_check_shared_branch.py` run
-        the hooks they cover as subprocesses. If this ever flips back to parallel, two
-        real 95%-plus baselines get re-recorded 10 and 33 points lower.
+        The `scripts` figures in `coverage_debt.json` come from a serial run. Flipping this
+        changes the conditions the recorded numbers were taken under, so it is a decision
+        that comes with a measurement rather than a default.
         """
         assert ccd.TREES_BY_NAME["scripts"].serial is True
+
+
+def _probe_tree(tmp_path: Path, name: str = "probe"):
+    """A one-file package whose only execution is two subprocesses, each with its own cwd.
+
+    The statements in `first_child` and `second_child` are reachable in exactly one way
+    each: the test runs `mod.py` twice as a child process, from directories that are
+    neither the package's nor pytest's. Nothing imports the module, so an in-process
+    measurement of this tree reports 0.00% for it however many times the test passes --
+    which is what makes it a probe for subprocess collection rather than for coverage in
+    general.
+
+    **Two children rather than one, because one child cannot tell whether the children are
+    writing over each other.** Without `parallel` in the configuration
+    ``COVERAGE_PROCESS_START`` names, every child writes to the single path
+    ``COVERAGE_FILE`` gives, so the last one wins and the earlier one's lines are simply
+    gone -- and with a single child the report still reads 100%, which is the measurement
+    that makes this shape necessary.
+    """
+    root = tmp_path / name
+    (root / "pkg").mkdir(parents=True, exist_ok=True)
+    (root / "tests").mkdir(parents=True, exist_ok=True)
+    (root / "pkg" / "__init__.py").write_text("", encoding="utf-8")
+    (root / "pkg" / "mod.py").write_text(
+        "import sys\n"
+        "\n"
+        "\n"
+        "def first_child():\n"
+        "    a = 1\n"
+        "    b = a + 1\n"
+        "    return b\n"
+        "\n"
+        "\n"
+        "def second_child():\n"
+        "    c = 3\n"
+        "    d = c + 1\n"
+        "    return d\n"
+        "\n"
+        "\n"
+        'if __name__ == "__main__":\n'
+        '    which = first_child if sys.argv[1] == "first" else second_child\n'
+        "    sys.exit(0 if which() else 1)\n",
+        encoding="utf-8",
+    )
+    (root / "tests" / "test_probe.py").write_text(
+        "import subprocess\n"
+        "import sys\n"
+        "from pathlib import Path\n"
+        "\n"
+        'MOD = Path(__file__).resolve().parents[1] / "pkg" / "mod.py"\n'
+        "\n"
+        "\n"
+        "def _run(which, cwd):\n"
+        "    return subprocess.run(\n"
+        "        [sys.executable, str(MOD), which], cwd=cwd, check=False\n"
+        "    ).returncode\n"
+        "\n"
+        "\n"
+        "def test_the_first_child_runs(tmp_path):\n"
+        '    assert _run("first", tmp_path) == 0\n'
+        "\n"
+        "\n"
+        "def test_the_second_child_runs(tmp_path):\n"
+        '    assert _run("second", tmp_path) == 0\n',
+        encoding="utf-8",
+    )
+    return ccd.Tree(name, name, "pkg", ("tests",))
+
+
+def _probe_rate(report: Path) -> float:
+    """`pkg/mod.py`'s line rate out of a report this run produced, or 0.0 if absent."""
+    rates = ccd.read_report(report, root=report.parent.parent)
+    return rates.get("pkg/mod.py", 0.0)
+
+
+@pytest.mark.unit
+class TestASubprocessOfAMeasuredSuiteCannotRunUninstrumented:
+    """The capability, measured end to end: a child process's coverage is collected.
+
+    Not "the environment mentions `COVERAGE_PROCESS_START`". A check written that way
+    passes on any spelling that sets the variable, including ones that collect nothing --
+    pointing it at a configuration file without `parallel`, or leaving the data file
+    relative so each child writes into a directory that is then deleted. So this runs a
+    real pytest over a real probe package through `run`, the production function, and
+    reads the resulting report. The statements it looks at execute only in a child process
+    started with a working directory of its own, so the number is 0.00% unless collection
+    genuinely works.
+
+    Both directions are asserted, because only the pair is evidence: with the wiring the
+    probe reads 100.00%, and with either variable withheld it reads 0.00%. The second half
+    is what would fail if the assertion had been written against something the mechanism
+    does not need.
+
+    These run a nested pytest, which the rest of this module deliberately does not: what
+    is asserted here is a property of the environment a child process inherits, and no
+    command line can show it.
+    """
+
+    def test_the_probe_is_fully_covered_through_the_production_wiring(
+        self, monkeypatch, tmp_path
+    ):
+        tree = _probe_tree(tmp_path)
+        monkeypatch.setattr(ccd, "REPO_ROOT", tmp_path)
+        monkeypatch.setattr(cov_all, "REPO_ROOT", tmp_path)
+        name, code, total = cov_all.run(tree, sys.executable, parallel=False)
+        assert (name, code) == ("probe", 0)
+        assert total is not None
+        assert _probe_rate(ccd.report_path(tree)) == 100.0
+
+    @pytest.mark.parametrize(
+        "withheld", ["COVERAGE_PROCESS_START", "COVERAGE_FILE", "both"]
+    )
+    def test_withholding_either_variable_loses_the_subprocess_entirely(
+        self, monkeypatch, tmp_path, withheld
+    ):
+        """Each variable on its own is necessary, so neither is decoration.
+
+        `COVERAGE_PROCESS_START` decides whether the child measures anything;
+        `COVERAGE_FILE` decides whether what it measured is in a place the parent's
+        `combine()` will find. Withholding either gives the same 0.00%, which is why a
+        test that only set one of them would have looked like it worked.
+        """
+        drop = (
+            ["COVERAGE_PROCESS_START", "COVERAGE_FILE"]
+            if withheld == "both"
+            else [withheld]
+        )
+
+        complete = cov_all.subprocess_coverage_env
+
+        def crippled(data_dir, source_dir, env=None):
+            out = complete(data_dir, source_dir, env)
+            for key in drop:
+                out.pop(key, None)
+            return out
+
+        tree = _probe_tree(tmp_path)
+        monkeypatch.setattr(ccd, "REPO_ROOT", tmp_path)
+        monkeypatch.setattr(cov_all, "REPO_ROOT", tmp_path)
+        monkeypatch.setattr(cov_all, "subprocess_coverage_env", crippled)
+        name, code, _ = cov_all.run(tree, sys.executable, parallel=False)
+        assert (name, code) == ("probe", 0)
+        assert _probe_rate(ccd.report_path(tree)) == 0.0
+
+    def test_the_configuration_the_variable_names_makes_children_write_their_own_data(
+        self,
+    ):
+        """`parallel` is what keeps a child from overwriting the parent's data file.
+
+        `coverage.process_startup` builds its Coverage object from this file and nothing
+        else, so without `parallel` every child writes to the single path `COVERAGE_FILE`
+        names -- the one the parent is writing too. Asserted against `coverage`'s own
+        parser rather than against the file's text, so a rename of the option or a move to
+        another section is caught.
+        """
+        assert cov_all.SUBPROCESS_RC.is_file()
+        config = coverage.Coverage(config_file=str(cov_all.SUBPROCESS_RC)).config
+        assert config.parallel is True

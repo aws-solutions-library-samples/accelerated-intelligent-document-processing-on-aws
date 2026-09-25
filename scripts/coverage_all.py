@@ -13,6 +13,12 @@ Each tree's report lands at ``<tree>/test-reports/coverage-<name>.xml``, which i
 ``coverage-<name>-results.xml``. The ratchet compares a report only when that record says
 the run finished: a run whose xdist workers errored writes a well-formed coverage report
 whose numbers are an artefact, and nothing inside the report itself says so.
+
+Several of the files these suites cover are executed as **subprocesses** — a gate script
+run the way a developer runs it, a git hook run the way git runs it — and the coverage of
+a subprocess is collected only if that process starts coverage for itself.
+:func:`subprocess_coverage_env` is the whole of that wiring, and every pytest invocation
+this script makes goes through it.
 """
 
 from __future__ import annotations
@@ -35,6 +41,60 @@ sys.modules["check_coverage_debt"] = _ccd
 _spec.loader.exec_module(_ccd)
 
 
+#: The configuration a subprocess started by a measured suite runs coverage under.
+#:
+#: Named so that nothing discovers it implicitly: `coverage` and `pytest-cov` search for
+#: `.coveragerc`, `setup.cfg`, `tox.ini` and `pyproject.toml`, and this repository has
+#: coverage settings in none of them — every option in force is one a command line spells
+#: out. Keeping that true means this file is reached only through the environment variable
+#: below.
+SUBPROCESS_RC = REPO_ROOT / "scripts" / "coverage_subprocess.rc"
+
+
+def subprocess_coverage_env(
+    data_dir: Path, source_dir: Path, env: dict[str, str] | None = None
+) -> dict[str, str]:
+    """The environment a pytest invocation needs for its subprocesses to be measured.
+
+    A suite that runs the code it covers as a **subprocess** — `scripts/hooks/` run the
+    way git runs them, a gate script run the way a developer runs it — measures nothing
+    about that code unless the subprocess starts coverage itself. What starts it is the
+    `.pth` file `coverage` installs into `site-packages`: it runs
+    `coverage.process_startup()` in every Python process, and that call returns
+    immediately unless ``COVERAGE_PROCESS_START`` names a configuration file. Nothing
+    else supplies it. `pytest-cov` used to, through a bootstrap of its own
+    (``COV_CORE_SOURCE``), and no longer ships one — so the collection is this
+    repository's to arrange, at the point where it asks for coverage.
+
+    Three variables are load-bearing and they fail differently:
+
+    * ``COVERAGE_PROCESS_START`` decides *whether* the subprocess measures anything.
+    * ``COVERAGE_FILE`` decides whether what it measured is *found*. The data file is
+      resolved against the writing process's own working directory, so a subprocess
+      started with ``cwd=tmp_path`` writes its data into a directory that is deleted
+      before anything combines it. Pointing both the parent and its children at one
+      absolute path is what makes the location independent of where a test chose to run.
+    * ``COVERAGE_SUBPROCESS_SOURCE`` decides *what* it measures, and the tree's own source
+      directory is the answer. `process_startup` builds its Coverage from the rc file
+      alone, so a child given no source measures every file it imports, the parent's
+      `combine()` merges all of it, and the report grows from one tree to whatever the
+      children touched: measured on `scripts`, 1,189 files and a whole-tree total of
+      31.52% instead of 51 files and 82%. A ratchet cannot use that, and `--write` would
+      record every one of those files. The path has to be **absolute** for the same reason
+      the data file does.
+
+    Measured on a probe whose only execution is a subprocess with a `cwd` of its own:
+    0.00% with neither of the first two variables, 0.00% with ``COVERAGE_PROCESS_START``
+    alone, 100.00% with both. `scripts/tests/test_coverage_all.py` runs that probe against
+    this function rather than asserting that the variables are spelled a particular way.
+    """
+    out = dict(os.environ if env is None else env)
+    out["COVERAGE_PROCESS_START"] = str(SUBPROCESS_RC)
+    out["COVERAGE_FILE"] = str(Path(data_dir).resolve() / ".coverage")
+    out["COVERAGE_SUBPROCESS_SOURCE"] = str(Path(source_dir).resolve())
+    return out
+
+
 def run(tree, python: str, parallel: bool) -> tuple[str, int, float | None]:
     report = _ccd.report_path(tree)
     report.parent.mkdir(parents=True, exist_ok=True)
@@ -54,7 +114,12 @@ def run(tree, python: str, parallel: bool) -> tuple[str, int, float | None]:
         f"--junitxml={record}",
         *tree.args,
     ]
-    result = subprocess.run(cmd, cwd=REPO_ROOT / tree.cwd)
+    cwd = REPO_ROOT / tree.cwd
+    # What the children measure has to be the same tree the parent measures, spelled
+    # absolutely: `--cov=<tree.cov>` is resolved by pytest-cov against this cwd, and a
+    # child does not have this cwd.
+    source = cwd if tree.cov == "." else cwd / tree.cov
+    result = subprocess.run(cmd, cwd=cwd, env=subprocess_coverage_env(cwd, source))
     total = None
     if report.is_file():
         try:
