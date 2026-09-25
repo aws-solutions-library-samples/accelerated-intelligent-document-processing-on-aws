@@ -105,6 +105,18 @@ whole-package run (`make test-cicd -C lib/idp_common_pkg`) writes to
 `scripts/coverage_all.py` writes. Both producers also write the JUnit run record beside
 the report, which is what makes the second refusal above possible.
 
+⚠️ **The two producers do not measure subprocesses alike.** Coverage of code a suite runs
+as a **child process** is collected only where `COVERAGE_PROCESS_START` and an absolute
+`COVERAGE_FILE` are set, and `scripts/coverage_all.py` is the only producer that sets them
+(`coverage_all.subprocess_coverage_env`). So for `idp_common` — the one tree with two
+possible reports — a figure from the legacy path can be lower than the same tree's figure
+from `coverage_all.py`, for a file whose tests drive it as a child process. Which way that
+matters depends on which producer the record came from, and the record does not say: a
+baseline taken from the legacy path is only ever undershot by it, while one taken from
+`coverage_all.py` and then compared against a legacy report would name falls nobody caused.
+So re-recording `idp_common` from `coverage_all.py` goes together with giving the legacy
+recipe the same environment.
+
 A submodule-scoped `--cov` under `pytest -n auto` used to produce spurious failures on
 this package as well, because `idp_common/__init__.py` cached lazily-imported submodules
 in a package-private dict and a patch could land on a different module object than the
@@ -147,16 +159,20 @@ class Tree(NamedTuple):
     args: tuple[str, ...] = ()
     #: Measure this tree WITHOUT `-n auto`.
     #:
-    #: Not a performance note -- a correctness one. A suite that invokes the code under
-    #: test as a **subprocess** has its coverage under-collected by xdist workers, and
-    #: the symptom is a large, confident-looking fall in a file whose own suite is
-    #: entirely green. Measured on `scripts`: `scripts/hooks/check_commit_text.py` reads
-    #: 65.15% under `-n auto` and 98% run alone, and `check_shared_branch.py` 85.75%
-    #: against 95%. Recording the parallel numbers would have replaced two real 95%+
-    #: baselines with figures 10 and 33 points lower, which is worse than having no
-    #: ratchet on those files at all: it pre-approves a genuine regression down to the
-    #: recorded floor. The whole-tree total moves too (81.93% parallel, 82.22% serial),
-    #: so it is not confined to the files that spawn processes.
+    #: **What under-collects the coverage of a suite that drives the code under test as a
+    #: subprocess is the absence of subprocess instrumentation, not the worker count.**
+    #: Measured on `scripts/hooks/check_commit_text.py`, one test file, `--cov=scripts`,
+    #: 80 passed in every cell: 65.15% serial and 65.15% under `-n 4` without
+    #: ``COVERAGE_PROCESS_START``; 98.48% serial and 98.48% under `-n 4` with it. xdist
+    #: moves that figure by nothing at all and the instrument moves it by 33 points, so
+    #: the flag is not what protects those files -- `scripts/coverage_all.py` is, through
+    #: :func:`coverage_all.subprocess_coverage_env`.
+    #:
+    #: What this flag is for, then, is cost and caution: it keeps a tree on the
+    #: measurement conditions its recorded baseline was taken under. `scripts` stays
+    #: serial because its recorded figures come from a serial run and whether the
+    #: whole-tree total differs under `-n auto` has not been measured since subprocess
+    #: collection was restored. Flipping it is a decision for whoever measures both.
     serial: bool = False
 
 
@@ -180,10 +196,10 @@ TREES: tuple[Tree, ...] = (
             "scripts/security/tests",
             "scripts/srt/tests",
         ),
-        # `scripts/tests/test_check_commit_text.py` and `test_check_shared_branch.py`
-        # run the hooks they cover as subprocesses, which xdist under-collects. See
-        # `Tree.serial`. Costs ~19 minutes instead of ~20; the parallel run was not
-        # meaningfully faster here anyway, because one root cannot use every worker.
+        # Measured serially, which is what its recorded figures are. The parallel run
+        # is not meaningfully faster on this tree anyway -- one root cannot use every
+        # worker -- and the coverage of the hooks its suites run as subprocesses is
+        # unaffected by the worker count either way. See `Tree.serial`.
         serial=True,
     ),
     Tree("idp_sdk", "lib/idp_sdk", "idp_sdk", ("-m", "not integration")),
