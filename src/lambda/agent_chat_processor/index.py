@@ -12,7 +12,6 @@ import asyncio
 import json
 import logging
 import os
-import re
 import time
 import uuid
 from datetime import datetime
@@ -252,21 +251,128 @@ def set_sink(sink) -> None:
     _active_sink = sink
 
 
-def clean_content_for_display(content):
+_THINKING_OPEN = "<thinking>"
+_THINKING_CLOSE = "</thinking>"
+
+
+def _longest_partial_tag_suffix(text, tag):
     """
-    Remove thinking tags from content for display.
-    
-    Agents may use <thinking>...</thinking> tags for internal reasoning.
-    This function removes those tags so only the final response is shown to users.
-    
-    Args:
-        content: The raw content from the agent
-        
-    Returns:
-        Cleaned content without thinking tags
+    Length of the longest proper prefix of ``tag`` that ``text`` ends with.
+
+    This is how many trailing characters cannot yet be classified: they may turn
+    out to be the front of a tag that the next chunk completes. Zero means the
+    whole of ``text`` is decided.
     """
-    cleaned = re.sub(r'<thinking>.*?</thinking>', '', content, flags=re.DOTALL)
-    return cleaned.strip()
+    for length in range(min(len(tag) - 1, len(text)), 0, -1):
+        if text.endswith(tag[:length]):
+            return length
+    return 0
+
+
+class ThinkingFilter:
+    """
+    Remove ``<thinking>...</thinking>`` from a stream that arrives in pieces.
+
+    A chunk boundary can fall anywhere — a ``{"data": ...}`` event carries one
+    Bedrock ``contentBlockDelta`` verbatim and unbuffered, so the split point is
+    chosen by the service and can land in the middle of either tag. Deciding what
+    to show by re-running a regex over the accumulated buffer cannot cope with
+    that: with no closing tag in the buffer yet the block matches nothing, so the
+    reasoning is streamed to the browser, and when the closing tag finally arrives
+    the cleaned text is *shorter* than the character count already emitted, so the
+    answer that follows is dropped or sent from the middle.
+
+    So this holds a boundary instead of re-deriving one. Text is released only
+    once it is known to sit outside a block, which means holding back any trailing
+    run of characters that could still be the front of a tag. Whatever is released
+    is final: the emitted text only ever grows, so the ``assistant_stream`` deltas
+    the UI *appends* stay a correct prefix of the answer at every moment, and there
+    is no cursor into a buffer that shrinks underneath it. The held state is
+    bounded at ``len(tag) - 1`` characters.
+
+    An instance is **single-use**: ``close`` drains what is held but does not
+    return the instance to its opening state, so ``stream_agent_response`` builds
+    one per response rather than reusing one.
+    """
+
+    def __init__(self):
+        self._held = ""
+        self._pending_space = ""
+        self._inside = False
+        self._started = False
+
+    def feed(self, chunk):
+        """Add a streamed chunk and return the text that is now safe to emit."""
+        self._held += chunk
+        released = []
+
+        while True:
+            if self._inside:
+                end = self._held.find(_THINKING_CLOSE)
+                if end != -1:
+                    self._held = self._held[end + len(_THINKING_CLOSE):]
+                    self._inside = False
+                    continue
+                # Still inside the block: this is reasoning and is discarded, bar
+                # any tail that could be the start of the closing tag.
+                keep = _longest_partial_tag_suffix(self._held, _THINKING_CLOSE)
+                self._held = self._held[len(self._held) - keep:] if keep else ""
+                break
+
+            start = self._held.find(_THINKING_OPEN)
+            if start != -1:
+                released.append(self._held[:start])
+                self._held = self._held[start + len(_THINKING_OPEN):]
+                self._inside = True
+                continue
+            keep = _longest_partial_tag_suffix(self._held, _THINKING_OPEN)
+            if keep:
+                released.append(self._held[:len(self._held) - keep])
+                self._held = self._held[len(self._held) - keep:]
+            else:
+                released.append(self._held)
+                self._held = ""
+            break
+
+        return self._present("".join(released))
+
+    def close(self):
+        """
+        Return whatever is still held and is genuinely text, once per response.
+
+        A response that ends mid-tag leaves a few held characters that no chunk
+        will ever complete; they are ordinary text and are released, because
+        silently dropping the end of an answer is the same class of failure as
+        dropping the start of one. A response that ends inside an unterminated
+        block leaves reasoning, which is discarded — an agent that stops
+        mid-thought has no answer to show, and showing the thought is the defect
+        this class exists to prevent.
+        """
+        tail = "" if self._inside else self._held
+        self._held = ""
+        return self._present(tail)
+
+    def _present(self, text):
+        """
+        Apply the whitespace trimming the previous whole-buffer ``.strip()`` gave.
+
+        Leading whitespace is dropped until the first real output. Trailing
+        whitespace is *deferred* rather than dropped, because more text may follow
+        it and the space between two words belongs on screen — so it is emitted in
+        front of whatever comes next, and a run still deferred when the stream ends
+        is never emitted. That is what the old whole-buffer ``.strip()`` amounted
+        to, and keeping it is what makes this a no-op for every response that
+        contains no block at all.
+        """
+        text = self._pending_space + text
+        self._pending_space = ""
+        if text and not self._started:
+            text = text.lstrip()
+        visible = text.rstrip()
+        self._pending_space = text[len(visible):]
+        if visible:
+            self._started = True
+        return visible
 
 
 async def publish_stream_update(
@@ -341,7 +447,9 @@ async def stream_agent_response(appsync_client, orchestrator, prompt, session_id
         The final displayed text (without thinking tags)
     """
     try:
-        full_text_buffer = ""
+        # One filter per response: it carries a boundary through the whole stream
+        # and `close` does not reset it (see ThinkingFilter).
+        thinking = ThinkingFilter()
         displayed_text = ""
         message_id = str(uuid.uuid4())
         current_subagent = None
@@ -350,7 +458,28 @@ async def stream_agent_response(appsync_client, orchestrator, prompt, session_id
         sent_tool_use_ids = set()  # Track which nested tool use IDs we've already announced
         tool_input_buffers = {}  # Track input text sent for each tool use ID
         skip_content = False  # Flag to skip content containing JSON markers
-        
+
+        async def release_held_text():
+            """
+            Emit whatever the filter withheld, once no further chunk can arrive.
+
+            Sent as an ``assistant_stream`` delta rather than folded into the final
+            message only, because the UI appends those deltas and a stream that
+            ends without a ``result`` event has no final message to correct them.
+            """
+            nonlocal displayed_text
+            tail = thinking.close()
+            if tail:
+                displayed_text += tail
+                await publish_stream_update(
+                    appsync_client,
+                    session_id,
+                    tail,
+                    "assistant_stream",
+                    message_id,
+                    True
+                )
+
         logger.info(f"Starting to stream response for session {session_id}")
         
         # Stream the agent's response asynchronously
@@ -440,17 +569,16 @@ async def stream_agent_response(appsync_client, orchestrator, prompt, session_id
             if "data" in event:
                 # Handle streaming chunk
                 chunk_text = event["data"]
-                full_text_buffer += chunk_text
-                
-                # Clean the content (remove thinking tags)
-                clean_text = clean_content_for_display(full_text_buffer)
-            
-                # Only send new text that hasn't been displayed yet
-                if len(clean_text) > len(displayed_text):
-                    new_text = clean_text[len(displayed_text):]
-                    displayed_text = clean_text
-                    
-                    # Publish the chunk to AppSync
+
+                # Text the filter releases is outside every thinking block and is
+                # final, so it can be appended and sent as a delta. There is no
+                # cursor into a buffer here: nothing already sent is ever revised.
+                new_text = thinking.feed(chunk_text)
+
+                if new_text:
+                    displayed_text += new_text
+
+                    # Publish the chunk to the streaming sink
                     await publish_stream_update(
                         appsync_client,
                         session_id, 
@@ -820,10 +948,11 @@ async def stream_agent_response(appsync_client, orchestrator, prompt, session_id
             
             elif "result" in event:
                 # Handle final response
-                
-                if len(displayed_text) < len(full_text_buffer):
-                    displayed_text = clean_content_for_display(full_text_buffer)
-                
+
+                # Whatever the filter is still withholding is answer text no
+                # further chunk will complete, so release it before the final.
+                await release_held_text()
+
                 # Publish the final response
                 await publish_stream_update(
                     appsync_client,
@@ -836,9 +965,17 @@ async def stream_agent_response(appsync_client, orchestrator, prompt, session_id
                 
                 logger.info(f"Completed streaming for session {session_id}")
                 break
-        
+
+        # A stream can end without a "result" event -- the force_stop branch above
+        # `continue`s, so the generator can simply run out. `_persist_chat_turn`
+        # writes this return value to the chat history table, so the held tail has
+        # to be released here too or the stored answer is a few characters short.
+        # `close` is idempotent for the value it returns, so the normal path
+        # reaching this line after the branch above gets "".
+        await release_held_text()
+
         return displayed_text
-        
+
     except (botocore.exceptions.ClientError, botocore.exceptions.EventStreamError) as e:
         # Handle Bedrock-specific errors (raised after boto3 Config retries are exhausted)
         logger.error(f"Bedrock error in stream_agent_response: {e}")
