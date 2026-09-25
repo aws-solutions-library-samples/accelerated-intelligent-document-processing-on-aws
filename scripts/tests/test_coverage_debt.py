@@ -1748,20 +1748,38 @@ class TestRequireAllTreesIsDerivedFromTheRegistry:
 #: and `types` can each narrow it and enumerating the ways is the denylist mistake again.
 GITHUB_WORKFLOW_TRIGGER = {"pull_request": {"branches": ["**"]}}
 
-#: Structural keys of the GitHub job that holds the gates, pinned.
+#: The GitHub gate job, **everything except its steps**, pinned as one mapping.
 #:
-#: Each decides whether the job runs at all and none is about a step: `needs` on a job that
-#: is itself skipped, an empty `strategy` matrix, and a `runs-on` label no runner has were
-#: each measured to leave every other check here green while the job never produced a red
-#: mark. `timeout-minutes` is included because a job killed by its own timeout is a
-#: different outcome from a gate finding something.
-GITHUB_GATE_JOB_STRUCTURE = {
+#: Pinned wholesale rather than key by key, because naming the keys that matter is the
+#: enumerate-today's-cases mistake a third time and the space is not enumerable. Five ways
+#: past a key-by-key pin were measured, each leaving every step present and correct in a job
+#: that produces no red mark: `needs:` on a job that is itself skipped, an empty `strategy`
+#: matrix, a `runs-on` label no runner has, and — one scope from the keys that were pinned —
+#: `defaults: run: shell:` naming a valid custom shell that swallows every step's status.
+#: `steps` is excluded because it legitimately churns and is asserted in detail elsewhere.
+GITHUB_GATE_JOB = {
+    "name": "Lint, Type Check, and Test",
     "runs-on": "ubuntu-latest",
-    "needs": None,
-    "strategy": None,
-    "if": None,
-    "continue-on-error": None,
     "timeout-minutes": 120,
+    "permissions": {"contents": "read", "issues": "read", "checks": "write"},
+    "container": {"image": "python:3.13-bookworm"},
+}
+
+#: GitLab's top-level `workflow:`, pinned. It is the counterpart of GitHub's `on:`.
+#:
+#: `workflow: rules: - when: never`, or a never-true rule here, disables **every job in the
+#: pipeline** in three lines — measured, with every other check green. Pinning the job's own
+#: `rules` cannot see it, because it is a scope above.
+GITLAB_PIPELINE_WORKFLOW = {
+    "rules": [
+        {"if": '$CI_PIPELINE_SOURCE == "merge_request_event"'},
+        {"if": "$CI_COMMIT_BRANCH && $CI_OPEN_MERGE_REQUESTS", "when": "never"},
+        {
+            "if": '$CI_COMMIT_BRANCH == "develop"',
+            "auto_cancel": {"on_new_commit": "none"},
+        },
+        {"if": "$CI_COMMIT_BRANCH"},
+    ]
 }
 
 #: `rules:` of the GitLab job that holds them, pinned, for that reason and one more.
@@ -1986,6 +2004,12 @@ class TestTheCIStepsAreLiveAndNotMerelyPresent:
     #: be lying around. That matters because the alternative -- run the target and hope the
     #: ratchet refuses -- depends on the local tree having no reports, which is true in CI
     #: and false on a developer's machine after `make coverage-all`.
+    #: The gated targets, and the script each one must be running for the stub to bite.
+    GATED_TARGET_SCRIPTS = {
+        "check-coverage-debt-cicd": "scripts/check_coverage_debt.py",
+        "coverage-all-cicd": "scripts/coverage_all.py",
+    }
+
     FORCED_FAILURE = {
         "check-coverage-debt-cicd": (
             "CHECK_COVERAGE_DEBT_ARGS=--require-tree=a_tree_that_does_not_exist"
@@ -2031,6 +2055,53 @@ class TestTheCIStepsAreLiveAndNotMerelyPresent:
             f"fails — so this gate would report nothing while both CIs stayed green."
         )
 
+    @pytest.mark.parametrize("target", sorted(GATED_TARGET_SCRIPTS))
+    def test_a_failing_command_fails_the_target_on_CIs_own_invocation(
+        self, target, tmp_path
+    ):
+        """Make the command fail without changing a single thing make sees.
+
+        This is the assertion that covers **both** targets, and the reason it can is that it
+        moves the forced failure out of make's arguments entirely: a stub `python3` earlier
+        on `PATH` exits 2, so every make variable is exactly what CI passes and there is
+        nothing on the make side to branch on.
+
+        That property is what the two weaker forms lack. A forced-failure *argument* is
+        observable and a recipe can key off it — measured on both recipes, in opposite
+        polarities: ``|| [ -z "$(CHECK_COVERAGE_DEBT_ARGS)" ]`` on the ratchet and
+        ``|| [ "$(COVERAGE_CICD_SKIP)" = "--skip idp_common" ]`` on the producer each failed
+        for the probe and **succeeded for CI**, with every other check green. Comparing exit
+        statuses fixes that for the ratchet but cannot reach the producer, whose real command
+        measures eight trees and takes minutes.
+
+        Under the stub both targets refuse in about 0.01 s, so this is the cheap form as well
+        as the strong one, and it catches every swallow: ``-``/``@-`` prefixes, ``|| true``,
+        ``.IGNORE:``, ``MAKEFLAGS += -i``, ``.SHELLFLAGS``, a trailing pipe, and both
+        conditional clauses above. The residual, stated rather than hidden: a recipe could
+        branch on ``$PATH``. That is less plausible than branching on a variable the Makefile
+        defines itself, and the exit-status comparison below carries the same residual.
+        """
+        stub = tmp_path / "bin"
+        stub.mkdir()
+        fake = stub / "python3"
+        fake.write_text("#!/bin/sh\nexit 2\n", encoding="utf-8")
+        fake.chmod(0o755)
+        out = subprocess.run(
+            ["make", "--no-print-directory", target],
+            cwd=REPO_ROOT,
+            capture_output=True,
+            text=True,
+            env={**os.environ, "PATH": f"{stub}:{os.environ['PATH']}"},
+        )
+        assert out.returncode != 0, (
+            f"`make {target}` exited 0 although the interpreter running its command exited "
+            f"2, so the target does not carry its command's status and this gate reports "
+            f"and blocks nothing. A `-`/`@-` prefix, a trailing `|| true`, `.IGNORE:`, "
+            f"`MAKEFLAGS += -i`, `.SHELLFLAGS`, or a clause branching on one of the "
+            f"recipe's own variables are all ways to lose it.\n"
+            f"make said:\n{(out.stdout + out.stderr)[-500:]}"
+        )
+
     def test_the_ratchet_target_exits_exactly_as_its_command_does(self):
         """RUN the target and its command with **no override**, and require equal statuses.
 
@@ -2065,26 +2136,44 @@ class TestTheCIStepsAreLiveAndNotMerelyPresent:
             f"make said:\n{(through_make.stdout + through_make.stderr)[-500:]}"
         )
 
-    def test_the_gate_jobs_own_structure_is_what_was_recorded(self):
-        """The keys that decide whether the job runs at all, none of them about a step.
+    def test_the_gate_job_is_structurally_what_was_recorded(self):
+        """Everything about the job except its steps, compared as one mapping.
 
-        Three escapes sit here and none is exotic: `needs: [preflight]` where the preflight
-        job carries `if: false` skips this job entirely, and a job's own `if` is not its
-        dependencies'; an empty `strategy: matrix` produces zero instances; and a `runs-on:`
-        label no runner has means the job never starts, so its check shows pending and never
-        red. Enumerating those would be the denylist mistake a third time, so the structure
-        is pinned and any edit is a finding somebody reads.
+        Five escapes live in these keys and none is about a step: a dependency on a job that
+        is itself skipped, an empty matrix, a runner label nothing matches, and a `defaults:
+        run: shell:` naming a valid custom shell that returns 0 however the step fared. Each
+        left every other assertion here green. Adding those four names to a list would have
+        been the enumerate-today's-cases move for a third time, and the next unpinned key
+        would be the next finding — so the whole mapping is pinned and any structural change
+        is one diff somebody reads.
         """
-        job = self._github_jobs()["developer_tests"]
-        actual = {key: job.get(key) for key in GITHUB_GATE_JOB_STRUCTURE}
-        assert actual == GITHUB_GATE_JOB_STRUCTURE, (
-            "the job holding the coverage gates has structural keys other than what was "
-            "recorded. These decide whether it runs at all — a `needs:` on a job that is "
-            "itself skipped, an empty matrix, or a `runs-on:` label no runner has each "
-            "leave every step present and correct in a job that never produces a red "
-            f"mark.\n  recorded: {GITHUB_GATE_JOB_STRUCTURE}\n  now:      {actual}\n"
-            "If deliberate, confirm the job still runs and goes red on a pull request, "
-            "then update GITHUB_GATE_JOB_STRUCTURE."
+        job = dict(self._github_jobs()["developer_tests"])
+        job.pop("steps", None)
+        assert job == GITHUB_GATE_JOB, (
+            "the job holding the coverage gates is structurally different from what was "
+            "recorded. Keys here decide whether it runs and whether a red step reaches the "
+            "merge decision at all.\n"
+            f"  recorded: {GITHUB_GATE_JOB}\n  now:      {job}\n"
+            "If the change is deliberate, confirm the job still runs AND still goes red on "
+            "a pull request, then update GITHUB_GATE_JOB."
+        )
+
+    def test_the_gitlab_pipeline_itself_still_runs(self):
+        """The scope above every job, and GitLab's counterpart of GitHub's `on:`.
+
+        `workflow: rules: - when: never` — or a rule that is merely never true — disables
+        every job in the pipeline, so every gate in this repository stops running, in three
+        lines that look like ordinary pipeline hygiene. Pinning a job's own `rules` cannot
+        see it.
+        """
+        doc = yaml.safe_load((REPO_ROOT / ".gitlab-ci.yml").read_text(encoding="utf-8"))
+        assert doc.get("workflow") == GITLAB_PIPELINE_WORKFLOW, (
+            "`.gitlab-ci.yml`'s top-level `workflow:` differs from what was recorded. This "
+            "governs whether the pipeline runs at all, so a change here can silence every "
+            "gate in the repository.\n"
+            f"  recorded: {GITLAB_PIPELINE_WORKFLOW}\n  now:      {doc.get('workflow')}\n"
+            "If deliberate, confirm a merge request still starts a pipeline, then update "
+            "GITLAB_PIPELINE_WORKFLOW."
         )
 
     def test_the_forced_failure_really_is_the_command_failing(self):
