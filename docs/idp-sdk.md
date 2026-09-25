@@ -1488,7 +1488,15 @@ Validate a configuration file against system defaults.
 - `show_merged` (bool, optional): Include merged configuration in result (default: False)
 - `strict` (bool, optional): Report deprecated/unknown fields as errors (default: False)
 
-**Returns:** `ConfigValidationResult` with `valid`, `errors`, `warnings`, `deprecated_fields`, `unknown_fields`, and optional `merged_config`
+**Returns:** `ConfigValidationResult` with `valid`, `validation_available`, `errors`, `warnings`, `deprecated_fields`, `unknown_fields`, and optional `merged_config`
+
+`validation_available` is False when this installation could not run the checks at
+all — `idp_common`, which does the checking, is not importable — and the missing
+component is named in `errors`. The method returns that as a result rather than
+raising, so a caller in a minimal environment still gets an answer; `valid` is False
+in that case too, so code that gates only on `valid` keeps refusing. Branch on
+`validation_available` when you need to tell a configuration that was checked and
+found wrong from an installation that cannot check one.
 
 ```python
 result = client.config.validate(
