@@ -1376,6 +1376,68 @@ def test_auto_detect_refuses_ground_truth_and_the_class_hint(
 
 
 @pytest.mark.unit
+def test_an_empty_class_hint_is_refused_too(runner, sdk, tmp_path):
+    """`--class-hint ""` is an option the user typed, so it is not quietly dropped.
+
+    The guard tests `class_hint is not None` rather than its truthiness. An empty
+    string is falsy, so a truthiness test would let this through and drop the hint —
+    the same accepted-then-ignored shape in miniature, which is what this issue is
+    about. An absent option arrives as `None`.
+    """
+    from idp_cli.cli import discover
+
+    result = runner.invoke(
+        discover,
+        ["-d", _doc(tmp_path, "package.pdf"), "--auto-detect", "--class-hint", ""],
+    )
+
+    assert result.exit_code == 1, result.output
+    assert "--class-hint" in result.output
+    sdk.assert_never_constructed()
+
+
+@pytest.mark.unit
+def test_the_rerun_hint_names_every_document_and_every_ground_truth(
+    runner, sdk, tmp_path
+):
+    """The suggested command must not narrow the work the user asked for.
+
+    The non-auto-detect form the hint suggests accepts several documents and several
+    ground truth files, so a hint naming only the first would send the user to a run
+    covering one of them — this issue's own shape, in the remedy for it. Two of each
+    are given, and both of each must appear.
+    """
+    from idp_cli.cli import discover
+
+    doc_a = _doc(tmp_path, "alpha.pdf")
+    doc_b = _doc(tmp_path, "beta.pdf")
+    gt_a = tmp_path / "alpha.json"
+    gt_a.write_text("{}", encoding="utf-8")
+    gt_b = tmp_path / "beta.json"
+    gt_b.write_text("{}", encoding="utf-8")
+
+    result = runner.invoke(
+        discover,
+        [
+            "-d",
+            doc_a,
+            "-d",
+            doc_b,
+            "-g",
+            str(gt_a),
+            "-g",
+            str(gt_b),
+            "--auto-detect",
+        ],
+    )
+
+    assert result.exit_code == 1, result.output
+    for path in (doc_a, doc_b, str(gt_a), str(gt_b)):
+        assert Path(path).name in result.output, path
+    sdk.assert_never_constructed()
+
+
+@pytest.mark.unit
 def test_auto_detect_alone_is_unaffected_by_that_refusal(runner, sdk, tmp_path):
     """The guard is conditional on the two options, not on `--auto-detect`.
 
@@ -1660,6 +1722,54 @@ def test_a_page_label_with_no_ranges_at_all_falls_under_the_same_rule(
 
     assert result.exit_code == 1, result.output
     assert "1 --page-label(s) were given for 0 --page-range(s)" in result.output
+    # Without --auto-detect, adding the missing range is the correct remedy.
+    assert "Add the missing --page-range" in result.output
+    sdk.assert_never_constructed()
+
+
+@pytest.mark.unit
+def test_an_orphan_label_under_auto_detect_is_not_told_to_add_a_range(
+    runner, sdk, tmp_path
+):
+    """The remedy has to be one the next guard will not refuse.
+
+    `--auto-detect --page-label X` is caught by the label/range comparison, and
+    "add the missing --page-range" would send the user straight into the refusal of
+    `--auto-detect` together with `--page-range`. Two refusals for one mistake is
+    worse than one, so under `--auto-detect` the remedy is to drop the label.
+    """
+    from idp_cli.cli import discover
+
+    result = runner.invoke(
+        discover,
+        ["-d", _doc(tmp_path, "package.pdf"), "--auto-detect", "--page-label", "W2"],
+    )
+
+    assert result.exit_code == 1, result.output
+    assert "1 --page-label(s) were given for 0 --page-range(s)" in result.output
+    assert "--auto-detect names each section itself" in result.output
+    assert "Add the missing --page-range" not in result.output
+    sdk.assert_never_constructed()
+
+
+@pytest.mark.unit
+def test_an_empty_orphan_label_is_named_rather_than_printed_as_a_bare_bullet(
+    runner, sdk, tmp_path
+):
+    """An empty label is the hardest orphan to spot, so it must not render as `- `.
+
+    The listing exists so the user can see which label has no range. A whitespace or
+    empty label interpolated directly produces a bullet with nothing after it, which
+    identifies nothing — so it is named instead.
+    """
+    from idp_cli.cli import discover
+
+    result = runner.invoke(
+        discover, ["-d", _doc(tmp_path, "package.pdf"), "--page-label", "   "]
+    )
+
+    assert result.exit_code == 1, result.output
+    assert "(empty label)" in result.output
     sdk.assert_never_constructed()
 
 

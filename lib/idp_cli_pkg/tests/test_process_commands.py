@@ -425,7 +425,7 @@ class TestInputSourceDispatch:
 
     @pytest.mark.parametrize("command", PROCESS_COMMANDS)
     def test_the_config_option_is_refused_rather_than_silently_dropped(
-        self, runner, tmp_path, command, api_calls
+        self, runner, tmp_path, command
     ):
         """`--config` cannot be applied to a batch, so the batch is not submitted.
 
@@ -433,10 +433,17 @@ class TestInputSourceDispatch:
         takes a `config_path` and hands it to `BatchProcessor`, which assigns
         `self.config_path` and never reads it — so forwarding the value would leave
         the run under the stack's existing configuration exactly as before while
-        looking wired. The refusal is asserted on the client and on `api_calls`
-        rather than only on the message: "printed an error" and "submitted nothing"
-        are different claims, and the second is the one that matters when the
-        alternative was a paid run under the wrong configuration.
+        looking wired. The refusal is asserted on the client as well as on the
+        message: "printed an error" and "submitted nothing" are different claims, and
+        the second is the one that matters when the alternative was a paid run under
+        the wrong configuration.
+
+        The `api_calls` fixture is deliberately *not* used, although the other
+        refusals in this module do use it. `IDPClient` is patched here and the `--dir`
+        path builds no boto3 client of its own, so no mutation of the guard can put an
+        entry in that log: an `api_calls.operations() == []` assertion would hold
+        whether the guard existed or not, and apparent coverage is worse than none.
+        `mock_cls.called is False` is the assertion that carries the claim.
 
         Both spellings are covered because the option is declared separately on each
         command and both route to the same body.
@@ -470,7 +477,6 @@ class TestInputSourceDispatch:
         # Nothing was submitted and nothing was built, so nothing was paid for.
         assert client.batch.process.called is False
         assert mock_cls.called is False
-        assert api_calls.operations() == []
 
     def test_the_config_refusal_is_about_the_option_not_the_file(
         self, runner, tmp_path
@@ -483,7 +489,13 @@ class TestInputSourceDispatch:
         make that unmistakable the file written here is *not valid YAML*, while the
         message is the option refusal rather than anything about parsing. A future
         change that started honouring `--config` by opening the file would fail here
-        with a parse error instead, which is the signal wanted.
+        on one of these fragments, which is the signal wanted.
+
+        The fragments are chosen so that none of them can occur in a filesystem path:
+        an earlier version looked for `"yaml"` and stripped `"config.yaml"` from the
+        output first, which Rich can fold across a line break for a long enough
+        `tmp_path`, leaving `"yaml"` in the text and failing on the path rather than
+        on a parse error.
         """
         directory = tmp_path / "documents"
         directory.mkdir()
@@ -508,8 +520,49 @@ class TestInputSourceDispatch:
 
         assert result.exit_code == 1, result.output
         assert "--config is not applied to a batch submission" in result.output
-        for parser_noise in ("yaml", "YAML", "mapping values", "ScannerError"):
-            assert parser_noise not in result.output.replace("config.yaml", "")
+        for parser_noise in (
+            "mapping values",
+            "ScannerError",
+            "ParserError",
+            "while scanning",
+            "while parsing",
+            "expected ',' or",
+        ):
+            assert parser_noise not in result.output
+
+    def test_a_config_path_that_does_not_exist_reaches_the_refusal(
+        self, runner, tmp_path
+    ):
+        """The option is untyped, so a mistyped path is one round trip, not two.
+
+        With `type=click.Path(exists=True)` click would exit 2 on the path before the
+        refusal was reached, and the user would fix the typo only to be told the
+        option is not applied at all. Nothing opens the file, so its existence is
+        irrelevant to the answer.
+        """
+        directory = tmp_path / "documents"
+        directory.mkdir()
+        patcher, mock_cls, client = patched_client()
+        try:
+            result = runner.invoke(
+                cli,
+                [
+                    "process",
+                    "--stack-name",
+                    "my-stack",
+                    "--dir",
+                    str(directory),
+                    "--config",
+                    str(tmp_path / "typo.yaml"),
+                ],
+            )
+        finally:
+            patcher.stop()
+
+        assert result.exit_code == 1, result.output
+        assert "--config is not applied to a batch submission" in result.output
+        assert "does not exist" not in result.output
+        assert mock_cls.called is False
 
     def test_a_batch_without_the_config_option_still_submits(self, runner, tmp_path):
         """The refusal is conditional: the ordinary submission is untouched.

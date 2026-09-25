@@ -1930,8 +1930,11 @@ def _process_impl(
     help="Include subdirectories when scanning (default: recursive)",
 )
 @click.option(
+    # Deliberately untyped. `click.Path(exists=True)` would make a mistyped path
+    # exit 2 on the path before the refusal is reached, so the user would fix the
+    # typo only to be told the option is not applied at all — two round trips for
+    # one mistake. Nothing here opens the file, so its existence is irrelevant.
     "--config",
-    type=click.Path(exists=True),
     help=(
         "Not applied to a batch, and refused rather than ignored. Upload the file "
         "with 'config-upload' and process under it with --config-profile."
@@ -2170,8 +2173,11 @@ def reprocess(
     help="Include subdirectories when scanning (default: recursive)",
 )
 @click.option(
+    # Deliberately untyped. `click.Path(exists=True)` would make a mistyped path
+    # exit 2 on the path before the refusal is reached, so the user would fix the
+    # typo only to be told the option is not applied at all — two round trips for
+    # one mistake. Nothing here opens the file, so its existence is irrelevant.
     "--config",
-    type=click.Path(exists=True),
     help=(
         "Not applied to a batch, and refused rather than ignored. Upload the file "
         "with 'config-upload' and process under it with --config-profile."
@@ -5669,8 +5675,8 @@ def config_sync_bda(
     is_flag=True,
     help=(
         "Auto-detect document section boundaries using AI, then discover each "
-        "section. Cannot be combined with --page-range, -g or --class-hint, none of "
-        "which this mode applies."
+        "section. Cannot be combined with --page-range, --page-label, -g or "
+        "--class-hint, none of which this mode applies."
     ),
 )
 @click.option(
@@ -5789,7 +5795,10 @@ def discover(
         _unusable = []
         if ground_truth:
             _unusable.append("--ground-truth/-g")
-        if class_hint:
+        # `is not None` rather than truthiness: `--class-hint ""` is an option the user
+        # typed, and dropping it because it is empty is the same accepted-then-ignored
+        # shape in miniature. An absent option is `None`.
+        if class_hint is not None:
             _unusable.append("--class-hint")
         if _unusable:
             console.print(
@@ -5804,10 +5813,16 @@ def discover(
                 "[yellow]Drop --auto-detect to discover the whole document, where "
                 "both apply:[/yellow]"
             )
-            _rerun = f"idp-cli discover -d {escape(document[0])}"
-            if ground_truth:
-                _rerun += f" -g {escape(ground_truth[0])}"
-            if class_hint:
+            # Every document and every ground truth, not just the first: the
+            # non-auto-detect form the hint suggests accepts all of them, and a hint
+            # that quietly narrows the user's work to one file is its own small
+            # version of this issue.
+            _rerun = "idp-cli discover"
+            for _doc_path in document:
+                _rerun += f" -d {escape(_doc_path)}"
+            for _gt_path in ground_truth:
+                _rerun += f" -g {escape(_gt_path)}"
+            if class_hint is not None:
                 _rerun += f' --class-hint "{escape(class_hint)}"'
             console.print(f"   [cyan]{_rerun}[/cyan]")
             console.print(
@@ -5875,12 +5890,25 @@ def discover(
         )
         console.print("  Labels pair with ranges in order, so these have no range:")
         for _orphan in page_label[len(page_range) :]:
-            console.print(f"    - {escape(_orphan)}")
-        console.print(
-            "[yellow]Add the missing --page-range, or drop the extra label. A range "
-            "may be given without a label; a label may not be given without a "
-            "range.[/yellow]"
-        )
+            # An empty or whitespace label would otherwise render as a bare bullet,
+            # which names nothing and is the hardest case to spot on a command line.
+            console.print(
+                f"    - {escape(_orphan)}" if _orphan.strip() else "    - (empty label)"
+            )
+        if auto_detect:
+            # "Add the missing --page-range" is the wrong remedy here: the next guard
+            # up refuses --auto-detect together with --page-range, so following it
+            # would land the user on a second refusal.
+            console.print(
+                "[yellow]--auto-detect names each section itself, so drop the "
+                "label.[/yellow]"
+            )
+        else:
+            console.print(
+                "[yellow]Add the missing --page-range, or drop the extra label. A "
+                "range may be given without a label; a label may not be given "
+                "without a range.[/yellow]"
+            )
         sys.exit(1)
 
     try:
