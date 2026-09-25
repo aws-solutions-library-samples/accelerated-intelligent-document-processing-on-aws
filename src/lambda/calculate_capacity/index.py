@@ -587,7 +587,7 @@ def generate_adaptive_recommendations(
         # Infrastructure-based recommendations
         if latency_distribution.get("exceedsLimit"):
             recommendations.append(
-                "⏰ Processing time exceeds SLA - consider increasing timeouts or reducing document complexity"
+                "⏰ P99 processing time exceeds SLA - consider increasing timeouts or reducing document complexity"
             )
 
         # Quota analysis with specific actions
@@ -715,7 +715,9 @@ def get_simple_quotas():
     Requires valid quota configuration and API access - no fallback defaults.
     Raises ValueError if quotas cannot be retrieved.
     """
-    quotas = {"bedrock": None, "bedrock_models": {}, "bedrock_models_rpm": {}}
+    # Per-model mappings only. There is deliberately no account-wide scalar
+    # alongside them: see the closing comment of this function.
+    quotas = {"bedrock_models": {}, "bedrock_models_rpm": {}}
 
     quotas_client = boto3.client("service-quotas")
     region = boto3.Session().region_name
@@ -793,10 +795,18 @@ def get_simple_quotas():
 
     print(f"📊 Retrieved {retrieved_count} quotas from AWS Service Quotas API")
 
-    # Set bedrock quota from retrieved values
-    if quotas["bedrock_models"]:
-        quotas["bedrock"] = max(quotas["bedrock_models"].values())
-    else:
+    # No account-wide scalar is derived from these, and adding one back is the
+    # defect to avoid. A single number cannot say *which* model is the
+    # constraint, which is the only actionable thing about a set of per-model
+    # limits; and the collapse that used to stand here took the **maximum**, so
+    # every throughput figure the report published described the account's most
+    # generously provisioned model whatever models the plan's steps actually
+    # called. Both consumers take the per-model mappings instead:
+    # `calculate_latency_distribution` reduces them to the binding minimum at the
+    # point of use and names the model holding it, and
+    # `build_simple_quota_requirements` looks up each step's own model via
+    # `_lookup_quota`.
+    if not quotas["bedrock_models"]:
         raise ValueError("No Bedrock model quotas were retrieved. Check BEDROCK_MODEL_QUOTA_CODES configuration.")
 
     return quotas
@@ -869,6 +879,57 @@ def calculate_document_complexity_factor(document_configs):
         raise ValueError(f"Error calculating complexity factor: {e}")
 
 
+# Which `model_config` key supplies each Bedrock inference step's model, and which
+# steps each pattern runs through Bedrock. `build_simple_quota_requirements` builds
+# its per-step demands from the same two facts, and
+# `test_the_plan_model_set_agrees_with_the_step_level_quota_builder` derives its set
+# from that function's own output for all three patterns, so a step added there
+# without being added here is a red gate rather than a silent divergence.
+STEP_MODEL_CONFIG_KEYS = {
+    "Classification": "classification_model",
+    "Extraction": "extraction_model",
+    "Assessment": "assessment_model",
+    "Summarization": "summarization_model",
+    "OCR": "ocr_model",
+}
+PATTERN_BEDROCK_STEPS = {
+    "pattern-1": ("Summarization",),
+    "pattern-2": (
+        "Classification",
+        "Extraction",
+        "Assessment",
+        "Summarization",
+        "OCR",
+    ),
+    "pattern-3": ("Extraction", "Assessment", "Summarization", "OCR"),
+}
+
+
+def plan_model_ids(pattern, model_config):
+    """The Bedrock models a plan's steps actually call, in step order.
+
+    An empty result is a legitimate answer, not an error: a pattern-1 plan with no
+    summarization model configured calls Bedrock from no step, and OCR is blank
+    whenever Textract is doing the reading rather than a Bedrock model.
+    """
+    if not model_config:
+        return []
+    steps = PATTERN_BEDROCK_STEPS.get(pattern, PATTERN_BEDROCK_STEPS["pattern-3"])
+    model_ids = []
+    for step in steps:
+        model_id = model_config.get(STEP_MODEL_CONFIG_KEYS[step])
+        # OCR is stripped before the emptiness test because a whitespace-only
+        # value there means Textract, matching the step-level quota builder.
+        if step == "OCR":
+            model_id = model_id.strip() if model_id else model_id
+        # Duplicates are left in: two steps sharing a model is ordinary, the
+        # caller keys a dict on these so the reduction dedupes anyway, and a
+        # dedupe here would be a line no input could distinguish.
+        if model_id:
+            model_ids.append(model_id)
+    return model_ids
+
+
 def calculate_latency_distribution(
     docs_per_hour,
     pages_per_hour,
@@ -878,6 +939,7 @@ def calculate_latency_distribution(
     quotas,
     document_configs=None,
     latency_metrics_hours=None,
+    model_config=None,
 ):
     """
     Calculate latency distribution using simplified approach.
@@ -890,11 +952,68 @@ def calculate_latency_distribution(
     # max_allowed_latency is in seconds (from frontend), convert to minutes for internal calculations
     max_allowed_minutes = max_allowed_latency / 60
 
-    # Get processing capacity from quotas - REQUIRED, no defaults
-    bedrock_quota_tpm = quotas.get("bedrock")
+    # Get processing capacity from quotas - REQUIRED, no defaults.
+    #
+    # Reduced from the per-model TPM mapping here, at the point of use, rather
+    # than upstream, and reduced over **the models this plan's steps call** rather
+    # than over every model the stack can be configured with. Both halves of that
+    # matter and they fail differently.
+    #
+    # Taking the *binding* model — the minimum — is what makes the figure a limit:
+    # a document is throttled at the narrowest quota any of its steps touches, so
+    # the maximum this replaced overstated throughput by the ratio between the
+    # widest and narrowest quota in the mapping.
+    #
+    # Reducing over the plan's models rather than the whole mapping is what makes
+    # it a limit on *this* plan. `BEDROCK_MODEL_QUOTA_CODES` lists every model the
+    # stack supports, so a minimum over all of them would be bound by whichever
+    # model the account is least provisioned for whether or not the pipeline ever
+    # calls it — a mirror image of the old error, understating instead of
+    # overstating, and naming a model an operator has no reason to request an
+    # increase for. Resolution goes through `_lookup_quota` so the `:1m` context
+    # suffix falls back to its base model, as it does in the step-level builder.
+    #
+    # Two skips, each narrower than a refusal. A model whose quota is **zero** is
+    # left out rather than allowed to bind, which keeps this function's refusal
+    # behaviour exactly what it was — a zero never won the maximum this replaced,
+    # so an all-zero mapping was and remains the only one refused. A model the
+    # mapping does not hold at all is also skipped, because
+    # `build_simple_quota_requirements` raises on precisely that case a few steps
+    # later, naming the model and the variable to fix; refusing here as well would
+    # only replace that message with a less specific one. Either way the
+    # per-step table is where a single model's shortfall is reported.
+    #
+    # With no model configuration to narrow by — an older caller, or a plan that
+    # calls Bedrock from no step at all — the reduction falls back to the whole
+    # mapping, which is pessimistic rather than wrong and is the only answer
+    # available without knowing the steps.
+    all_tpm_by_model = quotas.get("bedrock_models") or {}
+    planned_model_ids = plan_model_ids(pattern, model_config)
+    planned_tpm_by_model = {
+        model_id: _lookup_quota(all_tpm_by_model, model_id)
+        for model_id in planned_model_ids
+    }
+    bedrock_quota_tpm_by_model = {
+        model_id: quota
+        for model_id, quota in (planned_tpm_by_model or all_tpm_by_model).items()
+        if quota
+    }
+    if not bedrock_quota_tpm_by_model and planned_tpm_by_model:
+        print(
+            f"⚠️ No usable TPM quota for the planned models {planned_model_ids} - "
+            "falling back to the account's full model mapping for the throughput estimate"
+        )
+        bedrock_quota_tpm_by_model = {
+            model_id: quota for model_id, quota in all_tpm_by_model.items() if quota
+        }
+    binding_tpm_model, bedrock_quota_tpm = min(
+        bedrock_quota_tpm_by_model.items(),
+        key=lambda entry: entry[1],
+        default=(None, None),
+    )
     if not bedrock_quota_tpm:
         raise ValueError("Bedrock TPM quota not available. Ensure BEDROCK_MODEL_QUOTA_CODES environment variable is configured and Service Quotas API is accessible.")
-    
+
     bedrock_quota_rpm = quotas.get("bedrock_models_rpm", {})
     if not bedrock_quota_rpm:
         raise ValueError("Bedrock RPM quotas not available. Ensure BEDROCK_MODEL_RPM_QUOTA_CODES environment variable is configured and Service Quotas API is accessible.")
@@ -928,7 +1047,7 @@ def calculate_latency_distribution(
     effective_capacity = min(token_limited_capacity, request_limited_capacity)
     
     print(f"🔍 Capacity Analysis:")
-    print(f"  - Token-limited capacity: {token_limited_capacity:.1f} docs/min ({bedrock_quota_tpm} TPM ÷ {avg_tokens_per_request:.0f} tokens)")
+    print(f"  - Token-limited capacity: {token_limited_capacity:.1f} docs/min ({bedrock_quota_tpm} TPM for {binding_tpm_model} ÷ {avg_tokens_per_request:.0f} tokens)")
     print(f"  - Request-limited capacity: {request_limited_capacity:.1f} docs/min")
     print(f"  - Effective capacity: {effective_capacity:.1f} docs/min")
     
@@ -1069,12 +1188,25 @@ def calculate_latency_distribution(
     p95_seconds = proc_p95 + queue_p95
     p99_seconds = proc_p99 + queue_p99
 
-    # Check if latency exceeds limits
-    exceeds_limit = total_latency_minutes > max_allowed_minutes
+    # Check if latency exceeds limits.
+    #
+    # Judged on the tail, not the median. An SLA is a promise about the documents
+    # that go slowly, and the median is insensitive to them by construction: a
+    # plan whose typical document lands inside the limit while one in a hundred
+    # takes ten times as long is not meeting it, and comparing the P50 reports
+    # that plan as compliant. P99 is also what the flag is already described as
+    # everywhere it is consumed — the warning banner in the UI reads "Your P99
+    # latency exceeds the configured SLA target", and the percentile chart marks
+    # each row against the SLA line independently.
+    #
+    # The median is still carried in the message, because the gap between the two
+    # is what tells an operator whether to chase a slow tail or a slow pipeline.
+    p99_latency_minutes = p99_seconds / 60
+    exceeds_limit = p99_latency_minutes > max_allowed_minutes
     warning_message = None
 
     if exceeds_limit:
-        warning_message = f"Processing time ({total_latency_minutes:.1f}min) exceeds SLA ({max_allowed_minutes:.1f}min) due to insufficient quota capacity"
+        warning_message = f"P99 processing time ({p99_latency_minutes:.1f}min) exceeds SLA ({max_allowed_minutes:.1f}min); the median is {total_latency_minutes:.1f}min"
 
     # Calculate factors for display
     load_factor = utilization
@@ -2042,6 +2174,7 @@ def lambda_handler(event: Dict[str, Any], context) -> Dict[str, Any]:
             quotas,
             document_configs,
             latency_metrics_hours,
+            model_config,
         )
 
         # Build quota requirements using Applied account-level quota values
