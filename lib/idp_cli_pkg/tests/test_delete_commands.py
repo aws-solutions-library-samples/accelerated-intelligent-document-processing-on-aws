@@ -24,10 +24,11 @@ DELETE_IN_PROGRESS (moto deletes synchronously, so a stack is never observed
 mid-delete) and a DELETE_FAILED outcome. In those tests the assertions are about the
 command's own logic — which SDK call it makes, what it prints, and its exit code.
 
-Two defects found while writing these are pinned by name below, with the consequence
-stated in the test docstring: `delete` announces "Stack deleted successfully" for a
-deletion it only initiated, and `delete-documents` exits 0 when every single document
-deletion failed.
+One defect found while writing these is pinned by name below, with the consequence
+stated in the test docstring: `delete-documents` exits 0 when every single document
+deletion failed. The other — `delete` announcing "Stack deleted successfully" for a
+deletion it had only initiated — is fixed, and the test that pinned it now asserts
+the guidance a user omitting `--wait` should see.
 """
 
 import json
@@ -577,25 +578,23 @@ class TestDeleteAgainstRealServices:
         # The retained LoggingBucket note belongs to a completed deletion.
         assert "LoggingBucket (if exists) is retained by design" in result.output
 
-    def test_without_wait_it_claims_success_for_a_deletion_only_initiated(self):
-        """DEFECT: `delete` without `--wait` reports a deletion that has not happened.
+    def test_without_wait_it_reports_a_deletion_started_rather_than_finished(self):
+        """`delete` without `--wait` must not claim the stack is gone.
 
-        The command distinguishes the two outcomes with
-        `initiated_only = not result.success and result.status == "INITIATED"`
-        (cli.py:1289), but `StackOperation.delete` computes
-        `success = result.get("success", status == "INITIATED")`
-        (idp_sdk/operations/stack.py:233), so an initiated-but-unwaited deletion
-        arrives as `success=True, status="INITIATED"` and `initiated_only` is never
-        true. The consequence is that a user who omits `--wait` is told
-        "✓ Stack deleted successfully!" while CloudFormation is still deleting, is
-        shown "Status: INITIATED" as the only hint, and never sees the block at
-        cli.py:1295-1306 that would have told them how to monitor or wait for it.
-        The trailing "retained by design" note also prints, implying the deletion
-        finished.
+        The command distinguished the two outcomes with
+        `initiated_only = not result.success and result.status == "INITIATED"`, but
+        `StackOperation.delete` computes
+        `success = result.get("success", status == "INITIATED")` and the underlying
+        no-wait path sets no `success` key, so an initiated-but-unwaited deletion
+        arrives as `success=True, status="INITIATED"` and that conjunction could never
+        be true. A user who omitted `--wait` was told "✓ Stack deleted successfully!"
+        while CloudFormation was still deleting, with "Status: INITIATED" as the only
+        hint, and never saw the guidance that names the console path and the command
+        to wait with. The "retained by design" note printed too, reading as the
+        post-mortem of a deletion that had finished.
 
-        This test pins the current wrong behaviour. If it starts failing because
-        "Monitor progress in the AWS Console" now appears, the defect has been fixed
-        and this test should be replaced by an assertion on the correct message.
+        Driven through moto, so this is the real no-wait path rather than a
+        hand-built result: it is the input a user actually produces.
         """
         with mock_aws():
             _create_stack("unwaited", buckets=["unwaited-bucket"])
@@ -604,12 +603,13 @@ class TestDeleteAgainstRealServices:
             )
 
         assert result.exit_code == 0
-        assert "Stack deleted successfully!" in result.output
-        assert "Status: INITIATED" in result.output
-        assert "Monitor progress in the AWS Console" not in result.output
-        assert (
-            "idp-cli delete --stack-name unwaited --force --wait" not in result.output
-        )
+        assert "Stack deletion initiated!" in result.output
+        assert "Stack deleted successfully!" not in result.output
+        assert "Monitor progress in the AWS Console" in result.output
+        assert "CloudFormation → Stacks → unwaited" in result.output
+        assert "idp-cli delete --stack-name unwaited --force --wait" in result.output
+        # The retained-bucket note belongs to a completed deletion, not a started one.
+        assert "retained by design" not in result.output
 
     def test_an_sdk_error_is_reported_and_exits_non_zero(self):
         """An unexpected failure must not be swallowed into a zero exit code."""
@@ -1153,18 +1153,21 @@ class TestDeleteFailureReporting:
         assert "Cleanup phase error" in result.output
         assert "Some resources may remain - check AWS Console" in result.output
 
-    def test_the_initiated_only_branch_can_only_be_reached_by_hand(self):
-        """Document the message cli.py:1295-1306 was written to print.
+    @pytest.mark.parametrize("success", [True, False])
+    def test_an_initiated_deletion_is_reported_the_same_either_way(self, success):
+        """`status="INITIATED"` decides this branch, whatever `success` says.
 
-        That branch requires `success=False` together with `status="INITIATED"`, a
-        combination `StackOperation.delete` cannot produce — see
-        `test_without_wait_it_claims_success_for_a_deletion_only_initiated` for the
-        defect. Constructing the result directly shows what a user omitting `--wait`
-        was meant to be told, and gives the fix a ready-made assertion: the guidance
-        names the console path and the exact command to wait for the deletion.
+        Both spellings are exercised because the SDK produces one of them and the
+        other was what the old condition required: `StackOperation.delete` computes
+        `success = result.get("success", status == "INITIATED")`, so the real no-wait
+        result is `success=True, status="INITIATED"` — and a test that only built
+        `success=False` by hand, as this one used to, passed against a condition no
+        user input could satisfy.
         """
         client = self._client_returning(
-            StackDeletionResult(success=False, status="INITIATED", stack_name="started")
+            StackDeletionResult(
+                success=success, status="INITIATED", stack_name="started"
+            )
         )
 
         with patch("idp_cli.cli.IDPClient", return_value=client):

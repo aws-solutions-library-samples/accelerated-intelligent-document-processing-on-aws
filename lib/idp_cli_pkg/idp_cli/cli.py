@@ -53,6 +53,7 @@ try:
     import click
     from rich.console import Console
     from rich.live import Live
+    from rich.markup import escape
     from rich.table import Table
 except ImportError as exc:
     print(_SETUP_HELP, file=sys.stderr)
@@ -71,12 +72,15 @@ except ImportError as exc:
 # real cause.
 try:
     from idp_sdk import IDPClient
+    from idp_sdk.models import DocumentBucket, classify_document_state
 
     from . import display
 except ImportError as exc:
     _IMPORT_ERROR = exc
     if not TYPE_CHECKING:
         IDPClient = None
+        DocumentBucket = None
+        classify_document_state = None
         display = None
 
 # Configure logging
@@ -1346,12 +1350,22 @@ def delete(
             )
 
         # Show CloudFormation deletion results.
-        # success=True  → deletion completed (waited to DELETE_COMPLETE)
-        # success=False + status=INITIATED → deletion started but not waited on
-        # success=False + other status    → genuine failure
-        initiated_only = not result.success and result.status == "INITIATED"
+        #   status=INITIATED → deletion started, not waited on (no --wait)
+        #   success=True     → deletion completed (waited to DELETE_COMPLETE)
+        #   otherwise        → genuine failure
+        #
+        # The INITIATED test comes first and does NOT also require `success` to be
+        # false. `StackOperation.delete` computes
+        # `success = result.get("success", status == "INITIATED")` and the underlying
+        # no-wait path sets no `success` key, so an initiated-but-unwaited deletion
+        # arrives as `success=True, status="INITIATED"`: the old
+        # `not result.success and result.status == "INITIATED"` could never be true.
+        # A user omitting `--wait` was told "✓ Stack deleted successfully!" while
+        # CloudFormation was still deleting, with "Status: INITIATED" as the only
+        # hint, and never saw the console path or the `--force --wait` command below.
+        initiated_only = result.status == "INITIATED"
 
-        if result.success:
+        if result.success and not initiated_only:
             console.print("\n[green]✓ Stack deleted successfully![/green]")
             console.print(f"Stack: {stack_name}")
             console.print(f"Status: {result.status}")
@@ -1451,8 +1465,11 @@ def delete(
                 console.print(
                     "[yellow]Some resources may remain - check AWS Console[/yellow]"
                 )
-        elif result.success:
-            # Standard deletion without force-delete-all — stack was fully deleted
+        elif result.success and not initiated_only:
+            # Standard deletion without force-delete-all — stack was fully deleted.
+            # `not initiated_only` matters: this note reads as a post-mortem of a
+            # finished deletion, and it was printing under a deletion that had only
+            # been started, reinforcing the false "deleted successfully" above it.
             console.print()
             console.print(
                 "[bold]Note:[/bold] LoggingBucket (if exists) is retained by design."
@@ -3161,7 +3178,7 @@ def generate_manifest(
                     f"[yellow]Warning: Test set '{test_set}' already exists in bucket[/yellow]"
                 )
                 console.print(
-                    "[yellow]Files will be overwritten. Continue? [y/N][/yellow]",
+                    "[yellow]Files will be overwritten. Continue? \\[y/N][/yellow]",
                     end=" ",
                 )
 
@@ -3373,6 +3390,66 @@ def validate_manifest_cmd(manifest: str):
         sys.exit(1)
 
 
+def _test_run_ids_from(option_value: str) -> List[str]:
+    """Split a `--test-run-ids` value on commas, dropping blanks.
+
+    `str.split` never returns an empty list, and that is the whole reason this
+    exists. `"".split(",")` is `[""]` and `"run-a,".split(",")` is
+    `["run-a", ""]`, so a blank segment arrives as an id that is the empty string:
+    `if not ids` after a plain split is unreachable code, and a length check counts
+    a trailing comma as a second run. Both spellings of that mistake were live —
+    `--test-run-ids ""` asked the service to abort a run whose id was `""`, and
+    `--test-run-ids "run-a,"` passed `test-compare`'s "at least 2" check with one
+    real id and then rendered a column for a run that does not exist.
+
+    Dropping the blanks makes the callers' own guards reachable and correct, rather
+    than adding a separate check beside each of them.
+
+    Args:
+        option_value: The raw `--test-run-ids` value.
+
+    Returns:
+        The non-empty ids, stripped, in the order given. Possibly empty.
+    """
+    return [
+        candidate.strip() for candidate in option_value.split(",") if candidate.strip()
+    ]
+
+
+def _timestamp_for_display(value) -> str:
+    """Render an optional timestamp as a string, always -- never as a `datetime`.
+
+    `BatchStatus` carries `datetime` fields that pydantic leaves as `None` when the
+    tracking table has not written them yet, and the dicts `display.py` consumes are
+    plain data that gets sorted and JSON-encoded. Substituting `""` for the absent
+    case while passing the `datetime` through for the present one puts two types
+    under one key, and both of the things `display.py` then does with that key fail
+    on the mix rather than degrade:
+
+    * `create_recent_completions_table` sorts the completed documents by `end_time`,
+      and Python will not order a `datetime` against a `str`, so a batch holding one
+      completed document with an end time and one without raised
+      `'<' not supported between instances of 'datetime.datetime' and 'str'`. Both
+      callers catch broadly, so `idp-cli status` printed that as an error and exited
+      1 instead of showing the table, and `--monitor` abandoned the watch.
+    * `format_status_json` puts the value straight into `json.dumps`, which has no
+      encoder for `datetime`, so `status --format json` on a single completed
+      document with an end time raised `Object of type datetime is not JSON
+      serializable`.
+
+    ISO 8601 is the representation to normalise to: it is what `json.dumps` would
+    have needed anyway, and lexicographic order over it agrees with chronological
+    order, so the sort is still the sort that was intended.
+    """
+    if not value:
+        return ""
+    isoformat = getattr(value, "isoformat", None)
+    # `str(...)` around the call, not just around the fallback: `getattr` is untyped,
+    # so without it this function's return type is `object | str` and every consumer
+    # -- the sort key, `json.dumps` -- is back to not knowing what it has.
+    return str(isoformat()) if callable(isoformat) else str(value)
+
+
 def _batch_status_to_display_dicts(batch_status):
     """
     Convert a BatchStatus Pydantic model to the legacy dict format expected by display.py.
@@ -3395,32 +3472,30 @@ def _batch_status_to_display_dicts(batch_status):
         doc_dict = {
             "document_id": doc.document_id,
             "status": doc.status,
-            "start_time": doc.start_time or "",
-            "end_time": doc.end_time or "",
+            "start_time": _timestamp_for_display(doc.start_time),
+            "end_time": _timestamp_for_display(doc.end_time),
             "duration": doc.duration_seconds or 0,
             "num_pages": doc.num_pages,
             "num_sections": doc.num_sections,
             "error": doc.error or "",
         }
-        status_upper = (doc.status or "").upper()
-        if status_upper == "COMPLETED":
+        # Bucketed through `idp_sdk.models.classify_document_state`, which is total
+        # over `DocumentState` -- the same authority the SDK's own progress monitor
+        # uses, so the CLI's counts and the SDK's `all_complete` cannot disagree
+        # about whether a state is terminal. The chain this replaced named eleven
+        # members and sent the other twelve to `queued` by falling off the end,
+        # which put `PREPROCESSING` (set for every document whenever a
+        # preprocessing hook is registered) under "Queued" and left the terminal
+        # `ABORTED` reporting "IN PROGRESS" forever.
+        bucket = classify_document_state(doc.status)
+        if bucket is DocumentBucket.COMPLETED:
             completed_docs.append(doc_dict)
             if doc.duration_seconds:
                 total_duration += doc.duration_seconds
                 duration_count += 1
-        elif status_upper == "FAILED":
+        elif bucket is DocumentBucket.FAILED:
             failed_docs.append(doc_dict)
-        elif status_upper in (
-            "RUNNING",
-            "CLASSIFYING",
-            "EXTRACTING",
-            "ASSESSING",
-            "RULE_VALIDATION",
-            "RULE_VALIDATION_ORCHESTRATOR",
-            "SUMMARIZING",
-            "HITL_IN_PROGRESS",
-            "EVALUATING",
-        ):
+        elif bucket is DocumentBucket.RUNNING:
             running_docs.append(doc_dict)
         else:
             queued_docs.append(doc_dict)
@@ -4832,7 +4907,8 @@ def config_upload(
         # Warn for the default profile
         if config_version and config_version.lower() == "default":
             console.print(
-                "[yellow]⚠️  Warning: This will update the default [system default] config profile[/yellow]"
+                "[yellow]⚠️  Warning: This will update the default "
+                "\\[system default] config profile[/yellow]"
             )
 
         result = client.config.upload(
@@ -6534,9 +6610,16 @@ def chat(
     try:
         from .chat import run_chat
     except ImportError:
+        # `\[agents]` escapes the bracket for Rich, which otherwise reads
+        # `[agents]` as a style tag, fails to resolve it as a style, and drops it
+        # silently -- leaving the user told to run `pip install -e
+        # 'lib/idp_common_pkg'`, which fixes nothing, because `idp_common` is
+        # already installed in the situation that produces this message and the
+        # missing piece is the extra. They run it, watch it succeed, retry, and get
+        # the identical error. Same idiom as the `\[Y/w/n]` prompts above.
         console.print(
-            "[red]✗ Chat requires idp_common[agents] to be installed.\n"
-            "  Run: pip install -e 'lib/idp_common_pkg[agents]'[/red]"
+            "[red]✗ Chat requires idp_common\\[agents] to be installed.\n"
+            "  Run: pip install -e 'lib/idp_common_pkg\\[agents]'[/red]"
         )
         sys.exit(1)
 
@@ -6713,8 +6796,9 @@ def test_compare(
         region = os.environ.get("AWS_REGION", "us-east-1")
 
     try:
-        # Parse test run IDs
-        test_run_id_list = [tid.strip() for tid in test_run_ids.split(",")]
+        # Parse test run IDs. Blank segments are dropped, so a trailing comma no
+        # longer counts as a second run and satisfy this check with one real id.
+        test_run_id_list = _test_run_ids_from(test_run_ids)
 
         if len(test_run_id_list) < 2:
             console.print(
@@ -6734,8 +6818,13 @@ def test_compare(
         )
 
         metrics = comparison_result.metrics
-        # Note: configs not yet in SDK model, but in raw_data if needed
-        configs = []  # TODO: Add to SDK model if needed
+        # `[]` and `None` are different answers here: `[]` means the captured
+        # configurations were compared and matched, `None` means fewer than two of
+        # the runs recorded one, so nothing was compared. Printing "no configuration
+        # differences" for both is a claim about the configurations that was never
+        # checked, which is exactly the question a user is asking when two runs
+        # score differently.
+        configs = comparison_result.configs
 
         if not metrics:
             console.print("[yellow]⚠ No metrics data available for comparison[/yellow]")
@@ -6842,8 +6931,10 @@ def test_compare(
         console.print(table)
         console.print()
 
-        # Display configuration differences
-        if configs and len(configs) > 0:
+        # Display configuration differences. Three outcomes, kept distinct: some
+        # settings differ, they were compared and matched, or too few runs captured
+        # a configuration for there to be anything to compare.
+        if configs:
             console.print("[bold green]Configuration Differences[/bold green]\n")
 
             config_table = Table(show_header=True, header_style="bold cyan")
@@ -6852,23 +6943,49 @@ def test_compare(
             for test_run_id in test_run_id_list:
                 config_table.add_column(test_run_id[:20])
 
+            # Every cell here is user-authored configuration text, and Rich reads
+            # `[...]` in a table cell as markup exactly as it does in a printed
+            # string. Two measured consequences if it is not escaped, both of them
+            # the item this table was written for: a prompt containing
+            # `[full log_group name]` — which five shipped `config_library` profiles
+            # do — renders with that run gone, so a row asserting the two runs
+            # *differ* displays two identical cells; and a value containing
+            # `[/INST]`, the Llama and Mistral instruction token, raises
+            # `MarkupError`, which the broad handler below turns into `✗ Error:` and
+            # exit 1 after the metrics table has already printed. Escaped before the
+            # truncation, so the escape cannot itself be cut in half.
             for diff in configs:
-                setting = diff.get("setting", "")
+                row = [escape(str(diff.get("setting", "")))]
                 values = diff.get("values", {})
-
-                row = [setting]
                 for test_run_id in test_run_id_list:
-                    value = values.get(test_run_id, "<missing>")
-                    # Truncate long values
-                    if len(str(value)) > 50:
-                        value = str(value)[:47] + "..."
-                    row.append(str(value))
+                    value = str(values.get(test_run_id, "<missing>"))
+                    if len(value) > 50:
+                        value = value[:47] + "..."
+                    row.append(escape(value))
 
                 config_table.add_row(*row)
 
             console.print(config_table)
+        elif configs is None:
+            # Deliberately says nothing about whether the configurations match, and
+            # does not promise that waiting will produce them. A run records its
+            # configuration when it is created; what is conditional is that
+            # `getTestRun` withholds it until the run's evaluation aggregate has been
+            # written — and two other states land here too, a run this command could
+            # not retrieve at all and one whose stored configuration would not
+            # decompress, for which no amount of waiting helps.
+            console.print(
+                "[dim]Configurations not compared: fewer than two of these runs "
+                "returned the configuration they ran under. A run returns it once "
+                "its evaluation results have been aggregated, and not at all if it "
+                "could not be retrieved.[/dim]"
+            )
         else:
-            console.print("[dim]No configuration differences to display[/dim]")
+            console.print(
+                "[dim]Configurations are identical across the compared runs "
+                "(metadata such as save timestamps, and the class definitions, are "
+                "not compared).[/dim]"
+            )
 
         console.print()
 
@@ -6922,8 +7039,11 @@ def abort_test_run(
         region = os.environ.get("AWS_REGION", "us-east-1")
 
     try:
-        # Parse test run IDs
-        test_run_id_list = [tid.strip() for tid in test_run_ids.split(",")]
+        # Parse test run IDs. Blank segments are dropped, which is what makes the
+        # guard below reachable: after a plain `split(",")` it never was, because
+        # `"".split(",")` is `[""]`, and `--test-run-ids ""` went on to ask the
+        # service to abort a run whose id is the empty string.
+        test_run_id_list = _test_run_ids_from(test_run_ids)
 
         if not test_run_id_list:
             console.print("[red]✗ No test run IDs provided[/red]")
@@ -7085,7 +7205,13 @@ def bootstrap(
         progress.print(
             f"[yellow]Note: document generator unavailable ({reason}).[/yellow]"
         )
-        progress.print(f"[yellow]{synthesis_engine.INSTALL_HINT}[/yellow]")
+        # `escape`, because INSTALL_HINT names the `[synthesis-generator]` pip extra
+        # and Rich would read that as a style tag and drop it -- leaving the user told
+        # to `pip install idp_common`, which is already installed. The constant is
+        # shared with consumers that do not render through Rich (the bootstrap
+        # module, the capability field), so the escape belongs at this call site
+        # rather than in the constant.
+        progress.print(f"[yellow]{escape(synthesis_engine.INSTALL_HINT)}[/yellow]")
 
     request = bootstrap_mod.BootstrapRequest(
         prompt=prompt,
