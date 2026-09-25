@@ -31,8 +31,10 @@ not by calling the implementation: the wiring between the command and the body i
 itself something that has been wrong here, and a test that calls the body cannot see
 it.
 
-One command is pinned here as defective rather than working: `--config` is accepted by
-`process` and then never used, written up on the test that pins it.
+`--config` is the one option here that is refused rather than honoured: no layer below
+the CLI applies a configuration file to a batch, so submitting one under a file the
+caller supplied would run at full cost under the stack's existing configuration. Those
+tests assert what was *not* submitted, not only what was printed.
 """
 
 from __future__ import annotations
@@ -421,23 +423,83 @@ class TestInputSourceDispatch:
         assert "DEPRECATED" in result.output
         assert "idp-cli process" in result.output
 
-    def test_the_config_option_is_accepted_and_then_ignored(self, runner, tmp_path):
-        """DEFECT, pinned as it behaves today (`cli.py:1659`, `1707-1738`).
+    @pytest.mark.parametrize("command", PROCESS_COMMANDS)
+    def test_the_config_option_is_refused_rather_than_silently_dropped(
+        self, runner, tmp_path, command
+    ):
+        """`--config` cannot be applied to a batch, so the batch is not submitted.
 
-        `--config` is declared on both `process` and `run-inference`, typed as an
-        existing path, and documented as "Path to configuration YAML file". The
-        parameter arrives in `_process_impl` and is never read again: it is not
-        passed to `client.batch.process`, which does accept a `config_path`, and
-        `BatchProcessor` does act on it. So a caller who submits a batch with
-        `--config ./bank-statement.yaml` gets a silent, full-price run under the
-        stack's existing configuration, with nothing in the output to say the file
-        was disregarded. Compare `--config-profile`, which does reach the SDK.
+        Nothing in the submission path applies a configuration file. `batch.process`
+        takes a `config_path` and hands it to `BatchProcessor`, which assigns
+        `self.config_path` and never reads it — so forwarding the value would leave
+        the run under the stack's existing configuration exactly as before while
+        looking wired. The refusal is asserted on the client as well as on the
+        message: "printed an error" and "submitted nothing" are different claims, and
+        the second is the one that matters when the alternative was a paid run under
+        the wrong configuration.
+
+        The `api_calls` fixture is deliberately *not* used, although the other
+        refusals in this module do use it. `IDPClient` is patched here and the `--dir`
+        path builds no boto3 client of its own, so no mutation of the guard can put an
+        entry in that log: an `api_calls.operations() == []` assertion would hold
+        whether the guard existed or not, and apparent coverage is worse than none.
+        `mock_cls.called is False` is the assertion that carries the claim.
+
+        Both spellings are covered because the option is declared separately on each
+        command and both route to the same body.
         """
         directory = tmp_path / "documents"
         directory.mkdir()
         config = tmp_path / "config.yaml"
-        # Deliberately not valid YAML: the command succeeds anyway, which is the
-        # sharpest available evidence that nothing ever opens the file.
+        config.write_text("classes: []\n", encoding="utf-8")
+        patcher, mock_cls, client = patched_client()
+        try:
+            result = runner.invoke(
+                cli,
+                [
+                    command,
+                    "--stack-name",
+                    "my-stack",
+                    "--dir",
+                    str(directory),
+                    "--config",
+                    str(config),
+                ],
+            )
+        finally:
+            patcher.stop()
+
+        assert result.exit_code == 1, result.output
+        assert "--config is not applied to a batch submission" in result.output
+        # The remedy has to be actionable, so both halves of it are named.
+        assert "idp-cli config-upload" in result.output
+        assert "--config-profile" in result.output
+        # Nothing was submitted and nothing was built, so nothing was paid for.
+        assert client.batch.process.called is False
+        assert mock_cls.called is False
+
+    def test_the_config_refusal_is_about_the_option_not_the_file(
+        self, runner, tmp_path
+    ):
+        """The file is never opened, so its contents cannot be what triggers the exit.
+
+        This is the discriminator against passing for the wrong reason. The refusal
+        runs ahead of `from idp_sdk import IDPClient`, so a YAML parse error from the
+        SDK's own loader is not a possible explanation for the non-zero exit — and to
+        make that unmistakable the file written here is *not valid YAML*, while the
+        message is the option refusal rather than anything about parsing. A future
+        change that started honouring `--config` by opening the file would fail here
+        on one of these fragments, which is the signal wanted.
+
+        The fragments are chosen so that none of them can occur in a filesystem path:
+        an earlier version looked for `"yaml"` and stripped `"config.yaml"` from the
+        output first, which Rich can fold across a line break for a long enough
+        `tmp_path`, leaving `"yaml"` in the text and failing on the path rather than
+        on a parse error.
+        """
+        directory = tmp_path / "documents"
+        directory.mkdir()
+        config = tmp_path / "config.yaml"
         config.write_text("this: is: not: yaml: [", encoding="utf-8")
         patcher, mock_cls, client = patched_client()
         try:
@@ -456,13 +518,73 @@ class TestInputSourceDispatch:
         finally:
             patcher.stop()
 
+        assert result.exit_code == 1, result.output
+        assert "--config is not applied to a batch submission" in result.output
+        for parser_noise in (
+            "mapping values",
+            "ScannerError",
+            "ParserError",
+            "while scanning",
+            "while parsing",
+            "expected ',' or",
+        ):
+            assert parser_noise not in result.output
+
+    def test_a_config_path_that_does_not_exist_reaches_the_refusal(
+        self, runner, tmp_path
+    ):
+        """The option is untyped, so a mistyped path is one round trip, not two.
+
+        With `type=click.Path(exists=True)` click would exit 2 on the path before the
+        refusal was reached, and the user would fix the typo only to be told the
+        option is not applied at all. Nothing opens the file, so its existence is
+        irrelevant to the answer.
+        """
+        directory = tmp_path / "documents"
+        directory.mkdir()
+        patcher, mock_cls, client = patched_client()
+        try:
+            result = runner.invoke(
+                cli,
+                [
+                    "process",
+                    "--stack-name",
+                    "my-stack",
+                    "--dir",
+                    str(directory),
+                    "--config",
+                    str(tmp_path / "typo.yaml"),
+                ],
+            )
+        finally:
+            patcher.stop()
+
+        assert result.exit_code == 1, result.output
+        assert "--config is not applied to a batch submission" in result.output
+        assert "does not exist" not in result.output
+        assert mock_cls.called is False
+
+    def test_a_batch_without_the_config_option_still_submits(self, runner, tmp_path):
+        """The refusal is conditional: the ordinary submission is untouched.
+
+        Without this, a refusal written unconditionally — or one whose guard is
+        inverted — would pass every assertion in the test above.
+        """
+        directory = tmp_path / "documents"
+        directory.mkdir()
+        patcher, mock_cls, client = patched_client()
+        try:
+            result = runner.invoke(
+                cli,
+                ["process", "--stack-name", "my-stack", "--dir", str(directory)],
+            )
+        finally:
+            patcher.stop()
+
         assert result.exit_code == 0, result.output
-        kwargs = client.batch.process.call_args.kwargs
-        assert "config" not in kwargs
-        assert "config_path" not in kwargs
-        assert str(config) not in str(kwargs)
-        # No warning either: the output is the ordinary submission summary.
         assert "Batch ID:" in result.output
+        assert client.batch.process.called is True
+        assert "--config is not applied" not in result.output
 
 
 class TestSubmissionOutput:
@@ -685,21 +807,25 @@ class TestTestSetPath:
             client=client,
             number_of_files=6,
             config_version="v2",
+            config_revision=None,
         )
         assert "Batch ID: test-run-42" in result.output
         assert "Documents queued: 6" in result.output
 
-    def test_a_pinned_config_revision_is_dropped_on_the_test_set_path(self, runner):
-        """DEFECT, pinned as it behaves today (`cli.py:1690-1698`).
+    def test_a_pinned_config_revision_reaches_the_test_set_path(self, runner):
+        """`--config-revision` is honoured on `--test-set`, as it is on the others.
 
-        `_process_test_set` takes a `config_revision` parameter and forwards it to the
-        test-runner Lambda payload, and `_process_impl` does not pass it. So
-        `process --test-set ts --config-profile v2 --config-revision 7` runs under
-        whatever v2 currently holds, while the same flags on `--dir`, `--manifest`
-        and `--s3-uri` do pin the revision. The run is then recorded and compared as
-        if it were r7. That is the exact failure mode `test_config_revision.py`'s
-        module docstring describes — "a silently dropped revision is worse than a
-        rejected one" — surviving on the one path it was not checked on.
+        `_process_test_set` has always taken a `config_revision` and forwarded it
+        into the test-runner Lambda payload; the call site in `_process_impl` was the
+        only place it was dropped, so `--test-set --config-profile v2
+        --config-revision 7` ran under whatever v2 currently held while the run was
+        recorded, and later compared, as r7. That is the failure mode
+        `test_config_revision.py`'s module docstring describes — "a silently dropped
+        revision is worse than a rejected one" — on the one path it was not checked
+        on.
+
+        The assertion is on the value rather than on the key's presence, because a
+        call site that passed a literal `None` would satisfy the weaker form.
         """
         patcher, mock_cls, client = patched_client()
         try:
@@ -730,8 +856,58 @@ class TestTestSetPath:
         assert result.exit_code == 0, result.output
         kwargs = process_test_set.call_args.kwargs
         assert kwargs["config_version"] == "v2"
-        assert "config_revision" not in kwargs
-        assert "7" not in result.output
+        assert kwargs["config_revision"] == 7
+
+    def test_the_revision_reaches_the_test_runner_with_the_real_helper_in_between(
+        self, runner
+    ):
+        """The whole chain, because both of its ends were already covered separately.
+
+        `_process_test_set` forwarding its `config_revision` to `_invoke_test_runner`
+        had a test, and `_invoke_test_runner` putting `configRevision` in the payload
+        had a test, and the revision was still dropped — the call site between them
+        was the gap, and no test spanned it. This one runs the command by name with
+        the real `_process_test_set` in place and reads what the runner was handed, so
+        a future break anywhere along that chain fails here.
+        """
+        from idp_cli import cli as cli_module
+
+        captured = {}
+
+        def _runner(*args, **kwargs):
+            captured["args"] = args
+            return {"testRunId": "test-run-9", "filesCount": 2}
+
+        patcher, mock_cls, client = patched_client()
+        try:
+            with (
+                patch.object(cli_module, "_invoke_test_set_resolver", lambda *a: None),
+                patch.object(cli_module, "_invoke_test_runner", _runner),
+                patch.object(
+                    cli_module, "_get_test_set_document_ids", lambda *a: ["a", "b"]
+                ),
+            ):
+                result = runner.invoke(
+                    cli,
+                    [
+                        "process",
+                        "--stack-name",
+                        "my-stack",
+                        "--test-set",
+                        "fcc-example-test",
+                        "--config-profile",
+                        "v2",
+                        "--config-revision",
+                        "7",
+                    ],
+                )
+        finally:
+            patcher.stop()
+
+        assert result.exit_code == 0, result.output
+        # _invoke_test_runner(stack, test_set, context, region, resources,
+        #                     number_of_files, config_version, config_revision)
+        assert captured["args"][6:] == ("v2", 7)
 
     def test_the_test_set_counts_come_from_the_legacy_dict(self, runner):
         """The test-set path returns a dict, so the fields are read by key, not attribute.
