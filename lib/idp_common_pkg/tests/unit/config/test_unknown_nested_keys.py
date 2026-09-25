@@ -1066,7 +1066,14 @@ def test_a_deprecated_nested_key_is_reported_as_deprecated_not_unknown():
 # ---------------------------------------------------------------------------
 
 
-def test_the_default_configuration_of_a_stock_deployment_is_clean():
+def _valid_patterns() -> list[str]:
+    from idp_common.config.merge_utils import VALID_PATTERNS
+
+    return list(VALID_PATTERNS)
+
+
+@pytest.mark.parametrize("pattern", _valid_patterns())
+def test_the_default_configuration_of_a_stock_deployment_is_clean(pattern: str):
     """The report has to be silent on a stock deployment or it trains people to ignore it.
 
     A warning about a key the operator did not write is one they cannot act on, and
@@ -1076,14 +1083,12 @@ def test_the_default_configuration_of_a_stock_deployment_is_clean():
     deployment performs, it resolves the ``_inherits`` chain, and it needs no second
     copy of the "which files here are configuration documents" question that
     ``scripts/tests/test_preset_keys_are_read.py`` already answers for the presets.
-    Every system-defaults file except ``pattern-1.yaml`` is reached this way —
-    ``pattern-1.yaml`` inherits a file that no longer exists, which is
-    [#1203](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/1203)
-    and not this walk's finding to make.
+    Asked for *every* pattern, because the two compose different module sets and a
+    key the models ignore can therefore appear in one and not the other.
     """
     from idp_common.config.merge_utils import merge_config_with_defaults
 
-    merged = merge_config_with_defaults({}, "pattern-2", validate=False)
+    merged = merge_config_with_defaults({}, pattern, validate=False)
     findings = collect_ignored_config_keys(merged, IDPConfig, include_top_level=True)
     assert findings == [], [f.describe() for f in findings]
 

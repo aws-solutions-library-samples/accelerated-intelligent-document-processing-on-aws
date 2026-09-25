@@ -16,10 +16,11 @@ by everything below it, so each of them is wrong for every command at once:
 
 ``_build_from_local_code``
     Runs a publish build and answers with the template to deploy. It has three
-    return paths (plain, headless, GovCloud) chosen by flags, and two exits. A
+    return paths (plain, headless, GovCloud) chosen by flags, and three exits. A
     wrong choice here does not fail — it deploys a correct template that is the
-    wrong *variant*, which in the GovCloud case means deploying CloudFront
-    resources into a partition that has none.
+    wrong *variant* — so the GovCloud case, where the wrong variant means
+    CloudFront resources in a partition that has none, is an exit rather than a
+    choice: a ``--govcloud`` build that produced no GovCloud template refuses.
 
 ``_display_deployment_failure``
     The only thing a user sees when a deploy fails. It accepts either a result
@@ -308,43 +309,85 @@ class TestBuildFromLocalCode:
         )
         assert returned[0] == "/build/govcloud.yaml"
 
-    @pytest.mark.parametrize("flag", ["headless", "govcloud"])
-    def test_a_variant_the_build_did_not_produce_falls_back_to_the_plain_template(
-        self, flag, capsys
-    ):
-        """A silent fallback, pinned because the consequence is not obvious.
+    def test_govcloud_refuses_when_the_build_produced_no_govcloud_variant(self, capsys):
+        """No GovCloud variant means no deploy — not the commercial template.
 
-        Each variant is returned only ``if flag and result.<variant>_template_path``.
-        A build that succeeded without emitting the variant therefore returns the
-        ordinary template, with the ordinary "Build complete" line and no
-        warning — so ``--govcloud`` can deploy the commercial template, whose
-        CloudFront resources do not exist in a GovCloud partition, and the first
-        sign of it is a CloudFormation failure on an unrelated-looking resource.
+        The refusal is the whole point, so both halves of it are asserted: the
+        exit status, and a message that names the variant that is missing. A test
+        that only checked "nothing was deployed" would pass on any unrelated
+        failure, and a message reading only "variant not available" would leave
+        the operator with nothing to do next — so the two commands that produce
+        and then deploy the transformed template are asserted as well.
+
+        Falling back here would deploy a template whose ``AWS::CloudFront::*``
+        resources do not exist in a GovCloud partition, and the first sign of it
+        would be a CloudFormation failure minutes in, on a resource that looks
+        unrelated to the flag that was ignored. Issue #1233.
         """
-        returned, _client_cls, _client = self._run(_build_result(), **{flag: True})
+        with pytest.raises(SystemExit) as exit_info:
+            self._run(_build_result(), govcloud=True)
+        assert exit_info.value.code == 1
+
+        out = capsys.readouterr().out
+        assert "--govcloud was requested but the build did not produce" in out
+        assert "GovCloud template variant" in out
+        assert "(/src/project/.aws-sam/idp-govcloud.yaml)" in out
+        # And it never claims to have built or chosen anything.
+        assert "Build complete" not in out
+        # Actionable: how to produce the variant, and how to deploy it once made.
+        assert (
+            "idp-cli publish --source-dir /src/project --region us-west-2 --govcloud"
+            in out
+        )
+        assert "--template-file /src/project/.aws-sam/idp-govcloud.yaml" in out
+
+    def test_a_headless_build_without_the_variant_falls_back_to_the_plain_template(
+        self, capsys
+    ):
+        """The headless fallback is unchanged, and still silent.
+
+        ``--headless`` is returned only ``if headless and
+        result.headless_template_path``, so a build that succeeded without
+        emitting the variant deploys the ordinary full-UI template with the
+        ordinary "Build complete" line. Pinned as current behaviour rather than
+        endorsed: unlike the GovCloud case above, the result is a working stack
+        in the right partition with more in it than was asked for, and whether
+        that should refuse or warn is a product decision that is not taken here.
+        """
+        returned, _client_cls, _client = self._run(_build_result(), headless=True)
         assert returned == (
             "/build/idp-main.yaml",
             "https://s3.example.invalid/idp-main.yaml",
         )
         out = capsys.readouterr().out
         assert "Build complete. Template: /build/idp-main.yaml" in out
-        assert "GovCloud" not in out
         assert "(headless)" not in out
 
-    def test_a_failed_build_exits_1_with_the_build_error(self, capsys):
-        """And is not re-reported as an unexpected exception.
+    @pytest.mark.parametrize(
+        "flags", [{}, {"govcloud": True}], ids=["plain", "govcloud"]
+    )
+    def test_a_failed_build_exits_1_with_the_build_error(self, flags, capsys):
+        """And is not re-reported as an unexpected exception, or as a refusal.
 
         ``sys.exit`` raises ``SystemExit``, which is not an ``Exception``, so it
         passes through the surrounding ``except Exception`` rather than being
         relabelled "Error during build" — which would hide which of the two
         failure modes happened.
+
+        The ``govcloud`` case is the same assertion about the *other* message
+        that can now be printed instead. A failed build produces no variant, so
+        both conditions hold at once and only the order of the two checks decides
+        which the operator is told about; the build error is the one that says
+        what went wrong, and reporting the missing variant in its place would
+        send them off to re-run the transform over a build that never finished.
         """
         with pytest.raises(SystemExit) as exit_info:
-            self._run(_build_result(success=False, error="sam build failed"))
+            self._run(_build_result(success=False, error="sam build failed"), **flags)
         assert exit_info.value.code == 1
         out = capsys.readouterr().out
         assert "Build failed: sam build failed" in out
         assert "Error during build" not in out
+        assert "--govcloud was requested" not in out
 
     def test_an_exception_inside_the_build_exits_1_with_its_message(self, capsys):
         with patch.object(cli_module, "IDPClient") as client_cls:

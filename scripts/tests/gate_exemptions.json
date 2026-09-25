@@ -100,6 +100,20 @@
     "            'nobody is working on it', which is itself information."
   ],
   "exemptions": {
+    "lib/idp_common_pkg/tests/unit/config/test_system_defaults_inheritance.py::PATTERN_1_EXTRACTION_SUBSECTIONS": {
+      "kind": "enforced-universe",
+      "memberKind": "the name of a sub-section under the `extraction` key of a resolved system-defaults document",
+      "turnsOff": "nothing. It is the complete set of `extraction` sub-sections the BDA pattern's resolved defaults may hold, and the test compares it for EQUALITY, so a member being in it is what makes that member required rather than what excuses it. A third sub-section appearing under that key fails the same assertion.",
+      "premise": [
+        "JUDGEMENT"
+      ],
+      "ratchet": "universe-closure",
+      "ratchetEvidence": "lib/idp_common_pkg/tests/unit/config/test_system_defaults_inheritance.py",
+      "issues": [
+        1203
+      ],
+      "reason": "Discovered through the prose route, on a comment saying the LLM extraction settings are 'deliberately absent' from the BDA pattern -- which reads as an exclusion decision and is instead the fact being asserted. The v0.6 refactor moved per-field confidence and bounding-box geometry under `extraction`, so the BDA pattern has to compose those two modules while still omitting the extraction module itself; this constant names what that leaves under the key, and the assertion is equality in both directions, which is the closure. There is no member the set omits by choice and no per-member fact to compute, because the comparison is against what the real loader resolves rather than against an authored inventory: a module that added a third sub-section under `extraction`, or one of these two ceasing to be inherited, fails there without anyone editing this file. What a reviewer should check instead is that the equality is real -- add a sub-section to base-confidence.yaml and watch it fail. Registered rather than reworded, because rewording a comment to slip past discovery is the failure this registry exists to prevent, and 'not a carve-out at all' is a decision the registry is built to record."
+    },
     "lib/idp_common_pkg/tests/unit/config/test_record_root_unknown_keys.py::REACHED": {
       "kind": "enforced-universe",
       "memberKind": "a (record root, nested model) pair, with the field-name/shape route from the root to it",

@@ -328,13 +328,28 @@ idp-cli deploy [OPTIONS]
   v0.4.11) — enable it in the Web UI under **Configuration → Assessment & HITL
   Configuration**, or in the config YAML passed to `--custom-config`. The flag is
   still accepted as `false` so existing scripts keep working.
-- `--parameters`: Additional parameters as `key=value,key2=value2`
+- `--parameters`: Additional CloudFormation parameters as `key=value,key2=value2`. A
+  new pair starts at a comma or whitespace followed by `key=` (so a space-separated
+  list, as `aws cloudformation deploy --parameter-overrides` takes, also works), and
+  everything up to the next pair is one value — so a value may itself contain commas
+  (`SubnetIds=subnet-a,subnet-b`) and `=` signs (a metadata URL with a query string,
+  a base64 value). Whitespace around the `=` is ignored. Two things it cannot read as
+  a pair are printed back to you rather than passing unremarked: text before the first
+  pair, which is named and not submitted, and a value that looks like it swallowed a
+  pair — a key holding a character CloudFormation does not allow, or pairs separated
+  with `;`, `|` or a stray backslash — which is named together with the parameter it
+  landed in, since a value may contain commas and so cannot be split back apart. The
+  reason for the noise is that a parameter which never reached CloudFormation is
+  indistinguishable afterwards from one deliberately left at its default. Pairs
+  separated with `&` or `?` are the one case read silently as a value, because that is
+  exactly what a query string looks like.
 - `--tags`: Stack tags as `key=value,key2=value2`. CloudFormation applies these to the stack and propagates them to all taggable resources and nested stacks — useful for governance/ownership (e.g. `Owner`, `Team`, `Environment`). See [Resource tagging](#resource-tagging) below.
 - `--wait`: Wait for stack operation to complete
 - `--no-rollback`: Disable rollback on stack creation failure
 - `--region`: AWS region (optional, auto-detected)
 - `--role-arn`: CloudFormation service role ARN (optional)
 - `--headless`: Deploy a **headless (no-UI) stack** — removes CloudFront, the UI REST API (the `APIRESOLVERSTACK` nested stack holding the API Gateway REST API, its dispatcher, and the UI-only resolver Lambdas), Cognito, WAF, agents, HITL, and Test Studio. Required for GovCloud; also valid in Commercial regions for API-only / pipeline integrations. See [Headless Deployment](./headless-deployment.md).
+- `--govcloud`: Deploy the **GovCloud template variant** — keeps the full Web UI but removes every `AWS::CloudFront::*` resource (CloudFront does not exist in GovCloud) and forces API Gateway UI hosting. Mutually exclusive with `--headless`. If the GovCloud template cannot be produced, the deploy is **refused** rather than falling back to the commercial template: that template's CloudFront resources cannot exist in a GovCloud partition, so deploying it fails part-way through CREATE on a resource that looks unrelated to the flag. The error names the template that is missing (`.aws-sam/idp-govcloud.yaml`) and the `idp-cli publish --govcloud` command that produces it. See [GovCloud Deployment](./govcloud-deployment.md).
 - `--bucket-basename`: S3 bucket basename for build artifacts (used with `--from-code`; region is appended automatically)
 - `--prefix`: S3 key prefix for build artifacts (default: `idp-cli`, used with `--from-code`)
 - `--public`: Make published S3 artifacts publicly readable (used with `--from-code`)
@@ -518,6 +533,7 @@ idp-cli publish [OPTIONS]
 - `--bucket-basename`: S3 bucket basename for artifacts (region is appended automatically; auto-generated if not provided)
 - `--prefix`: S3 key prefix for artifacts (default: `idp-cli`)
 - `--headless`: Also generate a **headless (no-UI) template variant**. For commercial regions this produces `idp-main.yaml` **and** `idp-headless.yaml`; for GovCloud (`us-gov-*`) the headless template is additionally updated with GovCloud configuration defaults (ARN partition, GovCloud Bedrock models, `lending-package-sample-govcloud` preset).
+- `--govcloud`: Also generate the **GovCloud template variant** — the full Web UI with every `AWS::CloudFront::*` resource removed and API Gateway UI hosting forced. Writes `.aws-sam/idp-govcloud.yaml` beside `idp-main.yaml` and uploads it as `idp-govcloud.yaml`. The transform is linted against a GovCloud region, so an unsupported resource type that survived it fails the publish with the `cfn-lint` finding rather than at deploy time. Deploy the result with `idp-cli deploy --template-file .aws-sam/idp-govcloud.yaml`, or build and deploy in one step with `idp-cli deploy --from-code . --govcloud`.
 - `--public`: Make S3 artifacts publicly readable (for shared deployments)
 - `--max-workers`: Maximum concurrent build workers (default: auto-detect)
 - `--clean-build`: Force full rebuild by deleting all checksum files
@@ -1495,6 +1511,7 @@ idp-cli generate-manifest [OPTIONS]
 - **Test Set Creation:**
   - `--test-set`: Test set name - creates folder in test set bucket and uploads files
   - `--stack-name`: CloudFormation stack name (required with --test-set)
+  - `--force` / `-y`: Overwrite an existing test set without the confirmation prompt
 
 **Examples:**
 
@@ -1524,6 +1541,14 @@ idp-cli generate-manifest \
     --test-set "fcc example test" \
     --stack-name IDP \
     --output test-manifest.csv
+
+# Refresh an existing test set from a script or CI job (asks nothing)
+idp-cli generate-manifest \
+    --dir ./documents/ \
+    --baseline-dir ./baselines/ \
+    --test-set "fcc example test" \
+    --stack-name IDP \
+    --force
 ```
 
 **Test Set Creation:**
@@ -1533,6 +1558,14 @@ When using `--test-set`, the command:
 3. Uploads baseline files to `s3://test-set-bucket/{test-set-id}/baseline/`
 4. Creates proper test set structure for evaluation workflows
 5. Test set will be auto-detected by the Test Studio UI
+
+**Overwriting an existing test set:** if the test set name already exists, everything
+under its prefix — including the baselines a previous evaluation was scored against —
+is deleted before the new files are uploaded, so the command asks for confirmation
+first. Answer `y` to proceed, anything else to abort. Run non-interactively (a CI job,
+a `make` target, stdin from `/dev/null`) there is no answer to read, and the command
+**aborts with exit 1 and changes nothing**; pass `--force` to overwrite without the
+prompt. Baselines cleared this way are not recoverable from the CLI.
 
 Process the created test set:
 ```bash
@@ -1988,6 +2021,18 @@ s3://docs/statement.pdf,s3://baselines/statement/
 - From filename without extension
 - Example: `invoice-2024.pdf` → `invoice-2024`
 - Subdirectories preserved: `W2s/john.pdf` → `W2s/john`
+
+**Baseline Source Type (Auto-detected):**
+- Local path → the directory is uploaded recursively
+- `s3://bucket/prefix/` → every object under the prefix is copied, keeping its
+  directory shape. This is the form `generate-manifest --test-set` writes
+
+⚠️ **A `baseline_source` naming a single S3 object copies nothing.** When
+`idp-cli process --manifest` consumes the manifest, an `s3://` value is treated as a
+**prefix** — a trailing `/` is appended if absent — so `s3://bucket/gt/invoice.json`
+becomes a prefix that matches no object and the document is processed with no baseline
+to score against. Point `baseline_source` at the directory holding the baseline files,
+not at one of them.
 
 **Important:**
 - ⚠️ Duplicate filenames not allowed
@@ -2848,6 +2893,27 @@ idp-cli discover -d ./invoice.pdf -g ./invoice.json \
 | `--model-id` | Override the Bedrock model ID used for discovery (e.g., `us.anthropic.claude-opus-4-6-v1`). When omitted, the discovery model from the stack config (stack mode) or system defaults (local mode) is used. Applies to with-ground-truth, without-ground-truth, `--auto-detect`, and `--page-range` modes. |
 | `--region` | AWS region |
 
+**Filenames in directory mode.** When `-o` names a directory, each schema is
+written as `<class id>.json`, where the class id is the schema's `$id` (falling
+back to `x-aws-idp-document-type`, then to `unknown`) reduced to the character
+set every consumer of a class id accepts — `[a-zA-Z0-9_-]`. Anything else becomes
+a hyphen, runs of hyphens collapse to one, and leading and trailing hyphens are
+trimmed, so a class id of `Bank Statement` is written as `Bank-Statement.json`
+and one with no usable character in it at all as `unknown.json`. That is the same
+rule the discovered class gets when it is saved to a configuration profile, so
+the two agree on the name.
+
+The class id is generated by the model from the content of the document, and a
+filename is not the right place to trust it: without that reduction a class id
+spelling a path would name a file somewhere else entirely. The directory each
+file is written into is therefore checked to be the one you named, and the
+command errors rather than writing outside it. A symlink *you* placed at a target
+filename inside that directory is followed as usual — what is checked is the
+directory, not the file.
+
+The command prints the path it wrote to, and prints a note when a class id had to
+be rewritten to produce it.
+
 ---
 
 ### `discover-multidoc`
@@ -2986,6 +3052,8 @@ orphaned-blueprint cleanup — the `syncBdaIdp` API operation with direction
 Interactive Agent Companion Chat from the terminal. Provides access to the full multi-agent orchestrator including Analytics, Error Analyzer, Code Intelligence, and any configured External MCP Agents.
 
 The chat command runs the same orchestrator as the Web UI's Agent Companion Chat, but locally in your terminal — with real-time streaming and multi-turn conversation support.
+
+Agents wrap their private reasoning in `<thinking>...</thinking>` and only the answer is printed. Because the response arrives as a stream of small pieces whose boundaries the service chooses, a reasoning block can be split across two of them; the terminal output is the same either way, and if a response ends mid-thought the incomplete reasoning is discarded rather than shown.
 
 **Usage:**
 ```bash

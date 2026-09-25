@@ -273,6 +273,7 @@ Navigate to the Web UI and select the "Capacity Planning" section:
 - Quick reference: 60s = 1 min | 120s = 2 min | 300s = 5 min | 600s = 10 min
 - Used for SLA compliance checking and performance validation
 - Displayed with automatic conversion to minutes for reference
+- `0` is outside the range and is refused as such ("maxAllowedLatency must be positive"), since no plan can meet a zero-second budget. Leaving the field empty is a different case and reports the field as missing.
 
 ### 4. Capacity Calculation and Results
 
@@ -415,6 +416,15 @@ The capacity planning system requires **real processed documents** with metering
 - Request counts (requires metering data with requests field)
 - Page counts (requires metering or document-level page data)
 
+The two processing-time sources are genuine alternatives: either one on its own
+produces a report, and the timestamp pair is preferred where both are present
+because it measures the document end to end. A history carrying only the
+timestamps therefore plans normally. The per-step figures the planner derives
+from `gb_seconds` stay at zero in that case rather than being back-filled from
+the document total, so no estimate is substituted for a measurement that was
+never taken; those per-step figures feed the calculation and are not themselves
+part of the report.
+
 **Error Messages When Data is Missing**:
 - "No processed documents found with metering data"
 - "No processing time data found in documents"
@@ -458,9 +468,14 @@ The capacity planning system requires **real processed documents** with metering
 - **Symptom**: "No request count data found for [step_name]"
 - **Solution**: Process documents through the full workflow to generate metering data with request counts
 
+**Assessment Rows Missing After Disabling Granular Assessment**:
+- **Symptom**: The report is produced, but it carries no Assessment TPM or RPM row
+- **Cause**: Assessment records its Bedrock calls under `GranularAssessment/...` keys while granular assessment is enabled, and those keys are excluded from the request count when it is disabled. A history recorded entirely under them therefore leaves Assessment with token demand and nothing countable, so its rows are dropped rather than sized from a request rate the current configuration has never produced. The Lambda log names the step and the reason.
+- **Solution**: Process a document under the current configuration, which records an `Assessment/...` key — or re-enable granular assessment, which brings the recorded history back into scope. Every other step is reported either way.
+
 **No Processing Time Data**:
 - **Symptom**: "No processing time data found in documents"
-- **Solution**: Ensure documents have `/lambda/duration` gb_seconds or WorkflowStartTime/CompletionTime timestamps
+- **Solution**: Ensure documents have `/lambda/duration` gb_seconds or WorkflowStartTime/CompletionTime timestamps. Either is sufficient, so this message means **neither** was found in the sampled documents.
 
 **OCR Quota Error When Not Using Bedrock OCR**:
 - **Symptom**: Error about missing OCR metering data
