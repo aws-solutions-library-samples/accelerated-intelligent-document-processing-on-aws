@@ -797,18 +797,22 @@ def test_json_bucket_precedence_is_completed_then_running_then_failed_then_queue
 
 
 @pytest.mark.unit
-def test_json_a_single_document_with_no_bucket_entry_falls_through_to_the_batch_shape():
+def test_json_a_single_document_with_no_bucket_entry_reports_an_unknown_outcome():
     """
-    DEFECT (pinned, not fixed): `total == 1` with four empty buckets reports the
-    batch summary, and its exit code comes from `all_complete` -- so a lookup that
-    returned no document at all reports success.
+    The guarantee (#1230): `total == 1` with four empty buckets no longer falls
+    through to the batch summary and answers 0.
 
-    `format_status_json` only takes the single-document branch if one of the four
-    buckets holds something. With `stats["total"] == 1`, `all_complete` true and
-    no failures -- the shape a batch record whose document lookup returned nothing
-    produces -- the caller is handed `exit_code: 0` and a payload with no
-    `document_id` in it. A CI job that checks the exit code concludes the document
-    succeeded.
+    `format_status_json` takes its single-document branch only if one of the four
+    buckets holds something. With `stats["total"] == 1`, `all_complete` true and no
+    failures -- the shape a batch record whose document lookup returned nothing
+    produces -- the caller used to be handed `exit_code: 0` and a payload with no
+    `document_id` in it, so a CI job reading the exit code concluded the document
+    succeeded. It now answers 2, which is this module's code for an outcome that was
+    not established, and names the document as `None` rather than omitting it.
+
+    The batch keys are asserted *absent*: the point is that the batch summary is not
+    what comes back, and a payload carrying `total` would mean the fall-through is
+    still there with a patched code.
     """
     payload = json.loads(
         display.format_status_json(
@@ -816,9 +820,11 @@ def test_json_a_single_document_with_no_bucket_entry_falls_through_to_the_batch_
         )
     )
 
-    assert "document_id" not in payload
-    assert payload["exit_code"] == 0
-    assert payload["total"] == 1
+    assert payload["exit_code"] == 2
+    assert payload["document_id"] is None
+    assert payload["status"] == "UNKNOWN"
+    assert "total" not in payload
+    assert "all_complete" not in payload
 
 
 # ---------------------------------------------------------------------------
@@ -1085,23 +1091,23 @@ def test_an_aborted_document_gets_a_different_exit_code_from_each_output_format(
 
 
 @pytest.mark.unit
-def test_a_single_document_lookup_that_found_nothing_disagrees_too():
+def test_a_single_document_lookup_that_found_nothing_agrees_across_both_paths():
     """
-    DEFECT (pinned, not fixed): with `total == 1` and no bucket entry, the JSON
-    path reports the batch summary and exits 0 while the table path exits 2.
+    The guarantee (#1230): with `total == 1` and no bucket entry, both output paths
+    answer 2.
 
-    The JSON path takes its single-document branch only when a bucket is
-    non-empty, so it falls through to the batch summary and derives the code from
-    `all_complete`; the table path has no such fall-through and answers UNKNOWN /
-    2. Exiting 0 is the worse half: nothing was measured, and the caller is told
-    the document succeeded.
+    The JSON path took its single-document branch only when a bucket was non-empty,
+    so it fell through to the batch summary and derived the code from `all_complete`,
+    answering 0 — nothing was measured and the caller was told the document
+    succeeded. The table path has no such fall-through and has always answered
+    UNKNOWN / 2. Asserted as equality *and* as the value, since two paths that agree
+    on the wrong answer would satisfy equality alone.
     """
     from_json, from_summary = _both_codes(
         _status_data(total=1), _stats(total=1, all_complete=True)
     )
 
-    assert from_json == 0
-    assert from_summary == 2
+    assert from_json == from_summary == 2
 
 
 @pytest.mark.unit

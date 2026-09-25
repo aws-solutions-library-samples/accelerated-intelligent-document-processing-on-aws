@@ -639,7 +639,7 @@ class TestMonitorProgress:
             cli_module._monitor_progress(
                 client=client, batch_id="batch-1", refresh_interval=7
             )
-            is None
+            == 0
         )
 
         assert asked == ["batch-1", "batch-1", "batch-1"]
@@ -751,17 +751,21 @@ class TestMonitorProgress:
         assert "b.pdf" in out
         assert "Bedrock throttled" in out
 
-    def test_it_returns_none_even_for_a_batch_that_finished_with_failures(
+    def test_it_returns_a_failing_code_for_a_batch_that_finished_with_failures(
         self, monkeypatch
     ):
-        """DEFECT, pinned as it behaves today (`cli.py:3465-3468`).
+        """The guarantee: the batch's outcome is a value the caller can propagate.
 
-        The function ends by printing a summary and falling off the end; it has no
-        return value and raises nothing, so a caller cannot tell a clean batch from
-        one where every document failed. `status --wait` is the case that matters:
-        the same batch reported without `--wait` exits 1, and with `--wait` exits 0.
-        See `test_results_commands.py::test_wait_exits_zero_even_when_documents_failed`
-        for that consequence at the command level.
+        The function used to print a summary and fall off the end, returning nothing,
+        so a caller could not tell a clean batch from one in which every document
+        failed. `status --wait` was the consequence that mattered — the same batch
+        exited 1 when polled and 0 when waited on, and `--wait` is the form a
+        pipeline uses (#1230). See
+        `test_results_commands.py::test_wait_exits_non_zero_when_documents_failed`
+        for that at the command level.
+
+        Both directions are asserted in one test on purpose: a return of a constant
+        would satisfy either half alone.
         """
         clock = Clock()
         monkeypatch.setattr(cli_module, "time", clock)
@@ -789,13 +793,13 @@ class TestMonitorProgress:
             cli_module._monitor_progress(
                 client=failed_only, batch_id="batch-1", refresh_interval=5
             )
-            is None
+            == 1
         )
         assert (
             cli_module._monitor_progress(
                 client=clean, batch_id="batch-1", refresh_interval=5
             )
-            is None
+            == 0
         )
 
     def test_a_complete_batch_with_nothing_terminal_waits_out_the_grace_period(
@@ -872,7 +876,9 @@ class TestMonitorProgress:
             )
         out = captured.get()
 
-        assert result is None
+        # 2, not 0: the watch ended without establishing what the batch did, and 2 is
+        # this CLI's code for that. 0 would report a success nothing measured.
+        assert result == 2
         assert len(asked) == 1
         assert "Monitoring stopped. Processing continues in background." in out
         assert "idp-cli status --stack-name my-stack --batch-id batch-1" in out
@@ -881,15 +887,18 @@ class TestMonitorProgress:
     def test_a_monitoring_failure_is_reported_and_swallowed(
         self, monkeypatch, pinned_console
     ):
-        """Any other exception ends the watch without re-raising and without an exit code.
+        """Any other exception ends the watch without re-raising, and answers 2.
 
-        Worth knowing rather than admiring: a batch whose status cannot be read at
-        all is indistinguishable, in exit code, from one that completed cleanly —
-        `process --monitor` still exits 0. The instructions printed afterwards are
-        also wrong: `_sn = stack_name or batch_id` on this path, and `stack_name` is
-        `None` for every modern caller, so the suggested command reads
-        `--stack-name batch-1`, naming the batch where a stack belongs. Copy-pasting
-        it fails against a stack that does not exist.
+        A batch whose status cannot be read at all is not a batch that succeeded, so
+        the code is 2 — outcome not established — and `status --wait` exits on it.
+        `process --monitor` still exits 0 whatever this returns, deliberately: its
+        work is the submission, and the batch's verdict is a separate query.
+
+        The instructions printed afterwards are wrong, and that is a separate defect:
+        `_sn = stack_name or batch_id` on this path, and `stack_name` is `None` for
+        every modern caller, so the suggested command reads `--stack-name batch-1`,
+        naming the batch where a stack belongs. Copy-pasting it fails against a stack
+        that does not exist.
         """
         clock = Clock()
         monkeypatch.setattr(cli_module, "time", clock)
@@ -906,7 +915,7 @@ class TestMonitorProgress:
             )
         out = captured.get()
 
-        assert result is None
+        assert result == 2
         assert "Monitoring error: DynamoDB is unavailable" in out
         assert "idp-cli status --stack-name batch-1 --batch-id batch-1" in out
 
@@ -933,5 +942,5 @@ class TestMonitorProgress:
         with pinned_console.capture() as captured:
             result = cli_module._monitor_progress("my-stack", "batch-1", 5)
 
-        assert result is None
+        assert result == 0
         assert "Batch Processing Complete" in captured.get()

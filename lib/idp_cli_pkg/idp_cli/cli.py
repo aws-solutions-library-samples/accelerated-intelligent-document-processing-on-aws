@@ -1371,6 +1371,9 @@ def delete(
         # CloudFormation was still deleting, with "Status: INITIATED" as the only
         # hint, and never saw the console path or the `--force --wait` command below.
         initiated_only = result.status == "INITIATED"
+        # Set when --force-delete-all suppresses the early exit so the cleanup phase
+        # can run; exited on at the end of the command.
+        deletion_failed = False
 
         if result.success and not initiated_only:
             console.print("\n[green]✓ Stack deleted successfully![/green]")
@@ -1402,6 +1405,13 @@ def delete(
             if not force_delete_all:
                 sys.exit(1)
             else:
+                # The early exit is skipped on purpose so the cleanup phase below
+                # still runs — that is what --force-delete-all is for. But nothing
+                # then set a failing code, so a stack that failed to delete was
+                # indistinguishable to a caller from one that deleted cleanly
+                # (#1230). Recorded here and exited on at the end, after the
+                # cleanup has had its run.
+                deletion_failed = True
                 console.print()
                 console.print(
                     "[yellow]Stack deletion failed, but continuing with force cleanup...[/yellow]"
@@ -1484,6 +1494,13 @@ def delete(
             console.print("Delete it manually if no longer needed:")
             console.print("  [cyan]aws s3 rb s3://<logging-bucket-name> --force[/cyan]")
             console.print()
+
+        if deletion_failed:
+            console.print(
+                "[red]✗ The stack was not deleted. The force cleanup above ran "
+                "anyway; check the AWS Console for what remains.[/red]"
+            )
+            sys.exit(1)
 
     except Exception as e:
         logger.error(f"Error deleting stack: {e}", exc_info=True)
@@ -1733,6 +1750,17 @@ def delete_documents_cmd(
 
         console.print()
 
+        # A run that deleted nothing at all must not report success: an automated
+        # cleanup step otherwise proceeds having removed no documents (#1230). The
+        # reporting branch above had no `sys.exit`, so "⚠ Deleted 0/2 document(s)"
+        # and "2 failed" were followed by exit 0.
+        #
+        # Scoped to the total failure the issue names. A *partial* failure still
+        # exits 0, which is a residual rather than a decision anyone would defend:
+        # see `test_a_partial_failure_still_exits_zero_and_that_is_the_residual`.
+        if not dry_run and result["deleted_count"] == 0 and result["failed_count"] > 0:
+            sys.exit(1)
+
     except Exception as e:
         logger.error(f"Error deleting documents: {e}", exc_info=True)
         console.print(f"[red]✗ Error: {e}[/red]")
@@ -1898,6 +1926,13 @@ def _process_impl(
 
         # Monitor if requested
         if monitor and result_queued > 0:
+            # The returned exit code is deliberately not propagated, and the
+            # asymmetry with `status --wait` is the point. This command's work is
+            # the submission, which succeeded; `--monitor` is a view of what
+            # happens next. Exiting non-zero because 1 of 100 documents failed
+            # would stop `process --monitor && download-results` from collecting
+            # the 99 that worked. Ask for the batch's verdict with
+            # `idp-cli status --batch-id <id>`, which answers exactly that.
             _monitor_progress(
                 client=client,
                 batch_id=result_batch_id,
@@ -2444,6 +2479,7 @@ def _rerun_inference_impl(
         console.print()
 
         if monitor and result.documents_queued > 0:
+            # Not propagated, for the reason given at the `process --monitor` call.
             _monitor_progress(
                 client=client,
                 batch_id=batch_id or "rerun",
@@ -2683,11 +2719,17 @@ def status(
             from idp_sdk import IDPClient as _IDPClient
 
             _client = _IDPClient(stack_name=stack_name, region=region)
-            # Monitor until completion
-            _monitor_progress(
-                client=_client,
-                batch_id=identifier,
-                refresh_interval=refresh_interval,
+            # Monitor until completion, and exit on what it found. `status` is a
+            # query, so its exit code is its answer — and the polled branch below
+            # has always exited on that answer. This branch discarded it, so the
+            # same batch reported 1 when polled and 0 when waited on, and `--wait`
+            # is the form a pipeline uses (#1230).
+            sys.exit(
+                _monitor_progress(
+                    client=_client,
+                    batch_id=identifier,
+                    refresh_interval=refresh_interval,
+                )
             )
         else:
             # Show current status once via IDPClient
@@ -3903,7 +3945,7 @@ def _monitor_progress(
     document_ids: Optional[list] = None,
     region: Optional[str] = None,
     resources: Optional[dict] = None,
-):
+) -> int:
     """
     Monitor batch progress with live updates using IDPClient.
 
@@ -3915,6 +3957,22 @@ def _monitor_progress(
         document_ids: (legacy, unused) kept for signature compatibility
         region: (legacy) AWS region
         resources: (legacy, unused) kept for signature compatibility
+
+    Returns:
+        The exit code the batch's outcome implies, on the same scale
+        ``display.show_final_status_summary`` uses: 0 every document completed,
+        1 at least one failed, 2 the outcome was not established.
+
+        This function used to return nothing, so a caller had no value to
+        propagate and `status --wait` exited 0 on a batch in which every document
+        failed — while the *polled* form of the same command exited 1 (#1230). The
+        exit code is frequently the only thing a pipeline reads, so 0 there was a
+        confidently wrong success rather than a missing signal.
+
+        2, not 0, for a watch that ended without a verdict — a monitoring error or
+        a Ctrl-C. Nothing about the batch was measured on those paths, and 2 is
+        already this CLI's code for "not established"; answering 1 would report
+        documents as failed that may all have succeeded.
     """
     from idp_sdk import IDPClient as _IDPClient
 
@@ -3989,7 +4047,7 @@ def _monitor_progress(
             else getattr(idp_client, "_stack_name", batch_id)
         )
         display.show_monitoring_instructions(_sn or batch_id, batch_id)
-        return
+        return 2
     except Exception as e:
         logger.error(f"Monitoring error: {e}", exc_info=True)
         console.print()
@@ -3997,12 +4055,17 @@ def _monitor_progress(
         console.print("[yellow]You can check status later with:[/yellow]")
         _sn = stack_name or batch_id
         display.show_monitoring_instructions(_sn, batch_id)
-        return
+        return 2
 
     # Show final summary
     logger.info("Showing final summary")
     elapsed_time = time.time() - start_time
     display.show_final_summary(status_data, stats, elapsed_time)
+    # The outcome is derived by the same function the polled form of `status` uses,
+    # rather than re-deriving it from `stats` here. Two implementations of one rule
+    # is how the two forms of `status` came to disagree in the first place; this
+    # keeps `--wait` and the poll answering out of one place.
+    return display.show_final_status_summary(status_data, stats)
 
 
 def _process_test_set(
@@ -5273,6 +5336,22 @@ def config_upload(
     """
     try:
         from idp_sdk import IDPClient
+
+        # `--config-profile ""` is *present* as far as click is concerned, so
+        # `required=True` passes it and `resolve_config_profile(..., required=True)`
+        # — which tests for None — passes it too. `ConfigurationManager` then builds
+        # its key as f"Config#{version}" only when the version is truthy, so the
+        # configuration landed on the bare `Config` key: a record `config-list` cannot
+        # see (it filters on begins_with(Configuration, "Config#")) and nothing reads,
+        # reported as "Configuration is now active!" with exit 0 (#1230). Refuse here,
+        # before anything is written.
+        if config_version is not None and not config_version.strip():
+            console.print(
+                "[red]✗ Error: --config-profile is empty. Name the profile to "
+                "update or create; `idp-cli config-list` shows the existing "
+                "ones.[/red]"
+            )
+            sys.exit(1)
 
         console.print(f"[bold blue]Uploading config to stack: {stack_name}[/bold blue]")
         console.print(f"Config file: {config_file}")
@@ -7361,6 +7440,25 @@ def test_result(
             console.print(f"[dim]Created: {test_result.created_at}[/dim]")
         if test_result.completed_at:
             console.print(f"[dim]Completed: {test_result.completed_at}[/dim]")
+
+        # The run's outcome has to reach the shell. This command reported the status
+        # and never let it influence the exit code, so a run with status="FAILED"
+        # and every file failed exited 0 exactly like a clean pass, and
+        # `idp-cli test-result ... && deploy` proceeded on a failed evaluation
+        # (#1230).
+        #
+        # Two conditions, because either alone leaves a real failure at 0: a run can
+        # carry a terminal FAILED status with no per-file count, and a run whose
+        # status is not FAILED can still have failed files (a partial run reports
+        # COMPLETED). Reading the printed text was the only route before this, which
+        # is what having an exit code is for.
+        if str(test_result.status).upper() == "FAILED" or test_result.failed_files > 0:
+            console.print(
+                f"[red]✗ Test run {test_result.test_run_id} did not pass: "
+                f"status {test_result.status}, "
+                f"{test_result.failed_files} failed file(s)[/red]"
+            )
+            sys.exit(1)
 
     except Exception as e:
         logger.error(f"Error getting test results: {e}", exc_info=True)

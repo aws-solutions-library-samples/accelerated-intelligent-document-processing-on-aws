@@ -172,8 +172,28 @@ class TestTheDirectionReachesTheSdk:
         assert run.exit_code == 1
         assert "Blueprints deleted: 1" in flat
         assert "Blueprints failed: 2" in flat
+        # The service's own message is the only thing that says *why*, so it is
+        # printed. Asserted because an unbiased mutation of `if result.error:`
+        # survived every other test in this file.
+        assert "Deleted 1 orphaned blueprints, 2 failed" in flat
         # The ones it could not delete are still orphaned, so they are still named.
         assert ORPHAN in flat
+
+    def test_a_failing_cleanup_that_carries_no_message_says_nothing_about_an_error(
+        self,
+    ):
+        """Non-vacuity for the assertion above: the line is driven by `error`.
+
+        Without this, inverting `if result.error:` would leave the suite green.
+        """
+        client = _client(
+            _cleanup_result(success=False, deleted=0, failed=1, error=None)
+        )
+        with patch("idp_sdk.IDPClient", return_value=client):
+            run = CliRunner().invoke(cli, CLEANUP_ARGS + ["--force"])
+
+        assert run.exit_code == 1
+        assert "Error:" not in _flat(run)
 
 
 @pytest.mark.unit

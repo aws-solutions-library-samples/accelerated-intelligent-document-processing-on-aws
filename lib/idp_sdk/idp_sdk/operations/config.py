@@ -324,9 +324,12 @@ class ConfigOperation:
             ConfigDownloadResult with downloaded configuration
 
         Raises:
-            IDPResourceNotFoundError: If the requested revision is not retained.
-                Falling back to the profile head would hand back a *different*
-                configuration than the one asked for, under the same filename.
+            IDPResourceNotFoundError: If the named profile does not exist, or if the
+                requested revision is not retained. Answering anything else would
+                hand back a *different* configuration than the one asked for, under
+                the same filename — and for a missing profile the answer on offer was
+                the YAML null document, which every downstream reader takes for an
+                empty configuration.
         """
         config_version = resolve_config_profile(config_profile, config_version)
 
@@ -384,6 +387,19 @@ class ConfigOperation:
             config_data = reader.get_configuration(
                 "Config", version=config_version, as_dict=True
             )
+            if config_data is None:
+                # `get_configuration` answers `None` for a profile that does not
+                # exist, and this branch used to pass that straight on:
+                # `yaml.dump(None)` is the string "null\n...\n", so
+                # `config-download --config-profile lendnig > config.yaml` exited 0
+                # and left a file every downstream step reads as an *empty*
+                # configuration (#1230). The revision branch above raises for exactly
+                # this case; the two paths disagreed.
+                raise IDPResourceNotFoundError(
+                    f"Configuration profile '{config_version}' does not exist on "
+                    f"stack '{name}'. Run `idp-cli config-list` to see the profiles "
+                    f"that do."
+                )
 
         if format == "minimal":
             from idp_common.config.merge_utils import (

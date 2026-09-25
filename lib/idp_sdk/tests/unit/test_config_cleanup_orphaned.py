@@ -130,11 +130,13 @@ class TestTheCleanupBranchExists:
 
 @pytest.mark.unit
 class TestTheCountsAreReportedAsBlueprints:
-    def test_a_clean_cleanup_reports_its_deletions(self, ops):
+    def test_a_clean_cleanup_reports_its_deletions(self, ops, caplog):
         service, _manager, p_service, p_manager = _doubles(cleanup=_clean(deleted=5))
-        with p_service, p_manager:
+        with p_service, p_manager, caplog.at_level("ERROR"):
             result = ops.sync_bda(direction="cleanup_orphaned", config_version="v1")
 
+        # Non-vacuity for the log assertion below: the guard really is a guard.
+        assert "did not complete" not in caplog.text
         assert result.cleanup_deleted_count == 5
         assert result.cleanup_failed_count == 0
         # Nothing is reported as a class, in either direction.
@@ -143,14 +145,23 @@ class TestTheCountsAreReportedAsBlueprints:
         assert result.processed_classes == []
         assert result.error is None
 
-    def test_a_cleanup_that_could_not_delete_everything_is_not_a_success(self, ops):
+    def test_a_cleanup_that_could_not_delete_everything_is_not_a_success(
+        self, ops, caplog
+    ):
         service, _manager, p_service, p_manager = _doubles(
             cleanup=_clean(deleted=1, failed=2, message="Deleted 1, 2 failed"),
             orphans=[ORPHAN],
         )
-        with p_service, p_manager:
+        with p_service, p_manager, caplog.at_level("ERROR"):
             result = ops.sync_bda(direction="cleanup_orphaned", config_version="v1")
 
+        # The log line is asserted because an unbiased mutation of the `if not
+        # succeeded:` guard around it survived every other assertion here. This is
+        # an account-wide destructive operation, so a partial failure that leaves no
+        # trace in the logs is how it goes unnoticed on a Lambda caller with no
+        # console.
+        assert "did not complete" in caplog.text
+        assert "2 failed" in caplog.text
         assert result.success is False
         assert result.cleanup_deleted_count == 1
         assert result.cleanup_failed_count == 2

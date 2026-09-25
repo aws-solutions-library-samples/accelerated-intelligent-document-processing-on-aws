@@ -653,6 +653,12 @@ The `--force-delete-all` flag performs a comprehensive cleanup AFTER CloudFormat
    - CloudWatch Log Groups (matching stack name pattern)
    - S3 buckets (regular buckets first, LoggingBucket last)
 
+⚠️ **A CloudFormation deletion that failed exits 1 even under `--force-delete-all`.** The
+cleanup phase still runs — that is what the flag is for — and the non-zero exit comes
+after it, so you get both. Before this, `--force-delete-all` printed "Stack deletion
+failed!" and exited 0, so a CI teardown job could not tell a stack that failed to delete
+from one that deleted cleanly.
+
 **Resources Always Cleaned Up (with `--wait` or `--force-delete-all`):**
 - IAM custom policies (containing stack name)
 - IAM permissions boundary policies
@@ -1195,7 +1201,25 @@ Processing Time (WorkflowStartTime → CompletionTime):
 The command returns exit codes for scripting:
 - `0` - Document(s) completed successfully
 - `1` - Document(s) failed
-- `2` - Document(s) still processing
+- `2` - Document(s) still processing, or the outcome could not be established
+
+⚠️ **`--wait` answers the same way as the polled form, and did not always.** Both
+now derive the code from the same place, so a batch that finished with failures exits
+`1` whether you polled it or waited on it. Before this change `--wait` exited `0` on
+that batch while the poll exited `1`, which meant `idp-cli status --wait && deploy`
+proceeded after a batch in which every document failed. If you have a script that
+relied on `--wait` always exiting `0`, it will now stop on a failed batch — that is
+the intended behaviour, but it is a change.
+
+`--wait` also exits `2` when the watch ended without a verdict: a monitoring error, or
+Ctrl-C. Nothing about the batch was measured on those paths, so `0` would assert a
+success and `1` would report failures that may not exist.
+
+`process --monitor` and `rerun --monitor` deliberately still exit `0` regardless of
+what the monitored batch did. Their work is the submission, which succeeded; exiting
+non-zero because 1 of 100 documents failed would stop `process --monitor &&
+download-results` from collecting the 99 that worked. Ask for the batch's verdict with
+`idp-cli status --batch-id <id>`, which answers exactly that.
 
 **JSON Output Format:**
 
@@ -1427,6 +1451,13 @@ idp-cli delete-documents [OPTIONS]
 nothing, and that is all it means. A failure while finding the documents — a throttled or
 rejected table scan, a table that is not there — prints the cause and exits 1 instead of
 reporting that there was nothing to delete.
+
+A run in which **every** deletion failed also exits 1; it used to exit 0 after printing
+"Deleted 0/2 document(s)", so an automated cleanup step reported success having deleted
+nothing.
+
+⚠️ A **partial** failure still exits 0. Read the per-document "Failed deletions:" list
+rather than the exit code when some documents may have survived.
 
 **Examples:**
 
@@ -2485,6 +2516,15 @@ idp-cli config-download --stack-name my-stack --config-profile lending \
     --config-revision 7 --output r7.yaml
 ```
 
+⚠️ **A profile that does not exist is refused, and did not always be.** A typo in
+`--config-profile` used to exit 0 having written the YAML null document — so
+`config-download --config-profile lendnig > config.yaml` left a file every downstream
+step reads as an *empty* configuration, under an exit code that said it worked. All
+three spellings (stdout, `--output`, `--format minimal`) now exit 1, name the profile
+they could not find, and write no file. A script that swallowed the exit code and
+carried on with the downloaded file will now be handed nothing instead of an empty
+configuration.
+
 ---
 
 ### `config-upload`
@@ -2502,7 +2542,7 @@ idp-cli config-upload [OPTIONS]
 - `--stack-name` (required): CloudFormation stack name
 - `--config-file`, `-f` (required): Path to configuration file (YAML or JSON)
 - `--validate/--no-validate`: Validate config before uploading (default: validate)
-- `--config-profile` (alias: `--config-version`) **(required)**: Configuration profile to update (e.g., `default`, `v1`, `v2`). If the profile doesn't exist, it will be created automatically.
+- `--config-profile` (alias: `--config-version`) **(required)**: Configuration profile to update (e.g., `default`, `v1`, `v2`). If the profile doesn't exist, it will be created automatically. An **empty** value is refused with exit 1 and nothing is written; it used to land the configuration on a key no profile listing can see, reported as "Configuration is now active!" with exit 0
 - `--version-description`: Description for the configuration **profile** (persisted on the profile and overwritten by every save)
 - `--revision-notes`: What this upload changed, recorded on the **revision** it cuts and shown as *Notes* in the revision history (e.g. `'raised topK to 20'`). Per-revision and immutable, unlike `--version-description`
 - `--region`: AWS region (optional)
@@ -2768,6 +2808,14 @@ idp-cli test-result \
   --test-run-id fake-w2-20260409-123456 \
   --wait --output-dir ./results
 ```
+
+**Exit codes:** `0` when the run passed, `1` when it did not — `status` is `FAILED`, or
+any file failed. The results are printed before the exit either way, so you still get
+the accuracy figures for a failed run.
+
+⚠️ This command used to exit `0` for a run with `status="FAILED"` and every file
+failed, exactly like a clean pass, so `idp-cli test-result ... && deploy` proceeded on a
+failed evaluation. A CI job that relied on that will now stop, which is the point.
 
 **Output:**
 - Overall accuracy, precision, recall, F1 score

@@ -1587,10 +1587,15 @@ Download configuration from a deployed stack.
 
 **Returns:** `ConfigDownloadResult` with `config`, `yaml_content`, `output_path`, and `revision`
 
-**Raises:** `IDPResourceNotFoundError` if the requested revision is no longer
-retained. It does not fall back to the profile's current configuration — that
-would hand back a *different* configuration under the name you asked for, and it
-would look like a success.
+**Raises:** `IDPResourceNotFoundError` if the named profile does not exist, or if the
+requested revision is no longer retained. Neither falls back to anything: handing back
+a *different* configuration under the name you asked for would look like a success, and
+for a missing profile the answer on offer was the **YAML null document** — `config` came
+back `{}` and `yaml_content` was `"null\n...\n"`, so `output` was written with `null`
+inside it and every downstream reader took that for an empty configuration. That applies
+to the default resolution too: a stack where nothing has been activated falls back to
+the profile name `default`, and if `Config#default` does not exist this raises rather
+than substituting whichever profile happens to be there.
 
 ```python
 result = client.config.download(

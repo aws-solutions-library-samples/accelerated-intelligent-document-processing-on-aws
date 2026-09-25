@@ -420,6 +420,23 @@ def format_status_json(status_data: Dict, stats: Dict) -> str:
 
             return json.dumps(result, indent=2)
 
+        # A single-document lookup that found nothing must not fall through to the
+        # batch summary. It did, and the summary derives its code from
+        # `all_complete`, so `status --document-id <typo> --format json` answered
+        # `exit_code: 0` — nothing was measured and the caller was told the document
+        # succeeded (#1230). `show_final_status_summary` has no such fall-through and
+        # answers UNKNOWN / 2 for the same input; 2 is this CLI's code for "outcome
+        # not established", so the two paths now agree.
+        return json.dumps(
+            {
+                "document_id": None,
+                "status": "UNKNOWN",
+                "error": "No document found matching the search criteria",
+                "exit_code": 2,
+            },
+            indent=2,
+        )
+
     # For batch, return full summary
     result = {
         "total": stats["total"],
