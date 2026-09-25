@@ -936,6 +936,58 @@ def test_upload_validation_failure_blocks_the_write_and_offers_the_escape_hatch(
 
 
 @pytest.mark.unit
+def test_upload_offers_the_escape_hatch_when_the_checks_could_not_run_either(
+    api_calls,
+):
+    """The other refusal the SDK can return, and the case where the hint matters most.
+
+    `ConfigOperation.validate` answers with `validation_available=False` when part of
+    `idp_common` is not importable, rather than raising out of the method
+    ([#1252](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/1252)).
+    The modules that produce it are ones only the checks import, so the upload itself
+    can still work and `--no-validate` is a real way through — but the hint is
+    selected on the word "Validation" in the SDK's message, a coupling no assertion
+    covered, so a reworded refusal would drop the hint from the one case that needs
+    it while the test above stayed green.
+    """
+    from idp_sdk.operations.config import ConfigOperation
+
+    # Built by the SDK's own refusal, not restated here: the coupling under test is
+    # between that message and the hint, so a test carrying its own copy of the
+    # message would keep passing through exactly the rename it exists to catch.
+    unavailable = ConfigOperation._validation_unavailable(
+        ModuleNotFoundError(
+            "No module named 'idp_common.schema.multi_instance'",
+            name="idp_common.schema.multi_instance",
+        )
+    )
+    assert unavailable.validation_available is False
+    with config_stack() as stack:
+        api_calls.clear()
+        with write_config("classes: []\n") as runner:
+            with patch.object(ConfigOperation, "validate", return_value=unavailable):
+                result = runner.invoke(
+                    cli,
+                    [
+                        "config-upload",
+                        "--stack-name",
+                        STACK,
+                        "--config-file",
+                        "config.yaml",
+                        "--config-profile",
+                        "p1",
+                        "--region",
+                        REGION,
+                    ],
+                )
+        assert result.exit_code == 1
+        assert "Failed to upload configuration" in result.output
+        assert "--no-validate" in result.output
+        assert api_calls.of("PutItem") == []
+        assert stack.item("p1") is None
+
+
+@pytest.mark.unit
 def test_upload_requires_a_profile_and_an_existing_file():
     """Both are usage errors, so both are exit 2 and neither reaches AWS."""
     with write_config(VALID_MINIMAL) as runner:

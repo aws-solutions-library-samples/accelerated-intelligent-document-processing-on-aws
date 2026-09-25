@@ -592,6 +592,14 @@ def validate_config(
           warnings above describe in prose, in the form a caller can act on: this is
           what `idp-cli config-validate --strict` keys on, and what the SDK's
           `deprecated_fields` / `unknown_fields` are built from.
+
+    Raises:
+        ImportError: when a component the checks themselves need is not importable.
+            The configuration is then not examined at all, so it is reported as the
+            environment problem it is rather than as a finding about the document —
+            see the note above the merge step. `idp_sdk`'s
+            `ConfigOperation.validate` turns this into a result whose
+            `validation_available` is False.
     """
     result = {
         "valid": True,
@@ -632,9 +640,25 @@ def validate_config(
     _validate_ignored_keys(config, result)
 
     # Try to merge with defaults
+    #
+    # ⚠️ An ImportError is re-raised rather than described, in both blocks below. The
+    # steps here import lazily — the merge reaches `idp_common.config.migrations`, and
+    # `IDPConfig.model_validate` reaches `idp_common.schema.multi_instance` for a
+    # multi-instance class — so a component missing from the
+    # installation arrives at these handlers as an ordinary exception and was
+    # reported as a finding about the document: "Pydantic validation failed: No
+    # module named 'idp_common.schema.multi_instance'" is a verdict on a
+    # configuration nothing examined, which is the one answer worse than no answer.
+    # Nothing about the submitted document can produce an ImportError, so the
+    # exception type is a sufficient test, and letting it out is what lets a caller
+    # tell "this configuration is wrong" from "this installation cannot check it" —
+    # `idp_sdk`'s `ConfigOperation.validate` catches it and reports the second as
+    # such.
     try:
         merged = merge_config_with_defaults(config, pattern, validate=False)
         result["merged_config"] = merged
+    except ImportError:
+        raise
     except Exception as e:
         result["valid"] = False
         result["errors"].append(f"Failed to merge with defaults: {str(e)}")
@@ -645,6 +669,8 @@ def validate_config(
         from idp_common.config.models import IDPConfig
 
         IDPConfig.model_validate(merged)
+    except ImportError:
+        raise
     except Exception as e:
         result["valid"] = False
         result["errors"].append(f"Pydantic validation failed: {str(e)}")

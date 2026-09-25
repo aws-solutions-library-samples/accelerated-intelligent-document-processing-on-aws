@@ -43,8 +43,10 @@ and the download-by-revision path (`test_config_revisions_api.py`), the
 
 from __future__ import annotations
 
+import contextlib
 import json
 import os
+import sys
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -61,6 +63,7 @@ from idp_sdk.models import (
     ConfigSyncBdaResult,
     ConfigValidationResult,
 )
+from idp_sdk.operations.config import ConfigOperation
 
 # The two logical IDs `_configure_config_env` looks for, with the production key
 # schema. `Configuration` as a single hash key is what `ConfigurationManager`
@@ -142,6 +145,54 @@ def _write_config(path: Path, **body) -> str:
 
 def _client(region: str) -> IDPClient:
     return IDPClient(stack_name=STACK, region=region)
+
+
+@contextlib.contextmanager
+def _modules_absent(*names: str):
+    """Make importing `names`, and anything under them, fail as a real absence does.
+
+    A module that is not there is refused by the import machinery, so the import
+    machinery is what this replaces: a ``sys.meta_path`` finder raising
+    ``ModuleNotFoundError: No module named '<name>'`` — the same type, message and
+    ``name`` attribute an absent module produces on an ``import``. Whatever is
+    already in ``sys.modules`` under those names is evicted for the duration, or the
+    refusal is never reached, and restored afterwards so the rest of the session is
+    unaffected. It is the *import* route this reproduces: a real top-level absence
+    makes ``importlib.util.find_spec`` return None where this raises, which nothing
+    on the path under test does.
+
+    ``patch.dict(sys.modules, {name: None})`` is the shorter spelling and is a
+    *different* fixture, which is why one test below uses it deliberately: it raises
+    "import of <name> halted; None in sys.modules" rather than "No module named", and
+    it leaves the parent package loaded, so it cannot produce the shape a cold process
+    sees — where ``idp_common.config`` is itself unimportable because its ``__init__``
+    imports the missing submodule. The guard under test has to be about ImportError
+    rather than about either message, so both spellings are asserted.
+    """
+
+    def _matches(key: str) -> bool:
+        return any(key == name or key.startswith(name + ".") for name in names)
+
+    class _Refuse:
+        def find_spec(self, fullname, path=None, target=None):
+            if _matches(fullname):
+                raise ModuleNotFoundError(
+                    f"No module named '{fullname}'", name=fullname
+                )
+            return None
+
+    evicted = {key: module for key, module in sys.modules.items() if _matches(key)}
+    finder = _Refuse()
+    for key in evicted:
+        del sys.modules[key]
+    sys.meta_path.insert(0, finder)
+    try:
+        yield
+    finally:
+        sys.meta_path.remove(finder)
+        for key in [key for key in sys.modules if _matches(key)]:
+            del sys.modules[key]
+        sys.modules.update(evicted)
 
 
 # --------------------------------------------------------------------------
@@ -292,16 +343,140 @@ class TestValidate:
         assert merged["notes"] == "mine"
         assert "ocr" in merged, "the merge filled in the system defaults"
 
-    # There is no test here for `idp_common.config.models` being unavailable.
-    # `validate()` used to import it itself, behind an `ImportError` guard, to
-    # compute its own deprecated/unknown-field lists, and a test pinned that the
-    # guard kept the method returning a verdict on a trimmed `idp_common` install.
-    # Both the import and the guard are gone: the lists now come from
-    # `ignored_keys` on `validate_config`'s result, and `_validate_ignored_keys`
-    # imports the module unguarded one frame up. A trimmed install therefore
-    # raises `ModuleNotFoundError` out of `validate()`, and pinning *that* would
-    # record a gap as the intended contract. The behaviour worth having belongs to
-    # `idp_common`, not to this method.
+    # An installation that cannot run the checks gets a verdict, not a traceback.
+    #
+    # `idp_common` does the checking, and a Lambda package here is a handler tree plus
+    # a copy of the library pruned to fit the deployment limit, so part of it being
+    # absent is an environment this method meets rather than a hypothesis —
+    # `examples/lambda_function.py` calls it from a handler and serialises the result.
+    # Its contract is to return a `ConfigValidationResult`, so a missing component has
+    # to be answerable *as* a result
+    # ([#1252](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/1252)).
+    #
+    # Each frame that can raise is covered, because each is guarded separately and
+    # *which* module is missing decides which one fires: anything
+    # `idp_common.config.__init__` pulls in fails `validate()`'s own import (`models`
+    # included — that `__init__` imports it), while a module only the validation stack
+    # imports, and imports lazily, surfaces out of `validate_config`.
+
+    def test_the_package_being_absent_is_answered_rather_than_raised(self, tmp_path):
+        config = tmp_path / "c.yaml"
+        config.write_text(yaml.dump({"classes": []}), encoding="utf-8")
+        # Built before the import is refused, as a real caller's client would be.
+        operation = IDPClient().config
+
+        # The same call in an installation that has the component, so the fixture
+        # rather than the assertion is what makes the verdict below differ.
+        assert operation.validate(str(config)).validation_available is True
+
+        with _modules_absent("idp_common"):
+            result = operation.validate(str(config))
+
+        assert isinstance(result, ConfigValidationResult)
+        assert result.validation_available is False, (
+            "an environment that cannot check must be distinguishable from a "
+            "configuration that was checked and found wrong"
+        )
+        assert result.valid is False, (
+            "nothing was established about the configuration, and `upload`'s gate "
+            "reads this field"
+        )
+        assert any("idp_common" in error for error in result.errors), (
+            f"the missing component has to be named: {result.errors}"
+        )
+        assert result.deprecated_fields == []
+        assert result.unknown_fields == []
+        assert result.merged_config is None
+
+    @pytest.mark.parametrize(
+        "absent",
+        [
+            # Imported lazily by `_validate_ignored_keys`, by the warning checks, and
+            # by `IDPConfig.model_validate` for a multi-instance class respectively.
+            # Nothing above the validation stack imports any of them, so each is a
+            # module a pruned copy of the library can lack while the rest works.
+            "idp_common.config.migrations",
+            "idp_common.bedrock.prompt_cache",
+            "idp_common.config.hook_reachability",
+            "idp_common.schema.multi_instance",
+            # The submodule the issue named. `idp_common.config.__init__` imports it,
+            # so with `merge_utils` already loaded this reaches `validate_config`
+            # and otherwise `validate()`'s own import — both are guarded.
+            "idp_common.config.models",
+        ],
+    )
+    def test_a_component_only_the_checks_need_is_answered_too(self, tmp_path, absent):
+        """Every frame the validation stack imports from, not just the first one.
+
+        `merge_utils` is imported first, which is the state any long-running process
+        is in, so `validate()`'s own import succeeds and the refusal is reached
+        deeper. `schema.multi_instance` is the one worth singling out: it surfaces
+        inside `IDPConfig.model_validate`, whose handler in `idp_common` describes
+        whatever it catches as "Pydantic validation failed" — a verdict on a
+        configuration nothing examined, and the exact shape this field exists to
+        keep apart from a real finding.
+        """
+        import idp_common.config.merge_utils  # noqa: F401
+
+        config = tmp_path / "c.yaml"
+        config.write_text(
+            yaml.dump({"classes": [{"name": "w2", "description": "a W-2"}]}),
+            encoding="utf-8",
+        )
+        operation = IDPClient().config
+
+        assert operation.validate(str(config)).validation_available is True
+
+        with _modules_absent(absent):
+            result = operation.validate(str(config))
+
+        assert result.validation_available is False
+        assert result.valid is False
+        assert any(absent in error for error in result.errors), (
+            f"the missing component has to be named: {result.errors}"
+        )
+
+    def test_the_verdict_does_not_depend_on_having_a_client(self, tmp_path):
+        """`validate` needs no instance state, and one caller in this tree relies on it.
+
+        `test_config_validate_unread_keys.py` calls it as
+        `ConfigOperation.validate(None, path)`, which is legitimate — the method
+        touches no attribute of `self` — and would make a refusal built through
+        `self` raise `AttributeError` out of the one path whose contract is not to
+        raise.
+        """
+        config = tmp_path / "c.yaml"
+        config.write_text(yaml.dump({"classes": []}), encoding="utf-8")
+
+        with _modules_absent("idp_common"):
+            result = ConfigOperation.validate(None, str(config))  # type: ignore[arg-type]
+
+        assert result.validation_available is False
+        assert result.valid is False
+
+    def test_the_answer_does_not_depend_on_how_the_import_fails(self, tmp_path):
+        """`sys.modules[name] = None` raises a different message for the same cause.
+
+        A guard written against the wording of one absence — or against a list of
+        module names — reports the other as a configuration error or lets it escape.
+        This is the spelling the issue's own reproduction uses.
+        """
+        import idp_common.config.merge_utils  # noqa: F401
+
+        config = tmp_path / "c.yaml"
+        config.write_text(yaml.dump({"classes": []}), encoding="utf-8")
+        operation = IDPClient().config
+
+        assert operation.validate(str(config)).validation_available is True
+
+        with patch.dict(sys.modules, {"idp_common.config.models": None}):
+            result = operation.validate(str(config))
+
+        assert result.validation_available is False
+        assert result.valid is False
+        assert result.errors and "halted" in result.errors[0], (
+            "the cause is forwarded verbatim rather than re-worded into one shape"
+        )
 
 
 # --------------------------------------------------------------------------
@@ -540,6 +715,44 @@ class TestUploadWritesRealItems:
             "Validation failed:"
         )
         assert _item(aws_credentials, "Config#tuning") is None
+
+    @mock_aws
+    def test_an_installation_that_cannot_validate_refuses_and_says_which(
+        self, aws_credentials, config_env, tmp_path
+    ):
+        """The gate holds, and the refusal asks for the right thing.
+
+        `upload`'s gate is `not result.valid`, so an installation that cannot run the
+        checks must keep it closed — storing a configuration nothing examined is the
+        one outcome worse than refusing. What changes is the sentence: "validation
+        failed" sends the operator through a file that may be perfectly good, when
+        what is missing is a component.
+        """
+        _create_stack(aws_credentials)
+        config = tmp_path / "c.yaml"
+        config.write_text(yaml.dump({"classes": []}), encoding="utf-8")
+        operation = _client(aws_credentials).config
+
+        unavailable = ConfigValidationResult(
+            valid=False,
+            validation_available=False,
+            errors=["Configuration validation is unavailable in this installation"],
+        )
+        with patch.object(operation, "validate", return_value=unavailable):
+            result = operation.upload(
+                config_file=str(config), config_profile="tuning", validate=True
+            )
+
+        assert result.success is False
+        assert result.error is not None
+        assert result.error.startswith("Validation unavailable:")
+        assert _item(aws_credentials, "Config#tuning") is None
+        # `idp-cli config-upload` keys its `--no-validate` hint on the word
+        # "Validation" in this string, and that hint is worth more here than on a
+        # genuine finding: a module only the checks import can be missing while
+        # everything the upload itself needs is present, so skipping validation
+        # really does let the upload through.
+        assert "Validation" in result.error
 
     @mock_aws
     def test_validate_false_skips_the_gate(self, aws_credentials, config_env, tmp_path):

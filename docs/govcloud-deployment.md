@@ -341,6 +341,14 @@ Common deployment issues:
 - **"Region '…' is not supported" with `--govcloud`/`--headless` but without
   `--from-code`** — pre-built templates only exist for a few commercial
   regions; in GovCloud always pass `--from-code .` (or `--template-url`).
+- **"`--govcloud` was requested but the build did not produce a GovCloud
+  template variant"** — the deploy is refused at that point and no stack is
+  created. It is refused rather than run against the commercial template,
+  which would deploy CloudFront resources into a partition that has none and
+  fail part-way through CREATE. Run the transform on its own
+  (`idp-cli publish --source-dir . --region <region> --govcloud`) to see why it
+  produced nothing, then deploy the result with
+  `--template-file .aws-sam/idp-govcloud.yaml`.
 
 ## Migration from Commercial AWS
 
