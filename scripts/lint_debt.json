@@ -132,8 +132,7 @@
       "I001": 1
     },
     "nested/api-resolvers/src/lambda/test_set_resolver/index.py": {
-      "E722": 1,
-      "F841": 1
+      "E722": 1
     },
     "nested/bedrockkb/src/opensearch_index_custom_resource/oss_handler.py": {
       "I001": 1
@@ -441,7 +440,6 @@
     "scripts/sdlc/tests/test_resolver_layer_coverage.py",
     "scripts/sdlc/tests/test_retired_services_not_documented.py",
     "scripts/sdlc/tests/test_scan_api_rbac_function_urls.py",
-    "scripts/sdlc/tests/test_scan_api_rbac_scope_check.py",
     "scripts/sdlc/tests/test_stale_stack_reaper.py",
     "scripts/sdlc/tests/test_suppress_invite_sentinel.py",
     "scripts/sdlc/validate_buildspec.py",
@@ -544,7 +542,7 @@
   ],
   "highWaterMark": {
     "lintDebtFiles": 84,
-    "lintFindings": 193,
-    "formatDebtFiles": 178
+    "lintFindings": 192,
+    "formatDebtFiles": 177
   }
 }
