@@ -1287,6 +1287,18 @@ def build_simple_quota_requirements(
         metering_table_name = os.environ.get('METERING_TABLE_NAME')
         
         requests_per_doc = 0  # Average requests per document for this step
+        # One measured page count per sampled metering record, averaged after the
+        # scan. Accumulated rather than folded in as it goes: the running form this
+        # replaced was `(running + next) / 2`, which halves the weight of
+        # everything already seen at every step, so page counts of 1, 10 and 100
+        # reported 52.8 instead of their mean of 37.
+        #
+        # "Record" rather than "document" because the scan filters the whole table
+        # on `Metering` existing, and a document's run snapshots carry that
+        # attribute alongside its live item, so a document processed several times
+        # contributes a sample each time. That sampling is what the request-rate
+        # average above does too and is not changed here.
+        measured_page_counts = []
         actual_pages_per_doc = None
         metering_data_available = False
         # True once a recorded Bedrock request for this step has been left out
@@ -1354,17 +1366,26 @@ def build_simple_quota_requirements(
                     # Convert Decimal types to float/int for math operations
                     metering_data = convert_decimal_to_float(metering_data)
                     
-                    # Extract actual page count from metering data
-                    if 'number_of_pages' in item:
-                        # float() so the running average below is well-typed:
-                        # convert_decimal_to_float() is recursive and so is inferred
-                        # as returning a scalar/dict/list union, which the "+" and "/"
-                        # below cannot accept. A page count is always scalar.
-                        pages = float(convert_decimal_to_float(item['number_of_pages']))
-                        if actual_pages_per_doc is None:
-                            actual_pages_per_doc = pages
-                        else:
-                            actual_pages_per_doc = (actual_pages_per_doc + pages) / 2  # Running average
+                    # This document's page count, as the tracking table stores it.
+                    # `PageCount` is the attribute both of its writers set, on the
+                    # line next to the `Metering` payload this scan filters on;
+                    # `number_of_pages` — read here previously — is a column of the
+                    # Athena reporting table and is never an attribute here, so the
+                    # measured figure was silently unavailable on every stack and
+                    # the report always fell back to the configured page values.
+                    # Both writers omit the attribute for a zero page count rather
+                    # than storing a zero, but the positive test is made here too:
+                    # a document contributing no pages is not a measurement of a
+                    # document's length, and resting that on what two files
+                    # elsewhere happen to do makes it their property rather than
+                    # this function's.
+                    if 'PageCount' in item:
+                        # float() because convert_decimal_to_float() is recursive and
+                        # so is inferred as returning a scalar/dict/list union, which
+                        # sum() below cannot accept. A page count is always scalar.
+                        pages = float(convert_decimal_to_float(item['PageCount']))
+                        if pages > 0:
+                            measured_page_counts.append(pages)
                     
                     # Requests this document contributes to this step. A step can
                     # issue several Bedrock calls under distinct metering keys —
@@ -1435,6 +1456,13 @@ def build_simple_quota_requirements(
                 if doc_count > 0:
                     requests_per_doc = total_requests / doc_count
                     print(f"✅ {step_name}: Average {requests_per_doc:.1f} requests/doc from {doc_count} documents")
+
+                # Mean pages per document over the sampled records, which is the
+                # figure an operator checks against their own corpus.
+                if measured_page_counts:
+                    actual_pages_per_doc = sum(measured_page_counts) / len(
+                        measured_page_counts
+                    )
                         
             except Exception as e:
                 print(f"⚠️ Could not read metering data for {step_name}: {e}")
@@ -1509,7 +1537,7 @@ def build_simple_quota_requirements(
         
         # Log actual page count if found
         if actual_pages_per_doc is not None:
-            print(f"📄 Actual pages per document from metering: {actual_pages_per_doc:.1f}")
+            print(f"📄 Actual pages per document from metering: {actual_pages_per_doc:.1f} (mean of {len(measured_page_counts)} metering records)")
         else:
             print("ℹ️ Using configured page values (no metering data)")
 

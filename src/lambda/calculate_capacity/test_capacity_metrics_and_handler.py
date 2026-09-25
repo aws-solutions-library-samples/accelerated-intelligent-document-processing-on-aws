@@ -1958,20 +1958,65 @@ def test_a_metering_table_that_cannot_be_read_does_not_crash_the_scan(
 
 
 @pytest.mark.unit
-def test_the_reported_page_count_is_a_decaying_average_not_the_mean(tracking, capsys):
-    """`(running + next) / 2` weights the last document far above the first.
+def test_the_reported_page_count_is_the_mean_over_the_sampled_documents(
+    tracking, capsys
+):
+    """Page counts of 1, 10 and 100 report their mean of 37, not 52.8.
 
-    Page counts of 1, 10 and 100 give 52.8 rather than the true mean of 37, because
-    each step halves the weight of everything before it.
+    52.8 is what the running form this replaced produced — `(running + next) / 2`
+    halves the weight of everything already seen at every step, so the last document
+    scanned dominated a figure labelled as an average. It is asserted as absent
+    alongside the positive form, because a missing line satisfies the negative one
+    on its own.
 
-    The attribute read is `number_of_pages`, which is a column of the Athena
-    `metering` table and **not** something the tracking table carries — that table
-    stores a page count as `PageCount`, per the test below. So this arithmetic
-    describes a branch no deployed document reaches, and the fixture has to write
-    `number_of_pages` by hand to reach it at all. Pinned rather than deleted because
-    the branch is live code: anything that starts stamping that attribute, or a
-    change of source table, makes it reachable, and then this is the figure an
-    operator reads.
+    The documents are built with `PageCount`, which is the attribute both writers of
+    this table set beside the `Metering` payload the scan filters on. That is what
+    makes this test worth anything: the branch used to read `number_of_pages`, an
+    Athena reporting column that is never an attribute here, so it could only be
+    reached by a fixture that wrote a shape production does not.
+    """
+    for i, pages in enumerate([1, 10, 100]):
+        put_metered(
+            tracking, f"doc-{i}", bedrock("Extraction", 3), PageCount=Decimal(pages)
+        )
+    hourly = hours(**{"9": {"docsPerHour": 60, "extractionTokensPerHour": 60000}})
+    build(hourly)
+    printed = capsys.readouterr().out
+    assert "Actual pages per document from metering: 37.0" in printed
+    assert "52.8" not in printed
+    assert "mean of 3 metering records" in printed
+
+
+@pytest.mark.unit
+def test_a_zero_page_count_does_not_enter_the_mean(tracking, capsys):
+    """A record contributing no pages is not a measurement of a document's length.
+
+    Both writers omit `PageCount` rather than storing a zero, so this shape does not
+    arise from them today; the filter is in this function so that the guarantee is
+    its own rather than theirs. With the zero counted the mean of 1, 10, 100 and 0
+    would be 27.75.
+    """
+    for i, pages in enumerate([1, 10, 100, 0]):
+        put_metered(
+            tracking, f"doc-{i}", bedrock("Extraction", 3), PageCount=Decimal(pages)
+        )
+    hourly = hours(**{"9": {"docsPerHour": 60, "extractionTokensPerHour": 60000}})
+    build(hourly)
+    printed = capsys.readouterr().out
+    assert "Actual pages per document from metering: 37.0" in printed
+    assert "mean of 3 metering records" in printed
+    assert "27.8" not in printed
+
+
+@pytest.mark.unit
+def test_the_athena_spelling_of_the_page_count_is_not_what_is_read(tracking, capsys):
+    """A document carrying only `number_of_pages` contributes no measured pages.
+
+    `number_of_pages` is a column of the Athena `metering` table, not an attribute
+    of the tracking table, and reading it was why the measured page count was
+    unavailable on every stack. Kept as a test in its own right so that restoring
+    that spelling — or accepting both — is a red mark rather than a silent widening,
+    and asserted through the fallback line, which is the only visible consequence.
     """
     for i, pages in enumerate([1, 10, 100]):
         put_metered(
@@ -1979,26 +2024,6 @@ def test_the_reported_page_count_is_a_decaying_average_not_the_mean(tracking, ca
             f"doc-{i}",
             bedrock("Extraction", 3),
             number_of_pages=Decimal(pages),
-        )
-    hourly = hours(**{"9": {"docsPerHour": 60, "extractionTokensPerHour": 60000}})
-    build(hourly)
-    printed = capsys.readouterr().out
-    assert "Actual pages per document from metering: 52.8" in printed
-    assert "37.0" not in printed
-
-
-@pytest.mark.unit
-def test_the_page_count_the_tracking_table_really_stores_is_not_read(tracking, capsys):
-    """`PageCount` is the attribute, and the scan does not look at it.
-
-    This is what a deployed document looks like — `DocumentDynamoDBService` writes
-    `PageCount` — so the measured page count is never available and the report falls
-    back to the configured page values on every stack. Asserted through both printed
-    lines, because the fallback is silent apart from them.
-    """
-    for i, pages in enumerate([1, 10, 100]):
-        put_metered(
-            tracking, f"doc-{i}", bedrock("Extraction", 3), PageCount=Decimal(pages)
         )
     hourly = hours(**{"9": {"docsPerHour": 60, "extractionTokensPerHour": 60000}})
     build(hourly)
