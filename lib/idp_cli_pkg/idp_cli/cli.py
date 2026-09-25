@@ -3124,7 +3124,7 @@ def generate_manifest(
                     f"[yellow]Warning: Test set '{test_set}' already exists in bucket[/yellow]"
                 )
                 console.print(
-                    "[yellow]Files will be overwritten. Continue? [y/N][/yellow]",
+                    "[yellow]Files will be overwritten. Continue? \\[y/N][/yellow]",
                     end=" ",
                 )
 
@@ -4824,7 +4824,8 @@ def config_upload(
         # Warn for the default profile
         if config_version and config_version.lower() == "default":
             console.print(
-                "[yellow]⚠️  Warning: This will update the default [system default] config profile[/yellow]"
+                "[yellow]⚠️  Warning: This will update the default "
+                "\\[system default] config profile[/yellow]"
             )
 
         result = client.config.upload(
@@ -6526,9 +6527,16 @@ def chat(
     try:
         from .chat import run_chat
     except ImportError:
+        # `\[agents]` escapes the bracket for Rich, which otherwise reads
+        # `[agents]` as a style tag, fails to resolve it as a style, and drops it
+        # silently -- leaving the user told to run `pip install -e
+        # 'lib/idp_common_pkg'`, which fixes nothing, because `idp_common` is
+        # already installed in the situation that produces this message and the
+        # missing piece is the extra. They run it, watch it succeed, retry, and get
+        # the identical error. Same idiom as the `\[Y/w/n]` prompts above.
         console.print(
-            "[red]✗ Chat requires idp_common[agents] to be installed.\n"
-            "  Run: pip install -e 'lib/idp_common_pkg[agents]'[/red]"
+            "[red]✗ Chat requires idp_common\\[agents] to be installed.\n"
+            "  Run: pip install -e 'lib/idp_common_pkg\\[agents]'[/red]"
         )
         sys.exit(1)
 

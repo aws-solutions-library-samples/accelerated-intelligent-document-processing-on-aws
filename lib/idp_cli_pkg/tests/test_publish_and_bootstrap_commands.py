@@ -338,26 +338,25 @@ class TestChatCommandForwarding:
         assert result.exit_code != 0
         assert "--stack-name" in result.output
 
-    def test_defect_the_missing_dependency_message_loses_the_agents_extra(self, runner):
-        """
-        DEFECT (pinned as current behaviour, not fixed). `chat` guards its import of
-        the optional agents dependency tree and prints a remedy, but the remedy is
-        passed through Rich's console markup with the pip extra written as a bare
-        `[agents]`. Rich reads `[agents]` as a style tag, fails to parse it as a
-        style, and drops it silently — so both lines lose the qualifier and the user
-        is told:
+    def test_the_missing_dependency_remedy_keeps_the_agents_extra(self, runner):
+        """The printed remedy has to be the command that fixes the problem.
+
+        `chat` guards its import of the optional agents dependency tree and prints a
+        remedy, and that remedy goes through Rich's console markup. Written as a bare
+        `[agents]`, Rich reads it as a style tag, fails to resolve it as a style and
+        drops it silently, so the user was told:
 
             Chat requires idp_common to be installed.
               Run: pip install -e 'lib/idp_common_pkg'
 
-        The observable consequence is that the printed remedy does not fix the
-        problem: `idp_common` is already installed in the situation that produces
-        this message, and installing it again without the `[agents]` extra changes
-        nothing, so the user runs the suggested command, sees it succeed, retries
-        `idp-cli chat` and gets the same error. The fix is to escape the brackets
-        (`\\[agents]`, as line 1111 already does for `\\[n]`) or to pass
-        `markup=False`; `idp_cli/cli.py:6231-6232` is the only place in this package
-        that prints a pip extra through Rich.
+        — which fixes nothing. `idp_common` is already installed in the situation
+        that produces this message; the missing piece is the extra. The user runs the
+        suggested command, watches it succeed, retries `idp-cli chat` and gets the
+        identical error.
+
+        Asserted on the *rendered* output rather than on the source string, because
+        the defect was entirely in the rendering: the source said `[agents]` and the
+        terminal did not.
 
         Forced by putting `None` at `sys.modules["idp_cli.chat"]`, which the import
         system treats as "this module is known to be unimportable" and turns into an
@@ -369,10 +368,124 @@ class TestChatCommandForwarding:
             result = runner.invoke(cli_module.cli, ["chat", "--stack-name", "IDP"])
 
         assert result.exit_code == 1
-        assert "Chat requires idp_common to be installed." in result.output
-        assert "Run: pip install -e 'lib/idp_common_pkg'" in result.output
-        # The qualifier the user actually needs is absent from both lines.
-        assert "[agents]" not in result.output
+        assert "Chat requires idp_common[agents] to be installed." in result.output
+        assert "Run: pip install -e 'lib/idp_common_pkg[agents]'" in result.output
+        # No stray backslash reached the terminal: the escape is for Rich's parser,
+        # not something the user should read.
+        assert "\\[agents]" not in result.output
+
+
+def _rich_reads_as_a_style(content: str) -> bool:
+    """Would Rich resolve `[<content>]` as a style tag rather than drop it?
+
+    Asked of Rich itself rather than of a list of style names, because a list is the
+    thing that goes stale: `Style.parse` is the same code the markup renderer uses,
+    so "Rich keeps this" and "this test says Rich keeps this" cannot diverge. A
+    closing tag (`[/red]`, `[/]`) is a tag whatever follows the slash.
+    """
+    from rich.style import Style
+
+    bare = content.lstrip("/")
+    if not bare:
+        return True
+    try:
+        Style.parse(bare)
+    except Exception:
+        return False
+    return True
+
+
+def _square_bracket_text_rich_would_drop():
+    """Every `[...]` in a console-printed literal that Rich silently removes.
+
+    Yields `"<file>:<line>: [<content>]"`. Rich's markup parser treats any
+    `[...]` as a tag; one it cannot resolve as a style is dropped with no error
+    and no warning, so the text inside it never reaches the terminal and the only
+    way to notice is to read the output and miss it.
+
+    Scoped to literals passed to a `*console.print(...)` call, which is the set
+    Rich can reach. A docstring is not in that set -- click renders a command's help
+    with its own formatter, so `[multi_document_discovery]` in `discover-multidoc`'s
+    help is correct as written and escaping it there would print a backslash -- and
+    neither is `_SETUP_HELP`, which goes to a plain `print()`. Both are excluded by
+    where they are rather than by being named.
+    """
+    import ast
+    import pathlib
+    import re
+
+    package = pathlib.Path(cli_module.__file__).parent
+    sources = sorted(package.glob("*.py"))
+    assert sources, "found no modules to scan, so this check asserts nothing"
+
+    # Not preceded by a backslash: that is how the escaped form appears in the
+    # runtime string the AST gives us, and it is the form Rich keeps.
+    bracketed = re.compile(r"(?<!\\)\[([^\[\]]*)\]")
+
+    for source in sources:
+        tree = ast.parse(source.read_text(encoding="utf-8"))
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call):
+                continue
+            func = node.func
+            if not (
+                isinstance(func, ast.Attribute)
+                and func.attr == "print"
+                and isinstance(func.value, ast.Name)
+                and func.value.id.endswith("console")
+            ):
+                continue
+            for arg in node.args:
+                literals = []
+                if isinstance(arg, ast.Constant) and isinstance(arg.value, str):
+                    literals.append(arg.value)
+                elif isinstance(arg, ast.JoinedStr):
+                    literals.extend(
+                        part.value
+                        for part in arg.values
+                        if isinstance(part, ast.Constant)
+                        and isinstance(part.value, str)
+                    )
+                for text in literals:
+                    for content in bracketed.findall(text):
+                        if not _rich_reads_as_a_style(content):
+                            yield f"{source.name}:{node.lineno}: [{content}]"
+
+
+def test_the_bracket_scan_finds_an_unescaped_tag_when_there_is_one():
+    """The scan is not vacuous: given a real offender, it reports it.
+
+    Measured by asking the discriminator about the three contents that were
+    unescaped in this package -- a pip extra, a profile-name placeholder and a
+    prompt's answer hint -- rather than by asserting the scan currently finds
+    nothing, which is what a clean tree makes it do and which a broken scan would
+    also do.
+    """
+    assert not _rich_reads_as_a_style("agents")
+    assert not _rich_reads_as_a_style("system default")
+    assert not _rich_reads_as_a_style("y/N")
+    # And the discriminator still recognises the styles this package really uses,
+    # or the scan would report every coloured line in the file.
+    for style in ("red", "bold green", "dim", "/yellow", "/"):
+        assert _rich_reads_as_a_style(style), style
+
+
+def test_no_console_print_drops_text_through_rich_markup():
+    """No `[...]` in a printed message is silently removed by Rich.
+
+    The class behind the `chat` remedy above, and not only that instance: the same
+    mistake was dropping the profile name from `config-activate`'s "this will update
+    the default [system default] config profile" warning and the `[y/N]` hint from
+    the test-set overwrite prompt, leaving a question with no answers offered.
+    """
+    offenders = sorted(_square_bracket_text_rich_would_drop())
+
+    assert not offenders, (
+        "Rich reads each of these as a style tag, cannot resolve it, and drops it "
+        "along with the text inside -- so the message reaching the terminal is "
+        "missing exactly the part that was put in brackets to stand out. Escape the "
+        f"opening bracket (`\\\\[...]`): {offenders}"
+    )
 
 
 class TestBootstrapLocalMode:

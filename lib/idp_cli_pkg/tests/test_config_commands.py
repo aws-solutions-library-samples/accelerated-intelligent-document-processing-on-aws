@@ -973,11 +973,11 @@ def test_upload_to_a_profile_named_DEFAULT_warns_about_a_profile_it_does_not_tou
     Consequence: the warning describes a destructive act that did not happen, and
     hides the one that did — a duplicate profile differing only in case.
 
-    Second, `[system default]` is Rich console markup. Rich reads it as a style tag
-    and deletes it, so the rendered warning reads "...update the default  config
-    profile" with a doubled space and no indication of which profile is meant.
-
-    Both pinned.
+    Pinned. The warning does now name the profile it means: `[system default]` was
+    being read by Rich as a style tag and deleted, leaving "...update the default
+    config profile" with a doubled space and no indication of which profile that was,
+    and the bracket is escaped so the text survives. That is a separate defect from
+    the case-sensitivity one this test exists for, which remains.
     """
     with config_stack() as stack:
         stack.seed("default", class_name="the-real-default")
@@ -999,7 +999,7 @@ def test_upload_to_a_profile_named_DEFAULT_warns_about_a_profile_it_does_not_tou
             )
         assert result.exit_code == 0, result.output
         assert "This will update the default" in result.output
-        assert "[system default]" not in result.output, (
+        assert "[system default]" in result.output, (
             "Rich swallowed the bracketed text as a style tag"
         )
         assert "Configuration profile 'DEFAULT' created!" in result.output
