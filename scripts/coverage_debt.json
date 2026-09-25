@@ -179,6 +179,7 @@
         "idp_common/hooks/__init__.py": 100.0,
         "idp_common/image/__init__.py": 79.01,
         "idp_common/job_service.py": 0.0,
+        "idp_common/metering_units.py": 100.0,
         "idp_common/metrics/__init__.py": 76.56,
         "idp_common/model_finetuning/__init__.py": 100.0,
         "idp_common/model_finetuning/models.py": 100.0,

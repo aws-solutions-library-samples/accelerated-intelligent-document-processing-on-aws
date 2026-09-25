@@ -28,12 +28,12 @@ What these tests pin
 2. All three drops are reported, and each names the metering key.
 3. ⚠️ **The boundary in the other direction**, which is the test to break before
    changing the matching rule: a unit a matched pricing entry does not list is
-   ``$0.00`` *by design*, not a missing price. Every Bedrock call meters
-   ``totalTokens`` and ``requests``, neither of which Bedrock charges for, so
-   reporting the unit axis would mark every Bedrock entry in every row unpriceable
-   and null every cost in the corpus. Production settled this rule first
-   (``idp_common/reporting/README.md``) and the two implementations are required to
-   agree.
+   ``$0.00`` when ``idp_common.metering_units`` declares it free for that service,
+   and reporting *those* would mark every Bedrock entry in every row unpriceable
+   and null every cost in the corpus. A unit nothing declares is reported, which is
+   the other half of the same rule and is what #1212 added — the two cases used to
+   be one. Production settled the rule first (``idp_common/reporting/README.md``)
+   and the two implementations call the same function so they cannot diverge.
 4. ``analyze.score_doc`` withholds ``cost``, ``cost_by_phase`` and ``cost_by_key``
    from a row it could not fully price and names the entries in ``cost_unpriced`` —
    while keeping ``tokens``, which were read rather than priced.
@@ -448,11 +448,16 @@ class TestEveryDropIsReported:
 class TestAUnitAnEntryDoesNotListIsARealZero:
     """⚠️ Break these before relaxing or widening the matching rule.
 
-    A unit absent from a pricing entry that EXISTS means the unit is not chargeable
-    for that service, not that a price is missing. Production decided this first and
-    documents it in ``idp_common/reporting/README.md``; the two implementations are
-    required to agree, so reporting the unit axis here would also put the benchmark
-    cost and the product's reported cost out of step (#926's docstring).
+    A unit absent from a pricing entry that EXISTS is $0.00 when
+    ``idp_common.metering_units`` declares it non-chargeable for that service —
+    ``totalTokens`` and ``requests`` on Bedrock, on the evidence of AWS's own
+    price list. That is the case these tests protect, and the reason it needs
+    protecting is that the alternative is catastrophic rather than merely wrong:
+    reporting those would null every cost in the corpus. An *undeclared* absent
+    unit is reported instead, which is the other half of the rule and is covered
+    by :class:`TestAnUndeclaredUnitIsReportedRatherThanPricedAtZero` below.
+    Production decided the rule first (``idp_common/reporting/README.md``) and
+    both implementations now call the same function, so they cannot disagree.
     """
 
     def test_no_pricing_entry_anywhere_lists_totaltokens(self):
@@ -510,13 +515,95 @@ class TestAUnitAnEntryDoesNotListIsARealZero:
                 keys.update(row.get("cost_by_key") or {})
         keys = sorted(keys)
         assert len(keys) >= 14, f"only found {len(keys)} keys in the artifacts"
+        # The free units are added only to the keys whose writer really emits
+        # them: `BedrockClient` puts `totalTokens` and `requests` on a
+        # `bedrock/` or `lambda_hook/` entry, and nothing puts either on a
+        # `textract/` or `lambda/` one. Sprinkling `totalTokens` over every key
+        # was a fixture that described no metering map this project produces, and
+        # it is the shape that makes a unit-axis assertion look impossible: the
+        # units to declare free are per service, so a fixture that ignores the
+        # service asks the wrong question of the rule.
+        free_units = {
+            "bedrock": ("totalTokens", "requests"),
+            "lambda_hook": ("totalTokens", "requests"),
+        }
         metering = {
             f"Extraction/{key}": {
-                unit: 1 for unit in (*lib.PRICING.get(key, {}), "totalTokens")
+                unit: 1
+                for unit in (
+                    *lib.PRICING.get(key, {}),
+                    *free_units.get(key.split("/", 1)[0], ()),
+                )
             }
             for key in keys
         }
         priced = lib.price_metering(read_metering(metering))
+        assert priced.complete, priced.why
+
+
+# --------------------------------------------------------------------------- #
+# 3b. The half #1212 added: an absent unit nothing declares free
+# --------------------------------------------------------------------------- #
+@pytest.mark.unit
+class TestAnUndeclaredUnitIsReportedRatherThanPricedAtZero:
+    """A numeric field Bedrock adds to ``usage`` must not cost exactly $0.00.
+
+    ``bedrock.client.numeric_usage`` forwards every numeric member of a Converse
+    ``usage`` block into metering by design, so an unanticipated unit arrives
+    here without anyone adding it. Dropping it contributed nothing to the total,
+    which is the same arithmetic as contributing zero — #1146's own argument, one
+    axis along. See GitHub #1212.
+    """
+
+    def test_a_new_numeric_usage_member_is_named_not_dropped(self, read_metering):
+        priced = lib.price_metering(
+            read_metering(
+                {
+                    f"Extraction/{REAL_MODEL}": {
+                        "inputTokens": 1000,
+                        "reasoningTokens": 5000,
+                    }
+                }
+            )
+        )
+        assert not priced.complete
+        assert len(priced.unpriced) == 1
+        assert "reasoningTokens" in priced.why
+        assert REAL_MODEL in priced.why
+        # The rest of the map still priced, and `partial_total` is the number
+        # under the name that says it is short.
+        assert priced.partial_total == pytest.approx(
+            1000 * lib.PRICING[REAL_MODEL]["inputTokens"]
+        )
+
+    def test_production_and_the_harness_agree_on_the_same_unit(self):
+        """Both implementations, one rule — asserted rather than asserted-of.
+
+        The two used to state the rule in prose in two docstrings, which is how
+        they came to disagree over ``cacheReadInputTokens`` (#926). This compares
+        the verdicts directly, and it is the assertion to keep if these tests are
+        ever reorganised.
+        """
+        from idp_common.metering_units import UNKNOWN, classify_absent_unit
+
+        for unit in ("reasoningTokens", "TotalTokens", "requestCount"):
+            assert classify_absent_unit(REAL_MODEL, unit, 5000) == UNKNOWN
+            priced = lib.price_metering({f"Extraction/{REAL_MODEL}": {unit: 5000}})
+            assert not priced.complete, f"{unit} priced silently"
+
+    def test_a_zero_count_of_an_undeclared_unit_is_not_reported(self, read_metering):
+        """Arithmetic: 0 x any rate is 0, so there is no spend to hide.
+
+        Without this, every shipped per-page LambdaHook — which reports
+        ``inputTokens``/``outputTokens``/``totalTokens`` as 0 against a price
+        listing only ``pages`` — would make its row unpriceable and drop the
+        document out of every cell mean.
+        """
+        priced = lib.price_metering(
+            read_metering(
+                {f"Extraction/{REAL_MODEL}": {"inputTokens": 1000, "mysteryUnit": 0}}
+            )
+        )
         assert priced.complete, priced.why
 
 
