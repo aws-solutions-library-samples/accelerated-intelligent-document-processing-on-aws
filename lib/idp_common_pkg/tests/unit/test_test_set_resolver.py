@@ -8859,6 +8859,7 @@ class TestPatternImportIsAdminOnly:
         [
             "addTestSetFromUpload",
             "addDocumentsToTestSetFromUpload",
+            "addDocumentsToTestSetByKey",
             "createEmptyTestSet",
         ],
     )
@@ -8883,6 +8884,283 @@ def test_publish_snapshot_records_the_drafting_configuration(publish_table):
         "Item"
     ]
     assert written["configVersion"] == "prof-A"
+
+
+@pytest.mark.unit
+class TestAddDocumentsToTestSetByKey:
+    """Selected Document List rows are appended by exact key, unlabeled ones too."""
+
+    def _completed_set(self):
+        return {
+            "id": "my-set",
+            "name": "My Set",
+            "status": "COMPLETED",
+            "fileCount": 3,
+            "createdAt": "2026-09-01T00:00:00Z",
+        }
+
+    @staticmethod
+    def _rows(keys, status="COMPLETED", config_version="lending"):
+        return [
+            {
+                "PK": f"doc#{k}",
+                "SK": "none",
+                "ObjectKey": k,
+                "ObjectStatus": status,
+                "ConfigVersion": config_version,
+            }
+            for k in keys
+        ]
+
+    def _run(self, args, item=None, rows=None, event=None):
+        table = Mock()
+        sqs = Mock()
+        if rows is None:
+            rows = self._rows(args.get("objectKeys") or [])
+        with (
+            patch.object(
+                test_set_index.db_client,
+                "get_item",
+                return_value=item if item is not None else self._completed_set(),
+            ),
+            patch.object(
+                test_set_index.db_client, "batch_get_items", return_value=rows
+            ),
+            patch.object(test_set_index.boto3, "resource") as resource,
+            patch.object(test_set_index.boto3, "client", return_value=sqs),
+            patch.dict(
+                os.environ,
+                {
+                    "TRACKING_TABLE": "tracking",
+                    "TEST_SET_COPY_QUEUE_URL": "https://sqs/queue",
+                },
+            ),
+        ):
+            resource.return_value.Table.return_value = table
+            result = test_set_index.add_documents_to_test_set_by_key(args, event)
+        return result, table, sqs
+
+    def test_queues_the_keys_and_marks_the_set_updating(self):
+        result, table, sqs = self._run(
+            {"testSetId": "my-set", "objectKeys": ["a.pdf", "folder/b.pdf"]}
+        )
+
+        body = json.loads(sqs.send_message.call_args.kwargs["MessageBody"])
+        assert body == {
+            "testSetId": "my-set",
+            "objectKeys": ["a.pdf", "folder/b.pdf"],
+            "bucketType": "input",
+            "trackingTable": "tracking",
+            "mode": "append",
+        }
+        assert "filePattern" not in body
+
+        update = table.update_item.call_args.kwargs
+        assert update["ExpressionAttributeValues"][":status"] == "UPDATING"
+        assert "statusUpdatedAt" in update["UpdateExpression"]
+        assert result["status"] == "UPDATING"
+        assert result["id"] == "my-set"
+        assert result["fileCount"] == 3
+
+    def test_duplicate_and_padded_keys_collapse(self):
+        _, _, sqs = self._run(
+            {"testSetId": "my-set", "objectKeys": [" a.pdf", "a.pdf", "b.pdf "]},
+            rows=self._rows(["a.pdf", "b.pdf"]),
+        )
+        body = json.loads(sqs.send_message.call_args.kwargs["MessageBody"])
+        assert body["objectKeys"] == ["a.pdf", "b.pdf"]
+
+    @pytest.mark.parametrize(
+        "keys",
+        [[], None, [""], ["   "], [42], ["/abs.pdf"], ["dir/"], ["a/../b.pdf"]],
+    )
+    def test_rejects_malformed_key_lists_before_touching_the_set(self, keys):
+        with (
+            patch.object(test_set_index.db_client, "get_item") as get,
+            patch.object(test_set_index.boto3, "client") as client,
+        ):
+            with pytest.raises(ValueError):
+                test_set_index.add_documents_to_test_set_by_key(
+                    {"testSetId": "my-set", "objectKeys": keys}
+                )
+        get.assert_not_called()
+        client.assert_not_called()
+
+    def test_caps_the_number_of_keys(self):
+        keys = [f"{i}.pdf" for i in range(test_set_index.MAX_KEYS_PER_ADD + 1)]
+        with pytest.raises(ValueError, match="At most"):
+            test_set_index.add_documents_to_test_set_by_key(
+                {"testSetId": "my-set", "objectKeys": keys}
+            )
+
+    def test_refuses_a_set_that_is_not_completed(self):
+        item = self._completed_set()
+        item["status"] = "UPDATING"
+        with pytest.raises(Exception, match="not in COMPLETED status"):
+            self._run({"testSetId": "my-set", "objectKeys": ["a.pdf"]}, item=item)
+
+    def test_refuses_a_missing_set(self):
+        with pytest.raises(Exception, match="not found"):
+            self._run({"testSetId": "nope", "objectKeys": ["a.pdf"]}, item={})
+
+    @staticmethod
+    def _event(groups, email="author@example.com"):
+        return {
+            "identity": {
+                "claims": {
+                    "cognito:groups": groups,
+                    "email": email,
+                    "sub": "sub-1",
+                }
+            }
+        }
+
+    def _scoped(self, scope):
+        return patch.object(
+            test_set_index, "resolve_allowed_config_versions", return_value=scope
+        )
+
+    def test_a_scoped_author_can_add_documents_inside_their_scope(self):
+        with self._scoped(["lending*"]):
+            result, _, sqs = self._run(
+                {"testSetId": "my-set", "objectKeys": ["a.pdf"]},
+                rows=self._rows(["a.pdf"], config_version="lending-v2"),
+                event=self._event(["Author"]),
+            )
+        assert result["status"] == "UPDATING"
+        sqs.send_message.assert_called_once()
+
+    @pytest.mark.parametrize(
+        "rows",
+        [
+            pytest.param(
+                lambda s: s._rows(["a.pdf"], config_version="payroll"),
+                id="outside-scope",
+            ),
+            pytest.param(
+                lambda s: [
+                    {**s._rows(["a.pdf"])[0], "ConfigVersion": None},
+                ],
+                id="no-profile-name",
+            ),
+            pytest.param(lambda s: [], id="no-tracking-row"),
+            pytest.param(
+                lambda s: s._rows(["a.pdf"], status="RUNNING"), id="not-completed"
+            ),
+        ],
+    )
+    def test_a_scoped_author_is_refused_with_one_message_that_names_nothing(self, rows):
+        with self._scoped(["lending"]):
+            with pytest.raises(PermissionError) as excinfo:
+                self._run(
+                    {"testSetId": "my-set", "objectKeys": ["a.pdf"]},
+                    rows=rows(self),
+                    event=self._event(["Author"]),
+                )
+        assert str(excinfo.value) == test_set_index._SELECTION_REFUSED
+        assert "a.pdf" not in str(excinfo.value)
+
+    def test_the_refusal_happens_before_the_set_is_touched(self):
+        with (
+            self._scoped(["lending"]),
+            patch.object(
+                test_set_index.db_client,
+                "batch_get_items",
+                return_value=self._rows(["a.pdf"], config_version="payroll"),
+            ),
+            patch.object(test_set_index.db_client, "get_item") as get,
+            patch.object(test_set_index.boto3, "client") as client,
+        ):
+            with pytest.raises(PermissionError):
+                test_set_index.add_documents_to_test_set_by_key(
+                    {"testSetId": "my-set", "objectKeys": ["a.pdf"]},
+                    self._event(["Author"]),
+                )
+        get.assert_not_called()
+        client.assert_not_called()
+
+    def test_an_unfinished_document_is_refused_even_for_an_admin(self):
+        with pytest.raises(PermissionError):
+            self._run(
+                {"testSetId": "my-set", "objectKeys": ["a.pdf"]},
+                rows=self._rows(["a.pdf"], status="RUNNING"),
+                event=self._event(["Admin"]),
+            )
+
+    def test_an_admin_is_never_looked_up(self):
+        with patch.object(test_set_index, "resolve_allowed_config_versions") as lookup:
+            self._run(
+                {"testSetId": "my-set", "objectKeys": ["a.pdf"]},
+                rows=self._rows(["a.pdf"], config_version="anything"),
+                event=self._event(["Admin"]),
+            )
+        lookup.assert_not_called()
+
+    def test_a_scope_that_cannot_be_resolved_is_refused(self):
+        with patch.object(
+            test_set_index,
+            "resolve_allowed_config_versions",
+            side_effect=test_set_index.ScopeLookupError("no table"),
+        ):
+            with pytest.raises(PermissionError, match="could not be verified"):
+                self._run(
+                    {"testSetId": "my-set", "objectKeys": ["a.pdf"]},
+                    event=self._event(["Author"]),
+                )
+
+    def test_an_unscoped_author_is_not_restricted(self):
+        with self._scoped(None):
+            result, _, _ = self._run(
+                {"testSetId": "my-set", "objectKeys": ["a.pdf"]},
+                rows=self._rows(["a.pdf"], config_version="anything"),
+                event=self._event(["Author"]),
+            )
+        assert result["status"] == "UPDATING"
+
+    def test_the_handler_passes_the_caller_identity_through(self):
+        event = {
+            "info": {"fieldName": "addDocumentsToTestSetByKey"},
+            "arguments": {"testSetId": "my-set", "objectKeys": ["a.pdf"]},
+            **self._event(["Author"]),
+        }
+        with patch.object(
+            test_set_index, "add_documents_to_test_set_by_key", return_value={}
+        ) as op:
+            test_set_index.handler(event, {})
+        assert op.call_args.args[1] is event
+
+    def test_pattern_append_still_sends_the_pattern_message(self):
+        table = Mock()
+        sqs = Mock()
+        with (
+            patch.object(
+                test_set_index.db_client, "get_item", return_value=self._completed_set()
+            ),
+            patch.object(test_set_index.boto3, "resource") as resource,
+            patch.object(test_set_index.boto3, "client", return_value=sqs),
+            patch.dict(
+                os.environ,
+                {
+                    "TRACKING_TABLE": "tracking",
+                    "TEST_SET_COPY_QUEUE_URL": "https://sqs/queue",
+                },
+            ),
+        ):
+            resource.return_value.Table.return_value = table
+            result = test_set_index.add_documents_to_test_set(
+                {
+                    "testSetId": "my-set",
+                    "filePattern": "*.pdf",
+                    "bucketType": "input",
+                    "fileCount": 2,
+                    "modifiedAfter": "2026-09-01T00:00:00Z",
+                }
+            )
+        body = json.loads(sqs.send_message.call_args.kwargs["MessageBody"])
+        assert body["filePattern"] == "*.pdf"
+        assert body["modifiedAfter"] == "2026-09-01T00:00:00Z"
+        assert "objectKeys" not in body
+        assert result["status"] == "UPDATING"
 
 
 class TestResolverPathsKeyLikeTheStoredCurve:

@@ -8,9 +8,10 @@ SPDX-License-Identifier: MIT-0
 # Blogs, Customer Stories & Research
 
 External publications about the GenAI Intelligent Document Processing (GenAIIDP)
-Accelerator — AWS blog deep-dives into the solution's features, customer
-references that share real-world results and metrics, and peer-reviewed research
-that underpins the accelerator's approach.
+Accelerator — AWS blog deep-dives into the solution's features, independent
+industry-analyst assessments, customer references that share real-world results
+and metrics, and peer-reviewed research that underpins the accelerator's
+approach.
 
 ## Feature Deep-Dives
 
@@ -56,6 +57,29 @@ its capabilities.
   `IDPTools__process` / `get_results` from a Quick workflow that writes the
   extracted fields to an Excel workbook in S3. See also
   [MCP Server](./mcp-server.md) and [Human-in-the-Loop Review](./human-review.md).
+
+## Analyst Reports
+
+Independent assessments by industry analyst firms. These are the publishers'
+copyrighted work, hosted here with their permission and unmodified — see
+[PROVENANCE.md](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/blob/develop/docs/analyst-reports/PROVENANCE.md)
+for each report's rights grant.
+
+- **[Deep Analysis — *Vendor Analysis: AWS GenAI IDP Accelerator*](https://aws-solutions-library-samples.github.io/accelerated-intelligent-document-processing-on-aws/analyst-reports/deep-analysis-aws-genai-idp-accelerator-2026-08.pdf)**
+  *(Aug 2026, 9 pages)* — A follow-up to the firm's November 2025 review, which
+  had judged the accelerator "a capable developers-only offering" with a steep
+  learning curve. Nine months on it finds the progress "striking," crediting
+  quick-start agents, AI-driven auto-configuration, managed configuration
+  versions, and the Agent Companion with moving the platform within reach of a
+  business analyst "without dumbing down the deep configurability underneath."
+  Singles out the empirical cost-and-accuracy work — [Test Studio](./test-studio.md),
+  [confidence calibration](./assessment.md), and the
+  [Auto Optimizer](./extensions/auto-optimizer.md) — as ahead of the commercial
+  field, and the Auto Optimizer as "the most comprehensive answer" it has seen to
+  continuous re-optimization against model churn. Also walks the inference-hook
+  escape hatch, agentic extraction with sharding and cost-aware tool selection,
+  OCR as an optional pipeline step, and the extensions catalog; closes with
+  advice to buyers and a SOAR analysis.
 
 ## Customer Stories
 

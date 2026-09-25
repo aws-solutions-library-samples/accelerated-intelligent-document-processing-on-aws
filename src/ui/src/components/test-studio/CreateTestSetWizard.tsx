@@ -521,8 +521,8 @@ const CreateTestSetWizard = ({
       />
       {isEmpty && (
         <Alert type="info" header="Next step after this">
-          This set is created with no documents. Open it and use <strong>Add documents</strong> to bring some in: files in a bucket, a zip
-          upload, or generated documents.
+          This set is created with no documents. Open it and use <strong>Add documents</strong> to bring some in: processed documents, files
+          in a bucket, a zip upload, or generated documents.
         </Alert>
       )}
       {source === 'upload-documents' && (

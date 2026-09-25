@@ -649,6 +649,7 @@ const TestSets = (): React.JSX.Element => {
                     text: 'Add documents',
                     disabled: selectedItems.length !== 1 || selectedItems[0]?.status !== 'COMPLETED',
                     items: [
+                      { id: 'docs-processed', text: 'From processed documents' },
                       { id: 'docs-pattern', text: 'From files in a bucket', disabled: !isAdmin, disabledReason: 'Administrators only' },
                       { id: 'docs-upload', text: 'From a zip upload' },
                     ],
@@ -662,6 +663,9 @@ const TestSets = (): React.JSX.Element => {
                     window.location.hash = testSetAnnotateHref(selected.id).slice(1);
                   } else if (detail.id === 'browse' && selected) {
                     window.location.hash = testSetDetailHref(selected.id).slice(1);
+                  } else if (detail.id === 'docs-processed') {
+                    setError('');
+                    setAddDocsMode('documents');
                   } else if (detail.id === 'docs-pattern') {
                     setError('');
                     setAddDocsMode('pattern');

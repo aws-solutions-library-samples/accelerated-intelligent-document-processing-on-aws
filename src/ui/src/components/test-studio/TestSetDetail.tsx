@@ -964,6 +964,7 @@ const TestSetDetail = (): React.JSX.Element => {
                       )}
                       <ButtonDropdown
                         items={[
+                          { id: 'add-processed', text: 'From processed documents' },
                           { id: 'add-pattern', text: 'From files in a bucket', disabled: !isAdmin, disabledReason: 'Administrators only' },
                           { id: 'add-upload', text: 'From a zip upload' },
                           {
@@ -974,7 +975,8 @@ const TestSetDetail = (): React.JSX.Element => {
                           },
                         ]}
                         onItemClick={({ detail }) => {
-                          if (detail.id === 'add-pattern') setAddDocsMode('pattern');
+                          if (detail.id === 'add-processed') setAddDocsMode('documents');
+                          else if (detail.id === 'add-pattern') setAddDocsMode('pattern');
                           else if (detail.id === 'add-upload') setAddDocsMode('upload');
                           else if (detail.id === 'add-generate') setShowGenerateModal(true);
                         }}
@@ -1137,7 +1139,7 @@ const TestSetDetail = (): React.JSX.Element => {
                   <Box variant="p" color="inherit">
                     {filterText
                       ? 'This test set has no documents matching the filter.'
-                      : 'This test set has no documents. Use Add documents to bring some in: files in a bucket, a zip upload, or generated documents.'}
+                      : 'This test set has no documents. Use Add documents to bring some in: processed documents, files in a bucket, a zip upload, or generated documents.'}
                   </Box>
                 </Box>
               }

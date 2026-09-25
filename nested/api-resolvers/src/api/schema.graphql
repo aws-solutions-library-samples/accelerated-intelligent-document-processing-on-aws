@@ -1607,6 +1607,10 @@ type Mutation {
     @aws_cognito_user_pools(cognito_groups: ["Admin", "Author"])
   addDocumentsToTestSet(testSetId: String!, filePattern: String!, bucketType: String!, fileCount: Int!, modifiedAfter: String): TestSet
     @aws_cognito_user_pools(cognito_groups: ["Admin"])
+  # Add processed documents the caller picked, by input-bucket key. A document
+  # with no ground truth is added unlabeled rather than skipped.
+  addDocumentsToTestSetByKey(testSetId: String!, objectKeys: [String!]!): TestSet
+    @aws_cognito_user_pools(cognito_groups: ["Admin", "Author"])
   addDocumentsToTestSetFromUpload(input: TestSetDocumentsUploadInput!): TestSetUploadResponse
     @aws_cognito_user_pools(cognito_groups: ["Admin", "Author"])
   updateTestSet(input: UpdateTestSetInput!): TestSet

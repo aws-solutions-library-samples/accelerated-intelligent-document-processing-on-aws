@@ -322,6 +322,7 @@ export default defineConfig({
         {
           label: "New & Uncategorized",
           items: [
+            { label: "Data Mart Migration Runbook", slug: "data-mart-migration-runbook" },
             { label: "Rule Validation Z3", slug: "rule-validation-z3" },
           ],
         },
