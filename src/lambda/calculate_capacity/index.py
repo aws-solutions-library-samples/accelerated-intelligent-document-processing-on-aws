@@ -1159,8 +1159,15 @@ def build_simple_quota_requirements(
     # Add 10% buffer to base demand for safety margin
     BUFFER_FACTOR = 1.1  # 10% buffer
     
+    # Every per-step token key is indexed, OCR included. The sole producer of this
+    # breakdown is the handler below, whose initialiser writes all five for every
+    # hour of the day, so an absent key means the caller assembled a shape this
+    # function cannot plan from. Defaulting one of them to zero silently plans no
+    # quota at all for that stage, and the failure mode of an under-provisioned
+    # quota is production throttling that points nowhere near here; a KeyError
+    # names the missing key at the point it is needed.
     for hour_data in hourly_breakdown:
-        ocr_tpm = hour_data.get("ocrTokensPerHour", 0) / 60 * BUFFER_FACTOR
+        ocr_tpm = hour_data["ocrTokensPerHour"] / 60 * BUFFER_FACTOR
         classification_tpm = hour_data["classificationTokensPerHour"] / 60 * BUFFER_FACTOR
         extraction_tpm = hour_data["extractionTokensPerHour"] / 60 * BUFFER_FACTOR
         assessment_tpm = hour_data["assessmentTokensPerHour"] / 60 * BUFFER_FACTOR

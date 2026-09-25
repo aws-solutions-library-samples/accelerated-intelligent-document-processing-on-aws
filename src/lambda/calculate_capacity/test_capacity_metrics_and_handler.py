@@ -1062,27 +1062,75 @@ def test_the_token_requirement_is_the_busiest_hour_plus_a_ten_percent_buffer(tra
     assert requirements[("Extraction", "TPM")]["requiredQuota"] == "2,420"
 
 
-@pytest.mark.unit
-def test_an_hourly_breakdown_missing_the_ocr_key_is_tolerated_but_not_the_others(
-    tracking,
-):
-    """`ocrTokensPerHour` is read with a default; the other four are not.
+def breakdown_step_token_keys():
+    """The per-step token keys the handler's breakdown initialiser writes.
 
-    A caller assembling the breakdown by hand — the only way to call this function
-    other than through the handler — gets a `KeyError` for four of the five stages
-    and a silent zero for the fifth. Pinned so the asymmetry is visible rather than
-    discovered from a Lambda traceback.
+    Derived from `index.py`, and deliberately from the **producer** rather than
+    from the reader under test. Collecting the reader's subscripts would shrink
+    this universe by exactly the regression the test below guards against — a key
+    that went back to `.get(..., 0)` would stop being a subscript, drop out of the
+    parametrisation, and the suite would pass by testing one stage fewer. The
+    producer keeps listing every stage it populates either way.
+
+    The aggregate `tokensPerHour` is excluded by case: the five per-step keys spell
+    it `TokensPerHour`.
+    """
+    tree = ast.parse(Path(index.__file__).read_text(encoding="utf-8"))
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Dict):
+            continue
+        keys = {
+            key.value
+            for key in node.keys
+            if isinstance(key, ast.Constant) and isinstance(key.value, str)
+        }
+        if "classificationTokensPerHour" in keys:
+            return sorted(key for key in keys if key.endswith("TokensPerHour"))
+    return []
+
+
+STEP_TOKEN_KEYS = breakdown_step_token_keys()
+
+
+@pytest.mark.unit
+def test_the_derived_step_token_key_set_is_the_five_pipeline_stages():
+    """Closes the universe the parametrised test below runs over.
+
+    Written out as literals rather than derived a second way, because an empty or
+    short derivation makes that test collect fewer cases — and a parametrisation
+    with no cases is reported as nothing at all, which reads like a pass. This
+    fails instead, and it also catches a sixth stage being added to the
+    initialiser without being required.
+    """
+    assert STEP_TOKEN_KEYS == [
+        "assessmentTokensPerHour",
+        "classificationTokensPerHour",
+        "extractionTokensPerHour",
+        "ocrTokensPerHour",
+        "summarizationTokensPerHour",
+    ]
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("missing_key", STEP_TOKEN_KEYS)
+def test_every_per_step_token_key_in_the_breakdown_is_required(tracking, missing_key):
+    """All five stages, one rule: an absent key is a `KeyError` naming it.
+
+    OCR used to be the exception, read with a default of zero while the other four
+    were indexed. The asymmetry is the wrong way round for a quota planner — a
+    missing key defaulted to zero plans no quota for that stage, and the operator
+    meets that as Bedrock throttling in production with nothing pointing back here,
+    whereas the four that raised said which key was missing. The sole producer
+    writes all five for every hour, so no caller loses a shape it used to have.
+
+    Stated over the derived key set rather than as five hand-written cases, so a
+    stage added to the pipeline is covered without this test being edited.
     """
     put_metered(tracking, "doc-1", bedrock("Extraction", 4))
     hourly = hours(**{"9": {"docsPerHour": 60, "extractionTokensPerHour": 60000}})
     for entry in hourly:
-        del entry["ocrTokensPerHour"]
-    assert build(hourly)  # tolerated
-
-    hourly = hours(**{"9": {"docsPerHour": 60, "extractionTokensPerHour": 60000}})
-    for entry in hourly:
-        del entry["assessmentTokensPerHour"]
-    with pytest.raises(KeyError, match="assessmentTokensPerHour"):
+        del entry[missing_key]
+    with pytest.raises(KeyError, match=missing_key):
         build(hourly)
 
 
