@@ -199,12 +199,14 @@ def complete_section_review(
     doc = response.get("Item", {})
     skipped = set(doc.get("HITLSectionsSkipped", []) or [])
 
-    # If HITLSectionsPending was never initialized, initialize it from all sections
+    # If HITLSectionsPending was never initialized, initialize it from all sections.
+    # Every section starts pending, including the one being reviewed now: the move to
+    # completed just below is the single place a section leaves the pending set, on
+    # this path and on the one where the set came from the stored item.
     if not pending and not completed and not skipped:
-        all_section_ids = {
+        pending = {
             section.section_id for section in document.sections if section.section_id
         }
-        pending = all_section_ids - {section_id}
         logger.info(f"Initialized HITLSectionsPending from sections: {pending}")
 
     # Move section from pending to completed
@@ -709,18 +711,17 @@ def claim_review(object_key, username="", user_email=""):
         raise ValueError(f"Document {object_key} not found")
 
     table = dynamodb.Table(TRACKING_TABLE_NAME)
-    response = table.get_item(Key={"PK": f"doc#{object_key}", "SK": "none"})
-    doc = response.get("Item", {})
-    current_owner = doc.get("HITLReviewOwner", "")
 
-    if current_owner and current_owner != username:
-        raise ValueError(f"Document is already claimed by {current_owner}")
-
-    # Conditional, so the claim is exclusive rather than advisory. The read above
-    # cannot be: two annotators clicking Claim at the same moment both pass it and
-    # both write, and the collaborative queue is exactly the feature that depends
-    # on only one winning. Updating in place (rather than via the document model)
-    # also avoids re-serializing metering data.
+    # Conditional, so the claim is exclusive rather than advisory, and the condition
+    # is the *only* ownership test here. A read-then-check before this write cannot
+    # be one: two annotators clicking Claim at the same moment both pass it and both
+    # write, and the collaborative queue is exactly the feature that depends on only
+    # one winning. It also cannot refuse anything this condition accepts, since it
+    # answers from an eventually consistent read — a document released a moment ago
+    # can still read as owned, and refusing that claim is wrong. So ownership is
+    # decided once, here, and the recovery path below phrases the refusal. Updating
+    # in place (rather than via the document model) also avoids re-serializing
+    # metering data.
     try:
         table.update_item(
             Key={"PK": f"doc#{object_key}", "SK": "none"},
@@ -737,9 +738,12 @@ def claim_review(object_key, username="", user_email=""):
             },
         )
     except dynamodb.meta.client.exceptions.ConditionalCheckFailedException:
-        # Lost the race. Re-read so the message names the actual winner, and phrase
-        # it the way the read-path check does — the UI matches on "already claimed"
-        # to skip to the next document instead of dead-ending.
+        # Lost the race. Re-read so the message names the actual winner, and keep the
+        # "already claimed" phrasing — the UI matches on it to skip to the next
+        # document instead of dead-ending. This re-read is eventually consistent like
+        # any other, so a winner it cannot yet see degrades the name to "another
+        # reviewer"; the phrase the UI keys on is there either way, which is why the
+        # fallback is worded as a reviewer rather than as an error.
         current = (
             table.get_item(Key={"PK": f"doc#{object_key}", "SK": "none"}).get("Item")
             or {}
