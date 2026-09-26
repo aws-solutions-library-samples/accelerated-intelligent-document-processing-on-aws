@@ -573,10 +573,11 @@ def test_the_retry_ladder_never_sleeps_past_the_invocation():
     """A stall that keeps recurring must give up inside the invocation.
 
     The ladder allows 50 attempts, so its real bound is time: the cumulative backoff
-    allowance and the Lambda deadline. Neither may be exceeded, and it must not
-    raise early either — ``clamp_sleep_to_budgets`` shortens a sleep rather than
-    converting it into a failure, because the remaining time is better spent on
-    another attempt than asleep.
+    allowance and the Lambda deadline. Neither may be exceeded. What happens when one
+    of them bites differs by bound — a tight deadline shortens the sleeps and keeps
+    trying, a spent allowance ends the ladder — and this test is about the deadline,
+    where the stall recurs for longer than a read timeout and so never reaches the
+    allowance. ``test_retry_deadline_bounds.py`` covers both.
     """
     pytest.importorskip("strands", reason="agentic extras not installed")
     from idp_common.extraction.agentic_idp import invoke_agent_with_retry

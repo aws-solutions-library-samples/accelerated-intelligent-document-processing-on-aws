@@ -63,17 +63,24 @@ logger.setLevel(os.environ.get("LOG_LEVEL", "INFO"))
 # invocation asleep and achieve nothing.
 #
 # The deadline CLAMPS a sleep; it never converts one into a failure. That is
-# deliberate. Being killed by the Lambda timeout surfaces to Step Functions as
-# ``Sandbox.Timedout``/``Lambda.Unknown``, which the Extraction and Assessment
-# states DO retry (8 attempts, and completed shards are skipped on resume).
-# Raising early instead would surface the underlying error name — ``ReadTimeoutError``,
-# ``EventLoopException``, ``ModelThrottledException`` — none of which appear in
-# ``ExtractionStep``'s or ``AssessmentStep``'s ``ErrorEquals`` in
-# ``patterns/unified/statemachine/workflow.asl.json``. So failing fast would turn a
-# recoverable timeout into an unrecoverable task failure. Clamping keeps the
-# retryable failure mode and spends the remaining time on another attempt rather
-# than asleep. (``ShardExtractionStep`` does list ``States.TaskFailed``; the
-# asymmetry between it and ``ExtractionStep`` is a separate issue.)
+# deliberate, and it is the half of the policy that differs from the cumulative
+# allowance, which DOES end the ladder (see ``_backoff_or_none``). Near the wall the
+# attempts themselves are what consume the clock, so continuing can end in a real
+# Lambda timeout — and those attempts may still succeed, which is worth more than a
+# marginally earlier raise.
+#
+# Which failure mode is preferable is a property of the state machine, and it has
+# moved: ``Sandbox.Timedout``/``Lambda.Unknown``/``States.Timeout`` are down to
+# ``MaxAttempts: 1`` on every Lambda task since #917, because a document that needs
+# more time than the function has fails identically on every attempt. A raised
+# transient error does better: the handlers wrap one as ``TransientError`` via
+# ``utils.transient_errors.raise_if_transient``, and ``ExtractionStep`` and
+# ``ShardExtractionStep`` list that with ``MaxAttempts: 8`` in
+# ``patterns/unified/statemachine/workflow.asl.json``. Completed shards are skipped
+# on resume either way. So the underlying error name is no longer the thing that
+# decides this — what decides it is whether the remaining time is better spent on
+# attempts (the deadline case) or handed to a ladder with more of it (the allowance
+# case).
 _LAMBDA_DEADLINE_EPOCH: ContextVar[float | None] = ContextVar(
     "idp_lambda_deadline_epoch", default=None
 )
@@ -125,9 +132,10 @@ def clamp_sleep_to_budgets(
       attempts, because a per-sleep cap alone still permits 50 x 60s.
     - **wall-clock** — what remains of this Lambda invocation, minus ``reserve``.
 
-    A return of 0.0 means "do not sleep, just try again": the caller keeps
-    retrying, and if time genuinely runs out the invocation is killed, which is the
-    failure mode Step Functions retries. Nothing here raises.
+    A return of 0.0 means "no time left to back off". Nothing here raises; what the
+    caller does with it depends on WHICH bound produced it, and
+    :func:`_backoff_or_none` is where that is decided — a spent cumulative allowance
+    ends the ladder, a tight deadline keeps trying with no sleep.
     """
     if reserve is None:
         reserve = _DEADLINE_RESERVE_SECONDS
@@ -153,16 +161,82 @@ def _clamped_or_log(
         logger.warning(
             "Shortening %s retry backoff from %.1fs to %.1fs to stay inside the "
             "retry budget (slept %.1fs of %s) and this Lambda invocation (%s left). "
-            "The time goes to another attempt rather than to sleeping; if it runs "
-            "out the invocation times out, which the caller retries.",
+            "%s",
             func_name,
             sleep_time,
             allowed,
             total_slept,
             f"{max_total_delay:.0f}s" if max_total_delay is not None else "unbounded",
             f"{deadline - time.time():.1f}s" if deadline is not None else "unknown",
+            # Which bound bit decides what happens next, and saying the wrong one
+            # here put two contradictory lines next to each other in the log.
+            "This was the last backoff the allowance permits; the attempt after it "
+            "is not made."
+            if max_total_delay is not None and total_slept + allowed >= max_total_delay
+            else "The time goes to another attempt rather than to sleeping; if it "
+            "runs out the invocation times out, which the caller retries.",
         )
     return allowed
+
+
+def _backoff_or_none(
+    sleep_time: float,
+    total_slept: float,
+    max_total_delay: float | None,
+    func_name: str,
+) -> float | None:
+    """Seconds to sleep before the next attempt, or ``None`` to stop retrying.
+
+    ``None`` is returned for exactly one condition: the **cumulative** allowance
+    ``max_total_delay`` is spent. Past that point every remaining attempt goes out
+    with no delay at all, and an unbacked-off retry against a service that is asking
+    us to slow down is the shape that makes congestion worse. Measured on the agentic
+    ladder's own numbers (``max_retries=50``, 90s allowance) over 200 jitter seeds:
+    all 50 attempts were always made, and **43-45 of them (mean 44)** carried no
+    backoff — so the ladder sent roughly **eight times** the requests it needed to.
+    The burst does not buy the time it looks like it buys either, because a refused
+    call returns in well under a second. With the stop, the same measurement gives
+    **5-7 attempts (typically 6)** and no zero-backoff send at all, with the 90s
+    allowance still spent in full.
+
+    Stopping hands the decision to the caller, which on this path is a better place
+    for it. ``ExtractionStep``/``ShardExtractionStep`` retry ``TransientError`` eight
+    times at ``IntervalSeconds: 10`` with ``BackoffRate`` 2.5/2.0 — minutes to hours
+    of backoff, against a state-machine budget of 21,600s — and the handlers wrap a
+    transient failure under that name (``raise_if_transient``). It also releases the
+    Lambda concurrency slot at once instead of holding it to spin.
+
+    Two things about the objection this overrides, because it was a deliberate
+    decision and its stated reason was that failing fast "would convert a
+    recoverable timeout into an unrecoverable task failure". Neither half survives
+    for THIS bound. Spinning after a spent allowance did not end in a Lambda
+    timeout: measured, it raised the same exception class this now raises, about ten
+    seconds later. And being killed by the timeout is no longer the better outcome —
+    ``Sandbox.Timedout`` is down to ``MaxAttempts: 1`` since #917, against eight for
+    ``TransientError``.
+
+    The **wall-clock** bound is deliberately NOT a stopping condition, and the two
+    are not symmetric. There, the attempts themselves are what consume the clock, so
+    continuing genuinely can end in a Lambda timeout, and those attempts may still
+    succeed — whereas continuing past a spent allowance only repeats a request that
+    is being refused. The burst is not *absent* in the deadline case, but it is
+    bounded by ``_DEADLINE_RESERVE_SECONDS`` rather than by the attempt count. So
+    the deadline keeps shortening sleeps towards zero and keeps trying, which is what
+    ``test_{sync,async}_retry_shortens_the_sleep_and_keeps_retrying`` and
+    ``test_the_deadline_still_only_shortens_and_does_not_stop`` pin.
+    """
+    if max_total_delay is not None and total_slept >= max_total_delay:
+        logger.warning(
+            "Stopping %s retries: its %.0fs backoff allowance is spent, so every "
+            "further attempt would be sent with no delay at all. Raising instead. A "
+            "transient failure is retried by the caller with a longer backoff than "
+            "fits in one invocation; one it classifies as deterministic is not, and "
+            "either way this invocation is freed now.",
+            func_name,
+            max_total_delay,
+        )
+        return None
+    return _clamped_or_log(sleep_time, total_slept, max_total_delay, func_name)
 
 
 # Bedrock rejects a request whose IMAGES are wrong — too many pixels per side, too
@@ -192,10 +266,12 @@ def _clamped_or_log(
 # Be clear about what a MISS costs, because it is more than a worse message. An
 # image rejection worded outside this list is still a ValidationException, which is
 # in DEFAULT_RETRYABLE_ERRORS and matched by substring in the generic branch below,
-# so it goes back to being retried — on the agentic path up to max_retries=50
-# bounded by max_total_delay=300s (see agentic_idp's invoke_agent_with_retry)
-# before failing the way it failed first time. That stall is the pathology the
-# short-circuit exists to prevent. The trade is still the right way round —
+# so it goes back to being retried before failing the way it failed first time. On
+# the agentic path that is bounded by AGENT_MAX_TOTAL_BACKOFF_SECONDS rather than by
+# max_retries: spending the allowance now ends the ladder (see _backoff_or_none), so
+# the stall is a handful of attempts rather than the fifty max_retries permits. That
+# stall is the pathology the short-circuit exists to prevent, and it is smaller than
+# it was. The trade is still the right way round —
 # retrying a transient error costs time, permanently failing a document costs the
 # document — but a marker added later should be judged on both sides of it.
 _IMAGE_REJECTION_MARKERS = (
@@ -325,8 +401,12 @@ def async_exponential_backoff_retry[T, **P](
     max_total_delay: float | None = None,
 ) -> Callable[[Callable[P, Awaitable[T]]], Callable[P, Awaitable[T]]]:
     """Retry with exponential backoff, bounded by cumulative delay AND by the
-    Lambda deadline (see :func:`set_lambda_deadline_epoch`). When either bound is
-    reached the last exception is re-raised instead of sleeping through it."""
+    Lambda deadline (see :func:`set_lambda_deadline_epoch`). The two bounds do
+    different things when they bite, and the difference is deliberate: a spent
+    ``max_total_delay`` **stops** the ladder and re-raises, because every further
+    attempt would carry no delay at all; the deadline only **shortens** sleeps and
+    keeps trying, because there is no burst to suppress that close to the wall and
+    an attempt may still succeed. See :func:`_backoff_or_none`."""
     # Use defaults if not provided
     if retryable_errors is None:
         retryable_errors = DEFAULT_RETRYABLE_ERRORS
@@ -387,15 +467,17 @@ def async_exponential_backoff_retry[T, **P](
 
                     jitter_value = random.uniform(-jitter, jitter)  # nosec B311 - retry jitter
                     sleep_time = max(0.1, delay * (1 + jitter_value))
-                    sleep_time = _clamped_or_log(
+                    backoff = _backoff_or_none(
                         sleep_time, total_slept, max_total_delay, func.__name__
                     )
+                    if backoff is None:
+                        raise
                     logger.warning(
-                        f"{error_code}:{e.response.get('Error', {}).get('Message', '')} encountered in {func.__name__}. Retrying in {sleep_time:.2f} seconds. "
+                        f"{error_code}:{e.response.get('Error', {}).get('Message', '')} encountered in {func.__name__}. Retrying in {backoff:.2f} seconds. "
                         f"Attempt {attempt + 1}/{max_retries}"
                     )
-                    await asyncio.sleep(sleep_time)
-                    total_slept += sleep_time
+                    await asyncio.sleep(backoff)
+                    total_slept += backoff
                     delay = min(delay * exponential_base, max_delay)
                 except Exception as e:
                     # An image rejection is deterministic: the same request will be
@@ -431,15 +513,17 @@ def async_exponential_backoff_retry[T, **P](
                         log_bedrock_invocation_error(e, attempt + 1)
                         jitter_value = random.uniform(-jitter, jitter)  # nosec B311 - retry jitter
                         sleep_time = max(0.1, delay * (1 + jitter_value))
-                        sleep_time = _clamped_or_log(
+                        backoff = _backoff_or_none(
                             sleep_time, total_slept, max_total_delay, func.__name__
                         )
+                        if backoff is None:
+                            raise
                         logger.warning(
                             f"{exception_name}: {exception_str} encountered in {func.__name__}. "
-                            f"Retrying in {sleep_time:.2f} seconds. Attempt {attempt + 1}/{max_retries}"
+                            f"Retrying in {backoff:.2f} seconds. Attempt {attempt + 1}/{max_retries}"
                         )
-                        await asyncio.sleep(sleep_time)
-                        total_slept += sleep_time
+                        await asyncio.sleep(backoff)
+                        total_slept += backoff
                         delay = min(delay * exponential_base, max_delay)
                         continue
 
@@ -463,8 +547,12 @@ def exponential_backoff_retry[T, **P](
     max_total_delay: float | None = None,
 ) -> Callable[[Callable[P, T]], Callable[P, T]]:
     """Retry with exponential backoff, bounded by cumulative delay AND by the
-    Lambda deadline (see :func:`set_lambda_deadline_epoch`). When either bound is
-    reached the last exception is re-raised instead of sleeping through it."""
+    Lambda deadline (see :func:`set_lambda_deadline_epoch`). The two bounds do
+    different things when they bite, and the difference is deliberate: a spent
+    ``max_total_delay`` **stops** the ladder and re-raises, because every further
+    attempt would carry no delay at all; the deadline only **shortens** sleeps and
+    keeps trying, because there is no burst to suppress that close to the wall and
+    an attempt may still succeed. See :func:`_backoff_or_none`."""
 
     def decorator(func: Callable[P, T]) -> Callable[P, T]:
         @wraps(func)
@@ -575,15 +663,17 @@ def exponential_backoff_retry[T, **P](
 
                     jitter_value = random.uniform(-jitter, jitter)  # nosec B311 - retry jitter
                     sleep_time = max(0.1, delay * (1 + jitter_value))
-                    sleep_time = _clamped_or_log(
+                    backoff = _backoff_or_none(
                         sleep_time, total_slept, max_total_delay, func.__name__
                     )
+                    if backoff is None:
+                        raise
                     logger.warning(
-                        f"{error_code}:{e.response.get('Error', {}).get('Message', '')} encountered in {func.__name__}. Retrying in {sleep_time:.2f} seconds. "
+                        f"{error_code}:{e.response.get('Error', {}).get('Message', '')} encountered in {func.__name__}. Retrying in {backoff:.2f} seconds. "
                         f"Attempt {attempt + 1}/{max_retries}"
                     )
-                    time.sleep(sleep_time)
-                    total_slept += sleep_time
+                    time.sleep(backoff)
+                    total_slept += backoff
                     delay = min(delay * exponential_base, max_delay)
                 except Exception as e:
                     # Log bedrock invocation details for non-ClientError exceptions too

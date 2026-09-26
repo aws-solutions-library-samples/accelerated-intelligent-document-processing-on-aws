@@ -7,12 +7,18 @@
 backoff — inside a function Lambda kills at 900 seconds, so one transient
 ``Read timed out`` could spend the whole invocation asleep and achieve nothing.
 
-The fix CLAMPS a sleep to the time available; it never turns one into a failure.
-That distinction is the important one and is tested here. Raising early would
-surface the underlying error name (``ReadTimeoutError``, ``EventLoopException``,
-``ModelThrottledException``), none of which appear in ``ExtractionStep``'s or
-``AssessmentStep``'s ``ErrorEquals`` in ``workflow.asl.json`` — so failing fast
-would convert a retryable ``Sandbox.Timedout`` into an unrecoverable task failure.
+The two bounds behave differently when they bite, and both behaviours are tested
+here. A tight **deadline** shortens a sleep and keeps trying: near the wall the
+attempts are what consume the clock, so continuing can end in a real Lambda timeout,
+and an attempt may still succeed. A spent **cumulative allowance** ends the ladder
+and re-raises, because past it every attempt would be sent with no backoff at all —
+measured, 43-45 of 50 were.
+
+The state machine is what makes the second preferable, and its policy is the part to
+check if this looks arbitrary: a transient error raised from here is wrapped as
+``TransientError`` by the handlers, which ``ExtractionStep`` and
+``ShardExtractionStep`` retry eight times, while ``Sandbox.Timedout`` is down to one
+attempt since #917.
 
 Every test patches its sleep function. Without that, a regression of the clamp
 makes these tests HANG (50 x 1800s) and burn the CI job timeout instead of failing.
@@ -120,14 +126,19 @@ def test_reserve_is_configurable_and_actually_applied():
 
 
 # ---------------------------------------------------------------------------
-# The decorators never raise early
+# What each bound does when it bites: the deadline shortens, the allowance stops
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.unit
 def test_sync_retry_shortens_the_sleep_and_keeps_retrying():
-    """It must NOT fail fast: being killed by the Lambda timeout is retried by Step
-    Functions, whereas the raised error name is not in ExtractionStep's ErrorEquals."""
+    """A tight deadline shortens the sleeps and keeps trying.
+
+    This is the bound that does NOT stop the ladder: the attempts themselves are
+    what consume the remaining clock, so they still have a chance of succeeding,
+    and giving them up buys only a marginally earlier raise. The cumulative
+    allowance is the bound that stops — see the tests below it.
+    """
     calls = {"n": 0}
 
     @exponential_backoff_retry(
@@ -165,9 +176,107 @@ def test_sync_retry_respects_the_cumulative_budget():
     with patch("time.sleep") as slept:
         with pytest.raises(botocore.exceptions.ClientError):
             always_throttled()
-    assert calls["n"] == 6
     total = sum(c.args[0] for c in slept.call_args_list)
     assert total == pytest.approx(25), f"slept {total}s against a 25s budget"
+    # 10 + 10 + 5 spends the allowance, and the attempt after that is the one the
+    # ladder declines to make: past this point it has no delay left to apply, and
+    # an unbacked-off retry of a refused request is what the caller's own ladder is
+    # for. The attempt budget (6) is deliberately not reached.
+    assert calls["n"] == 4, (
+        f"made {calls['n']} attempts; once the cumulative allowance is spent the "
+        "ladder must stop rather than keep firing with no delay"
+    )
+
+
+@pytest.mark.unit
+def test_a_spent_cumulative_allowance_stops_the_ladder_instead_of_spinning():
+    """The measured shape of the defect this asserts against.
+
+    On the agentic ladder's own numbers — ``max_retries=50`` against a 90s
+    allowance — the old behaviour clamped every sleep after the allowance to 0.0 and
+    kept going, so 42 of 50 requests went out back to back at a service that was
+    refusing them. It bought almost no extra time either: a refused call returns in
+    well under a second.
+    """
+    calls = {"n": 0}
+
+    @async_exponential_backoff_retry(
+        max_retries=50,
+        initial_delay=5,
+        max_delay=60,
+        jitter=0.0,
+        max_total_delay=90,
+    )
+    async def always_throttled():
+        calls["n"] += 1
+        raise _throttle()
+
+    async def run():
+        set_lambda_deadline_epoch(time.time() + 900)
+        with patch("asyncio.sleep", new_callable=AsyncMock) as slept:
+            with pytest.raises(botocore.exceptions.ClientError):
+                await always_throttled()
+        return slept
+
+    slept = asyncio.run(run())
+    delays = [c.args[0] for c in slept.await_args_list]
+
+    assert sum(delays) == pytest.approx(90), (
+        f"slept {sum(delays)}s against a 90s allowance — the allowance itself must "
+        "still be spent in full before the ladder gives up"
+    )
+    assert 0.0 not in delays, (
+        f"delays were {delays}; a 0.0 means an attempt was fired with no backoff, "
+        "which is the burst this test exists to prevent"
+    )
+    assert calls["n"] == len(delays) + 1, (
+        f"made {calls['n']} attempts for {len(delays)} sleeps; the ladder must stop "
+        "on the attempt after its last real backoff"
+    )
+    assert calls["n"] < 50, (
+        f"made {calls['n']} attempts — the attempt budget was reached, so the "
+        "allowance is not bounding the ladder at all"
+    )
+
+
+@pytest.mark.unit
+def test_the_deadline_still_only_shortens_and_does_not_stop():
+    """The two bounds are not symmetric, and this is the half that did not change.
+
+    With no cumulative allowance, a tight deadline clamps sleeps towards zero and
+    the ladder keeps trying: there is no burst to suppress that close to the wall,
+    and an attempt may still succeed. Turning this into a stop as well would
+    surrender attempts that cost nothing.
+    """
+    calls = {"n": 0}
+
+    # max_total_delay is SET, as production always sets it, and deliberately large
+    # enough to stay unspent: with it None the stop can never fire whatever the
+    # deadline does, so the test would pass against a deadline-based stop too.
+    @async_exponential_backoff_retry(
+        max_retries=4,
+        initial_delay=1800,
+        max_delay=1800,
+        jitter=0.0,
+        max_total_delay=300,
+    )
+    async def always_throttled():
+        calls["n"] += 1
+        raise _throttle()
+
+    async def run():
+        set_lambda_deadline_epoch(time.time() + 10)
+        with patch("asyncio.sleep", new_callable=AsyncMock) as slept:
+            with pytest.raises(botocore.exceptions.ClientError):
+                await always_throttled()
+        return slept
+
+    slept = asyncio.run(run())
+    assert calls["n"] == 4, (
+        f"made {calls['n']} of 4 attempts; a deadline must shorten the sleeps, not "
+        "end the ladder"
+    )
+    assert [c.args[0] for c in slept.await_args_list] == [0.0, 0.0, 0.0]
 
 
 @pytest.mark.unit

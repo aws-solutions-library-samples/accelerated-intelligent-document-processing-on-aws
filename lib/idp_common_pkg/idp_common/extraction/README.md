@@ -585,6 +585,19 @@ point reaches Bedrock. A cache write is 1.25× input price and pays back only on
 second same-prefix request inside the 5-minute TTL, so a low-volume deployment is
 better off with `off`.
 
+⚠️ **Bedrock permits at most four `cache_control` blocks in one request, and the
+Advanced path already uses three of them.** It counts additively across the three
+places they can appear — one in `system` (Strands `cache_prompt`), one in
+`toolConfig` (`cache_tools`), and one per message block — so a fifth is rejected
+outright with `ValidationException: A maximum of 4 blocks with cache_control may be
+provided. Found 5.`, which is not retried and fails the section keeping no rows.
+There is one message-level block, the trailing one `_prepare_prompt_content`
+appends, and **adding a second cache point to the message content is therefore the
+last one available**. This is also why `invoke_agent_with_retry` *resumes* a failed
+attempt's conversation rather than sending the prompt again: a second copy of the
+prompt is a fourth block and a third copy is a fifth
+([#1296](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/1296)).
+
 Each model has a **minimum cacheable prefix** (512 tokens on Opus 5 / Opus 5.5 /
 Fable 5, 1,024
 on Sonnet 5 / 4.6 / Opus 4.8, 2,048 on Opus 4.7, 4,096 on Opus 4.6 / 4.5 / Haiku 4.5;
