@@ -1112,14 +1112,18 @@ ROW COUNT VALIDATION:
 #
 # * ``max_delay=60`` keeps any ONE sleep well inside a single invocation. Delays
 #   run 5, 10, 20, 40, 60, 60, ... rather than doubling to half an hour.
-# * ``max_total_delay=300`` bounds the SUM. A per-sleep cap alone still permits
-#   50 x 60s; five minutes is a third of a 900s invocation, which leaves room for
-#   the work itself.
+# * ``max_total_delay`` bounds the SUM. A per-sleep cap alone still permits
+#   50 x 60s, which is a third of a 900s invocation before the work itself.
 #
 # The decorator additionally refuses any sleep that would not finish before the
 # Lambda deadline (``utils.bedrock_utils.set_lambda_deadline_epoch``), so on a
-# short-remaining invocation it gives up sooner than either constant implies.
-# ``max_retries=50`` is left alone: the real bound is time, not attempts.
+# short-remaining invocation it sleeps less than either constant implies.
+#
+# ``max_retries=50`` is left alone because the real bound is time, not attempts —
+# and spending the cumulative allowance now ENDS the ladder rather than clamping
+# every later sleep to zero and firing the rest of the 50 back to back at a service
+# that is refusing them. On these numbers that is 6 attempts, not 50. The wall-clock
+# bound still only shortens; the asymmetry is argued in ``_backoff_or_none``.
 #
 # The rest of the same budget — how long ONE request may stall before botocore
 # gives up and this ladder gets its turn, on each of the two clients a shard uses,
