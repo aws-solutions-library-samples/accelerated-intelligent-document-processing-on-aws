@@ -7,12 +7,18 @@
 backoff — inside a function Lambda kills at 900 seconds, so one transient
 ``Read timed out`` could spend the whole invocation asleep and achieve nothing.
 
-The fix CLAMPS a sleep to the time available; it never turns one into a failure.
-That distinction is the important one and is tested here. Raising early would
-surface the underlying error name (``ReadTimeoutError``, ``EventLoopException``,
-``ModelThrottledException``), none of which appear in ``ExtractionStep``'s or
-``AssessmentStep``'s ``ErrorEquals`` in ``workflow.asl.json`` — so failing fast
-would convert a retryable ``Sandbox.Timedout`` into an unrecoverable task failure.
+The two bounds behave differently when they bite, and both behaviours are tested
+here. A tight **deadline** shortens a sleep and keeps trying: near the wall the
+attempts are what consume the clock, so continuing can end in a real Lambda timeout,
+and an attempt may still succeed. A spent **cumulative allowance** ends the ladder
+and re-raises, because past it every attempt would be sent with no backoff at all —
+measured, 43-45 of 50 were.
+
+The state machine is what makes the second preferable, and its policy is the part to
+check if this looks arbitrary: a transient error raised from here is wrapped as
+``TransientError`` by the handlers, which ``ExtractionStep`` and
+``ShardExtractionStep`` retry eight times, while ``Sandbox.Timedout`` is down to one
+attempt since #917.
 
 Every test patches its sleep function. Without that, a regression of the clamp
 makes these tests HANG (50 x 1800s) and burn the CI job timeout instead of failing.
@@ -120,14 +126,19 @@ def test_reserve_is_configurable_and_actually_applied():
 
 
 # ---------------------------------------------------------------------------
-# The decorators never raise early
+# What each bound does when it bites: the deadline shortens, the allowance stops
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.unit
 def test_sync_retry_shortens_the_sleep_and_keeps_retrying():
-    """It must NOT fail fast: being killed by the Lambda timeout is retried by Step
-    Functions, whereas the raised error name is not in ExtractionStep's ErrorEquals."""
+    """A tight deadline shortens the sleeps and keeps trying.
+
+    This is the bound that does NOT stop the ladder: the attempts themselves are
+    what consume the remaining clock, so they still have a chance of succeeding,
+    and giving them up buys only a marginally earlier raise. The cumulative
+    allowance is the bound that stops — see the tests below it.
+    """
     calls = {"n": 0}
 
     @exponential_backoff_retry(
@@ -239,8 +250,15 @@ def test_the_deadline_still_only_shortens_and_does_not_stop():
     """
     calls = {"n": 0}
 
+    # max_total_delay is SET, as production always sets it, and deliberately large
+    # enough to stay unspent: with it None the stop can never fire whatever the
+    # deadline does, so the test would pass against a deadline-based stop too.
     @async_exponential_backoff_retry(
-        max_retries=4, initial_delay=1800, max_delay=1800, jitter=0.0
+        max_retries=4,
+        initial_delay=1800,
+        max_delay=1800,
+        jitter=0.0,
+        max_total_delay=300,
     )
     async def always_throttled():
         calls["n"] += 1

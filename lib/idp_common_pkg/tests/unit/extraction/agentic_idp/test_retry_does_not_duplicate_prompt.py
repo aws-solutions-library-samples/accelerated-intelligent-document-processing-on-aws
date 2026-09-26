@@ -15,7 +15,7 @@ Every test here is offline. The first two drive the REAL strands ``Agent`` and t
 REAL ``BedrockModel.format_request``, because the defect lives in the interaction
 between the two: strands' append-on-failure behavior, its treatment of a
 ``list[ContentBlock]`` input as the caller's own list (which is what
-``_prompt_is_already_on_the_conversation`` reads), and its rendering of
+``_has_an_unanswered_attempt`` reads), and its rendering of
 ``cache_prompt``/``cache_tools`` plus our message cachePoint into one request.
 Asserting on a hand-written fake would have missed all three — and if a future
 strands starts copying the content list, or stops leaving a failed turn behind,
@@ -168,9 +168,7 @@ def test_the_assembled_request_stays_within_bedrocks_cache_block_limit():
         patched.setattr(time, "time", lambda: 1_000_000.0)
 
         with pytest.raises(Exception, match="ThrottlingException"):
-            asyncio.new_event_loop().run_until_complete(
-                agentic_idp.invoke_agent_with_retry(input=prompt, agent=agent)
-            )
+            asyncio.run(agentic_idp.invoke_agent_with_retry(input=prompt, agent=agent))
 
     assert len(counts) >= 3, (
         f"the ladder made {len(counts)} attempt(s); at least three are needed for "
@@ -243,9 +241,7 @@ def test_a_retry_keeps_the_turns_the_failed_attempt_completed():
         patched.setattr(time, "time", lambda: 1_000_000.0)
 
         with pytest.raises(Exception, match="ThrottlingException"):
-            asyncio.new_event_loop().run_until_complete(
-                agentic_idp.invoke_agent_with_retry(input=prompt, agent=agent)
-            )
+            asyncio.run(agentic_idp.invoke_agent_with_retry(input=prompt, agent=agent))
 
     assert agent.messages[: len(before)] == before, (
         "a retry discarded turns the failed attempt had completed; the tool "
@@ -310,7 +306,7 @@ def test_the_extraction_loop_reaches_the_guard_so_two_throttles_leave_one_copy()
 
     with pytest.MonkeyPatch.context() as patched:
         patched.setattr(asyncio, "sleep", _no_sleep)
-        response, result = asyncio.new_event_loop().run_until_complete(
+        response, result = asyncio.run(
             agentic_idp._invoke_agent_for_extraction(
                 agent=agent,
                 prompt_content=prompt_content,
@@ -349,7 +345,7 @@ def test_a_feedback_round_is_sent_rather_than_resumed():
     first_prompt = _a_prompt()
     verdicts = iter([(False, "status must be lowercase"), (True, "ok")])
 
-    response, result = asyncio.new_event_loop().run_until_complete(
+    response, result = asyncio.run(
         agentic_idp._invoke_agent_for_extraction(
             agent=agent,
             prompt_content=first_prompt,
@@ -391,11 +387,65 @@ def test_a_compacted_conversation_is_sent_again_rather_than_resumed():
     """
     agent = _StrandsLikeAgent({"status": "paid"}, failures=0)
     prompt = _a_prompt()
-    assert not agentic_idp._prompt_is_already_on_the_conversation(prompt, agent)
+    assert not agentic_idp._has_an_unanswered_attempt(prompt, agent)
 
     agent.messages.append({"role": "user", "content": prompt})
-    assert agentic_idp._prompt_is_already_on_the_conversation(prompt, agent)
+    assert agentic_idp._has_an_unanswered_attempt(prompt, agent)
 
     # What reduce_context does: the prompt turn is gone, a summary stands in.
     agent.messages[:] = [{"role": "user", "content": [{"text": "## Summary ..."}]}]
-    assert not agentic_idp._prompt_is_already_on_the_conversation(prompt, agent)
+    assert not agentic_idp._has_an_unanswered_attempt(prompt, agent)
+
+
+@pytest.mark.agentic
+def test_reusing_one_content_list_for_two_turns_is_not_mistaken_for_a_retry():
+    """Identity alone would make behaviour depend on an invisible property.
+
+    ``_invoke_agent_for_extraction`` builds a fresh list per round, so the
+    production path never does this — but a future caller that passes one list
+    twice must get two turns, not one turn and one resume, and nothing at a call
+    site would show which it got. The second condition is what tells them apart:
+    a completed turn ends in an assistant message, an outstanding attempt does not.
+    """
+    agent = _StrandsLikeAgent({"status": "paid"}, failures=0)
+    prompt = _a_prompt()
+
+    # A failed attempt: the prompt is on the conversation, unanswered.
+    agent.messages.append({"role": "user", "content": prompt})
+    assert agentic_idp._has_an_unanswered_attempt(prompt, agent), (
+        "an attempt the model never answered must be resumed"
+    )
+
+    # A mid-loop failure: a tool round completed, then the model call failed. The
+    # last turn is the user's toolResult, so this is still one outstanding attempt.
+    agent.messages.append(
+        {"role": "assistant", "content": [{"toolUse": {"toolUseId": "t1"}}]}
+    )
+    agent.messages.append(
+        {"role": "user", "content": [{"toolResult": {"toolUseId": "t1"}}]}
+    )
+    assert agentic_idp._has_an_unanswered_attempt(prompt, agent), (
+        "a mid-loop failure must still resume, or the completed tool round is lost"
+    )
+
+    # The turn completes. Submitting the SAME list again is a new logical turn.
+    agent.messages.append({"role": "assistant", "content": [{"text": "done"}]})
+    assert not agentic_idp._has_an_unanswered_attempt(prompt, agent), (
+        "a list reused after a completed turn was read as a retry; the caller "
+        "asked for a second turn and would silently have got a resume"
+    )
+
+
+@pytest.mark.agentic
+def test_an_unreadable_message_shape_falls_back_to_sending():
+    """The guard chooses the always-valid request when it cannot read the history.
+
+    Sending is a valid Converse request from any state; resuming is not. So an
+    ``agent.messages`` this cannot inspect must not raise out of the retried body
+    and fail the section.
+    """
+    agent = _StrandsLikeAgent({"status": "paid"}, failures=0)
+    prompt = _a_prompt()
+    agent.messages.append({"role": "user", "content": prompt})
+    agent.messages.append("not a message")  # type: ignore[arg-type]
+    assert not agentic_idp._has_an_unanswered_attempt(prompt, agent)

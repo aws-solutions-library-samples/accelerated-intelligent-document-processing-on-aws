@@ -1134,24 +1134,51 @@ ROW COUNT VALIDATION:
 # inequality so this cannot regress into a comment nobody re-checks (#1014).
 
 
-def _prompt_is_already_on_the_conversation(input: AgentInput, agent: Agent) -> bool:
-    """True when a previous attempt already put ``input`` on ``agent.messages``.
+def _has_an_unanswered_attempt(input: AgentInput, agent: Agent) -> bool:
+    """True when ``input`` is on the conversation and the model has not answered it.
 
+    Two independent conditions, and both are needed.
+
+    **``input`` is on ``agent.messages``.**
     ``Agent._convert_prompt_to_messages`` wraps a ``list[ContentBlock]`` input as
     ``{"role": "user", "content": <the caller's list>}`` — the same list object,
     not a copy — so identity answers this exactly, with no dependence on what the
-    prompt contains. A ``str`` input (only the retry-budget tests pass one) is
-    rebuilt into a fresh list and so never matches, which leaves those callers on
-    the historical path.
+    prompt contains. ``strands-agents`` is pinned to an exact version in every
+    extra, so a release that started copying arrives as a reviewable bump, and it
+    would degrade to the pre-fix re-send rather than to something unsafe.
+    A ``str`` input (only the retry-budget tests pass one) is rebuilt into a fresh
+    list and so never matches, leaving those callers on the historical path.
+    A conversation the summarizing manager has compacted no longer holds the prompt
+    at all, and answering False there is right: the task has to be stated again.
 
-    A conversation the summarizing manager has since compacted no longer holds the
-    prompt, and answering False for it is right: the prompt is genuinely gone and
-    the next attempt has to state the task again.
+    **The last message is from the user.** ``Agent.invoke_async`` appends the
+    assistant message only after the model call succeeds, so a conversation whose
+    last turn is the user's is one with an attempt outstanding — either the prompt
+    itself, or a ``toolResult`` the model never replied to. Identity alone would
+    make behaviour depend on whether a caller happened to reuse a list object:
+    submitting one list for two *logical* turns would silently resume instead of
+    asking again. This condition is what tells the two apart, because a completed
+    turn always ends in an assistant message.
+
+    ⚠️ The premise behind resuming at all is that a failed attempt never leaves an
+    assistant ``toolUse`` with no ``toolResult``. It cannot here: the tool executor
+    turns a per-tool exception into an error ``toolResult``, this ``Agent``
+    registers no hooks, and strands' own structured-output mode is off. Adding a
+    hook, or enabling that mode, reopens it — and in that state strands re-executes
+    the tool, which is the row duplication ``invoke_agent_with_retry`` exists to
+    avoid.
     """
     messages = getattr(agent, "messages", None)
-    if not isinstance(messages, list) or not isinstance(input, list):
+    if not isinstance(messages, list) or not messages or not isinstance(input, list):
         return False
-    return any(message.get("content") is input for message in messages)
+    try:
+        if messages[-1].get("role") != "user":
+            return False
+        return any(message.get("content") is input for message in messages)
+    except AttributeError:
+        # A message shape this function cannot read is not one to make a decision
+        # on: fall back to the historical send, which is always a valid request.
+        return False
 
 
 @async_exponential_backoff_retry(
@@ -1177,6 +1204,10 @@ async def invoke_agent_with_retry(input: AgentInput, agent: Agent):
     provided. Found 5.`` One copy short of that nothing was raised at all and the
     document text and every attached page image were re-sent at full price.
 
+    Only an attempt the model never answered is resumed — see
+    :func:`_has_an_unanswered_attempt`, which is also what keeps a caller that
+    reuses one content list for two logical turns from silently getting one.
+
     Resuming rather than rewinding is the load-bearing choice. The tools write
     their progress to ``agent.state`` (``current_extraction``,
     ``intermediate_extraction``, ``mapped_table_rows``), and ``mapped_table_rows``
@@ -1187,7 +1218,7 @@ async def invoke_agent_with_retry(input: AgentInput, agent: Agent):
     row twice — a silently wrong answer in place of a loud failure. Keeping the
     turns keeps the conversation and the state describing the same work.
     """
-    if _prompt_is_already_on_the_conversation(input, agent):
+    if _has_an_unanswered_attempt(input, agent):
         return await agent.invoke_async(None)
     return await agent.invoke_async(input)
 
