@@ -82,22 +82,16 @@ axes:
   schema_restatement:
     'on':  {extraction.agentic.restate_schema_in_system_prompt: true}
     'off': {extraction.agentic.restate_schema_in_system_prompt: false}
-  # extraction.agentic.top_k (#956). AWS's Nova tool-use troubleshooting guide asks
-  # for greedy decoding while a model is doing tool use (temperature 0, topP 1,
-  # topK 1) and attributes malformed tool-use output largely to inference
-  # parameters; the agentic path sets temperature but has never sent topK at all.
-  # `off` (null) is the historical behaviour — the model samples at whatever topK
-  # default it has — so the pair is a same-stack, same-code A/B whose OUTCOME
-  # METRIC is the rate of "Model produced invalid sequence as part of ToolUse"
-  # (#895), not accuracy. Only meaningful on a model that accepts topK at all:
-  # Nova (carrier additionalModelRequestFields.inferenceConfig.topK) and Claude
-  # <= 4.6 (carrier additionalModelRequestFields.top_k). Sonnet 5 / Opus 5 /
-  # Claude 4.7+ / Grok / Astra reject or ignore it, so the arms are IDENTICAL
-  # there and the suite would measure nothing — run it with
-  # `--set extraction_model=nova_lite`, the model #895 was reported on.
-  agentic_top_k:
-    'off': {extraction.agentic.top_k: null}
-    '1':   {extraction.agentic.top_k: 1}
+  # There is deliberately NO `agentic_top_k` axis. The #956 A/B measured topK on the
+  # agentic tool-use call against the rate of "Model produced invalid sequence as part
+  # of ToolUse" (#895) and found it statistically unchanged, so #956 shipped **no
+  # configuration option** — `extraction.agentic.top_k` is not a field of
+  # `AgenticConfig`. An axis naming it fails `_set_dotted`'s path check, and because
+  # the arms were also in `default_cell` and `core_cells` that failure reached every
+  # suite, `corefast` included. The study is written up in
+  # docs/benchmarking/studies/greedy-decoding-tool-use.md and its measurements are
+  # retained under benchmarks/results/v0.6.10/topkab{,2}__extraction-model-nova-lite/.
+  # Re-adding the axis requires the product field to exist first.
   # ocr.image.dpi. Raised 150 -> 300 by #729/#740, and base-ocr.yaml records the
   # mechanism: "below ~200 dpi Textract silently omits small, faint or skewed
   # characters - PAGE NUMBERS, box numbers, hand-filled values - from its response
@@ -300,8 +294,6 @@ default_cell:
   shard_pages: default                # shipped 5-page agentic shard; astracap's
                                       # `wide25` cells vary it (see the axis note)
   lazy_images: 'on'                   # shipped default; advscale varies it via --set
-  agentic_top_k: 'off'                # shipped behaviour: no topK on the tool-use
-                                      # call at all (#956); the topkab suite varies it
 
 # -----------------------------------------------------------------------------
 # CORE cells — the decision-relevant combinations every release should measure.
@@ -319,9 +311,6 @@ core_cells:
   # #710 pair. ADVANCED mode: the restatement only exists on the agentic path.
   - {id: restate-on,           ocr: textract_tables, extraction_mode: advanced, assessment: separate, schema_restatement: 'on'}
   - {id: restate-off,          ocr: textract_tables, extraction_mode: advanced, assessment: separate, schema_restatement: 'off'}
-  # #956 pair. ADVANCED mode: topK only reaches the agentic tool-use call.
-  - {id: topk-off,             ocr: textract_tables, extraction_mode: advanced, assessment: separate, agentic_top_k: 'off'}
-  - {id: topk-1,               ocr: textract_tables, extraction_mode: advanced, assessment: separate, agentic_top_k: '1'}
   - {id: split-llm,            ocr: textract_tables, extraction_mode: simple,   assessment: separate, section_splitting: llm_determined}
   # WS-05 pair. SIMPLE mode: forcing only applies to the non-agentic path.
   - {id: force-off,            ocr: textract_tables, extraction_mode: simple,   assessment: separate, forcing: 'off'}
@@ -641,53 +630,10 @@ suites:
     docs:
     - manylists_400
     repeats: 10
-  # #956: does greedy tool-use decoding (topK 1) change the invalid-ToolUse rate?
-  # The OUTCOME METRIC IS NOT ACCURACY. #895 recorded 247 "Model produced invalid
-  # sequence as part of ToolUse" stream errors in one Nova Lite advanced grid, all
-  # on Nova Lite and none on any other model, each classified transient and
-  # retried — so the visible cost is wall-clock and spend, not a wrong answer.
-  # Count the errors in the ShardRuntime/extraction logs per arm; accuracy and
-  # completeness ride along only to catch a greedy-decoding regression.
-  #
-  # MUST be run with `--set extraction_model=nova_lite`. On the default control
-  # model (Sonnet 4.6) the arms differ, but on Sonnet 5 / Opus 5 / Claude 4.7+ /
-  # Grok / Astra topK is rejected or silently ignored, so both arms would send
-  # byte-identical requests and the suite would measure nothing but noise.
-  #
-  # Docs are chosen to maximise ConverseStream CALLS per run, because the error is
-  # per call: longdesc_100 and manylists_400 both make the agent emit many rows,
-  # and manylists_400 shards (8 lists / 400 rows), so one run is several agent
-  # loops. repeats: 4 for the same non-determinism reason as `restatement`.
-  topkab:
-    cells:
-    - topk-off
-    - topk-1
-    docs:
-    - longdesc_100
-    - manylists_400
-    repeats: 4
-  # Round 2 of the #956 A/B, sized from round 1 rather than guessed. What round 1
-  # (4 repeats) showed: Nova Lite fails MOST documents on the agentic path either
-  # way, and it fails in TWO ways — ModelInvalidToolUseSequence (the #895 error)
-  # and MaxTokensReachedException — in similar proportions in both arms. So:
-  #   * `small_narrow` joins the grid as the EASY case. manylists_400 failed 8/8
-  #     at document level in round 1, which means it carries no information about
-  #     the arm at document level (only at shard level); a document Nova Lite can
-  #     sometimes finish is where a decoding change has room to show.
-  #   * repeats: 8 because the outcome is a RATE. At 4 repeats the per-arm counts
-  #     were 4 vs 6 invalid-ToolUse events, which cannot separate the arms from
-  #     each other or from chance.
-  # The unit of observation is the AGENTIC CALL CHAIN, not the document: an
-  # unsharded doc is one, and manylists_400 is ~4 shards. Count both.
-  topkab2:
-    cells:
-    - topk-off
-    - topk-1
-    docs:
-    - small_narrow
-    - longdesc_100
-    - manylists_400
-    repeats: 8
+  # The #956 topK A/B suites (`topkab`, `topkab2`) are gone with the axis they used:
+  # see the note beside the axes above. Their measurements are retained under
+  # benchmarks/results/v0.6.10/topkab{,2}__extraction-model-nova-lite/ and the study
+  # is docs/benchmarking/studies/greedy-decoding-tool-use.md.
   # #715 / #753 three-arm study: silent loss -> visible loss -> fixed. Runs on
   # `twodocs_2x20` (two complete statements, distinct account numbers, globally
   # unique SEQ tags across copies, so completeness is exact) plus `small_narrow` as
