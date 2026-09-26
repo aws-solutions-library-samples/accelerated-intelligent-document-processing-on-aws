@@ -3,6 +3,12 @@ SPDX-License-Identifier: MIT-0
 
 # Changelog
 
+## [Unreleased]
+
+### Fixed
+
+- ⚠️ **A retried Advanced-mode extraction sent the prompt again as a *second copy*, and two transient Bedrock errors in one section then failed it outright** ([#1296](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/1296)). The agent's retry ladder handed the prompt back to a conversation that already held it, so a throttle or a read timeout was not a delay but a step towards a hard failure: the prompt ends in a cache point, and on a caching-capable Claude model — where the request also carries a system and a toolConfig cache point — the third copy reached five `cache_control` blocks against Bedrock's limit of four and the section was rejected with `ValidationException`, keeping no rows and writing no result. One copy short of that nothing was raised at all and the document text and every attached page image were silently re-sent at full price. A retry now **resumes** the conversation the failed attempt started, which both keeps the request within the limit and carries the completed tool rounds forward instead of repeating them. **Action:** none. ⚠️ The duplication predates 0.6.10 but only became reachable in it, when the shard time budget stopped letting botocore retry a stalled request one layer lower, where nothing was re-appended ([#1014](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/1014)).
+
 ## [0.6.10]
 
 ### Added

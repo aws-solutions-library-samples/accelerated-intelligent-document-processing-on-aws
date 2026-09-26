@@ -1130,6 +1130,26 @@ ROW COUNT VALIDATION:
 # inequality so this cannot regress into a comment nobody re-checks (#1014).
 
 
+def _prompt_is_already_on_the_conversation(input: AgentInput, agent: Agent) -> bool:
+    """True when a previous attempt already put ``input`` on ``agent.messages``.
+
+    ``Agent._convert_prompt_to_messages`` wraps a ``list[ContentBlock]`` input as
+    ``{"role": "user", "content": <the caller's list>}`` — the same list object,
+    not a copy — so identity answers this exactly, with no dependence on what the
+    prompt contains. A ``str`` input (only the retry-budget tests pass one) is
+    rebuilt into a fresh list and so never matches, which leaves those callers on
+    the historical path.
+
+    A conversation the summarizing manager has since compacted no longer holds the
+    prompt, and answering False for it is right: the prompt is genuinely gone and
+    the next attempt has to state the task again.
+    """
+    messages = getattr(agent, "messages", None)
+    if not isinstance(messages, list) or not isinstance(input, list):
+        return False
+    return any(message.get("content") is input for message in messages)
+
+
 @async_exponential_backoff_retry(
     max_retries=50,
     initial_delay=5,
@@ -1138,6 +1158,33 @@ ROW COUNT VALIDATION:
     max_total_delay=AGENT_MAX_TOTAL_BACKOFF_SECONDS,
 )
 async def invoke_agent_with_retry(input: AgentInput, agent: Agent):
+    """Invoke the agent, retrying transient Bedrock failures with backoff.
+
+    A retry RESUMES the conversation the failed attempt started; it does not send
+    the prompt again. ``Agent.invoke_async`` appends ``input`` to
+    ``agent.messages`` before calling the model and does NOT remove it when that
+    call fails, so passing the prompt a second time appended a second copy of it.
+    Two transient errors were then a hard failure rather than a delay: the prompt
+    carries a trailing ``cachePoint`` (``_prepare_prompt_content``), so on a
+    caching-capable Claude model — where the request also carries a system and a
+    toolConfig cache point — a third copy reached five ``cache_control`` blocks
+    against Bedrock's limit of four and the section was rejected outright with
+    ``ValidationException: A maximum of 4 blocks with cache_control may be
+    provided. Found 5.`` One copy short of that nothing was raised at all and the
+    document text and every attached page image were re-sent at full price.
+
+    Resuming rather than rewinding is the load-bearing choice. The tools write
+    their progress to ``agent.state`` (``current_extraction``,
+    ``intermediate_extraction``, ``mapped_table_rows``), and ``mapped_table_rows``
+    *accumulates* across calls by design, for chunked tables. Discarding the
+    attempt's turns while keeping that state would leave the agent with no record
+    of the chunks it had already mapped and a prompt that does not mention them,
+    so it would map them again and ``finalize_table_extraction`` would emit every
+    row twice — a silently wrong answer in place of a loud failure. Keeping the
+    turns keeps the conversation and the state describing the same work.
+    """
+    if _prompt_is_already_on_the_conversation(input, agent):
+        return await agent.invoke_async(None)
     return await agent.invoke_async(input)
 
 
@@ -1694,7 +1741,10 @@ async def _invoke_agent_for_extraction(
     response = None
 
     for attempt in range(max_extraction_retries):
-        # invoke_agent_with_retry already handles network errors and throttling
+        # invoke_agent_with_retry already handles network errors and throttling,
+        # and a transient failure there resumes the conversation rather than
+        # re-sending prompt_content. Each round below builds a NEW content list,
+        # which is what keeps a feedback turn distinguishable from a retry.
         try:
             response = await invoke_agent_with_retry(agent=agent, input=prompt_content)
         except Exception as e:  # noqa: BLE001 - translate two specific failure modes
