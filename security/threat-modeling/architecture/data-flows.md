@@ -701,7 +701,7 @@ sequenceDiagram
 > machine's `Catch` block routes forward to the next step, so a hook that fails
 > — including one configured `onError: fail` — does not halt processing. A
 > deployment relying on a hook to enforce a business or compliance gate at one of
-> those points does not have that guarantee today. See HOOK.T07; fix **pending in
+> those points now has that guarantee as well: every hook state routes its catch to a terminal failure state. See HOOK.T07, closed by **issue
 > issue #919**.
 
 ## 9. Summary of Cross-Boundary Data Flows
@@ -717,7 +717,7 @@ sequenceDiagram
 | Chat messages (REST path) | TB1 | TB3→TB4 | Medium-High | Group check + `ownerSub` ownership check |
 | **Jobs API submission** | TB1 | TB3 | High | Separate Cognito pool, OAuth scopes, PRIVATE endpoint + VPCe resource policy (JOB.T01) |
 | **Feature UI bundle** | TB6 | TB1 | High (runs as the user) | Admin-gated install, prefix-scoped S3 write; **no SRI/signature, same-origin, unsandboxed** (FEAT.T01) |
-| **Preprocessing / PII hook** | TB3 | TB6→TB4 | High (un-redacted document) | Fail-closed `onError: fail` (terminal at this hook point only — HOOK.T07, **pending in issue #919**); re-entrancy guard; detection call still sees raw PII (PII.T01) |
+| **Preprocessing / PII hook** | TB3 | TB6→TB4 | High (un-redacted document) | Fail-closed `onError: fail` (terminal here, as at every other hook point — HOOK.T07, closed by issue #919); re-entrancy guard; detection call still sees raw PII (PII.T01) |
 | MCP tool calls | TB3 | TB6→External | Variable (depends on tool) | IAM, customer responsibility |
 | Lambda hooks | TB3 | TB6 | High (full processing results) | IAM, invocation-only permissions |
 | Analytics queries | TB3 | TB5 | High (aggregated processing data) | Athena workgroup, IAM |
