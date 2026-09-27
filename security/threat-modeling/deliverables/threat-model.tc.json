@@ -2,10 +2,10 @@
   "schema": "threat-composer/1.0",
   "projectName": "GenAI IDP Accelerator",
   "description": "STRIDE threat model for the GenAI Intelligent Document Processing Accelerator (unified architecture: Pipeline + BDA modes). Generated from the Markdown corpus by scripts/build_threat_model.py \u2014 do not edit by hand.",
-  "version": "3.8",
-  "lastUpdated": "2026-09-21",
-  "appliesToRelease": "v0.6.9",
-  "lastReviewedAgainstVersion": "0.6.9",
+  "version": "3.9",
+  "lastUpdated": "2026-09-26",
+  "appliesToRelease": "v0.6.11",
+  "lastReviewedAgainstVersion": "0.6.11",
   "threatCount": 99,
   "riskDistribution": {
     "High": 31,
@@ -14,10 +14,10 @@
     "Critical": 9
   },
   "mitigationStatus": {
-    "Mitigated": 62,
-    "Partially Mitigated": 27,
+    "Mitigated": 63,
+    "Partially Mitigated": 28,
     "Accepted": 4,
-    "Open": 6
+    "Open": 4
   },
   "threats": [
     {
@@ -746,8 +746,8 @@
       "riskScore": 6,
       "component": "Lambda Hooks",
       "affectedComponents": "`patterns/unified/statemachine/workflow.asl.json` (the `Catch` blocks on `PostOcrHook`, `PostClassificationHook`, `PostExtractionHook`, `PostRuleValidationHook`, `PostSummarizationHook`, `PostprocessingHook`), `patterns/unified/src/pipeline_hooks_function/index.py`",
-      "status": "Open",
-      "mitigations": "**In place today:** the dispatcher does raise on a failed `onError: fail` hook, so the signal exists and is recorded in execution state; `preprocessing` \u2014 the hook point with the widest blast radius, running before any processing and able to replace the source document \u2014 is genuinely terminal; hook failures are visible in CloudWatch and in the execution history for an operator who looks. **Pending \u2014 do not read as present:** routing the remaining six hook points' `onError: fail` failures to a terminal failure state, so the declared behaviour matches the actual behaviour, is tracked in **issue #919**. Until that merges, treat `onError: fail` at any point other than `preprocessing` as best-effort, and do not rely on a hook at those points as a gate.",
+      "status": "Mitigated",
+      "mitigations": "`onError: fail` is terminal at **every** hook point. Each of the seven states routes its catch to a terminal failure state \u2014 `PreprocessingHookFailed`, `PostExtractionHookFailed`, or the shared `PostStepHookFailed` for the other five \u2014 so the declared behaviour and the actual behaviour now agree, and a hook at any point may be relied on as a gate. Verified against `patterns/unified/statemachine/workflow.asl.json` by reading each hook state's `Catch`, not from the setting's documentation. The dispatcher raises on a failed `onError: fail` hook, so the signal exists and is recorded in execution state, and hook failures remain visible in CloudWatch and in the execution history. \u26a0\ufe0f `onError: continue` is unchanged and still routes forward by design \u2014 the distinction this threat was about is now the one the configuration key makes.",
       "residualRisk": "Even once the routing is corrected, a hook is customer code and a *gate implemented as a hook* is only as reliable as the hook's own availability. Where a control must hold, prefer `preprocessing` (terminal today) and alert on the rate of failed and halted executions rather than inferring success from the absence of errors.",
       "source": "feature-threats/lambda-hooks.md"
     },
@@ -1409,7 +1409,7 @@
       "riskScore": 8,
       "component": "SDK/CLI",
       "affectedComponents": "`iam-roles/cloudformation-management/IDP-Cloudformation-Service-Role.yaml`, `scripts/sdlc/validate_service_role_permissions.py`",
-      "status": "Open",
+      "status": "Partially Mitigated",
       "mitigations": "**In place today:** the role is an *optional* artefact \u2014 a deployment may use any role or an administrator directly, so its scope is a ceiling on the delegated case rather than a permission the product requires; `scripts/sdlc/validate_service_role_permissions.py` runs in both CI systems and checks the role against the permissions the stack actually needs, so the file is at least under review; the role must be explicitly passed to a stack operation and every use is a CloudTrail event attributable to the passing principal. **Pending \u2014 do not read as present:** removing the boundary-manipulation permissions, narrowing the service wildcards to the resources this stack creates, adding a permissions boundary to the role itself, and adding trust-policy conditions, is tracked in **issue #927**. Until that merges, treat granting `iam:PassRole` for this role as equivalent to granting account administrator, and scope who may do so accordingly.",
       "residualRisk": "A CloudFormation service role for a stack this broad will always be substantial \u2014 it creates IAM roles, KMS keys, buckets and Lambda functions. The realistic goal is that it cannot *escalate beyond* what deploying this stack requires, not that it be small. Document the role's true privilege level plainly wherever it is offered, so an operator does not adopt it believing it to be a containment measure.",
       "source": "feature-threats/sdk-cli.md"

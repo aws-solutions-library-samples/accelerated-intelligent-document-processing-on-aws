@@ -143,7 +143,7 @@ STATUS: dict[str, tuple[int, str]] = {
     "SDK.T02": (6, "Partially Mitigated"),
     "SDK.T03": (3, "Mitigated"),
     "SDK.T04": (4, "Mitigated"),
-    "SDK.T05": (8, "Open"),
+    "SDK.T05": (8, "Partially Mitigated"),
     # Hooks
     "HOOK.T01": (4, "Partially Mitigated"),
     "HOOK.T02": (8, "Partially Mitigated"),
@@ -151,7 +151,7 @@ STATUS: dict[str, tuple[int, str]] = {
     "HOOK.T04": (4, "Mitigated"),
     "HOOK.T05": (3, "Mitigated"),
     "HOOK.T06": (6, "Mitigated"),
-    "HOOK.T07": (6, "Open"),
+    "HOOK.T07": (6, "Mitigated"),
     # Web UI
     "UI.T01": (6, "Partially Mitigated"),
     "UI.T02": (2, "Mitigated"),

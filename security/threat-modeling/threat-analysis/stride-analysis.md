@@ -80,7 +80,7 @@ Tampering threats involve unauthorized modification of data or code.
 | **BDA output mapping errors** — data corruption in format normalization | BDA Mode | Medium | Strict schema validation, defensive parsing |
 | **OCR manipulation** — adversarial documents producing incorrect text | Pipeline Processing | Medium | Format validation, confidence thresholds |
 | **Glue Catalog manipulation** — altered data schemas/locations | Reporting | Medium | IAM restrictions, CloudTrail, catalog validation |
-| **Hook failure does not halt the workflow** — a pipeline hook relied on as a gate fails and processing continues past it | Lambda Hooks | High | `onError: fail` is terminal at the `preprocessing` hook point only; at the other six the state machine's `Catch` block routes forward to the next step. A deployment relying on a hook as a compliance or business gate at one of those points does not have that guarantee. See HOOK.T07; **pending in issue #919** |
+| **Hook failure does not halt the workflow** — closed: `onError: fail` is terminal at all seven hook points, each routing its catch to a terminal failure state (issue #919) | Lambda Hooks | High | `onError: fail` is terminal at the `preprocessing` hook point only; at the other six the state machine's `Catch` block routes forward to the next step. A deployment relying on a hook as a compliance or business gate at one of those points does not have that guarantee. See HOOK.T07; **pending in issue #919** |
 
 ## 4. Repudiation
 
