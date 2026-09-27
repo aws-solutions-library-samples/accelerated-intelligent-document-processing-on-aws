@@ -788,38 +788,43 @@ rather than on the parent execution. The catcher names that one error rather tha
 `States.ALL`, because the Map's other failure modes (`States.DataLimitExceeded`,
 `States.Runtime`) already report a specific and differently-actionable condition.
 
-Inside one shard, several durations draw on the same invocation and only add up if
-they are chosen together:
+Inside one shard, several durations draw on the same invocation:
 
 | | Value | What it bounds |
 |---|---|---|
-| Agentic `read_timeout` | 180 s | One socket read on the **streamed** extraction call — time to first response event, then each inter-event gap |
+| Agentic `read_timeout` | 600 s | One socket read on the **streamed** extraction call — time to first response event, then each inter-event gap |
 | Confidence `read_timeout` | 300 s | One **non-streamed** `converse`, which bounds the whole response rather than a gap, so it is legitimately larger. Inside the shard invocation whenever confidence runs in `separate` mode |
 | botocore attempts per call | 1 | botocore retries a read timeout *itself*, multiplying either timeout above inside a single call, where no deadline check can see it |
 | Retry backoff allowance | 90 s | Total time the retry ladder around the agent call may spend asleep, across all attempts |
 | Lambda `Timeout` | 900 s | The whole invocation — Lambda's maximum, so it cannot be widened |
 
-The worst case is a stall on **each** client plus the whole backoff allowance —
-180 + 300 + 90 = 570 s — which leaves 330 s for the work itself. A stall then surfaces
-as a `ReadTimeoutError` with most of the invocation still available, the ladder retries
-inside the same invocation, and the shard returns a result. The alternative is that the
-invocation is killed at 900 s: Step Functions reports that as `Sandbox.Timedout`, which
-is deterministic and retried once (see above), so the transient blip a retry would have
-cleared becomes the failure that is not retried.
+What keeps a shard inside its invocation is **not** that these numbers sum to less than
+900 — they do not. It is that the retry ladder refuses to *begin* an attempt the size of
+the one that just failed when the remaining invocation cannot hold it, and raises the
+underlying error instead. That surfaces as a `ReadTimeoutError` the shard handler wraps
+as `TransientError`, which `ShardExtractionStep` retries eight times against a
+state-machine budget of 21,600 s. The alternative is that the invocation is killed at
+900 s: Step Functions reports that as `Sandbox.Timedout`, which is deterministic and
+retried once (see above), so the transient blip a retry would have cleared becomes the
+failure that is not retried.
 
-**Why `read_timeout` can be this short.** The agentic path streams, so 180 s is not a
-cap on how long a generation may take — it is how long the socket may go completely
-silent. A healthy long generation emits deltas continuously and never approaches it;
-three minutes of no traffic at all is a stall by definition. Observed per-call latency
-is far below the ceiling in any case: a 3,200-row document completes in about 408 s
-spread over many calls. The confidence call is **not** streamed, which is exactly why
-its timeout is larger and why it has to be counted separately.
+⚠️ **Do not lower the agentic `read_timeout` to make the table add up.** That is what
+600 s → 180 s did, and it broke the largest-table extraction in this repository's own
+integration suite for a week. The reasoning behind the cut — "the path streams, so a
+healthy generation emits deltas continuously and three minutes of silence is a stall by
+definition" — is wrong for an agent loop: a gap here also covers the whole wait between
+submitting a tool result and the first event of the model's reply, on a request carrying
+a large cached prefix and a dozen-plus page images. Measured on `samples/Nuveen.pdf`
+(532 table rows, 17 pages) that gap exceeds 180 s reproducibly and fits inside 600 s.
+Change the value only against a measurement of that gap
+([#1310](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/1310)).
 
 The numbers live together in `idp_common.timeout_budget`, and
 `lib/idp_common_pkg/tests/unit/extraction/test_shard_timeout_budget.py` asserts the
-whole inequality — reading the resolved client configurations, not the source, so
-botocore's own attempt count is inside the bound — along with the Map's `Retry`,
-`Catch` and zero tolerance.
+remaining arithmetic — one agentic stall plus all the backoff leaves room to return —
+reading the resolved client configurations rather than the source, so botocore's own
+attempt count is inside the bound, along with the ladder's stop behaviour and the Map's
+`Retry`, `Catch` and zero tolerance.
 
 ⚠️ **One exposure the arithmetic above does not close.** The `BedrockClient` used for
 the non-streamed call has its own retry ladder (7 attempts, backing off 2 s doubling to

@@ -7,12 +7,14 @@
 backoff — inside a function Lambda kills at 900 seconds, so one transient
 ``Read timed out`` could spend the whole invocation asleep and achieve nothing.
 
-The two bounds behave differently when they bite, and both behaviours are tested
+Three bounds behave differently when they bite, and all three behaviours are tested
 here. A tight **deadline** shortens a sleep and keeps trying: near the wall the
-attempts are what consume the clock, so continuing can end in a real Lambda timeout,
-and an attempt may still succeed. A spent **cumulative allowance** ends the ladder
-and re-raises, because past it every attempt would be sent with no backoff at all —
-measured, 43-45 of 50 were.
+attempts are what consume the clock, and a cheap attempt may still succeed. A spent
+**cumulative allowance** ends the ladder and re-raises, because past it every attempt
+would be sent with no backoff at all — measured, 43-45 of 50 were. An attempt whose
+**measured cost** no longer fits in what remains also ends the ladder, because there
+"it may still succeed" is not true — it cannot even return, and being killed on the
+wall clock is the one failure the state machine does not retry (#1310).
 
 The state machine is what makes the second preferable, and its policy is the part to
 check if this looks arbitrary: a transient error raised from here is wrapped as
@@ -277,6 +279,80 @@ def test_the_deadline_still_only_shortens_and_does_not_stop():
         "end the ladder"
     )
     assert [c.args[0] for c in slept.await_args_list] == [0.0, 0.0, 0.0]
+
+
+@pytest.mark.unit
+def test_an_attempt_that_cannot_finish_ends_the_ladder_rather_than_starting_it():
+    """The third bound: cost, not proximity. Added for #1310.
+
+    The distinguishing case, and the reason the gate reads the attempt's own duration
+    rather than the elapsed fraction of the invocation: the deadline here is close in
+    absolute terms but each attempt is EXPENSIVE, so the next one provably cannot
+    complete. ``test_the_deadline_still_only_shortens_and_does_not_stop`` is the same
+    deadline with cheap attempts and must keep retrying, which is what makes these two
+    tests a pair — a gate keyed on "the deadline is close" passes one and breaks the
+    other.
+    """
+    clock = [5_000_000.0]
+    calls = {"n": 0}
+
+    @async_exponential_backoff_retry(
+        max_retries=10, initial_delay=1, max_delay=1, jitter=0.0, max_total_delay=300
+    )
+    async def stalls_expensively():
+        calls["n"] += 1
+        clock[0] += 400.0
+        raise _throttle()
+
+    async def _fake_sleep(seconds: float) -> None:
+        clock[0] += seconds
+
+    with pytest.MonkeyPatch.context() as patched:
+        patched.setattr(time, "time", lambda: clock[0])
+        patched.setattr(asyncio, "sleep", _fake_sleep)
+
+        async def run():
+            # 900s of invocation: attempt 1 spends 400, attempt 2 spends 400, and a
+            # third cannot fit in the ~100 that remain.
+            set_lambda_deadline_epoch(clock[0] + 900.0)
+            with pytest.raises(botocore.exceptions.ClientError):
+                await stalls_expensively()
+
+        asyncio.run(run())
+
+    assert calls["n"] == 2, (
+        f"made {calls['n']} attempt(s) of an allowed 10. Two fit inside the "
+        "invocation and a third cannot: the ladder must raise then, so the caller "
+        "retries a real error instead of the Lambda being killed."
+    )
+
+
+@pytest.mark.unit
+def test_the_cost_gate_is_inert_without_a_deadline():
+    """No deadline means no basis for the judgement, so nothing is surrendered.
+
+    Only the shard and extraction handlers publish a deadline; every other caller of
+    these decorators (classification, summarization, the CLI, tests) runs with the
+    ContextVar unset, and there the ladder must behave exactly as it did before.
+    """
+    calls = {"n": 0}
+
+    @exponential_backoff_retry(
+        max_retries=4, initial_delay=1, max_delay=1, jitter=0.0, max_total_delay=300
+    )
+    def stalls_expensively():
+        calls["n"] += 1
+        raise _throttle()
+
+    with patch("time.sleep"):
+        with pytest.raises(botocore.exceptions.ClientError):
+            stalls_expensively()
+
+    assert get_lambda_deadline_epoch() is None
+    assert calls["n"] == 4, (
+        f"made {calls['n']} of 4 attempts with no deadline set; the cost gate has no "
+        "deadline to measure against and must not shorten the ladder"
+    )
 
 
 @pytest.mark.unit
