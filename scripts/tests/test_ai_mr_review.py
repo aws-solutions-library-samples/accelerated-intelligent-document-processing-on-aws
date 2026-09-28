@@ -237,6 +237,18 @@ def test_the_instruction_file_set_is_derived_not_authored(mod, tmp_path) -> None
     (repo / ".claude" / "skills").mkdir(parents=True)
     run = lambda *a: subprocess.run(a, cwd=repo, check=True, capture_output=True)  # noqa: E731
     run("git", "init", "-q")
+    # Detach the throwaway repo from this machine's git configuration. A managed
+    # developer machine may set ``core.hooksPath`` system-wide to a directory of
+    # hook runners belonging to a security tool, and one such runner rejects a
+    # commit whose author email is not the registered one — so the placeholder
+    # identity below fails on that machine and nowhere else, which reads as a
+    # regression in every local `make test` while CI stays green. Pointing
+    # ``core.hooksPath`` at an empty directory makes this measure git's behaviour
+    # rather than the host's policy. Same reasoning as ``_make_hermetic`` in
+    # ``scripts/sdlc/tests/test_typecheck_pr_changes.py``.
+    (tmp_path / "empty-hooks").mkdir(exist_ok=True)
+    run("git", "config", "core.hooksPath", str(tmp_path / "empty-hooks"))
+    run("git", "config", "commit.gpgsign", "false")
     run("git", "config", "user.email", "t@example.invalid")
     run("git", "config", "user.name", "t")
     for relative in mod.REQUIRED_INSTRUCTION_FILES:
@@ -918,6 +930,11 @@ def test_the_review_criteria_come_from_the_target_branch_not_the_mr(
         argv, cwd=repo, check=True, capture_output=True
     )
     run("git", "init", "-q")
+    # Hook-free and identity-pinned, for the reason spelled out at the other
+    # throwaway repo in this file.
+    (tmp_path / "empty-hooks").mkdir(exist_ok=True)
+    run("git", "config", "core.hooksPath", str(tmp_path / "empty-hooks"))
+    run("git", "config", "commit.gpgsign", "false")
     run("git", "config", "user.email", "t@example.invalid")
     run("git", "config", "user.name", "t")
     for name in ("pr-review.md", "pr-review-ci.md"):
