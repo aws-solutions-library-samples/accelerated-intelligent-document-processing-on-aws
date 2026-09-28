@@ -748,6 +748,15 @@ Resources:
               - 'cognito-idp:AdminSetUserPassword'
               - 'cognito-idp:AdminAddUserToGroup'
               - 'cognito-idp:AdminInitiateAuth'
+              # Reads the test user's Cognito `sub`. Without it the per-user scope
+              # row carries only the email leg, so the scope suite exercises half
+              # the key it is meant to exercise and says so as a WARN.
+              - 'cognito-idp:AdminGetUser'
+              # Revokes the test user's tokens for the logout check
+              # (SEC-2.4-LOGOUT-REVOCATION). Without it that check cannot be run,
+              # and a check that could not be run is not a pass — it fails the
+              # gate, which is the whole point of that rule.
+              - 'cognito-idp:AdminUserGlobalSignOut'
               - 'cognito-idp:DescribeUserPoolClient'
               - 'cognito-idp:UpdateUserPoolClient'
             Resource: !Sub 'arn:${AWS::Partition}:cognito-idp:${AWS::Region}:${AWS::AccountId}:userpool/*'
