@@ -247,11 +247,20 @@ r8, and the result would correspond to no single configuration. The pinned
 revision is recorded as `ConfigRevision` on the document and shown next to the
 configuration profile in the document list, document details, and exports.
 
-A pinned revision that has been deleted or pruned **fails the step** rather than
-falling back to the profile's current configuration: a run that silently used the
-wrong configuration would look successful, and its numbers would go into a
-comparison. Retention protects any revision a test run pinned (below), so this
-only arises after an explicit delete.
+A pinned revision that has been deleted, pruned or expired **fails the step**
+rather than falling back to the profile's current configuration: a run that
+silently used the wrong configuration would look successful, and its numbers would
+go into a comparison. Retention protects any revision a test run pinned (below)
+from pruning, but not from the Configuration bucket's `DataRetentionInDays`
+lifecycle rule, which expires revision bodies like every other object in the
+bucket.
+
+**The profile's current revision is the exception, so a profile nobody has saved
+in a while keeps processing.** When the current revision's body has expired, it is
+served from the profile's current configuration. That happens only when the
+current configuration can be shown to be that exact revision; otherwise the step
+fails as above. If a profile reports its current revision as unavailable, save it
+once: that cuts a new revision.
 
 ### Test Studio: comparing two revisions of one profile
 
@@ -294,7 +303,10 @@ configuration resolver and the configuration custom-resource Lambda.
 
 Revision bodies are stored in the Configuration bucket under
 `config_revisions/<profile>/<nnnnnn>.json.gz`, with a small metadata index in the
-`ConfigurationTable`. Keeping the bodies out of the table is deliberate: listing
+`ConfigurationTable`. The bucket's lifecycle rule expires them after
+`DataRetentionInDays` (365 by default) whatever their label or pin, so a labeled or
+pinned revision is readable for that long and no longer; the current revision keeps
+working past it, as described above. Keeping the bodies out of the table is deliberate: listing
 profiles scans that table, and DynamoDB bills a scan on full item size, so storing
 revision bodies there would make the profile list more expensive with every save.
 

@@ -446,10 +446,43 @@ Two deliberate choices:
 
 - **A missing pinned revision raises.** It does *not* fall back to the head: a run
   that silently used the wrong configuration looks successful, and its numbers then
-  enter a comparison.
+  enter a comparison. The one exception is below.
 - **No "published revision" branch on the unpinned path.** The head always holds
   the published revision's content, and reading the head is one `get_item` against
   an S3 GET, so an unpinned read stays on the head.
+
+**The published revision survives its body expiring.** Revision bodies live in the
+Configuration bucket, whose lifecycle rule expires every object after
+`DataRetentionInDays`, while every new document is pinned to the profile's
+`PublishedRevision`. `_read_revision_body()` (behind `get_revision()`,
+`restore_revision()` and every pinned read) therefore rebuilds a missing body from
+the head. It does so only when all of these hold:
+
+- the requested revision equals both `PublishedRevision` and `LatestRevision`;
+- its index entry still exists;
+- the head is proven to hold it, by either:
+  - its `storedHash` — a hash of the head's stored content, excluding metadata,
+    that `_write_record()` returns and every cut records — matching the head now; or
+  - for revisions cut before `storedHash` existed, the head's `UpdatedAt` being no
+    later than the revision's `createdAt`.
+
+Every other missing body still raises.
+
+The fingerprints are not used as the proof. They cover only `classes` and the
+confidence settings, and they cannot match a head at all when its classes carry
+numbers, because `_stringify_values` stores those numbers as strings and they come
+back as strings.
+
+An unchanged save cuts no revision but rewrites the head. Stack deployments do this
+to `default` and managed profiles, so an unchanged save refreshes the published
+entry's `storedHash`. The refresh (`_refresh_published_stored_hash()`) is computed
+from the revision's **own body**, never from the head. A head changed by a writer
+that cut no revision is therefore never recorded as the published revision; for
+example, a Lambda without `CONFIGURATION_BUCKET`, where history is disabled.
+
+The rebuild writes nothing back. Pipeline roles can only read `config_revisions/`,
+so each pinned read of an expired published body is rebuilt again and logged at
+WARNING.
 
 `resolve_published_revision(profile)` returns the revision a new document should be
 pinned to, or None when the profile has no history (an older deployment, or one

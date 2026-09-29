@@ -369,6 +369,7 @@ class ConfigRevisionStore:
             "sizeBytes": coerce_int(entry.get("sizeBytes")),
             "classFingerprint": entry.get("classFingerprint"),
             "confidenceFingerprint": entry.get("confidenceFingerprint"),
+            "storedHash": entry.get("storedHash"),
             "pinned": bool(entry.get("pinned", False)),
         }
 
@@ -487,9 +488,14 @@ class ConfigRevisionStore:
         notes: Optional[str] = None,
         label: Optional[str] = None,
         publish: bool = True,
+        stored_hash: Optional[str] = None,
     ) -> Optional[int]:
         """
         Record `config_dict` as the profile's next revision.
+
+        `stored_hash` is the hash of the profile head's stored content when that
+        head holds exactly this configuration; it lets the head stand in for the
+        body if the body's object later expires.
 
         Returns the revision number, or None when history is disabled.
         """
@@ -508,6 +514,8 @@ class ConfigRevisionStore:
             "confidenceFingerprint": confidence_fingerprint(config_dict),
             "pinned": False,
         }
+        if stored_hash:
+            entry["storedHash"] = stored_hash
         self.append_index(profile, entry)
         if publish:
             self.set_published(profile, revision)

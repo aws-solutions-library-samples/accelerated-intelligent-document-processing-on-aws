@@ -346,6 +346,186 @@ class TestPinnedResolution:
         assert manager.resolve_published_revision("p") is None
 
 
+def _classes_config(note):
+    """A full config whose classes carry numbers, which storage stringifies."""
+    return IDPConfig(
+        notes=note,
+        classes=[
+            {
+                "$id": "Invoice",
+                "x-aws-idp-document-type": "Invoice",
+                "type": "object",
+                "description": "An invoice",
+                "properties": {
+                    "total": {
+                        "type": "number",
+                        "description": "Amount due",
+                        "x-aws-idp-confidence-threshold": 0.85,
+                        "x-aws-idp-evaluation-weight": 2,
+                    },
+                    "code": {"type": "string", "enum": ["01", "02"]},
+                },
+            }
+        ],
+    )
+
+
+def _expire_body(profile, revision):
+    """What the Configuration bucket's lifecycle rule does after DataRetentionInDays."""
+    boto3.client("s3", region_name="us-east-1").delete_object(
+        Bucket=BUCKET, Key=ConfigRevisionStore.body_key(profile, revision)
+    )
+
+
+def _forget_stored_hash(manager, profile, revision):
+    """Make an entry look like one cut before revisions recorded a stored hash."""
+    assert manager.revisions.update_entry(profile, revision, storedHash=None)
+
+
+@pytest.mark.unit
+@mock_aws
+class TestExpiredPublishedBody:
+    """
+    Revision bodies expire under the Configuration bucket's lifecycle rule, and every
+    new document is pinned to its profile's published revision. A profile that is
+    not saved within the retention window must keep processing, and a revision
+    number must never be put on a configuration it did not record.
+    """
+
+    def test_an_expired_published_body_is_served_from_the_head(self, monkeypatch):
+        _make_table()
+        manager = _manager(monkeypatch)
+        manager.save_configuration(
+            CONFIG_TYPE_CONFIG, _classes_config("live"), version="p"
+        )
+        _expire_body("p", 1)
+
+        config = manager.get_merged_configuration("p", revision=1)
+
+        assert config.notes == "live"
+        assert config.classes[0]["properties"]["code"]["enum"] == ["01", "02"]
+        assert _notes_of(manager.get_revision("p", 1)) == "live"
+
+    def test_the_pipeline_entry_point_recovers_too(self, monkeypatch):
+        from idp_common.config import get_config
+
+        _make_table()
+        manager = _manager(monkeypatch)
+        manager.save_configuration(
+            CONFIG_TYPE_CONFIG, _classes_config("live"), version="p"
+        )
+        _expire_body("p", 1)
+
+        assert get_config(as_model=True, version="p", revision=1).notes == "live"
+
+    def test_an_older_expired_revision_still_raises(self, monkeypatch):
+        """Only the published revision can be proven identical to the head."""
+        _make_table()
+        manager = _manager(monkeypatch)
+        manager.save_configuration(CONFIG_TYPE_CONFIG, _config("old"), version="p")
+        manager.save_configuration(CONFIG_TYPE_CONFIG, _config("new"), version="p")
+        _expire_body("p", 1)
+
+        with pytest.raises(ValueError, match="not available"):
+            manager.get_merged_configuration("p", revision=1)
+        assert manager.get_revision("p", 1) is None
+
+    def test_a_head_rewritten_without_a_revision_is_refused(self, monkeypatch):
+        """
+        A writer with revision history disabled updates the head and cuts nothing,
+        so the head is newer than the published revision it still points at.
+        """
+        _make_table()
+        manager = _manager(monkeypatch)
+        manager.save_configuration(CONFIG_TYPE_CONFIG, _config("r1"), version="p")
+        manager.save_configuration(
+            CONFIG_TYPE_CONFIG, _config("unrecorded"), version="p", cut_revision=False
+        )
+        _expire_body("p", 1)
+
+        with pytest.raises(ValueError, match="not available"):
+            manager.get_merged_configuration("p", revision=1)
+
+    def test_a_legacy_revision_is_recovered_when_the_head_is_untouched(
+        self, monkeypatch
+    ):
+        _make_table()
+        manager = _manager(monkeypatch)
+        manager.save_configuration(
+            CONFIG_TYPE_CONFIG, _classes_config("live"), version="p"
+        )
+        _forget_stored_hash(manager, "p", 1)
+        _expire_body("p", 1)
+
+        assert manager.get_merged_configuration("p", revision=1).notes == "live"
+
+    def test_a_legacy_revision_is_refused_once_the_head_was_rewritten(
+        self, monkeypatch
+    ):
+        _make_table()
+        manager = _manager(monkeypatch)
+        manager.save_configuration(CONFIG_TYPE_CONFIG, _config("r1"), version="p")
+        _forget_stored_hash(manager, "p", 1)
+        manager.save_configuration(
+            CONFIG_TYPE_CONFIG, _config("unrecorded"), version="p", cut_revision=False
+        )
+        _expire_body("p", 1)
+
+        with pytest.raises(ValueError, match="not available"):
+            manager.get_merged_configuration("p", revision=1)
+
+    def test_an_unchanged_save_records_the_stored_hash_from_the_body(self, monkeypatch):
+        """
+        Stack deployments re-save `default` and managed profiles unchanged, which
+        rewrites the head without cutting a revision. The published revision must
+        stay recoverable afterwards.
+        """
+        _make_table()
+        manager = _manager(monkeypatch)
+        manager.save_configuration(CONFIG_TYPE_CONFIG, _config("live"), version="p")
+        _forget_stored_hash(manager, "p", 1)
+        manager.save_configuration(CONFIG_TYPE_CONFIG, _config("live"), version="p")
+
+        assert [r["revision"] for r in manager.list_revisions("p")] == [1]
+        assert manager.list_revisions("p")[0]["storedHash"]
+        _expire_body("p", 1)
+        assert manager.get_merged_configuration("p", revision=1).notes == "live"
+
+    def test_an_unchanged_save_never_vouches_for_an_unrecorded_head(self, monkeypatch):
+        """The refresh is computed from the revision's body, not from the head."""
+        _make_table()
+        manager = _manager(monkeypatch)
+        manager.save_configuration(CONFIG_TYPE_CONFIG, _config("r1"), version="p")
+        manager.save_configuration(
+            CONFIG_TYPE_CONFIG, _config("unrecorded"), version="p", cut_revision=False
+        )
+        manager.save_configuration(
+            CONFIG_TYPE_CONFIG, _config("unrecorded"), version="p"
+        )
+        _expire_body("p", 1)
+
+        with pytest.raises(ValueError, match="not available"):
+            manager.get_merged_configuration("p", revision=1)
+
+    def test_every_cut_records_the_heads_stored_hash(self, monkeypatch):
+        from idp_common.config.configuration_manager import _stored_content_hash
+
+        _make_table()
+        manager = _manager(monkeypatch)
+        manager.save_configuration(
+            CONFIG_TYPE_CONFIG, _classes_config("live"), version="p"
+        )
+        head = manager._decompress_item(
+            manager.table.get_item(Key={"Configuration": "Config#p"})["Item"]
+        )
+
+        entry = manager.list_revisions("p")[0]
+        assert entry["storedHash"] == _stored_content_hash(head)
+        assert entry["storedHash"] == manager._stored_hash_of_body(
+            "p", manager.get_revision("p", 1)
+        )
+
+
 @pytest.mark.unit
 @mock_aws
 class TestRetention:
