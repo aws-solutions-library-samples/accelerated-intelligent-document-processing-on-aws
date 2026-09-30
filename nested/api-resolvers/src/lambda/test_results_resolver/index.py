@@ -1692,10 +1692,12 @@ def get_test_run_status(test_run_id):
                         logger.info(
                             f"File {file_key}: counted as evaluating (eval not started)"
                         )
-                    elif eval_status == "FAILED":
+                    elif eval_status in ("FAILED", "TIMED_OUT"):
                         # Evaluation failed - count as failed
                         processing_failed_files += 1
-                        logger.info(f"File {file_key}: counted as failed (eval failed)")
+                        logger.info(
+                            f"File {file_key}: counted as failed (eval {eval_status})"
+                        )
                     elif eval_status == "NO_BASELINE":
                         # No baseline data available - count as completed
                         completed_files += 1
