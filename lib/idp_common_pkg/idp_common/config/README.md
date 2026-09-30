@@ -16,6 +16,8 @@ inheritance), see [docs/configuration.md](../../../../docs/configuration.md).
 ```python
 from idp_common.config import (
     get_config,            # Load merged config (dict or IDPConfig model)
+    prepare_config_snapshot,  # Validate + snapshot a config supplied by S3 URI
+    load_config_snapshot,     # Load that snapshot (get_config(config_uri=...))
     ConfigurationReader,   # Read configuration records from DynamoDB
     ConfigurationManager,  # Lower-level CRUD on the Configuration Table
 )
@@ -218,6 +220,7 @@ Three things to know before using it:
 |------|---------|
 | `models.py` | Typed `IDPConfig` Pydantic models (per-service config: OCR, classification, extraction, assessment, summarization, evaluation, chat, discovery, …). The source of truth for config field defaults and validation. |
 | `merge_utils.py` | Merge user config with system defaults, diff/strip helpers, and `validate_config()` with its enhanced validators. |
+| `config_uri.py` | `prepare_config_snapshot()` / `load_config_snapshot()` — process a document under a configuration supplied by S3 URI instead of a stored profile. See [Supplied configurations (`config_uri`)](#supplied-configurations-config_uri). |
 | `configuration_manager.py` | `ConfigurationManager` — CRUD against the DynamoDB Configuration Table (Default + Custom records), compression, versioning. Takes an optional `region`; see [Region for the underlying clients](#region-for-the-underlying-clients). |
 | `migration.py` | Migration of legacy configuration formats to the current JSON-Schema-based format. |
 | `revisions.py` | `ConfigRevisionStore` — immutable numbered snapshots of a Configuration Profile's configuration. See [Configuration Profiles and revisions](#configuration-profiles-and-revisions). |
@@ -477,6 +480,37 @@ from the value the same configuration hashes to now. The curve keys are unaffect
 (they are recomputed from the captured body, never read from the index), but
 anything that compares *stored* index fingerprints must treat a mismatch on a
 pre-normalization revision as "unknown" rather than "changed".
+
+## Supplied configurations (`config_uri`)
+
+A document uploaded with `config-uri` S3 metadata is processed under the
+configuration that URI names, not a stored profile (user guide:
+[docs/config-uri-processing.md](../../../../docs/config-uri-processing.md)).
+`Document.from_s3_event` reads it into `Document.config_uri` and clears any
+`config-version`/`config-revision` alongside it, because a profile name next to a
+supplied configuration would label the document with a configuration it was not
+processed under — and `config_version` is what the RBAC scope checks compare.
+
+Two functions, one per side of the queue:
+
+- **`prepare_config_snapshot(uri, allowed_bucket=, working_bucket=)`** — called once
+  by the queue processor. Reads the object (which must be in `allowed_bucket`),
+  parses it (`yaml.safe_load` for `.yaml`/`.yml`, else JSON), runs
+  `validate_config`, refuses `use_bda: true`, and writes the merged result to
+  `<working_bucket>/config_snapshots/<sha256>.json`. Returns the snapshot URI, which
+  replaces `document.config_uri`. Anything retrying cannot fix raises
+  `ConfigUriError` and the document is rejected; a transient S3 error raises
+  `ClientError` so the message is retried.
+- **`load_config_snapshot(uri)`** — what `get_config(config_uri=…)` calls. A read and
+  an `IDPConfig.model_validate`; no merge, no table. When `config_uri` is passed it
+  wins over `version`/`revision`, so every call site passes all three.
+
+The snapshot, not the caller's object, is what every step reads, so an edit or a
+delete after upload cannot change the configuration under an in-flight document.
+The key is content-addressed, so an SQS redelivery that stages the same
+configuration again writes the same object. `SNAPSHOT_PREFIX` is mirrored in the
+pipeline-hooks dispatcher (which ships without `idp_common`) and in the two IAM
+grants that read the prefix.
 
 ## Rollback-safe DynamoDB serialization
 

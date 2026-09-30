@@ -252,7 +252,7 @@ def handler(event, context):
     # Use document's version if specified, otherwise use active version
     config_version = getattr(document, 'config_version', None)
     config_revision = getattr(document, 'config_revision', None)
-    config = get_config(as_model=True, version=config_version, revision=config_revision)
+    config = get_config(as_model=True, version=config_version, revision=config_revision, config_uri=getattr(document, 'config_uri', None))
     backend = config.ocr.backend
     
     logger.info(f"Initializing OCR with backend: {backend}")

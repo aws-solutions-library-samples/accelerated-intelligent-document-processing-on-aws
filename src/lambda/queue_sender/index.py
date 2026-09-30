@@ -176,8 +176,10 @@ def handler(event, context):
     document.status = Status.QUEUED
     document.queued_time = current_time
 
-    # If no config version found in metadata or filename, get active config version
-    if not document.config_version:
+    # If no config version found in metadata or filename, get active config version.
+    # Not for a document carrying config-uri: it is processed under the supplied
+    # configuration and belongs to no stored profile.
+    if not document.config_version and not document.config_uri:
         try:
             import boto3
 

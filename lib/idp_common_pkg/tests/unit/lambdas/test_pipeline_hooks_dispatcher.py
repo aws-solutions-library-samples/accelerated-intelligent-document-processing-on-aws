@@ -2054,3 +2054,121 @@ def test_disabled_and_arnless_unreachable_hooks_are_not_reported(monkeypatch):
         None,
     )
     assert "unreachableHooks" not in out
+
+
+# --- Documents processed under a supplied configuration (config-uri) ----------
+
+_SNAPSHOT = "s3://wb/config_snapshots/abc123.json"
+
+
+class _SnapshotS3:
+    """S3 fake holding one configuration snapshot."""
+
+    def __init__(self, payload, fail=False):
+        self.body = json.dumps(payload).encode()
+        self.fail = fail
+        self.keys = []
+
+    def get_object(self, Bucket, Key):
+        self.keys.append((Bucket, Key))
+        if self.fail:
+            raise RuntimeError("s3 down")
+
+        class _Body:
+            def __init__(self, data):
+                self.data = data
+
+            def read(self):
+                return self.data
+
+        return {"Body": _Body(self.body)}
+
+
+def _no_table(monkeypatch, mod):
+    """Fail the test if the configuration table is consulted in any way."""
+
+    def _boom(*_a, **_k):
+        raise AssertionError("the configuration table was read")
+
+    monkeypatch.setattr(mod._dynamodb, "Table", _boom)
+    monkeypatch.setattr(mod, "_resolve_active_version", _boom)
+    monkeypatch.setattr(mod, "_read_hooks_from_config", _boom)
+    monkeypatch.setattr(mod, "_load_config_payload", _boom)
+
+
+def test_supplied_configuration_hooks_come_from_its_snapshot(monkeypatch):
+    """Resolving the ACTIVE profile for such a document would run hooks its
+    configuration never declared and skip the ones it did."""
+    monkeypatch.setenv("CONFIGURATION_TABLE_NAME", "ConfigTable")
+    monkeypatch.setenv("WORKING_BUCKET", "wb")
+    mod = _reload()
+    _no_table(monkeypatch, mod)
+    s3 = _SnapshotS3(
+        {"extraction": {"postHook": [{"featureId": "mine", "arn": "arn:mine"}]}}
+    )
+    monkeypatch.setattr(mod, "_s3", s3)
+    invoked = []
+    monkeypatch.setattr(
+        mod,
+        "_invoke_hook",
+        lambda h, p: invoked.append(h["featureId"]) or _ok(None, h["featureId"]),
+    )
+
+    out = mod.lambda_handler(
+        {
+            "hookPoint": "postExtraction",
+            "document": {"compressed": True, "config_uri": _SNAPSHOT},
+        },
+        None,
+    )
+
+    assert invoked == ["mine"]
+    assert s3.keys == [("wb", "config_snapshots/abc123.json")]
+    assert out["configUri"] == _SNAPSHOT
+    assert out["configVersion"] is None
+
+
+def test_supplied_configuration_without_hooks_dispatches_nothing(monkeypatch):
+    monkeypatch.setenv("CONFIGURATION_TABLE_NAME", "ConfigTable")
+    monkeypatch.setenv("WORKING_BUCKET", "wb")
+    mod = _reload()
+    _no_table(monkeypatch, mod)
+    monkeypatch.setattr(mod, "_s3", _SnapshotS3({"extraction": {}}))
+
+    out = mod.lambda_handler(
+        {"hookPoint": "preprocessing", "document": {"config_uri": _SNAPSHOT}}, None
+    )
+
+    assert out["invoked"] == 0
+    assert out["configUri"] == _SNAPSHOT
+    assert "configVersion" not in out
+
+
+@pytest.mark.parametrize(
+    ("uri", "fail"),
+    [
+        # Not under the snapshot prefix: never read, whatever it names.
+        ("s3://wb/compressed_documents/x.json", False),
+        ("s3://other-bucket/config_snapshots/abc123.json", False),
+        # Readable prefix, failed read.
+        (_SNAPSHOT, True),
+    ],
+)
+def test_an_unusable_snapshot_dispatches_no_hooks(monkeypatch, uri, fail):
+    """And still never falls back to the table's active profile."""
+    monkeypatch.setenv("CONFIGURATION_TABLE_NAME", "ConfigTable")
+    monkeypatch.setenv("WORKING_BUCKET", "wb")
+    mod = _reload()
+    _no_table(monkeypatch, mod)
+    s3 = _SnapshotS3(
+        {"extraction": {"postHook": [{"featureId": "x", "arn": "arn:x"}]}}, fail
+    )
+    monkeypatch.setattr(mod, "_s3", s3)
+
+    out = mod.lambda_handler(
+        {"hookPoint": "postExtraction", "document": {"config_uri": uri}}, None
+    )
+
+    assert out["invoked"] == 0
+    if not fail:
+        assert s3.keys == []

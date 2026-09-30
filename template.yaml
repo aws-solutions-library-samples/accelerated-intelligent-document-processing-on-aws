@@ -7766,6 +7766,13 @@ Resources:
                 bucket:
                   name:
                     - !Ref InputBucket
+                # `_configs/` holds configurations named by `config-uri`
+                # metadata (docs/config-uri-processing.md). They are inputs to
+                # processing, never documents, so their uploads do not queue.
+                object:
+                  key:
+                    - anything-but:
+                        prefix: _configs/
 
   QueueSenderLogGroup:
     Type: AWS::Logs::LogGroup
@@ -7860,6 +7867,14 @@ Resources:
             TableName: !Ref ConfigurationTable
         - S3CrudPolicy:
             BucketName: !Ref WorkingBucket
+        # Reads the configuration a document names in `config-uri` metadata,
+        # which must live in the input bucket, to validate and snapshot it.
+        # GetObject only: the key comes from the document, so nothing is listed.
+        - Statement:
+            - Effect: Allow
+              Action:
+                - s3:GetObject
+              Resource: !Sub "arn:${AWS::Partition}:s3:::${InputBucket}/*"
         - Statement:
             - Effect: Allow
               Action:
@@ -8422,6 +8437,14 @@ Resources:
             BucketName: !Ref OutputBucket
         - DynamoDBReadPolicy:
             TableName: !Ref ConfigurationTable
+        # The configuration snapshot of a document processed under a supplied
+        # configuration (`config-uri`); scoped to the prefix the queue processor
+        # writes them under (idp_common.config.config_uri.SNAPSHOT_PREFIX).
+        - Statement:
+            - Effect: Allow
+              Action:
+                - s3:GetObject
+              Resource: !Sub "arn:${AWS::Partition}:s3:::${WorkingBucket}/config_snapshots/*"
         - Statement:
             - Effect: Allow
               Action:

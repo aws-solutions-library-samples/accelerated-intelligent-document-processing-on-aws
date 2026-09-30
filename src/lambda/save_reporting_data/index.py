@@ -89,7 +89,14 @@ def handler(event, context):
                 if config_version:
                     logger.info(f"Using document config_version: {config_version}")
                 
-                config = get_config(table_name=config_table_name, as_model=True, version=config_version)
+                # A document processed under a supplied configuration reads its
+                # classes from that snapshot; pricing below is stack-wide either way.
+                config = get_config(
+                    table_name=config_table_name,
+                    as_model=True,
+                    version=config_version,
+                    config_uri=document_dict.get("config_uri") if document_dict else None,
+                )
 
                 # Also load pricing separately and attach it to the config
                 config_manager = ConfigurationManager(table_name=config_table_name)

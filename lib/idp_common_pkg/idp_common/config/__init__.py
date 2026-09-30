@@ -8,6 +8,14 @@ from botocore.exceptions import ClientError
 import logging
 from copy import deepcopy
 from .configuration_manager import ConfigurationManager
+# Re-exported (redundant aliases mark them as such) so a handler imports them the
+# way it imports ConfigurationManager.
+from .config_uri import (
+    SNAPSHOT_PREFIX as SNAPSHOT_PREFIX,
+    ConfigUriError as ConfigUriError,
+    load_config_snapshot,
+    prepare_config_snapshot as prepare_config_snapshot,
+)
 from .merge_utils import deep_update
 from .models import (
     IDPConfig,
@@ -198,6 +206,7 @@ def get_config(
     as_model: Literal[True],
     version: Optional[str] = None,
     revision: Optional[int] = None,
+    config_uri: Optional[str] = None,
 ) -> IDPConfig:
     """
     Get configuration as Pydantic model.
@@ -216,6 +225,7 @@ def get_config(
     as_model: Literal[False] = False,
     version: Optional[str] = None,
     revision: Optional[int] = None,
+    config_uri: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Get configuration as mutable dictionary."""
     ...
@@ -228,6 +238,7 @@ def get_config(
     version: Optional[str] = None,
     revision: Optional[int] = None,
     region: Optional[str] = None,
+    config_uri: Optional[str] = None,
 ) -> Union[IDPConfig, Dict[str, Any]]:
     """
     Get the merged configuration using the environment variable for table name.
@@ -241,6 +252,9 @@ def get_config(
         revision: Optional revision of that profile. Pass document.config_revision so a
             document keeps processing under the configuration it was queued with, even
             if someone saves the profile mid-flight.
+        config_uri: Optional S3 URI of a configuration snapshot. Pass
+            document.config_uri: when set it wins over version/revision and the
+            configuration table is not read at all (see config.config_uri).
     Returns:
         Merged configuration as IDPConfig (with .to_dict() helper) or mutable dictionary.
 
@@ -253,5 +267,7 @@ def get_config(
         config = get_config(as_model=True)
         config_dict = config.to_dict(sagemaker_endpoint_name=endpoint)
     """
+    if config_uri:
+        return load_config_snapshot(config_uri, as_model=as_model, region=region)
     reader = ConfigurationReader(table_name, region=region)
     return reader.get_merged_configuration(as_model=as_model, version=version, revision=revision)

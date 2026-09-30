@@ -84,7 +84,7 @@ def _handle(event, context):
     # Load configuration - use document's version if specified, otherwise use active version
     config_version = getattr(full_document, 'config_version', None)
     config_revision = getattr(full_document, 'config_revision', None)
-    config = get_config(as_model=True, version=config_version, revision=config_revision)
+    config = get_config(as_model=True, version=config_version, revision=config_revision, config_uri=getattr(full_document, 'config_uri', None))
     logger.info(f"Config: {json.dumps(config.model_dump(), default=str)}")
     
     # Log loaded document for troubleshooting

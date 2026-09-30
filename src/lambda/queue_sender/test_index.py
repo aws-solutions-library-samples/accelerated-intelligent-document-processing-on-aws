@@ -323,3 +323,45 @@ class TestReuploadCleanup:
             index.handler(make_event("doc.pdf"), None)
 
         assert call_order == ["purge", "create_document", "send_message"]
+
+
+@pytest.mark.unit
+class TestSuppliedConfiguration:
+    """A document uploaded with `config-uri` belongs to no stored profile, so the
+    sender must not stamp the active one on it: the RBAC scope checks compare
+    config_version, and a profile name would label the document with a
+    configuration it was not processed under."""
+
+    def _run(self, config_uri):
+        import index
+
+        mock_document = MagicMock()
+        mock_document.config_version = None
+        mock_document.config_uri = config_uri
+        mock_document.id = "doc.pdf"
+        mock_document.input_key = "doc.pdf"
+        mock_document.to_json.return_value = "{}"
+
+        with (
+            patch.object(index, "sqs"),
+            patch.object(index, "document_service"),
+            patch.object(index, "delete_current_output_objects", return_value=0),
+            patch.object(index.Document, "from_s3_event", return_value=mock_document),
+            patch.object(index.xray_recorder, "current_segment", return_value=None),
+            patch.object(
+                index, "resolve_active_config_version", return_value="active-v1"
+            ) as mock_resolve,
+            patch("boto3.resource"),
+        ):
+            index.handler(make_event("doc.pdf"), None)
+        return mock_document, mock_resolve
+
+    def test_a_supplied_configuration_is_not_stamped_with_the_active_profile(self):
+        doc, mock_resolve = self._run("s3://test-input-bucket/configs/w2.json")
+        mock_resolve.assert_not_called()
+        assert doc.config_version is None
+
+    def test_an_unpinned_document_still_gets_the_active_profile(self):
+        doc, mock_resolve = self._run(None)
+        mock_resolve.assert_called_once()
+        assert doc.config_version == "active-v1"

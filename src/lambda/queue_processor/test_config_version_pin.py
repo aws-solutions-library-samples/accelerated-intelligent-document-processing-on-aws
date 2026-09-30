@@ -85,10 +85,11 @@ class _Doc:
     """Minimal document stand-in. serialize_document mirrors the real wrapper,
     which carries config_version so consumers need not decompress."""
 
-    def __init__(self, config_version=None, config_revision=None):
+    def __init__(self, config_version=None, config_revision=None, config_uri=None):
         self.id = "w2.pdf"
         self.config_version = config_version
         self.config_revision = config_revision
+        self.config_uri = config_uri
         self.status = None
         self.start_time = None
         self.workflow_execution_arn = None
@@ -99,6 +100,7 @@ class _Doc:
             "s3_uri": f"s3://{bucket}/compressed_documents/{self.id}/1.json",
             "config_version": self.config_version,
             "config_revision": self.config_revision,
+            "config_uri": self.config_uri,
             "compressed": True,
         }
 
@@ -252,3 +254,22 @@ class TestConfigVersionPin:
 
         assert doc.config_version is None
         index_module.sfn.start_execution.assert_called_once()
+
+    def test_a_supplied_configuration_reads_no_profile(self, index_module):
+        """A document processed under config-uri belongs to no stored profile: it
+        is neither pinned to one nor routed by one, and nothing here reads the
+        configuration table for it."""
+        snapshot = "s3://test-working-bucket/config_snapshots/abc.json"
+        doc = _Doc(config_uri=snapshot)
+        manager = _mock_manager(index_module, "claims-pack-v0.4.0", use_bda=True)
+
+        index_module.start_workflow(doc)
+
+        assert doc.config_version is None
+        assert doc.config_revision is None
+        index_module.ConfigurationManager.assert_not_called()
+        manager.get_merged_configuration.assert_not_called()
+        payload = _sfn_input(index_module)
+        assert payload["config_uri"] == snapshot
+        # use_bda: true is refused at staging, so this is always the pipeline.
+        assert payload["use_bda"] is False

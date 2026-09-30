@@ -84,6 +84,9 @@ key lands in `$.HookResults.preprocessing` and therefore in the execution
 history, which is where an operator asking "did my gate run?" can find it.
 
 Resolution rules:
+  0. If the SFN input has `document.config_uri`, the document is processed under
+     a supplied configuration: read hooks from that snapshot and never consult
+     the table (see `_load_snapshot_payload`).
   1. If the SFN input has `document.config_version`, use it.
   2. Else, scan the table for the row with IsActive=true.
   3. Else, fall back to `Config#default`.
@@ -173,6 +176,12 @@ _CONTROL_FIELDS = ("use_bda", "bda_project_arn")
 # grants s3:PutObject on. Both the keys we write and the URIs we accept from a
 # hook are constrained to it.
 _COMPRESSED_DOC_PREFIX = "compressed_documents/"
+
+# Working-bucket prefix of the configuration snapshots the queue processor writes
+# for a document uploaded with `config-uri` metadata. Mirrors
+# idp_common.config.config_uri.SNAPSHOT_PREFIX (this Lambda ships without
+# idp_common) and the s3:GetObject grant in the dispatcher's IAM policy.
+_CONFIG_SNAPSHOT_PREFIX = "config_snapshots/"
 
 # Fields the STATE MACHINE reads straight off the document payload via JSONPath:
 #
@@ -531,6 +540,34 @@ def _load_config_payload(table: Any, version: str) -> Dict[str, Any]:
     if not item:
         return {}
     return _decompress_item(item)
+
+
+def _load_snapshot_payload(config_uri: str) -> Dict[str, Any]:
+    """A supplied-configuration snapshot as a plain dict ({} if unreadable).
+
+    The document's hooks come from the configuration it is processed under. For a
+    document uploaded with `config-uri` that is this snapshot, NOT the active
+    profile — resolving the active profile here would run hooks the caller's
+    configuration never declared, and skip the ones it did.
+
+    Only a URI under the working bucket's snapshot prefix is read: that is where
+    the queue processor writes them, and all the IAM policy grants.
+    """
+    expected = f"s3://{_WORKING_BUCKET}/{_CONFIG_SNAPSHOT_PREFIX}"
+    if not _WORKING_BUCKET or not config_uri.startswith(expected):
+        logger.warning(
+            "config_uri %s is not a configuration snapshot; no hooks dispatched",
+            config_uri,
+        )
+        return {}
+    key = config_uri[len(f"s3://{_WORKING_BUCKET}/") :]
+    try:
+        body = _s3.get_object(Bucket=_WORKING_BUCKET, Key=key)["Body"].read()
+        payload = json.loads(body)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Config snapshot read failed for %s: %s", config_uri, exc)
+        return {}
+    return payload if isinstance(payload, dict) else {}
 
 
 def _hooks_from_payload(payload: Dict[str, Any], point: str) -> List[Dict[str, Any]]:
@@ -962,7 +999,12 @@ def _invoke_hook(hook: Dict[str, Any], payload: Dict[str, Any]) -> Dict[str, Any
         }
 
 
-def _noop(point: Any, document: Any, version: Optional[str] = None) -> Dict[str, Any]:
+def _noop(
+    point: Any,
+    document: Any,
+    version: Optional[str] = None,
+    config_uri: Optional[str] = None,
+) -> Dict[str, Any]:
     """An empty dispatch result.
 
     Carries halt=False AND the inbound document unchanged, so both state-machine
@@ -975,6 +1017,8 @@ def _noop(point: Any, document: Any, version: Optional[str] = None) -> Dict[str,
     "we resolved the wrong version and found none" — `invoked: 0` alone cannot
     (issue #599). Omitted entirely when resolution never happened (unknown hook
     point, no configuration table), since there is no version to report.
+    `config_uri` is echoed as `configUri` on the same terms, for a document
+    processed under a supplied configuration.
     """
     out: Dict[str, Any] = {
         "hookPoint": point,
@@ -985,6 +1029,8 @@ def _noop(point: Any, document: Any, version: Optional[str] = None) -> Dict[str,
     }
     if version is not None:
         out["configVersion"] = version
+    if config_uri is not None:
+        out["configUri"] = config_uri
     return out
 
 
@@ -994,19 +1040,29 @@ def lambda_handler(event: Dict[str, Any], _ctx: Any) -> Dict[str, Any]:
     if point not in _HOOK_TO_STEP:
         logger.warning("Unknown hookPoint=%s — returning empty result", point)
         return _noop(point, inbound_document)
-    if not _CONFIG_TABLE:
-        logger.info("CONFIGURATION_TABLE_NAME not set — no hooks dispatched")
-        return _noop(point, inbound_document)
-
-    table = _dynamodb.Table(_CONFIG_TABLE)
     document = inbound_document or {}
-    pinned = document.get("config_version") if isinstance(document, dict) else None
-    version = _resolve_active_version(table, pinned)
-    if not version:
-        logger.info("No config version resolvable; returning no-hooks")
-        return _noop(point, inbound_document)
+    config_uri = document.get("config_uri") if isinstance(document, dict) else None
+    version: Optional[str] = None
+    table: Any = None
+    config_payload: Optional[Dict[str, Any]] = None
+    if config_uri:
+        # Processed under a supplied configuration: its snapshot is the only
+        # source of hooks, and the configuration table is not consulted.
+        config_payload = _load_snapshot_payload(config_uri)
+        hooks = _hooks_from_payload(config_payload, point)
+    else:
+        if not _CONFIG_TABLE:
+            logger.info("CONFIGURATION_TABLE_NAME not set — no hooks dispatched")
+            return _noop(point, inbound_document)
 
-    hooks = _read_hooks_from_config(table, version, point)
+        table = _dynamodb.Table(_CONFIG_TABLE)
+        pinned = document.get("config_version") if isinstance(document, dict) else None
+        version = _resolve_active_version(table, pinned)
+        if not version:
+            logger.info("No config version resolvable; returning no-hooks")
+            return _noop(point, inbound_document)
+
+        hooks = _read_hooks_from_config(table, version, point)
 
     # `preprocessing` is the only point ahead of the BDA/pipeline routing Choice,
     # so it is the only one guaranteed to run whichever branch this document
@@ -1022,14 +1078,21 @@ def lambda_handler(event: Dict[str, Any], _ctx: Any) -> Dict[str, Any]:
     unreachable: List[Dict[str, Any]] = []
     if point == "preprocessing":
         unreachable = _unreachable_hook_report(
-            _load_config_payload(table, version), document
+            config_payload
+            if config_payload is not None
+            else _load_config_payload(table, version),
+            document,
         )
         for entry in unreachable:
             logger.warning("%s", entry["message"])
 
     if not hooks:
-        logger.info("No hooks registered for %s in Config#%s", point, version)
-        out = _noop(point, inbound_document, version)
+        logger.info(
+            "No hooks registered for %s in %s",
+            point,
+            config_uri or f"Config#{version}",
+        )
+        out = _noop(point, inbound_document, version, config_uri)
         if unreachable:
             out["unreachableHooks"] = unreachable
         return out
@@ -1148,6 +1211,7 @@ def lambda_handler(event: Dict[str, Any], _ctx: Any) -> Dict[str, Any]:
     out: Dict[str, Any] = {
         "hookPoint": point,
         "configVersion": version,
+        **({"configUri": config_uri} if config_uri else {}),
         "invoked": len(results),
         "halt": halt,
         # Always present. Equals the inbound document unless a hook returned a
