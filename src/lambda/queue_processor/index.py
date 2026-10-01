@@ -14,12 +14,7 @@ import boto3
 from aws_xray_sdk.core import patch_all, xray_recorder
 from botocore.exceptions import BotoCoreError, ClientError
 
-from idp_common.config import (
-    SNAPSHOT_PREFIX,
-    ConfigurationManager,
-    ConfigUriError,
-    prepare_config_snapshot,
-)
+from idp_common.config import ConfigurationManager
 from idp_common.docs_service import create_document_service
 from idp_common.models import Document, Status
 from idp_common.utils.log_sanitizer import sanitize_event_for_logging
@@ -965,49 +960,6 @@ def extend_visibility_for_outage(receipt_handle: str) -> None:
         logger.warning(f"Failed to extend visibility for OPEN-state message: {e}")
 
 
-def stage_supplied_config(document: Document) -> Optional[str]:
-    """Validate and snapshot the configuration a document names in ``config-uri``.
-
-    Replaces ``document.config_uri`` with the snapshot's URI, so every step reads
-    the same validated bytes even if the caller's object changes mid-flight.
-
-    Returns:
-        None when the document may proceed (including when it names no
-        configuration), or the reason it must be rejected.
-
-    Raises:
-        ClientError: A transient S3 failure; the message should be retried.
-    """
-    if not document.config_uri:
-        return None
-    working_bucket = os.environ.get("WORKING_BUCKET", "")
-    # Already a snapshot — a document re-queued after staging. An SQS redelivery is
-    # not this case: its body still names the source, and staging it again writes
-    # the same content-addressed snapshot.
-    if document.config_uri.startswith(f"s3://{working_bucket}/{SNAPSHOT_PREFIX}/"):
-        return None
-    source_uri = document.config_uri
-    try:
-        document.config_uri = prepare_config_snapshot(
-            source_uri,
-            allowed_bucket=document.input_bucket,
-            working_bucket=working_bucket,
-        )
-    except ConfigUriError as e:
-        return str(e)
-    document.metadata["config_source_uri"] = source_uri
-    return None
-
-
-def reject_document(document: Document, reason: str) -> None:
-    """Record a document as FAILED without starting a workflow."""
-    logger.warning(f"Rejecting {document.input_key}: {reason}")
-    document.status = Status.FAILED
-    document.completion_time = datetime.now(timezone.utc).isoformat()
-    document.errors.append(reason)
-    document_service.update_document(document)
-
-
 def start_workflow(
     document: Document, execution_name: Optional[str] = None
 ) -> Dict[str, Any]:
@@ -1058,9 +1010,9 @@ def start_workflow(
     # profile has no history (an older deployment, or untouched since the
     # upgrade), and consumers fall back to the profile head as before.
     #
-    # A document carrying config_uri is processed under that snapshot (staged by
-    # stage_supplied_config before this runs), so there is no profile to pin and
-    # nothing here may read the configuration table for it.
+    # A document carrying config_uri is processed under that snapshot (validated
+    # and written by queue_sender before the document was queued), so there is no
+    # profile to pin and nothing here may read the configuration table for it.
     config_table_name = os.environ.get("CONFIG_TABLE")
     needs_version = not document.config_version
     needs_revision = document.config_revision is None
@@ -1121,8 +1073,8 @@ def start_workflow(
     # The unified state machine uses $.document.use_bda to choose BDA vs pipeline branch,
     # and $.document.bda_project_arn for the per-config-version BDA project.
     if document.config_uri:
-        # stage_supplied_config refused use_bda: true, so a supplied
-        # configuration always runs the pipeline branch.
+        # queue_sender refused use_bda: true, so a supplied configuration always
+        # runs the pipeline branch.
         compressed_document["use_bda"] = False
     elif config_table_name:
         try:
@@ -1248,16 +1200,6 @@ def process_message(record: Dict[str, Any]) -> Tuple[bool, str]:
             # cycle to repeat until the message eventually hits its
             # maxReceiveCount. Same invariant the workflow-started path
             # below enforces (see #904).
-            ack_message(receipt_handle)
-            return True, message_id
-
-        # A supplied configuration is validated before a concurrency slot is
-        # taken, so a rejected document never holds one. Rejection is final (the
-        # document is marked FAILED and the message acked); a transient S3 error
-        # raises ClientError and the message is retried by the handler below.
-        rejection = stage_supplied_config(document)
-        if rejection:
-            reject_document(document, rejection)
             ack_message(receipt_handle)
             return True, message_id
 

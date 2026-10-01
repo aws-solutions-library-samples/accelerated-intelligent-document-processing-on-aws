@@ -5,7 +5,7 @@
 Process a document under a configuration supplied by S3 URI.
 
 An input object carrying ``config-uri`` metadata names a JSON (or YAML) config in
-the input bucket. The queue processor turns that into a **snapshot** with
+the input bucket. The queue sender turns that into a **snapshot** with
 :func:`prepare_config_snapshot` — validated, merged onto the system defaults, and
 written once to the working bucket under a content-addressed key — and every step
 after it reads the snapshot with :func:`load_config_snapshot`. No step reads the
@@ -14,8 +14,8 @@ configuration table for such a document.
 Why a snapshot rather than reading the caller's object at every step: the caller
 can overwrite or delete their object while the document is in flight, and a result
 must correspond to exactly one configuration. A content-addressed key is also
-idempotent, so an SQS redelivery that stages the same config again writes the same
-object.
+idempotent, so a retried invocation that stages the same config again writes the
+same object.
 """
 
 import hashlib
@@ -37,6 +37,11 @@ SNAPSHOT_PREFIX = "config_snapshots"
 #: S3 error codes meaning the caller's object cannot be read no matter how often
 #: we retry. Anything else (throttling, 5xx) propagates so the message is retried.
 _PERMANENT_S3_ERRORS = {"NoSuchKey", "NoSuchBucket", "AccessDenied", "404", "403"}
+
+
+#: One S3 client per region for load_config_snapshot, which a Lambda may call more
+#: than once per invocation and on every warm invocation.
+_snapshot_clients: Dict[Optional[str], Any] = {}
 
 
 class ConfigUriError(ValueError):
@@ -100,6 +105,7 @@ def prepare_config_snapshot(
     # Lambda happens to import first.
     from ..utils import parse_s3_uri
     from .merge_utils import validate_config
+    from .migration import is_legacy_format, migrate_legacy_to_schema
 
     s3 = s3_client or boto3.client("s3")
     try:
@@ -123,6 +129,12 @@ def prepare_config_snapshot(
         raise
 
     supplied = parse_config_document(body, key)
+    # The same legacy-class migration a stored profile gets when it is read
+    # (ConfigurationRecord.from_dynamodb_item). The models accept either shape, so
+    # without it a legacy-format class list validates and is then misread.
+    for section in ("classes", "policy_classes"):
+        if supplied.get(section) and is_legacy_format(supplied[section]):
+            supplied[section] = migrate_legacy_to_schema(supplied[section])
     result = validate_config(supplied, pattern="pattern-2")
     if not result["valid"]:
         raise ConfigUriError(
@@ -174,7 +186,10 @@ def load_config_snapshot(
     from .models import IDPConfig
 
     bucket, key = parse_s3_uri(config_uri)
-    s3 = boto3.client("s3", region_name=region) if region else boto3.client("s3")
+    s3 = _snapshot_clients.get(region)
+    if s3 is None:
+        s3 = boto3.client("s3", region_name=region) if region else boto3.client("s3")
+        _snapshot_clients[region] = s3
     data = json.loads(s3.get_object(Bucket=bucket, Key=key)["Body"].read())
     config = IDPConfig.model_validate(data)
     logger.info(f"Loaded configuration from {config_uri}")

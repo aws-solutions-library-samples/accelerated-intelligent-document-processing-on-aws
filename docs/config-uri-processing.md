@@ -70,9 +70,10 @@ idp-cli config-validate --config-file ./my-config.json
 
 ## What happens to the document
 
-1. The queue processor reads the configuration and validates it. The document is
-   **rejected** — recorded as `FAILED` with the reason in its errors, and no
-   workflow is started — when:
+1. When the document is queued, its configuration is read and validated. The
+   document is **rejected** — recorded as `FAILED`, never queued, and the reason
+   written to `s3://<OutputBucket>/<document key>/config_uri_rejection.json` —
+   when:
    - the file is missing or unreadable, or not in the input bucket;
    - it is not valid JSON/YAML, or not an object;
    - validation reports errors;
@@ -105,6 +106,13 @@ lifecycle (the stack's log retention period).
 - **Only principals that can write to the input bucket directly can use it.** The
   Web UI's upload allows a fixed set of metadata fields, and `config-uri` is not one
   of them.
+- ⚠️ **Writing to the input bucket now carries a configuration author's reach.** A
+  supplied configuration chooses the prompts, the models, and any
+  [pipeline hooks](./lambda-hook-inference.md) or custom prompt Lambda, exactly as
+  a stored profile does. Those invocations stay bounded by the same IAM policies
+  (functions named `GENAIIDP-*` or tagged `idp:feature-id`), but a principal that
+  could previously only *select* a profile with `config-version` can now *author*
+  one. Grant input-bucket write access accordingly.
 - **Reprocessing from the Web UI uses a stored profile.** Reprocess builds a fresh
   document from the tracking record and does not carry `config-uri`. To reprocess
   under the supplied configuration, upload the document again with the metadata.

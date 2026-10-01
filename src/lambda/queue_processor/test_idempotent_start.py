@@ -85,7 +85,6 @@ def index_module(monkeypatch):
         doc.input_key = "input/statements/bank statement (march).pdf"
         doc.id = doc.input_key
         doc.config_version = "default"
-        doc.config_uri = None
         doc.config_revision = 3
         doc.workflow_execution_arn = None
         doc.to_dict = MagicMock(return_value={"id": doc.id})

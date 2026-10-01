@@ -7699,6 +7699,9 @@ Resources:
           TRACKING_TABLE: !Ref TrackingTable
           DATA_RETENTION_IN_DAYS: !Ref DataRetentionInDays
           OUTPUT_BUCKET: !Ref OutputBucket
+          # Destination of the configuration snapshot for a document uploaded
+          # with `config-uri` metadata (docs/config-uri-processing.md).
+          WORKING_BUCKET: !Ref WorkingBucket
           CONFIG_TABLE: !Ref ConfigurationTable
           # Namespace for the ``StaleOutputPurgeFailed`` telemetry metric
           # (issue #719). Matches every other IDP Lambda's convention:
@@ -7730,6 +7733,20 @@ Resources:
               Action:
                 - s3:DeleteObject
               Resource: !Sub "arn:${AWS::Partition}:s3:::${OutputBucket}/*"
+        # A document uploaded with `config-uri` metadata: its configuration is
+        # validated here and snapshotted under config_snapshots/ (the prefix
+        # every reader is granted), or rejected with a notice written next to
+        # the document's output. Each grant is PutObject on exactly that path.
+        # The configuration itself is read through S3ReadPolicy on InputBucket.
+        - Statement:
+            - Effect: Allow
+              Action:
+                - s3:PutObject
+              Resource: !Sub "arn:${AWS::Partition}:s3:::${WorkingBucket}/config_snapshots/*"
+            - Effect: Allow
+              Action:
+                - s3:PutObject
+              Resource: !Sub "arn:${AWS::Partition}:s3:::${OutputBucket}/*/config_uri_rejection.json"
         # Issue #719: emit ``StaleOutputPurgeFailed`` on partial-purge
         # failure so operators can alarm on the metric rather than
         # scraping ERROR logs. Matches the pattern in
@@ -7867,14 +7884,6 @@ Resources:
             TableName: !Ref ConfigurationTable
         - S3CrudPolicy:
             BucketName: !Ref WorkingBucket
-        # Reads the configuration a document names in `config-uri` metadata,
-        # which must live in the input bucket, to validate and snapshot it.
-        # GetObject only: the key comes from the document, so nothing is listed.
-        - Statement:
-            - Effect: Allow
-              Action:
-                - s3:GetObject
-              Resource: !Sub "arn:${AWS::Partition}:s3:::${InputBucket}/*"
         - Statement:
             - Effect: Allow
               Action:
@@ -8438,7 +8447,7 @@ Resources:
         - DynamoDBReadPolicy:
             TableName: !Ref ConfigurationTable
         # The configuration snapshot of a document processed under a supplied
-        # configuration (`config-uri`); scoped to the prefix the queue processor
+        # configuration (`config-uri`); scoped to the prefix the queue sender
         # writes them under (idp_common.config.config_uri.SNAPSHOT_PREFIX).
         - Statement:
             - Effect: Allow

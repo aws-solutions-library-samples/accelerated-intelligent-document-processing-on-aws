@@ -5778,7 +5778,7 @@ Resources:
                 Action: s3:PutObject
                 Resource: !Sub 'arn:${AWS::Partition}:s3:::${WorkingBucket}/compressed_documents/*'
               # A document uploaded with `config-uri` metadata takes its hooks
-              # from the configuration snapshot the queue processor wrote, not
+              # from the configuration snapshot the queue sender wrote, not
               # from a Config#* row. Read-only, and only that prefix.
               - Effect: Allow
                 Action: s3:GetObject

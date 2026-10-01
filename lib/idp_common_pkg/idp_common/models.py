@@ -684,7 +684,7 @@ class Document:
     # there would either bypass or break scope.
     config_revision: Optional[int] = None
     # S3 URI of a configuration to process under INSTEAD of a stored profile, read
-    # from the input object's `config-uri` metadata. The queue processor validates
+    # from the input object's `config-uri` metadata. The queue sender validates
     # it and replaces it with an immutable snapshot in the working bucket, so every
     # step reads the same bytes. When set, config_version/config_revision are
     # ignored for config resolution. See docs/config-uri-processing.md.

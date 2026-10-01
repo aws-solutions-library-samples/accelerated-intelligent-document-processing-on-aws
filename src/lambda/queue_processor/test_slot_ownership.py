@@ -68,7 +68,6 @@ def index_module(monkeypatch):
         doc = MagicMock()
         doc.input_key = "input/test.pdf"
         doc.id = "doc-1"
-        doc.config_uri = None  # processed under a stored profile
         module.Document.load_document = MagicMock(return_value=doc)
         module.document_service.get_document = MagicMock(return_value=None)
         module.check_circuit_breaker = MagicMock(return_value=(True, "CLOSED"))

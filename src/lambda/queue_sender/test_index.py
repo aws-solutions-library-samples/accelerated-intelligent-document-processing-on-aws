@@ -3,8 +3,10 @@
 
 """Unit tests for the queue_sender Lambda function."""
 
+import json
 import os
 import sys
+from enum import Enum
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -14,6 +16,7 @@ sys.modules["idp_common"] = MagicMock()
 sys.modules["idp_common.models"] = MagicMock()
 sys.modules["idp_common.docs_service"] = MagicMock()
 sys.modules["idp_common.document_versions"] = MagicMock()
+sys.modules["idp_common.config"] = MagicMock()
 
 mock_xray_core = MagicMock()
 # capture() is used as a decorator; make it a pass-through.
@@ -29,6 +32,7 @@ def mock_env():
         "DATA_RETENTION_IN_DAYS": "30",
         "OUTPUT_BUCKET": "test-output-bucket",
         "CONFIG_TABLE": "test-config-table",
+        "WORKING_BUCKET": "test-working-bucket",
         "LOG_LEVEL": "INFO",
         # index.py builds boto3 clients (sqs/s3/cloudwatch) which need a region.
         # Without this the tests inherit one from the developer's environment and
@@ -82,6 +86,7 @@ class TestFolderPseudoObject:
         import index
 
         mock_document = MagicMock()
+        mock_document.config_uri = None  # processed under a stored profile
         mock_document.config_version = "v1"
         mock_document.id = "doc.pdf"
         mock_document.input_key = "doc.pdf"
@@ -112,6 +117,7 @@ class TestReuploadCleanup:
         import index
 
         mock_document = MagicMock()
+        mock_document.config_uri = None  # processed under a stored profile
         mock_document.config_version = "v1"
         mock_document.id = key
         mock_document.input_key = key
@@ -144,6 +150,7 @@ class TestReuploadCleanup:
         import index
 
         mock_document = MagicMock()
+        mock_document.config_uri = None  # processed under a stored profile
         mock_document.config_version = "v1"
         mock_document.id = "doc.pdf"
         mock_document.input_key = "doc.pdf"
@@ -177,6 +184,7 @@ class TestReuploadCleanup:
         import index
 
         mock_document = MagicMock()
+        mock_document.config_uri = None  # processed under a stored profile
         mock_document.config_version = "v1"
         mock_document.id = "doc.pdf"
         mock_document.input_key = "doc.pdf"
@@ -227,6 +235,7 @@ class TestReuploadCleanup:
         import index
 
         mock_document = MagicMock()
+        mock_document.config_uri = None  # processed under a stored profile
         mock_document.config_version = "v1"
         mock_document.id = "doc.pdf"
         mock_document.input_key = "doc.pdf"
@@ -257,6 +266,7 @@ class TestReuploadCleanup:
         import index
 
         mock_document = MagicMock()
+        mock_document.config_uri = None  # processed under a stored profile
         mock_document.config_version = "v1"
         mock_document.id = "doc.pdf"
         mock_document.input_key = "doc.pdf"
@@ -289,6 +299,7 @@ class TestReuploadCleanup:
         import index
 
         mock_document = MagicMock()
+        mock_document.config_uri = None  # processed under a stored profile
         mock_document.config_version = "v1"
         mock_document.id = "doc.pdf"
         mock_document.input_key = "doc.pdf"
@@ -325,14 +336,31 @@ class TestReuploadCleanup:
         assert call_order == ["purge", "create_document", "send_message"]
 
 
+class _Status(Enum):
+    """The two members this path sets, real so they serialize."""
+
+    QUEUED = "QUEUED"
+    FAILED = "FAILED"
+
+
+class _ConfigUriError(ValueError):
+    """Stands in for idp_common.config.ConfigUriError, which this suite stubs."""
+
+
+SOURCE = "s3://test-input-bucket/_configs/w2.json"
+SNAPSHOT = "s3://test-working-bucket/config_snapshots/abc123.json"
+
+
 @pytest.mark.unit
 class TestSuppliedConfiguration:
-    """A document uploaded with `config-uri` belongs to no stored profile, so the
-    sender must not stamp the active one on it: the RBAC scope checks compare
-    config_version, and a profile name would label the document with a
-    configuration it was not processed under."""
+    """A document uploaded with `config-uri` is validated and snapshotted here,
+    once per upload, before it is queued.
 
-    def _run(self, config_uri):
+    It belongs to no stored profile, so the sender must not stamp the active one
+    on it: the RBAC scope checks compare config_version, and a profile name would
+    label the document with a configuration it was not processed under."""
+
+    def _run(self, config_uri, prepare=None):
         import index
 
         mock_document = MagicMock()
@@ -340,28 +368,85 @@ class TestSuppliedConfiguration:
         mock_document.config_uri = config_uri
         mock_document.id = "doc.pdf"
         mock_document.input_key = "doc.pdf"
+        mock_document.input_bucket = "test-input-bucket"
+        mock_document.metadata = {}
+        mock_document.errors = []
         mock_document.to_json.return_value = "{}"
 
         with (
-            patch.object(index, "sqs"),
-            patch.object(index, "document_service"),
+            patch.object(index, "sqs") as mock_sqs,
+            patch.object(index, "s3") as mock_s3,
+            patch.object(index, "document_service") as mock_doc_service,
             patch.object(index, "delete_current_output_objects", return_value=0),
             patch.object(index.Document, "from_s3_event", return_value=mock_document),
             patch.object(index.xray_recorder, "current_segment", return_value=None),
             patch.object(
                 index, "resolve_active_config_version", return_value="active-v1"
             ) as mock_resolve,
+            patch.object(index, "ConfigUriError", _ConfigUriError),
+            patch.object(index, "Status", _Status),
+            patch.object(
+                index,
+                "prepare_config_snapshot",
+                prepare or MagicMock(return_value=SNAPSHOT),
+            ) as mock_prepare,
             patch("boto3.resource"),
         ):
-            index.handler(make_event("doc.pdf"), None)
-        return mock_document, mock_resolve
+            response = index.handler(make_event("doc.pdf"), None)
+        return {
+            "response": response,
+            "doc": mock_document,
+            "resolve": mock_resolve,
+            "prepare": mock_prepare,
+            "sqs": mock_sqs,
+            "s3": mock_s3,
+            "docs": mock_doc_service,
+        }
 
-    def test_a_supplied_configuration_is_not_stamped_with_the_active_profile(self):
-        doc, mock_resolve = self._run("s3://test-input-bucket/configs/w2.json")
-        mock_resolve.assert_not_called()
-        assert doc.config_version is None
+    def test_a_supplied_configuration_is_snapshotted_and_queued(self):
+        r = self._run(SOURCE)
+
+        r["prepare"].assert_called_once_with(
+            SOURCE,
+            allowed_bucket="test-input-bucket",
+            working_bucket="test-working-bucket",
+        )
+        assert r["doc"].config_uri == SNAPSHOT
+        assert r["doc"].metadata["config_source_uri"] == SOURCE
+        r["resolve"].assert_not_called()
+        assert r["doc"].config_version is None
+        r["sqs"].send_message.assert_called_once()
+        # A notice from an earlier rejected upload of this key is cleared.
+        r["s3"].delete_object.assert_called_once_with(
+            Bucket="test-output-bucket", Key="doc.pdf/config_uri_rejection.json"
+        )
+
+    def test_a_rejected_configuration_is_recorded_and_never_queued(self):
+        r = self._run(SOURCE, prepare=MagicMock(side_effect=_ConfigUriError("bad dpi")))
+
+        assert r["response"]["rejected"] == "bad dpi"
+        r["sqs"].send_message.assert_not_called()
+        # Tracked as FAILED: create_document, then update_document for the
+        # WorkflowStatus and CompletionTime create_document does not write.
+        r["docs"].create_document.assert_called_once()
+        r["docs"].update_document.assert_called_once_with(r["doc"])
+        assert r["doc"].status == _Status.FAILED
+        assert r["doc"].errors == ["bad dpi"]
+        # And the reason lands next to the document's output.
+        put = r["s3"].put_object.call_args.kwargs
+        assert put["Bucket"] == "test-output-bucket"
+        assert put["Key"] == "doc.pdf/config_uri_rejection.json"
+        notice = json.loads(put["Body"])
+        assert notice["reason"] == "bad dpi"
+        assert notice["config_uri"] == SOURCE
+
+    def test_a_transient_failure_fails_the_invocation_for_a_retry(self):
+        boom = MagicMock(side_effect=RuntimeError("SlowDown"))
+        with pytest.raises(RuntimeError):
+            self._run(SOURCE, prepare=boom)
 
     def test_an_unpinned_document_still_gets_the_active_profile(self):
-        doc, mock_resolve = self._run(None)
-        mock_resolve.assert_called_once()
-        assert doc.config_version == "active-v1"
+        r = self._run(None)
+        r["resolve"].assert_called_once()
+        r["prepare"].assert_not_called()
+        assert r["doc"].config_version == "active-v1"

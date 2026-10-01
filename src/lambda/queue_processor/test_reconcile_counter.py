@@ -907,7 +907,6 @@ class TestNegativeCounterIsReachedThroughAdmission:
         doc = MagicMock()
         doc.input_key = "input/test.pdf"
         doc.id = "doc-1"
-        doc.config_uri = None
         module.Document.load_document = MagicMock(return_value=doc)
         module.document_service.get_document = MagicMock(return_value=None)
         module.document_service.update_document = MagicMock(return_value=doc)

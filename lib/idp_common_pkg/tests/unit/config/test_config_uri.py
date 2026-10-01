@@ -85,7 +85,7 @@ class TestSnapshot:
         assert config.classification.model
 
     def test_the_snapshot_key_is_content_addressed(self, s3):
-        """An SQS redelivery that stages the same configuration again must write
+        """A retried invocation that stages the same configuration again must write
         the same object, not accumulate copies."""
         body = json.dumps(SUPPLIED)
         first = _stage(s3, _put(s3, "a.json", body))
@@ -105,6 +105,25 @@ class TestSnapshot:
             s3, _put(s3, "configs/invoice.yaml", yaml.safe_dump(SUPPLIED))
         )
         assert load_config_snapshot(snapshot).extraction.temperature == 0.25
+
+    def test_a_legacy_class_list_is_migrated_like_a_stored_profile(self, s3):
+        """A stored profile's legacy `attributes` list is migrated when it is read;
+        a supplied one must be too, or it validates and is then misread."""
+        legacy = {
+            "classes": [
+                {
+                    "name": "Invoice",
+                    "description": "A commercial invoice",
+                    "attributes": [
+                        {"name": "InvoiceNumber", "description": "Invoice number"}
+                    ],
+                }
+            ]
+        }
+        snapshot = _stage(s3, _put(s3, "legacy.json", json.dumps(legacy)))
+        (invoice,) = load_config_snapshot(snapshot).classes
+        assert "properties" in invoice
+        assert "InvoiceNumber" in invoice["properties"]
 
     def test_as_model_false_returns_a_dict(self, s3):
         snapshot = _stage(s3, _put(s3, "c.json", json.dumps(SUPPLIED)))

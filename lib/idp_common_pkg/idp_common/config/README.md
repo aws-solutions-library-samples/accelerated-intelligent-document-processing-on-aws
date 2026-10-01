@@ -494,20 +494,20 @@ processed under — and `config_version` is what the RBAC scope checks compare.
 Two functions, one per side of the queue:
 
 - **`prepare_config_snapshot(uri, allowed_bucket=, working_bucket=)`** — called once
-  by the queue processor. Reads the object (which must be in `allowed_bucket`),
+  by the queue sender, once per upload. Reads the object (which must be in `allowed_bucket`),
   parses it (`yaml.safe_load` for `.yaml`/`.yml`, else JSON), runs
   `validate_config`, refuses `use_bda: true`, and writes the merged result to
   `<working_bucket>/config_snapshots/<sha256>.json`. Returns the snapshot URI, which
   replaces `document.config_uri`. Anything retrying cannot fix raises
-  `ConfigUriError` and the document is rejected; a transient S3 error raises
-  `ClientError` so the message is retried.
+  `ConfigUriError` and the document is rejected before it is queued; a
+  transient S3 error raises `ClientError` so the invocation is retried.
 - **`load_config_snapshot(uri)`** — what `get_config(config_uri=…)` calls. A read and
   an `IDPConfig.model_validate`; no merge, no table. When `config_uri` is passed it
   wins over `version`/`revision`, so every call site passes all three.
 
 The snapshot, not the caller's object, is what every step reads, so an edit or a
 delete after upload cannot change the configuration under an in-flight document.
-The key is content-addressed, so an SQS redelivery that stages the same
+The key is content-addressed, so a retried invocation that stages the same
 configuration again writes the same object. `SNAPSHOT_PREFIX` is mirrored in the
 pipeline-hooks dispatcher (which ships without `idp_common`) and in the two IAM
 grants that read the prefix.

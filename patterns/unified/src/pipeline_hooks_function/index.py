@@ -177,7 +177,7 @@ _CONTROL_FIELDS = ("use_bda", "bda_project_arn")
 # hook are constrained to it.
 _COMPRESSED_DOC_PREFIX = "compressed_documents/"
 
-# Working-bucket prefix of the configuration snapshots the queue processor writes
+# Working-bucket prefix of the configuration snapshots the queue sender writes
 # for a document uploaded with `config-uri` metadata. Mirrors
 # idp_common.config.config_uri.SNAPSHOT_PREFIX (this Lambda ships without
 # idp_common) and the s3:GetObject grant in the dispatcher's IAM policy.
@@ -551,7 +551,7 @@ def _load_snapshot_payload(config_uri: str) -> Dict[str, Any]:
     configuration never declared, and skip the ones it did.
 
     Only a URI under the working bucket's snapshot prefix is read: that is where
-    the queue processor writes them, and all the IAM policy grants.
+    the queue sender writes them, and all the IAM policy grants.
     """
     expected = f"s3://{_WORKING_BUCKET}/{_CONFIG_SNAPSHOT_PREFIX}"
     if not _WORKING_BUCKET or not config_uri.startswith(expected):
