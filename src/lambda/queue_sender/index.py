@@ -7,6 +7,7 @@ import os
 import json
 from datetime import datetime, timezone, timedelta
 import logging
+from idp_common.config import ConfigUriError, prepare_config_snapshot
 from idp_common.models import Document, Status
 from idp_common.docs_service import create_document_service
 from idp_common.document_versions import delete_current_output_objects
@@ -34,6 +35,62 @@ retentionDays = int(os.environ["DATA_RETENTION_IN_DAYS"])
 # Matches queue_processor's namespace so both concurrency and ingest
 # telemetry share the same operator-facing surface.
 METRIC_NAMESPACE = os.environ.get("METRIC_NAMESPACE", "IDP")
+
+
+#: Written next to a document's output when its `config-uri` configuration is
+#: rejected, so a caller watching the output bucket learns why nothing else
+#: appeared. A rejected document never starts a workflow, so there is no
+#: execution to carry the reason.
+CONFIG_URI_REJECTION_KEY = "config_uri_rejection.json"
+
+
+def stage_supplied_config(document, output_bucket):
+    """Validate and snapshot the configuration a document names in `config-uri`.
+
+    Runs once per upload, before the document is queued, so a configuration that
+    cannot be used never reaches the queue and never holds a concurrency slot. On
+    success ``document.config_uri`` becomes the snapshot's URI, so every step
+    reads the same validated bytes even if the caller's object changes
+    mid-flight.
+
+    Returns:
+        None when the document may be queued, or the reason it was rejected.
+
+    Raises:
+        ClientError: A transient S3 failure. The invocation fails and
+            EventBridge retries it.
+    """
+    source_uri = document.config_uri
+    rejection_key = f"{document.input_key}/{CONFIG_URI_REJECTION_KEY}"
+    try:
+        document.config_uri = prepare_config_snapshot(
+            source_uri,
+            allowed_bucket=document.input_bucket,
+            working_bucket=os.environ["WORKING_BUCKET"],
+        )
+    except ConfigUriError as e:
+        reason = str(e)
+        logger.warning(f"Rejecting {document.input_key}: {reason}")
+        s3.put_object(
+            Bucket=output_bucket,
+            Key=rejection_key,
+            Body=json.dumps(
+                {
+                    "document": document.input_key,
+                    "status": Status.FAILED.value,
+                    "config_uri": source_uri,
+                    "reason": reason,
+                    "time": datetime.now(timezone.utc).isoformat(),
+                },
+                indent=2,
+            ),
+            ContentType="application/json",
+        )
+        return reason
+    document.metadata["config_source_uri"] = source_uri
+    # A notice left by an earlier, rejected upload of this key no longer applies.
+    s3.delete_object(Bucket=output_bucket, Key=rejection_key)
+    return None
 
 
 def resolve_active_config_version(config_table):
@@ -176,8 +233,10 @@ def handler(event, context):
     document.status = Status.QUEUED
     document.queued_time = current_time
 
-    # If no config version found in metadata or filename, get active config version
-    if not document.config_version:
+    # If no config version found in metadata or filename, get active config version.
+    # Not for a document carrying config-uri: it is processed under the supplied
+    # configuration and belongs to no stored profile.
+    if not document.config_version and not document.config_uri:
         try:
             import boto3
 
@@ -196,6 +255,10 @@ def handler(event, context):
         except Exception as e:
             logger.warning(f"Could not retrieve active config version: {e}")
             document.config_version = None
+
+    rejection = (
+        stage_supplied_config(document, output_bucket) if document.config_uri else None
+    )
 
     # Capture X-Ray trace ID for error analysis
     current_segment = xray_recorder.current_segment()
@@ -217,6 +280,20 @@ def handler(event, context):
         document, expires_after=expires_after
     )
     logger.info(f"Document created with key: {created_key}")
+
+    if rejection:
+        # Recorded as FAILED and never queued. update_document is what writes
+        # WorkflowStatus and CompletionTime; create_document writes neither.
+        document.status = Status.FAILED
+        document.completion_time = datetime.now(timezone.utc).isoformat()
+        document.errors.append(rejection)
+        document_service.update_document(document)
+        return {
+            "statusCode": 200,
+            "detail": detail,
+            "document_id": document.id,
+            "rejected": rejection,
+        }
 
     # Send serialized document to SQS queue
     doc_json = document.to_json()

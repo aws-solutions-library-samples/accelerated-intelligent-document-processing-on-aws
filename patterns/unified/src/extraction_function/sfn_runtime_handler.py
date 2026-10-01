@@ -58,6 +58,7 @@ def _load(event):
         as_model=True,
         version=getattr(full_document, "config_version", None),
         revision=getattr(full_document, "config_revision", None),
+        config_uri=getattr(full_document, "config_uri", None),
     )
     return working_bucket, full_document, config
 

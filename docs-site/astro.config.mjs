@@ -54,6 +54,10 @@ export default defineConfig({
               label: "Configuration Profiles",
               slug: "configuration-profiles",
             },
+            {
+              label: "Processing with a Supplied Configuration",
+              slug: "config-uri-processing",
+            },
             // Redirect stub for the page's old name, kept so existing links and
             // bookmarks do not 404. Listed next to its replacement, and labelled
             // so the nav does not read as two competing pages. sync-sidebar.mjs

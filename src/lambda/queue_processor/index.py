@@ -1009,10 +1009,19 @@ def start_workflow(
     # not correspond to any single configuration. A revision of None means the
     # profile has no history (an older deployment, or untouched since the
     # upgrade), and consumers fall back to the profile head as before.
+    #
+    # A document carrying config_uri is processed under that snapshot (validated
+    # and written by queue_sender before the document was queued), so there is no
+    # profile to pin and nothing here may read the configuration table for it.
     config_table_name = os.environ.get("CONFIG_TABLE")
     needs_version = not document.config_version
     needs_revision = document.config_revision is None
-    if config_table_name and (needs_version or needs_revision):
+    if document.config_uri:
+        logger.info(
+            f"Document {document.id} is processed under supplied configuration "
+            f"{document.config_uri}; not pinning a profile"
+        )
+    elif config_table_name and (needs_version or needs_revision):
         try:
             manager = ConfigurationManager(table_name=config_table_name)
             if needs_version:
@@ -1063,7 +1072,11 @@ def start_workflow(
     # Inject use_bda flag and bda_project_arn from config into document for state machine routing.
     # The unified state machine uses $.document.use_bda to choose BDA vs pipeline branch,
     # and $.document.bda_project_arn for the per-config-version BDA project.
-    if config_table_name:
+    if document.config_uri:
+        # queue_sender refused use_bda: true, so a supplied configuration always
+        # runs the pipeline branch.
+        compressed_document["use_bda"] = False
+    elif config_table_name:
         try:
             # Read the version PINNED above, so the routing flags and the rest of
             # the pipeline are guaranteed to come from the same config version.

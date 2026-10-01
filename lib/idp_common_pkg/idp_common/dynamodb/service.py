@@ -439,6 +439,13 @@ class DocumentDynamoDBService:
             expression_names["#ConfigRevision"] = "ConfigRevision"
             expression_values[":ConfigRevision"] = int(document.config_revision)
 
+        # A supplied configuration's snapshot URI, when the document was processed
+        # under one instead of a stored profile (see Document.config_uri).
+        if document.config_uri:
+            set_expressions.append("#ConfigUri = :ConfigUri")
+            expression_names["#ConfigUri"] = "ConfigUri"
+            expression_values[":ConfigUri"] = document.config_uri
+
         # Set workflow status based on document status
         if document.status == Status.FAILED:
             workflow_status = "FAILED"
@@ -760,6 +767,7 @@ class DocumentDynamoDBService:
             initial_event_time=item.get("InitialEventTime"),
             config_version=item.get("ConfigVersion"),
             config_revision=coerce_revision(item.get("ConfigRevision")),
+            config_uri=item.get("ConfigUri"),
         )
 
         # Convert status
@@ -1523,6 +1531,8 @@ class DocumentDynamoDBService:
             item["ConfigVersion"] = document.config_version
         if document.config_revision is not None:
             item["ConfigRevision"] = int(document.config_revision)
+        if document.config_uri:
+            item["ConfigUri"] = document.config_uri
         if document.num_pages > 0:
             item["PageCount"] = document.num_pages
         if document.metering:

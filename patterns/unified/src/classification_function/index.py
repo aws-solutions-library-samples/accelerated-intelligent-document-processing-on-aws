@@ -43,7 +43,7 @@ def handler(event, context):
     # Load configuration - use document's version if specified, otherwise use active version
     config_version = getattr(document, 'config_version', None)
     config_revision = getattr(document, 'config_revision', None)
-    config = get_config(as_model=True, version=config_version, revision=config_revision)
+    config = get_config(as_model=True, version=config_version, revision=config_revision, config_uri=getattr(document, 'config_uri', None))
     # Use default=str to handle Decimal and other non-serializable types
     logger.info(f"Config: {json.dumps(config.model_dump(), default=str)}, version name: {config_version}")
     

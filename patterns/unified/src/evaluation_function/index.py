@@ -304,7 +304,10 @@ def handler(event, context):
         config_version = getattr(actual_document, "config_version", None)
         config_revision = getattr(actual_document, "config_revision", None)
         config = get_config(
-            as_model=True, version=config_version, revision=config_revision
+            as_model=True,
+            version=config_version,
+            revision=config_revision,
+            config_uri=getattr(actual_document, "config_uri", None),
         )
 
         if config_version:

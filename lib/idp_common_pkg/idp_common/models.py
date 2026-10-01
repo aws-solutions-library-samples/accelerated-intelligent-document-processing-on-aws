@@ -683,6 +683,12 @@ class Document:
     # against allowedConfigVersions in the RBAC scope checks — a composite value
     # there would either bypass or break scope.
     config_revision: Optional[int] = None
+    # S3 URI of a configuration to process under INSTEAD of a stored profile, read
+    # from the input object's `config-uri` metadata. The queue sender validates
+    # it and replaces it with an immutable snapshot in the working bucket, so every
+    # step reads the same bytes. When set, config_version/config_revision are
+    # ignored for config resolution. See docs/config-uri-processing.md.
+    config_uri: Optional[str] = None
     submission_source: Optional[str] = None
     test_set_id: Optional[str] = None
     # Class every page must be treated as, instead of classifying. Set when a
@@ -793,6 +799,7 @@ class Document:
             "trace_id": self.trace_id,
             "config_version": self.config_version,
             "config_revision": self.config_revision,
+            "config_uri": self.config_uri,
             "submission_source": self.submission_source,
             "test_set_id": self.test_set_id,
             # Carried across step boundaries: set before OCR, read at
@@ -949,6 +956,7 @@ class Document:
             trace_id=data.get("trace_id"),
             config_version=data.get("config_version"),
             config_revision=coerce_revision(data.get("config_revision")),
+            config_uri=data.get("config_uri"),
             submission_source=data.get("submission_source"),
             test_set_id=data.get("test_set_id"),
             forced_document_class=data.get("forced_document_class"),
@@ -1070,6 +1078,7 @@ class Document:
         # Read S3 metadata to get configuration version if available
         config_version = None
         config_revision = None
+        config_uri = None
         submission_source = None
         test_set_id = None
         forced_document_class = None
@@ -1089,6 +1098,21 @@ class Document:
                 )
             else:
                 logger.info(f"No config-version found in metadata for {input_key}")
+            config_uri = metadata.get("config-uri") or None
+            if config_uri:
+                # A document processed under a supplied config belongs to no
+                # stored profile. Keeping a profile name alongside it would label
+                # the document with a configuration it was not processed under,
+                # and config_version is what the RBAC scope checks compare.
+                if config_version:
+                    logger.warning(
+                        f"{input_key} carries both config-uri and config-version; "
+                        f"config-uri wins and config-version "
+                        f"'{config_version}' is ignored"
+                    )
+                config_version = None
+                config_revision = None
+                logger.info(f"Found config-uri in S3 metadata: {config_uri}")
             submission_source = metadata.get("submission-source")
             test_set_id = metadata.get("test-set-id")
             forced_document_class = metadata.get("document-class")
@@ -1114,6 +1138,7 @@ class Document:
             status=Status.QUEUED,
             config_version=config_version,  # Add config version to document
             config_revision=config_revision,
+            config_uri=config_uri,
             submission_source=submission_source,
             test_set_id=test_set_id,
             forced_document_class=forced_document_class,
@@ -1334,6 +1359,7 @@ class Document:
                 # still honor the version the document was processed under.
                 "config_version": self.config_version,
                 "config_revision": self.config_revision,
+                "config_uri": self.config_uri,
                 "compressed": True,
             }
 

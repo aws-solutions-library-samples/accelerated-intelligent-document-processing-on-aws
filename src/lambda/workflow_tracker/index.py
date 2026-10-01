@@ -373,6 +373,7 @@ def record_document_run(
             metadata={
                 "completion_time": document.completion_time,
                 "config_version": document.config_version,
+                "config_uri": document.config_uri,
                 "workflow_execution_arn": document.workflow_execution_arn,
             },
         )

@@ -5777,6 +5777,12 @@ Resources:
               - Effect: Allow
                 Action: s3:PutObject
                 Resource: !Sub 'arn:${AWS::Partition}:s3:::${WorkingBucket}/compressed_documents/*'
+              # A document uploaded with `config-uri` metadata takes its hooks
+              # from the configuration snapshot the queue sender wrote, not
+              # from a Config#* row. Read-only, and only that prefix.
+              - Effect: Allow
+                Action: s3:GetObject
+                Resource: !Sub 'arn:${AWS::Partition}:s3:::${WorkingBucket}/config_snapshots/*'
               # Two parallel allow paths for hook Lambdas:
               #
               # 1. Tag-based ABAC for vertical-product packs. Pack-shipped
