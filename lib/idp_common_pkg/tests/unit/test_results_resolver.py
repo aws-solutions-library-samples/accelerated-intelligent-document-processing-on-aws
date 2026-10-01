@@ -1183,6 +1183,136 @@ def test_stickler_metrics_survive_athena_failure():
     assert result["cost_breakdown"] == {}
 
 
+def _aggregation_lambda_returning(body):
+    payload = Mock()
+    payload.read.return_value = json.dumps(
+        {"statusCode": 200, "body": json.dumps(body)}
+    )
+    lambda_client = Mock()
+    lambda_client.invoke.return_value = {"Payload": payload}
+    return lambda_client
+
+
+@pytest.mark.unit
+def test_a_classification_only_run_keeps_its_per_document_metrics():
+    """A run with no extractable schema still caches what each document measured.
+
+    Every section of a classification-only run is skipped for extraction, so the
+    aggregation finds no comparisons and answers ``document_count`` 0 with the
+    graded packet metrics, the classification errors and the excluded documents
+    folded in. The Athena fallback that follows supplies accuracy, splits and cost,
+    and none of those three.
+    """
+    test_run_id = "classify-only-run"
+    graded = {
+        "mean": {"final_score": 0.753, "v_measure": 0.756},
+        "per_document": {"classify-only-run/p1.pdf": {"final_score": 0.753}},
+        "document_count": 1,
+    }
+    errors = {
+        "errors": [
+            {
+                "doc_key": "classify-only-run/p1.pdf",
+                "section_id": "section_2",
+                "kind": "split",
+                "expected_class": "invoice",
+                "predicted_class": "invoice",
+                "expected_pages": [1, 2],
+                "predicted_pages": [1],
+            }
+        ],
+        "total": 1,
+        "documents_affected": 1,
+        "truncated": False,
+    }
+    aggregation = {
+        "overall_accuracy": None,
+        "weighted_overall_scores": {},
+        "split_classification_metrics": {},
+        "graded_packet_metrics": graded,
+        "classification_errors": errors,
+        "excluded_documents": ["classify-only-run/p1.pdf"],
+        "excluded_document_count": 1,
+        "document_count": 0,
+    }
+    athena_splits = {"total_pages": 3, "page_level_accuracy": 0.67}
+    mock_table = Mock()
+
+    with (
+        patch.dict(
+            os.environ,
+            {
+                "TRACKING_TABLE": "tracking",
+                "TEST_EXECUTION_AGGREGATION_FUNCTION_ARN": "arn:aws:lambda:::function:agg",
+            },
+        ),
+        patch.object(index.dynamodb, "Table", return_value=mock_table),
+        patch.object(
+            index, "lambda_client", _aggregation_lambda_returning(aggregation)
+        ),
+        patch.object(index, "_get_test_run_config", return_value={}),
+        patch.object(index, "_invoke_mlflow_logger"),
+        patch.object(
+            index,
+            "_get_evaluation_metrics_from_athena",
+            return_value={"split_classification_metrics": athena_splits},
+        ),
+        patch.object(
+            index,
+            "_get_cost_data_from_athena",
+            return_value={"total_cost": 4.6, "cost_breakdown": {}},
+        ),
+    ):
+        index.handle_cache_update_request(
+            {"Records": [{"body": json.dumps({"testRunId": test_run_id})}]}, None
+        )
+
+    cached = mock_table.update_item.call_args.kwargs["ExpressionAttributeValues"][
+        ":metrics"
+    ]
+    assert cached["gradedPacketMetrics"] == index.float_to_decimal(graded)
+    assert cached["classificationErrors"] == errors
+    assert cached["excludedDocumentCount"] == 1
+    assert cached["splitClassificationMetrics"] == index.float_to_decimal(athena_splits)
+    assert cached["totalCost"] == index.float_to_decimal(4.6)
+
+
+@pytest.mark.unit
+def test_an_empty_aggregation_falls_back_without_inventing_fields():
+    """With nothing measured per document, the fallback result keeps its old shape."""
+    with (
+        patch.dict(
+            os.environ,
+            {
+                "TEST_EXECUTION_AGGREGATION_FUNCTION_ARN": "arn:aws:lambda:::function:agg"
+            },
+        ),
+        patch.object(
+            index, "lambda_client", _aggregation_lambda_returning({"document_count": 0})
+        ),
+        patch.object(index, "_get_test_run_config", return_value={}),
+        patch.object(index, "_invoke_mlflow_logger"),
+        patch.object(index, "_get_evaluation_metrics_from_athena", return_value={}),
+        patch.object(
+            index,
+            "_get_cost_data_from_athena",
+            return_value={"total_cost": 0, "cost_breakdown": {}},
+        ),
+    ):
+        result = index._aggregate_test_run_metrics("empty-run")
+
+    assert set(result) == {
+        "overall_accuracy",
+        "weighted_overall_scores",
+        "avg_weighted_overall_score",
+        "average_confidence",
+        "accuracy_breakdown",
+        "split_classification_metrics",
+        "total_cost",
+        "cost_breakdown",
+    }
+
+
 @pytest.mark.unit
 def test_classification_errors_are_cached_and_served():
     """The aggregator's per-section class detail must survive the cache round-trip.

@@ -1573,6 +1573,10 @@ graded metrics can't drag the newer docs' scores down.
   every metric collapses to `1.0` trivially since there's nothing to
   mis-cluster. The panel still renders but adds no signal beyond the
   existing accuracy row.
+- **Classification-only runs** (no class has an extractable field): the graded
+  metrics and split errors populate as usual. With no extraction comparisons,
+  every document is counted as excluded from extraction scoring, and
+  accuracy, splits and cost come from Athena.
 - **No page overlap between ground-truth and prediction** (rare — usually an
   OCR page-count mismatch): `evaluate_packet` returns nothing for that doc
   and it's absent from the map. If no doc in the run reported any graded

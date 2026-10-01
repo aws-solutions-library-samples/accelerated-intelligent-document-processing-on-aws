@@ -1885,6 +1885,31 @@ def _athena_supplements(test_run_id):
     return evaluation_metrics, cost_data
 
 
+_PER_DOCUMENT_FIELDS = (
+    "graded_packet_metrics",
+    "classification_errors",
+    "excluded_documents",
+    "excluded_document_count",
+)
+
+
+def _per_document_fields(aggregation_metrics):
+    """The fields the aggregation Lambda reads from each document's own evaluation.
+
+    A run in which no section has an extractable schema, such as a
+    classification-only run, produces no extraction comparisons, so the
+    aggregation reports ``document_count`` 0 and the Athena fallback supplies the
+    accuracy, split and cost numbers. These fields are still measured, and the
+    Athena path computes none of them, so they are carried over from the
+    aggregation instead of being discarded with it.
+    """
+    return {
+        key: aggregation_metrics[key]
+        for key in _PER_DOCUMENT_FIELDS
+        if key in aggregation_metrics
+    }
+
+
 def _aggregate_test_run_metrics(test_run_id):
     """Aggregate metrics using Stickler bulk evaluator (with Athena fallback)"""
 
@@ -1899,6 +1924,7 @@ def _aggregate_test_run_metrics(test_run_id):
     test_execution_aggregation_arn = os.environ.get(
         "TEST_EXECUTION_AGGREGATION_FUNCTION_ARN"
     )
+    per_document = {}
 
     if test_execution_aggregation_arn:
         try:
@@ -1958,6 +1984,7 @@ def _aggregate_test_run_metrics(test_run_id):
                     )
                     return merged_metrics
                 else:
+                    per_document = _per_document_fields(stickler_metrics)
                     logger.warning(
                         f"Test execution aggregation returned empty metrics (document_count=0) for {test_run_id}, falling back to Athena"
                     )
@@ -1993,6 +2020,7 @@ def _aggregate_test_run_metrics(test_run_id):
         ),
         "total_cost": cost_data.get("total_cost", 0),
         "cost_breakdown": cost_data.get("cost_breakdown", {}),
+        **per_document,
     }
     _invoke_mlflow_logger(test_run_id, athena_result, config=test_run_config)
     return athena_result
