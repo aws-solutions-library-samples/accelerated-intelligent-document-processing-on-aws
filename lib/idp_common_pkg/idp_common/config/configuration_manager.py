@@ -601,7 +601,8 @@ class ConfigurationManager:
         not the shipped configuration moved, so without this a handful of no-op
         upgrades would fill the retention window with identical revisions and
         push a user's real history out of it. Such a save still refreshes the
-        published revision's stored-content hash (see `_read_revision_body`).
+        published revision's stored-content hash while that revision's body
+        exists (see `_read_revision_body`).
         """
         if not self.revisions.enabled:
             return None
@@ -703,10 +704,10 @@ class ConfigurationManager:
 
         Revision bodies live in the Configuration bucket, whose lifecycle rule
         expires every object after DataRetentionInDays, while every new document is
-        pinned to its profile's PublishedRevision. Without this, a profile not saved
-        within the retention window stops processing new documents. The head stands
-        in only when it is provably that revision (`_head_is_revision`); any other
-        missing body stays missing.
+        pinned to its profile's PublishedRevision. Without this, a profile whose
+        published revision was cut more than DataRetentionInDays ago stops
+        processing new documents. The head stands in only when it is provably that
+        revision (`_head_is_revision`); any other missing body stays missing.
         """
         body = self.revisions.get_body(profile, revision)
         if body is not None or not self.revisions.enabled:
@@ -738,7 +739,8 @@ class ConfigurationManager:
             logger.warning(
                 f"Revision r{revision} of configuration profile '{profile}' has no "
                 f"stored body, and the profile head cannot be shown to be that "
-                f"revision; save the profile to cut a new revision"
+                f"revision; save a change to the profile's configuration to cut a "
+                f"new revision"
             )
             return None
         record = ConfigurationRecord.from_dynamodb_item(head)

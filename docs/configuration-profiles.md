@@ -255,12 +255,14 @@ from pruning, but not from the Configuration bucket's `DataRetentionInDays`
 lifecycle rule, which expires revision bodies like every other object in the
 bucket.
 
-**The profile's current revision is the exception, so a profile nobody has saved
+**The profile's current revision is the exception, so a profile nobody has changed
 in a while keeps processing.** When the current revision's body has expired, it is
 served from the profile's current configuration. That happens only when the
 current configuration can be shown to be that exact revision; otherwise the step
-fails as above. If a profile reports its current revision as unavailable, save it
-once: that cuts a new revision.
+fails as above. If a profile reports its current revision as unavailable, save a
+change to its configuration: only a save that changes the configuration cuts a new
+revision, and that new revision is what recovers the profile. Saving it unchanged,
+or changing only its description, cuts nothing.
 
 ### Test Studio: comparing two revisions of one profile
 

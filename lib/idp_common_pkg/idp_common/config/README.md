@@ -480,6 +480,12 @@ from the revision's **own body**, never from the head. A head changed by a write
 that cut no revision is therefore never recorded as the published revision; for
 example, a Lambda without `CONFIGURATION_BUCKET`, where history is disabled.
 
+The refresh needs that body, so once the body has expired nothing refreshes
+`storedHash`. If a later unchanged save writes the same configuration with
+different stored content, the hash no longer matches and a pinned read of the
+revision raises. The profile recovers only when a save that changes the
+configuration cuts a new revision.
+
 The rebuild writes nothing back. Pipeline roles can only read `config_revisions/`,
 so each pinned read of an expired published body is rebuilt again and logged at
 WARNING.
