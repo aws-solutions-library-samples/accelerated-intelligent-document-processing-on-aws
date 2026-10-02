@@ -11,6 +11,8 @@ Covers the invariants the feature rests on:
 - retention never deletes a revision something still depends on.
 """
 
+import datetime
+import logging
 from decimal import Decimal
 
 import boto3
@@ -524,6 +526,78 @@ class TestExpiredPublishedBody:
         assert entry["storedHash"] == manager._stored_hash_of_body(
             "p", manager.get_revision("p", 1)
         )
+
+    def test_a_profile_with_no_head_has_nothing_to_stand_in(self, monkeypatch):
+        _make_table()
+        manager = _manager(monkeypatch)
+        manager.save_configuration(CONFIG_TYPE_CONFIG, _config("live"), version="p")
+        _expire_body("p", 1)
+        manager.table.delete_item(Key={"Configuration": "Config#p"})
+
+        assert manager._published_body_from_head("p", 1) is None
+
+    def test_a_published_revision_with_no_index_entry_is_not_rebuilt(self, monkeypatch):
+        _make_table()
+        manager = _manager(monkeypatch)
+        manager.save_configuration(CONFIG_TYPE_CONFIG, _config("live"), version="p")
+        _expire_body("p", 1)
+        monkeypatch.setattr(manager.revisions, "list", lambda profile: [])
+
+        with pytest.raises(ValueError, match="not available"):
+            manager.get_merged_configuration("p", revision=1)
+
+    def test_the_refresh_does_nothing_without_a_published_revision(self, monkeypatch):
+        _make_table()
+        manager = _manager(monkeypatch)
+        manager.save_configuration(CONFIG_TYPE_CONFIG, _config("live"), version="p")
+        monkeypatch.setattr(manager, "resolve_published_revision", lambda p: None)
+        updates = []
+        monkeypatch.setattr(
+            manager.revisions, "update_entry", lambda *a, **k: updates.append(k)
+        )
+
+        manager._refresh_published_stored_hash("p")
+
+        assert updates == []
+
+    def test_the_refresh_does_nothing_once_the_published_body_has_expired(
+        self, monkeypatch
+    ):
+        _make_table()
+        manager = _manager(monkeypatch)
+        manager.save_configuration(CONFIG_TYPE_CONFIG, _config("live"), version="p")
+        _forget_stored_hash(manager, "p", 1)
+        _expire_body("p", 1)
+
+        manager._refresh_published_stored_hash("p")
+
+        assert not manager.list_revisions("p")[0].get("storedHash")
+
+    def test_a_refresh_that_fails_is_logged_and_never_raised(self, monkeypatch, caplog):
+        _make_table()
+        manager = _manager(monkeypatch)
+        manager.save_configuration(CONFIG_TYPE_CONFIG, _config("live"), version="p")
+
+        def unreadable(profile):
+            raise RuntimeError("index unreadable")
+
+        monkeypatch.setattr(manager.revisions, "list", unreadable)
+
+        with caplog.at_level(logging.WARNING):
+            manager._refresh_published_stored_hash("p")
+
+        assert "Could not refresh the stored-content hash of 'p'" in caplog.text
+
+    def test_timestamps_parse_to_aware_datetimes_or_none(self):
+        from idp_common.config.configuration_manager import _parse_timestamp
+
+        assert _parse_timestamp(None) is None
+        assert _parse_timestamp("") is None
+        assert _parse_timestamp(20261002) is None
+        assert _parse_timestamp("not a timestamp") is None
+        naive = _parse_timestamp("2026-10-02T10:00:00")
+        assert naive is not None and naive.tzinfo is datetime.timezone.utc
+        assert _parse_timestamp("2026-10-02T10:00:00Z") == naive
 
 
 @pytest.mark.unit
