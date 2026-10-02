@@ -11,16 +11,23 @@ Covers the invariants the feature rests on:
 - retention never deletes a revision something still depends on.
 """
 
+import copy
 import datetime
 import logging
 from decimal import Decimal
+from pathlib import Path
 
 import boto3
 import pytest
+import yaml
 from moto import mock_aws
 
-from idp_common.config.configuration_manager import ConfigurationManager
+from idp_common.config.configuration_manager import (
+    EXPIRED_REVISION_REMEDY,
+    ConfigurationManager,
+)
 from idp_common.config.constants import ACTIVE_POINTER_KEY, CONFIG_TYPE_CONFIG
+from idp_common.config.merge_utils import merge_config_with_defaults
 from idp_common.config.models import IDPConfig
 from idp_common.config.revisions import ConfigRevisionStore
 
@@ -448,6 +455,30 @@ class TestExpiredPublishedBody:
         with pytest.raises(ValueError, match="not available"):
             manager.get_merged_configuration("p", revision=1)
 
+    def test_the_failure_names_expiry_and_how_each_kind_of_profile_recovers(
+        self, monkeypatch
+    ):
+        """
+        A failed document's error is what the operator reads, and the editor cannot
+        save `default` or a stack-managed profile, so the remedy covers those too.
+        """
+        _make_table()
+        manager = _manager(monkeypatch)
+        manager.save_configuration(CONFIG_TYPE_CONFIG, _config("r1"), version="p")
+        manager.save_configuration(
+            CONFIG_TYPE_CONFIG, _config("unrecorded"), version="p", cut_revision=False
+        )
+        _expire_body("p", 1)
+
+        with pytest.raises(ValueError) as failure:
+            manager.get_merged_configuration("p", revision=1)
+
+        message = str(failure.value)
+        assert "expired under the Configuration bucket's DataRetentionInDays" in message
+        assert EXPIRED_REVISION_REMEDY in message
+        assert "'default'" in EXPIRED_REVISION_REMEDY
+        assert "stack-managed" in EXPIRED_REVISION_REMEDY
+
     def test_a_legacy_revision_is_recovered_when_the_head_is_untouched(
         self, monkeypatch
     ):
@@ -489,7 +520,7 @@ class TestExpiredPublishedBody:
         manager.save_configuration(CONFIG_TYPE_CONFIG, _config("live"), version="p")
 
         assert [r["revision"] for r in manager.list_revisions("p")] == [1]
-        assert manager.list_revisions("p")[0]["storedHash"]
+        assert manager.revisions.get_entry("p", 1)["storedHash"]
         _expire_body("p", 1)
         assert manager.get_merged_configuration("p", revision=1).notes == "live"
 
@@ -521,11 +552,54 @@ class TestExpiredPublishedBody:
             manager.table.get_item(Key={"Configuration": "Config#p"})["Item"]
         )
 
-        entry = manager.list_revisions("p")[0]
+        entry = manager.revisions.get_entry("p", 1)
         assert entry["storedHash"] == _stored_content_hash(head)
         assert entry["storedHash"] == manager._stored_hash_of_body(
             "p", manager.get_revision("p", 1)
         )
+
+    def test_the_stored_hash_of_a_given_head_never_changes(self):
+        """
+        Recorded hashes outlive the code that wrote them. A change to how an item is
+        digested leaves every recorded hash unmatched at once, so each published
+        revision whose body has already expired stops being served on upgrade.
+        Change it only together with a way to read the hashes already recorded.
+        """
+        from idp_common.config.configuration_manager import _stored_content_hash
+
+        head = {
+            "Configuration": "Config#p",
+            "UpdatedAt": "2026-10-02T10:00:00Z",
+            "Managed": True,
+            "notes": "live",
+            "extraction": {"temperature": "0.0", "enabled": True},
+            "classes": [{"$id": "Invoice", "enum": ["01", "02"]}],
+            "_config_format": "full",
+        }
+        rewritten = {**head, "UpdatedAt": "2027-01-01T00:00:00Z", "Description": "x"}
+
+        assert _stored_content_hash(head) == "b26a02095c8935891409b2bc7429c1fa"
+        assert _stored_content_hash(rewritten) == _stored_content_hash(head)
+
+    def test_the_stored_hash_stays_out_of_the_revision_list(self, monkeypatch):
+        """The revision list is what the API returns; the hash is internal proof."""
+        _make_table()
+        manager = _manager(monkeypatch)
+        manager.save_configuration(CONFIG_TYPE_CONFIG, _config("live"), version="p")
+
+        assert manager.revisions.get_entry("p", 1)["storedHash"]
+        assert "storedHash" not in manager.list_revisions("p")[0]
+
+    def test_an_entry_is_none_when_not_retained_or_history_is_disabled(
+        self, monkeypatch
+    ):
+        _make_table()
+        manager = _manager(monkeypatch)
+        manager.save_configuration(CONFIG_TYPE_CONFIG, _config("live"), version="p")
+
+        assert manager.revisions.get_entry("p", 2) is None
+        disabled = ConfigRevisionStore(manager.table, bucket="")
+        assert disabled.get_entry("p", 1) is None
 
     def test_a_profile_with_no_head_has_nothing_to_stand_in(self, monkeypatch):
         _make_table()
@@ -541,7 +615,7 @@ class TestExpiredPublishedBody:
         manager = _manager(monkeypatch)
         manager.save_configuration(CONFIG_TYPE_CONFIG, _config("live"), version="p")
         _expire_body("p", 1)
-        monkeypatch.setattr(manager.revisions, "list", lambda profile: [])
+        assert manager.revisions.remove_entry("p", 1)
 
         with pytest.raises(ValueError, match="not available"):
             manager.get_merged_configuration("p", revision=1)
@@ -571,17 +645,17 @@ class TestExpiredPublishedBody:
 
         manager._refresh_published_stored_hash("p")
 
-        assert not manager.list_revisions("p")[0].get("storedHash")
+        assert not manager.revisions.get_entry("p", 1).get("storedHash")
 
     def test_a_refresh_that_fails_is_logged_and_never_raised(self, monkeypatch, caplog):
         _make_table()
         manager = _manager(monkeypatch)
         manager.save_configuration(CONFIG_TYPE_CONFIG, _config("live"), version="p")
 
-        def unreadable(profile):
+        def unreadable(profile, revision):
             raise RuntimeError("index unreadable")
 
-        monkeypatch.setattr(manager.revisions, "list", unreadable)
+        monkeypatch.setattr(manager.revisions, "get_entry", unreadable)
 
         with caplog.at_level(logging.WARNING):
             manager._refresh_published_stored_hash("p")
@@ -598,6 +672,99 @@ class TestExpiredPublishedBody:
         naive = _parse_timestamp("2026-10-02T10:00:00")
         assert naive is not None and naive.tzinfo is datetime.timezone.utc
         assert _parse_timestamp("2026-10-02T10:00:00Z") == naive
+
+
+_REPO_ROOT = Path(__file__).resolve().parents[5]
+_MANAGED_PROFILES = sorted(
+    (_REPO_ROOT / "config_library" / "managed_config").glob("*/config.yaml")
+)
+_LIBRARY_PROFILES = _MANAGED_PROFILES + sorted(
+    (_REPO_ROOT / "config_library" / "unified").glob("*/config.yaml")
+)
+
+
+def _profile_id(path):
+    return f"{path.parent.parent.name}/{path.parent.name}"
+
+
+def _library_profile(path):
+    """A config_library profile, merged with system defaults as a deployment does."""
+    raw = yaml.safe_load(path.read_text())
+    raw.pop("description", None)
+    raw.pop("pricing", None)
+    return merge_config_with_defaults(raw, pattern="pattern-2")
+
+
+def _head_item(manager, profile):
+    return manager._decompress_item(
+        manager.table.get_item(Key={"Configuration": f"Config#{profile}"})["Item"]
+    )
+
+
+@pytest.mark.unit
+@mock_aws
+class TestLibraryProfileStoredHash:
+    """
+    The proof rests on two code paths agreeing: the hash `_write_record` takes of the
+    head it stores, and the hash `_stored_hash_of_body` derives from a revision's
+    body. A disagreement raises nothing at save time; the profile fails once its
+    body expires. Both are therefore pinned on every profile the stack ships, which
+    carry nested thresholds and numeric and boolean leaves in every section.
+    """
+
+    def test_the_shipped_profiles_are_found(self):
+        """An empty parameter list would skip the tests below rather than fail."""
+        assert _MANAGED_PROFILES
+        assert len(_LIBRARY_PROFILES) > len(_MANAGED_PROFILES)
+
+    @pytest.mark.parametrize("path", _LIBRARY_PROFILES, ids=_profile_id)
+    def test_the_cut_the_head_and_the_body_agree_on_the_hash(self, monkeypatch, path):
+        """The pricing table is added so its numeric leaves go through storage too."""
+        from idp_common.config.configuration_manager import _stored_content_hash
+
+        _make_table()
+        manager = _manager(monkeypatch)
+        config = _library_profile(path)
+        config["pricing"] = yaml.safe_load(
+            (_REPO_ROOT / "config_library" / "pricing.yaml").read_text()
+        )["pricing"]
+        manager.save_configuration(CONFIG_TYPE_CONFIG, config, version="p")
+
+        recorded = manager.revisions.get_entry("p", 1)["storedHash"]
+        assert recorded == _stored_content_hash(_head_item(manager, "p"))
+        assert recorded == manager._stored_hash_of_body(
+            "p", manager.revisions.get_body("p", 1)
+        )
+
+    @pytest.mark.parametrize("path", _MANAGED_PROFILES, ids=_profile_id)
+    def test_a_redeployed_profile_is_served_once_its_body_expires(
+        self, monkeypatch, path
+    ):
+        """
+        A managed profile's revision cut before stored hashes existed, then re-saved
+        unchanged by the deployment that upgrades the stack. That save refreshes the
+        hash from the body, or cuts a new revision where it does not recognise the
+        configuration as unchanged; either way the current revision must outlive
+        its body.
+        """
+        from idp_common.config.configuration_manager import _stored_content_hash
+
+        _make_table()
+        manager = _manager(monkeypatch)
+        config = _library_profile(path)
+        manager.save_configuration(
+            CONFIG_TYPE_CONFIG, copy.deepcopy(config), version="p"
+        )
+        _forget_stored_hash(manager, "p", 1)
+        manager.save_configuration(
+            CONFIG_TYPE_CONFIG, copy.deepcopy(config), version="p"
+        )
+        published = manager.resolve_published_revision("p")
+
+        stored_hash = manager.revisions.get_entry("p", published)["storedHash"]
+        assert stored_hash == _stored_content_hash(_head_item(manager, "p"))
+        _expire_body("p", published)
+        assert manager.get_merged_configuration("p", revision=published) is not None
 
 
 @pytest.mark.unit

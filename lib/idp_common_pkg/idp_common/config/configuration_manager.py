@@ -86,6 +86,17 @@ _DYNAMODB_ITEM_SIZE_WARNING = 350 * 1024  # Warn at 350KB
 # Minimum number of top-level keys expected in a full IDP config
 _MIN_FULL_CONFIG_KEYS = 4
 
+EXPIRED_REVISION_REMEDY = (
+    "If it is the profile's current revision and its body has expired, saving a "
+    "change to the profile's configuration in the editor or with idp-cli "
+    "config-upload cuts a new revision with a fresh body, and new documents are "
+    "pinned to it. 'default' and stack-managed profiles cannot be saved in the "
+    "editor: an administrator can change 'default' with Save as default from "
+    "another profile or with idp-cli config-upload, and a stack-managed profile "
+    "gets a new revision from a stack update that changes its configuration, so "
+    "process its documents under an editable copy of it until then."
+)
+
 
 def _is_full_config(raw_dict: Dict[str, Any]) -> bool:
     """
@@ -728,10 +739,7 @@ class ConfigurationManager:
             or coerce_int(item.get("LatestRevision")) != revision
         ):
             return None
-        entry = next(
-            (e for e in self.revisions.list(profile) if e["revision"] == revision),
-            None,
-        )
+        entry = self.revisions.get_entry(profile, revision)
         if entry is None:
             return None
         head = self._decompress_item(item)
@@ -739,15 +747,14 @@ class ConfigurationManager:
             logger.warning(
                 f"Revision r{revision} of configuration profile '{profile}' has no "
                 f"stored body, and the profile head cannot be shown to be that "
-                f"revision; save a change to the profile's configuration to cut a "
-                f"new revision"
+                f"revision. {EXPIRED_REVISION_REMEDY}"
             )
             return None
         record = ConfigurationRecord.from_dynamodb_item(head)
         logger.warning(
             f"Revision r{revision} of configuration profile '{profile}' has no stored "
-            f"body (expired under the bucket's retention rule); using the profile "
-            f"head, which is that revision"
+            f"body (expired under the Configuration bucket's DataRetentionInDays "
+            f"lifecycle rule); using the profile head, which is that revision"
         )
         return self._config_to_dict(record.config)
 
@@ -796,10 +803,7 @@ class ConfigurationManager:
             if body is None:
                 return
             stored_hash = self._stored_hash_of_body(profile, body)
-            entry = next(
-                (e for e in self.revisions.list(profile) if e["revision"] == published),
-                None,
-            )
+            entry = self.revisions.get_entry(profile, published)
             if entry is not None and entry.get("storedHash") != stored_hash:
                 self.revisions.update_entry(profile, published, storedHash=stored_hash)
         except Exception as e:  # noqa: BLE001
@@ -821,7 +825,9 @@ class ConfigurationManager:
         if body is None:
             raise ValueError(
                 f"Revision r{revision} of configuration profile '{profile}' is not "
-                f"available (deleted, pruned, or history is disabled)"
+                f"available (deleted, pruned, expired under the Configuration "
+                f"bucket's DataRetentionInDays lifecycle rule, or history is "
+                f"disabled). {EXPIRED_REVISION_REMEDY}"
             )
         config_dict = {k: v for k, v in body.items() if k != _FULL_CONFIG_MARKER}
         config_dict.pop("config_type", None)

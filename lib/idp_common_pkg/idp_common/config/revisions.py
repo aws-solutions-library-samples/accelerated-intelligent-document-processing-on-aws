@@ -369,7 +369,6 @@ class ConfigRevisionStore:
             "sizeBytes": coerce_int(entry.get("sizeBytes")),
             "classFingerprint": entry.get("classFingerprint"),
             "confidenceFingerprint": entry.get("confidenceFingerprint"),
-            "storedHash": entry.get("storedHash"),
             "pinned": bool(entry.get("pinned", False)),
         }
 
@@ -381,6 +380,21 @@ class ConfigRevisionStore:
         entries = [self._normalize(e) for e in item.get("Revisions", [])]
         entries.sort(key=lambda e: e["revision"], reverse=True)
         return entries
+
+    def get_entry(self, profile: str, revision: int) -> Optional[Dict[str, Any]]:
+        """
+        One revision's index entry exactly as stored, or None if it is not retained.
+
+        Unlike `list`, which is what the revision-list API returns, this includes
+        `storedHash`, the proof that the profile head holds this revision.
+        """
+        if not self.enabled:
+            return None
+        target = int(revision)
+        for entry in self._read_index_item(profile).get("Revisions", []):
+            if coerce_int(entry.get("revision")) == target:
+                return entry
+        return None
 
     def append_index(self, profile: str, entry: Dict[str, Any]) -> None:
         """

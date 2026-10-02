@@ -231,9 +231,10 @@ numbers would go into a comparison. Label or pin the revisions you need to keep.
 For a test run the check happens **when the run is submitted**: `startTestRun`
 (Test Studio, `idp-cli run-inference --test-set`, a direct invocation) rejects a
 profile that does not exist and a revision whose body cannot be read — `Revision
-r3 of configuration profile 'lending' is not available (deleted, pruned, or never
-existed)` — instead of queuing a run whose every document would fail in OCR
-minutes later.
+r3 of configuration profile 'lending' is not available (deleted, pruned, expired
+under the Configuration bucket's DataRetentionInDays lifecycle rule, or never
+existed)`, followed by the remedy described below — instead of queuing a run whose
+every document would fail in OCR minutes later.
 
 Naming a new profile per attempt also works and predates revisions, but every one
 of those profiles then appears in the profile pickers and `allowedConfigVersions`
@@ -259,10 +260,20 @@ bucket.
 in a while keeps processing.** When the current revision's body has expired, it is
 served from the profile's current configuration. That happens only when the
 current configuration can be shown to be that exact revision; otherwise the step
-fails as above. If a profile reports its current revision as unavailable, save a
-change to its configuration: only a save that changes the configuration cuts a new
-revision, and that new revision is what recovers the profile. Saving it unchanged,
+fails as above. What recovers such a profile is a save that changes its
+configuration, in the editor or with `idp-cli config-upload`: only such a save cuts
+a new revision, and new documents are pinned to that revision. Saving it unchanged,
 or changing only its description, cuts nothing.
+
+`default` and stack-managed profiles cannot be saved in the editor, so for those:
+
+- **`default`**: change it with **Actions → Save as default…** from another profile
+  (Admin), or upload a changed configuration with
+  `idp-cli config-upload --config-profile default`.
+- **A stack-managed profile**: it gets a new revision from a stack update that
+  changes its configuration. Until then, an Admin can copy it into an editable
+  profile with **Create profile** and process its documents under the copy, which
+  starts with a revision of its own.
 
 ### Test Studio: comparing two revisions of one profile
 
@@ -308,9 +319,10 @@ Revision bodies are stored in the Configuration bucket under
 `ConfigurationTable`. The bucket's lifecycle rule expires them after
 `DataRetentionInDays` (365 by default) whatever their label or pin, so a labeled or
 pinned revision is readable for that long and no longer; the current revision keeps
-working past it, as described above. Keeping the bodies out of the table is deliberate: listing
-profiles scans that table, and DynamoDB bills a scan on full item size, so storing
-revision bodies there would make the profile list more expensive with every save.
+working past it, as described above. Keeping the bodies out of the table is
+deliberate: listing profiles scans that table, and DynamoDB bills a scan on full
+item size, so storing revision bodies there would make the profile list more
+expensive with every save.
 
 ### First save after upgrading
 
