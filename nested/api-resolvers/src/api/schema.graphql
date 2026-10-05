@@ -787,7 +787,9 @@ type TestRun @aws_cognito_user_pools @aws_iam {
   # where kind is "class" | "unmatched" | "order". Capped (see
   # MAX_CLASSIFICATION_ERRORS) because the whole run result is one DynamoDB
   # attribute; ``total`` is the uncapped count so the UI can say "200 of 340".
-  # Empty on the Athena fallback path, which aggregates percentages only.
+  # Empty on the Athena fallback path, which aggregates percentages only,
+  # except for a classification-only run, whose mismatches the aggregation
+  # still supplies.
   classificationErrors: AWSJSON
   totalCost: Float
   costBreakdown: AWSJSON

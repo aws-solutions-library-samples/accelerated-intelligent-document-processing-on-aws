@@ -520,9 +520,10 @@ def handle_cache_update_request(event, context):
                 "gradedPacketMetrics": aggregated_metrics.get(
                     "graded_packet_metrics", {}
                 ),
-                # Per-section classification mismatches. Absent on the Athena
-                # fallback path, which has the accuracy percentages but not the
-                # per-document detail — hence the default rather than a KeyError.
+                # Per-section classification mismatches. Only the aggregation
+                # Lambda computes them, and the Athena fallback keeps them when it
+                # does, so they are absent only when it is not configured, fails or
+                # predates the field — hence the default rather than a KeyError.
                 "classificationErrors": aggregated_metrics.get(
                     "classification_errors", {}
                 ),
@@ -1885,27 +1886,28 @@ def _athena_supplements(test_run_id):
     return evaluation_metrics, cost_data
 
 
-_PER_DOCUMENT_FIELDS = (
+_FIELDS_ATHENA_CANNOT_SUPPLY = (
     "graded_packet_metrics",
     "classification_errors",
-    "excluded_documents",
     "excluded_document_count",
 )
 
 
-def _per_document_fields(aggregation_metrics):
-    """The fields the aggregation Lambda reads from each document's own evaluation.
+def _fields_athena_cannot_supply(aggregation_metrics):
+    """The aggregation's results that the cache reads and Athena cannot compute.
 
     A run in which no section has an extractable schema, such as a
     classification-only run, produces no extraction comparisons, so the
-    aggregation reports ``document_count`` 0 and the Athena fallback supplies the
-    accuracy, split and cost numbers. These fields are still measured, and the
-    Athena path computes none of them, so they are carried over from the
-    aggregation instead of being discarded with it.
+    aggregation reports ``document_count`` 0 and the Athena fallback supplies
+    only the split metrics and the cost: it averages confidence over attribute
+    comparisons, and such a run writes none. The aggregation still measures the
+    fields in ``_FIELDS_ATHENA_CANNOT_SUPPLY`` from each document's own
+    evaluation, so they are carried over instead of being discarded with the
+    rest of its answer.
     """
     return {
         key: aggregation_metrics[key]
-        for key in _PER_DOCUMENT_FIELDS
+        for key in _FIELDS_ATHENA_CANNOT_SUPPLY
         if key in aggregation_metrics
     }
 
@@ -1924,7 +1926,7 @@ def _aggregate_test_run_metrics(test_run_id):
     test_execution_aggregation_arn = os.environ.get(
         "TEST_EXECUTION_AGGREGATION_FUNCTION_ARN"
     )
-    per_document = {}
+    carried_over = {}
 
     if test_execution_aggregation_arn:
         try:
@@ -1984,7 +1986,7 @@ def _aggregate_test_run_metrics(test_run_id):
                     )
                     return merged_metrics
                 else:
-                    per_document = _per_document_fields(stickler_metrics)
+                    carried_over = _fields_athena_cannot_supply(stickler_metrics)
                     logger.warning(
                         f"Test execution aggregation returned empty metrics (document_count=0) for {test_run_id}, falling back to Athena"
                     )
@@ -2020,7 +2022,7 @@ def _aggregate_test_run_metrics(test_run_id):
         ),
         "total_cost": cost_data.get("total_cost", 0),
         "cost_breakdown": cost_data.get("cost_breakdown", {}),
-        **per_document,
+        **carried_over,
     }
     _invoke_mlflow_logger(test_run_id, athena_result, config=test_run_config)
     return athena_result

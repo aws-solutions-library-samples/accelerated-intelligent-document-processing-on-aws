@@ -1194,14 +1194,15 @@ def _aggregation_lambda_returning(body):
 
 
 @pytest.mark.unit
-def test_a_classification_only_run_keeps_its_per_document_metrics():
+def test_a_classification_only_run_keeps_what_athena_cannot_supply():
     """A run with no extractable schema still caches what each document measured.
 
     Every section of a classification-only run is skipped for extraction, so the
     aggregation finds no comparisons and answers ``document_count`` 0 with the
     graded packet metrics, the classification errors and the excluded documents
-    folded in. The Athena fallback that follows supplies accuracy, splits and cost,
-    and none of those three.
+    folded in. The Athena fallback that follows supplies none of those three,
+    and for such a run only the split metrics and the cost, as mocked here: it
+    averages confidence over attribute comparisons, and there are none.
     """
     test_run_id = "classify-only-run"
     graded = {
@@ -1279,7 +1280,12 @@ def test_a_classification_only_run_keeps_its_per_document_metrics():
 
 @pytest.mark.unit
 def test_an_empty_aggregation_falls_back_without_inventing_fields():
-    """With nothing measured per document, the fallback result keeps its old shape."""
+    """An aggregation Lambda older than the carried fields adds none of them.
+
+    The current Lambda answers with every one of them, as an empty value when
+    nothing was measured, so only an older one omits them; the fallback result then
+    keeps the shape it has with no aggregation answer at all.
+    """
     with (
         patch.dict(
             os.environ,
