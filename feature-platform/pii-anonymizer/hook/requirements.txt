@@ -5,7 +5,7 @@
 # NOTE: python-Levenshtein / fuzzywuzzy / termcolor / aws-xray-sdk / matplotlib
 # are NOT needed by the document closure (textract_helper uses stdlib difflib).
 # Audio deps (ffmpeg) are intentionally excluded — documents only in v1.
-pypdf>=5.1.0
+pypdf>=6.19.0
 pypdfium2>=4.30.0
 # Cap lifted. 12.3.0 fixes 9 HIGH advisories (heap OOB writes in
 # Image.paste/crop and ImageCmsTransform, decompression-bomb DoS in the PDF and

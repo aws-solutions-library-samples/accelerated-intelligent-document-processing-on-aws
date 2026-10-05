@@ -11,6 +11,8 @@ SPDX-License-Identifier: MIT-0
 
 - **The Estimated Cost panel no longer reads `$NaN` for documents processed by 0.6.7 or earlier.** Their stored metering can hold Bedrock's `cacheDetails`, a breakdown of the cache-write tokens rather than a count, and since 0.6.9 the panel priced it as one: the per-page figure and the total showed `$NaN`, and that phase's subtotal counted only the rows listed after it. The panel now counts only numeric metering members, the rule metering has followed since 0.6.8 (and on `develop` since 2026-09-10), so those documents show their correct cost without reprocessing.
 
+- **Security: newly published advisories in ten dependencies are resolved.** The PII Anonymizer extension's hook and the DocSplit test-set deployer now require pypdf 6.19.0 or later, so neither can be built against a release open to its denial-of-service advisories on malformed PDFs; that matters most for the PII hook, which parses customer documents. The `idp_common` development lock now pins urllib3 2.8.0, PyJWT 2.15.0, Tornado 6.5.10, JupyterLab 4.6.4 and Jupyter Notebook 7.6.3, and the web UI and documentation-site build trees take patched axios, brace-expansion, undici and devalue releases on their current major lines. **Action:** none.
+
 ## [0.6.11]
 
 ### Fixed

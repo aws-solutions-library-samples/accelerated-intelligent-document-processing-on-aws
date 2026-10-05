@@ -19,5 +19,19 @@
     "severity": "HIGH",
     "reason": "Already remediated; OSV cannot express it. SheetJS ReDoS, affected range '< 0.20.2' per last_known_affected_version_range. src/ui pins exactly 0.20.2 from cdn.sheetjs.com, i.e. the version the advisory names as the fix. Same open-ended-range artifact as GHSA-4r6h-8v6p-xvw6. Raise the pin if SheetJS publishes a newer CDN build with further fixes.",
     "triagedOn": "2026-08-25"
+  },
+  {
+    "id": "GHSA-vfj7-8cjw-p6xm",
+    "package": "braces",
+    "severity": "HIGH",
+    "reason": "Not reachable. braces reaches src/ui only as a development dependency of micromatch, which the build and lint tooling uses; the browser bundle does not include it, and the patterns it expands come from this repository's own configuration, never from user input. No fixed release exists yet; upgrade and remove this entry once one is published.",
+    "triagedOn": "2026-10-05"
+  },
+  {
+    "id": "GHSA-ch52-4w7c-c8xp",
+    "package": "http-cache-semantics",
+    "severity": "HIGH",
+    "reason": "Not reachable. It reaches this repository only through astro in docs-site, the documentation site, which CI builds into static files. The advisory concerns a shared HTTP cache returning one user's cached response to another, and no deployed component of the solution runs astro or a shared cache on it. No fixed release exists yet; upgrade and remove this entry once one is published.",
+    "triagedOn": "2026-10-05"
   }
 ]
