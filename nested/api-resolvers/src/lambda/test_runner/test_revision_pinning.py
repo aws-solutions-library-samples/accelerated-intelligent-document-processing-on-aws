@@ -187,7 +187,8 @@ class TestRetentionPin:
         the profile head for the RECORD — while the revision was still stamped
         onto every document, which the pipeline then refused to process. One
         error at submit beats N failed documents minutes later (#878), so it
-        carries the same cause list and remedy those documents would have.
+        carries the same cause list and remedy those documents would have, and
+        says to resubmit the run pinned to the new revision once one exists.
         """
         from idp_common.config.configuration_manager import EXPIRED_REVISION_REMEDY
 
@@ -216,8 +217,10 @@ class TestRetentionPin:
         with pytest.raises(ValueError, match="r99 .* not available") as refusal:
             module._capture_config("config-table", "lending", 99)
 
-        assert "DataRetentionInDays" in str(refusal.value)
-        assert EXPIRED_REVISION_REMEDY in str(refusal.value)
+        message = str(refusal.value)
+        assert "DataRetentionInDays" in message
+        assert EXPIRED_REVISION_REMEDY in message
+        assert "once a new revision exists, resubmit the run pinned to it" in message
         manager.mark_revision_pinned.assert_not_called()
 
     def test_a_revision_that_cannot_be_read_fails_with_the_cause(self, monkeypatch):

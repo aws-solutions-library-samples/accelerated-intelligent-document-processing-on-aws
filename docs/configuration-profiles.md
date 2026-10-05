@@ -233,8 +233,10 @@ For a test run the check happens **when the run is submitted**: `startTestRun`
 profile that does not exist and a revision whose body cannot be read — `Revision
 r3 of configuration profile 'lending' is not available (deleted, pruned, expired
 under the Configuration bucket's DataRetentionInDays lifecycle rule, or never
-existed)`, followed by the remedy described below — instead of queuing a run whose
-every document would fail in OCR minutes later.
+existed)`, followed by the
+[remedy](#recovering-a-profile-whose-current-revision-is-unavailable) and an
+instruction to resubmit the run pinned to the new revision once one exists —
+instead of queuing a run whose every document would fail in OCR minutes later.
 
 Naming a new profile per attempt also works and predates revisions, but every one
 of those profiles then appears in the profile pickers and `allowedConfigVersions`
@@ -260,10 +262,14 @@ bucket.
 in a while keeps processing.** When the current revision's body has expired, it is
 served from the profile's current configuration. That happens only when the
 current configuration can be shown to be that exact revision; otherwise the step
-fails as above. What recovers such a profile is a save that changes its
-configuration, in the editor or with `idp-cli config-upload`: only such a save cuts
-a new revision, and new documents are pinned to that revision. Saving it unchanged,
-or changing only its description, cuts nothing.
+fails as above.
+
+### Recovering a profile whose current revision is unavailable
+
+A profile whose current revision is reported unavailable recovers when a save
+changes its configuration, in the editor or with `idp-cli config-upload`: only such
+a save cuts a new revision, and new documents are pinned to that revision. Saving it
+unchanged, or changing only its description, cuts nothing.
 
 `default` and stack-managed profiles cannot be saved in the editor, so for those:
 

@@ -488,13 +488,14 @@ The refresh needs that body, so once the body has expired nothing refreshes
 `storedHash`. If a later unchanged save writes the same configuration with
 different stored content, the hash no longer matches and a pinned read of the
 revision raises. The profile recovers only when a save that changes the
-configuration cuts a new revision. The error a pinned read raises, and the test
-runner's refusal at submit, both end with `EXPIRED_REVISION_REMEDY`, which says so
-and covers `default` and stack-managed profiles too, since the editor cannot save
-either: `default` can still be changed with Save as default or
-`idp-cli config-upload`, and a stack-managed profile gets a new revision from a
-stack update that changes it, with an editable copy to process its documents under
-until then.
+configuration cuts a new revision. The error a pinned read raises ends with
+`EXPIRED_REVISION_REMEDY`, which says so and covers `default` and stack-managed
+profiles too, since the editor cannot save either: `default` can still be changed
+with Save as default or `idp-cli config-upload`, and a stack-managed profile gets a
+new revision from a stack update that changes it, with an editable copy to process
+its documents under until then. The test runner's refusal at submit carries the
+same remedy, followed by an instruction to resubmit the run pinned to the new
+revision once one exists.
 
 The rebuild writes nothing back. Pipeline roles can only read `config_revisions/`,
 so each pinned read of an expired published body is rebuilt again and logged at

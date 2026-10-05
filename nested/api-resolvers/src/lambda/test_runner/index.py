@@ -574,7 +574,9 @@ def _capture_config(config_table, config_version=None, config_revision=None):
                 f"Revision r{config_revision} of configuration profile "
                 f"'{config_version}' is not available (deleted, pruned, expired "
                 f"under the Configuration bucket's DataRetentionInDays lifecycle "
-                f"rule, or never existed). {EXPIRED_REVISION_REMEDY}"
+                f"rule, or never existed). {EXPIRED_REVISION_REMEDY} A test run is "
+                f"pinned when it is submitted, so once a new revision exists, "
+                f"resubmit the run pinned to it."
             )
         # A revision body is JSON, so it carries Python floats (e.g.
         # temperature: 0.0). The captured config is written straight into the

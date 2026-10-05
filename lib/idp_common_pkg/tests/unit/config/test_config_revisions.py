@@ -736,16 +736,17 @@ class TestLibraryProfileStoredHash:
             "p", manager.revisions.get_body("p", 1)
         )
 
-    @pytest.mark.parametrize("path", _MANAGED_PROFILES, ids=_profile_id)
+    @pytest.mark.parametrize("path", _LIBRARY_PROFILES, ids=_profile_id)
     def test_a_redeployed_profile_is_served_once_its_body_expires(
         self, monkeypatch, path
     ):
         """
-        A managed profile's revision cut before stored hashes existed, then re-saved
-        unchanged by the deployment that upgrades the stack. That save refreshes the
-        hash from the body, or cuts a new revision where it does not recognise the
-        configuration as unchanged; either way the current revision must outlive
-        its body.
+        A shipped profile's revision cut before stored hashes existed, then re-saved
+        unchanged by the deployment that upgrades the stack, which does this to each
+        managed profile and to `default`, built from a unified preset. That save
+        refreshes the hash from the body, or cuts a new revision where it does not
+        recognise the configuration as unchanged; either way the current revision
+        must outlive its body, as exactly the configuration the head serves.
         """
         from idp_common.config.configuration_manager import _stored_content_hash
 
@@ -764,7 +765,10 @@ class TestLibraryProfileStoredHash:
         stored_hash = manager.revisions.get_entry("p", published)["storedHash"]
         assert stored_hash == _stored_content_hash(_head_item(manager, "p"))
         _expire_body("p", published)
-        assert manager.get_merged_configuration("p", revision=published) is not None
+        served = manager.get_merged_configuration("p", revision=published)
+        head = manager.get_merged_configuration("p")
+        assert served is not None and head is not None
+        assert served.model_dump() == head.model_dump()
 
 
 @pytest.mark.unit
