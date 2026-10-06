@@ -2833,6 +2833,41 @@ class TestClassificationErrorsFromTheDocSplitMatcher:
             }
         ]
 
+    def test_a_class_named_no_match_is_not_taken_for_the_placeholder(self, mock_env):
+        """A configured class can itself be named "No Match".
+
+        A section of that class the matcher paired carries the paired section's
+        id, so it is reproduced when its pages are, and a page-order error when
+        only their order differs.
+        """
+        index = import_test_module()
+        reproduced = self._doc_split_metrics(
+            [self._section("1", "No Match", [0, 1])],
+            [self._section("1", "No Match", [0, 1])],
+        )
+        reordered = self._doc_split_metrics(
+            [self._section("1", "No Match", [0, 1])],
+            [self._section("1", "No Match", [1, 0])],
+        )
+        details = reproduced["section_details_with_order"][0]
+        assert (details["predicted_class"], details["matched_section_id"]) == (
+            "No Match",
+            "1",
+        )
+
+        assert index._classification_errors_for_doc("a.pdf", reproduced) == []
+        assert index._classification_errors_for_doc("b.pdf", reordered) == [
+            {
+                "doc_key": "b.pdf",
+                "section_id": "1",
+                "kind": "order",
+                "expected_class": "No Match",
+                "predicted_class": "No Match",
+                "expected_pages": [0, 1],
+                "predicted_pages": [1, 0],
+            }
+        ]
+
     def test_a_moved_boundary_lists_every_predicted_section_over_the_pages(
         self, mock_env
     ):
@@ -2896,3 +2931,27 @@ class TestClassificationErrorsFromTheDocSplitMatcher:
             ]
         for error in [split_error, *merged_errors]:
             assert len(json.dumps(error["predicted_sections"])) < 512
+
+    def test_a_predicted_section_with_gaps_carries_a_run_per_stretch(self, mock_env):
+        """Its size in the entry grows with the gaps in its pages, not the pages.
+
+        The section editor accepts any list of page ids, so a predicted
+        section's pages need not be contiguous.
+        """
+        index = import_test_module()
+        doc_split_metrics = self._doc_split_metrics(
+            [self._section("1", "Invoice", list(range(10)))],
+            [
+                self._section("1", "Invoice", [0, 1, 2, 3, 6, 7, 8, 9]),
+                self._section("2", "Receipt", [4, 5]),
+            ],
+        )
+
+        (error,) = index._classification_errors_for_doc("d.pdf", doc_split_metrics)
+
+        assert error["kind"] == "unmatched"
+        assert error["predicted_section_count"] == 2
+        assert error["predicted_sections"] == [
+            {"class": "Invoice", "page_ranges": [[0, 3], [6, 9]]},
+            {"class": "Receipt", "page_ranges": [[4, 5]]},
+        ]

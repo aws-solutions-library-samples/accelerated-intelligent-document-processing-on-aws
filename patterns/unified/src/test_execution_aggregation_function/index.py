@@ -147,11 +147,17 @@ def _stickler_unmatched(section: Dict[str, Any]) -> bool:
 
     It reports such a ground-truth section as ``predicted_class`` "No Match"
     with ``matched`` false, no ``matched_section_id`` and no predicted pages.
+    A section it did pair, in page order or not, carries that predicted
+    section's id as ``matched_section_id``. That is read before "No Match" is
+    taken for the placeholder, because it can also be a configured class's name.
     """
-    if section.get("predicted_class") in (None, "", "No Match"):
+    if section.get("predicted_class") in (None, ""):
         return True
-    matched_id = section.get("matched_section_id")
-    return section.get("matched") is False and matched_id in (None, "")
+    if section.get("matched_section_id") not in (None, ""):
+        return False
+    return (
+        section.get("predicted_class") == "No Match" or section.get("matched") is False
+    )
 
 
 def _classification_errors_for_doc(
