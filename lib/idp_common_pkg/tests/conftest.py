@@ -9,9 +9,30 @@ import importlib
 import os
 import sys
 from pathlib import Path
+from typing import Dict, Optional
 from unittest.mock import MagicMock
 
 import pytest
+
+#: The AWS credential variables this file forces to sentinels for the unit suite.
+#: Named once because three things below have to agree about the set: the
+#: snapshot, the sentinel assignment, and the integration reconciliation.
+_AWS_CREDENTIAL_VARS = (
+    "AWS_ACCESS_KEY_ID",
+    "AWS_SECRET_ACCESS_KEY",
+    "AWS_SECURITY_TOKEN",
+    "AWS_SESSION_TOKEN",
+)
+
+#: Whatever real credentials the invoking environment exported, captured BEFORE
+#: the sentinels below overwrite them. The `aws_credentials` fixture assigns
+#: unconditionally (not `setdefault`), so by the time any test runs, exported
+#: real credentials are gone — and an integration test cannot get them back from
+#: the environment. Recovering them from the boto3 profile/role chain only works
+#: for a machine that HAS a profile or an instance role, which is why
+#: `AWS_PROFILE=...` worked and the exported `AWS_ACCESS_KEY_ID` form documented
+#: alongside it did not.
+_REAL_AWS_ENV = {var: os.environ.get(var) for var in _AWS_CREDENTIAL_VARS}
 
 # Set up AWS credentials and region BEFORE any imports that might use boto3
 # This must be done at module load time, not in a fixture, because fixtures
@@ -119,3 +140,116 @@ def aws_credentials():
     os.environ["AWS_REGION"] = (
         "us-east-1"  # Also set AWS_REGION for code that checks this variable
     )
+
+
+# ---------------------------------------------------------------------------
+# Integration-tier credential reconciliation
+# ---------------------------------------------------------------------------
+# This reconciliation is keyed on the ``integration`` MARKER, not on the
+# directory, and that is the whole point of it living here. It used to be an
+# autouse session fixture in ``tests/integration/conftest.py``, so it reached
+# integration tests by virtue of where their file sat. Two integration-marked
+# tests live under ``tests/unit/`` (the live-Bedrock agentic extraction pair,
+# which belong beside the agentic conftest that guards on a real ``strands``),
+# and `make test-integration` runs ``pytest -m "integration"`` over the whole
+# tree — so those two were handed the sentinel ``testing`` key, signed real
+# Bedrock calls with it and failed with ``InvalidClientTokenId``. The marker is
+# what says "this test calls AWS"; the directory only says where someone filed
+# it. Keyed on the marker, a future misplaced file is covered on arrival.
+# Pinned by test_integration_marked_tests_get_real_credentials in
+# tests/unit/test_suite_hygiene.py. See #1307.
+
+_SENTINEL = "testing"
+
+#: Memo for the resolution below, which otherwise re-walks the boto3 credential
+#: chain once per integration test. ``None`` is a real answer here (no
+#: credentials available), so the "not yet computed" state needs its own flag.
+_RESOLVED_REAL_CREDENTIALS: Optional[Dict[str, str]] = None
+_CREDENTIAL_RESOLUTION_DONE = False
+
+
+def _resolve_real_credentials() -> Optional[Dict[str, str]]:
+    """Return real AWS credentials as an env mapping, or None if only sentinels.
+
+    Two sources, in order: the values the invoking environment exported before
+    this module replaced them (``_REAL_AWS_ENV``), then the boto3 chain with the
+    sentinels hidden, which covers ``AWS_PROFILE`` and instance roles.
+    """
+    global _RESOLVED_REAL_CREDENTIALS, _CREDENTIAL_RESOLUTION_DONE
+    if _CREDENTIAL_RESOLUTION_DONE:
+        return _RESOLVED_REAL_CREDENTIALS
+
+    resolved: Optional[Dict[str, str]] = None
+    snapshot_key = _REAL_AWS_ENV.get("AWS_ACCESS_KEY_ID")
+    if snapshot_key not in (None, _SENTINEL):
+        # The environment really did carry credentials; hand back exactly what it
+        # had, including the absence of a session token for a long-lived key.
+        resolved = {
+            k: v for k, v in _REAL_AWS_ENV.items() if v is not None and v != _SENTINEL
+        }
+    else:
+        # Hide the sentinels so boto3 falls through to the profile/role chain,
+        # then put the environment back exactly as it was. Leaving them popped is
+        # what made the previous session-scoped version unsafe to generalise: a
+        # later moto test in the same session would then sign with whatever the
+        # chain resolved. (Popping at module scope is worse still — #988.)
+        saved = {var: os.environ.pop(var, None) for var in _AWS_CREDENTIAL_VARS}
+        # Imported here rather than at module scope: this file runs before every
+        # test module, and the sentinel assignment above has to land before
+        # anything builds a boto3 client.
+        import boto3
+
+        try:
+            creds = boto3.Session().get_credentials()
+            frozen = creds.get_frozen_credentials() if creds else None
+        except Exception:
+            frozen = None
+        finally:
+            for var, val in saved.items():
+                if val is not None:
+                    os.environ[var] = val
+
+        if frozen is not None and frozen.access_key not in (None, _SENTINEL):
+            resolved = {
+                "AWS_ACCESS_KEY_ID": frozen.access_key,
+                "AWS_SECRET_ACCESS_KEY": frozen.secret_key,
+                "AWS_SESSION_TOKEN": frozen.token,
+                "AWS_SECURITY_TOKEN": frozen.token,
+            }
+            resolved = {k: v for k, v in resolved.items() if v is not None}
+
+    _RESOLVED_REAL_CREDENTIALS = resolved
+    _CREDENTIAL_RESOLUTION_DONE = True
+    return resolved
+
+
+@pytest.fixture(autouse=True)
+def real_aws_credentials_for_integration_tests(request):
+    """Give every ``integration``-marked test real credentials, and only those.
+
+    Function-scoped and restoring on teardown, so a run that spans both tiers —
+    a bare ``pytest`` with no ``-m`` — leaves the sentinels in force for the
+    moto tests either side of an integration test.
+    """
+    if request.node.get_closest_marker("integration") is None:
+        yield
+        return
+
+    real = _resolve_real_credentials()
+    if real is None:
+        pytest.skip(
+            "Integration tests require real AWS credentials. Configure a profile "
+            "or export AWS_ACCESS_KEY_ID/AWS_SECRET_ACCESS_KEY (and "
+            "AWS_SESSION_TOKEN if using temporary creds)."
+        )
+
+    saved = {var: os.environ.get(var) for var in _AWS_CREDENTIAL_VARS}
+    for var in _AWS_CREDENTIAL_VARS:
+        os.environ.pop(var, None)
+    os.environ.update(real)
+    try:
+        yield
+    finally:
+        for var in _AWS_CREDENTIAL_VARS:
+            os.environ.pop(var, None)
+        os.environ.update({k: v for k, v in saved.items() if v is not None})

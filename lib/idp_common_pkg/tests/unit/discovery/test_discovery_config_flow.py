@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: MIT-0
 
 """
-Integration tests for Discovery module configuration.
+End-to-end tests for Discovery module configuration.
 Tests the complete configuration flow from loading to usage.
 """
 
@@ -10,7 +10,6 @@ import json
 import unittest
 from unittest.mock import Mock, patch
 
-import pytest
 import yaml
 
 from idp_common.config.models import (
@@ -19,15 +18,39 @@ from idp_common.config.models import (
 from idp_common.discovery.classes_discovery import ClassesDiscovery
 
 
-@pytest.mark.integration
-class TestDiscoveryConfigIntegration(unittest.TestCase):
-    """Integration tests for Discovery configuration functionality.
+def discovered_schema(document_type: str, description: str, properties: dict) -> dict:
+    """Build a model reply in the shape discovery actually validates.
 
-    Marked ``integration`` (consistent with every other file in
-    ``tests/integration/``) so the ``-m "not integration"`` unit gate excludes
-    it. These end-to-end config-flow tests mock several internal seams that have
-    drifted from the current discovery implementation; they are exercised in the
-    integration suite rather than the fast unit gate.
+    ``ClassesDiscovery._validate_json_schema`` requires ``$schema``, ``$id``,
+    ``type``, ``properties`` and ``x-aws-idp-document-type``, with a root type of
+    ``object``. Both end-to-end tests below fed the pre-JSON-Schema reply shape
+    (a bare ``document_class`` + ``groups`` dict), so the validator rejected it on
+    all three attempts and discovery raised ``Failed to extract data from
+    document`` (#1307).
+    """
+    return {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "$id": document_type.lower(),
+        "type": "object",
+        "title": document_type,
+        "description": description,
+        "x-aws-idp-document-type": document_type,
+        "properties": properties,
+    }
+
+
+class TestDiscoveryConfigIntegration(unittest.TestCase):
+    """End-to-end tests for the Discovery configuration flow.
+
+    Every AWS seam these exercise is patched — ``ConfigurationReader``,
+    ``ConfigurationManager``, ``BedrockClient`` and ``S3Util.get_bytes`` — so
+    they make no network call and run in the default unit gate. They were
+    previously marked ``integration`` and filed under ``tests/integration/``,
+    which excluded them from ``make test`` while putting them in a tier that
+    needs credentials to run at all. Two of the four then failed on drifted mock
+    seams and stayed red, because the only thing that ran them was a person
+    typing ``make test-integration`` (#1307). The credentials-only tier is not a
+    quarantine; a test that needs no credentials belongs in the gate.
     """
 
     def setUp(self):
@@ -99,8 +122,10 @@ discovery:
         mock_config_manager_instance = Mock()
         mock_config_manager.return_value = mock_config_manager_instance
 
-        # Mock the configuration manager to return empty config
-        mock_config_manager_instance.get_configuration.return_value = None
+        # Mock the configuration manager to return empty config. The method the
+        # save path calls is ``get_raw_configuration``; stubbing any other name
+        # left it returning a Mock, which `list(...)` cannot iterate (#1307).
+        mock_config_manager_instance.get_raw_configuration.return_value = None
 
         mock_bedrock_instance = Mock()
         mock_bedrock_client.return_value = mock_bedrock_instance
@@ -109,24 +134,22 @@ discovery:
         mock_response = {"response": "success"}
         mock_bedrock_instance.invoke_model.return_value = mock_response
 
-        expected_result = {
-            "document_class": "TestForm",
-            "document_description": "A test form for validation",
-            "groups": [
-                {
-                    "name": "PersonalInfo",
-                    "attributeType": "group",
-                    "groupType": "normal",
-                    "groupAttributes": [
-                        {
-                            "name": "FirstName",
-                            "dataType": "string",
+        expected_result = discovered_schema(
+            "TestForm",
+            "A test form for validation",
+            {
+                "PersonalInfo": {
+                    "type": "object",
+                    "description": "Personal information group",
+                    "properties": {
+                        "FirstName": {
+                            "type": "string",
                             "description": "First name field",
                         }
-                    ],
+                    },
                 }
-            ],
-        }
+            },
+        )
 
         mock_extract_text.return_value = json.dumps(expected_result)
         mock_s3_get_bytes.return_value = b"mock document content"
@@ -138,7 +161,11 @@ discovery:
             mock_reader_instance = mock_config_reader.return_value
             # Convert dict to IDPConfig model
             idp_config = IDPConfig(**self.config_dict)
-            mock_reader_instance.get_configuration.return_value = idp_config
+            # ``get_merged_configuration`` is the method ClassesDiscovery calls.
+            # Stubbing ``get_configuration`` instead left ``self.config`` a
+            # MagicMock, so ``model_id`` was a MagicMock repr -- which the
+            # document-block guard matched as a GPT-5.x model and rejected (#1307).
+            mock_reader_instance.get_merged_configuration.return_value = idp_config
 
             with patch.dict("os.environ", {"CONFIGURATION_TABLE_NAME": "test-table"}):
                 # Initialize ClassesDiscovery with YAML config
@@ -201,8 +228,9 @@ discovery:
         mock_config_manager_instance = Mock()
         mock_config_manager.return_value = mock_config_manager_instance
 
-        # Mock the configuration manager to return empty config
-        mock_config_manager_instance.get_merged_configuration.return_value = None
+        # Mock the configuration manager to return empty config (see the note on
+        # the method name in the without-ground-truth test above).
+        mock_config_manager_instance.get_raw_configuration.return_value = None
 
         mock_bedrock_instance = Mock()
         mock_bedrock_client.return_value = mock_bedrock_instance
@@ -211,29 +239,26 @@ discovery:
         mock_response = {"response": "success"}
         mock_bedrock_instance.invoke_model.return_value = mock_response
 
-        expected_result = {
-            "document_class": "W4Form",
-            "document_description": "Employee withholding form",
-            "groups": [
-                {
-                    "name": "EmployeeInfo",
-                    "attributeType": "group",
-                    "groupType": "normal",
-                    "groupAttributes": [
-                        {
-                            "name": "FirstName",
-                            "dataType": "string",
+        expected_result = discovered_schema(
+            "W4Form",
+            "Employee withholding form",
+            {
+                "EmployeeInfo": {
+                    "type": "object",
+                    "description": "Employee information group",
+                    "properties": {
+                        "FirstName": {
+                            "type": "string",
                             "description": "Employee first name",
                         },
-                        {
-                            "name": "LastName",
-                            "dataType": "string",
+                        "LastName": {
+                            "type": "string",
                             "description": "Employee last name",
                         },
-                    ],
+                    },
                 }
-            ],
-        }
+            },
+        )
 
         mock_extract_text.return_value = json.dumps(expected_result)
 

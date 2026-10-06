@@ -267,9 +267,17 @@ GATES_DELIBERATELY_OUT_OF_CI = {
     ),
     # --- needs credentials, network, or a human -------------------------------
     "test-integration-all": (
-        "Runs the integration-marked suites, which call live AWS. GitLab's "
-        "`integration_tests` stage is the one deliberate CI asymmetry in this "
-        "repo; test_integration_tests_stay_gitlab_only below pins it."
+        "Runs the integration-marked suites, which call live AWS. NO CI runs "
+        "them — not GitLab either. GitLab's `integration_tests` stage is a "
+        "different thing with a similar name: it triggers a CodePipeline stack "
+        "deploy (scripts/sdlc/integration_test_deployment.py) and never invokes "
+        "`pytest -m integration`. So the only thing that runs this tier is a "
+        "person typing the target, which is how 14 of its 23 tests came to be "
+        "failing for tooling reasons with nothing reporting it (#1307). That is "
+        "a genuine residual, not a duplicate; it stays out of CI because it "
+        "needs credentials GitHub has no OIDC role for, and because it bills "
+        "Bedrock per run. `test_the_integration_pytest_tier_runs_in_no_ci` "
+        "below measures the claim rather than asserting the stage name."
     ),
     "check-retired-models": (
         "Asks Bedrock whether a model this repo offers has been retired. Needs AWS "
@@ -966,9 +974,65 @@ def test_ruff_is_pinned_consistently() -> None:
 
 @pytest.mark.unit
 def test_integration_tests_stay_gitlab_only() -> None:
-    """Documents the ONE deliberate asymmetry, so it cannot drift unnoticed."""
+    """Documents the ONE deliberate asymmetry, so it cannot drift unnoticed.
+
+    ⚠️ This is about the GitLab **stage** of that name — a CodePipeline stack
+    deploy — and nothing more. It does NOT say the pytest ``integration`` marker
+    tier runs there; see the test below, which is the one that measures that.
+    Reading this assertion as coverage of that tier is the mistake that let
+    #1307 sit: a `test-integration-all` exemption cited this test as its ratchet,
+    and a string check over a stage name cannot carry that claim.
+    """
     assert "integration_tests" in GITLAB.read_text()
     assert "integration_tests" not in _github_ci_text(), (
         "integration_tests appeared in GitHub CI. It needs AWS credentials; if "
         "that is now intended, update this test and CI_TEST_COVERAGE.md."
+    )
+
+
+@pytest.mark.unit
+def test_the_integration_pytest_tier_runs_in_no_ci() -> None:
+    """The ``-m integration`` tier is run by no CI, and that must stay measured.
+
+    The reason this is worth a test rather than a comment: the two things are
+    easy to conflate by name. GitLab's `integration_tests` stage runs
+    `scripts/sdlc/integration_test_deployment.py`, which deploys a stack through
+    CodePipeline — it never invokes `pytest -m integration`, so the pytest tier
+    was covered nowhere while the exemption for it said GitLab had it. 14 of its
+    23 tests were failing on tooling faults, and the first thing to notice was a
+    release validation months later (#1307).
+
+    So: assert the absence directly, over every CI configuration and the
+    buildspecs the GitLab stage reaches. If a CI starts running the tier, this
+    test fails and the `test-integration-all` exemption above must be rewritten
+    — which is the point. It is an inverted ratchet: the exemption is only
+    honest while this holds.
+    """
+    runners = [
+        GITLAB,
+        GITHUB_TESTS,
+        GITHUB_SECURITY,
+        REPO_ROOT / "scripts" / "sdlc" / "integration_test_deployment.py",
+        *sorted((REPO_ROOT / "patterns" / "unified").glob("buildspec*.yml")),
+    ]
+    present = [p for p in runners if p.exists()]
+    assert len(present) == len(runners), (
+        f"expected to read all of {[p.name for p in runners]}; missing "
+        f"{[p.name for p in runners if not p.exists()]} — this test cannot "
+        "report an absence it never looked for"
+    )
+
+    invocations = ("test-integration", "-m integration", '-m "integration"')
+    found = {
+        p.relative_to(REPO_ROOT).as_posix(): [
+            needle for needle in invocations if needle in _uncommented(p.read_text())
+        ]
+        for p in present
+    }
+    offenders = {path: hits for path, hits in found.items() if hits}
+    assert not offenders, (
+        "the pytest `integration` tier is now invoked from CI "
+        f"({offenders}). That is a real improvement, but the "
+        "`test-integration-all` entry in GATES_DELIBERATELY_OUT_OF_CI says the "
+        "opposite — rewrite it, and delete this test or invert it."
     )

@@ -8,6 +8,25 @@ import pytest
 from idp_common.bedrock.client import BedrockClient
 
 
+def assert_converse_envelope(response):
+    """Assert the envelope ``BedrockClient.invoke_model`` actually returns.
+
+    It is ``{"response": <Converse response>, "metering": {...}}``, so the
+    Converse payload's ``output`` is nested one level down. Every assertion in
+    this file used to look for ``output`` at the top level, which no successful
+    call can satisfy — the calls were reaching Bedrock and metering tokens, and
+    only the assertion was wrong (#1307). Asserted through one helper so the
+    envelope is written down once rather than remembered at six call sites.
+    """
+    assert response is not None
+    assert "response" in response, f"missing 'response' envelope key: {response}"
+    assert "metering" in response, f"missing 'metering' envelope key: {response}"
+    assert "output" in response["response"], (
+        f"missing 'output' in Converse response: {response['response']}"
+    )
+    assert "message" in response["response"]["output"]
+
+
 @pytest.mark.integration
 class TestBedrockClientServiceTierIntegration:
     """Integration tests for service tier with real Bedrock API calls."""
@@ -26,9 +45,7 @@ class TestBedrockClientServiceTierIntegration:
             max_tokens=10,
         )
 
-        assert response is not None
-        assert "output" in response
-        assert "message" in response["output"]
+        assert_converse_envelope(response)
 
     def test_model_id_with_priority_suffix(self, bedrock_client):
         """Test model ID with :priority suffix."""
@@ -39,8 +56,7 @@ class TestBedrockClientServiceTierIntegration:
             max_tokens=5,
         )
 
-        assert response is not None
-        assert "output" in response
+        assert_converse_envelope(response)
 
     def test_model_id_without_suffix(self, bedrock_client):
         """Test model ID without suffix (uses standard/default tier)."""
@@ -51,8 +67,7 @@ class TestBedrockClientServiceTierIntegration:
             max_tokens=20,
         )
 
-        assert response is not None
-        assert "output" in response
+        assert_converse_envelope(response)
 
     def test_service_tier_parameter_fallback(self, bedrock_client):
         """Test service_tier parameter still works as fallback."""
@@ -64,8 +79,7 @@ class TestBedrockClientServiceTierIntegration:
             max_tokens=5,
         )
 
-        assert response is not None
-        assert "output" in response
+        assert_converse_envelope(response)
 
     def test_suffix_precedence_over_parameter(self, bedrock_client):
         """Test model ID suffix takes precedence over service_tier parameter."""
@@ -77,8 +91,7 @@ class TestBedrockClientServiceTierIntegration:
             max_tokens=5,
         )
 
-        assert response is not None
-        assert "output" in response
+        assert_converse_envelope(response)
 
     def test_global_model_with_flex_suffix(self, bedrock_client):
         """Test global model ID with :flex suffix.
@@ -86,7 +99,9 @@ class TestBedrockClientServiceTierIntegration:
         The skip covers the *invocation* only. It used to wrap the assertions
         as well, and `except Exception` catches `AssertionError`, so a response
         that came back without an `output` key was reported as a skip -- which
-        reads as green (#1129).
+        reads as green (#1129). Narrowing it is what exposed that the assertion
+        itself was wrong about the envelope, for all six tests here (#1307):
+        this file had never had a run that could fail.
         """
         try:
             response = bedrock_client.invoke_model(
@@ -98,5 +113,4 @@ class TestBedrockClientServiceTierIntegration:
         except Exception as e:
             pytest.skip(f"Global model not available: {e}")
 
-        assert response is not None
-        assert "output" in response
+        assert_converse_envelope(response)

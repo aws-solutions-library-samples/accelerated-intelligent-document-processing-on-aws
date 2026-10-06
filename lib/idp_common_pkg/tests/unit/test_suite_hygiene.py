@@ -235,6 +235,83 @@ def test_only_one_pytest_ini_governs_this_package():
     )
 
 
+def _root_conftest_fixture(name):
+    """Return the ``ast.FunctionDef`` for a fixture in ``tests/conftest.py``."""
+    path = os.path.join(TESTS_DIR, "conftest.py")
+    with open(path) as fh:
+        tree = ast.parse(fh.read(), filename=path)
+    for node in tree.body:
+        if isinstance(node, ast.FunctionDef) and node.name == name:
+            return node
+    return None
+
+
+@pytest.mark.unit
+def test_integration_marked_tests_get_real_credentials(request):
+    """The credential reconciliation must reach every directory, not one.
+
+    ``tests/conftest.py`` forces sentinel credentials
+    (``AWS_ACCESS_KEY_ID=testing``) so unit tests cannot reach AWS. Undoing that
+    for the tests that DO need AWS used to live in
+    ``tests/integration/conftest.py``, so it reached integration tests by virtue
+    of the directory their file sat in. ``make test-integration`` runs
+    ``pytest -m "integration"`` over the whole tree, and two integration-marked
+    tests live under ``tests/unit/`` — the live-Bedrock agentic pair, which need
+    the ``strands`` guard in the agentic conftest — so those two signed real
+    Bedrock calls with the sentinel key and failed with ``InvalidClientTokenId``
+    (#1307).
+
+    This test is itself under ``tests/unit/``, so its own fixture closure is the
+    evidence: the reconciliation is visible here, which it could not have been
+    while it lived one directory over.
+    """
+    assert "real_aws_credentials_for_integration_tests" in request.fixturenames, (
+        "the integration credential reconciliation is not in scope for tests "
+        "under tests/unit/. If it moved back into a subdirectory conftest, the "
+        "integration-marked tests outside that subdirectory lose it again."
+    )
+
+
+@pytest.mark.unit
+def test_the_credential_reconciliation_is_keyed_on_the_marker():
+    """It must gate on the ``integration`` marker and restore on teardown.
+
+    Gating is what makes a suite-wide autouse fixture safe: without it, the
+    session-scoped skip it replaced would skip all ~10,500 tests on a machine
+    with no AWS credentials. Restoring is what makes a mixed run safe — a bare
+    ``pytest`` with no ``-m`` interleaves both tiers, and the previous version
+    popped the sentinels and left them popped, so every moto test after an
+    integration test would sign with whatever the credential chain resolved.
+    (Doing it at module scope is worse again — #988.)
+    """
+    fixture = _root_conftest_fixture("real_aws_credentials_for_integration_tests")
+    assert fixture is not None, (
+        "tests/conftest.py no longer defines the reconciliation fixture"
+    )
+    # `ast.unparse` normalizes string literals to single quotes, so match on
+    # that spelling rather than on however the source happens to quote it.
+    src = ast.unparse(fixture)
+    assert "get_closest_marker('integration')" in src, (
+        "the fixture is autouse over the whole suite but no longer gates on the "
+        "`integration` marker, so it applies to every unit test too"
+    )
+    assert any(isinstance(node, ast.Try) for node in ast.walk(fixture)), (
+        "the fixture no longer restores the credential environment on teardown; "
+        "a bare `pytest` run would leave real credentials in force for the moto "
+        "tests that follow an integration test"
+    )
+
+
+@pytest.mark.unit
+def test_unit_tests_still_run_under_sentinel_credentials():
+    """The live negative for the two above: this test is not integration-marked,
+    so the reconciliation must have left the sentinels alone."""
+    assert os.environ.get("AWS_ACCESS_KEY_ID") == "testing", (
+        "a non-integration test is running with non-sentinel AWS credentials "
+        f"({os.environ.get('AWS_ACCESS_KEY_ID')!r}); moto tests could reach AWS"
+    )
+
+
 @pytest.mark.unit
 def test_the_default_marker_filter_is_actually_in_effect(pytestconfig):
     """Guard-the-guard for the above: assert the running session really excludes
