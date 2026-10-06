@@ -31,8 +31,10 @@ breaking everything else.
 from __future__ import annotations
 
 import ast
+import importlib
 import os
 
+import boto3
 import pytest
 
 TESTS_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -299,6 +301,51 @@ def test_the_credential_reconciliation_is_keyed_on_the_marker():
         "the fixture no longer restores the credential environment on teardown; "
         "a bare `pytest` run would leave real credentials in force for the moto "
         "tests that follow an integration test"
+    )
+
+
+@pytest.mark.unit
+def test_the_reconciliation_drops_cached_boto3_clients():
+    """Swapping the credential environment does not reach an existing client.
+
+    boto3 freezes credentials at construction, and `idp_common.s3`,
+    `idp_common.metrics` and four other modules cache one in a process-global.
+    Collection imports every test module while the sentinels are in force, so a
+    client built at import time is poisoned before any test runs — measured as
+    `InvalidAccessKeyId` on an S3 read in `-m integration -k payslip` with the
+    whole tree collected, where the same test alone passes (#1307, and the
+    import-time-environment class is #988).
+
+    Driven here against a real cached client rather than against the source, so
+    the detection is what is tested: a `boto3.client` needs no network to build.
+    """
+    from idp_common import s3 as idp_s3
+
+    conftest = importlib.import_module("tests.conftest")
+
+    saved = idp_s3._s3_client
+    try:
+        idp_s3._s3_client = boto3.client("s3", region_name="us-east-1")
+        cleared = conftest.reset_cached_aws_clients()
+        assert cleared >= 1, (
+            "the reset found no cached boto3 client to clear, so its detection "
+            "has stopped matching the caches it is for"
+        )
+        assert idp_s3._s3_client is None, (
+            "idp_common.s3 still holds a client built under the previous "
+            "credentials; an integration test would inherit it"
+        )
+    finally:
+        idp_s3._s3_client = saved
+
+    fixture = _root_conftest_fixture("real_aws_credentials_for_integration_tests")
+    assert fixture is not None
+    body = ast.unparse(fixture)
+    assert body.count("reset_cached_aws_clients()") == 2, (
+        "the fixture must drop cached clients on BOTH edges: entering, so a "
+        "client built under the sentinels is not reused with real credentials, "
+        "and leaving, so a client built under real credentials is not inherited "
+        "by the moto tests that follow"
     )
 
 

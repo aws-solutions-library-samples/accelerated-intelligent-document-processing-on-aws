@@ -223,6 +223,54 @@ def _resolve_real_credentials() -> Optional[Dict[str, str]]:
     return resolved
 
 
+def reset_cached_aws_clients() -> int:
+    """Drop every module-level boto3 client/session/resource ``idp_common`` holds.
+
+    Changing the credential environment is not enough on its own, because a
+    boto3 client **freezes its credentials at construction**. Several modules
+    cache one in a process-global — ``idp_common.s3._s3_client``,
+    ``idp_common.metrics._cloudwatch_client``, the Bedrock session cache, the
+    X-Ray/DynamoDB/CloudFormation/SSM helpers — so the first construction in the
+    process wins for every test afterwards.
+
+    The construction that wins is usually one nobody intended: pytest imports
+    every test module during collection, and the sentinel credentials are in
+    force then, so a client built at import time is poisoned before a single
+    test has run. That is measurable rather than theoretical — collecting the
+    whole tree and selecting one test (``-m integration -k payslip``, 10,494
+    deselected) reproduces ``InvalidAccessKeyId`` on an S3 read, where the same
+    test alone passes. Issue #1307; the import-time-environment class is #988.
+
+    Every one of these caches is ``if _x is None: _x = boto3.client(...)``, so
+    setting it to ``None`` costs one reconstruction and nothing else. Detection
+    is by **value type** rather than by name: a hardcoded list of module globals
+    rots silently the first time somebody adds a seventh cache, and a name
+    pattern would also match unrelated caches like ``_settings_cache``.
+
+    Returns the number of caches cleared, so a caller can assert it did
+    something.
+    """
+    import boto3
+    from boto3.resources.base import ServiceResource
+    from botocore.client import BaseClient
+
+    frozen_credential_holders = (BaseClient, boto3.Session, ServiceResource)
+    cleared = 0
+    for module_name, module in list(sys.modules.items()):
+        if module_name != "idp_common" and not module_name.startswith("idp_common."):
+            continue
+        if module is None:
+            continue
+        for attr, value in list(vars(module).items()):
+            # Module-private by convention: these caches are all `_`-prefixed,
+            # and a public boto3 client at module scope would be someone's
+            # deliberate singleton rather than a lazy cache.
+            if attr.startswith("_") and isinstance(value, frozen_credential_holders):
+                setattr(module, attr, None)
+                cleared += 1
+    return cleared
+
+
 @pytest.fixture(autouse=True)
 def real_aws_credentials_for_integration_tests(request):
     """Give every ``integration``-marked test real credentials, and only those.
@@ -230,6 +278,11 @@ def real_aws_credentials_for_integration_tests(request):
     Function-scoped and restoring on teardown, so a run that spans both tiers —
     a bare ``pytest`` with no ``-m`` — leaves the sentinels in force for the
     moto tests either side of an integration test.
+
+    The cached-client reset happens on **both** edges, and the second one is not
+    symmetry for its own sake: without it a client built under real credentials
+    during an integration test would be inherited by the moto tests that follow
+    it, which is the same defect pointing the other way.
     """
     if request.node.get_closest_marker("integration") is None:
         yield
@@ -247,9 +300,11 @@ def real_aws_credentials_for_integration_tests(request):
     for var in _AWS_CREDENTIAL_VARS:
         os.environ.pop(var, None)
     os.environ.update(real)
+    reset_cached_aws_clients()
     try:
         yield
     finally:
         for var in _AWS_CREDENTIAL_VARS:
             os.environ.pop(var, None)
         os.environ.update({k: v for k, v in saved.items() if v is not None})
+        reset_cached_aws_clients()

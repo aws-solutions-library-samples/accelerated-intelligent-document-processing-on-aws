@@ -39,7 +39,7 @@ def discovered_schema(document_type: str, description: str, properties: dict) ->
     }
 
 
-class TestDiscoveryConfigIntegration(unittest.TestCase):
+class TestDiscoveryConfigFlow(unittest.TestCase):
     """End-to-end tests for the Discovery configuration flow.
 
     Every AWS seam these exercise is patched — ``ConfigurationReader``,

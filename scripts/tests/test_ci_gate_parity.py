@@ -16,8 +16,15 @@ Nothing detected any of those; each was found by hand, months later. This test i
 the detector. It deliberately asserts on the *config files*, because the failure
 mode is a config edit, not a code change.
 
-Integration tests are excluded on purpose: they need AWS credentials and stay
-GitLab-only. See ``scripts/sdlc/docs/CI_TEST_COVERAGE.md``.
+⚠️ **Two different things are called "integration" here, and only one of them is
+GitLab-only.** The GitLab ``integration_tests`` *stage* deploys a stack through
+CodePipeline and is deliberately GitLab-only, because it needs AWS credentials.
+The pytest ``integration`` *marker tier* — ``make test-integration`` — is a
+different suite that stage never invokes, and it runs in **no** CI at all. The
+two were conflated in this very docstring, which is how the tier came to be
+uncovered while an exemption cited the stage as its coverage (#1307). See
+:func:`test_the_integration_pytest_tier_runs_in_no_ci`, which measures the
+absence, and ``scripts/sdlc/docs/CI_TEST_COVERAGE.md``.
 
 **The structural weakness of a hardcoded list, and what is done about it.** The
 first two incidents in that list — SRT and the dependency audit — were the ones
@@ -1002,19 +1009,47 @@ def test_the_integration_pytest_tier_runs_in_no_ci() -> None:
     23 tests were failing on tooling faults, and the first thing to notice was a
     release validation months later (#1307).
 
-    So: assert the absence directly, over every CI configuration and the
-    buildspecs the GitLab stage reaches. If a CI starts running the tier, this
-    test fails and the `test-integration-all` exemption above must be rewritten
-    — which is the point. It is an inverted ratchet: the exemption is only
-    honest while this holds.
+    So: assert the absence directly, over every CI configuration and every
+    buildspec. If a CI starts running the tier, this test fails and the
+    `test-integration-all` exemption above must be rewritten — which is the
+    point. It is an inverted ratchet: the exemption is only honest while this
+    holds.
+
+    ⚠️ **The universe is derived, not listed.** An absence measured over a
+    hardcoded inventory is the failure mode the rest of this file exists to
+    avoid: a workflow added later, or a buildspec outside the directory someone
+    happened to glob, would invoke the tier and leave this green. Every
+    `.github/workflows/*.yml` and every tracked `buildspec*.yml` is read,
+    discovered at run time. The first draft of this test named two of the four
+    workflows and globbed three of the four buildspecs.
     """
+    workflows = sorted((REPO_ROOT / ".github" / "workflows").glob("*.yml"))
+    buildspecs = sorted(
+        REPO_ROOT / line
+        for line in subprocess.run(
+            ["git", "ls-files", "*buildspec*.yml"],
+            cwd=REPO_ROOT,
+            capture_output=True,
+            text=True,
+            check=True,
+        ).stdout.split()
+    )
     runners = [
         GITLAB,
-        GITHUB_TESTS,
-        GITHUB_SECURITY,
+        *workflows,
         REPO_ROOT / "scripts" / "sdlc" / "integration_test_deployment.py",
-        *sorted((REPO_ROOT / "patterns" / "unified").glob("buildspec*.yml")),
+        *buildspecs,
     ]
+    # Discovery returning nothing would make the assertion below vacuous, which
+    # is how an absence check quietly stops checking anything.
+    assert workflows, "no GitHub workflow discovered"
+    assert buildspecs, "no buildspec discovered"
+    for named in (GITHUB_TESTS, GITHUB_SECURITY):
+        assert named in workflows, (
+            f"{named.name} is not in the discovered workflow set, so discovery "
+            "has stopped reaching the files this suite reads elsewhere"
+        )
+
     present = [p for p in runners if p.exists()]
     assert len(present) == len(runners), (
         f"expected to read all of {[p.name for p in runners]}; missing "
