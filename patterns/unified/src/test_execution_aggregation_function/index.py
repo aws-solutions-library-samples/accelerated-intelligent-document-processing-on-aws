@@ -197,12 +197,25 @@ def _classification_errors_for_doc(
     exactly the expected pages under another class is the counterpart, and the
     section is a ``class`` error against it; with no such section it is
     ``unmatched``.
+
+    ``predicted_sections`` holds what the evaluation recorded, which is not
+    always every predicted section. One of a class excluded from processing is
+    there without its class or pages, because the result it was loaded from is
+    the extraction stage's skipped stub, and one whose result failed to load is
+    not there at all, which ``errors`` notes. In a document with either, an
+    ``unmatched`` entry whose expected pages are not all covered by the
+    sections it lists carries ``predicted_sections_incomplete``: what the
+    prediction put on the rest is unknown rather than absent. So does an entry
+    whose ground-truth section was recorded without pages.
     """
     predicted_sections = [
         (section.get("document_class"), _page_set(section.get("page_indices")))
         for section in doc_split_metrics.get("predicted_sections") or []
         if isinstance(section, dict)
     ]
+    record_incomplete = bool(doc_split_metrics.get("errors")) or any(
+        not pages for _, pages in predicted_sections
+    )
     errors: List[Dict[str, Any]] = []
     for section in doc_split_metrics.get("section_details_with_order") or []:
         if not isinstance(section, dict):
@@ -237,6 +250,9 @@ def _classification_errors_for_doc(
                     ],
                     "predicted_section_count": len(overlapping),
                 }
+                covered = {page for _, pages in overlapping for page in pages}
+                if not expected_set or (record_incomplete and expected_set - covered):
+                    split["predicted_sections_incomplete"] = True
         elif expected != predicted:
             kind = "class"
         elif section.get("order_matched") is False:

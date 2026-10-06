@@ -67,8 +67,8 @@ const readLegacyNoMatch = (error: ClassificationError): ClassificationError =>
     ? { ...error, kind: 'unmatched', predicted_class: null }
     : error;
 
-const predictedSplit = (sections: PredictedSectionSummary[], count: number): React.JSX.Element => {
-  if (count === 0) return <i>no predicted section on these pages</i>;
+const predictedSplit = (sections: PredictedSectionSummary[], count: number, incomplete: boolean): React.JSX.Element => {
+  if (count === 0) return <i>{incomplete ? 'not recorded' : 'no predicted section on these pages'}</i>;
   const groups: { name: string; size: number }[] = [];
   for (const section of sections) {
     const name = section.class ?? 'Unknown';
@@ -82,6 +82,11 @@ const predictedSplit = (sections: PredictedSectionSummary[], count: number): Rea
       {count > sections.length && (
         <Box variant="small" color="text-body-secondary" display="block">
           first {sections.length} of {count} predicted sections
+        </Box>
+      )}
+      {incomplete && (
+        <Box variant="small" color="text-body-secondary" display="block">
+          some pages not recorded
         </Box>
       )}
     </span>
@@ -116,7 +121,7 @@ const ClassificationErrorsPanel = ({ classificationErrors, testSetId }: Classifi
         <Header
           variant="h3"
           counter={`(${total})`}
-          description="Ground-truth sections the prediction got wrong. A wrong class means extraction ran the wrong schema, so that section's fields are unreliable even where they look plausible. No matching section means no predicted section holds exactly those pages, because the prediction split them differently."
+          description="Ground-truth sections the prediction got wrong. A wrong class means extraction ran the wrong schema, so that section's fields are unreliable even where they look plausible. No matching section means the evaluation paired no predicted section with those pages: the prediction split them differently or, where the row says not recorded, the evaluation has no record of what the prediction put there."
         >
           Classification errors
         </Header>
@@ -174,7 +179,11 @@ const ClassificationErrorsPanel = ({ classificationErrors, testSetId }: Classifi
             header: 'Predicted class',
             cell: (item: ClassificationError) =>
               item.predicted_sections
-                ? predictedSplit(item.predicted_sections, item.predicted_section_count ?? item.predicted_sections.length)
+                ? predictedSplit(
+                    item.predicted_sections,
+                    item.predicted_section_count ?? item.predicted_sections.length,
+                    Boolean(item.predicted_sections_incomplete),
+                  )
                 : (item.predicted_class ?? <i>no matching section</i>),
             sortingField: 'predicted_class',
           },

@@ -787,8 +787,11 @@ type TestRun @aws_cognito_user_pools @aws_iam {
   # expected_pages, predicted_pages}], total, documents_affected, truncated}``
   # where kind is "class" | "unmatched" | "order"; an "unmatched" entry also
   # carries ``predicted_sections`` ([{class, page_ranges}], at most
-  # MAX_PREDICTED_SECTIONS_PER_ERROR) and their uncapped
-  # ``predicted_section_count``. ``errors`` is capped (see
+  # MAX_PREDICTED_SECTIONS_PER_ERROR), their uncapped
+  # ``predicted_section_count``, and ``predicted_sections_incomplete: true``
+  # when it has no expected pages, or when some of them are on no predicted
+  # section the evaluation recorded in a document whose record is missing one.
+  # ``errors`` is capped (see
   # MAX_CLASSIFICATION_ERRORS) because the whole run result is one DynamoDB
   # attribute; ``total`` is the uncapped count so the UI can say "200 of 340".
   # Empty on the Athena fallback path, which aggregates percentages only.

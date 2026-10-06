@@ -87,6 +87,16 @@ export interface ClassificationError {
    */
   predicted_sections?: PredictedSectionSummary[];
   predicted_section_count?: number;
+  /**
+   * `unmatched` only, and present only when true: some of the expected pages
+   * are on no predicted section the evaluation recorded, in a document whose
+   * record is known to be missing one. A section of a class excluded from
+   * processing is recorded without its class or pages, and one whose result
+   * failed to load is not recorded. What the prediction put on those pages is
+   * unknown rather than absent. Also true when the ground-truth section was
+   * itself recorded without pages.
+   */
+  predicted_sections_incomplete?: boolean;
 }
 
 /**

@@ -592,7 +592,9 @@ class TestAggregation:
         Conflating them would misdirect whoever is debugging: only ``class``
         means extraction ran the wrong schema. Nor is the matcher's "No Match" a
         class: a section it paired with nothing is ``unmatched``, and so is one
-        it reports as unmatched under any predicted class.
+        it reports as unmatched under any predicted class. With nothing in the
+        record to say a predicted section is missing from it, an empty overlap
+        is reported as one, unmarked.
         """
         index = import_test_module()
 
@@ -654,6 +656,7 @@ class TestAggregation:
         assert no_match["predicted_class"] is None
         assert no_match["predicted_sections"] == []
         assert no_match["predicted_section_count"] == 0
+        assert "predicted_sections_incomplete" not in no_match
 
     def test_classification_errors_tolerate_a_malformed_payload(self, mock_env):
         """A missing or non-list section detail must not fail the whole run."""
@@ -2686,7 +2689,10 @@ class TestClassificationErrorsFromTheDocSplitMatcher:
     ``section_details_with_order``; only the document's ``predicted_sections``
     tell them apart. The payloads here come from the matcher itself and the
     evaluation service's own ``DocSplitMetrics.to_dict``, so they pin the shape
-    the aggregation reads rather than a hand-written copy of it.
+    the aggregation reads rather than a hand-written copy of it. A section of a
+    class excluded from processing, or one whose result failed to load, goes
+    through the evaluation's own section loader, from the stub extraction
+    writes for it or from a failed read.
     """
 
     FIXTURE_PATH = os.path.join(
@@ -2705,7 +2711,46 @@ class TestClassificationErrorsFromTheDocSplitMatcher:
         }
 
     @staticmethod
-    def _doc_split_metrics(ground_truth, predicted):
+    def _load(section, read):
+        """``section`` as the evaluation hands it to the matcher, and any load error.
+
+        ``read`` stands in for the S3 read of the section's result.json.
+        """
+        from stickler.doc_split.doc_split_classification_metrics import (
+            DocSplitClassificationMetrics,
+        )
+
+        from idp_common.evaluation.stickler_backend import doc_split
+
+        calculator = DocSplitClassificationMetrics()
+        with patch.object(doc_split.s3, "get_json_content", side_effect=read):
+            loaded = doc_split.load_sections_for_doc_split([section], calculator)
+        return loaded, calculator.errors
+
+    @classmethod
+    def _excluded_section(cls, section_id, document_class, page_ids):
+        """A section of a class excluded from processing, as the matcher gets it.
+
+        Extraction writes ``build_skipped_stub_result``'s stub as the section's
+        result, so the stub is what the evaluation loads for it.
+        """
+        from idp_common.models import Document, Section
+        from idp_common.section_exclusion import build_skipped_stub_result
+
+        section = Section(
+            section_id=section_id,
+            classification=document_class,
+            page_ids=page_ids,
+            excluded=True,
+            extraction_result_uri=f"s3://out/d.pdf/sections/{section_id}/result.json",
+        )
+        stub = build_skipped_stub_result(Document(id="d.pdf"), section, "extraction")
+        (loaded,), errors = cls._load(section, lambda uri: stub)
+        assert errors == []
+        return loaded
+
+    @staticmethod
+    def _doc_split_metrics(ground_truth, predicted, errors=()):
         """``doc_split_metrics`` as a document's results.json carries it."""
         from stickler.doc_split.doc_split_classification_metrics import (
             DocSplitClassificationMetrics,
@@ -2714,6 +2759,7 @@ class TestClassificationErrorsFromTheDocSplitMatcher:
         from idp_common.evaluation.models import DocSplitMetrics
 
         calculator = DocSplitClassificationMetrics()
+        calculator.errors.extend(errors)
         calculator.load_sections(
             ground_truth_sections=ground_truth, predicted_sections=predicted
         )
@@ -2734,6 +2780,7 @@ class TestClassificationErrorsFromTheDocSplitMatcher:
             section_details_without_order=without_order["section_details"],
             section_details_with_order=with_order["section_details"],
             predicted_sections=calculator.sections_pred,
+            errors=results.get("errors", []),
         )
         return json.loads(json.dumps(metrics.to_dict()))
 
@@ -2955,3 +3002,192 @@ class TestClassificationErrorsFromTheDocSplitMatcher:
             {"class": "Invoice", "page_ranges": [[0, 3], [6, 9]]},
             {"class": "Receipt", "page_ranges": [[4, 5]]},
         ]
+
+    def test_pages_under_an_excluded_class_are_not_reported_as_uncovered(
+        self, mock_env
+    ):
+        """The evaluation records an excluded section without its class or pages.
+
+        So the matcher pairs nothing with the ground-truth section on its pages,
+        and the aggregation cannot tell what the prediction put there. Wrongly
+        classified under the excluded class, or rightly against a ground truth
+        that records the class in full, the entry is the same, and it must not
+        say that no predicted section is on those pages.
+        """
+        index = import_test_module()
+        wrong_class = self._doc_split_metrics(
+            [
+                self._section("1", "Application", [0, 1]),
+                self._section("2", "Form", [2]),
+            ],
+            [
+                self._excluded_section("1", "Instructions", ["1", "2"]),
+                self._section("2", "Form", [2]),
+            ],
+        )
+        right_class = self._doc_split_metrics(
+            [
+                self._section("1", "Application", [0, 1]),
+                self._section("2", "Instructions", [2]),
+            ],
+            [
+                self._section("1", "Application", [0, 1]),
+                self._excluded_section("2", "Instructions", ["3"]),
+            ],
+        )
+        assert {
+            "section_id": "1",
+            "document_class": "Unknown",
+            "page_indices": [],
+        } in wrong_class["predicted_sections"]
+
+        assert index._classification_errors_for_doc("a.pdf", wrong_class) == [
+            {
+                "doc_key": "a.pdf",
+                "section_id": "1",
+                "kind": "unmatched",
+                "expected_class": "Application",
+                "predicted_class": None,
+                "expected_pages": [0, 1],
+                "predicted_pages": [],
+                "predicted_sections": [],
+                "predicted_section_count": 0,
+                "predicted_sections_incomplete": True,
+            }
+        ]
+        assert index._classification_errors_for_doc("b.pdf", right_class) == [
+            {
+                "doc_key": "b.pdf",
+                "section_id": "2",
+                "kind": "unmatched",
+                "expected_class": "Instructions",
+                "predicted_class": None,
+                "expected_pages": [2],
+                "predicted_pages": [],
+                "predicted_sections": [],
+                "predicted_section_count": 0,
+                "predicted_sections_incomplete": True,
+            }
+        ]
+
+    def test_only_pages_no_recorded_section_covers_are_marked(self, mock_env):
+        """An excluded section marks only the entries whose pages it could hold.
+
+        An application whose last page the prediction put under the excluded
+        class lists its recorded piece and is marked for the rest. An invoice
+        the recorded sections cover in full is not marked, although the same
+        document holds the excluded section.
+        """
+        index = import_test_module()
+        doc_split_metrics = self._doc_split_metrics(
+            [
+                self._section("1", "Application", [0, 1, 2, 3]),
+                self._section("2", "Invoice", [4, 5, 6]),
+            ],
+            [
+                self._section("1", "Application", [0, 1, 2]),
+                self._excluded_section("2", "Instructions", ["4"]),
+                self._section("3", "Invoice", [4, 5]),
+                self._section("4", "Invoice", [6]),
+            ],
+        )
+
+        application, invoice = index._classification_errors_for_doc(
+            "d.pdf", doc_split_metrics
+        )
+
+        assert application["predicted_sections"] == [
+            {"class": "Application", "page_ranges": [[0, 2]]}
+        ]
+        assert application["predicted_section_count"] == 1
+        assert application["predicted_sections_incomplete"] is True
+        assert invoice["predicted_sections"] == [
+            {"class": "Invoice", "page_ranges": [[4, 5]]},
+            {"class": "Invoice", "page_ranges": [[6, 6]]},
+        ]
+        assert "predicted_sections_incomplete" not in invoice
+
+    def test_a_section_whose_result_failed_to_load_is_not_reported_as_absent(
+        self, mock_env
+    ):
+        """The evaluation leaves such a section out and notes it in ``errors``."""
+        from idp_common.models import Section
+
+        index = import_test_module()
+        unreadable = Section(
+            section_id="1",
+            classification="Invoice",
+            page_ids=["1", "2"],
+            extraction_result_uri="s3://out/d.pdf/sections/1/result.json",
+        )
+
+        def read(uri):
+            raise OSError("AccessDenied")
+
+        loaded, load_errors = self._load(unreadable, read)
+        assert loaded == []
+        assert len(load_errors) == 1
+        doc_split_metrics = self._doc_split_metrics(
+            [self._section("1", "Invoice", [0, 1]), self._section("2", "Receipt", [2])],
+            [self._section("2", "Receipt", [2])],
+            errors=load_errors,
+        )
+
+        assert index._classification_errors_for_doc("d.pdf", doc_split_metrics) == [
+            {
+                "doc_key": "d.pdf",
+                "section_id": "1",
+                "kind": "unmatched",
+                "expected_class": "Invoice",
+                "predicted_class": None,
+                "expected_pages": [0, 1],
+                "predicted_pages": [],
+                "predicted_sections": [],
+                "predicted_section_count": 0,
+                "predicted_sections_incomplete": True,
+            }
+        ]
+
+    def test_a_ground_truth_section_recorded_without_pages_is_marked(self, mock_env):
+        """A baseline section of an excluded class is recorded without pages too.
+
+        Against a prediction that classifies those pages in full, the
+        ground-truth section has no pages to compare, so its entry is marked.
+        Against a prediction that excludes the class too, the two empty records
+        pair and nothing is reported.
+        """
+        index = import_test_module()
+        baseline = [
+            self._section("1", "Application", [0, 1]),
+            self._excluded_section("2", "Instructions", ["3"]),
+        ]
+        classified = self._doc_split_metrics(
+            baseline,
+            [
+                self._section("1", "Application", [0, 1]),
+                self._section("2", "Instructions", [2]),
+            ],
+        )
+        excluded = self._doc_split_metrics(
+            baseline,
+            [
+                self._section("1", "Application", [0, 1]),
+                self._excluded_section("2", "Instructions", ["3"]),
+            ],
+        )
+
+        assert index._classification_errors_for_doc("a.pdf", classified) == [
+            {
+                "doc_key": "a.pdf",
+                "section_id": "2",
+                "kind": "unmatched",
+                "expected_class": "Unknown",
+                "predicted_class": None,
+                "expected_pages": [],
+                "predicted_pages": [],
+                "predicted_sections": [],
+                "predicted_section_count": 0,
+                "predicted_sections_incomplete": True,
+            }
+        ]
+        assert index._classification_errors_for_doc("b.pdf", excluded) == []

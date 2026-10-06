@@ -168,6 +168,62 @@ describe('ClassificationErrorsPanel', () => {
     expect(screen.getByText('4 / —')).toBeInTheDocument();
   });
 
+  it('says not recorded where the evaluation has no record of the predicted section', () => {
+    render(
+      <ClassificationErrorsPanel
+        classificationErrors={{
+          errors: [
+            {
+              doc_key: 'application.pdf',
+              kind: 'unmatched',
+              expected_class: 'Application',
+              predicted_class: null,
+              expected_pages: [0, 1],
+              predicted_pages: [],
+              predicted_sections: [],
+              predicted_section_count: 0,
+              predicted_sections_incomplete: true,
+            },
+          ],
+          total: 1,
+        }}
+        testSetId="ts1"
+      />,
+    );
+
+    expect(screen.getByText('not recorded')).toBeInTheDocument();
+    expect(screen.queryByText('no predicted section on these pages')).not.toBeInTheDocument();
+    expect(screen.getByText('1-2 / —')).toBeInTheDocument();
+  });
+
+  it('lists the recorded predicted sections and says the rest of the pages are not recorded', () => {
+    render(
+      <ClassificationErrorsPanel
+        classificationErrors={{
+          errors: [
+            {
+              doc_key: 'application.pdf',
+              kind: 'unmatched',
+              expected_class: 'Application',
+              predicted_class: null,
+              expected_pages: [0, 1, 2, 3],
+              predicted_pages: [],
+              predicted_sections: [{ class: 'Application', page_ranges: [[0, 2]] }],
+              predicted_section_count: 1,
+              predicted_sections_incomplete: true,
+            },
+          ],
+          total: 1,
+        }}
+        testSetId="ts1"
+      />,
+    );
+
+    expect(screen.getAllByText('Application')).toHaveLength(2);
+    expect(screen.getByText('some pages not recorded')).toBeInTheDocument();
+    expect(screen.getByText('1-4 / 1-3')).toBeInTheDocument();
+  });
+
   it('shows an older run\'s "No Match" class error as the unmatched section it is', () => {
     render(
       <ClassificationErrorsPanel
@@ -207,7 +263,8 @@ describe('ClassificationErrorsPanel', () => {
     );
 
     expect(screen.getByText(/A wrong class means extraction ran the wrong schema/)).toBeInTheDocument();
-    expect(screen.getByText(/No matching section means no predicted section holds exactly those pages/)).toBeInTheDocument();
+    expect(screen.getByText(/No matching section means the evaluation paired no predicted section with those pages/)).toBeInTheDocument();
+    expect(screen.getByText(/where the row says not recorded, the evaluation has no record/)).toBeInTheDocument();
   });
 
   it('links the document into the annotation queue where the class is corrected', () => {

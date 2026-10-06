@@ -1628,7 +1628,7 @@ Each row links into the annotation queue for that document, which is where the
 class is corrected — see
 [Correcting a misclassified document](#correcting-a-misclassified-document).
 
-**Three limits worth knowing:**
+**Four limits worth knowing:**
 
 - The list is **capped** (200 entries), because a run's whole result set is stored
   as a single record. Wrong-class errors sort first so a run full of page-order
@@ -1637,6 +1637,18 @@ class is corrected — see
   **No matching section** row lists at most 5 predicted sections, and says how
   many there were ("first 5 of 12 predicted sections"); the document's evaluation
   report lists them all.
+- A predicted section of a class
+  [excluded from processing](./classification.md#excluding-static-pages-eg-instructions-legal-boilerplate)
+  is recorded by the evaluation without its class or its pages, because the
+  result extraction writes for it is a stub, and a predicted section whose result
+  could not be read is not recorded at all. So the evaluation pairs neither with
+  the ground-truth section on its pages, which is **No matching section** whether
+  or not the class was right, and the row says *not recorded* for the pages no
+  recorded predicted section covers. The document's evaluation report lists its
+  excluded sections with their classes and pages. A baseline taken while a class was
+  excluded records that class's sections the same way, so they are listed with
+  expected class *Unknown* and no pages, unless the prediction also has a section
+  of an excluded class.
 - A run aggregated by an earlier release shows each of its unmatched sections as
   **No matching section** without the predicted sections, because its stored
   result does not carry them. That result also cannot tell a split from a wrong
