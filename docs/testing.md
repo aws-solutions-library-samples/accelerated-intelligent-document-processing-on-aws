@@ -165,13 +165,22 @@ exclusion it describes fails too.
 
 ### The `integration`-marked tier runs in no CI
 
-Separate from the directory exclusions above, `pytest.ini` carries
-`addopts = -m "not integration"`, so every suite on this page deselects the tests
-marked `@pytest.mark.integration`. Those tests call live AWS — real Bedrock,
-Textract, S3 and DynamoDB rather than `moto` — and they are the only tests here that
-do. They run with `make test-integration-all`, or per-package with
-`make test-integration`, and **nothing else runs them**: not `make test`, not
-GitHub, not GitLab. A person typing the target is the whole of their coverage.
+Separate from the directory exclusions above, the tests marked
+`@pytest.mark.integration` are deselected from every suite on this page. **The
+mechanism is the runner, not a config file.** `scripts/run_all_tests.py` runs one
+`pytest -m "not integration" <root>` subprocess per root, so the filter applies to
+every root it discovers — including a new package under `lib/`, which inherits
+nothing. Only `lib/idp_common_pkg/pytest.ini` carries `addopts = -m "not
+integration"` of its own; `lib/idp_sdk` and `lib/idp_cli_pkg` have an empty
+`addopts`, and the root `pytest.ini` deliberately sets none, because an `addopts`
+there would silently change collection for every suite that resolves to it.
+
+Those tests call live AWS — real Bedrock, Textract, S3 and DynamoDB rather than
+`moto` — and within `idp_common` they are the only ones that do. (Layers 5 to 7
+below need AWS too, but none of them is a marked pytest suite.) They run with
+`make test-integration-all`, or per-package with `make test-integration`, and
+**nothing else runs them**: not `make test`, not GitHub, not GitLab. A person
+typing the target is the whole of their coverage.
 
 ⚠️ **GitLab's `integration_tests` job is a different thing with a similar name.**
 It is the deploy-driven smoke suite in [layer 5](#5-integration-smoke-suite-ci-only)

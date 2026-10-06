@@ -159,11 +159,21 @@ def aws_credentials():
 # arrival.
 #
 # ⚠️ **The reach is this package, not the repository.** A conftest governs its own
-# directory downwards, so ``lib/idp_sdk/tests/integration/`` and
-# ``feature-platform/confbench-testset/tests/test_variants.py`` also hold
-# integration-marked tests and are outside it. Neither needs this today — neither
-# tree injects sentinel credentials, so neither has anything to reconcile — but
-# the repo-wide claim belongs to the parity test, not to this fixture.
+# directory downwards, so two other trees hold integration-marked tests outside
+# it, and they are outside it for different reasons — one reason each, because a
+# single reason covering both is false of one of them:
+#
+#   * ``lib/idp_sdk/tests/integration/`` injects no sentinel credentials at all,
+#     so there is nothing there to reconcile.
+#   * ``feature-platform/confbench-testset/`` DOES inject them — its
+#     ``conftest.py`` sets ``AWS_ACCESS_KEY_ID=testing`` and four siblings at
+#     module scope. Nothing to reconcile *yet*: its one integration-marked test
+#     (``tests/test_variants.py``, gated on ``CONFBENCH_NETWORK_TESTS=1``) calls
+#     HuggingFace and makes no AWS call. ⚠️ An AWS-calling integration test added
+#     to that tree WOULD be handed the sentinels, and would need a reconciliation
+#     of its own — this comment is where somebody would come looking.
+#
+# The repo-wide claim belongs to the parity test, not to this fixture.
 #
 # Pinned by test_integration_marked_tests_get_real_credentials in
 # tests/unit/test_suite_hygiene.py. See #1307.
