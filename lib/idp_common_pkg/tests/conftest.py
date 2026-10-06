@@ -184,14 +184,15 @@ def _resolve_credential_overrides() -> Optional[Dict[str, str]]:
 
     ⚠️ **An empty mapping is a real answer, and the common one.** It means the
     sentinels merely have to be out of the way, and boto3's own chain — a
-    profile, SSO, an instance role — resolves from there *and refreshes*. That
-    is deliberate: an earlier version of this wrote a frozen access key, secret
-    and session token into ``os.environ`` and memoized them for the session,
-    which pins a token. Under an SSO or assume-role profile a long
-    ``make test-integration`` run can outlive such a snapshot and start failing
-    partway through with ``ExpiredToken``, where a live chain would have renewed
-    it. The predecessor this replaced resolved frozen credentials only to decide
-    skip-or-run and left the chain to do the signing, and that part was right.
+    profile, SSO, an instance role — resolves from there *and refreshes*.
+
+    **Why ``{}`` rather than the frozen key material.** Writing a resolved
+    access key, secret and session token into ``os.environ`` pins them for the
+    session, so an SSO or instance-role token that expires mid-run fails with
+    ``ExpiredToken`` instead of refreshing — and a ``make test-integration`` run
+    is long enough to reach that. The frozen credentials are read here to answer
+    "are there credentials at all" and are deliberately discarded; signing stays
+    with the chain.
 
     So only one case writes anything: credentials the invoking environment
     exported itself, which the sentinel assignment at the top of this module

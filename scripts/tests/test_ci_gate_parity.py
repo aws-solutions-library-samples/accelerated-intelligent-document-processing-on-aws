@@ -1020,8 +1020,8 @@ def test_the_integration_pytest_tier_runs_in_no_ci() -> None:
     avoid: a workflow added later, or a buildspec outside the directory someone
     happened to glob, would invoke the tier and leave this green. Every
     `.github/workflows/*.y*ml` and every tracked `buildspec*.yml` is read,
-    discovered at run time. The first draft of this test named two of the four
-    workflows and globbed three of the four buildspecs.
+    discovered at run time, so a workflow or buildspec added later is covered
+    without being named.
 
     The glob is `*.y*ml` rather than `*.yml` because GitHub Actions reads both
     extensions, so a workflow added as `.yaml` would otherwise sit outside a
@@ -1062,7 +1062,20 @@ def test_the_integration_pytest_tier_runs_in_no_ci() -> None:
         "report an absence it never looked for"
     )
 
-    invocations = ("test-integration", "-m integration", '-m "integration"')
+    # Every spelling that starts the tier, not just the `make` one. The whole-tree
+    # runner takes `--integration` (root Makefile's `test-integration-all` is
+    # `run_all_tests.py --integration`), and a buildspec calling that script
+    # directly is the natural way to run the tier from CI — it would have left this
+    # check green while running every test the check is about. The marker selector
+    # is listed in all three quotings because a shell or YAML author picks freely
+    # between them and an unlisted one is an invisible hole, not a near miss.
+    invocations = (
+        "test-integration",
+        "--integration",
+        "-m integration",
+        '-m "integration"',
+        "-m 'integration'",
+    )
     found = {
         p.relative_to(REPO_ROOT).as_posix(): [
             needle for needle in invocations if needle in _uncommented(p.read_text())
