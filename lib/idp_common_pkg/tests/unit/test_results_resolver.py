@@ -1319,6 +1319,93 @@ def test_an_empty_aggregation_falls_back_without_inventing_fields():
     }
 
 
+def _load_aggregation_module():
+    spec = importlib.util.spec_from_file_location(
+        "aggregation_index",
+        os.path.join(
+            os.path.dirname(__file__),
+            "../../../../patterns/unified/src/test_execution_aggregation_function/index.py",
+        ),
+    )
+    if spec is None or spec.loader is None:
+        raise ImportError("Could not load test_execution_aggregation_function module")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+@pytest.mark.unit
+def test_the_aggregation_lambdas_classification_only_answer_survives_the_fallback():
+    """The carried fields are the ones the aggregation Lambda actually sends.
+
+    Their keys are spelled out in that Lambda's file and again in the resolver's,
+    so here the answer comes from the Lambda's own handler rather than being
+    written by hand: a key renamed on either side fails this test instead of
+    leaving the fallback with nothing to carry. The handler's document loader is
+    mocked to return what a classification-only run's document holds: no
+    extraction comparisons and no weighted score, so it is excluded from scoring,
+    and a graded score and a classification mismatch from its own evaluation.
+    """
+    aggregation = _load_aggregation_module()
+    test_run_id = "classify-only-run"
+    doc_key = f"{test_run_id}/p1.pdf"
+    graded_scores = {"final_score": 0.753, "v_measure": 0.756}
+    mismatch = {
+        "doc_key": doc_key,
+        "section_id": "section_1",
+        "kind": "class",
+        "expected_class": "invoice",
+        "predicted_class": "receipt",
+        "expected_pages": [1],
+        "predicted_pages": [1],
+    }
+
+    with (
+        patch.dict(os.environ, {"TRACKING_TABLE": "tracking"}),
+        patch.object(
+            aggregation,
+            "_load_comparison_results",
+            return_value=(
+                [],
+                {},
+                {doc_key: graded_scores},
+                [doc_key],
+                {doc_key: [mismatch]},
+            ),
+        ),
+    ):
+        response = aggregation.handler({"test_run_id": test_run_id}, None)
+
+    assert response["statusCode"] == 200
+
+    with (
+        patch.dict(
+            os.environ,
+            {
+                "TEST_EXECUTION_AGGREGATION_FUNCTION_ARN": "arn:aws:lambda:::function:agg"
+            },
+        ),
+        patch.object(
+            index,
+            "lambda_client",
+            _aggregation_lambda_returning(json.loads(response["body"])),
+        ),
+        patch.object(index, "_get_test_run_config", return_value={}),
+        patch.object(index, "_invoke_mlflow_logger"),
+        patch.object(index, "_get_evaluation_metrics_from_athena", return_value={}),
+        patch.object(
+            index,
+            "_get_cost_data_from_athena",
+            return_value={"total_cost": 0, "cost_breakdown": {}},
+        ),
+    ):
+        result = index._aggregate_test_run_metrics(test_run_id)
+
+    assert result["graded_packet_metrics"]["per_document"] == {doc_key: graded_scores}
+    assert result["classification_errors"]["errors"] == [mismatch]
+    assert result["excluded_document_count"] == 1
+
+
 @pytest.mark.unit
 def test_classification_errors_are_cached_and_served():
     """The aggregator's per-section class detail must survive the cache round-trip.
