@@ -462,7 +462,8 @@ the head. It does so only when all of these hold:
 - its index entry still exists;
 - the head is proven to hold it, by either:
   - its `storedHash` — a hash of the head's stored content, excluding metadata,
-    that `_write_record()` returns and every cut records — matching the head now; or
+    that `_write_record()` returns and every revision a save publishes records —
+    matching the head now; or
   - for revisions cut before `storedHash` existed, the head's `UpdatedAt` being no
     later than the revision's `createdAt`.
 

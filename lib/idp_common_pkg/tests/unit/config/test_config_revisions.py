@@ -540,7 +540,7 @@ class TestExpiredPublishedBody:
         with pytest.raises(ValueError, match="not available"):
             manager.get_merged_configuration("p", revision=1)
 
-    def test_every_cut_records_the_heads_stored_hash(self, monkeypatch):
+    def test_a_published_cut_records_the_heads_stored_hash(self, monkeypatch):
         from idp_common.config.configuration_manager import _stored_content_hash
 
         _make_table()
