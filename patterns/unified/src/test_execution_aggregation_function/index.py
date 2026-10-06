@@ -203,10 +203,10 @@ def _classification_errors_for_doc(
     there without its class or pages, because the result it was loaded from is
     the extraction stage's skipped stub, and one whose result failed to load is
     not there at all, which ``errors`` notes. In a document with either, an
-    ``unmatched`` entry whose expected pages are not all covered by the
-    sections it lists carries ``predicted_sections_incomplete``: what the
-    prediction put on the rest is unknown rather than absent. So does an entry
-    whose ground-truth section was recorded without pages.
+    ``unmatched`` entry with expected pages on none of the recorded predicted
+    sections carries ``predicted_sections_incomplete``: what the prediction
+    put on those pages is unknown rather than absent. So does an entry whose
+    ground-truth section was recorded without pages.
     """
     predicted_sections = [
         (section.get("document_class"), _page_set(section.get("page_indices")))
