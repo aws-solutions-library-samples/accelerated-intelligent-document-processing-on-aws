@@ -97,11 +97,11 @@ class TestBedrockClientServiceTierIntegration:
         """Test global model ID with :flex suffix.
 
         The skip covers the *invocation* only. It used to wrap the assertions
-        as well, and `except Exception` catches `AssertionError`, so a response
-        that came back without an `output` key was reported as a skip -- which
-        reads as green (#1129). Narrowing it is what exposed that the assertion
-        itself was wrong about the envelope, for all six tests here (#1307):
-        this file had never had a run that could fail.
+        as well, and `except Exception` catches `AssertionError`, so THIS one
+        test reported a wrong-envelope response as a skip, which reads as green
+        (#1129). The other five asserted the same wrong envelope with nothing
+        masking it, so they could only ever fail -- the file had never had a run
+        that could pass (#1307).
         """
         try:
             response = bedrock_client.invoke_model(

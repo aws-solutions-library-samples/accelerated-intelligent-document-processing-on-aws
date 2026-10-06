@@ -305,6 +305,64 @@ def test_the_credential_reconciliation_is_keyed_on_the_marker():
 
 
 @pytest.mark.unit
+def test_chain_resolved_credentials_are_not_frozen_into_the_environment():
+    """Credentials reachable through boto3's chain must stay with the chain.
+
+    Writing the frozen access key, secret and session token into ``os.environ``
+    pins a token for the session. Under an SSO or assume-role profile a long
+    ``make test-integration`` run can outlive that snapshot and start failing
+    with ``ExpiredToken`` partway through, where the live chain would have
+    renewed it. So the resolver reads the frozen values only to answer "are
+    there credentials here" and must then discard them, returning an empty
+    mapping: popping the sentinels is the whole job.
+
+    Driven through the real resolver with a fake chain, because the distinction
+    is one line and invisible in a passing integration run with a long-lived key.
+    """
+    conftest = importlib.import_module("tests.conftest")
+
+    class _FakeFrozen:
+        access_key = "AKIAFAKECHAINKEY"  # pragma: allowlist secret
+        secret_key = "fake-chain-secret"  # pragma: allowlist secret
+        token = "fake-chain-token"  # noqa: S105 # pragma: allowlist secret
+
+    class _FakeCreds:
+        def get_frozen_credentials(self):
+            return _FakeFrozen()
+
+    class _FakeSession:
+        def get_credentials(self):
+            return _FakeCreds()
+
+    saved_env = conftest._REAL_AWS_ENV.copy()
+    saved_memo = (conftest._CREDENTIAL_OVERRIDES, conftest._CREDENTIAL_RESOLUTION_DONE)
+    saved_session = boto3.Session
+    try:
+        # No exported credentials, so the resolver must consult the chain.
+        conftest._REAL_AWS_ENV.update(
+            dict.fromkeys(conftest._AWS_CREDENTIAL_VARS, None)
+        )
+        conftest._CREDENTIAL_OVERRIDES = None
+        conftest._CREDENTIAL_RESOLUTION_DONE = False
+        boto3.Session = _FakeSession
+
+        overrides = conftest._resolve_credential_overrides()
+    finally:
+        boto3.Session = saved_session
+        conftest._REAL_AWS_ENV.clear()
+        conftest._REAL_AWS_ENV.update(saved_env)
+        conftest._CREDENTIAL_OVERRIDES, conftest._CREDENTIAL_RESOLUTION_DONE = (
+            saved_memo
+        )
+
+    assert overrides == {}, (
+        "chain-resolved credentials were written into the environment "
+        f"({sorted(overrides or {})}), which pins a token for the session. The "
+        "frozen values are for the existence check only."
+    )
+
+
+@pytest.mark.unit
 def test_the_reconciliation_drops_cached_boto3_clients():
     """Swapping the credential environment does not reach an existing client.
 

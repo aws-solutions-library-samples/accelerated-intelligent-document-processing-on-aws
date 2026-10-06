@@ -1019,11 +1019,16 @@ def test_the_integration_pytest_tier_runs_in_no_ci() -> None:
     hardcoded inventory is the failure mode the rest of this file exists to
     avoid: a workflow added later, or a buildspec outside the directory someone
     happened to glob, would invoke the tier and leave this green. Every
-    `.github/workflows/*.yml` and every tracked `buildspec*.yml` is read,
+    `.github/workflows/*.y*ml` and every tracked `buildspec*.yml` is read,
     discovered at run time. The first draft of this test named two of the four
     workflows and globbed three of the four buildspecs.
+
+    The glob is `*.y*ml` rather than `*.yml` because GitHub Actions reads both
+    extensions, so a workflow added as `.yaml` would otherwise sit outside a
+    universe this calls closed — and the non-vacuity guard below would not
+    notice, because the other four files would still be found.
     """
-    workflows = sorted((REPO_ROOT / ".github" / "workflows").glob("*.yml"))
+    workflows = sorted((REPO_ROOT / ".github" / "workflows").glob("*.y*ml"))
     buildspecs = sorted(
         REPO_ROOT / line
         for line in subprocess.run(

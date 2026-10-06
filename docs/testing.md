@@ -187,7 +187,8 @@ exemption fails rather than the claim going quietly out of date.
 
 Two consequences worth keeping in mind when adding one of these tests. The marker,
 not the directory, is what makes a test part of this tier — `make test-integration`
-runs `pytest -m "integration"` over the whole tree, so an integration-marked test
+runs `pytest -m "integration"` over its whole *package* tree, so an
+integration-marked test
 under `tests/unit/` is in it. And because nothing gates them, a broken one stays
 broken: a test whose seams are all mocked needs no credentials and belongs in the
 default gate, where something will notice.
