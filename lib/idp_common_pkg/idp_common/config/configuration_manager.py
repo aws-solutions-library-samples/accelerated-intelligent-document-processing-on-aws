@@ -534,7 +534,12 @@ class ConfigurationManager:
             timestamp = datetime.datetime.utcnow().isoformat() + "Z"
 
             # Get existing record to preserve metadata
-            existing_record = self._read_record(CONFIG_TYPE_CONFIG, version)
+            existing_item = self._read_item(CONFIG_TYPE_CONFIG, version)
+            existing_record = (
+                ConfigurationRecord.from_dynamodb_item(existing_item)
+                if existing_item is not None
+                else None
+            )
             is_active_status = existing_record.is_active if existing_record else False
 
             if existing_record:
@@ -584,6 +589,7 @@ class ConfigurationManager:
                     created_by=created_by,
                     notes=revision_notes,
                     stored_hash=stored_hash,
+                    previous_head=existing_item,
                 )
             except Exception as e:  # noqa: BLE001
                 logger.warning(
@@ -598,6 +604,7 @@ class ConfigurationManager:
         created_by: Optional[str] = None,
         notes: Optional[str] = None,
         stored_hash: Optional[str] = None,
+        previous_head: Optional[Dict[str, Any]] = None,
     ) -> Optional[int]:
         """
         Cut the revision(s) for a just-completed profile save.
@@ -612,8 +619,9 @@ class ConfigurationManager:
         not the shipped configuration moved, so without this a handful of no-op
         upgrades would fill the retention window with identical revisions and
         push a user's real history out of it. Such a save still refreshes the
-        published revision's stored-content hash while that revision's body
-        exists (see `_read_revision_body`).
+        published revision's stored-content hash, from the revision's body or
+        from `previous_head`, the decompressed head this save replaced (see
+        `_refresh_published_stored_hash`).
         """
         if not self.revisions.enabled:
             return None
@@ -660,7 +668,7 @@ class ConfigurationManager:
                 f"Profile '{profile}' saved with no configuration change; "
                 f"not recording a revision"
             )
-            self._refresh_published_stored_hash(profile)
+            self._refresh_published_stored_hash(profile, previous_head)
             return None
 
         return self.revisions.cut(
@@ -732,12 +740,7 @@ class ConfigurationManager:
         item = self.table.get_item(
             Key={"Configuration": f"{CONFIG_TYPE_CONFIG}#{profile}"}
         ).get("Item")
-        if not item:
-            return None
-        if (
-            coerce_int(item.get("PublishedRevision")) != revision
-            or coerce_int(item.get("LatestRevision")) != revision
-        ):
+        if not item or not self._is_published_and_latest(item, revision):
             return None
         entry = self.revisions.get_entry(profile, revision)
         if entry is None:
@@ -750,13 +753,26 @@ class ConfigurationManager:
                 f"revision. {EXPIRED_REVISION_REMEDY}"
             )
             return None
-        record = ConfigurationRecord.from_dynamodb_item(head)
+        body = self._config_of_head(head)
         logger.warning(
             f"Revision r{revision} of configuration profile '{profile}' has no stored "
             f"body (expired under the Configuration bucket's DataRetentionInDays "
             f"lifecycle rule); using the profile head, which is that revision"
         )
-        return self._config_to_dict(record.config)
+        return body
+
+    @staticmethod
+    def _is_published_and_latest(item: Dict[str, Any], revision: int) -> bool:
+        """Whether a head item names `revision` as both its published and newest."""
+        return (
+            coerce_int(item.get("PublishedRevision")) == revision
+            and coerce_int(item.get("LatestRevision")) == revision
+        )
+
+    @classmethod
+    def _config_of_head(cls, head: Dict[str, Any]) -> Dict[str, Any]:
+        """The configuration a decompressed head item serves, shaped as a body."""
+        return cls._config_to_dict(ConfigurationRecord.from_dynamodb_item(head).config)
 
     @staticmethod
     def _head_is_revision(head: Dict[str, Any], entry: Dict[str, Any]) -> bool:
@@ -786,25 +802,37 @@ class ConfigurationManager:
         item[_FULL_CONFIG_MARKER] = _FULL_CONFIG_VALUE
         return _stored_content_hash(item)
 
-    def _refresh_published_stored_hash(self, profile: str) -> None:
+    def _refresh_published_stored_hash(
+        self, profile: str, previous_head: Optional[Dict[str, Any]] = None
+    ) -> None:
         """
-        Record, from the published revision's own body, the stored-content hash a
-        head holding it has under the current code.
+        Record the stored-content hash a head holding the published revision has
+        under the current code.
 
-        Computed from the body rather than the head, so a head changed by a writer
-        that cut no revision is never recorded as the published revision. Best
-        effort: a save never fails because this could not be recorded.
+        Computed from the revision's own body or, once that has expired, from the
+        configuration in `previous_head`, the decompressed head the save replaced,
+        provided that head passes the proof a pinned read applies. Never computed
+        from the head the save wrote, so a head changed by a writer that cut no
+        revision is never recorded as the published revision. Best effort: a save
+        never fails because this could not be recorded.
         """
         try:
             published = self.resolve_published_revision(profile)
             if published is None:
                 return
+            entry = self.revisions.get_entry(profile, published)
+            if entry is None:
+                return
             body = self.revisions.get_body(profile, published)
             if body is None:
-                return
+                if previous_head is None or not (
+                    self._is_published_and_latest(previous_head, published)
+                    and self._head_is_revision(previous_head, entry)
+                ):
+                    return
+                body = self._config_of_head(previous_head)
             stored_hash = self._stored_hash_of_body(profile, body)
-            entry = self.revisions.get_entry(profile, published)
-            if entry is not None and entry.get("storedHash") != stored_hash:
+            if entry.get("storedHash") != stored_hash:
                 self.revisions.update_entry(profile, published, storedHash=stored_hash)
         except Exception as e:  # noqa: BLE001
             logger.warning(
@@ -1781,6 +1809,15 @@ class ConfigurationManager:
         Returns:
             ConfigurationRecord or None if not found
         """
+        item = self._read_item(configuration_type, version)
+        if item is None:
+            return None
+        return ConfigurationRecord.from_dynamodb_item(item)
+
+    def _read_item(
+        self, configuration_type: str, version: str = ""
+    ) -> Optional[Dict[str, Any]]:
+        """The decompressed DynamoDB item `_read_record` parses, or None if absent."""
         response = self.table.get_item(
             Key={
                 "Configuration": f"{CONFIG_TYPE_CONFIG}#{version}"
@@ -1794,9 +1831,7 @@ class ConfigurationManager:
             return None
 
         # Decompress if stored in compressed format
-        item = self._decompress_item(item)
-
-        return ConfigurationRecord.from_dynamodb_item(item)
+        return self._decompress_item(item)
 
     def _write_record(
         self, record: ConfigurationRecord, identifier: Optional[str] = None

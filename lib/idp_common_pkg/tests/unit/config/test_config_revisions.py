@@ -540,6 +540,140 @@ class TestExpiredPublishedBody:
         with pytest.raises(ValueError, match="not available"):
             manager.get_merged_configuration("p", revision=1)
 
+    def test_an_unchanged_save_after_expiry_keeps_a_legacy_revision_servable(
+        self, monkeypatch
+    ):
+        """
+        The deployment that installs stored hashes re-saves `default` and managed
+        profiles unchanged, possibly after a revision's body has expired. That save
+        rewrites the head, which defeats the legacy rule, so the hash is taken from
+        the head it replaced, which the rule still proved.
+        """
+        from idp_common.config.configuration_manager import _stored_content_hash
+
+        _make_table()
+        manager = _manager(monkeypatch)
+        manager.save_configuration(CONFIG_TYPE_CONFIG, _config("live"), version="p")
+        _forget_stored_hash(manager, "p", 1)
+        _expire_body("p", 1)
+
+        manager.save_configuration(CONFIG_TYPE_CONFIG, _config("live"), version="p")
+        index_seq = manager.revisions._read_index_item("p")["IndexSeq"]
+        manager.save_configuration(CONFIG_TYPE_CONFIG, _config("live"), version="p")
+
+        assert [r["revision"] for r in manager.list_revisions("p")] == [1]
+        assert manager.revisions._read_index_item("p")["IndexSeq"] == index_seq
+        stored_hash = manager.revisions.get_entry("p", 1)["storedHash"]
+        assert stored_hash == _stored_content_hash(_head_item(manager, "p"))
+        assert manager.get_merged_configuration("p", revision=1).notes == "live"
+
+    @pytest.mark.parametrize("legacy", [True, False], ids=["legacy", "stored-hash"])
+    def test_an_unchanged_save_after_expiry_never_vouches_for_an_unproven_head(
+        self, monkeypatch, legacy
+    ):
+        """The head the save replaced must itself be proven, by either rule."""
+        _make_table()
+        manager = _manager(monkeypatch)
+        manager.save_configuration(CONFIG_TYPE_CONFIG, _config("r1"), version="p")
+        if legacy:
+            _forget_stored_hash(manager, "p", 1)
+        recorded = manager.revisions.get_entry("p", 1).get("storedHash")
+        manager.save_configuration(
+            CONFIG_TYPE_CONFIG, _config("unrecorded"), version="p", cut_revision=False
+        )
+        _expire_body("p", 1)
+
+        manager.save_configuration(
+            CONFIG_TYPE_CONFIG, _config("unrecorded"), version="p"
+        )
+
+        assert manager.revisions.get_entry("p", 1).get("storedHash") == recorded
+        with pytest.raises(ValueError, match="not available"):
+            manager.get_merged_configuration("p", revision=1)
+
+    def test_an_unchanged_save_after_expiry_follows_a_change_in_how_heads_are_stored(
+        self, monkeypatch
+    ):
+        """
+        A release that stores the same configuration differently changes the hash of
+        every head it re-saves. Once the body has expired, the new hash can only come
+        from the head that save replaced, which the old hash still proved.
+        """
+        from idp_common.config.configuration_manager import _stored_content_hash
+        from idp_common.config.models import ConfigurationRecord
+
+        _make_table()
+        manager = _manager(monkeypatch)
+        with monkeypatch.context() as earlier_release:
+            earlier_release.setattr(
+                ConfigurationRecord,
+                "_omit_rollback_hostile_defaults",
+                staticmethod(lambda model, dumped: dumped),
+            )
+            manager.save_configuration(CONFIG_TYPE_CONFIG, _config("live"), version="p")
+        earlier_hash = manager.revisions.get_entry("p", 1)["storedHash"]
+        _expire_body("p", 1)
+
+        manager.save_configuration(CONFIG_TYPE_CONFIG, _config("live"), version="p")
+
+        stored_hash = manager.revisions.get_entry("p", 1)["storedHash"]
+        assert stored_hash != earlier_hash
+        assert stored_hash == _stored_content_hash(_head_item(manager, "p"))
+        assert manager.get_merged_configuration("p", revision=1).notes == "live"
+
+    def test_an_unchanged_save_after_expiry_never_vouches_for_the_head_it_wrote(
+        self, monkeypatch
+    ):
+        """
+        `True == 1`, so a save that replaces one with the other inside a class counts
+        as unchanged and cuts nothing, yet the head then stores `"1"` where the
+        revision held `true`. The hash comes from the configuration of the head the
+        save replaced, so the head it wrote is not passed off as the revision.
+        """
+
+        def flagged(value):
+            return IDPConfig(
+                notes="live",
+                classes=[
+                    {
+                        "$id": "Invoice",
+                        "x-aws-idp-document-type": "Invoice",
+                        "type": "object",
+                        "x-example-flag": value,
+                    }
+                ],
+            )
+
+        _make_table()
+        manager = _manager(monkeypatch)
+        manager.save_configuration(CONFIG_TYPE_CONFIG, flagged(True), version="p")
+        _expire_body("p", 1)
+
+        manager.save_configuration(CONFIG_TYPE_CONFIG, flagged(1), version="p")
+
+        assert [r["revision"] for r in manager.list_revisions("p")] == [1]
+        with pytest.raises(ValueError, match="not available"):
+            manager.get_merged_configuration("p", revision=1)
+
+    def test_an_unchanged_save_after_expiry_needs_the_replaced_head_to_be_latest(
+        self, monkeypatch
+    ):
+        """
+        A pinned read requires the head to name the revision as both published and
+        newest, so the head a save replaced must too. A number allocated by a cut
+        that never published is what leaves the two apart.
+        """
+        _make_table()
+        manager = _manager(monkeypatch)
+        manager.save_configuration(CONFIG_TYPE_CONFIG, _config("live"), version="p")
+        _forget_stored_hash(manager, "p", 1)
+        manager.revisions.next_number("p")
+        _expire_body("p", 1)
+
+        manager.save_configuration(CONFIG_TYPE_CONFIG, _config("live"), version="p")
+
+        assert not manager.revisions.get_entry("p", 1).get("storedHash")
+
     def test_a_published_cut_records_the_heads_stored_hash(self, monkeypatch):
         from idp_common.config.configuration_manager import _stored_content_hash
 
@@ -655,7 +789,22 @@ class TestExpiredPublishedBody:
 
         assert updates == []
 
-    def test_the_refresh_does_nothing_once_the_published_body_has_expired(
+    def test_the_refresh_does_nothing_without_an_index_entry(self, monkeypatch):
+        _make_table()
+        manager = _manager(monkeypatch)
+        manager.save_configuration(CONFIG_TYPE_CONFIG, _config("live"), version="p")
+        assert manager.revisions.remove_entry("p", 1)
+        _expire_body("p", 1)
+        updates = []
+        monkeypatch.setattr(
+            manager.revisions, "update_entry", lambda *a, **k: updates.append(k)
+        )
+
+        manager._refresh_published_stored_hash("p", _head_item(manager, "p"))
+
+        assert updates == []
+
+    def test_the_refresh_does_nothing_after_expiry_without_the_replaced_head(
         self, monkeypatch
     ):
         _make_table()
@@ -757,16 +906,20 @@ class TestLibraryProfileStoredHash:
             "p", manager.revisions.get_body("p", 1)
         )
 
+    @pytest.mark.parametrize(
+        "expired_first", [False, True], ids=["body-live", "body-expired"]
+    )
     @pytest.mark.parametrize("path", _LIBRARY_PROFILES, ids=_profile_id)
     def test_a_redeployed_profile_is_served_once_its_body_expires(
-        self, monkeypatch, path
+        self, monkeypatch, path, expired_first
     ):
         """
         A shipped profile's revision cut before stored hashes existed, then re-saved
         unchanged by the deployment that upgrades the stack, which does this to each
         managed profile and to `default`, built from a unified preset. That save
-        refreshes the hash from the body, or cuts a new revision where it does not
-        recognise the configuration as unchanged; either way the current revision
+        records the hash from the body or, if the body has already expired, from the
+        head it replaced; where it does not recognise the configuration as
+        unchanged, it cuts a new revision instead. Either way the current revision
         must outlive its body, as exactly the configuration the head serves.
         """
         from idp_common.config.configuration_manager import _stored_content_hash
@@ -778,6 +931,8 @@ class TestLibraryProfileStoredHash:
             CONFIG_TYPE_CONFIG, copy.deepcopy(config), version="p"
         )
         _forget_stored_hash(manager, "p", 1)
+        if expired_first:
+            _expire_body("p", 1)
         manager.save_configuration(
             CONFIG_TYPE_CONFIG, copy.deepcopy(config), version="p"
         )
