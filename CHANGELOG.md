@@ -13,6 +13,8 @@ SPDX-License-Identifier: MIT-0
 
 - **Security: newly published advisories in ten dependencies are resolved.** The PII Anonymizer extension's hook and the DocSplit test-set deployer now require pypdf 6.19.0 or later, so neither can be built against a release open to its denial-of-service advisories on malformed PDFs; that matters most for the PII hook, which parses customer documents. The `idp_common` development lock now pins urllib3 2.8.0, PyJWT 2.15.0, Tornado 6.5.10, JupyterLab 4.6.4 and Jupyter Notebook 7.6.3, and the web UI and documentation-site build trees take patched axios, brace-expansion, undici and devalue releases on their current major lines. **Action:** none.
 
+- **Security: newly published advisories in six web UI and documentation-site build dependencies are resolved.** The web UI's GraphQL code-generation tooling takes `@graphql-tools/utils` 12.0.1 through an npm override, since no `@graphql-codegen` release accepts the 12.x line that carries its fix yet, along with `@graphql-tools/executor-legacy-ws` 1.1.35 and `shell-quote` 1.11.0. `vue`, which reaches the UI only as a peer of the unused `vuera` package, moves to 3.5.42, `source-map-js` moves to 1.2.2 in both build trees, and the documentation site takes `sharp` 0.35.5, which bundles a patched librsvg. None of them is in the web UI's production bundle. **Action:** none.
+
 ## [0.6.11]
 
 ### Fixed
