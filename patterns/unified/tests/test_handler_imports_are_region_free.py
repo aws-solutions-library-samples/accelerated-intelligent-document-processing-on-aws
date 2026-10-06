@@ -62,18 +62,17 @@ to make impossible elsewhere.
 
 **"As a single slash-joined literal" is the real limit, and both passes share it**,
 so no disagreement between them can surface a reference assembled another way.
-Two tests build the path by joining components
+Some tests build the path by joining components
 (``PATTERN_ROOT / "src" / "pipeline_hooks_function" / "hook_errors.py"``, and a
-``src_dir`` joined with ``"extraction_function/index.py"``), and
-``extraction_function/index.py`` is consequently named by a test and is not in the
-set below. Collecting ``Path`` join chains with an AST pass would close that, and
-is deliberately not done: all twelve modules the sweep does not reach were imported
-through this file's own child program, six of them fail a region-free import
-(``bda_completion_function``, ``bda_invoke_function``, ``classification_function``,
-``evaluation_function/index.py``, ``ocr_function``, ``rule-validation-function``),
-and **none of those six is referenced by any test in any spelling** — so coverage
-is complete with respect to the defects that exist, and the AST pass would buy
-machinery rather than findings. Narrow the claim, not the ambition.
+``src_dir`` joined with ``"extraction_function/index.py"``), and a module named
+only that way is not in the set below. Collecting ``Path`` join chains with an AST
+pass would close that, and is deliberately not done: every module the sweep does
+not reach was imported through this file's own child program, the ones that fail a
+region-free import are ``bda_completion_function``, ``bda_invoke_function`` and
+``classification_function``, and **no test refers to any of those three by any
+spelling of its path** — so coverage is complete with respect to the defects that
+exist, and the AST pass would buy machinery rather than findings. Narrow the claim,
+not the ambition.
 """
 
 from __future__ import annotations
