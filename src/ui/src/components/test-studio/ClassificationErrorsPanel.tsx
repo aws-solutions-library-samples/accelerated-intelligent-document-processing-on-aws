@@ -47,6 +47,16 @@ const formatRuns = (runs: number[][] | undefined): string =>
     .map(([first, last]) => (first === last ? `${first + 1}` : `${first + 1}-${last + 1}`))
     .join(', ') || '—';
 
+const formatPagesInOrder = (pages: number[] | undefined): string => {
+  const runs: [number, number][] = [];
+  for (const page of (pages ?? []).filter((value) => typeof value === 'number')) {
+    const last = runs[runs.length - 1];
+    if (last && page === last[1] + 1) last[1] = page;
+    else runs.push([page, page]);
+  }
+  return formatRuns(runs);
+};
+
 /**
  * A run aggregated by an earlier release reports an unmatched section as kind
  * `class`, with the matcher's "No Match" as its predicted class and no predicted
@@ -171,7 +181,10 @@ const ClassificationErrorsPanel = ({ classificationErrors, testSetId }: Classifi
           {
             id: 'pages',
             header: 'Pages (expected / predicted)',
-            cell: (item: ClassificationError) => `${formatPages(item.expected_pages)} / ${predictedPages(item)}`,
+            cell: (item: ClassificationError) =>
+              item.kind === 'order'
+                ? `${formatPagesInOrder(item.expected_pages)} / ${formatPagesInOrder(item.predicted_pages)}`
+                : `${formatPages(item.expected_pages)} / ${predictedPages(item)}`,
           },
         ]}
         empty={<Box textAlign="center">No classification errors</Box>}

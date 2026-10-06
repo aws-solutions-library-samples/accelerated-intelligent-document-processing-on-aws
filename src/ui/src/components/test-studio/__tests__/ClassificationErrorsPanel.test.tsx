@@ -295,4 +295,45 @@ describe('ClassificationErrorsPanel', () => {
 
     expect(screen.queryByText(/extracted under the wrong schema/)).not.toBeInTheDocument();
   });
+
+  it('shows each side of a page-order row in its own order', () => {
+    render(
+      <ClassificationErrorsPanel
+        classificationErrors={{
+          errors: [
+            {
+              doc_key: 'reversed.pdf',
+              kind: 'order',
+              expected_class: 'Invoice',
+              predicted_class: 'Invoice',
+              expected_pages: [0, 1, 2],
+              predicted_pages: [2, 1, 0],
+            },
+            {
+              doc_key: 'swapped.pdf',
+              kind: 'order',
+              expected_class: 'Invoice',
+              predicted_class: 'Invoice',
+              expected_pages: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9],
+              predicted_pages: [0, 1, 2, 3, 5, 4, 6, 7, 8, 9],
+            },
+            {
+              doc_key: 'unsorted-truth.pdf',
+              kind: 'order',
+              expected_class: 'Invoice',
+              predicted_class: 'Invoice',
+              expected_pages: [1, 0],
+              predicted_pages: [0, 1],
+            },
+          ],
+          total: 3,
+        }}
+        testSetId="ts1"
+      />,
+    );
+
+    expect(screen.getByText('1-3 / 3, 2, 1')).toBeInTheDocument();
+    expect(screen.getByText('1-10 / 1-4, 6, 5, 7-10')).toBeInTheDocument();
+    expect(screen.getByText('2, 1 / 1-2')).toBeInTheDocument();
+  });
 });

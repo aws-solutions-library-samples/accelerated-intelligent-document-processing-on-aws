@@ -1620,7 +1620,9 @@ A row is **Wrong class** only when the prediction has a section on exactly the
 expected pages under another class. A five-page invoice the prediction split into
 three invoices is **No matching section**, predicted **Invoice ×3**, with pages
 `1-5 / 1-2 | 3-4 | 5`: pages are numbered from 1, as in the document's
-evaluation report, and `|` separates the predicted sections.
+evaluation report, and `|` separates the predicted sections. A **Page order** row
+lists each side's pages in the order that side has them, so a three-page section
+predicted in reverse reads `1-3 / 3, 2, 1`.
 
 Each row links into the annotation queue for that document, which is where the
 class is corrected — see
