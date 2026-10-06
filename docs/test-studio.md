@@ -1578,9 +1578,11 @@ graded metrics can't drag the newer docs' scores down.
   [Classification errors](#finding-classification-errors) panel. With no
   extraction comparisons, every document is counted as excluded from extraction
   scoring, and the run falls back to Athena, which for such a run supplies only
-  the split classification metrics and the cost. Overall accuracy and average
-  confidence stay empty: Athena computes no overall accuracy, and it averages
-  confidence over compared fields, of which such a run has none. A
+  the split classification metrics and the cost. Overall accuracy, average
+  confidence and the average weighted score stay empty, and the weighted overall
+  score chart and table have nothing to show: Athena computes no overall
+  accuracy, such a run has no compared fields for it to average confidence over,
+  and an excluded document has no weighted score. A
   classification-only run that completed before this shipped **must be re-run**
   to show its graded metrics, classification errors and excluded count.
   Re-opening its results page does not recompute them: the stale-cache guard
@@ -1588,7 +1590,8 @@ graded metrics can't drag the newer docs' scores down.
   and that run's cache already holds all three keys, as `{}` or `0`. The
   exception is a run whose cache was last written before 0.6.7, which added the
   `classificationErrors` key: the guard finds that key missing and re-aggregates
-  the run the first time you open its results, so it recovers without a re-run.
+  the run the first time you open its results, so it recovers without a re-run,
+  provided its documents are still within the stack's `DataRetentionInDays`.
 - **No page overlap between ground-truth and prediction** (rare — usually an
   OCR page-count mismatch): `evaluate_packet` returns nothing for that doc
   and it's absent from the map. If no doc in the run reported any graded
