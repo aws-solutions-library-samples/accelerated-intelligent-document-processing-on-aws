@@ -20,7 +20,7 @@
     "zod": "^3.25.76"
   },
   "overrides": {
-    "devalue": ">=5.9.2",
+    "devalue": "^5.9.3",
     "esbuild": ">=0.28.1",
     "nanoid": "^3.3.18",
     "js-yaml": "^4.3.2",
