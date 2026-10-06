@@ -480,23 +480,37 @@ back as strings.
 
 An unchanged save cuts no revision but rewrites the head. Stack deployments do this
 to `default` and managed profiles, so an unchanged save refreshes the published
-entry's `storedHash`. The refresh (`_refresh_published_stored_hash()`) is computed
-from the revision's **own body**, never from the head. A head changed by a writer
-that cut no revision is therefore never recorded as the published revision; for
-example, a Lambda without `CONFIGURATION_BUCKET`, where history is disabled.
+entry's `storedHash` (`_refresh_published_stored_hash()`). The refresh is computed
+from the revision's **own body**. Once that body has expired, it is computed from
+the configuration of the head the save **replaced**, which `save_configuration()`
+keeps from the read it already makes, and only when that head passes the proof
+above: published and latest, and `_head_is_revision()`. It is never computed from
+the head the save wrote. A head changed by a writer that cut no revision is
+therefore never recorded as the published revision; for example, a Lambda without
+`CONFIGURATION_BUCKET`, where history is disabled. Nor is the head an unchanged
+save wrote when it stores something the replaced head did not: `True == 1`, so
+swapping one for the other inside a class counts as unchanged, yet the head then
+stores `"1"` where the revision held `true`.
 
-The refresh needs that body, so once the body has expired nothing refreshes
-`storedHash`. If a later unchanged save writes the same configuration with
-different stored content, the hash no longer matches and a pinned read of the
-revision raises. The profile recovers only when a save that changes the
-configuration cuts a new revision. The error a pinned read raises ends with
-`EXPIRED_REVISION_REMEDY`, which says so and covers `default` and stack-managed
-profiles too, since the editor cannot save either: `default` can still be changed
-with Save as default or `idp-cli config-upload`, and a stack-managed profile gets a
-new revision from a stack update that changes it, with an editable copy to process
-its documents under until then. The test runner's refusal at submit carries the
-same remedy, followed by an instruction to resubmit the run pinned to the new
-revision once one exists.
+So once a body has expired, an unchanged save keeps the revision servable when the
+head it replaces was proven, including across a release that stores the same
+configuration differently, but it cannot prove a head that was not. A revision cut
+before `storedHash` existed is the case to know. Until a save records its hash, the
+legacy rule is its only proof, and that proof is gone the first time anything
+rewrites the head. Earlier releases rewrote the head on every unchanged save and
+recorded nothing, so once the body of a revision whose head they rewrote has
+expired, nothing can prove it unless a refresh recorded its hash while the body
+still existed. A pinned read of it raises, as does a pinned read of a revision
+whose head a writer changed without cutting one.
+
+The profile then recovers only when a save that changes the configuration cuts a
+new revision. The error a pinned read raises ends with `EXPIRED_REVISION_REMEDY`,
+which says so and covers `default` and stack-managed profiles too, since the editor
+cannot save either: `default` can still be changed with Save as default or
+`idp-cli config-upload`, and a stack-managed profile gets a new revision from a
+stack update that changes it, with an editable copy to process its documents under
+until then. The test runner's refusal at submit carries the same remedy, followed
+by an instruction to resubmit the run pinned to the new revision once one exists.
 
 The rebuild writes nothing back. Pipeline roles can only read `config_revisions/`,
 so each pinned read of an expired published body is rebuilt again and logged at
