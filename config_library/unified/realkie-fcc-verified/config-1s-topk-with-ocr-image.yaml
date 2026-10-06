@@ -23,6 +23,9 @@ use_bda: false
 
 notes: "RealKIE-FCC-Verified 1S-TopK settings (simple integrated extraction+confidence in a single LLM call). Summarization and chat disabled by default."
 
+classification:
+  sectionSplitting: disabled
+
 extraction:
   mode: simple            # non-agentic single-pass extraction
   model: us.anthropic.claude-haiku-4-5-20251001-v1:0

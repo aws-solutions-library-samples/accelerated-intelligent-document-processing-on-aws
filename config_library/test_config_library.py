@@ -385,3 +385,58 @@ class TestPolicyClassRegexCoverage:
             for pc in policy_classes
             if re.search(pc.get("x-aws-idp-document-name-regex", "$^"), "invoice.pdf")
         ], "an unrelated document matched a policy class; the regex is too broad"
+
+
+REALKIE_FCC_PRESET_DIRS = (
+    "unified/realkie-fcc-verified",
+    "managed_config/realkie-fcc-verified",
+)
+
+
+def discover_realkie_fcc_configs():
+    """Every YAML configuration shipped for the RealKIE-FCC-Verified test set."""
+    return [
+        pytest.param(path, id=str(path.relative_to(CONFIG_LIBRARY_ROOT)))
+        for directory in REALKIE_FCC_PRESET_DIRS
+        for path in sorted((CONFIG_LIBRARY_ROOT / directory).glob("*.yaml"))
+    ]
+
+
+class TestRealkieFccWholeDocumentSections:
+    """Each RealKIE-FCC-Verified file is one invoice, so it must be one section.
+
+    The test set's ground truth is one ``Invoice`` section per file spanning every
+    page. Under the ``llm_determined`` default, page-level classification sometimes
+    takes a page in the middle of an invoice for the start of a new document and
+    splits the invoice into several sections, each extracted on its own, and Test
+    Studio lists the file as a classification error. The configurations are
+    discovered from the preset's directories rather than listed, so one added
+    beside them is held to the same rule.
+    """
+
+    @pytest.mark.parametrize("config_file", discover_realkie_fcc_configs())
+    def test_declares_whole_document_sections(self, config_file: Path):
+        parsed = yaml.safe_load(config_file.read_text(encoding="utf-8"))
+        splitting = (parsed.get("classification") or {}).get("sectionSplitting")
+        assert splitting == "disabled", (
+            f"{config_file.relative_to(CONFIG_LIBRARY_ROOT)} sets "
+            f"classification.sectionSplitting to {splitting!r}. Every file in this "
+            f"test set is one invoice, so it needs 'disabled' (one section over every "
+            f"page). Anything else lets page-level classification split an invoice, "
+            f"and an unrecognised value is coerced to 'llm_determined' with only a "
+            f"logged warning."
+        )
+
+    def test_discovery_reaches_the_unified_and_managed_presets(self):
+        discovered = {
+            str(param.values[0].relative_to(CONFIG_LIBRARY_ROOT))
+            for param in discover_realkie_fcc_configs()
+        }
+        for expected in (
+            "unified/realkie-fcc-verified/config.yaml",
+            "managed_config/realkie-fcc-verified/config.yaml",
+        ):
+            assert expected in discovered, (
+                f"{expected} is not discovered, so the whole-document check above "
+                f"does not cover it. Found: {sorted(discovered)}"
+            )

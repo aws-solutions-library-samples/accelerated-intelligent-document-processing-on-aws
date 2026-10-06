@@ -7,6 +7,9 @@ use_bda: false
 
 notes: "RealKIE-FCC-Verified dataset settings for pipeline mode (Bedrock LLM). Set use_bda: true for BDA mode. Assessment and summarization disabled by default."
 
+classification:
+  sectionSplitting: disabled
+
 extraction:
   confidence:
     mode: 'off'   # v0.6: confidence scoring disabled (was assessment.enabled: false)

@@ -95,6 +95,8 @@ During stack deployment, the system automatically:
 
 Use with: `config_library/unified/realkie-fcc-verified/config.yaml`
 
+Test Studio auto-selects the stack-managed `realkie-fcc-verified` profile for this test set. It and the preset set `classification.sectionSplitting: disabled`, because every file is one invoice: all of a file's pages form one `Invoice` section, and with a single class, classification makes no model call. Classification and splitting metrics on this test set are therefore 1.0 by construction, and a run measures extraction. A profile copied from `realkie-fcc-verified` is a snapshot and keeps the section splitting it was copied with; set **Section splitting** to `disabled` in its classification settings to match.
+
 ---
 
 ### OmniAI-OCR-Benchmark
