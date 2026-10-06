@@ -564,8 +564,16 @@ class TestExpiredPublishedBody:
         digested leaves every recorded hash unmatched at once, so each published
         revision whose body has already expired stops being served on upgrade.
         Change it only together with a way to read the hashes already recorded.
+
+        Which attributes count as metadata is part of the digest, so the set is
+        pinned too. Moving a configuration field into it changes the hash of every
+        real head that carries the field, which the digest of the fixed head below
+        shows only for the few fields it carries.
         """
-        from idp_common.config.configuration_manager import _stored_content_hash
+        from idp_common.config.configuration_manager import (
+            _DYNAMODB_METADATA_FIELDS,
+            _stored_content_hash,
+        )
 
         head = {
             "Configuration": "Config#p",
@@ -578,6 +586,19 @@ class TestExpiredPublishedBody:
         }
         rewritten = {**head, "UpdatedAt": "2027-01-01T00:00:00Z", "Description": "x"}
 
+        assert sorted(_DYNAMODB_METADATA_FIELDS) == [
+            "BdaLastSyncedAt",
+            "BdaProjectArn",
+            "BdaSyncStatus",
+            "Configuration",
+            "CreatedAt",
+            "Description",
+            "IsActive",
+            "LatestRevision",
+            "Managed",
+            "PublishedRevision",
+            "UpdatedAt",
+        ]
         assert _stored_content_hash(head) == "b26a02095c8935891409b2bc7429c1fa"
         assert _stored_content_hash(rewritten) == _stored_content_hash(head)
 
