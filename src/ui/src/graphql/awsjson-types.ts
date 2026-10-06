@@ -56,7 +56,14 @@ export interface SplitClassificationMetrics {
   };
 }
 
-/** One section whose classification disagreed with the ground truth. */
+/** A predicted section over the pages of an unmatched ground-truth section. */
+export interface PredictedSectionSummary {
+  class?: string | null;
+  /** Its pages as sorted, inclusive 0-based `[first, last]` runs. */
+  page_ranges?: number[][];
+}
+
+/** One ground-truth section the prediction did not reproduce. */
 export interface ClassificationError {
   doc_key?: string;
   section_id?: string | number | null;
@@ -70,6 +77,16 @@ export interface ClassificationError {
   predicted_class?: string | null;
   expected_pages?: number[];
   predicted_pages?: number[];
+  /**
+   * `unmatched` only: the predicted sections sharing a page with the expected
+   * pages, in page order, capped by the aggregation Lambda
+   * (MAX_PREDICTED_SECTIONS_PER_ERROR). `predicted_section_count` is the
+   * uncapped number. Absent on runs aggregated by an earlier release, which
+   * report an unmatched section as kind `class` with predicted class
+   * "No Match" instead.
+   */
+  predicted_sections?: PredictedSectionSummary[];
+  predicted_section_count?: number;
 }
 
 /**

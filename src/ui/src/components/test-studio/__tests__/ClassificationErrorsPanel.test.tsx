@@ -47,6 +47,167 @@ describe('ClassificationErrorsPanel', () => {
     expect(screen.getByText('Invoice')).toBeInTheDocument();
     expect(screen.getByText('Receipt')).toBeInTheDocument();
     expect(screen.getByText('Wrong class')).toBeInTheDocument();
+    expect(screen.getByText('1-2 / 1-2')).toBeInTheDocument();
+  });
+
+  it('shows a section the prediction split as the split, not as a wrong class', () => {
+    render(
+      <ClassificationErrorsPanel
+        classificationErrors={{
+          errors: [
+            {
+              doc_key: 'invoice-5.pdf',
+              section_id: '1',
+              kind: 'unmatched',
+              expected_class: 'Invoice',
+              predicted_class: null,
+              expected_pages: [0, 1, 2, 3, 4],
+              predicted_pages: [],
+              predicted_sections: [
+                { class: 'Invoice', page_ranges: [[0, 1]] },
+                { class: 'Invoice', page_ranges: [[2, 3]] },
+                { class: 'Invoice', page_ranges: [[4, 4]] },
+              ],
+              predicted_section_count: 3,
+            },
+          ],
+          total: 1,
+          documents_affected: 1,
+        }}
+        testSetId="ts1"
+      />,
+    );
+
+    expect(screen.getByText('No matching section')).toBeInTheDocument();
+    expect(screen.getByText('Invoice ×3')).toBeInTheDocument();
+    expect(screen.getByText('1-5 / 1-2 | 3-4 | 5')).toBeInTheDocument();
+    expect(screen.queryByText('Wrong class')).not.toBeInTheDocument();
+    expect(screen.queryByText(/extracted under the wrong schema/)).not.toBeInTheDocument();
+  });
+
+  it('names the classes of a split in page order when they differ', () => {
+    render(
+      <ClassificationErrorsPanel
+        classificationErrors={{
+          errors: [
+            {
+              doc_key: 'statement.pdf',
+              kind: 'unmatched',
+              expected_class: 'Statement',
+              predicted_class: null,
+              expected_pages: [0, 1, 2, 3, 4],
+              predicted_pages: [],
+              predicted_sections: [
+                { class: 'Statement', page_ranges: [[0, 1]] },
+                { class: 'Receipt', page_ranges: [[2, 2]] },
+                { class: 'Statement', page_ranges: [[3, 4]] },
+              ],
+              predicted_section_count: 3,
+            },
+          ],
+          total: 1,
+        }}
+        testSetId="ts1"
+      />,
+    );
+
+    expect(screen.getByText('Statement | Receipt | Statement')).toBeInTheDocument();
+    expect(screen.getByText('1-5 / 1-2 | 3 | 4-5')).toBeInTheDocument();
+  });
+
+  it('says how many predicted sections a split row is not showing', () => {
+    render(
+      <ClassificationErrorsPanel
+        classificationErrors={{
+          errors: [
+            {
+              doc_key: 'long.pdf',
+              kind: 'unmatched',
+              expected_class: 'Invoice',
+              predicted_class: null,
+              expected_pages: Array.from({ length: 12 }, (_, page) => page),
+              predicted_pages: [],
+              predicted_sections: Array.from({ length: 5 }, (_, page) => ({ class: 'Invoice', page_ranges: [[page, page]] })),
+              predicted_section_count: 12,
+            },
+          ],
+          total: 1,
+        }}
+        testSetId="ts1"
+      />,
+    );
+
+    expect(screen.getByText('Invoice ×5')).toBeInTheDocument();
+    expect(screen.getByText('first 5 of 12 predicted sections')).toBeInTheDocument();
+    expect(screen.getByText('1-12 / 1 | 2 | 3 | 4 | 5 | …')).toBeInTheDocument();
+  });
+
+  it('says so when no predicted section covers the expected pages', () => {
+    render(
+      <ClassificationErrorsPanel
+        classificationErrors={{
+          errors: [
+            {
+              doc_key: 'short.pdf',
+              kind: 'unmatched',
+              expected_class: 'Invoice',
+              predicted_class: null,
+              expected_pages: [3],
+              predicted_pages: [],
+              predicted_sections: [],
+              predicted_section_count: 0,
+            },
+          ],
+          total: 1,
+        }}
+        testSetId="ts1"
+      />,
+    );
+
+    expect(screen.getByText('no predicted section on these pages')).toBeInTheDocument();
+    expect(screen.getByText('4 / —')).toBeInTheDocument();
+  });
+
+  it('shows an older run\'s "No Match" class error as the unmatched section it is', () => {
+    render(
+      <ClassificationErrorsPanel
+        classificationErrors={{
+          errors: [
+            {
+              doc_key: 'invoice-5.pdf',
+              section_id: '1',
+              kind: 'class',
+              expected_class: 'Invoice',
+              predicted_class: 'No Match',
+              expected_pages: [0, 1, 2, 3, 4],
+              predicted_pages: [],
+            },
+          ],
+          total: 1,
+          documents_affected: 1,
+        }}
+        testSetId="ts1"
+      />,
+    );
+
+    expect(screen.getByText('No matching section')).toBeInTheDocument();
+    expect(screen.getByText('no matching section')).toBeInTheDocument();
+    expect(screen.getByText('1-5 / —')).toBeInTheDocument();
+    expect(screen.queryByText('Wrong class')).not.toBeInTheDocument();
+    expect(screen.queryByText('No Match')).not.toBeInTheDocument();
+    expect(screen.queryByText(/extracted under the wrong schema/)).not.toBeInTheDocument();
+  });
+
+  it('describes a split as well as a wrong class', () => {
+    render(
+      <ClassificationErrorsPanel
+        classificationErrors={{ errors: [{ doc_key: 'x.pdf', kind: 'unmatched', expected_class: 'A', predicted_class: null }], total: 1 }}
+        testSetId="ts1"
+      />,
+    );
+
+    expect(screen.getByText(/A wrong class means extraction ran the wrong schema/)).toBeInTheDocument();
+    expect(screen.getByText(/No matching section means no predicted section holds exactly those pages/)).toBeInTheDocument();
   });
 
   it('links the document into the annotation queue where the class is corrected', () => {

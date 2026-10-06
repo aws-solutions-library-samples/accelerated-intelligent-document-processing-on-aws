@@ -117,6 +117,41 @@ _GRADED_PACKET_KEYS = (
 # where the config is wrong for a whole class produces thousands of entries.
 # Truncation is reported rather than silent — see ``_collect_classification_errors``.
 MAX_CLASSIFICATION_ERRORS = 200
+MAX_PREDICTED_SECTIONS_PER_ERROR = 5
+
+
+def _page_set(pages: Any) -> set[int]:
+    """The integer page indices in ``pages``, ignoring anything malformed."""
+    if not isinstance(pages, list):
+        return set()
+    return {p for p in pages if isinstance(p, int) and not isinstance(p, bool)}
+
+
+def _page_runs(pages: set[int]) -> List[List[int]]:
+    """Pages as sorted, inclusive ``[first, last]`` runs.
+
+    ``{4, 0, 1}`` becomes ``[[0, 1], [4, 4]]``, so a section's size in the run
+    record grows with the gaps in its pages rather than with their number.
+    """
+    runs: List[List[int]] = []
+    for page in sorted(pages):
+        if runs and page == runs[-1][1] + 1:
+            runs[-1][1] = page
+        else:
+            runs.append([page, page])
+    return runs
+
+
+def _stickler_unmatched(section: Dict[str, Any]) -> bool:
+    """Whether the doc-split matcher paired no predicted section with ``section``.
+
+    It reports such a ground-truth section as ``predicted_class`` "No Match"
+    with ``matched`` false, no ``matched_section_id`` and no predicted pages.
+    """
+    if section.get("predicted_class") in (None, "", "No Match"):
+        return True
+    matched_id = section.get("matched_section_id")
+    return section.get("matched") is False and matched_id in (None, "")
 
 
 def _classification_errors_for_doc(
@@ -135,21 +170,67 @@ def _classification_errors_for_doc(
     different fixes:
 
     * ``class`` — the wrong document class. Extraction ran the wrong schema.
-    * ``unmatched`` — a ground-truth section with no predicted counterpart at
-      all, which is a splitting failure rather than a labelling one.
+    * ``unmatched`` — a ground-truth section no predicted section reproduces:
+      its pages were split, merged or left out differently, which is a
+      splitting failure rather than a labelling one. ``predicted_sections``
+      carries the predicted sections that share a page with it, in page
+      order, each with its class and its pages as ``[first, last]`` runs.
+      For the item-size reason ``MAX_CLASSIFICATION_ERRORS`` gives, at most
+      ``MAX_PREDICTED_SECTIONS_PER_ERROR`` are kept and
+      ``predicted_section_count`` is the uncapped number, so an entry grows
+      neither with the number of pieces a section was split into nor, given
+      the runs, with the length of a section it was merged into.
     * ``order`` — right class and right pages, wrong page order. Cosmetic for
       extraction, but it is what ``split_accuracy_with_order`` penalises, so
       conflating it with ``class`` would misdirect whoever is debugging.
+
+    The matcher pairs sections on page set and class together, so its
+    "No Match" does not say which of the two failed, and it is not a class:
+    taking it for one reports every split section as a wrong class. The
+    document's ``predicted_sections`` settle it. A predicted section covering
+    exactly the expected pages under another class is the counterpart, and the
+    section is a ``class`` error against it; with no such section it is
+    ``unmatched``.
     """
+    predicted_sections = [
+        (section.get("document_class"), _page_set(section.get("page_indices")))
+        for section in doc_split_metrics.get("predicted_sections") or []
+        if isinstance(section, dict)
+    ]
     errors: List[Dict[str, Any]] = []
     for section in doc_split_metrics.get("section_details_with_order") or []:
         if not isinstance(section, dict):
             continue
         expected = section.get("ground_truth_class")
         predicted = section.get("predicted_class")
+        expected_pages = section.get("ground_truth_pages") or []
+        predicted_pages = section.get("predicted_pages") or []
+        split: Dict[str, Any] = {}
 
-        if predicted in (None, ""):
-            kind = "unmatched"
+        if _stickler_unmatched(section):
+            expected_set = _page_set(expected_pages)
+            overlapping = sorted(
+                (item for item in predicted_sections if item[1] & expected_set),
+                key=lambda item: min(item[1]),
+            )
+            counterpart = next(
+                (item for item in overlapping if item[1] == expected_set), None
+            )
+            if counterpart is not None and counterpart[0] != expected:
+                kind = "class"
+                predicted = counterpart[0]
+                predicted_pages = sorted(counterpart[1])
+            else:
+                kind = "unmatched"
+                predicted = None
+                predicted_pages = []
+                split = {
+                    "predicted_sections": [
+                        {"class": cls, "page_ranges": _page_runs(pages)}
+                        for cls, pages in overlapping[:MAX_PREDICTED_SECTIONS_PER_ERROR]
+                    ],
+                    "predicted_section_count": len(overlapping),
+                }
         elif expected != predicted:
             kind = "class"
         elif section.get("order_matched") is False:
@@ -164,8 +245,9 @@ def _classification_errors_for_doc(
                 "kind": kind,
                 "expected_class": expected,
                 "predicted_class": predicted,
-                "expected_pages": section.get("ground_truth_pages") or [],
-                "predicted_pages": section.get("predicted_pages") or [],
+                "expected_pages": expected_pages,
+                "predicted_pages": predicted_pages,
+                **split,
             }
         )
     return errors
@@ -643,9 +725,9 @@ def _load_comparison_results(
         ``excluded_doc_keys`` lists documents whose every section was a
         scoring no-op (class has no extractable schema); they contribute no
         weighted score and are surfaced to the UI as an "excluded" count.
-        ``doc_classification_errors`` maps doc_key → the sections whose predicted
-        class disagreed with ground truth, which the run-level Classification errors
-        panel reads.
+        ``doc_classification_errors`` maps doc_key → the ground-truth sections the
+        prediction did not reproduce (wrong class, no matching section, or page
+        order), which the run-level Classification errors panel reads.
     """
     table = dynamodb.Table(tracking_table_name)
     output_bucket = os.environ.get("OUTPUT_BUCKET")

@@ -590,7 +590,9 @@ class TestAggregation:
         """A wrong class, a missing section and a wrong page order differ.
 
         Conflating them would misdirect whoever is debugging: only ``class``
-        means extraction ran the wrong schema.
+        means extraction ran the wrong schema. Nor is the matcher's "No Match" a
+        class: a section it paired with nothing is ``unmatched``, and so is one
+        it reports as unmatched under any predicted class.
         """
         index = import_test_module()
 
@@ -620,11 +622,38 @@ class TestAggregation:
                         "predicted_class": "Invoice",
                         "order_matched": True,
                     },
+                    {
+                        "section_id": "s5",
+                        "ground_truth_class": "Invoice",
+                        "ground_truth_pages": [5, 6],
+                        "matched": False,
+                        "order_matched": False,
+                        "matched_section_id": None,
+                        "predicted_class": "No Match",
+                        "predicted_pages": [],
+                    },
+                    {
+                        "section_id": "s6",
+                        "ground_truth_class": "Invoice",
+                        "matched": False,
+                        "matched_section_id": None,
+                        "predicted_class": "Invoice",
+                    },
                 ]
             },
         )
 
-        assert [e["kind"] for e in errors] == ["class", "unmatched", "order"]
+        assert [e["kind"] for e in errors] == [
+            "class",
+            "unmatched",
+            "order",
+            "unmatched",
+            "unmatched",
+        ]
+        no_match = errors[3]
+        assert no_match["predicted_class"] is None
+        assert no_match["predicted_sections"] == []
+        assert no_match["predicted_section_count"] == 0
 
     def test_classification_errors_tolerate_a_malformed_payload(self, mock_env):
         """A missing or non-list section detail must not fail the whole run."""
@@ -2644,3 +2673,226 @@ class TestAggregationConsumesRealStickler10Output:
         )
         assert top["fn"] == expected_counts["fn"]
         assert top["fa"] == expected_counts["fa"]
+
+
+@pytest.mark.unit
+class TestClassificationErrorsFromTheDocSplitMatcher:
+    """Classification errors read from what the doc-split matcher really writes.
+
+    The matcher pairs a ground-truth section with a predicted one only when the
+    page set and the class both agree, and reports every other ground-truth
+    section as predicted class "No Match" with no pages. A section split in
+    three and a section given the wrong class therefore look the same in
+    ``section_details_with_order``; only the document's ``predicted_sections``
+    tell them apart. The payloads here come from the matcher itself and the
+    evaluation service's own ``DocSplitMetrics.to_dict``, so they pin the shape
+    the aggregation reads rather than a hand-written copy of it.
+    """
+
+    FIXTURE_PATH = os.path.join(
+        os.path.dirname(__file__),
+        "evaluation",
+        "fixtures",
+        "doc_split_metrics.input.json",
+    )
+
+    @staticmethod
+    def _section(section_id, document_class, pages):
+        return {
+            "section_id": section_id,
+            "document_class": {"type": document_class},
+            "split_document": {"page_indices": pages},
+        }
+
+    @staticmethod
+    def _doc_split_metrics(ground_truth, predicted):
+        """``doc_split_metrics`` as a document's results.json carries it."""
+        from stickler.doc_split.doc_split_classification_metrics import (
+            DocSplitClassificationMetrics,
+        )
+
+        from idp_common.evaluation.models import DocSplitMetrics
+
+        calculator = DocSplitClassificationMetrics()
+        calculator.load_sections(
+            ground_truth_sections=ground_truth, predicted_sections=predicted
+        )
+        results = calculator.calculate_all_metrics()
+        page_level = results["page_level_accuracy"]
+        without_order = results["split_accuracy_without_order"]
+        with_order = results["split_accuracy_with_order"]
+        metrics = DocSplitMetrics(
+            page_level_accuracy=page_level["accuracy"],
+            split_accuracy_without_order=without_order["accuracy"],
+            split_accuracy_with_order=with_order["accuracy"],
+            total_pages=page_level["total_pages"],
+            total_splits=without_order["total_sections"],
+            correctly_classified_pages=page_level["correct_pages"],
+            correctly_split_without_order=without_order["correct_sections"],
+            correctly_split_with_order=with_order["correct_sections"],
+            page_details=page_level["page_details"],
+            section_details_without_order=without_order["section_details"],
+            section_details_with_order=with_order["section_details"],
+            predicted_sections=calculator.sections_pred,
+        )
+        return json.loads(json.dumps(metrics.to_dict()))
+
+    def test_a_section_split_in_three_is_one_unmatched_error_carrying_the_split(
+        self, mock_env
+    ):
+        """A five-page invoice predicted as three invoices is a split, not a class.
+
+        Read as a wrong class predicted "No Match", it told the reader neither
+        what kind of failure it was nor where the pages went. This goes from the
+        document's results.json to the run-level payload the panel reads.
+        """
+        index = import_test_module()
+        doc_split_metrics = self._doc_split_metrics(
+            [self._section("1", "Invoice", [0, 1, 2, 3, 4])],
+            [
+                self._section("1", "Invoice", [0, 1]),
+                self._section("2", "Invoice", [2, 3]),
+                self._section("3", "Invoice", [4]),
+            ],
+        )
+        assert (
+            doc_split_metrics["section_details_with_order"][0]["predicted_class"]
+            == "No Match"
+        )
+
+        table = MagicMock()
+        table.scan.return_value = {
+            "Items": [
+                {
+                    "PK": "doc#run-1#invoice-5.pdf",
+                    "ObjectKey": "invoice-5.pdf",
+                    "EvaluationStatus": "COMPLETED",
+                }
+            ]
+        }
+        payload = {
+            "overall_metrics": {"weighted_overall_score": 0.9},
+            "section_results": [
+                {"section_id": "1", "stickler_comparison_result": {"tp": 1}}
+            ],
+            "doc_split_metrics": doc_split_metrics,
+        }
+        with patch.object(index, "dynamodb") as mock_dynamodb:
+            mock_dynamodb.Table.return_value = table
+            with patch.object(index, "_load_s3_json", return_value=payload):
+                *_, per_doc = index._load_comparison_results("run-1", "test-table")
+
+        run_level = index._collect_classification_errors(per_doc)
+
+        assert run_level["total"] == 1
+        assert run_level["errors"] == [
+            {
+                "doc_key": "invoice-5.pdf",
+                "section_id": "1",
+                "kind": "unmatched",
+                "expected_class": "Invoice",
+                "predicted_class": None,
+                "expected_pages": [0, 1, 2, 3, 4],
+                "predicted_pages": [],
+                "predicted_sections": [
+                    {"class": "Invoice", "page_ranges": [[0, 1]]},
+                    {"class": "Invoice", "page_ranges": [[2, 3]]},
+                    {"class": "Invoice", "page_ranges": [[4, 4]]},
+                ],
+                "predicted_section_count": 3,
+            }
+        ]
+
+    def test_a_wrong_class_on_the_right_pages_is_still_a_class_error(self, mock_env):
+        """The matcher says "No Match" here too.
+
+        The predicted section covering exactly the expected pages is the
+        counterpart, and its class is the one reported.
+        """
+        index = import_test_module()
+        doc_split_metrics = self._doc_split_metrics(
+            [self._section("1", "Invoice", [0, 1]), self._section("2", "W2", [2])],
+            [self._section("1", "Receipt", [1, 0]), self._section("2", "W2", [2])],
+        )
+        assert (
+            doc_split_metrics["section_details_with_order"][0]["predicted_class"]
+            == "No Match"
+        )
+
+        errors = index._classification_errors_for_doc("d.pdf", doc_split_metrics)
+
+        assert errors == [
+            {
+                "doc_key": "d.pdf",
+                "section_id": "1",
+                "kind": "class",
+                "expected_class": "Invoice",
+                "predicted_class": "Receipt",
+                "expected_pages": [0, 1],
+                "predicted_pages": [0, 1],
+            }
+        ]
+
+    def test_a_moved_boundary_lists_every_predicted_section_over_the_pages(
+        self, mock_env
+    ):
+        """A page taken into the neighbouring section shows up under its class.
+
+        The fixture is the doc-split golden's input: the receipt section was
+        predicted one page long, so the statement's first page went to it. Both
+        ground-truth sections are unmatched, and the statement's entry says
+        which classes its pages went to.
+        """
+        index = import_test_module()
+        with open(self.FIXTURE_PATH) as f:
+            spec = json.load(f)
+        doc_split_metrics = self._doc_split_metrics(
+            spec["ground_truth_sections"], spec["predicted_sections"]
+        )
+
+        errors = index._classification_errors_for_doc("d.pdf", doc_split_metrics)
+
+        assert [(e["section_id"], e["kind"]) for e in errors] == [
+            ("gt-2", "unmatched"),
+            ("gt-3", "unmatched"),
+        ]
+        assert errors[0]["predicted_sections"] == [
+            {"class": "receipt", "page_ranges": [[2, 3]]}
+        ]
+        assert errors[1]["predicted_sections"] == [
+            {"class": "receipt", "page_ranges": [[2, 3]]},
+            {"class": "statement", "page_ranges": [[4, 5]]},
+        ]
+
+    def test_the_split_carried_on_one_error_is_bounded(self, mock_env):
+        """Page by page or packet-wide, the split costs one entry a few hundred bytes.
+
+        The run result is one DynamoDB item, so a section split into hundreds
+        of pieces, or a long section that swallowed many ground-truth ones,
+        must not grow the entry with the page count.
+        """
+        index = import_test_module()
+        per_page = self._doc_split_metrics(
+            [self._section("1", "Invoice", list(range(300)))],
+            [self._section(str(i), "Invoice", [i]) for i in range(300)],
+        )
+        merged = self._doc_split_metrics(
+            [self._section(str(i), "Invoice", [2 * i, 2 * i + 1]) for i in range(150)],
+            [self._section("1", "Invoice", list(range(300)))],
+        )
+
+        (split_error,) = index._classification_errors_for_doc("a.pdf", per_page)
+        merged_errors = index._classification_errors_for_doc("b.pdf", merged)
+
+        assert split_error["predicted_section_count"] == 300
+        assert split_error["predicted_sections"] == [
+            {"class": "Invoice", "page_ranges": [[i, i]]}
+            for i in range(index.MAX_PREDICTED_SECTIONS_PER_ERROR)
+        ]
+        assert len(merged_errors) == 150
+        for error in merged_errors:
+            assert error["predicted_sections"] == [
+                {"class": "Invoice", "page_ranges": [[0, 299]]}
+            ]
+        for error in [split_error, *merged_errors]:
+            assert len(json.dumps(error["predicted_sections"])) < 512

@@ -1496,7 +1496,8 @@ Test runs with status **QUEUED** or **RUNNING** can be aborted:
     - Split Accuracy With Order (average across documents)  
     - Total Pages, Total Splits (sums across documents)
     - Correctly Classified Pages, Correctly Split counts (sums across documents)
-  - **Classification errors**: which documents were misclassified and as what (see
+  - **Classification errors**: which documents were misclassified or split
+    differently from the ground truth, and how (see
     [Finding classification errors](#finding-classification-errors))
   - **Cost breakdown** by service and context
 - Side-by-side test comparison with all metrics including configuration versions
@@ -1612,19 +1613,33 @@ Three kinds are distinguished, because they call for different fixes:
 | Issue | Meaning | What to do |
 |---|---|---|
 | **Wrong class** | The document was assigned a different class than the ground truth. | Correct the class in the annotation queue and re-extract, then re-run. |
-| **No matching section** | The ground truth expects a section that no predicted section matched. | A *splitting* problem, not a labelling one — look at classification granularity rather than the class list. |
+| **No matching section** | No predicted section holds exactly the pages the ground truth expects: the prediction split them, merged them with other pages, or left some out. The row lists the predicted sections over those pages, with their classes and pages. | A *splitting* problem, not a labelling one — look at how classification groups pages into sections ([`sectionSplitting`](./classification.md#section-splitting-strategies)) rather than at the class list. A listed section under another class also means those pages were extracted with that class's schema. |
 | **Page order** | Right class and right pages, wrong order. | Extraction is unaffected. This is what "Split Accuracy With Order" penalises and "Without Order" does not. |
+
+A row is **Wrong class** only when the prediction has a section on exactly the
+expected pages under another class. A five-page invoice the prediction split into
+three invoices is **No matching section**, predicted **Invoice ×3**, with pages
+`1-5 / 1-2 | 3-4 | 5`: pages are numbered from 1, as in the document's
+evaluation report, and `|` separates the predicted sections.
 
 Each row links into the annotation queue for that document, which is where the
 class is corrected — see
 [Correcting a misclassified document](#correcting-a-misclassified-document).
 
-**Two limits worth knowing:**
+**Three limits worth knowing:**
 
 - The list is **capped** (200 entries), because a run's whole result set is stored
   as a single record. Wrong-class errors sort first so a run full of page-order
   differences cannot crowd them out, and the panel states the true total when it
-  truncates — "Showing the first 200 of 340".
+  truncates — "Showing the first 200 of 340". For the same reason a
+  **No matching section** row lists at most 5 predicted sections, and says how
+  many there were ("first 5 of 12 predicted sections"); the document's evaluation
+  report lists them all.
+- A run aggregated by an earlier release shows each of its unmatched sections as
+  **No matching section** without the predicted sections, because its stored
+  result does not carry them. That result also cannot tell a split from a wrong
+  class on the right pages, so a wrong class shows the same way. A new run of the
+  test set tells the two apart and lists the predicted sections.
 - Runs evaluated **before this shipped** show no panel until they re-aggregate,
   which happens automatically the first time you open their results. Runs
   aggregated through the Athena fallback path have the percentages but not the
