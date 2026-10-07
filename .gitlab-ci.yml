@@ -20,27 +20,107 @@ default:
 
 # Pipeline structure (see scripts/sdlc/docs/CI_TEST_COVERAGE.md for the full
 # trigger matrix):
-#   - fast_checks: cheap, no-AWS gate — code_checks (lint/typecheck/units/UI) and
-#     the SRT security scan run in PARALLEL here, on EVERY push and every MR.
-#     Both gate the expensive deploy that follows.
-#   - deployment_validation: pre-deploy IAM sanity check; runs only when the
-#     integration deploy is going to run.
-#   - integration_tests: the ~1h real AWS deploy + probe suite. Auto on develop
-#     and on non-Draft MRs targeting develop; a manual button on Draft MRs.
+#   - fast_checks: the whole no-AWS gate, as SEVEN parallel jobs on every push and
+#     every MR. Nothing in this stage depends on anything else in it, so they all
+#     carry `needs: []` and the stage costs its SLOWEST member rather than their
+#     sum.
+#   - deployment_validation / integration_tests: the real AWS deploy + probe
+#     suite. NIGHTLY (scheduled) plus a manual button — no longer triggered by an
+#     MR or a push to develop. See the note on integration_tests for what that
+#     trades away.
+#
+# ⚠️ WHY fast_checks IS SPLIT. It used to be one `code_checks` job running lint,
+# typecheck and every pytest suite in sequence, and it took 45 minutes of which 80%
+# was pytest: `test-packages-cicd` alone was 25 min because all 27 of its suites ran
+# serial, single-process, on a 16-vCPU runner. Those suites now run with `-n auto`
+# (see PYTEST_XDIST in the Makefile) AND the job is split, because the two fixes
+# address different halves — xdist shortens each suite, the split stops the lint
+# half from waiting on the test half. Measured: 45 min of serial work becomes a
+# stage whose critical path is its slowest job.
+#
+# The cost of the split, stated plainly: the Python environment is now built in
+# four jobs instead of one, so the pipeline burns MORE runner minutes than it did
+# to finish in less wall-clock time. Each job installs only what it needs (the
+# test jobs skip Node entirely; the UI job skips the Python packages) to keep that
+# bill down, but it is a real trade, not a free win.
 stages:
   - fast_checks
   - deployment_validation
   - integration_tests
 
+# ---------------------------------------------------------------------------
+# Shared setup fragments.
+#
+# These exist because fast_checks is four jobs that need overlapping but NOT
+# identical environments, and spelling each one out separately is how they drift.
+# A job `extends:` the fragment it needs.
+# ---------------------------------------------------------------------------
+
+# Every no-AWS gate job: same runner class, same triggers, same cancel-on-push.
+#
+# Triggers are deliberately broad — EVERY push on any branch, and every MR — so a
+# developer gets lint/typecheck/test feedback (GitLab emails on failure) without
+# opening an MR first. There is no `changes:` filter: these are cheap and must run
+# on everything, including docs-only commits.
+.fast_check_job: &fast_check_job
+  stage: fast_checks
+  interruptible: true
+  needs: []
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+    - if: $CI_COMMIT_BRANCH
+
+# Python toolchain + all first-party packages, for the jobs that run Python gates.
+#
+# SECURITY — dependency confusion: the first-party packages depend on each other by
+# bare name (idp_cli_pkg -> "idp-sdk", idp_sdk -> "idp_common") and those names are
+# squatted on public PyPI. Installing them one at a time lets a not-yet-installed
+# sibling resolve from the index instead of the checkout, so they go in a SINGLE
+# resolution pass. Do not split this. See docs/dependency-confusion.md.
+.python_setup: &python_setup
+  - python --version
+  - apt-get update -y
+  - apt-get install make curl git -y
+  - pip install uv
+  - uv venv .venv
+  - source .venv/bin/activate
+  - uv pip install 'ruff==0.15.13'
+  # Needed by publish.py for test imports
+  - uv pip install typer rich boto3
+  - uv pip install -e "lib/idp_common_pkg[test,evaluation]"
+                   -e "lib/idp_sdk[test]"
+                   -e "lib/idp_cli_pkg[test]"
+                   -e "lib/idp_feature_sdk[test]"
+  # Fail the build if any first-party package came from an index, not source.
+  - python3 scripts/check_first_party_deps.py
+
+# Node 22.14.0, pinned. Only the jobs that need it install it — the two pytest
+# jobs do not, which is most of what keeps the split's runner-minute cost down.
+#
+# Pick the tarball matching the runner arch: the size:2xlarge pool is arm64, and a
+# hardcoded x64 binary fails with "Syntax error: ')' unexpected".
+.node_setup: &node_setup
+  - NODE_ARCH=$(case "$(uname -m)" in x86_64) echo x64;; aarch64|arm64) echo arm64;; *) echo x64;; esac)
+  - echo "Runner arch $(uname -m) -> node $NODE_ARCH"
+  - curl -fsSL https://nodejs.org/dist/v22.14.0/node-v22.14.0-linux-$NODE_ARCH.tar.xz | tar -xJ -C /usr/local --strip-components=1
+  - npm install -g npm@11.1.0 || { echo "npm upgrade failed"; exit 1; }
+
 # Paths whose change can actually affect a real stack deploy / its behavior.
-# The expensive deploy jobs (deployment_validation, integration_tests) only run
-# when a commit/MR touches one of these — so doc-only / version-bump commits
-# (VERSION, CHANGELOG.md, **/*.md, docs/**, images/**, notebooks/**, etc.) skip
-# the ~70-min deploy. Intentionally GENEROUS: a false "run" wastes CI minutes,
-# but a false "skip" could merge a broken deploy — so err toward running. Update
-# this list if a new deploy-affecting top-level dir is added.
-# NOTE: fast_checks (lint / SRT) deliberately has NO changes: filter — it is
-# cheap and SHOULD run on every commit, including docs.
+#
+# ⚠️ THIS NO LONGER GATES ANYTHING. It is kept deliberately, as the definition of
+# "touches the deploy path" that the integration_tests comment below tells you to
+# apply by hand when deciding whether to click the manual deploy button. It was a
+# `changes:` filter on deployment_validation and integration_tests while those ran
+# automatically per-MR; now that both are nightly-plus-manual there is no automatic
+# deploy left for a path filter to suppress, and a manual button you click
+# deliberately should always be available regardless of what the diff touched.
+#
+# Keep it current anyway — add a new deploy-affecting top-level directory here — so
+# the judgement it encodes does not rot. Intentionally GENEROUS: when in doubt, a
+# path belongs in the list.
+#
+# (If the deploy is ever returned to an automatic per-MR trigger, re-attaching this
+# as a `changes:` rule is the first thing to do.)
 .deploy_affecting_changes: &deploy_affecting_changes
   - template.yaml
   - publish.py
@@ -60,18 +140,21 @@ stages:
 # an MR is open, otherwise the branch pipeline — never both.
 #
 # auto_cancel on develop: GitLab's "auto-cancel redundant pipelines" cancels the
-# previous pipeline on a ref whenever ANY new pipeline is created there. A
-# doc-only commit to develop creates a pipeline (fast_checks has no changes:
-# filter) but SKIPS integration_tests (deploy_affecting_changes filter) — so it
-# used to cancel the in-flight ~70-min deploy of the prior code commit, which
-# was then never re-run: that merge ended up never integration-tested. GitLab
-# can't condition the cancel on what the NEW commit touched, so on develop we
-# disable auto-cancel entirely (`on_new_commit: none`, GitLab >= 16.8): every
-# merge to the integration branch gets its own completed deploy, serialized by
-# integration_tests' per-branch resource_group. MR pipelines keep the default
-# (conservative) supersede behavior — the bug doesn't exist there, because MR
-# `changes:` compares against the target branch, so a doc push to an MR whose
-# diff still touches deploy-affecting files re-runs the deploy anyway.
+# previous pipeline on a ref whenever ANY new pipeline is created there, and it
+# cannot condition that on what the new commit touched. `on_new_commit: none`
+# (GitLab >= 16.8) disables it on develop.
+#
+# It STAYS disabled, for a reason that survives the deploy going nightly. The
+# original one did not: a doc-only commit to develop used to cancel the in-flight
+# ~70-min deploy of the prior code commit, which was then never re-run, so that
+# merge ended up never integration-tested. No deploy runs automatically on develop
+# any more, so that exact sequence cannot happen. What can is the manual button —
+# somebody clicks the deploy on a develop pipeline, a doc commit lands while it is
+# running, and default auto-cancel would kill a ~1h run that a person deliberately
+# started. Re-enabling the cancel would make the only remaining pre-merge deploy
+# signal unreliable, to save a few minutes of fast_checks time.
+#
+# MR pipelines keep the default (conservative) supersede behavior.
 workflow:
   rules:
     - if: $CI_PIPELINE_SOURCE == "merge_request_event"
@@ -82,21 +165,20 @@ workflow:
         on_new_commit: none
     - if: $CI_COMMIT_BRANCH
 
+# Lint, format, type check, and the static API RBAC scan. Everything that reads the
+# tree without running a test suite.
+#
+# Keeps the job name `code_checks` even though it no longer runs the test suites,
+# because that is the name on every historical pipeline, in the GitLab email
+# templates and in scripts/sdlc/docs/CI_TEST_COVERAGE.md.
 code_checks:
-  stage: fast_checks
-  interruptible: true
+  <<: *fast_check_job
   # Larger runner (16 vCPU / 64 GB, size:2xlarge): the Vite production build
   # tsc/eslint are CPU-bound and ran ~6 min on the default small runner vs
-  # seconds locally; more cores also make `pytest -n auto` worthwhile.
+  # seconds locally.
   tags:
     - size:2xlarge
     - arch:arm64
-  # Cheap, no-AWS checks — run on EVERY push (any branch) and every MR, so
-  # developers get lint/typecheck/unit feedback (emailed by GitLab on failure)
-  # without waiting for an MR, and this gates the expensive deploy.
-  rules:
-    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
-    - if: $CI_COMMIT_BRANCH
 
   # Cache the UI dependencies across runs so the single `npm ci` (in
   # before_script) is near-instant. Keyed on the lockfile so a dependency change
@@ -110,48 +192,22 @@ code_checks:
       - src/ui/node_modules/
 
   before_script:
-    - python --version
-    - apt-get update -y
-    - apt-get install make curl git -y
     # No gate in this job diffs against the MR target branch, so no target-branch
     # fetch is needed. The type gate is `make typecheck`, over the whole tree.
-    # Install uv
-    - pip install uv
-    # Create virtual environment
-    - uv venv .venv
-    - source .venv/bin/activate
-    # Install pinned Node.js 22.14.0 and npm 11.1.0 for basedpyright. Pick the
-    # tarball matching the runner arch — the size:large pool is arm64, so a
-    # hardcoded x64 binary fails with "Syntax error: ')' unexpected".
-    - NODE_ARCH=$(case "$(uname -m)" in x86_64) echo x64;; aarch64|arm64) echo arm64;; *) echo x64;; esac)
-    - echo "Runner arch $(uname -m) -> node $NODE_ARCH"
-    - curl -fsSL https://nodejs.org/dist/v22.14.0/node-v22.14.0-linux-$NODE_ARCH.tar.xz | tar -xJ -C /usr/local --strip-components=1
-    - npm install -g npm@11.1.0 || { echo "npm upgrade failed"; exit 1; }
+    - *python_setup
+    - *node_setup
+    # basedpyright is an npm package, which is the only reason this job needs Node
+    # at all besides the UI lint below.
     - npm install -g basedpyright
     # Install UI deps ONCE here (restored from cache when unchanged). The
     # lint-cicd UI targets run with SKIP_NPM_CI=1 so they reuse this instead of
     # each doing its own `npm ci` (which previously happened 3× per run).
     - cd src/ui && npm ci --prefer-offline --no-audit && cd ../..
-    - uv pip install 'ruff==0.15.13'
-    # Install dependencies needed by publish.py for test imports
-    - uv pip install typer rich boto3
-    # Install ALL first-party packages in a SINGLE resolution pass.
-    # SECURITY — dependency confusion: these depend on each other by bare name
-    # (idp_cli_pkg -> "idp-sdk", idp_sdk -> "idp_common") and those names are
-    # squatted on public PyPI. Installing them one at a time lets a
-    # not-yet-installed sibling resolve from the index instead of the checkout.
-    # Do not split this into per-package calls. See docs/dependency-confusion.md.
-    - uv pip install -e "lib/idp_common_pkg[test,evaluation]"
-                     -e "lib/idp_sdk[test]"
-                     -e "lib/idp_cli_pkg[test]"
-                     -e "lib/idp_feature_sdk[test]"
-    # Fail the build if any first-party package came from an index, not source.
-    - python3 scripts/check_first_party_deps.py
 
   script:
     # SKIP_NPM_CI=1: UI deps already installed once in before_script, so the UI
     # lint/build/codegen targets don't each re-run `npm ci`.
-    # `make lint-cicd` now also runs validate-buildspec and cfn-lint; cfn-lint
+    # `make lint-cicd` also runs validate-buildspec and cfn-lint; cfn-lint
     # ran in NEITHER CI before, so a template error could reach deploy time.
     # Pinned deliberately — an unpinned linter on a blocking gate can red-line
     # the branch with no code change. Keep in step with CFN_LINT_VERSION in the
@@ -168,23 +224,47 @@ code_checks:
     # Static API RBAC/authorization scan (no AWS needed; catches op/schema/
     # expectations drift and missing server-side group checks).
     - make api-test-static
+    # Pre-deploy IAM sanity check. It reads template.yaml against the service role's
+    # policy and needs no credentials, so it belongs with the offline gates — it
+    # used to sit in its own `deployment_validation` job, which now runs only on the
+    # nightly path and so would have taken this check off every MR with it.
+    - python3 scripts/sdlc/validate_service_role_permissions.py
+
+# The idp_common_pkg suite — the largest single suite in the repo (~10,500 tests)
+# and now the critical path of the whole pipeline at ~11 min.
+#
+# ⚠️ Its runtime is NOT a parallelism problem, so do not reach for more workers.
+# Profiled over the whole suite, the slowest single test is 2.2s and the top 20
+# together are ~35s of a 10-min run: the cost is ~10,000 × per-test fixture setup
+# (moto, boto3 client construction), spread flat. It already runs `-n auto`
+# (PYTEST_PARALLEL in lib/idp_common_pkg/Makefile) and measures 62% CPU on 14
+# cores, so the remaining time is not CPU-bound either. Cutting it further means
+# sharding it across several JOBS, which needs a splitter plugin and a
+# `coverage combine` step before the ratchet below can read a complete report.
+unit_tests:
+  <<: *fast_check_job
+  tags:
+    - size:2xlarge
+    - arch:arm64
+
+  before_script:
+    # No Node: nothing in this job needs it.
+    - *python_setup
+
+  script:
     # SKIP_INSTALL=1: idp_common[test] already installed via uv above (avoids a
     # redundant plain-pip resolve that recompiled numpy from source).
     #
-    # `-n auto` is no longer passed here: it is the Makefile's own default
+    # `-n auto` is not passed here: it is the Makefile's own default
     # (PYTEST_PARALLEL), so GitHub gets it too. Passing it again would put `-n auto`
     # on the command line twice, which pytest answers by collecting NOTHING and
     # exiting 5 -- loud rather than silent, but a broken job either way.
     - make test-cicd -C lib/idp_common_pkg SKIP_INSTALL=1
     # Ratchet per-file coverage against scripts/coverage_debt.json. Must follow the
-    # line above: it reads the coverage report that step writes.
+    # line above: it reads the coverage report that step writes. This ordering is
+    # also why the two steps could not be split into separate JOBS without passing
+    # the report between them as an artifact.
     - make check-coverage-debt
-    # Package/Lambda suites not covered by idp_common_pkg (idp_cli, idp_sdk,
-    # idp_feature_sdk, feature-platform, capacity, circuit-breaker, chat,
-    # config_library) — all green headless, previously CI-untested.
-    - make test-packages-cicd
-    # UI unit tests (Vitest + jsdom, no browser). Node 22 installed above.
-    - cd src/ui && npm ci --prefer-offline --no-audit && npx vitest run && cd ../..
 
   # COVERAGE IS REPORTED, NOT ENFORCED. There is deliberately no `coverage:`
   # minimum here, for the same reason GitHub's report sets fail_below_min: false:
@@ -193,6 +273,7 @@ code_checks:
   # be a number about one package presented as a number about the repository. See
   # the "Coverage is reported, not enforced" section in CONTRIBUTING.md.
   artifacts:
+    when: always
     paths:
       - lib/idp_common_pkg/test-reports/coverage.xml
       - lib/idp_common_pkg/test-reports/test-results.xml
@@ -203,19 +284,78 @@ code_checks:
       junit: lib/idp_common_pkg/test-reports/test-results.xml
     expire_in: 1 week
 
+# The package / Lambda suites not covered by idp_common_pkg (idp_cli, idp_sdk,
+# idp_feature_sdk, feature-platform, capacity, circuit-breaker, chat,
+# config_library, and the repo's own gate suites under scripts/).
+#
+# 27 pytest invocations, of which seven now run `-n auto` — see PYTEST_XDIST in the
+# Makefile for which seven and why not all of them.
+package_tests:
+  <<: *fast_check_job
+  tags:
+    - size:2xlarge
+    - arch:arm64
+
+  before_script:
+    # No Node: nothing in this job needs it.
+    - *python_setup
+
+  script:
+    - make test-packages-cicd
+
+# UI unit tests (Vitest + jsdom, no browser).
+#
+# Its own job because it is the one fast_checks member that needs Node and NOT the
+# Python packages, so pairing it with anything else would mean installing one
+# toolchain for nothing. ~1 min including the install.
+ui_tests:
+  <<: *fast_check_job
+  tags:
+    - size:large
+
+  cache:
+    key:
+      files:
+        - src/ui/package-lock.json
+    paths:
+      - src/ui/node_modules/
+
+  before_script:
+    - apt-get update -y
+    - apt-get install curl git -y
+    - *node_setup
+
+  script:
+    # ⚠️ `--silent` is load-bearing, not tidiness. These suites `console.log` from
+    # component code and React emits an act(...) warning with a full component stack
+    # per occurrence; on the run profiled for this change that output hit GitLab's
+    # trace cap — "Job's log exceeded limit of 4194304 bytes. Job execution will
+    # continue but no more output will be collected." — partway through vitest. The
+    # job still passed, but anything that failed after that point would have had no
+    # diagnostic in the log at all, which is the worst shape a CI failure can have.
+    # It silences console output from tests only; failure output is unaffected.
+    - cd src/ui && npm ci --prefer-offline --no-audit && npx vitest run --silent && cd ../..
+
 deployment_validation:
   stage: deployment_validation
   interruptible: true
-  # Pre-deploy IAM sanity check — only worth running when the integration deploy
-  # is actually going to run: on develop, or on an MR targeting develop (incl.
-  # Draft, so the manual integration button has a validated role when clicked).
+  # Pre-deploy IAM sanity check, on the same trigger as the deploy it validates:
+  # the nightly schedule, or a manual click. There is no point validating a role
+  # for a deploy that is not about to happen.
+  #
+  # ⚠️ This job going nightly does NOT take the check off merge requests. The same
+  # script runs as the last step of `code_checks` above, where it costs seconds and
+  # needs no credentials. What is nightly-only is this job's AWS-CLI-installing
+  # form, kept because the nightly deploy path should validate the role in the
+  # environment that is about to use it rather than trusting the offline read.
   rules:
-    # Same deploy-affecting gate as integration_tests: skip the pre-deploy IAM
-    # check for doc/VERSION/CHANGELOG-only commits (there's no deploy to validate).
-    - if: $CI_COMMIT_BRANCH == "develop"
-      changes: *deploy_affecting_changes
+    - if: $CI_PIPELINE_SOURCE == "schedule"
     - if: $CI_MERGE_REQUEST_TARGET_BRANCH_NAME == "develop"
-      changes: *deploy_affecting_changes
+      when: manual
+      allow_failure: true
+    - if: $CI_COMMIT_BRANCH == "develop"
+      when: manual
+      allow_failure: true
     - when: never
 
   before_script:
@@ -241,20 +381,17 @@ integration_tests:
   # When this equalled the monitor's deadline, GitLab hard-killed the job first
   # and after_script never captured logs.
   timeout: 2h30m
-  # Serialize + auto-cancel superseded deploys: rapid pushes to a ready MR won't
-  # stack up N concurrent ~1h stack deploys (which previously exhausted account
-  # quotas). The resource_group is a size-1 mutex, so scoping it PER-BRANCH
-  # (CI_COMMIT_REF_SLUG) still serializes rapid pushes to the SAME MR (a newer
-  # pipeline supersedes an older queued one via interruptible) while letting
-  # DIFFERENT MRs deploy concurrently. NOTE: on develop, auto-cancel is disabled
-  # (workflow rule `on_new_commit: none` above), so `interruptible` has no
-  # effect there — every develop deploy runs to completion, serialized by this
-  # resource_group; supersede-on-push applies to MR pipelines only. Concurrency is therefore bounded by the
-  # number of active MRs (typically <=5); this is NOT a hard cap of 5. If
-  # concurrent deploys ever exhaust account quotas again, revert to a single
-  # shared group (`resource_group: integration_deploy`).
+  # Serialize deploys. The resource_group is a size-1 mutex; it is now scoped to a
+  # single SHARED group rather than per-branch, which is the right choice once the
+  # trigger is a nightly schedule plus occasional manual clicks: the thing it has to
+  # prevent is a manual run colliding with the scheduled one, and those are on
+  # different refs, so a per-branch group would not see the collision at all.
+  #
+  # (It was `integration_deploy_$CI_COMMIT_REF_SLUG` while every MR deployed
+  # automatically, to let different MRs deploy concurrently. That concurrency is
+  # what used to exhaust account quotas, and it no longer exists to be bounded.)
   interruptible: true
-  resource_group: integration_deploy_$CI_COMMIT_REF_SLUG
+  resource_group: integration_deploy
   variables:
     IDP_ADMIN_EMAIL: ${GITLAB_USER_EMAIL}
   # variables:
@@ -264,28 +401,49 @@ integration_tests:
   #   IDP_ACCOUNT_ID: ${IDP_ACCOUNT_ID}
 
   # The expensive (~1h) real-AWS deploy + probe suite. Trigger policy:
-  #   - push to develop                          → auto
-  #   - NON-Draft MR targeting develop           → auto (gates the merge)
-  #   - Draft MR targeting develop               → MANUAL button on the MR page
-  #     (run it when you want, not on every WIP push)
+  #   - the nightly schedule                     → auto
+  #   - any MR targeting develop                 → MANUAL button on the MR page
+  #   - push to develop                          → MANUAL button on the pipeline
   #   - anything else                            → never
-  # Note: rules are ordered — the non-Draft rule must precede the catch-all MR
-  # rule so a Draft MR falls through to the manual rule, not the auto one.
+  #
+  # ⚠️ THIS IS NO LONGER A MERGE GATE, and that is a deliberate trade — read it
+  # before relying on a green MR pipeline.
+  #
+  # What it buys: an MR pipeline is the fast_checks stage alone. The deploy used to
+  # add ~62-113 min to every MR and every push to develop, serialized AFTER a 45-min
+  # check stage, which is how a pipeline reached 111 min (MR) and 160 min (develop).
+  # It also removes the concurrent-deploy load that exhausted account quotas.
+  #
+  # What it costs: a change that breaks the deploy, or any of the twelve suite steps
+  # or five variant probes the deploy runs, can now MERGE and stay undetected until
+  # the next nightly run — by which time other merges may sit on top of it, so the
+  # nightly failure does not name the commit that caused it. There is no required
+  # status check on this repository to fall back on (issue #933), so nothing else
+  # catches it either.
+  #
+  # Three things follow from that, and all three matter:
+  #   - Somebody has to WATCH the nightly result. A scheduled pipeline nobody reads
+  #     is strictly worse than no pipeline, because it looks like coverage.
+  #   - Before merging anything that touches the deploy path (template.yaml,
+  #     patterns/, nested/, lib/, publish.py, the scripts/sdlc harness), CLICK THE
+  #     BUTTON on the MR. That is what it is for, and it is the only pre-merge
+  #     signal left. The `.deploy_affecting_changes` list above is the same set of
+  #     paths and is still the right definition of "touches the deploy path" — it is
+  #     no longer wired to a `changes:` rule here, because a manual button you click
+  #     deliberately should always be available.
+  #   - A nightly failure is triaged by bisecting the day's merges, not by reading
+  #     the pipeline's own commit.
   rules:
-    # Auto-run only when deploy-affecting files changed — a doc/VERSION/CHANGELOG-
-    # only commit skips the ~70-min deploy. (Draft MRs stay a manual button
-    # regardless, so you can always force a run by clicking it.)
-    - if: $CI_COMMIT_BRANCH == "develop"
-      changes: *deploy_affecting_changes
+    - if: $CI_PIPELINE_SOURCE == "schedule"
       when: on_success
-    - if: $CI_MERGE_REQUEST_TARGET_BRANCH_NAME == "develop" && $CI_MERGE_REQUEST_TITLE !~ /^Draft:/
-      changes: *deploy_affecting_changes
-      when: on_success
+    # Any MR targeting develop (Draft or not) gets the button. No `changes:`
+    # filter — a manual button you click deliberately should always be available,
+    # even on a doc-only branch. allow_failure so an un-clicked button does not
+    # hold the pipeline (manual rules block by default).
     - if: $CI_MERGE_REQUEST_TARGET_BRANCH_NAME == "develop"
-      # Draft MR → optional manual button; allow_failure so it doesn't block the
-      # pipeline while it sits un-clicked (manual rules block by default). No
-      # changes: filter — a manual button you click deliberately should always be
-      # available, even on a doc-only Draft.
+      when: manual
+      allow_failure: true
+    - if: $CI_COMMIT_BRANCH == "develop"
       when: manual
       allow_failure: true
     - when: never

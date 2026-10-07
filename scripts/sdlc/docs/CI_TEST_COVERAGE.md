@@ -94,14 +94,44 @@ payload-robustness corpus covers that goal directly. See
 
 ## Pipeline stages & triggers
 
-The GitLab pipeline has three stages, gated so cheap checks run everywhere and
-the expensive AWS deploy runs only when it's worth it:
+The GitLab pipeline has three stages. Everything a merge request runs is in the
+first one; the two AWS stages are **nightly plus a manual button**.
 
 | Stage | Jobs | AWS? | Cost |
 |-------|------|------|------|
-| **fast_checks** | `code_checks` (lint, typecheck, buildspec + CloudFormation template validation, static RBAC scan, service-role permission check, first-party dependency-confusion check, all unit suites, UI vitest), `srt_security_review` (SRT security scan) **and** `dep_audit` (SCA vs OSV) — run in **parallel** | No | ~minutes |
+| **fast_checks** | Seven **parallel** jobs, every one `needs: []`: `code_checks` (lint, typecheck, buildspec + CloudFormation template validation, static RBAC scan, service-role permission check, first-party dependency-confusion check), `unit_tests` (`idp_common_pkg`, ~10,500 tests, + the coverage ratchet), `package_tests` (`test-packages-cicd`), `ui_tests` (vitest), `srt_security_review`, `dep_audit` (SCA vs OSV), `ai_mr_review` (advisory) | No | critical path ≈ the slowest job |
 | **deployment_validation** | IAM service-role permission pre-check | Yes (read-only) | seconds |
-| **integration_tests** | Full stack deploy + primary suite (Steps 1–13) on the **primary shared stack only**. The deployment-variant probes no longer run here by default — see the ⚠️ note under "deployment-variant probe framework" (run them manually with `make stacktest-*`, or set `IDP_RUN_PROBES=true`). | Yes (deploys) | ~1 hour |
+| **integration_tests** | Full stack deploy + primary suite + the five deployment-variant probes | Yes (deploys) | ~1 hour |
+
+### Why fast_checks is seven jobs
+
+It was one `code_checks` job that ran lint, typecheck and every pytest suite in
+sequence, and it took **45 minutes** — of which 80% was pytest. Two independent
+things were wrong and both are fixed, because neither fix subsumes the other:
+
+- **`test-packages-cicd` ran every one of its 27 suites serial, single-process, on
+  a 16-vCPU runner** — 25 minutes, with `scripts/tests` alone at 640s for 3,858
+  tests and `lib/idp_sdk` at 441s for 2,663. Seven of those suites now run
+  `-n auto` (`PYTEST_XDIST` in the `Makefile`, which documents why only seven:
+  nineteen of the 27 finish in under 25s, and xdist's worker startup makes those
+  *slower*).
+- **The lint half waited on the test half** for no reason — they share no inputs.
+  Splitting the job means the stage costs its slowest member rather than the sum.
+
+`unit_tests` is now the critical path at ~11 min, and ⚠️ **more workers will not
+shorten it.** Profiled over the whole suite the slowest single test is 2.2s and
+the top 20 together are ~35s of a 10-minute run: the cost is ~10,000 × per-test
+fixture setup, spread flat, at 62% CPU on 14 cores. It is neither CPU-bound nor
+hostage to a few slow tests. Cutting it further means sharding it across several
+*jobs*, which needs a splitter plugin and a `coverage combine` before
+`make check-coverage-debt` can read a complete report — deliberately not done
+here, since the measured gain over the current shape is ~5 minutes.
+
+The split's cost, stated plainly: the Python environment is built in four jobs
+instead of one, so the pipeline **burns more runner minutes to finish in less
+wall-clock time**. Each job installs only what it needs — the two pytest jobs skip
+Node entirely, `ui_tests` skips the Python packages — which is most of what keeps
+that bill down, but it is a real trade.
 
 ### The GitHub side runs the same two security gates
 
@@ -190,23 +220,44 @@ GitHub's own Merge button runs no code from this tree.
 
 **Trigger matrix** — what runs, when:
 
-| Event | fast_checks (code + SRT) | ai_mr_review² | deployment_validation | integration_tests |
+| Event | fast_checks (7 parallel jobs) | ai_mr_review² | deployment_validation | integration_tests |
 |-------|:---:|:---:|:---:|:---:|
 | Push to any branch, **no MR** | ✅ | — | — | — |
-| Push to branch with a **Draft** MR → `develop` | ✅ | — | ✅¹ | ▶️ **manual** (button on MR) |
-| Push to branch with a **non-Draft** MR → `develop` | ✅ | ✅ auto | ✅¹ | ✅ auto¹ |
-| Push to **`develop`** | ✅ | — | ✅¹ | ✅ auto¹ |
+| Push to branch with a **Draft** MR → `develop` | ✅ | — | ▶️ **manual** | ▶️ **manual** (button on MR) |
+| Push to branch with a **non-Draft** MR → `develop` | ✅ | ✅ auto | ▶️ **manual** | ▶️ **manual** (button on MR) |
+| Push to **`develop`** | ✅ | — | ▶️ **manual** | ▶️ **manual** |
+| **Nightly schedule** | ✅ | — | ✅ auto | ✅ auto¹ |
 
-¹ **Doc-only commits skip the deploy stages.** `deployment_validation` and the
-auto `integration_tests` only run when the commit/MR touches a **deploy-affecting
-path** (the `.deploy_affecting_changes` allowlist in `.gitlab-ci.yml`:
-`template.yaml`, `publish.py`, `requirements*.txt`, `patterns/`, `nested/`,
-`src/`, `lib/`, `config_library/`, `feature-platform/`, `iam-roles/`, `scripts/`,
-`.gitlab-ci.yml`). A commit that changes only `VERSION`, `CHANGELOG.md`,
-`**/*.md`, `docs/`, `images/`, etc. skips the ~1h deploy entirely. The allowlist
-is deliberately generous (a false "run" wastes CI minutes; a false "skip" could
-merge a broken deploy). The **Draft-MR manual button ignores this filter** — you
-can always force a deploy by clicking it, even on a doc-only branch.
+¹ ⚠️ **THE DEPLOY IS NO LONGER A MERGE GATE.** This is the central trade in the
+current pipeline shape and it has to be read before a green MR pipeline is relied
+on.
+
+*What it buys.* An MR pipeline is `fast_checks` alone. The deploy used to add
+62–113 min to every MR and every push to `develop`, serialized **after** a 45-min
+check stage — which is how a merge request pipeline reached 111 minutes and a
+`develop` pipeline 160. It also removes the concurrent-deploy load that has
+exhausted account quotas in this project before.
+
+*What it costs.* A change that breaks the deploy, or any of the twelve suite steps
+or five variant probes the deploy runs, can now **merge** and stay undetected
+until the next nightly run — by which time other merges may sit on top of it, so
+the nightly failure does not name the commit that caused it. There is no required
+status check on this repository to fall back on (issue #933), so nothing else
+catches it.
+
+*Three consequences, all load-bearing:*
+
+- **Somebody has to watch the nightly result.** A scheduled pipeline nobody reads
+  is strictly worse than no pipeline, because it looks like coverage.
+- **Click the button before merging anything on the deploy path** —
+  `template.yaml`, `publish.py`, `patterns/`, `nested/`, `src/`, `lib/`,
+  `config_library/`, `feature-platform/`, `iam-roles/`, `scripts/`. That list is
+  still maintained as `.deploy_affecting_changes` in `.gitlab-ci.yml`, but it is
+  now **documentation rather than configuration**: it gates nothing, because a
+  manual button you click deliberately should always be available. It is the
+  definition of "touches the deploy path" to apply by hand.
+- **Triage a nightly failure by bisecting the day's merges**, not by reading the
+  pipeline's own commit.
 
 ² **`ai_mr_review` is advisory, is not a gate, and does not run on its own.** It
 runs Claude Code (via Bedrock) over the MR diff with
@@ -264,32 +315,41 @@ behind federated sign-in and a token alone cannot reach it. The unattended
 contract is `.claude/skills/pr-review-ci.md`.
 
 Notes:
-- **Every push runs fast_checks** (code checks + SRT), so lint/typecheck/unit and
+- **Every push runs fast_checks** (all seven jobs), so lint/typecheck/unit and
   security feedback is immediate on any branch — **including doc-only commits**
   (fast_checks has no changes: filter). GitLab emails the committer on failure.
-- The **~1h integration deploy runs only** on `develop` and on **non-Draft** MRs
-  targeting `develop` — **and only when deploy-affecting files changed** (see ¹).
-  On a **Draft** MR it's a **manual play button** on the MR page — run it on
-  demand, not on every WIP push.
+- The **~1h integration deploy runs on the nightly schedule**, plus a manual play
+  button on any MR targeting `develop` and on a `develop` pipeline. See ¹ for what
+  that means for merge safety.
+- **The service-role permission check still runs on every MR**, even though the
+  `deployment_validation` *job* is nightly-only: the same
+  `scripts/sdlc/validate_service_role_permissions.py` is the last step of
+  `code_checks`, where it costs seconds and needs no credentials. The nightly job
+  is the AWS-CLI-installing form, kept so the nightly deploy path validates the
+  role in the environment about to use it rather than trusting the offline read.
 - A `workflow:` rule prevents **duplicate** branch+MR pipelines (a branch with an
   open MR runs only the MR pipeline).
-- integration_tests uses a **per-branch** `resource_group`
-  (`integration_deploy_$CI_COMMIT_REF_SLUG`) + `interruptible`, so rapid pushes
-  to the *same* MR still serialize (a newer run supersedes an older queued one),
-  while *different* MRs deploy concurrently. Concurrency is bounded by the number
-  of active MRs (typically ≤5) — not a hard cap. If concurrent deploys ever
-  exhaust account quotas, revert to a single shared `resource_group:
-  integration_deploy`.
+- integration_tests uses a **single shared** `resource_group:
+  integration_deploy` — a size-1 mutex account-wide. Per-branch scoping
+  (`integration_deploy_$CI_COMMIT_REF_SLUG`) existed to let different MRs deploy
+  concurrently; with the trigger now a nightly schedule plus occasional manual
+  clicks, the collision to prevent is a manual run against the scheduled one, and
+  those are on **different refs** — which a per-branch group would not see at all.
 - **Auto-cancel is disabled on `develop`** (`workflow` rule with
-  `auto_cancel: on_new_commit: none`). Previously, *any* new push to develop —
-  including a doc-only commit whose pipeline skips the deploy stages — would
-  auto-cancel the in-flight ~1h integration deploy of the prior commit, and
-  that deploy was never re-run (the merge went permanently untested). Now every
-  develop pipeline runs to completion; back-to-back deploys serialize via the
-  resource_group rather than superseding each other. MR pipelines keep the
-  default supersede-on-push behavior (there, `changes:` compares against the
-  target branch, so a doc push to an MR that still touches deploy-affecting
-  files re-runs the deploy anyway).
+  `auto_cancel: on_new_commit: none`). GitLab cancels the previous pipeline on a
+  ref whenever any new pipeline is created there, and cannot condition that on
+  what the new commit touched.
+
+  The reason it stays disabled is **not** the one it was added for. Originally a
+  doc-only commit to develop would auto-cancel the in-flight ~1h deploy of the
+  prior code commit, which was then never re-run, leaving that merge permanently
+  untested — and no deploy runs automatically on develop any more, so that exact
+  sequence cannot recur. What can is the manual button: somebody clicks the deploy
+  on a develop pipeline, a doc commit lands while it runs, and default auto-cancel
+  kills a ~1h run a person deliberately started. Re-enabling the cancel would make
+  the only remaining pre-merge deploy signal unreliable in order to save a few
+  minutes of fast_checks time. MR pipelines keep the default supersede-on-push
+  behavior.
 
 ## Test Execution Strategy
 
