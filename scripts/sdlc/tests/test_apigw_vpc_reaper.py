@@ -25,7 +25,11 @@ These mock boto3 so they need no AWS.
 from pathlib import Path
 
 import pytest
-import yaml
+
+# The registered CFN loader, reused rather than redefined — see
+# _load_pipeline_template below for why that matters. conftest.py puts this
+# directory on sys.path so the import is collection-order independent.
+from test_config_schema_order import _CfnSafeLoader
 
 pytestmark = pytest.mark.unit
 
@@ -148,16 +152,51 @@ def test_already_failed_stack_skips_the_plain_delete(cbd, monkeypatch):
     assert cfn.waits == 0
 
 
-def test_already_failed_with_nothing_swept_spends_no_waiter(cbd, monkeypatch, capsys):
+def test_already_failed_and_refused_spends_no_waiter(cbd, monkeypatch, capsys):
+    # The one case where skipping is justified: the refusal proves the blocking
+    # ENIs are still attached, so a retry re-attempts the same resources.
+    cfn = _install(
+        cbd,
+        monkeypatch,
+        _FakeCfn(["DELETE_FAILED"], outputs={"VpcId": "vpc-1"}),
+        ec2=_Ec2(["eni-1"], deny=True),
+    )
+    assert cbd.delete_apigw_test_vpc("idp-0719-012130-apigw-vpc") is False
+    assert cfn.waits == 0
+    assert "Not spending the waiter" in capsys.readouterr().out
+
+
+def test_already_failed_with_nothing_left_to_sweep_still_retries(cbd, monkeypatch):
+    # An earlier run deleted the ENIs but its own retry failed, because
+    # releasing the security-group dependency is eventually consistent. There is
+    # nothing to sweep now and the retry is what finishes the job — so it must
+    # still be issued. Keying the skip on `not swept` made this a permanent
+    # no-op: the reaper runs every build, issues no delete, and the VPC leaks
+    # for good.
     cfn = _install(
         cbd,
         monkeypatch,
         _FakeCfn(["DELETE_FAILED"], outputs={"VpcId": "vpc-1"}),
         ec2=_Ec2([], deny=False),
     )
-    cbd.delete_apigw_test_vpc("idp-0719-012130-apigw-vpc")
-    assert cfn.waits == 0
-    assert "Not spending the waiter" in capsys.readouterr().out
+    assert cbd.delete_apigw_test_vpc("idp-0719-012130-apigw-vpc") is True
+    assert cfn.delete_calls == [{"StackName": "idp-0719-012130-apigw-vpc"}]
+
+
+def test_a_non_eni_blocker_is_still_retried_every_run(cbd, monkeypatch):
+    # DELETE_FAILED for a reason that was never ENIs — a DeleteNatGateway,
+    # ReleaseAddress or DeleteVpcEndpoints failure. The sweep finds nothing
+    # because there is nothing of its kind to find, and a per-run retry is what
+    # eventually clears a transient.
+    cfn = _install(
+        cbd,
+        monkeypatch,
+        _FakeCfn(["DELETE_FAILED"], outputs={"VpcId": "vpc-1"}, fail_waits=1),
+        ec2=_Ec2([], deny=False),
+    )
+    assert cbd.delete_apigw_test_vpc("idp-0719-012130-apigw-vpc") is False
+    assert len(cfn.delete_calls) == 1  # attempted, not skipped
+    assert cfn.waits == 1
 
 
 def test_retain_resources_is_never_requested(cbd, monkeypatch):
@@ -277,19 +316,18 @@ def test_sweep_with_nothing_to_do_is_not_denied(cbd, monkeypatch):
 
 
 def _load_pipeline_template():
-    class _Loader(yaml.SafeLoader):
-        pass
+    """Parse the pipeline template with the harness's registered CFN loader.
 
-    def _keep_operand(loader, _tag_suffix, node):
-        if isinstance(node, yaml.ScalarNode):
-            return loader.construct_scalar(node)
-        if isinstance(node, yaml.SequenceNode):
-            return loader.construct_sequence(node, deep=True)
-        return loader.construct_mapping(node, deep=True)
-
-    _Loader.add_multi_constructor("!", _keep_operand)
+    Deliberately NOT a local loader of its own.
+    test_cfn_loader_safety._LOADERS claims to cover "every CFN loader in the
+    SDLC harness" and parametrises its unsafe-deserialization assertions over
+    that list; a loader defined locally inside this function could not be named
+    there even in principle, so adding one would leave that tripwire green while
+    its stated scope had quietly become false. conftest.py puts this directory
+    on sys.path precisely so sibling modules can share the registered one.
+    """
     with open(_PIPELINE_TEMPLATE) as f:
-        loader = _Loader(f)
+        loader = _CfnSafeLoader(f)
         try:
             return loader.get_single_data()
         finally:
@@ -332,6 +370,66 @@ def test_the_grant_is_not_hidden_behind_a_condition():
             f"statement is not a plain mapping, so an intrinsic may be gating "
             f"the grant: {st!r}"
         )
+
+
+# ---------------------------------------------------------------------------
+# The summary line a human actually reads
+# ---------------------------------------------------------------------------
+
+
+class _ListOnlyCfn:
+    """Just enough CloudFormation to drive the stale-stack sweep."""
+
+    def __init__(self, names):
+        self._names = list(names)
+
+    def get_paginator(self, name):
+        from datetime import datetime, timedelta, timezone
+
+        old = datetime.now(tz=timezone.utc) - timedelta(days=30)
+        summaries = [{"StackName": n, "CreationTime": old} for n in self._names]
+
+        class _P:
+            def paginate(self, **kwargs):
+                return [{"StackSummaries": summaries}]
+
+        return _P()
+
+
+def _install_reaper(cbd, monkeypatch, names, outcome):
+    monkeypatch.setattr(cbd.boto3, "client", lambda *a, **k: _ListOnlyCfn(names))
+    monkeypatch.setattr(cbd, "delete_apigw_test_vpc", lambda n: outcome[n])
+
+
+def test_a_stack_left_stuck_is_not_counted_as_reaped(cbd, monkeypatch, capsys):
+    # The premise of this whole change is that two outcomes reading identically
+    # in the log is what hid the leak for eleven weeks. "Reaped 1" printed for a
+    # stack this reaper could not delete is that same defect one level up, in
+    # the one line a human reads.
+    _install_reaper(
+        cbd,
+        monkeypatch,
+        ["idp-0719-012130-apigw-vpc", "idp-0801-100000-apigw-vpc"],
+        {"idp-0719-012130-apigw-vpc": False, "idp-0801-100000-apigw-vpc": True},
+    )
+    cbd.cleanup_stale_apigw_test_vpcs()
+    out = capsys.readouterr().out
+    assert "✅ Reaped 1 stale apigw test VPC stack(s)" in out
+    assert "1 stale apigw test VPC stack(s) left stuck" in out
+    assert "idp-0719-012130-apigw-vpc" in out
+
+
+def test_no_success_line_when_every_stack_is_left_stuck(cbd, monkeypatch, capsys):
+    _install_reaper(
+        cbd,
+        monkeypatch,
+        ["idp-0719-012130-apigw-vpc"],
+        {"idp-0719-012130-apigw-vpc": False},
+    )
+    cbd.cleanup_stale_apigw_test_vpcs()
+    out = capsys.readouterr().out
+    assert "✅ Reaped" not in out
+    assert "left stuck" in out
 
 
 def test_reaper_never_raises_when_cloudformation_errors(cbd, monkeypatch):

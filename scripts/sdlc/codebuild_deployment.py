@@ -4360,6 +4360,10 @@ def delete_apigw_test_vpc(vpc_stack_name):
     VPC with no stack is invisible to every reaper here. A DELETE_FAILED stack
     is ugly and discoverable, which is the better of the two states.
 
+    Returns True if the stack is gone, False if it was left stuck. The caller
+    reports those separately: a reaper that prints the same summary either way
+    is the defect this function was changed to fix, one level up.
+
     Best effort — never raises.
     """
     print(f"[{vpc_stack_name}] Deleting test VPC...")
@@ -4381,7 +4385,7 @@ def delete_apigw_test_vpc(vpc_stack_name):
         try:
             _attempt()
             print(f"[{vpc_stack_name}] ✅ Test VPC deleted")
-            return
+            return True
         except Exception as e:  # noqa: BLE001
             print(
                 f"[{vpc_stack_name}] ⚠️ First delete failed ({e}); "
@@ -4406,36 +4410,47 @@ def delete_apigw_test_vpc(vpc_stack_name):
             f"this stack cannot be cleared from here at all."
         )
 
-    # Whether a retry is worth a 15-minute waiter depends on which case this
-    # is, and the two cases pull in opposite directions.
+    # Skip the retry only when the blocker is demonstrably still there, which
+    # is `denied` — NOT when the sweep merely had nothing to do.
     #
-    # A delete that failed THIS run gets a retry even when the sweep found
-    # nothing: the cause may have been a NAT gateway or VPC endpoint still
-    # settling, or throttling, and those clear on their own. Gating the retry on
-    # `swept` would skip the attempt that succeeds.
+    # `swept == 0` has three causes and they do not want the same treatment:
     #
-    # A stack that was ALREADY DELETE_FAILED when this run started, with nothing
-    # swept, is the eleven-week case: the blocker is unchanged, so the retry
-    # re-attempts the same resources and reaches the same state. That waiter is
-    # the entire per-run cost this function exists to stop paying.
-    if already_stuck and not swept:
+    #   1. the sweep was refused, so any blocking ENI is still attached to the
+    #      security group and a retry re-attempts the same resources. Skip.
+    #   2. ENIs were the blocker and an EARLIER run already deleted them, but
+    #      that run's own retry failed because releasing the security-group
+    #      dependency is eventually consistent. Nothing is left to sweep now and
+    #      a retry is exactly what finishes the job.
+    #   3. the stack is DELETE_FAILED for a reason that was never ENIs — a
+    #      DeleteNatGateway, ReleaseAddress or DeleteVpcEndpoints failure — where
+    #      a per-run retry eventually clears a transient.
+    #
+    # Keying on `not swept` collapsed all three and made cases 2 and 3 a
+    # permanent no-op: the startup reaper calls this at the head of every run,
+    # it issued no delete at all, and the VPC leaked for good — the outcome this
+    # function exists to prevent. The per-run waiter is worth paying to avoid
+    # that; what is not worth paying is the one case where the refusal already
+    # tells us the attempt cannot succeed.
+    if already_stuck and denied:
         print(
-            f"[{vpc_stack_name}] ❌ nothing swept and the stack was already "
-            f"DELETE_FAILED — the blocker is unchanged, so a retry would "
-            f"re-attempt the same resources. Not spending the waiter; the "
-            f"stack stays discoverable for the next run."
+            f"[{vpc_stack_name}] ❌ the sweep was refused and the stack was "
+            f"already DELETE_FAILED, so the blocking ENIs are still there and a "
+            f"retry would re-attempt the same resources. Not spending the "
+            f"waiter; the stack stays discoverable for the next run."
         )
-        return
+        return False
 
     try:
         _attempt()
         print(f"[{vpc_stack_name}] ✅ Test VPC deleted (after ENI sweep)")
+        return True
     except Exception as e:  # noqa: BLE001
         print(
             f"[{vpc_stack_name}] ❌ Test VPC still failed to delete after ENI "
             f"sweep: {e}. The stack stays DELETE_FAILED and discoverable; the "
             f"startup reaper will retry on the next run."
         )
+        return False
 
 
 # Only reap *-apigw-vpc stacks older than this. A manual/local PRIVATE-VPC
@@ -4499,10 +4514,23 @@ def cleanup_stale_apigw_test_vpcs():
             )
             return
 
+        # Count the two outcomes apart. Printing "Reaped N" for everything this
+        # reaper merely *attempted* is how a stack that cannot be deleted reads
+        # as a stack that was: the summary line is the only part of this a human
+        # looks at, and it said success on every one of the eleven weeks the
+        # leak survived.
+        reaped, stuck = [], []
         for name in stale:
             print(f"[{name}] reaping stale test VPC stack...")
-            delete_apigw_test_vpc(name)
-        print(f"✅ Reaped {len(stale)} stale apigw test VPC stack(s)")
+            (reaped if delete_apigw_test_vpc(name) else stuck).append(name)
+        if reaped:
+            print(f"✅ Reaped {len(reaped)} stale apigw test VPC stack(s)")
+        if stuck:
+            print(
+                f"❌ {len(stuck)} stale apigw test VPC stack(s) left stuck: "
+                f"{', '.join(stuck)}. Each still holds a VPC against the "
+                f"account's limit of 5 and needs a human."
+            )
     except Exception as e:  # noqa: BLE001
         print(f"⚠️ Stale apigw VPC cleanup failed: {e}")
 
