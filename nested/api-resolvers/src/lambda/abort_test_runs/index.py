@@ -338,7 +338,8 @@ def _wait_for_documents_terminal_state(tracking_table, test_run_id, object_keys,
     Wait for all documents in the test run to reach a terminal state.
 
     Terminal states for documents:
-    - COMPLETED with EvaluationStatus='COMPLETED' (finished evaluation)
+    - COMPLETED with a finished EvaluationStatus (COMPLETED, FAILED, TIMED_OUT
+      or NO_BASELINE)
     - ABORTED (stopped by abort workflow)
     - FAILED (processing failed)
 
@@ -380,7 +381,7 @@ def _wait_for_documents_terminal_state(tracking_table, test_run_id, object_keys,
                 # Terminal = processing done AND (evaluation done OR no evaluation needed)
                 if doc_status == 'COMPLETED':
                     # Document processing finished, check if evaluation is also done
-                    if eval_status in ('COMPLETED', 'FAILED', 'NO_BASELINE'):
+                    if eval_status in ('COMPLETED', 'FAILED', 'TIMED_OUT', 'NO_BASELINE'):
                         terminal_count += 1
                     else:
                         # Still evaluating (or evaluation not started yet)

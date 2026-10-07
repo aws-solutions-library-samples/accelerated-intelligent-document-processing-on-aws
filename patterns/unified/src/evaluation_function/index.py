@@ -31,8 +31,14 @@ SAVE_REPORTING_FUNCTION_NAME = os.environ.get(
 logger = logging.getLogger()
 logger.setLevel(os.environ.get("LOG_LEVEL", "INFO"))
 
-# Create document service
-document_service = create_document_service()
+_document_service = None
+
+
+def _get_document_service():
+    global _document_service
+    if _document_service is None:
+        _document_service = create_document_service()
+    return _document_service
 
 
 # Define evaluation status constants
@@ -65,7 +71,7 @@ def update_document_evaluation_status(
     logger.info(
         f"Updating document via document service: {document.input_key} with status: {status.value}"
     )
-    return document_service.update_document(document)
+    return _get_document_service().update_document(document)
 
 
 def extract_document_from_event(event: Dict[str, Any]) -> Optional[Document]:
@@ -325,7 +331,7 @@ def handler(event, context):
 
         # Set document status to EVALUATING before processing
         actual_document.status = Status.EVALUATING
-        document_service.update_document(actual_document)
+        _get_document_service().update_document(actual_document)
 
         # Update document evaluation status to RUNNING
         update_document_evaluation_status(actual_document, EvaluationStatus.RUNNING)
