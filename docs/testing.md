@@ -163,6 +163,45 @@ Adding an exclusion, or lifting one of these, fails that guard until this table 
 the registry agree — it is checked in both directions, so a row that outlives the
 exclusion it describes fails too.
 
+### The `integration`-marked tier runs in no CI
+
+Separate from the directory exclusions above, the tests marked
+`@pytest.mark.integration` are deselected from every suite on this page. **The
+mechanism is the runner, not a config file.** `scripts/run_all_tests.py` runs one
+`pytest -m "not integration" <root>` subprocess per root, so the filter applies to
+every root it discovers — including a new package under `lib/`, which inherits
+nothing. Only `lib/idp_common_pkg/pytest.ini` carries `addopts = -m "not
+integration"` of its own; `lib/idp_sdk` and `lib/idp_cli_pkg` have an empty
+`addopts`, and the root `pytest.ini` deliberately sets none, because an `addopts`
+there would silently change collection for every suite that resolves to it.
+
+Those tests call live AWS — real Bedrock, Textract, S3 and DynamoDB rather than
+`moto` — and within `idp_common` they are the only ones that do. (Layers 5 to 7
+below need AWS too, but none of them is a marked pytest suite.) They run with
+`make test-integration-all`, or per-package with `make test-integration`, and
+**nothing else runs them**: not `make test`, not GitHub, not GitLab. A person
+typing the target is the whole of their coverage.
+
+⚠️ **GitLab's `integration_tests` job is a different thing with a similar name.**
+It is the deploy-driven smoke suite in [layer 5](#5-integration-smoke-suite-ci-only)
+— a CodePipeline stack deployment — and it never invokes `pytest -m integration`.
+Reading the stage name as coverage of this tier is what let 14 of its 23 tests sit
+failing on tooling faults until a release validation found them
+([#1307](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/1307)):
+the tier was uncovered, and the exemption recording that it was local-only cited
+the stage as the reason it did not need to be. `test_ci_gate_parity.py`'s
+`test_the_integration_pytest_tier_runs_in_no_ci` now measures the absence instead
+of asserting the stage name, so if a CI starts running the tier, the stale
+exemption fails rather than the claim going quietly out of date.
+
+Two consequences worth keeping in mind when adding one of these tests. The marker,
+not the directory, is what makes a test part of this tier — `make test-integration`
+runs `pytest -m "integration"` over its whole *package* tree, so an
+integration-marked test
+under `tests/unit/` is in it. And because nothing gates them, a broken one stays
+broken: a test whose seams are all mocked needs no credentials and belongs in the
+default gate, where something will notice.
+
 ### A run can measure the wrong checkout, and the `make` targets pin against it
 
 `idp_common` and the SDKs are **editable installs**, so `import idp_common` reads
