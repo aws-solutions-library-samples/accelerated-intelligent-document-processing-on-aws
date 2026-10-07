@@ -1,18 +1,25 @@
 # Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
 # SPDX-License-Identifier: MIT-0
 
-"""The RealKIE-FCC-Verified configurations classify a file as one Invoice section.
+"""How the RealKIE-FCC-Verified configurations divide a file into sections.
 
 The test set's ground truth is one ``Invoice`` section per file spanning every
 page. Under the default ``sectionSplitting: llm_determined``, page-level
 classification asks the model about every page of a multi-page file, and a page
-it calls the start of a document splits the invoice. Each configuration shipped
-for the test set sets ``sectionSplitting: disabled``; with its single class that
-needs no model call at all.
+it calls the start of a document splits the invoice. The stack-managed
+``realkie-fcc-verified`` profile and the 1S-TopK reference configuration set
+``sectionSplitting: disabled``; with their single class that needs no model call
+at all.
+
+The deploy-time preset, ``unified/realkie-fcc-verified/config.yaml``, leaves the
+key unset. A stack deployed with ``ConfigurationPreset=realkie-fcc-verified``
+rebuilds its ``default`` profile from that file on every update, and ``default``
+is usually the active profile and the base an imported or newly uploaded profile
+is built on. Leaving the key unset keeps the default strategy there, so an
+upgrade never changes such a stack's ``default``.
 
 The configurations are merged with the system defaults, as the stack merges them
-before storing them, and discovered from the preset's directories rather than
-listed.
+before storing them.
 """
 
 from pathlib import Path
@@ -31,18 +38,11 @@ from idp_common.config.models import IDPConfig
 from idp_common.models import Document, Page, Status
 
 CONFIG_LIBRARY = Path(__file__).resolve().parents[5] / "config_library"
-PRESET_DIRS = (
-    "unified/realkie-fcc-verified",
-    "managed_config/realkie-fcc-verified",
+DEPLOY_TIME_PRESET = "unified/realkie-fcc-verified/config.yaml"
+WHOLE_DOCUMENT_CONFIGS = (
+    "managed_config/realkie-fcc-verified/config.yaml",
+    "unified/realkie-fcc-verified/config-1s-topk-with-ocr-image.yaml",
 )
-
-
-def _preset_files():
-    return [
-        pytest.param(path, id=str(path.relative_to(CONFIG_LIBRARY)))
-        for directory in PRESET_DIRS
-        for path in sorted((CONFIG_LIBRARY / directory).glob("*.yaml"))
-    ]
 
 
 def _stored_config(raw: dict) -> IDPConfig:
@@ -52,8 +52,8 @@ def _stored_config(raw: dict) -> IDPConfig:
     )
 
 
-def _load(path: Path) -> dict:
-    return yaml.safe_load(path.read_text(encoding="utf-8"))
+def _load(relative_path: str) -> dict:
+    return yaml.safe_load((CONFIG_LIBRARY / relative_path).read_text(encoding="utf-8"))
 
 
 def _service(config: IDPConfig) -> ClassificationService:
@@ -78,20 +78,40 @@ def _document(page_count: int) -> Document:
     return doc
 
 
-@pytest.mark.unit
-def test_the_preset_directories_hold_configurations():
-    found = {param.id for param in _preset_files()}
-    assert {
-        "unified/realkie-fcc-verified/config.yaml",
-        "managed_config/realkie-fcc-verified/config.yaml",
-    } <= found, f"preset configurations not discovered; found {sorted(found)}"
+def _invoice_pages_starting_at(starts: set[str]):
+    def classify_page(page_id, *args, **kwargs):
+        return PageClassification(
+            page_id=page_id,
+            classification=DocumentClassification(
+                doc_type="Invoice",
+                confidence=0.9,
+                metadata={
+                    "document_boundary": "start" if page_id in starts else "continue"
+                },
+            ),
+        )
+
+    return classify_page
+
+
+def _sections_under_page_level_boundaries(config: IDPConfig):
+    service = _service(config)
+    with patch.object(
+        service,
+        "classify_page",
+        side_effect=_invoice_pages_starting_at({"1", "3", "5"}),
+    ) as classify_page:
+        result = service.classify_document(_document(5))
+    return classify_page.call_count, [section.page_ids for section in result.sections]
 
 
 @pytest.mark.unit
-@pytest.mark.parametrize("path", _preset_files())
-def test_every_page_lands_in_one_invoice_section_without_a_model_call(path: Path):
+@pytest.mark.parametrize("relative_path", WHOLE_DOCUMENT_CONFIGS)
+def test_every_page_lands_in_one_invoice_section_without_a_model_call(
+    relative_path: str,
+):
     """Eleven pages, so ids 10 and 11 would expose a string sort of the page ids."""
-    config = _stored_config(_load(path))
+    config = _stored_config(_load(relative_path))
     assert config.classification.sectionSplitting == "disabled"
 
     service = _service(config)
@@ -113,37 +133,39 @@ def test_every_page_lands_in_one_invoice_section_without_a_model_call(path: Path
 
 
 @pytest.mark.unit
-@pytest.mark.parametrize("path", _preset_files())
-def test_without_the_setting_a_page_called_a_start_splits_the_invoice(path: Path):
+@pytest.mark.parametrize("relative_path", WHOLE_DOCUMENT_CONFIGS)
+def test_without_the_setting_a_page_called_a_start_splits_the_invoice(
+    relative_path: str,
+):
     """The default strategy reproduces the split: pages [1, 2], [3, 4] and [5]."""
-    raw = _load(path)
-    raw.setdefault("classification", {}).pop("sectionSplitting", None)
+    raw = _load(relative_path)
+    classification = raw.get("classification") or {}
+    classification.pop("sectionSplitting", None)
+    raw["classification"] = classification
     config = _stored_config(raw)
     assert config.classification.sectionSplitting == "llm_determined"
 
-    starts = {"1", "3", "5"}
+    assert _sections_under_page_level_boundaries(config) == (
+        5,
+        [["1", "2"], ["3", "4"], ["5"]],
+    )
 
-    def classify_page(page_id, *args, **kwargs):
-        return PageClassification(
-            page_id=page_id,
-            classification=DocumentClassification(
-                doc_type="Invoice",
-                confidence=0.9,
-                metadata={
-                    "document_boundary": "start" if page_id in starts else "continue"
-                },
-            ),
-        )
 
-    service = _service(config)
-    with patch.object(
-        service, "classify_page", side_effect=classify_page
-    ) as classify_page_mock:
-        result = service.classify_document(_document(5))
+@pytest.mark.unit
+def test_the_deploy_time_preset_keeps_the_default_strategy():
+    """A stack deployed with the preset keeps ``llm_determined`` in ``default``.
 
-    assert classify_page_mock.call_count == 5
-    assert [section.page_ids for section in result.sections] == [
-        ["1", "2"],
-        ["3", "4"],
-        ["5"],
-    ]
+    The preset is what such a stack rebuilds ``default`` from on every update, so
+    a value set here would change that profile, and the profiles later built on
+    it, on upgrade. Unset, the stored profile keeps the default strategy and a
+    multi-page file still goes to the model page by page for its boundaries.
+    """
+    raw = _load(DEPLOY_TIME_PRESET)
+    assert "sectionSplitting" not in (raw.get("classification") or {})
+
+    config = _stored_config(raw)
+    assert config.classification.sectionSplitting == "llm_determined"
+    assert _sections_under_page_level_boundaries(config) == (
+        5,
+        [["1", "2"], ["3", "4"], ["5"]],
+    )

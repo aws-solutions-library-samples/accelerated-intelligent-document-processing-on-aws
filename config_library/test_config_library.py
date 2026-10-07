@@ -391,52 +391,76 @@ REALKIE_FCC_PRESET_DIRS = (
     "unified/realkie-fcc-verified",
     "managed_config/realkie-fcc-verified",
 )
+REALKIE_FCC_DEPLOY_TIME_PRESET = "unified/realkie-fcc-verified/config.yaml"
+REALKIE_FCC_WHOLE_DOCUMENT_CONFIGS = (
+    "managed_config/realkie-fcc-verified/config.yaml",
+    "unified/realkie-fcc-verified/config-1s-topk-with-ocr-image.yaml",
+)
 
 
-def discover_realkie_fcc_configs():
-    """Every YAML configuration shipped for the RealKIE-FCC-Verified test set."""
-    return [
-        pytest.param(path, id=str(path.relative_to(CONFIG_LIBRARY_ROOT)))
-        for directory in REALKIE_FCC_PRESET_DIRS
-        for path in sorted((CONFIG_LIBRARY_ROOT / directory).glob("*.yaml"))
-    ]
+def _realkie_fcc_section_splitting(relative_path: str):
+    parsed = yaml.safe_load(
+        (CONFIG_LIBRARY_ROOT / relative_path).read_text(encoding="utf-8")
+    )
+    return (parsed.get("classification") or {}).get("sectionSplitting")
 
 
-class TestRealkieFccWholeDocumentSections:
-    """Each RealKIE-FCC-Verified file is one invoice, so it must be one section.
+class TestRealkieFccSectionSplitting:
+    """Which RealKIE-FCC-Verified configurations treat a file as one section.
 
-    The test set's ground truth is one ``Invoice`` section per file spanning every
-    page. Under the ``llm_determined`` default, page-level classification sometimes
-    takes a page in the middle of an invoice for the start of a new document and
-    splits the invoice into several sections, each extracted on its own, and Test
-    Studio lists the file as a classification error. The configurations are
-    discovered from the preset's directories rather than listed, so one added
-    beside them is held to the same rule.
+    Every file in the test set is one invoice, and its ground truth is one
+    ``Invoice`` section spanning every page. Under the ``llm_determined`` default,
+    page-level classification sometimes takes a page in the middle of an invoice
+    for the start of a new document and splits the invoice into several sections,
+    each extracted on its own, and Test Studio lists the file as a classification
+    error. The stack-managed ``realkie-fcc-verified`` profile, which Test Studio
+    selects for this test set, and the 1S-TopK reference configuration therefore
+    declare ``disabled``.
+
+    The deploy-time preset, ``unified/realkie-fcc-verified/config.yaml``, does not
+    set ``classification.sectionSplitting``. A stack deployed with
+    ``ConfigurationPreset=realkie-fcc-verified`` and no ``CustomConfigPath``
+    rebuilds its ``default`` profile from that file on every update, ``default`` is
+    usually the active profile, and an imported or newly uploaded profile is built
+    on it. With the key unset, such a stack keeps the default strategy, so an
+    upgrade never changes its ``default``.
     """
 
-    @pytest.mark.parametrize("config_file", discover_realkie_fcc_configs())
-    def test_declares_whole_document_sections(self, config_file: Path):
-        parsed = yaml.safe_load(config_file.read_text(encoding="utf-8"))
-        splitting = (parsed.get("classification") or {}).get("sectionSplitting")
+    @pytest.mark.parametrize("relative_path", REALKIE_FCC_WHOLE_DOCUMENT_CONFIGS)
+    def test_declares_whole_document_sections(self, relative_path: str):
+        splitting = _realkie_fcc_section_splitting(relative_path)
         assert splitting == "disabled", (
-            f"{config_file.relative_to(CONFIG_LIBRARY_ROOT)} sets "
-            f"classification.sectionSplitting to {splitting!r}. Every file in this "
-            f"test set is one invoice, so it needs 'disabled' (one section over every "
-            f"page). Anything else lets page-level classification split an invoice, "
-            f"and an unrecognised value is coerced to 'llm_determined' with only a "
-            f"logged warning."
+            f"{relative_path} sets classification.sectionSplitting to "
+            f"{splitting!r}. Every file in this test set is one invoice, so it needs "
+            f"'disabled' (one section over every page). Anything else lets page-level "
+            f"classification split an invoice, and an unrecognised value is coerced "
+            f"to 'llm_determined' with only a logged warning."
         )
 
-    def test_discovery_reaches_the_unified_and_managed_presets(self):
+    def test_the_deploy_time_preset_leaves_section_splitting_unset(self):
+        splitting = _realkie_fcc_section_splitting(REALKIE_FCC_DEPLOY_TIME_PRESET)
+        assert splitting is None, (
+            f"{REALKIE_FCC_DEPLOY_TIME_PRESET} sets classification.sectionSplitting "
+            f"to {splitting!r}. A stack deployed with this preset rebuilds its "
+            f"`default` profile from this file on every update, so the value would "
+            f"change that stack's `default` on upgrade, and every profile created "
+            f"from `default` afterwards would inherit it. Set it in "
+            f"{REALKIE_FCC_WHOLE_DOCUMENT_CONFIGS[0]} instead."
+        )
+
+    def test_every_configuration_for_the_test_set_has_a_rule(self):
         discovered = {
-            str(param.values[0].relative_to(CONFIG_LIBRARY_ROOT))
-            for param in discover_realkie_fcc_configs()
+            str(path.relative_to(CONFIG_LIBRARY_ROOT))
+            for directory in REALKIE_FCC_PRESET_DIRS
+            for path in (CONFIG_LIBRARY_ROOT / directory).iterdir()
+            if path.suffix in (".yaml", ".yml")
         }
-        for expected in (
-            "unified/realkie-fcc-verified/config.yaml",
-            "managed_config/realkie-fcc-verified/config.yaml",
-        ):
-            assert expected in discovered, (
-                f"{expected} is not discovered, so the whole-document check above "
-                f"does not cover it. Found: {sorted(discovered)}"
-            )
+        ruled = {REALKIE_FCC_DEPLOY_TIME_PRESET, *REALKIE_FCC_WHOLE_DOCUMENT_CONFIGS}
+        assert discovered == ruled, (
+            f"Configurations with no section-splitting rule: "
+            f"{sorted(discovered - ruled)}; listed but not found: "
+            f"{sorted(ruled - discovered)}. Add a new configuration for this test set "
+            f"to REALKIE_FCC_WHOLE_DOCUMENT_CONFIGS if it should treat each file as one "
+            f"invoice, and keep REALKIE_FCC_DEPLOY_TIME_PRESET naming the file a stack "
+            f"deploys as its `default`."
+        )
