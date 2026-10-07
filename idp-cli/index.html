@@ -576,6 +576,11 @@ exactly what a query string looks like.</li>
 </ul>
 </li>
 </ol>
+<p>⚠️ <strong>A CloudFormation deletion that failed exits 1 even under <code dir="auto">--force-delete-all</code>.</strong> The
+cleanup phase still runs — that is what the flag is for — and the non-zero exit comes
+after it, so you get both. Before this, <code dir="auto">--force-delete-all</code> printed “Stack deletion
+failed!” and exited 0, so a CI teardown job could not tell a stack that failed to delete
+from one that deleted cleanly.</p>
 <p><strong>Resources Always Cleaned Up (with <code dir="auto">--wait</code> or <code dir="auto">--force-delete-all</code>):</strong></p>
 <ul>
 <li>IAM custom policies (containing stack name)</li>
@@ -875,8 +880,24 @@ For test runs to appear properly in the Test Studio UI, use either:</p>
 <ul>
 <li><code dir="auto">0</code> - Document(s) completed successfully</li>
 <li><code dir="auto">1</code> - Document(s) failed</li>
-<li><code dir="auto">2</code> - Document(s) still processing</li>
+<li><code dir="auto">2</code> - Document(s) still processing, or the outcome could not be established</li>
 </ul>
+<p>⚠️ <strong><code dir="auto">--wait</code> and the polled table form now derive their code from the same place.</strong> A
+batch that finished with failures exits <code dir="auto">1</code> whether you polled it or waited on it; it
+used to exit <code dir="auto">0</code> when waited on. (<code dir="auto">--format json</code> is a third implementation of the rule
+and still disagrees with both on two document states — see the <code dir="auto">CHANGELOG</code> entry for
+#1230.) Before this change <code dir="auto">--wait</code> exited <code dir="auto">0</code> on
+that batch while the poll exited <code dir="auto">1</code>, which meant <code dir="auto">idp-cli status --wait &#x26;&#x26; deploy</code>
+proceeded after a batch in which every document failed. If you have a script that
+relied on <code dir="auto">--wait</code> always exiting <code dir="auto">0</code>, it will now stop on a failed batch — that is
+the intended behaviour, but it is a change.</p>
+<p><code dir="auto">--wait</code> also exits <code dir="auto">2</code> when the watch ended without a verdict: a monitoring error, or
+Ctrl-C. Nothing about the batch was measured on those paths, so <code dir="auto">0</code> would assert a
+success and <code dir="auto">1</code> would report failures that may not exist.</p>
+<p><code dir="auto">process --monitor</code> and <code dir="auto">rerun --monitor</code> deliberately still exit <code dir="auto">0</code> regardless of
+what the monitored batch did. Their work is the submission, which succeeded; exiting
+non-zero because 1 of 100 documents failed would stop <code dir="auto">process --monitor &#x26;&#x26; download-results</code> from collecting the 99 that worked. Ask for the batch’s verdict with
+<code dir="auto">idp-cli status --batch-id &#x3C;id></code>, which answers exactly that.</p>
 <p><strong>JSON Output Format:</strong></p>
 <div class="expressive-code"><figure class="frame is-terminal not-content"><figcaption class="header"><span class="title"></span><span class="sr-only">Terminal window</span></figcaption><pre data-language="bash"><code><div class="ec-line"><div class="code"><span style="--0:#919F9F;--1:#5F636F"># Single document</span></div></div><div class="ec-line"><div class="code"><span style="--0:#82AAFF;--1:#3B61B0">$</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#ECC48D;--1:#3B61B0">idp-cli</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#ECC48D;--1:#3B61B0">status</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#82AAFF;--1:#3B61B0">--stack-name</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#ECC48D;--1:#3B61B0">my-stack</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#82AAFF;--1:#3B61B0">--document-id</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#ECC48D;--1:#3B61B0">batch-123/invoice.pdf</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#82AAFF;--1:#3B61B0">--format</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#ECC48D;--1:#3B61B0">json</span></div></div><div class="ec-line"><div class="code"><span style="--0:#D6DEEB;--1:#403F53">{</span></div></div><div class="ec-line"><div class="code"><span class="indent">  </span><span style="--0:#82AAFF;--1:#3B61B0">"document_id"</span><span style="--0:#C5E478;--1:#3B61B0">:</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#D9F5DD;--1:#111111">"</span><span style="--0:#ECC48D;--1:#984E4D">batch-123/invoice.pdf</span><span style="--0:#D9F5DD;--1:#111111">"</span><span style="--0:#ECC48D;--1:#3B61B0">,</span></div></div><div class="ec-line"><div class="code"><span class="indent">  </span><span style="--0:#82AAFF;--1:#3B61B0">"status"</span><span style="--0:#C5E478;--1:#3B61B0">:</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#D9F5DD;--1:#111111">"</span><span style="--0:#ECC48D;--1:#984E4D">COMPLETED</span><span style="--0:#D9F5DD;--1:#111111">"</span><span style="--0:#ECC48D;--1:#3B61B0">,</span></div></div><div class="ec-line"><div class="code"><span class="indent">  </span><span style="--0:#82AAFF;--1:#3B61B0">"duration"</span><span style="--0:#C5E478;--1:#3B61B0">:</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#ECC48D;--1:#3B61B0">125.4,</span></div></div><div class="ec-line"><div class="code"><span class="indent">  </span><span style="--0:#82AAFF;--1:#3B61B0">"start_time"</span><span style="--0:#C5E478;--1:#3B61B0">:</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#D9F5DD;--1:#111111">"</span><span style="--0:#ECC48D;--1:#984E4D">2025-01-01T10:30:45Z</span><span style="--0:#D9F5DD;--1:#111111">"</span><span style="--0:#ECC48D;--1:#3B61B0">,</span></div></div><div class="ec-line"><div class="code"><span class="indent">  </span><span style="--0:#82AAFF;--1:#3B61B0">"end_time"</span><span style="--0:#C5E478;--1:#3B61B0">:</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#D9F5DD;--1:#111111">"</span><span style="--0:#ECC48D;--1:#984E4D">2025-01-01T10:32:50Z</span><span style="--0:#D9F5DD;--1:#111111">"</span><span style="--0:#ECC48D;--1:#3B61B0">,</span></div></div><div class="ec-line"><div class="code"><span class="indent">  </span><span style="--0:#82AAFF;--1:#3B61B0">"num_sections"</span><span style="--0:#C5E478;--1:#3B61B0">:</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#ECC48D;--1:#3B61B0">2,</span></div></div><div class="ec-line"><div class="code"><span class="indent">  </span><span style="--0:#82AAFF;--1:#3B61B0">"exit_code"</span><span style="--0:#C5E478;--1:#3B61B0">:</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#F78C6C;--1:#AA0982">0</span></div></div><div class="ec-line"><div class="code"><span style="--0:#D6DEEB;--1:#403F53">}</span></div></div><div class="ec-line"><div class="code">
 </div></div><div class="ec-line"><div class="code"><span style="--0:#919F9F;--1:#5F636F"># Table output includes final status summary</span></div></div><div class="ec-line"><div class="code"><span style="--0:#82AAFF;--1:#3B61B0">$</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#ECC48D;--1:#3B61B0">idp-cli</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#ECC48D;--1:#3B61B0">status</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#82AAFF;--1:#3B61B0">--stack-name</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#ECC48D;--1:#3B61B0">my-stack</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#82AAFF;--1:#3B61B0">--document-id</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#ECC48D;--1:#3B61B0">batch-123/invoice.pdf</span></div></div><div class="ec-line"><div class="code"><span style="--0:#D6DEEB;--1:#403F53">[status table]</span></div></div><div class="ec-line"><div class="code">
@@ -984,6 +1005,26 @@ evaluation baseline bucket and tracking table.</p>
 nothing, and that is all it means. A failure while finding the documents — a throttled or
 rejected table scan, a table that is not there — prints the cause and exits 1 instead of
 reporting that there was nothing to delete.</p>
+<p><strong>A delete that could not finish says so.</strong> Each document’s cleanup has several steps —
+the input object, every output version, the tracking-list row, the run records, the
+tracking record — and a step that fails is reported per document rather than being
+reported as a completed delete. A transient throttle is retried first — four attempts, and no
+further attempt starts once five seconds of retrying is spent — so what is reported is a
+sustained failure rather than a momentary one.</p>
+<p>Two things to expect when a delete is reported as failed:</p>
+<ul>
+<li><strong>The document’s tracking record is kept on purpose</strong> if its tracking-list row could
+not be cleared, because that record is what a retry needs to find the row. The document
+therefore still appears in the document list, while its input file and outputs may
+already be gone — so the entry can open a document whose content is no longer there.
+Run the same delete again: the retry picks up where the first attempt stopped.</li>
+<li><strong><code dir="auto">--dry-run</code> is unaffected</strong> and still issues no delete of any kind.</li>
+</ul>
+<p>A run in which <strong>every</strong> deletion failed also exits 1; it used to exit 0 after printing
+“Deleted 0/2 document(s)”, so an automated cleanup step reported success having deleted
+nothing.</p>
+<p>⚠️ A <strong>partial</strong> failure still exits 0. Read the per-document “Failed deletions:” list
+rather than the exit code when some documents may have survived.</p>
 <p><strong>Examples:</strong></p>
 <div class="expressive-code"><figure class="frame is-terminal not-content"><figcaption class="header"><span class="title"></span><span class="sr-only">Terminal window</span></figcaption><pre data-language="bash"><code><div class="ec-line"><div class="code"><span style="--0:#919F9F;--1:#5F636F"># Delete specific documents by ID</span></div></div><div class="ec-line"><div class="code"><span style="--0:#82AAFF;--1:#3B61B0">idp-cli</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#ECC48D;--1:#3B61B0">delete-documents</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#F78C6C;--1:#AA0982">\</span></div></div><div class="ec-line"><div class="code"><span class="indent">    </span><span style="--0:#82AAFF;--1:#3B61B0">--stack-name</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#ECC48D;--1:#3B61B0">my-stack</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#F78C6C;--1:#AA0982">\</span></div></div><div class="ec-line"><div class="code"><span class="indent">    </span><span style="--0:#82AAFF;--1:#3B61B0">--document-ids</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#D9F5DD;--1:#111111">"</span><span style="--0:#ECC48D;--1:#984E4D">batch-123/doc1.pdf,batch-123/doc2.pdf</span><span style="--0:#D9F5DD;--1:#111111">"</span></div></div><div class="ec-line"><div class="code">
 </div></div><div class="ec-line"><div class="code"><span style="--0:#919F9F;--1:#5F636F"># Delete all documents in a batch</span></div></div><div class="ec-line"><div class="code"><span style="--0:#82AAFF;--1:#3B61B0">idp-cli</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#ECC48D;--1:#3B61B0">delete-documents</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#F78C6C;--1:#AA0982">\</span></div></div><div class="ec-line"><div class="code"><span class="indent">    </span><span style="--0:#82AAFF;--1:#3B61B0">--stack-name</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#ECC48D;--1:#3B61B0">my-stack</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#F78C6C;--1:#AA0982">\</span></div></div><div class="ec-line"><div class="code"><span class="indent">    </span><span style="--0:#82AAFF;--1:#3B61B0">--batch-id</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#ECC48D;--1:#3B61B0">cli-batch-20250123</span></div></div><div class="ec-line"><div class="code">
@@ -1517,6 +1558,14 @@ not at one of them.</p>
 </div></div><div class="ec-line"><div class="code"><span style="--0:#919F9F;--1:#5F636F"># Download minimal config (only customizations)</span></div></div><div class="ec-line"><div class="code"><span style="--0:#82AAFF;--1:#3B61B0">idp-cli</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#ECC48D;--1:#3B61B0">config-download</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#82AAFF;--1:#3B61B0">--stack-name</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#ECC48D;--1:#3B61B0">my-stack</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#82AAFF;--1:#3B61B0">--format</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#ECC48D;--1:#3B61B0">minimal</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#82AAFF;--1:#3B61B0">--output</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#ECC48D;--1:#3B61B0">config.yaml</span></div></div><div class="ec-line"><div class="code">
 </div></div><div class="ec-line"><div class="code"><span style="--0:#919F9F;--1:#5F636F"># Print to stdout</span></div></div><div class="ec-line"><div class="code"><span style="--0:#82AAFF;--1:#3B61B0">idp-cli</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#ECC48D;--1:#3B61B0">config-download</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#82AAFF;--1:#3B61B0">--stack-name</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#ECC48D;--1:#3B61B0">my-stack</span></div></div><div class="ec-line"><div class="code">
 </div></div><div class="ec-line"><div class="code"><span style="--0:#919F9F;--1:#5F636F"># Download an exact revision — what an earlier run actually used</span></div></div><div class="ec-line"><div class="code"><span style="--0:#82AAFF;--1:#3B61B0">idp-cli</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#ECC48D;--1:#3B61B0">config-download</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#82AAFF;--1:#3B61B0">--stack-name</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#ECC48D;--1:#3B61B0">my-stack</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#82AAFF;--1:#3B61B0">--config-profile</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#ECC48D;--1:#3B61B0">lending</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#F78C6C;--1:#AA0982">\</span></div></div><div class="ec-line"><div class="code"><span class="indent">    </span><span style="--0:#82AAFF;--1:#3B61B0">--config-revision</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#F78C6C;--1:#AA0982">7</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#82AAFF;--1:#3B61B0">--output</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#ECC48D;--1:#3B61B0">r7.yaml</span></div></div></code></pre><div class="copy"><div aria-live="polite"></div><button title="Copy to clipboard" data-copied="Copied!" data-code="idp-cli config-download --stack-name my-stack --output config.yamlidp-cli config-download --stack-name my-stack --config-profile v2 --output config.yamlidp-cli config-download --stack-name my-stack --format minimal --output config.yamlidp-cli config-download --stack-name my-stackidp-cli config-download --stack-name my-stack --config-profile lending \    --config-revision 7 --output r7.yaml"><div></div></button></div></figure></div>
+<p>⚠️ <strong>A profile that does not exist is refused.</strong> A typo in
+<code dir="auto">--config-profile</code> used to exit 0 having written the YAML null document — so
+<code dir="auto">config-download --config-profile lendnig > config.yaml</code> left a file every downstream
+step reads as an <em>empty</em> configuration, under an exit code that said it worked. All
+three spellings (stdout, <code dir="auto">--output</code>, <code dir="auto">--format minimal</code>) now exit 1, name the profile
+they could not find, and write no file. A script that swallowed the exit code and
+carried on with the downloaded file will now be handed nothing instead of an empty
+configuration.</p>
 <hr>
 <div class="sl-heading-wrapper level-h3"><h3 id="config-upload"><code dir="auto">config-upload</code></h3><a class="sl-anchor-link" href="#config-upload"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 1 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 0 0-1.42-1.42m8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 1 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 0 0 0 1.42 1 1 0 0 0 1.42 0l3.88-3.89a4.49 4.49 0 0 0 0-6.33M8.83 15.17a1 1 0 0 0 .71.29 1 1 0 0 0 .71-.29l4.92-4.92a1 1 0 1 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42"></path></svg></span><span class="sr-only" data-pagefind-ignore="">Section titled “config-upload”</span></a></div>
 <p>Upload a configuration file to a deployed IDP stack.</p>
@@ -1530,7 +1579,7 @@ not at one of them.</p>
 <li><code dir="auto">--stack-name</code> (required): CloudFormation stack name</li>
 <li><code dir="auto">--config-file</code>, <code dir="auto">-f</code> (required): Path to configuration file (YAML or JSON)</li>
 <li><code dir="auto">--validate/--no-validate</code>: Validate config before uploading (default: validate)</li>
-<li><code dir="auto">--config-profile</code> (alias: <code dir="auto">--config-version</code>) <strong>(required)</strong>: Configuration profile to update (e.g., <code dir="auto">default</code>, <code dir="auto">v1</code>, <code dir="auto">v2</code>). If the profile doesn’t exist, it will be created automatically.</li>
+<li><code dir="auto">--config-profile</code> (alias: <code dir="auto">--config-version</code>) <strong>(required)</strong>: Configuration profile to update (e.g., <code dir="auto">default</code>, <code dir="auto">v1</code>, <code dir="auto">v2</code>). If the profile doesn’t exist, it will be created automatically. An <strong>empty</strong> value is refused with exit 1 and nothing is written; it used to land the configuration on a key no profile listing can see, reported as “Configuration is now active!” with exit 0</li>
 <li><code dir="auto">--version-description</code>: Description for the configuration <strong>profile</strong> (persisted on the profile and overwritten by every save)</li>
 <li><code dir="auto">--revision-notes</code>: What this upload changed, recorded on the <strong>revision</strong> it cuts and shown as <em>Notes</em> in the revision history (e.g. <code dir="auto">'raised topK to 20'</code>). Per-revision and immutable, unlike <code dir="auto">--version-description</code></li>
 <li><code dir="auto">--region</code>: AWS region (optional)</li>
@@ -1632,9 +1681,9 @@ command runs is the same replace-mode sync as
 from the BDA project that could not then be deleted. The deletes happen whatever became
 of the document classes, which makes an aborted activation the outcome most likely to
 have left one. Those ARNs are printed whether the activation succeeded or failed, and
-they are not counted as failed classes — the remedy is the orphaned-blueprint cleanup
-(the <code dir="auto">syncBdaIdp</code> API operation with direction <code dir="auto">cleanup_orphaned</code>), not a re-run of this
-command. See the <code dir="auto">config-sync-bda</code> section for the full explanation.</p>
+they are not counted as failed classes — the remedy is the orphaned-blueprint cleanup,
+<a href="#--direction-cleanup-orphaned"><code dir="auto">config-sync-bda --direction cleanup-orphaned</code></a>, not a
+re-run of this command. See the <code dir="auto">config-sync-bda</code> section for the full explanation.</p>
 <p><strong>Notes:</strong></p>
 <ul>
 <li>Sets the specified profile as active for all new document processing</li>
@@ -1698,6 +1747,16 @@ and <code dir="auto">run-inference</code>; omit it to process under the profile�
 <div class="expressive-code"><figure class="frame is-terminal not-content"><figcaption class="header"><span class="title"></span><span class="sr-only">Terminal window</span></figcaption><pre data-language="bash"><code><div class="ec-line"><div class="code"><span style="--0:#919F9F;--1:#5F636F"># Get results immediately (may show "EVALUATING" status if metrics not ready)</span></div></div><div class="ec-line"><div class="code"><span style="--0:#82AAFF;--1:#3B61B0">idp-cli</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#ECC48D;--1:#3B61B0">test-result</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#F78C6C;--1:#AA0982">\</span></div></div><div class="ec-line"><div class="code"><span class="indent">  </span><span style="--0:#82AAFF;--1:#3B61B0">--stack-name</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#ECC48D;--1:#3B61B0">my-stack</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#F78C6C;--1:#AA0982">\</span></div></div><div class="ec-line"><div class="code"><span class="indent">  </span><span style="--0:#82AAFF;--1:#3B61B0">--test-run-id</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#ECC48D;--1:#3B61B0">fake-w2-20260409-123456</span></div></div><div class="ec-line"><div class="code">
 </div></div><div class="ec-line"><div class="code"><span style="--0:#919F9F;--1:#5F636F"># Wait for evaluation to complete (recommended for CI/CD)</span></div></div><div class="ec-line"><div class="code"><span style="--0:#82AAFF;--1:#3B61B0">idp-cli</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#ECC48D;--1:#3B61B0">test-result</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#F78C6C;--1:#AA0982">\</span></div></div><div class="ec-line"><div class="code"><span class="indent">  </span><span style="--0:#82AAFF;--1:#3B61B0">--stack-name</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#ECC48D;--1:#3B61B0">my-stack</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#F78C6C;--1:#AA0982">\</span></div></div><div class="ec-line"><div class="code"><span class="indent">  </span><span style="--0:#82AAFF;--1:#3B61B0">--test-run-id</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#ECC48D;--1:#3B61B0">fake-w2-20260409-123456</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#F78C6C;--1:#AA0982">\</span></div></div><div class="ec-line"><div class="code"><span class="indent">  </span><span style="--0:#82AAFF;--1:#3B61B0">--wait</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#82AAFF;--1:#3B61B0">--timeout</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#F78C6C;--1:#AA0982">900</span></div></div><div class="ec-line"><div class="code">
 </div></div><div class="ec-line"><div class="code"><span style="--0:#919F9F;--1:#5F636F"># Save results to JSON file</span></div></div><div class="ec-line"><div class="code"><span style="--0:#82AAFF;--1:#3B61B0">idp-cli</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#ECC48D;--1:#3B61B0">test-result</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#F78C6C;--1:#AA0982">\</span></div></div><div class="ec-line"><div class="code"><span class="indent">  </span><span style="--0:#82AAFF;--1:#3B61B0">--stack-name</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#ECC48D;--1:#3B61B0">my-stack</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#F78C6C;--1:#AA0982">\</span></div></div><div class="ec-line"><div class="code"><span class="indent">  </span><span style="--0:#82AAFF;--1:#3B61B0">--test-run-id</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#ECC48D;--1:#3B61B0">fake-w2-20260409-123456</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#F78C6C;--1:#AA0982">\</span></div></div><div class="ec-line"><div class="code"><span class="indent">  </span><span style="--0:#82AAFF;--1:#3B61B0">--wait</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#82AAFF;--1:#3B61B0">--output-dir</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#ECC48D;--1:#3B61B0">./results</span></div></div></code></pre><div class="copy"><div aria-live="polite"></div><button title="Copy to clipboard" data-copied="Copied!" data-code="idp-cli test-result \  --stack-name my-stack \  --test-run-id fake-w2-20260409-123456idp-cli test-result \  --stack-name my-stack \  --test-run-id fake-w2-20260409-123456 \  --wait --timeout 900idp-cli test-result \  --stack-name my-stack \  --test-run-id fake-w2-20260409-123456 \  --wait --output-dir ./results"><div></div></button></div></figure></div>
+<p><strong>Exit codes:</strong> <code dir="auto">1</code> when the run’s <code dir="auto">status</code> is <code dir="auto">FAILED</code>, or when any file failed
+whatever the status is (a <code dir="auto">PARTIAL_COMPLETE</code> run with failures exits <code dir="auto">1</code>). <code dir="auto">0</code>
+otherwise, which includes the in-flight states — <code dir="auto">EVALUATING</code>, <code dir="auto">IN_PROGRESS</code>, <code dir="auto">QUEUED</code> —
+and, for now, <code dir="auto">ABORTED</code> with no failed files. Read the printed <code dir="auto">Status:</code> line rather
+than the exit code if you need to distinguish “passed” from “has not finished”. The
+results are printed before the exit either way, so you still get the accuracy figures
+for a failed run.</p>
+<p>⚠️ This command used to exit <code dir="auto">0</code> for a run with <code dir="auto">status="FAILED"</code> and every file
+failed, exactly like a clean pass, so <code dir="auto">idp-cli test-result ... &#x26;&#x26; deploy</code> proceeded on a
+failed evaluation. A CI job that relied on that will now stop, which is the point.</p>
 <p><strong>Output:</strong></p>
 <ul>
 <li>Overall accuracy, precision, recall, F1 score</li>
@@ -1995,9 +2054,10 @@ be rewritten to produce it.</p>
 <p><strong>Options:</strong></p>
 <ul>
 <li><code dir="auto">--stack-name</code> (required): CloudFormation stack name</li>
-<li><code dir="auto">--direction</code>: Sync direction — <code dir="auto">bidirectional</code> (default), <code dir="auto">bda-to-idp</code>, or <code dir="auto">idp-to-bda</code></li>
-<li><code dir="auto">--mode</code>: Sync mode — <code dir="auto">replace</code> (default, full alignment) or <code dir="auto">merge</code> (additive, don’t delete)</li>
+<li><code dir="auto">--direction</code>: Sync direction — <code dir="auto">bidirectional</code> (default), <code dir="auto">bda-to-idp</code>, <code dir="auto">idp-to-bda</code>, or <code dir="auto">cleanup-orphaned</code> (not a sync — see <a href="#--direction-cleanup-orphaned">below</a>)</li>
+<li><code dir="auto">--mode</code>: Sync mode — <code dir="auto">replace</code> (default, full alignment) or <code dir="auto">merge</code> (additive, don’t delete). Not read by <code dir="auto">cleanup-orphaned</code></li>
 <li><code dir="auto">--config-profile</code> (alias: <code dir="auto">--config-version</code>): Configuration profile to sync (default: active profile)</li>
+<li><code dir="auto">--force</code>: Skip the confirmation prompt. Only <code dir="auto">cleanup-orphaned</code> prompts</li>
 <li><code dir="auto">--region</code>: AWS region (optional)</li>
 </ul>
 <p><strong>Examples:</strong></p>
@@ -2031,9 +2091,37 @@ fails leaves a blueprint that is already out of the project. It is invisible to
 everything that reads the project, it still counts against the account’s blueprint
 limit, and a name-prefix match can still pick it up. Those ARNs are printed beside the
 result, and they do <strong>not</strong> count as failed classes: the classes may all have synced,
-and the outstanding work is a cleanup rather than a re-sync. Remove them with the
-orphaned-blueprint cleanup — the <code dir="auto">syncBdaIdp</code> API operation with direction
-<code dir="auto">cleanup_orphaned</code>.</p>
+and the outstanding work is a cleanup rather than a re-sync. Remove them with
+<code dir="auto">--direction cleanup-orphaned</code>, described next.</p>
+<div class="sl-heading-wrapper level-h4"><h4 id="--direction-cleanup-orphaned"><code dir="auto">--direction cleanup-orphaned</code></h4><a class="sl-anchor-link" href="#--direction-cleanup-orphaned"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 1 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 0 0-1.42-1.42m8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 1 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 0 0 0 1.42 1 1 0 0 0 1.42 0l3.88-3.89a4.49 4.49 0 0 0 0-6.33M8.83 15.17a1 1 0 0 0 .71.29 1 1 0 0 0 .71-.29l4.92-4.92a1 1 0 1 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42"></path></svg></span><span class="sr-only" data-pagefind-ignore="">Section titled “--direction cleanup-orphaned”</span></a></div>
+<p>Not a sync. It deletes every BDA blueprint carrying the stack’s name prefix that the
+named configuration profile’s classes do not account for. That is an <strong>account-wide</strong>
+scan rather than a project-scoped one, which is exactly why it is the only thing that
+can reach a blueprint a replace-mode sync disassociated but could not delete — such a
+blueprint is invisible to every read that goes through the project.</p>
+<div class="expressive-code"><figure class="frame is-terminal not-content"><figcaption class="header"><span class="title"></span><span class="sr-only">Terminal window</span></figcaption><pre data-language="bash"><code><div class="ec-line"><div class="code"><span style="--0:#82AAFF;--1:#3B61B0">idp-cli</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#ECC48D;--1:#3B61B0">config-sync-bda</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#82AAFF;--1:#3B61B0">--stack-name</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#ECC48D;--1:#3B61B0">my-stack</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#F78C6C;--1:#AA0982">\</span></div></div><div class="ec-line"><div class="code"><span class="indent">    </span><span style="--0:#82AAFF;--1:#3B61B0">--direction</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#ECC48D;--1:#3B61B0">cleanup-orphaned</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#82AAFF;--1:#3B61B0">--config-profile</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#ECC48D;--1:#3B61B0">v2</span></div></div></code></pre><div class="copy"><div aria-live="polite"></div><button title="Copy to clipboard" data-copied="Copied!" data-code="idp-cli config-sync-bda --stack-name my-stack \    --direction cleanup-orphaned --config-profile v2"><div></div></button></div></figure></div>
+<p>⚠️ <strong>The profile decides what survives, and the scope is the whole account.</strong> Blueprints
+belonging to a <em>different</em> profile of the same stack are orphans as far as this command
+is concerned, so naming the wrong profile — or letting it fall back to the active one
+when you meant another — deletes live blueprints. There is no dry run.</p>
+<p>It prompts for confirmation and will not proceed on an empty answer; <code dir="auto">--force</code> skips the
+prompt, which is what a script wants. <code dir="auto">--mode</code> is not read. The command reports how many
+blueprints it deleted and exits non-zero if any deletion failed, naming the ARNs that
+are still orphaned afterwards.</p>
+<p>⚠️ <strong>It refuses to run unless the profile exists.</strong> A name that is not a profile — a
+typo in <code dir="auto">--config-profile</code>, or a whitespace-only value — is refused with exit 1 and
+nothing is deleted, and so is having no profile at all (you named none and none is
+active). Either way the set of classes to keep would come out empty, which is
+indistinguishable from “keep nothing”, so every prefixed blueprint in the account would
+be deleted — and the typo is the worse of the two, because those include the live
+blueprints of the profile you meant. Name the profile explicitly on a stack with no
+active configuration.</p>
+<p>A profile that exists and declares <strong>no classes</strong> is not refused: keeping nothing is a
+real instruction, and every prefixed blueprint is deleted. That is the one case where
+the account-wide sweep is the whole point.</p>
+<p>The same operation is available as <code dir="auto">config.sync_bda(direction="cleanup_orphaned")</code> in
+the SDK and as the <code dir="auto">syncBdaIdp</code> API operation with direction <code dir="auto">cleanup_orphaned</code>. The Web
+UI has no control for it.</p>
 <hr>
 <div class="sl-heading-wrapper level-h3"><h3 id="chat"><code dir="auto">chat</code></h3><a class="sl-anchor-link" href="#chat"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 1 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 0 0-1.42-1.42m8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 1 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 0 0 0 1.42 1 1 0 0 0 1.42 0l3.88-3.89a4.49 4.49 0 0 0 0-6.33M8.83 15.17a1 1 0 0 0 .71.29 1 1 0 0 0 .71-.29l4.92-4.92a1 1 0 1 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42"></path></svg></span><span class="sr-only" data-pagefind-ignore="">Section titled “chat”</span></a></div>
 <p>Interactive Agent Companion Chat from the terminal. Provides access to the full multi-agent orchestrator including Analytics, Error Analyzer, Code Intelligence, and any configured External MCP Agents.</p>

@@ -190,6 +190,14 @@ from a cache that simply had not warmed yet.</p>
 appears in a prompt template, with no length check.</strong> That is correct behaviour —
 there is nothing better to do at that layer — but it means a document class whose
 prompt prefix is short simply never caches, permanently and silently.</p>
+<p>⚠️ <strong>There is no count check either, and Bedrock permits at most four
+<code dir="auto">cache_control</code> blocks per request.</strong> It counts them additively across the system
+prompt, the tool configuration and the message content, and rejects a fifth outright
+with <code dir="auto">ValidationException: A maximum of 4 blocks with cache_control may be provided.</code>
+— which fails the section rather than degrading. No shipped preset in
+<code dir="auto">config_library/</code> carries more than two markers, so this is a ceiling on
+customisation rather than a live problem: a hand-written prompt with five
+<code dir="auto">&#x3C;&#x3C;CACHEPOINT>></code> markers does not cache less, it fails.</p>
 <div class="sl-heading-wrapper level-h3"><h3 id="nova-is-different-and-much-more-forgiving">Nova is different, and much more forgiving</h3><a class="sl-anchor-link" href="#nova-is-different-and-much-more-forgiving"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 1 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 0 0-1.42-1.42m8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 1 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 0 0 0 1.42 1 1 0 0 0 1.42 0l3.88-3.89a4.49 4.49 0 0 0 0-6.33M8.83 15.17a1 1 0 0 0 .71.29 1 1 0 0 0 .71-.29l4.92-4.92a1 1 0 1 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42"></path></svg></span><span class="sr-only" data-pagefind-ignore="">Section titled “Nova is different, and much more forgiving”</span></a></div>
 <p><code dir="auto">us.amazon.nova-2-lite-v1:0</code>, same sweep: <strong>every</strong> prefix tested cached, including
 the smallest (a 355-token prefix produced <code dir="auto">cacheWrite: 355</code>). A write only happens

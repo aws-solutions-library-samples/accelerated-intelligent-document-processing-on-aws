@@ -1507,7 +1507,7 @@ revisions:</p>
 <li><strong>RUNNING</strong>: Files being copied and processed</li>
 <li><strong>EVALUATING</strong>: Documents processed, evaluation in progress</li>
 <li><strong>COMPLETED</strong>: Test finished successfully with all documents evaluated</li>
-<li><strong>PARTIAL_COMPLETE</strong>: Test finished with some documents failed</li>
+<li><strong>PARTIAL_COMPLETE</strong>: Test finished with some documents failed. A document whose evaluation failed or timed out (<code dir="auto">EvaluationStatus</code> <code dir="auto">FAILED</code> or <code dir="auto">TIMED_OUT</code>) counts as failed, and the run’s metrics cover the documents that were scored</li>
 <li><strong>FAILED</strong>: Errors during processing</li>
 <li><strong>ABORTED</strong>: Test run manually stopped before completion</li>
 </ul>

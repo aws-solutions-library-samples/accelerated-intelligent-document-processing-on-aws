@@ -604,9 +604,31 @@ partition key.</p>
 totals are unaffected, but the gap can be found rather than being read as
 free usage:</p>
 <div class="expressive-code"><link rel="stylesheet" href="/accelerated-intelligent-document-processing-on-aws/_astro/ec.w36nc.css"><script type="module" src="/accelerated-intelligent-document-processing-on-aws/_astro/ec.0vx5m.js"></script><figure class="frame not-content"><figcaption class="header"></figcaption><pre data-language="sql"><code><div class="ec-line"><div class="code"><span style="--0:#C792EA;--1:#8844AE">SELECT DISTINCT</span><span style="--0:#D6DEEB;--1:#403F53"> service_api, unit</span></div></div><div class="ec-line"><div class="code"><span style="--0:#C792EA;--1:#8844AE">FROM</span><span style="--0:#D6DEEB;--1:#403F53"> metering</span></div></div><div class="ec-line"><div class="code"><span style="--0:#C792EA;--1:#8844AE">WHERE</span><span style="--0:#D6DEEB;--1:#403F53"> unit_cost </span><span style="--0:#C792EA;--1:#8844AE">IS</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#C792EA;--1:#8844AE">NULL</span><span style="--0:#D6DEEB;--1:#403F53">;   </span><span style="--0:#919F9F;--1:#5F636F">-- add pricing entries for anything listed here</span></div></div></code></pre><div class="copy"><div aria-live="polite"></div><button title="Copy to clipboard" data-copied="Copied!" data-code="SELECT DISTINCT service_api, unitFROM meteringWHERE unit_cost IS NULL;   -- add pricing entries for anything listed here"><div></div></button></div></figure></div>
-<p>A unit that is simply <em>absent from an entry that exists</em> is a genuine <code dir="auto">0.0</code> —
-it is not chargeable for that service (e.g. Bedrock’s <code dir="auto">totalTokens</code> and
-<code dir="auto">requests</code>).</p>
+<p>A unit <em>absent from an entry that exists</em> is a genuine <code dir="auto">0.0</code> only when it is
+<strong>declared non-chargeable</strong> for that service, or when its metered count is <code dir="auto">0</code>
+(a count of zero costs nothing at any rate). The declaration lives in one place,
+<code dir="auto">idp_common.metering_units</code>, and each entry records the authority behind it.
+The basis on which that set was populated is that <strong>a unit appearing in no
+priced entry of AWS’s published price list is treated as non-chargeable</strong>:
+Bedrock’s <code dir="auto">totalTokens</code> and <code dir="auto">requests</code> are there because no Bedrock usagetype
+names a total token count, and on-demand model inference is priced in tokens,
+images or video and never per request.</p>
+<p>⚠️ <strong>That is an accepted assumption, not something the price list states.</strong> A
+price list catalogues published SKUs; it does not say what AWS bills. So a unit
+AWS charges for and publishes no dimension for is treated as free here and
+billed at <code dir="auto">$0.00</code>, and that risk is accepted rather than eliminated. It is
+bounded in one partial, measured way: every token unit the shipped Bedrock
+pricing prices does appear as a published Bedrock dimension, so on that service
+every unit known to be chargeable is listed. The non-Bedrock units this project
+meters — <code dir="auto">pages</code>, <code dir="auto">documents</code>, <code dir="auto">gb_seconds</code>, and Lambda <code dir="auto">requests</code> — were not
+checked against their own services’ price lists.</p>
+<p>Any <em>other</em> unit an entry omits is written as <code dir="auto">NULL</code>, not <code dir="auto">0.0</code>, and appears in
+the query above. That matters because Bedrock’s <code dir="auto">usage</code> block grows: a numeric
+field a future model returns reaches the metering table automatically, and if
+its absence from your pricing configuration were read as “free” it would be
+billed at <code dir="auto">$0.00</code> with nothing to distinguish it from a unit AWS does not
+charge for. If you see a unit listed by that query, add its rate to the pricing
+configuration for that model.</p>
 </li>
 </ul>
 <div class="sl-heading-wrapper level-h4"><h4 id="pricing-configuration-format">Pricing Configuration Format</h4><a class="sl-anchor-link" href="#pricing-configuration-format"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 1 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 0 0-1.42-1.42m8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 1 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 0 0 0 1.42 1 1 0 0 0 1.42 0l3.88-3.89a4.49 4.49 0 0 0 0-6.33M8.83 15.17a1 1 0 0 0 .71.29 1 1 0 0 0 .71-.29l4.92-4.92a1 1 0 1 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42"></path></svg></span><span class="sr-only" data-pagefind-ignore="">Section titled “Pricing Configuration Format”</span></a></div>
