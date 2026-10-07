@@ -85,7 +85,7 @@ See the main [README.md](../README.md) for more detailed instructions on creatin
 | [lending-package-sample](./lending-package-sample/) | Lending package processing (payslips, IDs, bank checks, W2s) | 6 document classes |
 | [lending-package-sample-govcloud](./lending-package-sample-govcloud/) | GovCloud-compatible lending package processing | |
 | [ocr-benchmark](./ocr-benchmark/) | OCR benchmarking configuration | |
-| [realkie-fcc-verified](./realkie-fcc-verified/) | FCC invoices (the RealKIE-FCC-Verified test set) | One section per file (`sectionSplitting: disabled`) |
+| [realkie-fcc-verified](./realkie-fcc-verified/) | FCC invoices (the RealKIE-FCC-Verified test set) | 1S-TopK reference configuration with one section per file (`config-1s-topk-with-ocr-image.yaml`) |
 | [rule-validation](./rule-validation/) | Rule validation configuration | Custom validation rules |
 | [rvl-cdip](./rvl-cdip/) | RVL-CDIP document classification benchmark | 16 document classes |
 | [rvl-cdip-with-few-shot-examples](./rvl-cdip-with-few-shot-examples/) | RVL-CDIP with few-shot learning examples | Custom prompts with `{FEW_SHOT_EXAMPLES}` |

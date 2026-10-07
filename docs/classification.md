@@ -499,7 +499,7 @@ The `sectionSplitting` configuration controls how classified pages are grouped i
 - Excludes unclassifiable/blank pages from voting to prevent them from affecting the result
 - If there's a tie, uses the first page's classification for determinism
 - Ignores any page-level classification boundaries
-- With a **single-class configuration**, sends no page to the model: every page is given that class with confidence `1.0`. Under `llm_determined`, a multi-page file in such a configuration is still classified page by page, for the boundary signal
+- With a **single-class configuration**, sends no page to the model: every page is given that class with confidence `1.0`. Under `llm_determined`, a multi-page file in such a configuration still goes to the model for its section boundaries: page by page with page-level classification, and in one call for the whole file with holistic classification
 
 **Use Cases:**
 - Documents known to be single-type with no internal divisions
