@@ -4334,51 +4334,39 @@ def _stack_status(cf, stack_name):
         return ""
 
 
-def _delete_failed_logical_ids(cf, stack_name):
-    """Logical ids of the resources whose own delete failed."""
-    try:
-        return [
-            r["LogicalResourceId"]
-            for r in cf.describe_stack_resources(StackName=stack_name).get(
-                "StackResources", []
-            )
-            if r.get("ResourceStatus") == "DELETE_FAILED"
-        ]
-    except Exception:  # noqa: BLE001
-        return []
-
-
 def delete_apigw_test_vpc(vpc_stack_name):
     """Delete the test VPC stack, recovering from ENI-blocked DELETE_FAILED.
 
-    Three paths, in order of what the stack's current status says is possible:
+    Sweeping the orphaned ENIs is the only mechanism that actually frees the
+    VPC, so the whole function is arranged around getting to the sweep cheaply
+    and saying clearly when it could not run.
 
-    1. Already DELETE_FAILED — go straight to the retain path below. Re-issuing
-       a plain delete here re-attempts the *same* resources and fails the same
-       way, so the waiter is spent to learn nothing. That is not hypothetical:
-       one stack sat DELETE_FAILED for eleven weeks and the plain-delete-first
-       order paid two 15-minute waiters for it at the head of nearly every
-       pipeline run, which is where the integration stage's 55→77min step
-       change came from.
-    2. Otherwise a plain delete. If it fails, orphaned Lambda ENIs holding the
-       subnets/SG are the usual culprit, so sweep the detached ones and retry.
-    3. Retain path: a DELETE_FAILED stack can be deleted with RetainResources
-       naming the resources that failed, which is CloudFormation's own escape
-       hatch and needs no EC2 permission at all. It orphans those resources
-       rather than leaving the whole stack *and* its VPC stranded, and a
-       security group plus two subnets cost nothing against a quota while a VPC
-       counts against a limit of five.
+    What changed, and the one thing deliberately NOT done. A stack found
+    already in DELETE_FAILED skips the plain delete: re-issuing it re-attempts
+    the same resources and fails the same way, so the waiter is spent to learn
+    nothing. One stack sat DELETE_FAILED for eleven weeks and that
+    plain-delete-first order paid two 15-minute waiters for it at the head of
+    nearly every pipeline run — the integration stage's 56→77min step change.
+
+    CloudFormation's RetainResources escape hatch looks like the obvious
+    fallback for when the sweep cannot run, and it is the wrong tool here.
+    Retaining the resources that failed means retaining the security group and
+    the private subnets, which are children of the VPC; CloudFormation then
+    attempts the VPC and DeleteVpc fails with DependencyViolation because those
+    children still exist. So either the attempt fails — no better than not
+    trying — or, if the VPC itself later lands in DELETE_FAILED and is retained
+    too, the stack record disappears while the VPC survives. That is strictly
+    worse: cleanup_stale_apigw_test_vpcs finds leaks by listing stacks, so a
+    VPC with no stack is invisible to every reaper here. A DELETE_FAILED stack
+    is ugly and discoverable, which is the better of the two states.
 
     Best effort — never raises.
     """
     print(f"[{vpc_stack_name}] Deleting test VPC...")
     cf = boto3.client("cloudformation")
 
-    def _attempt(retain=None):
-        kwargs = {"StackName": vpc_stack_name}
-        if retain is not None:
-            kwargs["RetainResources"] = retain
-        cf.delete_stack(**kwargs)
+    def _attempt():
+        cf.delete_stack(StackName=vpc_stack_name)
         cf.get_waiter("stack_delete_complete").wait(
             StackName=vpc_stack_name, WaiterConfig={"MaxAttempts": 60, "Delay": 15}
         )
@@ -4414,43 +4402,39 @@ def delete_apigw_test_vpc(vpc_stack_name):
             f"teardown grant from CodeBuildEC2VPCPolicy in "
             f"scripts/sdlc/cfn/codepipeline-s3.yml — check that policy rather "
             f"than the conditional one on CodeBuildRole, whose DeployInVPC "
-            f"condition is false whenever VpcId is empty. The retain path "
-            f"below does not need it."
+            f"condition is false whenever VpcId is empty. Until it is granted "
+            f"this stack cannot be cleared from here at all."
         )
 
-    if swept:
-        try:
-            _attempt()
-            print(f"[{vpc_stack_name}] ✅ Test VPC deleted (after ENI sweep)")
-            return
-        except Exception as e:  # noqa: BLE001
-            print(f"[{vpc_stack_name}] ⚠️ Delete after ENI sweep failed ({e})")
-
-    # Retain path. Only legal for a DELETE_FAILED stack, and RetainResources
-    # must name every resource in that state, so both are read live.
-    if _stack_status(cf, vpc_stack_name) != "DELETE_FAILED":
+    # Whether a retry is worth a 15-minute waiter depends on which case this
+    # is, and the two cases pull in opposite directions.
+    #
+    # A delete that failed THIS run gets a retry even when the sweep found
+    # nothing: the cause may have been a NAT gateway or VPC endpoint still
+    # settling, or throttling, and those clear on their own. Gating the retry on
+    # `swept` would skip the attempt that succeeds.
+    #
+    # A stack that was ALREADY DELETE_FAILED when this run started, with nothing
+    # swept, is the eleven-week case: the blocker is unchanged, so the retry
+    # re-attempts the same resources and reaches the same state. That waiter is
+    # the entire per-run cost this function exists to stop paying.
+    if already_stuck and not swept:
         print(
-            f"[{vpc_stack_name}] ❌ Test VPC not deleted and not DELETE_FAILED "
-            f"(delete may still be in progress). Startup reaper will retry."
+            f"[{vpc_stack_name}] ❌ nothing swept and the stack was already "
+            f"DELETE_FAILED — the blocker is unchanged, so a retry would "
+            f"re-attempt the same resources. Not spending the waiter; the "
+            f"stack stays discoverable for the next run."
         )
         return
-    retain = _delete_failed_logical_ids(cf, vpc_stack_name)
-    if not retain:
-        print(f"[{vpc_stack_name}] ❌ DELETE_FAILED but no failed resource to retain")
-        return
-    print(f"[{vpc_stack_name}] retrying delete, retaining {', '.join(retain)}")
+
     try:
-        _attempt(retain=retain)
-        print(
-            f"[{vpc_stack_name}] ✅ Test VPC deleted; orphaned {len(retain)} "
-            f"resource(s) ({', '.join(retain)}) — the VPC no longer counts "
-            f"against the account's VPC limit"
-        )
+        _attempt()
+        print(f"[{vpc_stack_name}] ✅ Test VPC deleted (after ENI sweep)")
     except Exception as e:  # noqa: BLE001
         print(
-            f"[{vpc_stack_name}] ❌ Test VPC still failed to delete after "
-            f"retaining {len(retain)} resource(s): {e}. "
-            f"Startup reaper will retry on the next run."
+            f"[{vpc_stack_name}] ❌ Test VPC still failed to delete after ENI "
+            f"sweep: {e}. The stack stays DELETE_FAILED and discoverable; the "
+            f"startup reaper will retry on the next run."
         )
 
 
