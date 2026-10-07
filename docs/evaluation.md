@@ -1655,7 +1655,10 @@ Two things changed to make that true:
 
 If you see `TIMED_OUT`, the document's extraction results are intact — only its
 score is missing. Re-run evaluation for that document after reducing the
-comparison work (see the warning about `LLM` methods inside lists, above).
+comparison work (see the warning about `LLM` methods inside lists, above). In a
+Test Studio run the document counts as a failed file, the same as `FAILED`, so
+the run finishes `PARTIAL_COMPLETE` with metrics over the documents that were
+scored.
 
 ## Troubleshooting Evaluation Issues
 
