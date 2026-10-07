@@ -45,11 +45,12 @@ class _FakeCfn:
         # entry repeats, so a test only spells out the transitions it cares
         # about.
         #
-        # fail_waits is how many of the leading delete waiters raise. 1 is the
-        # shape that matters: a first delete that fails and a retry that
-        # succeeds, which a single always-raises flag cannot express — and that
-        # gap is what let an earlier version of these tests pin the API call
-        # shape while saying nothing about the outcome.
+        # fail_waits is how many of the leading delete waiters raise, and it is
+        # a count rather than a boolean because 1 is the shape that matters: a
+        # first delete that fails and a retry that succeeds. An always-succeeds
+        # or always-raises double cannot express that, and a suite built on one
+        # can only assert which arguments were sent — which reads like an
+        # outcome assertion without being one.
         self._statuses = list(statuses)
         self._outputs = outputs or {}
         self._fail_waits = fail_waits
@@ -169,10 +170,10 @@ def test_already_failed_and_refused_spends_no_waiter(cbd, monkeypatch, capsys):
 def test_already_failed_with_nothing_left_to_sweep_still_retries(cbd, monkeypatch):
     # An earlier run deleted the ENIs but its own retry failed, because
     # releasing the security-group dependency is eventually consistent. There is
-    # nothing to sweep now and the retry is what finishes the job — so it must
-    # still be issued. Keying the skip on `not swept` made this a permanent
-    # no-op: the reaper runs every build, issues no delete, and the VPC leaks
-    # for good.
+    # nothing to sweep now and the retry is what finishes the job, so it must
+    # still be issued. The retry must never be skipped merely because the sweep
+    # found nothing: this reaper runs at the head of every build, and a skip
+    # here is a no-op on every one of them while the VPC stays leaked.
     cfn = _install(
         cbd,
         monkeypatch,
@@ -303,6 +304,33 @@ def test_sweep_reports_denied_separately_from_swept_nothing(cbd, monkeypatch):
         ec2=_Ec2(["eni-1"], deny=True),
     )
     assert cbd._force_delete_vpc_stack_enis("x") == (0, True)
+
+
+def test_a_refused_read_does_not_count_as_a_refused_delete(cbd, monkeypatch, capsys):
+    # `denied` is the caller's proof that the blocking ENIs are still attached,
+    # and it skips the delete on that basis. Only the ENI delete may establish
+    # it: a refused DescribeNetworkInterfaces (or DescribeStacks) says nothing
+    # about the blocker, so treating it as a refusal would skip the delete on
+    # every build while naming a grant that is already present.
+    class _RefusingRead:
+        def describe_network_interfaces(self, Filters):
+            raise _ClientErrorish("UnauthorizedOperation")
+
+    cfn = _install(
+        cbd,
+        monkeypatch,
+        _FakeCfn(["DELETE_FAILED"], outputs={"VpcId": "vpc-1"}),
+        ec2=_RefusingRead(),
+    )
+    assert cbd._force_delete_vpc_stack_enis("x") == (0, False)
+
+    # ...and end to end: the delete is still issued, and no permission-gap line
+    # points the reader at the ENI delete grant.
+    assert cbd.delete_apigw_test_vpc("idp-0719-012130-apigw-vpc") is True
+    assert cfn.delete_calls == [{"StackName": "idp-0719-012130-apigw-vpc"}]
+    out = capsys.readouterr().out
+    assert "HARNESS PERMISSION GAP" not in out
+    assert "ENI sweep could not run" in out
 
 
 def test_sweep_with_nothing_to_do_is_not_denied(cbd, monkeypatch):

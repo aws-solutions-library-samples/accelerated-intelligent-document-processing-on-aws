@@ -4283,8 +4283,12 @@ def _force_delete_vpc_stack_enis(vpc_stack_name):
     read identically in the log ("swept 0") but mean opposite things: nothing to
     sweep is fine, while `UnauthorizedOperation` means this role cannot clear
     the blocker no matter how many times the reaper runs. That silent
-    equivalence is how a missing `ec2:DeleteNetworkInterface` kept one stack
-    stuck for eleven weeks while every run paid two 15-minute waiters for it.
+    equivalence let a missing `ec2:DeleteNetworkInterface` keep one stack stuck
+    for eleven weeks while every run paid two 15-minute waiters for it.
+
+    `denied` means the ENI *delete* was refused, and only that. Nothing else may
+    set it — see the handlers below.
+
     Best effort — never raises.
     """
     deleted = 0
@@ -4316,13 +4320,22 @@ def _force_delete_vpc_stack_enis(vpc_stack_name):
                 deleted += 1
                 print(f"[{vpc_stack_name}]   force-deleted orphaned ENI {eni_id}")
             except Exception as e:  # noqa: BLE001
+                # `denied` is set HERE and nowhere else, because this is the only
+                # call whose refusal means "this role cannot delete an ENI". The
+                # caller treats it as proof the blocker is still attached and
+                # skips the retry on that basis, so a refusal from anything else
+                # must not reach it: a missing DescribeStacks or
+                # DescribeNetworkInterfaces would otherwise skip the delete on
+                # every build forever, and send the reader to a grant that is
+                # already present.
                 if _is_authorization_error(e):
                     denied = True
                 print(f"[{vpc_stack_name}]   ⚠️ could not delete ENI {eni_id}: {e}")
     except Exception as e:  # noqa: BLE001
-        if _is_authorization_error(e):
-            denied = True
-        print(f"[{vpc_stack_name}]   ⚠️ ENI sweep failed: {e}")
+        # A sweep that could not be read tells us nothing about the blocker, so
+        # it is not a refusal to delete. The error text names the action that
+        # failed; the retry proceeds on the chance the stack deletes anyway.
+        print(f"[{vpc_stack_name}]   ⚠️ ENI sweep could not run: {e}")
     return deleted, denied
 
 
@@ -4341,24 +4354,23 @@ def delete_apigw_test_vpc(vpc_stack_name):
     VPC, so the whole function is arranged around getting to the sweep cheaply
     and saying clearly when it could not run.
 
-    What changed, and the one thing deliberately NOT done. A stack found
-    already in DELETE_FAILED skips the plain delete: re-issuing it re-attempts
-    the same resources and fails the same way, so the waiter is spent to learn
-    nothing. One stack sat DELETE_FAILED for eleven weeks and that
+    A stack found already in DELETE_FAILED does not get a plain delete first:
+    re-issuing it re-attempts the same resources and fails the same way, so the
+    waiter is spent to learn nothing. The cost of getting that wrong is
+    measured — one stack sat DELETE_FAILED for eleven weeks and the
     plain-delete-first order paid two 15-minute waiters for it at the head of
-    nearly every pipeline run — the integration stage's 56→77min step change.
+    nearly every pipeline run, which is the integration stage's 56→77min step
+    change.
 
-    CloudFormation's RetainResources escape hatch looks like the obvious
-    fallback for when the sweep cannot run, and it is the wrong tool here.
-    Retaining the resources that failed means retaining the security group and
-    the private subnets, which are children of the VPC; CloudFormation then
-    attempts the VPC and DeleteVpc fails with DependencyViolation because those
-    children still exist. So either the attempt fails — no better than not
-    trying — or, if the VPC itself later lands in DELETE_FAILED and is retained
-    too, the stack record disappears while the VPC survives. That is strictly
-    worse: cleanup_stale_apigw_test_vpcs finds leaks by listing stacks, so a
-    VPC with no stack is invisible to every reaper here. A DELETE_FAILED stack
-    is ugly and discoverable, which is the better of the two states.
+    RetainResources is not an option here, and the reason is worth stating so it
+    is not retried. Retaining the resources that failed means retaining the
+    security group and the private subnets, which are children of the VPC;
+    CloudFormation then attempts the VPC and DeleteVpc fails with
+    DependencyViolation because those children still exist. Retaining the VPC as
+    well does delete the stack record, and leaves the VPC alive with no stack —
+    invisible to every reaper here, because cleanup_stale_apigw_test_vpcs finds
+    leaks by listing stacks. A DELETE_FAILED stack is ugly and discoverable,
+    which is the better of the two states.
 
     Returns True if the stack is gone, False if it was left stuck. The caller
     reports those separately: a reaper that prints the same summary either way
@@ -4410,27 +4422,30 @@ def delete_apigw_test_vpc(vpc_stack_name):
             f"this stack cannot be cleared from here at all."
         )
 
-    # Skip the retry only when the blocker is demonstrably still there, which
-    # is `denied` — NOT when the sweep merely had nothing to do.
+    # Skip the retry on BOTH conjuncts below and on nothing less: the sweep was
+    # refused, AND the stack was already DELETE_FAILED when this run started.
+    # Together those mean the blocking ENIs are still attached to a stack whose
+    # delete has already been tried against them, so the attempt cannot
+    # succeed. Either one alone must still retry — a first-time DELETE_FAILED
+    # may clear on a second attempt even if the sweep was refused, and a refused
+    # sweep says nothing about a stack that was healthy a moment ago.
     #
-    # `swept == 0` has three causes and they do not want the same treatment:
+    # In particular the skip must never key on the sweep having found nothing.
+    # `swept == 0` has three causes and only the first wants skipping:
     #
-    #   1. the sweep was refused, so any blocking ENI is still attached to the
-    #      security group and a retry re-attempts the same resources. Skip.
-    #   2. ENIs were the blocker and an EARLIER run already deleted them, but
+    #   1. the sweep was refused, so any blocking ENI is still attached.
+    #   2. ENIs were the blocker and an earlier run already deleted them, but
     #      that run's own retry failed because releasing the security-group
-    #      dependency is eventually consistent. Nothing is left to sweep now and
-    #      a retry is exactly what finishes the job.
+    #      dependency is eventually consistent. Nothing is left to sweep and the
+    #      retry is what finishes the job.
     #   3. the stack is DELETE_FAILED for a reason that was never ENIs — a
     #      DeleteNatGateway, ReleaseAddress or DeleteVpcEndpoints failure — where
     #      a per-run retry eventually clears a transient.
     #
-    # Keying on `not swept` collapsed all three and made cases 2 and 3 a
-    # permanent no-op: the startup reaper calls this at the head of every run,
-    # it issued no delete at all, and the VPC leaked for good — the outcome this
-    # function exists to prevent. The per-run waiter is worth paying to avoid
-    # that; what is not worth paying is the one case where the refusal already
-    # tells us the attempt cannot succeed.
+    # Cases 2 and 3 have nothing of this mechanism's kind to find, and skipping
+    # them would make this function a no-op on every build while the VPC stayed
+    # leaked — the outcome it exists to prevent. A per-run waiter is the right
+    # price for avoiding that.
     if already_stuck and denied:
         print(
             f"[{vpc_stack_name}] ❌ the sweep was refused and the stack was "
