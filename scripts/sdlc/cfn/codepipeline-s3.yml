@@ -775,7 +775,10 @@ Resources:
       cfn_nag:
         rules_to_suppress:
           - id: W12
-            reason: "EC2 networking create/delete actions cannot be resource-scoped (resources are created by this policy); the test VPC is a throwaway stack torn down in the same build"
+            # One reason per member, because the first clause is false for the
+            # last action: ec2:DeleteNetworkInterface targets ENIs this policy
+            # never created.
+            reason: "EC2 networking create/delete actions cannot be resource-scoped (resources are created by this policy); the test VPC is a throwaway stack torn down in the same build; ec2:DeleteNetworkInterface is the exception to the first clause -- it targets orphaned ENIs that Lambda's VPC attachment created, in a throwaway VPC whose id is not known at template time, so neither the ENI nor its VPC can be named here"
     Properties:
       PolicyName: CodeBuildEC2VPCTest
       Roles:

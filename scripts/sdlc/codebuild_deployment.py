@@ -4408,6 +4408,14 @@ def delete_apigw_test_vpc(vpc_stack_name):
 
     swept, denied = _force_delete_vpc_stack_enis(vpc_stack_name)
     print(f"[{vpc_stack_name}] swept {swept} orphaned ENI(s)")
+    if swept:
+        # Deleting an ENI does not release its security-group dependency
+        # synchronously, so a delete issued immediately after the sweep can
+        # still fail on the group the sweep just freed — and that costs the full
+        # waiter, not 30 seconds. This window is the same eventual consistency
+        # case 2 below describes; settling here is what stops the stack being
+        # carried to another run.
+        time.sleep(30)
     if denied:
         # A permission gap, not a transient. Say so in the words that identify
         # it, because the symptom ("swept 0") is identical to having nothing to

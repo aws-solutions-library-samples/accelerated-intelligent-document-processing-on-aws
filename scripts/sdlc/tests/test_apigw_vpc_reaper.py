@@ -184,6 +184,28 @@ def test_already_failed_with_nothing_left_to_sweep_still_retries(cbd, monkeypatc
     assert cfn.delete_calls == [{"StackName": "idp-0719-012130-apigw-vpc"}]
 
 
+def test_a_failure_this_run_is_retried_even_when_the_sweep_was_refused(
+    cbd, monkeypatch
+):
+    # The skip requires BOTH conjuncts, and this is the case that pins the
+    # `and`: a stack healthy at the start of this run whose first delete failed.
+    # A refused sweep says nothing about it, so the retry must still be issued.
+    # Without this test the condition can be rewritten to a bare `if denied:`
+    # with the whole suite still green.
+    cfn = _install(
+        cbd,
+        monkeypatch,
+        _FakeCfn(
+            ["CREATE_COMPLETE", "DELETE_FAILED"],
+            outputs={"VpcId": "vpc-1"},
+            fail_waits=1,
+        ),
+        ec2=_Ec2(["eni-1"], deny=True),
+    )
+    cbd.delete_apigw_test_vpc("idp-0920-120000-apigw-vpc")
+    assert len(cfn.delete_calls) == 2  # a refused sweep alone must not skip it
+
+
 def test_a_non_eni_blocker_is_still_retried_every_run(cbd, monkeypatch):
     # DELETE_FAILED for a reason that was never ENIs — a DeleteNatGateway,
     # ReleaseAddress or DeleteVpcEndpoints failure. The sweep finds nothing
@@ -205,6 +227,7 @@ def test_retain_resources_is_never_requested(cbd, monkeypatch):
     # the VPC delete that follows fails on DependencyViolation; retaining the
     # VPC too would hide the leak from a reaper that lists stacks. Neither is
     # wanted, so no delete call may carry RetainResources — in any path.
+    issued = 0
     for statuses, enis, deny in (
         (["DELETE_FAILED"], ["eni-1"], True),
         (["DELETE_FAILED"], ["eni-1"], False),
@@ -219,6 +242,12 @@ def test_retain_resources_is_never_requested(cbd, monkeypatch):
         )
         cbd.delete_apigw_test_vpc("idp-0719-012130-apigw-vpc")
         assert all("RetainResources" not in c for c in cfn.delete_calls)
+        issued += len(cfn.delete_calls)
+    # `all()` over an empty list is true, so a scenario that issues no delete
+    # satisfies the assertion above without exercising it. Require that the
+    # scenarios collectively issued some deletes, or the whole test could pass
+    # while inspecting nothing.
+    assert issued > 0
 
 
 # ---------------------------------------------------------------------------
