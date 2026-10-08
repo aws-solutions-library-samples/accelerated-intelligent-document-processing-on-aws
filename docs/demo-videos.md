@@ -315,7 +315,7 @@ https://github.com/user-attachments/assets/1d17ea33-f098-4d9e-a461-1113b9dc3ce9
 ---
 
 ### Test Set - ConfBench (Confidence & OCR Robustness)
-Installable Feature Platform extension that deploys the [amazon/ConfBench](https://huggingface.co/datasets/amazon/ConfBench) benchmark into Test Studio on demand — the 75 verified FCC invoices degraded with up to 21 Augraphy noise pipelines into 1,346 (document, noise variant) pairs with identical ground truth. Purpose-built for measuring confidence calibration, OCR robustness, and extraction quality as input quality degrades, with results directly comparable to the clean RealKIE-FCC-Verified baseline.
+Installable Feature Platform extension that deploys the [amazon/ConfBench](https://huggingface.co/datasets/amazon/ConfBench) benchmark into Test Studio on demand — the 75 verified FCC invoices degraded with up to 21 Augraphy noise pipelines into 1,346 (document, noise variant) pairs with identical ground truth. Purpose-built for measuring confidence calibration, OCR robustness, and extraction quality as input quality degrades, with results directly comparable to the clean RealKIE-FCC-Verified baseline when both test sets run on one configuration version: the stack-managed `realkie-fcc-verified` profile sets `classification.sectionSplitting: disabled`, and the extension's preset does not set it.
 
 https://github.com/user-attachments/assets/0b164e6d-c694-4127-8be9-45ec7fd41bee
 
