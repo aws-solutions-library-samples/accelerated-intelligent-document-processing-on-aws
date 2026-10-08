@@ -33,10 +33,21 @@ shared ``haiku`` stem reports an 8x-too-high minimum. In ``cache_audit.py`` the 
 is scanned in **insertion order**, so getting it right is a question of line order
 rather than of content, which no amount of reading the values would reveal.
 
-What is asserted is agreement plus total coverage, both derived: every model id any
-copy knows about resolves to the same number in every copy that can express it, and
-every entry in the product's table is represented in each of the other four. The
-numbers themselves are not restated here — this file would then be a sixth copy.
+Two things are asserted, both derived, and the second is **not** uniform across the
+copies — read the scope before trusting a green run:
+
+* **Agreement**, on every family two copies both name. One published fact must not
+  have two answers.
+* **Coverage**, against a universe that differs by consumer, because the copies
+  legitimately hold different sets and demanding equality everywhere would invent a
+  requirement that fails today for reasons predating this file. The web UI mirrors
+  the product's gate, so its universe is the **product table** — equal sets. The
+  three benchmark tools are only ever pointed at models the benchmark runs, so
+  theirs is the **Claude ids on a** ``config_matrix.yaml`` **axis**, six families
+  today out of the product's thirteen. The nine families on neither get
+  agreement-only treatment.
+
+The numbers themselves are not restated here — this file would then be a sixth copy.
 """
 
 from __future__ import annotations
@@ -135,11 +146,6 @@ def _normalise(label: str) -> str:
     return label.strip().lower().replace(" ", "-").replace(".", "-")
 
 
-def _family_label(family: str) -> str:
-    """ "claude-haiku-5-5" -> "haiku-5-5"."""
-    return family.removeprefix("claude-")
-
-
 class TestEveryCopyAgrees:
     """Agreement on the INTERSECTION. Scoped that way on purpose.
 
@@ -182,15 +188,68 @@ class TestEveryCopyAgrees:
         self._assert_agrees(survey, product_tiers, "cache_prefix_survey.TIERS")
 
 
-class TestEveryBenchmarkedModelIsCovered:
-    """Every model the benchmark matrix names must be covered by all five copies.
+class TestTheUiTableCoversEveryFamily:
+    """The web UI gets the PRODUCT table as its universe — equal sets, not a subset.
 
-    This is the coverage half, and the set is **derived from the matrix** rather than
-    authored: ``config_matrix.yaml``'s axes are what decides which models the scan,
-    the survey and the probe are ever pointed at, so a model added to an axis is
-    exactly a model those three have to be able to annotate. That is the property
-    Haiku 5.5 broke — it went onto two axes while three of the five copies kept no
-    entry for it, so the scan printed no minimum for the arm it was added to run.
+    It is the only copy that earns that demand, and it is the copy whose omission
+    costs a user the most. ``minCacheablePrefixTokens`` backs the "may not cache"
+    badge in the configuration UI, so a family missing from it means a class author
+    configuring that model is told nothing, on the one screen where the remedy (add
+    field descriptions, pick a lower-minimum model, turn caching off) is offered.
+    Its universe is therefore the set of models a configuration can name, which is
+    what the product table tracks — not the benchmark's scope, which is why the
+    axis-derived universe used for the three benchmark tools must not be reused here.
+
+    ⚠️ This class exists because the first version of this file did not have it, and
+    the gap was invisible: deleting the UI's entire smallest tier —
+    ``[/claude-(opus-5|fable-5|haiku-5-5)/, 512]``, three families at once — left all
+    eight tests green. The agreement half cannot see a *missing* family by
+    construction, since it intersects the two key sets, and the coverage half never
+    opened this file. A control with a hole exactly where the defect it was written
+    for would recur is worse than no control, because the green run is now evidence.
+    """
+
+    def test_the_ui_names_every_family_the_product_does(self, product_tiers):
+        ts = _ts_tiers()
+        assert ts, f"parsed no tiers out of {UI_TS}; this check is vacuous"
+        missing = sorted(set(product_tiers) - set(ts))
+        assert not missing, (
+            f"{missing} have a published minimum in prompt_cache.py and no entry in "
+            f"{os.path.relpath(UI_TS, REPO)}, so minCacheablePrefixTokens returns "
+            "null for them and the configuration UI shows no minimum at all — no "
+            "badge, no number, no remedy. Unlike the benchmark tools, this copy's "
+            "universe is every model a configuration can name, so a subset is not "
+            "good enough here."
+        )
+
+    def test_the_ui_resolves_each_benchmarked_id_to_the_same_number(self):
+        """Resolution, not membership, for the same reason the scan is checked that
+        way: the UI scans its tiers in array order with a regex test, so a broader
+        pattern placed earlier shadows a later one."""
+        prompt_cache = pytest.importorskip("idp_common.bedrock.prompt_cache")
+        ts = _ts_tiers()
+        for family, minimum in _product_tiers().items():
+            model_id = f"us.anthropic.{family}"
+            assert prompt_cache.min_cacheable_prefix_tokens(model_id) == minimum
+            assert ts.get(family) == minimum, (
+                f"the web UI resolves {family} to {ts.get(family)}, not {minimum}."
+            )
+
+
+class TestEveryBenchmarkedModelIsCovered:
+    """Every model the benchmark MATRIX names must be covered by the three tools.
+
+    The set is **derived from the matrix** rather than authored: ``config_matrix.yaml``'s
+    axes are what decides which models the scan, the survey and the probe are ever
+    pointed at, so a model added to an axis is exactly a model those three have to be
+    able to annotate. That is the property Haiku 5.5 broke — it went onto two axes
+    while three of the five copies kept no entry for it, so the scan printed no
+    minimum for the arm it was added to run.
+
+    Scope note, because a green run here says less than it looks like: this universe
+    is six Claude families today against the product table's thirteen, and it is the
+    right universe for these three tools and the WRONG one for the web UI. The UI is
+    covered against the product table in ``TestTheUiTableCoversEveryFamily`` above.
     """
 
     @staticmethod

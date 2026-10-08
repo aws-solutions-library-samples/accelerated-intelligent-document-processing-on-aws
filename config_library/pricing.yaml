@@ -457,6 +457,9 @@ pricing:
 
   # ":1m" long-context variant — same rates as the base entry above. The 1M
   # context window carries no price premium; see the header note.
+  # ⚠️ Carries Sonnet 4.6's rates, a uniform 1.50x high, like the other five
+  # Sonnet 5 rows. The full explanation and the correct figures are on the
+  # us.anthropic.claude-sonnet-5 block above; fix all six together or none.
   - name: bedrock/us.anthropic.claude-sonnet-5:1m
     units:
       - name: inputTokens
@@ -958,6 +961,9 @@ pricing:
       - name: cacheWriteInputTokens
         price: "4.125E-6"
 
+  # ⚠️ Carries Sonnet 4.6's rates, a uniform 1.50x high, like the other five
+  # Sonnet 5 rows. The full explanation and the correct figures are on the
+  # us.anthropic.claude-sonnet-5 block above; fix all six together or none.
   - name: bedrock/eu.anthropic.claude-sonnet-5
     units:
       - name: inputTokens
@@ -984,6 +990,9 @@ pricing:
 
   # ":1m" long-context variant — same rates as the base entry above. The 1M
   # context window carries no price premium; see the header note.
+  # ⚠️ Carries Sonnet 4.6's rates, a uniform 1.50x high, like the other five
+  # Sonnet 5 rows. The full explanation and the correct figures are on the
+  # us.anthropic.claude-sonnet-5 block above; fix all six together or none.
   - name: bedrock/eu.anthropic.claude-sonnet-5:1m
     units:
       - name: inputTokens
@@ -1239,6 +1248,9 @@ pricing:
       - name: cacheWriteInputTokens
         price: "3.75E-6"
 
+  # ⚠️ Carries Sonnet 4.6's rates, a uniform 1.50x high, like the other five
+  # Sonnet 5 rows. The full explanation and the correct figures are on the
+  # us.anthropic.claude-sonnet-5 block above; fix all six together or none.
   - name: bedrock/global.anthropic.claude-sonnet-5
     units:
       - name: inputTokens
@@ -1265,6 +1277,9 @@ pricing:
 
   # ":1m" long-context variant — same rates as the base entry above. The 1M
   # context window carries no price premium; see the header note.
+  # ⚠️ Carries Sonnet 4.6's rates, a uniform 1.50x high, like the other five
+  # Sonnet 5 rows. The full explanation and the correct figures are on the
+  # us.anthropic.claude-sonnet-5 block above; fix all six together or none.
   - name: bedrock/global.anthropic.claude-sonnet-5:1m
     units:
       - name: inputTokens
