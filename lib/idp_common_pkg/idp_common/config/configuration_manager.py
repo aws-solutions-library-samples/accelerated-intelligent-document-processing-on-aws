@@ -615,10 +615,11 @@ class ConfigurationManager:
         introduced history. When that save changes nothing, the backfill is
         published, with the stored-content hash its own body implies rather than
         the hash of the head the save wrote: `True == 1`, so a save that swaps one
-        for the other inside a class counts as unchanged although the head it
-        writes stores the configuration differently from the backfill.
+        for the other wherever the configuration model leaves a value untyped, as
+        it does inside a class, counts as unchanged although the head it writes
+        stores the configuration differently from the backfill.
 
-        A save that does not change the configuration records nothing. Every
+        Any other save that does not change the configuration cuts no revision. Every
         stack deployment re-saves `default` and each managed profile whether or
         not the shipped configuration moved, so without this a handful of no-op
         upgrades would fill the retention window with identical revisions and
@@ -790,8 +791,8 @@ class ConfigurationManager:
         revision was cut. The second rule accepts the head the revision's own save
         wrote, so it accepts it for a pre-history backfill an earlier release
         published on an unchanged save too, although that save may have stored the
-        configuration differently from the backfill (`True` swapped for `1` in a
-        class).
+        configuration differently from the backfill (`True` swapped for `1` where
+        the configuration model leaves a value untyped, as in a class).
         """
         recorded = entry.get("storedHash")
         if recorded:

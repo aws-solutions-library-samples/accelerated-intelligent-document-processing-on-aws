@@ -491,8 +491,9 @@ the head the save wrote. A head changed by a writer that cut no revision is
 therefore never recorded as the published revision; for example, a Lambda without
 `CONFIGURATION_BUCKET`, where history is disabled. Nor is the head an unchanged
 save wrote when it stores something the replaced head did not: `True == 1`, so
-swapping one for the other inside a class counts as unchanged, yet the head then
-stores `"1"` where the revision held `true`.
+swapping one for the other wherever the configuration model leaves a value
+untyped, as it does inside a class, counts as unchanged, yet the head then stores
+`"1"` where the revision held `true`.
 
 The first save after upgrading into revision history follows the same rule. It
 cuts the configuration it replaces as a pre-history backfill, and when it changes
@@ -503,13 +504,15 @@ stored the configuration differently, a pinned read of the backfill therefore
 raises once its body expires, instead of being served from the head.
 
 So once a body has expired, an unchanged save keeps the revision servable when the
-head it replaces was proven, including across a release that stores the same
-configuration differently, but it cannot prove a head that was not. A revision cut
-before `storedHash` existed is the case to know. Until a save records its hash, the
-legacy rule is its only proof, and that proof is gone the first time anything
-rewrites the head. Earlier releases rewrote the head on every unchanged save and
-recorded nothing, so once the body of a revision whose head they rewrote has
-expired, nothing can prove it unless a refresh recorded its hash while the body
+head it replaces was proven and the head it writes is exactly how the current code
+stores that head's configuration. An upgrade to a release that stores the same
+configuration differently meets that condition; a save that swaps `True` for `1` as
+above does not. Where the replaced head was not proven, the save proves nothing. A
+revision cut before `storedHash` existed is the case to know. Until a save records
+its hash, the legacy rule is its only proof, and that proof is gone the first time
+anything rewrites the head. Earlier releases rewrote the head on every unchanged
+save and recorded nothing, so once the body of a revision whose head they rewrote
+has expired, nothing can prove it unless a refresh recorded its hash while the body
 still existed. A pinned read of it raises, as does a pinned read of a revision
 whose head a writer changed without cutting one.
 
