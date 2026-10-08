@@ -456,6 +456,55 @@ class TestExpiredPublishedBody:
             manager.get_merged_configuration("p", revision=1)
         assert manager.get_revision("p", 1) is None
 
+    def test_the_published_revision_is_served_only_while_it_is_the_newest(
+        self, monkeypatch
+    ):
+        """
+        A save writes the head before it allocates its revision number, so a head
+        whose LatestRevision has moved past the published revision may hold a
+        configuration no revision recorded. The published revision is then not
+        served from it, even while the head still hashes to that revision.
+        """
+        _make_table()
+        manager = _manager(monkeypatch)
+        manager.save_configuration(CONFIG_TYPE_CONFIG, _config("live"), version="p")
+        manager.revisions.next_number("p")
+        _expire_body("p", 1)
+
+        with pytest.raises(ValueError, match="not available"):
+            manager.get_merged_configuration("p", revision=1)
+
+    def test_the_newest_revision_is_served_only_while_it_is_published(
+        self, monkeypatch
+    ):
+        """
+        A first save after upgrading into revision history that changes the
+        configuration writes the head, cuts the configuration it replaced as an
+        unpublished backfill, then cuts its own revision. If its own cut fails, the
+        backfill is the newest revision and was cut after the head was written, so
+        the legacy rule alone would serve the save's configuration as the backfill.
+        """
+        _make_table()
+        _manager(monkeypatch, with_bucket=False).save_configuration(
+            CONFIG_TYPE_CONFIG, _config("before"), version="p"
+        )
+        manager = _manager(monkeypatch)
+        cut = manager.revisions.cut
+
+        def cut_only_the_backfill(profile, config_dict, **kwargs):
+            if kwargs.get("publish", True):
+                raise RuntimeError("throttled")
+            return cut(profile, config_dict, **kwargs)
+
+        monkeypatch.setattr(manager.revisions, "cut", cut_only_the_backfill)
+        manager.save_configuration(CONFIG_TYPE_CONFIG, _config("after"), version="p")
+        _expire_body("p", 1)
+
+        assert [r["revision"] for r in manager.list_revisions("p")] == [1]
+        assert manager.resolve_published_revision("p") is None
+        with pytest.raises(ValueError, match="not available"):
+            manager.get_merged_configuration("p", revision=1)
+
     def test_a_head_rewritten_without_a_revision_is_refused(self, monkeypatch):
         """
         A writer with revision history disabled updates the head and cuts nothing,
@@ -793,6 +842,28 @@ class TestExpiredPublishedBody:
         ]
         assert _stored_content_hash(head) == "b26a02095c8935891409b2bc7429c1fa"
         assert _stored_content_hash(rewritten) == _stored_content_hash(head)
+
+    def test_an_attribute_stamped_beside_the_configuration_is_not_hashed(
+        self, monkeypatch
+    ):
+        """
+        A feature's config preset stamps `_feature_id` on the head after the save
+        that cut its revision. The hash covers only the configuration
+        `_decompress_item` rebuilds from the compressed attribute, so the stamped
+        head is still that revision once its body expires.
+        """
+        _make_table()
+        manager = _manager(monkeypatch)
+        manager.save_configuration(CONFIG_TYPE_CONFIG, _config("live"), version="p")
+        manager.table.update_item(
+            Key={"Configuration": "Config#p"},
+            UpdateExpression="SET #fid = :fid",
+            ExpressionAttributeNames={"#fid": "_feature_id"},
+            ExpressionAttributeValues={":fid": "some-feature"},
+        )
+        _expire_body("p", 1)
+
+        assert manager.get_merged_configuration("p", revision=1).notes == "live"
 
     def test_the_stored_hash_stays_out_of_the_revision_list(self, monkeypatch):
         """The revision list is what the API returns; the hash is internal proof."""
