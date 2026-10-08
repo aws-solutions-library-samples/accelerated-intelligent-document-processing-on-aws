@@ -463,7 +463,11 @@ the head. It does so only when all of these hold:
 - the head is proven to hold it, by either:
   - its `storedHash` matching the head now. Every revision a save publishes
     records one: a hash of its configuration as the head stores it, excluding
-    metadata. For a revision cut from what the save wrote, that is the hash
+    metadata. Metadata includes the `Managed` attribute, which is read back into
+    the configuration as `managed`, so a head that differs from the revision only
+    in whether it is stack-managed still passes, and the configuration served
+    carries the head's flag: the flag says who maintains the profile, not how it
+    processes documents. For a revision cut from what the save wrote, that is the hash
     `_write_record()` returns; for the pre-history backfill an unchanged first
     save publishes, it is derived from the backfill's own body (below); or
   - for revisions cut before `storedHash` existed, the head's `UpdatedAt` being no
@@ -482,7 +486,11 @@ back as strings.
 
 An unchanged save cuts no revision but rewrites the head. Stack deployments do this
 to `default` and managed profiles, so an unchanged save refreshes the published
-entry's `storedHash` (`_refresh_published_stored_hash()`). The refresh is computed
+entry's `storedHash` (`_refresh_published_stored_hash()`). The exception is the
+update that migrates a stack from the legacy configuration format: the
+configuration custom resource then writes those heads directly
+(`save_configuration_bypass_manager()`), so that update cuts no revision and
+refreshes no hash. The refresh is computed
 from the revision's **own body**. Once that body has expired, it is computed from
 the configuration of the head the save **replaced**, which `save_configuration()`
 keeps from the read it already makes, and only when that head passes the proof
