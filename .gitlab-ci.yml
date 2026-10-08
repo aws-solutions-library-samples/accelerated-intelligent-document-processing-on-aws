@@ -637,6 +637,15 @@ integration_tests:
     # `job_url` and `summary` must be declared there, as Text, under exactly these
     # names. Renaming one here without renaming it there posts a message with a
     # blank variable rather than failing.
+    #
+    # ⚠️ The workflow's message template must NOT use Slack's `<url|label>` link
+    # syntax, or backticks/asterisks typed as characters. Those are **API** mrkdwn:
+    # they render only in a `blocks`/`text` body sent by an app, and a message
+    # composed in Workflow Builder shows them literally — `<https://…|view job>`
+    # appears verbatim, which is how the first version of this went out. Put
+    # `{{job_url}}` on its own line and Slack auto-links it; use the editor's own
+    # formatting buttons for bold and code. `job_url` is therefore sent as a bare
+    # URL, and keeping it bare is the point.
     - |
       if [ -z "$SLACK_WEBHOOK_URL" ]; then
         echo "ℹ️ SLACK_WEBHOOK_URL not set — skipping the Slack post"
