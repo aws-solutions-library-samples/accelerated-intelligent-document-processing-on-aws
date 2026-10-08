@@ -432,14 +432,14 @@ documentation. The full trade is in `scripts/sdlc/docs/CI_TEST_COVERAGE.md`.
 Two other GitLab-only jobs exist and neither is a gate, so the parity assertion is
 unaffected by both: `deployment_validation` (the pre-deploy IAM check, which
 belongs to the deploy path above, and which is nightly-only for the same reason —
-note the *check itself* still runs on every MR as the last step of `code_checks`,
+note the *check itself* still runs on every MR as the last step of `static_checks`,
 where it needs no credentials) and `ai_mr_review`, the advisory AI review that
 posts a comment on every non-Draft MR. The reviewer needs AWS credentials for
 Bedrock and is `allow_failure: true` — it approves nothing and blocks nothing —
 which is why it is deliberately absent from `SHARED_GATES` rather than missing
 from it. A GitHub equivalent would need its own OIDC role.
 
-**On GitLab the no-AWS gates are seven parallel jobs, not one.** `code_checks` ran
+**On GitLab the no-AWS gates are seven parallel jobs, not one.** `static_checks` ran
 lint, typecheck and every pytest suite in sequence for 45 minutes, 80% of it
 pytest, and `make test-packages-cicd` was 25 of those minutes because every one of
 its pytest invocations ran serial and single-process on a 16-vCPU runner. Both
@@ -448,7 +448,7 @@ halves are fixed independently: the invocations measured above 20s in CI now pas
 re-derive it by **timing in CI rather than counting tests** — the count is a poor
 proxy, and to count the invocations at all you must count `$(PYTEST_HERMETIC)`
 lines, not the `@echo` headers, which understate them by more than half), and the
-job is split into `code_checks`, `unit_tests`, `package_tests` and `ui_tests` so
+job is split into `static_checks`, `unit_tests`, `package_tests` and `ui_tests` so
 the lint half stops waiting on the test half. A merge-request pipeline went from
 111 minutes to 14.
 
