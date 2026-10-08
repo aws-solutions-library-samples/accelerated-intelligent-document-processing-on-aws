@@ -431,6 +431,16 @@ plus the published revision and anything labeled or pinned by a test run. A
 count-based cap cannot be expressed as an S3 lifecycle rule, which is why pruning
 runs in `ConfigRevisionStore.prune()` on write.
 
+Those exemptions are from pruning only. The Configuration bucket's one lifecycle
+rule, `DeleteAfterNDays` in `template.yaml`, has no filter, so it expires every
+revision body `DataRetentionInDays` after it was written, labeled and pinned ones
+included, and only the published revision can still be read after that, through
+the rebuild below. Every other revision stays subject to that expiry by design: a
+lifecycle filter can select a prefix but cannot exclude one, and the bucket also
+holds `config_library/` and `samples/` under the same rule, so sparing
+`config_revisions/` would mean replacing that rule with one per prefix that should
+still expire.
+
 `restore_revision()` is forward-only: it saves the chosen revision as a *new*
 revision rather than rewinding the counter, so history is never rewritten.
 

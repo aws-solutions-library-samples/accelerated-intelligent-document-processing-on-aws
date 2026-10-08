@@ -160,7 +160,9 @@ From the panel you can:
   replaced remains in the history and can itself be restored. History is never
   rewritten.
 - **Label a revision** — mark a revision (e.g. `known good`). A labeled revision is
-  exempt from retention pruning; labeling is how you say "keep this one".
+  exempt from retention pruning, so later saves never push it out of the history,
+  but the label does not stop its body expiring `DataRetentionInDays` after it was
+  cut (see [Retention](#retention)).
 - **Delete a revision** (Admin only) — permanently removes that revision's stored
   configuration. The current revision cannot be deleted.
 
@@ -173,7 +175,7 @@ From the panel you can:
 | **Notes** | What the save was — e.g. *Reset to default*, *Restored from r3*, *Updated by stack deployment* |
 | **Label** | Optional user marker; also protects the revision from pruning |
 | **Current** badge | The revision the profile's configuration currently reflects |
-| **Pinned** badge | Referenced by a test run, so retention keeps it and the run stays comparable |
+| **Pinned** badge | Referenced by a test run, so pruning never removes it. Its body still expires `DataRetentionInDays` after it was cut ([Retention](#retention)) |
 
 ### A save that changes nothing records nothing
 
@@ -226,7 +228,9 @@ idp-cli run-inference --stack-name my-stack --test-set my-tests \
 Requesting a revision that retention has already pruned **fails** rather than
 falling back to the profile's current configuration: substituting a different
 configuration under the name you asked for would look like a success, and its
-numbers would go into a comparison. Label or pin the revisions you need to keep.
+numbers would go into a comparison. A label or a test-run pin keeps a revision from
+being pruned, not from expiring `DataRetentionInDays` after it was cut; see
+[Retention](#retention) for how to keep its configuration for longer.
 
 For a test run the check happens **when the run is submitted**: `startTestRun`
 (Test Studio, `idp-cli run-inference --test-set`, a direct invocation) rejects a
@@ -296,7 +300,9 @@ ambiguous:
 
 The revision appears in the test-run list, the results view, the comparison view,
 and CSV/JSON exports. Pinning a revision in a run also marks it exempt from
-retention pruning, so the comparison stays readable later.
+retention pruning, so later saves never push it out of the profile's history. It
+does not stop the revision's body expiring `DataRetentionInDays` after it was cut
+([Retention](#retention)).
 
 > **Confidence curves are keyed per revision family.** Test Studio's review-effort
 > estimate rests on a confidence→accuracy curve, because confidence means
@@ -325,10 +331,12 @@ Revision bodies are stored in the Configuration bucket under
 `ConfigurationTable`. The bucket's lifecycle rule expires them after
 `DataRetentionInDays` (365 by default) whatever their label or pin, so a labeled or
 pinned revision is readable for that long and no longer; the current revision keeps
-working past it, as described above. Keeping the bodies out of the table is
-deliberate: listing profiles scans that table, and DynamoDB bills a scan on full
-item size, so storing revision bodies there would make the profile list more
-expensive with every save.
+working past it, as described above. To keep a revision's configuration for longer,
+download it before then with
+`idp-cli config-download --config-profile <profile> --config-revision <n>`. Keeping
+the bodies out of the table is deliberate: listing profiles scans that table, and
+DynamoDB bills a scan on full item size, so storing revision bodies there would make
+the profile list more expensive with every save.
 
 ### First save after upgrading
 
