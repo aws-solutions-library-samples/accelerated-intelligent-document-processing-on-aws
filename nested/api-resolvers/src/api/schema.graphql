@@ -781,10 +781,18 @@ type TestRun @aws_cognito_user_pools @aws_iam {
   splitClassificationMetrics: AWSJSON
   gradedPacketMetrics: AWSJSON
   # Per-section classification mismatches behind the percentages in
-  # splitClassificationMetrics: which documents were misclassified and as what.
+  # splitClassificationMetrics: which documents were misclassified or split
+  # differently, and how.
   # ``{errors: [{doc_key, section_id, kind, expected_class, predicted_class,
   # expected_pages, predicted_pages}], total, documents_affected, truncated}``
-  # where kind is "class" | "unmatched" | "order". Capped (see
+  # where kind is "class" | "unmatched" | "order"; an "unmatched" entry also
+  # carries ``predicted_sections`` ([{class, page_ranges}], at most
+  # MAX_PREDICTED_SECTIONS_PER_ERROR), their uncapped
+  # ``predicted_section_count``, and ``predicted_sections_incomplete: true``
+  # when it has no expected pages, or when some of them are on no predicted
+  # section the evaluation recorded in a document whose record holds a
+  # predicted section without pages or notes a failed load on either side.
+  # ``errors`` is capped (see
   # MAX_CLASSIFICATION_ERRORS) because the whole run result is one DynamoDB
   # attribute; ``total`` is the uncapped count so the UI can say "200 of 340".
   # Empty on the Athena fallback path, which aggregates percentages only,

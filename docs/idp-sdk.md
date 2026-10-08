@@ -1587,8 +1587,11 @@ Download configuration from a deployed stack.
 
 **Returns:** `ConfigDownloadResult` with `config`, `yaml_content`, `output_path`, and `revision`
 
-**Raises:** `IDPResourceNotFoundError` if the named profile does not exist, or if the
-requested revision is no longer retained. Neither falls back to anything: handing back
+**Raises:** `IDPResourceNotFoundError` if the named profile does not exist, if the
+requested revision is no longer retained, or if its body has expired under
+`DataRetentionInDays`, unless it is the profile's current published revision and the
+profile still provably holds that configuration, in which case it is rebuilt from the
+profile ([Retention](configuration-profiles.md#retention)). None of these falls back to anything: handing back
 a *different* configuration under the name you asked for would look like a success, and
 for a missing profile the answer on offer was the **YAML null document** — `config` came
 back `{}` and `yaml_content` was `"null\n...\n"`, so `output` was written with `null`
@@ -1641,6 +1644,13 @@ Revision history of one Configuration Profile, newest first.
 Every save of a profile cuts an immutable revision. This returns the ones still
 retained — the last 20, plus anything labeled, pinned by a test run, or currently
 in use. See [configuration-profiles.md](configuration-profiles.md#revision-history).
+
+A returned revision is not necessarily one `download(config_revision=...)` can still
+fetch. A label or a test-run pin keeps a revision in this list, but every revision's
+body expires `DataRetentionInDays` after it was cut, and after that only the
+profile's current published revision can still be downloaded, and only while the
+profile provably still holds that configuration
+([Retention](configuration-profiles.md#retention)).
 
 **Parameters:**
 - `config_profile` (alias: `config_version`) (str, required): Profile whose history to list

@@ -163,7 +163,17 @@ jobs:
       - name: Run UI unit tests
         id: run-ui-tests
         # Vitest + jsdom (no browser). Node 22 comes from setup-node above.
-        run: cd src/ui && npm ci --prefer-offline --no-audit && npx vitest run
+        #
+        # `--silent` for the reason spelled out beside the GitLab copy of this step:
+        # the suites console.log from component code and React emits a full component
+        # stack per act(...) warning, which is enough output to bury whatever follows
+        # it. GitHub does not truncate the log the way GitLab does, so here it is
+        # legibility rather than lost diagnostics — but the two steps are compared by
+        # scripts/tests/test_ci_gate_parity.py and should not drift on a flag.
+        #
+        # The `npm ci` stays on this side: unlike the GitLab job, nothing earlier in
+        # this workflow installs the UI dependencies unconditionally.
+        run: cd src/ui && npm ci --prefer-offline --no-audit && npx vitest run --silent
         continue-on-error: false
 
       - name: Upload coverage reports

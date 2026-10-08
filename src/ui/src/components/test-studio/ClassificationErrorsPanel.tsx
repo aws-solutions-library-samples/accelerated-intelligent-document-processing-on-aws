@@ -16,8 +16,9 @@
 import React from 'react';
 import { Alert, Badge, Box, Container, Header, Link, Table } from '@cloudscape-design/components';
 
-import type { ClassificationError, ClassificationErrors } from '../../graphql/awsjson-types';
+import type { ClassificationError, ClassificationErrors, PredictedSectionSummary } from '../../graphql/awsjson-types';
 import { testSetAnnotateHref } from '../../routes/constants';
+import { formatPageRanges } from '../common/classification-comparison-utils';
 
 interface ClassificationErrorsPanelProps {
   classificationErrors: ClassificationErrors | null;
@@ -37,13 +38,70 @@ const KIND_COLOUR: Record<string, 'red' | 'severity-medium' | 'grey'> = {
   order: 'grey',
 };
 
-const formatPages = (pages: number[] | undefined): string => {
-  if (!pages || pages.length === 0) return '—';
-  return pages.join(', ');
+const formatPages = (pages: number[] | undefined): string =>
+  formatPageRanges((pages ?? []).filter((page) => typeof page === 'number').map((page) => page + 1));
+
+const formatRuns = (runs: number[][] | undefined): string =>
+  (runs ?? [])
+    .filter((run) => Array.isArray(run) && run.length === 2 && run.every((page) => typeof page === 'number'))
+    .map(([first, last]) => (first === last ? `${first + 1}` : `${first + 1}-${last + 1}`))
+    .join(', ') || '—';
+
+const formatPagesInOrder = (pages: number[] | undefined): string => {
+  const runs: [number, number][] = [];
+  for (const page of (pages ?? []).filter((value) => typeof value === 'number')) {
+    const last = runs[runs.length - 1];
+    if (last && page === last[1] + 1) last[1] = page;
+    else runs.push([page, page]);
+  }
+  return formatRuns(runs);
+};
+
+/**
+ * A run aggregated by an earlier release reports an unmatched section as kind
+ * `class`, with the matcher's "No Match" as its predicted class and no predicted
+ * pages, and keeps that in its cached result. Such an entry is shown as unmatched.
+ */
+const readLegacyNoMatch = (error: ClassificationError): ClassificationError =>
+  error.kind === 'class' && error.predicted_class === 'No Match' && !error.predicted_pages?.length && !error.predicted_sections
+    ? { ...error, kind: 'unmatched', predicted_class: null }
+    : error;
+
+const predictedSplit = (sections: PredictedSectionSummary[], count: number, incomplete: boolean): React.JSX.Element => {
+  if (count === 0) return <i>{incomplete ? 'not recorded' : 'no predicted section on these pages'}</i>;
+  const groups: { name: string; size: number }[] = [];
+  for (const section of sections) {
+    const name = section.class ?? 'Unknown';
+    const last = groups[groups.length - 1];
+    if (last && last.name === name) last.size += 1;
+    else groups.push({ name, size: 1 });
+  }
+  return (
+    <span>
+      {groups.map(({ name, size }) => (size > 1 ? `${name} ×${size}` : name)).join(' | ')}
+      {count > sections.length && (
+        <Box variant="small" color="text-body-secondary" display="block">
+          first {sections.length} of {count} predicted sections
+        </Box>
+      )}
+      {incomplete && (
+        <Box variant="small" color="text-body-secondary" display="block">
+          some pages not recorded
+        </Box>
+      )}
+    </span>
+  );
+};
+
+const predictedPages = (item: ClassificationError): string => {
+  if (!item.predicted_sections) return formatPages(item.predicted_pages);
+  const pages = item.predicted_sections.map((section) => formatRuns(section.page_ranges));
+  if ((item.predicted_section_count ?? 0) > item.predicted_sections.length) pages.push('…');
+  return pages.length > 0 ? pages.join(' | ') : '—';
 };
 
 const ClassificationErrorsPanel = ({ classificationErrors, testSetId }: ClassificationErrorsPanelProps): React.JSX.Element | null => {
-  const errors = classificationErrors?.errors ?? [];
+  const errors = (classificationErrors?.errors ?? []).map(readLegacyNoMatch);
   const total = classificationErrors?.total ?? errors.length;
   const truncated = Boolean(classificationErrors?.truncated);
 
@@ -63,7 +121,7 @@ const ClassificationErrorsPanel = ({ classificationErrors, testSetId }: Classifi
         <Header
           variant="h3"
           counter={`(${total})`}
-          description="Sections whose classification disagreed with the ground truth. A wrong class means extraction ran the wrong schema, so the fields for that document are unreliable even where they look plausible."
+          description="Ground-truth sections the prediction got wrong. A wrong class means extraction ran the wrong schema, so that section's fields are unreliable even where they look plausible. No matching section means the evaluation paired no predicted section with those pages: the prediction split them differently or, where the row says not recorded, the evaluation has no record of what the prediction put there."
         >
           Classification errors
         </Header>
@@ -119,13 +177,23 @@ const ClassificationErrorsPanel = ({ classificationErrors, testSetId }: Classifi
           {
             id: 'predicted',
             header: 'Predicted class',
-            cell: (item: ClassificationError) => item.predicted_class ?? <i>no matching section</i>,
+            cell: (item: ClassificationError) =>
+              item.predicted_sections
+                ? predictedSplit(
+                    item.predicted_sections,
+                    item.predicted_section_count ?? item.predicted_sections.length,
+                    Boolean(item.predicted_sections_incomplete),
+                  )
+                : (item.predicted_class ?? <i>no matching section</i>),
             sortingField: 'predicted_class',
           },
           {
             id: 'pages',
             header: 'Pages (expected / predicted)',
-            cell: (item: ClassificationError) => `${formatPages(item.expected_pages)} / ${formatPages(item.predicted_pages)}`,
+            cell: (item: ClassificationError) =>
+              item.kind === 'order'
+                ? `${formatPagesInOrder(item.expected_pages)} / ${formatPagesInOrder(item.predicted_pages)}`
+                : `${formatPages(item.expected_pages)} / ${predictedPages(item)}`,
           },
         ]}
         empty={<Box textAlign="center">No classification errors</Box>}
