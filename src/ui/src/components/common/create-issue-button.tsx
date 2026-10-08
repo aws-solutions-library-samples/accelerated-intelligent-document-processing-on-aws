@@ -26,7 +26,11 @@ interface CreateIssueButtonProps {
 const CreateIssueButton = ({ findings, titleHint, variant = 'normal' }: CreateIssueButtonProps): React.JSX.Element => {
   const deploymentContext = useDeploymentContext();
 
-  const bugUrl = buildBugReportUrl(deploymentContext, findings ? { objectKey: titleHint, findings } : undefined);
+  // The chat answer goes to the bug form's "Additional context", not its
+  // Troubleshoot-agent field: this button is also rendered from the Agent
+  // Companion Chat, where the answer need not be about a document failure at
+  // all, so that field's heading would mislabel it.
+  const bugUrl = buildBugReportUrl(deploymentContext, titleHint ? { objectKey: titleHint } : undefined, findings);
   // Carry the same context (e.g. the chat answer) into the feature request so
   // "Request a feature" from chat isn't empty of context either.
   const featureUrl = buildFeatureRequestUrl(deploymentContext, findings);
