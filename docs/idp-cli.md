@@ -2511,7 +2511,7 @@ idp-cli config-download [OPTIONS]
 - `--output`, `-o`: Output file path (default: stdout)
 - `--format`: Output format - `full` (default) or `minimal` (only differences from defaults)
 - `--config-profile` (alias: `--config-version`): Configuration profile to download (e.g., v1, v2). If not specified, downloads the active profile
-- `--config-revision`: Download an exact **revision** of that profile instead of its current configuration (e.g. `7`). Requires `--config-profile`. Fails if the revision is no longer retained rather than silently returning the current configuration
+- `--config-revision`: Download an exact **revision** of that profile instead of its current configuration (e.g. `7`). Requires `--config-profile`. Fails if the revision is no longer retained, or if its body has expired under `DataRetentionInDays` and it is not the profile's current revision ([Retention](configuration-profiles.md#retention)), rather than silently returning the current configuration
 - `--region`: AWS region (optional)
 
 **Examples:**
@@ -2632,6 +2632,11 @@ List the revision history of a Configuration Profile.
 Every save of a profile cuts an immutable revision. This shows the ones still
 retained: the last 20, plus anything labeled, pinned by a test run, or currently
 in use. See [configuration-profiles.md](configuration-profiles.md#revision-history).
+
+A listed revision is not necessarily one you can still download. A label or a
+test-run pin keeps a revision listed, but every revision's body expires
+`DataRetentionInDays` after it was cut, and after that only the profile's current
+revision can still be downloaded ([Retention](configuration-profiles.md#retention)).
 
 **Usage:**
 ```bash
