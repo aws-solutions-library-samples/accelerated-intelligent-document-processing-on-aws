@@ -35,18 +35,32 @@
 #   * Every price dimension in that file and in the "AmazonBedrock" offer file
 #     spans StartingRange 0 to EndingRange Inf. There is not one token-volume
 #     band on any model, so there is no threshold at which a rate changes.
-#   * No Anthropic SKU names a long context anywhere in either file.
+#   * No Anthropic SKU in THAT file names a long context (see the next paragraph
+#     for what changed when Haiku 5.5 launched).
 # A long-context band IS expressible in the Bedrock price list — it appears as a
-# distinct "-long-ctx" usage type (tokenType "input-tokens-long-ctx" and friends)
-# — and today exactly two models have one: openai.gpt-5.6-luna-mantle and
-# openai.gpt-5.6-terra-mantle. No Claude model does.
+# distinct "-long-ctx" usage type (tokenType "input-tokens-long-ctx" and friends).
+# openai.gpt-5.6-luna-mantle and openai.gpt-5.6-terra-mantle have one, and so does
+# ONE Claude model: Claude Haiku 5.5, as of offer file version 20261008165109
+# (published 2026-10-08, retrieved the same day). Its long-context rates are 5x the
+# standard ones on every token type — $0.55/MTok input against $0.11, $2.75
+# against $0.55 output, regional — and they start at 100,000 input tokens. The
+# Haiku 5.5 entries below carry the STANDARD band only, so a cost report
+# UNDER-REPORTS by 5x for any request above that; this is handled the way the
+# GPT-6 Astra rows handle the same shape, and the note on those rows and on both
+# models' model_config_limits.yaml entries spells out the options. The ":1m"
+# discussion above does not apply to this model — it has no ":1m" id, because 1M
+# is its default window, which is also why it is the one exception in the quoted
+# sentence below.
 #
-# Anthropic says the same first-hand: "Claude 4.6 and later models ... include
+# Anthropic says the same first-hand, and the parenthetical is load-bearing —
+# quote it: "Claude 4.6 and later models (except Claude Haiku 5.5) ... include
 # the full 1M token context window at standard pricing. (A 900k-token request is
 # billed at the same per-token rate as a 9k-token request.)"
 # (platform.claude.com/docs/en/about-claude/pricing#long-context-pricing,
-# retrieved 2026-09-17). Every ":1m" entry here is a 4.6-or-later model: Sonnet
-# 4.6, Sonnet 5, Opus 4.6, Opus 4.7, Opus 4.8 and Opus 5.
+# retrieved 2026-10-08). Every ":1m" entry here is a 4.6-or-later model: Sonnet
+# 4.6, Sonnet 5, Opus 4.6, Opus 4.7, Opus 4.8 and Opus 5 — none of them is the
+# exception, so the sentence supports every ":1m" rate below. Haiku 5.5 is the
+# exception and has no ":1m" entry.
 #
 # These entries used to charge a flat 2x input / 1.5x output premium on every
 # request. That premium was Anthropic's pricing for the earlier Sonnet 4 /
@@ -245,7 +259,48 @@ pricing:
         price: "1.1E-7"
       - name: cacheWriteInputTokens
         price: "1.4E-6"
-  
+
+  # Claude Haiku 5.5 — exactly 10x cheaper per token than Haiku 4.5 above, which is
+  # worth stating because the launch announcement says "around 75% less ... for most
+  # tasks". Both are right and they measure different things: the per-token rate is
+  # 90% lower, and the ~75% figure is a per-task estimate that absorbs this model's
+  # reasoning tokens (it is the first Haiku with effort controls, default "medium").
+  # Rates are the US regional / geo-CRIS band, matching every other "us." entry in
+  # this file, read from the AWS price list offer file for
+  # AmazonBedrockFoundationModels version 20261007183733 (retrieved 2026-10-08).
+  # The 5m cache-write rate is 1.25x input exactly ($0.1375), not rounded as the
+  # Haiku 4.5 entry above is. A 1-hour-TTL cache write is a separate, higher rate
+  # ($0.22/MTok) that this file has no unit for on any model; IDP writes 5-minute
+  # cache points only.
+  #
+  # LONG CONTEXT BAND NOT REPRESENTED — read before trusting a cost report.
+  # Any request whose input exceeds 100,000 tokens is billed entirely at the long
+  # band, 5x on every one of the five token types: $0.55 in / $2.75 out / $0.055
+  # cache-read / $0.6875 cache-write (us., eu.), and $0.50 / $2.50 / $0.05 /
+  # $0.625 (global.). The metering schema carries one price per unit per model ID
+  # with no way to express a usage-dependent band, and model_config_limits.yaml
+  # intentionally states the full 1M window, so costs for prompts above 100,000
+  # are UNDER-REPORTED here by 5x. This is the same shape as the GPT-6 Astra rows
+  # below and is handled the same way; the difference is the multiplier (5x on
+  # everything, against Astra's 2x input / 1.5x output) and that Anthropic
+  # publishes this threshold while AWS does not. The auto-sizers cross it by
+  # DEFAULT: the agentic shard budget is 578,400 tokens and the summarization
+  # budget 850,000. Two ways to remove the discrepancy if it matters for your
+  # account: lower max_input_tokens in model_config_limits.yaml (read the warning
+  # on that entry first — 100000 leaves a 2,000-token shard budget and makes
+  # Advanced mode unusable), or edit these rows to the long-band rates, which
+  # then over-reports every small request by 5x instead.
+  - name: bedrock/us.anthropic.claude-haiku-5-5
+    units:
+      - name: inputTokens
+        price: "1.1E-7"
+      - name: outputTokens
+        price: "5.5E-7"
+      - name: cacheReadInputTokens
+        price: "1.1E-8"
+      - name: cacheWriteInputTokens
+        price: "1.375E-7"
+
   # Claude 3.5 Sonnet v1. Selected by the shipped ocr-benchmark and docsplit
   # presets in config_library/, but it had no pricing entry, so the whole model
   # costed as $0.00 (no pricing key is a substring of this ID, so even the old
@@ -365,6 +420,17 @@ pricing:
       - name: cacheWriteInputTokens
         price: "4.125E-6"
 
+  # ⚠️ KNOWN DISCREPANCY, left as-is deliberately and tracked separately: these
+  # Sonnet 5 rows carry Sonnet 4.6's rates. The AWS price list gives Sonnet 5
+  # $2.20 in / $11.00 out per 1M on us./eu. and $2.00 / $10.00 on global. (offer
+  # 20261008165109), and the header of this file already states those figures, so
+  # the six Sonnet 5 rows below — us., eu., global. and each one's ":1m" twin —
+  # read a uniform 1.50x high on every unit. Correcting them is a clean multiply
+  # rather than a re-derivation, but it moves every Sonnet 5 cost figure this
+  # repository has published, so it belongs in its own change with the benchmark
+  # baselines restated alongside it. Until then: a cost REPORT from this file
+  # overstates Sonnet 5 by 50%, while a per-token ratio against another model
+  # quoted in the docs is computed from the price list, not from here.
   - name: bedrock/us.anthropic.claude-sonnet-5
     units:
       - name: inputTokens
@@ -391,6 +457,9 @@ pricing:
 
   # ":1m" long-context variant — same rates as the base entry above. The 1M
   # context window carries no price premium; see the header note.
+  # ⚠️ Carries Sonnet 4.6's rates, a uniform 1.50x high, like the other five
+  # Sonnet 5 rows. The full explanation and the correct figures are on the
+  # us.anthropic.claude-sonnet-5 block above; fix all six together or none.
   - name: bedrock/us.anthropic.claude-sonnet-5:1m
     units:
       - name: inputTokens
@@ -820,7 +889,23 @@ pricing:
         price: "1.1E-7"
       - name: cacheWriteInputTokens
         price: "1.4E-6"
-  
+
+  # Claude Haiku 5.5, EU geo. Identical to the "us." band: the price list carries
+  # the same $0.11 / $0.55 regional rate in every commercial region that sells this
+  # model (checked across Frankfurt, Ireland and US East). GovCloud is the one
+  # exception at $0.12 / $0.60, and this file has no "us-gov." entries for any
+  # model, so that band is unrepresented here as well.
+  - name: bedrock/eu.anthropic.claude-haiku-5-5
+    units:
+      - name: inputTokens
+        price: "1.1E-7"
+      - name: outputTokens
+        price: "5.5E-7"
+      - name: cacheReadInputTokens
+        price: "1.1E-8"
+      - name: cacheWriteInputTokens
+        price: "1.375E-7"
+
   - name: bedrock/eu.anthropic.claude-3-5-sonnet-20241022-v2:0
     units:
       - name: inputTokens
@@ -876,6 +961,9 @@ pricing:
       - name: cacheWriteInputTokens
         price: "4.125E-6"
 
+  # ⚠️ Carries Sonnet 4.6's rates, a uniform 1.50x high, like the other five
+  # Sonnet 5 rows. The full explanation and the correct figures are on the
+  # us.anthropic.claude-sonnet-5 block above; fix all six together or none.
   - name: bedrock/eu.anthropic.claude-sonnet-5
     units:
       - name: inputTokens
@@ -902,6 +990,9 @@ pricing:
 
   # ":1m" long-context variant — same rates as the base entry above. The 1M
   # context window carries no price premium; see the header note.
+  # ⚠️ Carries Sonnet 4.6's rates, a uniform 1.50x high, like the other five
+  # Sonnet 5 rows. The full explanation and the correct figures are on the
+  # us.anthropic.claude-sonnet-5 block above; fix all six together or none.
   - name: bedrock/eu.anthropic.claude-sonnet-5:1m
     units:
       - name: inputTokens
@@ -1120,7 +1211,21 @@ pricing:
         price: "1.0E-7"
       - name: cacheWriteInputTokens
         price: "1.25E-6"
-  
+
+  # Claude Haiku 5.5, global cross-region. The global band is ~9% below the
+  # regional one (the regional rate carries the usual 10% premium), the same
+  # relationship the Haiku 4.5 pair above has.
+  - name: bedrock/global.anthropic.claude-haiku-5-5
+    units:
+      - name: inputTokens
+        price: "1.0E-7"
+      - name: outputTokens
+        price: "5.0E-7"
+      - name: cacheReadInputTokens
+        price: "1.0E-8"
+      - name: cacheWriteInputTokens
+        price: "1.25E-7"
+
   - name: bedrock/global.anthropic.claude-sonnet-4-5-20250929-v1:0
     units:
       - name: inputTokens
@@ -1143,6 +1248,9 @@ pricing:
       - name: cacheWriteInputTokens
         price: "3.75E-6"
 
+  # ⚠️ Carries Sonnet 4.6's rates, a uniform 1.50x high, like the other five
+  # Sonnet 5 rows. The full explanation and the correct figures are on the
+  # us.anthropic.claude-sonnet-5 block above; fix all six together or none.
   - name: bedrock/global.anthropic.claude-sonnet-5
     units:
       - name: inputTokens
@@ -1169,6 +1277,9 @@ pricing:
 
   # ":1m" long-context variant — same rates as the base entry above. The 1M
   # context window carries no price premium; see the header note.
+  # ⚠️ Carries Sonnet 4.6's rates, a uniform 1.50x high, like the other five
+  # Sonnet 5 rows. The full explanation and the correct figures are on the
+  # us.anthropic.claude-sonnet-5 block above; fix all six together or none.
   - name: bedrock/global.anthropic.claude-sonnet-5:1m
     units:
       - name: inputTokens

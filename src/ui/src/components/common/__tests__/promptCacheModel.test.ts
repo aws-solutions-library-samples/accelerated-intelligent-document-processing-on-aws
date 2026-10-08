@@ -68,6 +68,12 @@ describe('summarizeCacheUsage (mirrors idp_common.bedrock.prompt_cache)', () => 
     expect(minCacheablePrefixTokens('us.anthropic.claude-haiku-4-5-20251001-v1:0')).toBe(4096);
     expect(minCacheablePrefixTokens('us.anthropic.claude-opus-5')).toBe(512);
     expect(minCacheablePrefixTokens('us.amazon.nova-lite-v1:0')).toBeNull();
+    // The two Haikus bracket this table — 4,096 is its largest tier and 512 its
+    // smallest — so 'Haiku' is not a tier and a shared 'haiku-' stem in the pattern
+    // list would report an 8x-too-high minimum for 5.5. Asserted as a pair so
+    // widening the pattern cannot make both sides agree unnoticed.
+    expect(minCacheablePrefixTokens('us.anthropic.claude-haiku-5-5')).toBe(512);
+    expect(minCacheablePrefixTokens('global.anthropic.claude-haiku-5-5')).toBe(512);
   });
 
   it('measured caching beats the disabled flag', () => {
