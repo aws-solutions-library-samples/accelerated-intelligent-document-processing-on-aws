@@ -1440,7 +1440,7 @@ For full details on configuration profiles and their revisions, see [configurati
 - **RUNNING**: Files being copied and processed
 - **EVALUATING**: Documents processed, evaluation in progress
 - **COMPLETED**: Test finished successfully with all documents evaluated
-- **PARTIAL_COMPLETE**: Test finished with some documents failed
+- **PARTIAL_COMPLETE**: Test finished with some documents failed. A document whose evaluation failed or timed out (`EvaluationStatus` `FAILED` or `TIMED_OUT`) counts as failed, and the run's metrics cover the documents that were scored
 - **FAILED**: Errors during processing
 - **ABORTED**: Test run manually stopped before completion
 
