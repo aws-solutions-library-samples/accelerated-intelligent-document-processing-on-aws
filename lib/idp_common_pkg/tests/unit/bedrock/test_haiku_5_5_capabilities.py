@@ -19,7 +19,7 @@ plain Converse                          ``stopReason: end_turn``
 ``toolChoice: {"auto": {}}``            ``stopReason: tool_use``, toolUse emitted
 ``toolChoice: {"any": {}}``             **accepted**, toolUse emitted
 ``toolChoice: {"tool": {...}}``         **accepted**, toolUse emitted
-explicit ``cachePoint``                 accepted, 4,683 cache-write then cache-read
+explicit ``cachePoint``                 accepted; floor bracketed at (500, 520] tokens
 ``document`` content block (PDF)        accepted, 1,608 input tokens
 one 2550x3301 image                     4,770 input tokens (high-resolution tier)
 ======================================  =========================================
@@ -63,6 +63,7 @@ import pytest
 
 from idp_common.bedrock.client import (
     CACHEPOINT_SUPPORTED_MODELS,
+    document_blocks_unsupported_reason,
     is_claude_4_7_model,
     is_claude_effort_model,
     strips_sampling_params,
@@ -86,11 +87,26 @@ ARN = (
 #: No ``:1m`` form, unlike every other 1M-capable Claude in this repository. The 1M
 #: window is this model's default, so there is nothing to opt into and no suffix to
 #: translate into an ``anthropic_beta`` header.
+#: The GovCloud ARN is here because it is the form the justification in
+#: ``test_haiku_5_5_accepts_reasoning_effort`` is actually about. The commercial ARN
+#: above resolves to a ``us.`` id and so exercises the ordinary path; only the
+#: ``aws-us-gov`` partition reduces to a ``us-gov.`` id, which is the one a GovCloud
+#: configuration contains and the one a missing region prefix would break.
+GOV_ARN = (
+    "arn:aws-us-gov:bedrock:us-gov-west-1:123456789012:inference-profile/"
+    "us-gov.anthropic.claude-haiku-5-5"
+)
+#: ``au.`` and ``jp.`` are two of this model's four advertised geo ids and are in the
+#: sweep for that reason — they were missing from ``REGION_PREFIXES`` until this
+#: model was added, and a missing prefix fails permissively.
 ALL_FORMS = [
     BASE,
     "eu.anthropic.claude-haiku-5-5",
+    "au.anthropic.claude-haiku-5-5",
+    "jp.anthropic.claude-haiku-5-5",
     "global.anthropic.claude-haiku-5-5",
     ARN,
+    GOV_ARN,
 ]
 HAIKU_45 = "us.anthropic.claude-haiku-4-5-20251001-v1:0"
 
@@ -175,6 +191,16 @@ class TestTheOtherFiveFiveModelIsNotAGuide:
     def test_opus_5_5_is_the_one_that_cannot(self):
         assert thinking_can_be_disabled("us.anthropic.claude-opus-5-5") is False
 
+    def test_it_is_absent_from_the_thinking_always_on_set(self):
+        """``thinking_can_be_disabled`` is a DENYLIST gate: it answers True for any
+        id it knows nothing about, so the assertion above passes whether the decision
+        was made or merely never considered. Pin the registry, the way
+        ``test_it_is_absent_from_the_forcing_denylist`` does."""
+        from idp_common.bedrock.client import _THINKING_ALWAYS_ON_BASE_NAMES
+
+        assert "anthropic.claude-haiku-5-5" not in _THINKING_ALWAYS_ON_BASE_NAMES
+        assert "anthropic.claude-opus-5-5" in _THINKING_ALWAYS_ON_BASE_NAMES
+
     @pytest.mark.parametrize("model_id", ALL_FORMS)
     def test_a_forced_toolchoice_is_accepted(self, model_id):
         """Live: both ``{"any": {}}`` and ``{"tool": {"name": ...}}`` returned
@@ -207,9 +233,16 @@ class TestTheOtherFiveFiveModelIsNotAGuide:
 class TestCachingAndWindows:
     @pytest.mark.parametrize("prefix", ["us", "eu", "global"])
     def test_explicit_cachepoints_are_supported(self, prefix):
-        """Live: a >512-token system prefix followed by a cachePoint returned
-        cacheWriteInputTokens=4683, then cacheReadInputTokens=4683 on each of the
-        next two calls — a real discount rather than an aspirational listing."""
+        """Live, and bracketed rather than merely consistent.
+
+        A large prefix caching proves only that caching works somewhere above the
+        claimed floor: 4,683 tokens would cache under a 512 minimum, a 1,024 one and
+        Haiku 4.5's own 4,096 alike, so it cannot distinguish any of them. The floor
+        was therefore walked: a 500-token system prefix wrote nothing and read
+        nothing on the next two calls, while a 520-token prefix wrote 520 and read
+        520 back twice (us.anthropic.claude-haiku-5-5, us-west-2, 2026-10-08). That
+        brackets it at (500, 520], which is the published 512.
+        """
         assert f"{prefix}.anthropic.claude-haiku-5-5" in CACHEPOINT_SUPPORTED_MODELS
 
     @pytest.mark.parametrize("prefix", ["us", "eu", "global"])
@@ -227,16 +260,47 @@ class TestCachingAndWindows:
         so this model is usable for whole-PDF extraction and discovery."""
         assert supports_document_blocks(model_id) is True
 
-    def test_the_sizing_budget_is_capped_below_the_real_window(self):
-        """⚠️ This asserts a deliberate understatement, so read the reason before
-        "fixing" it. The model's context window is 1,000,000 tokens, but the AWS
-        price list carries a long-context band for it at 5x the standard rate on
-        every token type and ``pricing.yaml`` holds one flat rate per model, with the
-        threshold published nowhere. ``max_input_tokens`` is what auto-sizing derives
-        shard budgets from, so sizing to 1M would build shards that bill at 5x and
-        report at 1x. Raising this needs the threshold confirmed and a long-context
-        rate added first."""
-        assert get_model_max_input_tokens(BASE) == 200000
+    def test_it_is_absent_from_the_document_block_denylist(self):
+        """Denylist gate again — see the thinking test above for why True alone is a
+        weak assertion. The routes that cannot take a document block are the
+        bedrock-mantle Responses API, Grok and Astra; a Converse Claude is none of
+        them."""
+        from idp_common.bedrock.client import DOCUMENT_BLOCK_UNSUPPORTED_ROUTES
+
+        assert not any("haiku" in route for route in DOCUMENT_BLOCK_UNSUPPORTED_ROUTES)
+        assert document_blocks_unsupported_reason(BASE) is None
+
+    def test_the_window_is_stated_truthfully(self):
+        """1M is this model's default window and the limits file says so.
+
+        ⚠️ That is a deliberate choice with a documented cost consequence, not an
+        oversight: the long-context band starts at 100,000 input tokens and bills 5x
+        on every token type, ``pricing.yaml`` holds one flat rate per model, so a
+        request above 100,000 is UNDER-REPORTED by 5x. Capping this field was tried
+        and rejected — it is the same shape as GPT-6 Astra, which this repository
+        already handles by stating the window and documenting the gap, and no cap
+        both keeps the model usable and keeps every request in the cheap band:
+        measured, 100,000 leaves a 2,000-token agentic shard budget against 18,400
+        for Sonnet 5. Read the notes on this model's entries in
+        ``model_config_limits.yaml`` and ``pricing.yaml`` together.
+        """
+        assert get_model_max_input_tokens(BASE) == 1000000
+
+    def test_it_is_sized_like_a_1m_model_rather_than_a_200k_one(self):
+        """The consequence of the line above, asserted where a reader will look.
+
+        ``max_input_tokens`` is not only a statement of fact — it is the number
+        auto-sizing, summarization's fit-or-truncate budget and the user-visible
+        overflow message all read. A cap would have truncated a summarization payload
+        at 85% of the capped figure while telling nobody (the truncation flag is
+        discarded by its caller), and reported the wrong window in the overflow
+        message.
+        """
+        from idp_common.bedrock.sizing import compute_sizing_plan
+
+        plan = compute_sizing_plan(model_id=BASE)
+        sonnet5 = compute_sizing_plan(model_id="us.anthropic.claude-sonnet-5")
+        assert plan.shard_token_budget > sonnet5.shard_token_budget
 
 
 class TestPricing:
@@ -290,5 +354,12 @@ class TestPricing:
         """There is no ``:1m`` id for this model, so an entry would be a rate keyed
         on something unreachable — and ``test_model_surface_consistency`` reads this
         file as the set of ids configuration validation accepts."""
-        with pytest.raises(AssertionError):
-            self._units("bedrock/us.anthropic.claude-haiku-5-5:1m")
+        from pathlib import Path
+
+        import yaml
+
+        root = Path(__file__).resolve().parents[5]
+        data = yaml.safe_load((root / "config_library" / "pricing.yaml").read_text())
+        names = {entry["name"] for entry in data["pricing"]}
+        for prefix in ("us", "eu", "global"):
+            assert f"bedrock/{prefix}.anthropic.claude-haiku-5-5:1m" not in names

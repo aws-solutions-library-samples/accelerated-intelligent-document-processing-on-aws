@@ -212,7 +212,7 @@ axes:
     # Claude Haiku 5.5. Every other arm on this axis asks "is a more capable model
     # worth the money"; this one asks the opposite question, and it is the only arm
     # that can. At $0.11/$0.55 per 1M in/out it is 10x cheaper per token than Haiku
-    # 4.5 and 30x cheaper than Sonnet 5 on input, so the interesting outcome is not
+    # 4.5 and 20x cheaper than Sonnet 5 on input, so the interesting outcome is not
     # "does it win" but "how much completeness and accuracy does the floor cost".
     # nova_lite is the existing cheap arm and is NOT a substitute for it: Nova is a
     # different family with a different prompt-cache minimum, a different tool-use
@@ -237,13 +237,17 @@ axes:
     #     every other arm, but it is why "10x cheaper per token" is not "10x cheaper
     #     per page".
     #
-    # ⚠️ COST IS UNDER-REPORTED above ~200K input tokens, the same caveat the astra
-    # arm carries and for the same reason: the AWS price list has a long-context band
-    # for this model at 5x the standard rate on every token type, pricing.yaml
-    # carries one flat rate, and the threshold is unpublished.
-    # model_config_limits.yaml caps its sizing budget at 200K to keep requests inside
-    # the standard band, so an ordinary cell is priced correctly — but do not raise
-    # that cap for a benchmark run without adding the long band first.
+    # ⚠️ COST IS UNDER-REPORTED BY 5x above 100,000 input tokens, and this arm crosses
+    # that by DEFAULT — exactly the caveat the astra arm carries, for the same reason
+    # and with a bigger multiplier. Anthropic prices the model in two prompt-length
+    # bands (5x on every token type above 100,000 tokens); pricing.yaml holds one flat
+    # rate per model; and the agentic shard budget derived for it is 578,400 tokens.
+    # So a dollar figure from this arm is a LOWER BOUND, not a measurement, on any
+    # document whose shards exceed 100,000 tokens. Capping the window to stay in the
+    # cheap band was tried and rejected: measured, 100,000 leaves a 2,000-token shard
+    # budget against Sonnet 5's 18,400, which makes advanced mode unusable. Compare
+    # its cost against nova_lite with that in mind, and read the note on its
+    # model_config_limits.yaml entry before publishing a cost claim.
     haiku55:      {extraction.model: us.anthropic.claude-haiku-5-5}
   # extraction.agentic.max_pages_per_shard — the lever that decides whether a big
   # context window is reachable at all on the AGENTIC path.

@@ -103,10 +103,19 @@ LONG_CONTEXT_SUFFIX = ":1m"
 #: account-scoped inference-profile ARN is the only way to name a model there and
 #: ``resolve_model_id_from_arn`` reduces one to a ``us-gov.`` id.
 #:
-#: ``config.retired_models._REGION_PREFIX`` holds the same five as a regex and
+#: ``au`` and ``jp`` are here because Claude Haiku 5.5 is the first model this
+#: repository offers whose card advertises them: its geo inference ids are ``us.``,
+#: ``eu.``, ``au.`` and ``jp.``. Their absence had the permissive failure above for
+#: **every** 4.7-or-later Claude, not only that one — ``au.anthropic.claude-haiku-5-5``
+#: reported ``strips_sampling_params`` False, so ``top_k`` and ``top_p`` went to a
+#: model that rejects both and every request 400'd. Not reachable from the picklists,
+#: which offer ``us.``/``eu.``/``global.`` only, but reachable through a custom
+#: configuration or the CLI, where a user copies the id off the model card.
+#:
+#: ``config.retired_models._REGION_PREFIX`` holds the same seven as a regex and
 #: cannot import this module (``config`` is imported BY ``bedrock``), so the two are
 #: asserted equal by ``tests/unit/bedrock/test_region_prefix_parity.py``.
-REGION_PREFIXES = ("us", "eu", "apac", "global", "us-gov")
+REGION_PREFIXES = ("us", "eu", "apac", "au", "jp", "global", "us-gov")
 
 
 def metering_model_id(model_id: str) -> str:

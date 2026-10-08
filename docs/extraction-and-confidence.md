@@ -107,7 +107,8 @@ extraction:
 > `max_tokens` knob.)
 >
 > **Reasoning effort:** for reasoning-capable models — Claude Sonnet 5 / Sonnet
-> 4.6 / Opus 4.5–4.8 / Fable 5 / Haiku 5.5 (`low`|`medium`|`high`|`xhigh`|`max`), OpenAI
+> 4.6 / Opus 4.5–4.8 / Opus 5 / Opus 5.5 / Fable 5 / Haiku 5.5
+> (`low`|`medium`|`high`|`xhigh`|`max`), OpenAI
 > GPT-5.x (`minimal`|`low`|`medium`|`high`), xAI Grok
 > (`none`|`low`|`medium`|`high`|`xhigh`, **not** `max`), and OpenAI GPT-6 Astra
 > (`none`|`low`|`medium`|`high`|`xhigh`|`max`, **not** `minimal`) — `reasoning_effort` controls how much

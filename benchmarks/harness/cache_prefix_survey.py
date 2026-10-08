@@ -42,8 +42,11 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 #: Published minimum cacheable prefix, by model tier. The ordering is deliberate — the
 #: tiers are NOT increasing with recency, and presenting them sorted by size is what
 #: makes "newer is not safer" visible.
+#: Haiku 5.5 at 512 against Haiku 4.5 at 4,096 is the sharpest instance of the
+#: non-monotonicity this table exists to display: one family name, the smallest tier
+#: and the largest.
 TIERS = [
-    (512, "Opus 5, Fable 5"),
+    (512, "Opus 5, Opus 5.5, Fable 5, Haiku 5.5"),
     (1024, "Sonnet 5, Sonnet 4.6, Opus 4.8"),
     (2048, "Opus 4.7"),
     (4096, "Opus 4.6, Opus 4.5, Haiku 4.5"),

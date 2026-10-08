@@ -759,7 +759,8 @@ Different Bedrock models implement these parameters with varying defaults, namin
   - Parameters use snake_case: `temperature`, `top_p`, `top_k`
   - Implementation: `top_k` is placed in `additionalModelRequestFields`
   - **Reasoning effort** (Sonnet 5, Sonnet 4.6, Opus 4.5–4.8, Opus 5, Opus 5.5,
-    Fable 5, Haiku 5.5 — see `is_claude_effort_model()`): `reasoning_effort`
+    Fable 5, Haiku 5.5 — see `is_claude_effort_model()`, which is the authority;
+    every list of this set in the tree is a copy of it): `reasoning_effort`
     (`low`/`medium`/`high`/`xhigh`/`max`) maps to
     `additionalModelRequestFields.output_config.effort`.
     Ignored for Sonnet 4.5 / Haiku 4.5 (they 400 on it). `budget_tokens` is

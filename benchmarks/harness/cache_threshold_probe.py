@@ -4,9 +4,11 @@
 
 """Where does Bedrock actually START caching? A direct sweep, not an assumption.
 
-Anthropic publishes a minimum cacheable prefix per model (512 on Opus 5 / Fable 5;
-1024 on Sonnet 5 / Sonnet 4.6 / Opus 4.8; 2048 on Opus 4.7; 4096 on Opus 4.6/4.5
-and Haiku 4.5) and states that a shorter prefix "silently won't cache" — no error,
+Anthropic publishes a minimum cacheable prefix per model (512 on Opus 5 / Opus 5.5 /
+Fable 5 / Haiku 5.5; 1024 on Sonnet 5 / Sonnet 4.6 / Opus 4.8; 2048 on Opus 4.7; 4096 on Opus
+4.6/4.5 and Haiku 4.5 — note the two Haikus are the smallest and the largest tier, so
+the family name settles nothing) and states that a shorter prefix "silently won't
+cache" — no error,
 just ``cacheWriteInputTokens: 0``. Our client inserts a ``cachePoint`` wherever
 ``<<CACHEPOINT>>`` appears with **no length check**, so any class whose prompt
 prefix falls under the model's minimum silently pays full input price forever.
