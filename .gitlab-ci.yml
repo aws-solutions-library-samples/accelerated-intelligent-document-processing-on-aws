@@ -604,6 +604,78 @@ integration_tests:
         printf '<!doctype html><meta charset="utf-8"><title>No ZAP DAST report</title>\n<p>Not collected: no pipeline execution was recorded.</p>\n' > zap-report.html
       fi
 
+    # Post the nightly result to Slack.
+    #
+    # ⚠️ WHY THIS IS HERE AND NOT GitLab's OWN SLACK INTEGRATION. That integration
+    # fires on `pipeline_events` for a branch, and like the pipeline BADGE it cannot
+    # filter by pipeline SOURCE — so it would post every push pipeline to `develop`
+    # as well, which is the majority of them and is not what anybody subscribed for.
+    # Posting from this job is the only place that knows the run was the scheduled
+    # one, and it is also the only place with the deploy's own summary and the
+    # agentic root-cause analysis to put in the message.
+    #
+    # Scoped to `schedule` deliberately: a manually clicked deploy is watched by the
+    # person who clicked it and does not need to interrupt a channel.
+    #
+    # SLACK_WEBHOOK_URL is a MASKED CI variable, never a committed value — this
+    # repository is public, and an incoming webhook URL is a bearer credential that
+    # lets anyone post to the channel. Absent, the block prints one line and exits 0,
+    # the same contract GITLAB_REVIEW_TOKEN has in ai_mr_review.
+    #
+    # The channel is fixed by the webhook at creation time, so a `channel` field in
+    # the payload would be ignored by modern Slack apps and is not sent.
+    - |
+      if [ -z "$SLACK_WEBHOOK_URL" ]; then
+        echo "ℹ️ SLACK_WEBHOOK_URL not set — skipping the Slack post"
+      elif [ "$CI_PIPELINE_SOURCE" != "schedule" ]; then
+        echo "ℹ️ Not the scheduled run (source=$CI_PIPELINE_SOURCE) — skipping the Slack post"
+      else
+        # Build the payload in python rather than by string-concatenating shell:
+        # the summary is multi-line model output that reliably contains quotes,
+        # backslashes and newlines, and a hand-built JSON body breaks on all three.
+        python3 - "$CI_JOB_STATUS" "$CI_JOB_URL" "$CI_PROJECT_URL" "$CI_COMMIT_SHA" > slack-payload.json <<'PY'
+      import json, os, pathlib, sys
+
+      status, job_url, project_url, sha = sys.argv[1:5]
+      ok = status == "success"
+
+      summary = ""
+      p = pathlib.Path("deployment_summary.txt")
+      if p.is_file():
+          summary = p.read_text(errors="replace").strip()
+      # Slack hard-limits a section block to 3000 characters and rejects the whole
+      # message if one exceeds it, so truncate rather than lose the post entirely.
+      if len(summary) > 2600:
+          summary = summary[:2600] + "\n… (truncated — full summary in the job artifacts)"
+
+      header = ("✅ Nightly IDP integration deploy PASSED" if ok
+                else "❌ Nightly IDP integration deploy FAILED")
+
+      lines = [f"*<{job_url}|{header}>*",
+               f"Commit `{sha[:8]}` on `develop` · <{project_url}/-/pipeline_schedules|schedules>"]
+      if not ok:
+          lines.append("Triage by bisecting the day's merges — the pipeline's own "
+                       "commit is not necessarily the cause.")
+
+      blocks = [{"type": "section",
+                 "text": {"type": "mrkdwn", "text": "\n".join(lines)}}]
+      if summary:
+          blocks.append({"type": "section",
+                         "text": {"type": "mrkdwn", "text": f"```{summary}```"}})
+
+      json.dump({"text": header, "blocks": blocks}, sys.stdout)
+      PY
+        # --fail so a 4xx from Slack is visible rather than silently discarded, but
+        # `|| true` so a notification problem never changes the job's verdict: the
+        # deploy result is what this job reports.
+        if curl -sS --fail -X POST -H 'Content-type: application/json' \
+             --data @slack-payload.json "$SLACK_WEBHOOK_URL" >/dev/null; then
+          echo "💬 Nightly result posted to Slack"
+        else
+          echo "⚠️ Slack post failed (HTTP error or bad webhook) — deploy result unaffected"
+        fi
+      fi
+
   artifacts:
     when: always
     paths:

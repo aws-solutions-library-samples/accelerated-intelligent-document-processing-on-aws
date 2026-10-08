@@ -278,7 +278,23 @@ catches it.
 *Three consequences, all load-bearing:*
 
 - **Somebody has to watch the nightly result.** A scheduled pipeline nobody reads
-  is strictly worse than no pipeline, because it looks like coverage.
+  is strictly worse than no pipeline, because it looks like coverage. Three
+  channels carry it, and each has a different blind spot:
+  - **Slack** — the `integration_tests` job posts the result and the deploy
+    summary to the team channel, but only on the **scheduled** run. Needs the
+    masked `SLACK_WEBHOOK_URL` CI variable; absent, it logs one line and skips.
+  - **Email** — the *Pipeline status emails* integration sends pipeline failures
+    on the default branch to the team distribution list. ⚠️ It fires for **any**
+    failed `develop` pipeline, not just the nightly: GitLab cannot filter
+    notifications by pipeline source, which is the same limitation the badge has.
+  - **The SNS topic** `<pipeline>-failures` carries the agentic root-cause
+    analysis (`IDP_FAILURE_AGENT=1`) on a failed deploy, to whatever address the
+    `FailureNotificationEmail` stack parameter was set to.
+
+  ⚠️ **None of them is a heartbeat.** All three are failure- or event-driven, so a
+  schedule that silently stops firing produces exactly the same silence as a
+  month of passing runs. **Build → Pipeline schedules** shows last-run status per
+  schedule and is the only view that answers "did it run at all".
 - **Click the button before merging anything on the deploy path** —
   `template.yaml`, `publish.py`, `patterns/`, `nested/`, `src/`, `lib/`,
   `config_library/`, `feature-platform/`, `iam-roles/`, `scripts/`. That list is
