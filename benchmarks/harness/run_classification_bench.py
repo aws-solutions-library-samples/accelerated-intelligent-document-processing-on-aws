@@ -52,6 +52,19 @@ MODELS = {
     "nova2lite": "us.amazon.nova-2-lite-v1:0",
     "novalite": "us.amazon.nova-lite-v1:0",
     "haiku45": "us.anthropic.claude-haiku-4-5-20251001-v1:0",
+    # Claude Haiku 5.5. Both numbers this driver reports are open questions on it and
+    # neither can be read off the haiku45 row: at 10x less per token it is the
+    # cheapest Claude that can hold a class vocabulary, and it is the first Haiku with
+    # an effort control, which is exactly the kind of change that moves a confidence
+    # distribution. class_calibration_separation is the one to watch — a cheap model
+    # can score well on class_accuracy while reporting a confidence that does not
+    # separate its right answers from its wrong ones, and that combination is worse
+    # for a user than a lower accuracy with an honest confidence, because the
+    # escalation path trusts the number (#673).
+    #
+    # Run it against haiku45 in the same invocation so the pair is one measurement:
+    #   --models haiku45,haiku55 --mode topk
+    "haiku55": "us.anthropic.claude-haiku-5-5",
     "haiku3": "us.anthropic.claude-3-haiku-20240307-v1:0",
     "sonnet46": "us.anthropic.claude-sonnet-4-6",
 }

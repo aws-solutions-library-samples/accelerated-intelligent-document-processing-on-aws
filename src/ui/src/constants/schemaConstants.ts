@@ -228,6 +228,7 @@ export const EXTRACTION_MODEL_OVERRIDE_OPTIONS = [
   { label: 'us.amazon.nova-pro-v1:0', value: 'us.amazon.nova-pro-v1:0' },
   { label: 'us.amazon.nova-2-lite-v1:0', value: 'us.amazon.nova-2-lite-v1:0' },
   { label: 'us.anthropic.claude-haiku-4-5-20251001-v1:0', value: 'us.anthropic.claude-haiku-4-5-20251001-v1:0' },
+  { label: 'us.anthropic.claude-haiku-5-5', value: 'us.anthropic.claude-haiku-5-5' },
   { label: 'us.anthropic.claude-sonnet-4-5-20250929-v1:0', value: 'us.anthropic.claude-sonnet-4-5-20250929-v1:0' },
   { label: 'us.anthropic.claude-sonnet-4-6', value: 'us.anthropic.claude-sonnet-4-6' },
   { label: 'us.anthropic.claude-sonnet-4-6:1m', value: 'us.anthropic.claude-sonnet-4-6:1m' },
@@ -261,6 +262,7 @@ export const EXTRACTION_MODEL_OVERRIDE_OPTIONS = [
   { label: 'eu.amazon.nova-pro-v1:0', value: 'eu.amazon.nova-pro-v1:0' },
   { label: 'eu.amazon.nova-2-lite-v1:0', value: 'eu.amazon.nova-2-lite-v1:0' },
   { label: 'eu.anthropic.claude-haiku-4-5-20251001-v1:0', value: 'eu.anthropic.claude-haiku-4-5-20251001-v1:0' },
+  { label: 'eu.anthropic.claude-haiku-5-5', value: 'eu.anthropic.claude-haiku-5-5' },
   { label: 'eu.anthropic.claude-sonnet-4-5-20250929-v1:0', value: 'eu.anthropic.claude-sonnet-4-5-20250929-v1:0' },
   { label: 'eu.anthropic.claude-sonnet-4-6', value: 'eu.anthropic.claude-sonnet-4-6' },
   { label: 'eu.anthropic.claude-sonnet-4-6:1m', value: 'eu.anthropic.claude-sonnet-4-6:1m' },
@@ -282,6 +284,7 @@ export const EXTRACTION_MODEL_OVERRIDE_OPTIONS = [
     label: 'global.anthropic.claude-haiku-4-5-20251001-v1:0',
     value: 'global.anthropic.claude-haiku-4-5-20251001-v1:0',
   },
+  { label: 'global.anthropic.claude-haiku-5-5', value: 'global.anthropic.claude-haiku-5-5' },
   {
     label: 'global.anthropic.claude-sonnet-4-5-20250929-v1:0',
     value: 'global.anthropic.claude-sonnet-4-5-20250929-v1:0',

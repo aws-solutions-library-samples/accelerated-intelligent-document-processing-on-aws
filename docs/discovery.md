@@ -565,6 +565,7 @@ The Discovery module supports comprehensive configuration through the deployment
 - `us.amazon.nova-lite-v1:0` - Fast, cost-effective for simple documents
 - `us.amazon.nova-pro-v1:0` - Balanced performance and accuracy (recommended)
 - `us.anthropic.claude-haiku-4-5-20251001-v1:0` - Fast processing
+- `us.anthropic.claude-haiku-5-5` - Fastest and cheapest; first Haiku with reasoning effort
 - `us.anthropic.claude-sonnet-4-5-20250929-v1:0` - High accuracy
 - `us.anthropic.claude-sonnet-4-5-20250929-v1:0` - Latest capabilities
 

@@ -95,6 +95,12 @@ MODEL_MAPPINGS = {
     # model to another. Claude Haiku 4.5 is the current Haiku-class model.
     "us.anthropic.claude-3-haiku-20240307-v1:0": "eu.anthropic.claude-haiku-4-5-20251001-v1:0",
     "us.anthropic.claude-haiku-4-5-20251001-v1:0": "eu.anthropic.claude-haiku-4-5-20251001-v1:0",
+    # Haiku 5.5 maps to its own EU geo profile, so this row is safe in BOTH
+    # directions — get_model_mapping walks this dict backwards for a US target, and
+    # the reverse of this row returns the US Haiku 5.5 profile rather than moving a
+    # user onto a different model (the hazard documented at the bottom of this dict).
+    # There is no ":1m" pair to add: 1M is this model's default window.
+    "us.anthropic.claude-haiku-5-5": "eu.anthropic.claude-haiku-5-5",
     # Retired source -> LIVE target, as above: both 3.5 and 3.7 Sonnet are
     # end-of-life, so the EU twin was no better than the US original.
     "us.anthropic.claude-3-5-sonnet-20241022-v2:0": "eu.anthropic.claude-sonnet-4-5-20250929-v1:0",

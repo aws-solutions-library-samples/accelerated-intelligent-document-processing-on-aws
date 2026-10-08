@@ -148,6 +148,13 @@ _CLAUDE_4_7_BASE_NAMES = {
     # top_p=0.0, so Sonnet 5 must be treated like the sampling-param-stripped models
     # (this is a deliberate deviation from Sonnet 4.6, which still accepts them).
     "anthropic.claude-sonnet-5",
+    # Claude Haiku 5.5 joins the set, and this is the first Haiku to do so —
+    # Haiku 4.5 still accepts all three parameters, so "it's a Haiku" is not the
+    # rule. Verified live on Bedrock Converse (us.anthropic.claude-haiku-5-5,
+    # us-west-2, 2026-10-08): each of `temperature`, `top_p` and `top_k` comes
+    # back "is deprecated for this model". IDP's default decoding config sets
+    # top_k=5 / top_p=0.0, so without this entry every Haiku 5.5 request fails.
+    "anthropic.claude-haiku-5-5",
 }
 
 
@@ -216,6 +223,17 @@ _CLAUDE_EFFORT_BASE_NAMES = {
     # wrong for any future Opus 5.x that does NOT take effort.
     "anthropic.claude-opus-5-5",
     "anthropic.claude-fable-5",
+    # Claude Haiku 5.5 is the FIRST Haiku to accept effort — Haiku 4.5 rejects it
+    # with a 400, and that rejection is the reason the comment above names Haiku
+    # 4.5 explicitly. Verified live on Bedrock Converse
+    # (us.anthropic.claude-haiku-5-5, us-west-2, 2026-10-08): accepted at both
+    # "low" and "max", and "max" measurably spent more output tokens on the same
+    # prompt. Its default is "medium" per the Bedrock model card, read rather than
+    # measured for the same reason Opus 5.5's is. Unlike Opus 5.5, thinking CAN be
+    # disabled here (see _THINKING_ALWAYS_ON_BASE_NAMES), and the model card adds
+    # one constraint this file does not model: with thinking disabled the effort
+    # level is capped at "high".
+    "anthropic.claude-haiku-5-5",
 }
 
 # Claude models on which extended thinking cannot be turned off. Verified live on
@@ -230,6 +248,11 @@ _CLAUDE_EFFORT_BASE_NAMES = {
 # currently constructs the rejected request — the set exists so that a future
 # caller that wants to disable thinking has one place to ask, instead of
 # discovering the 400 in production.
+#
+# Membership does NOT follow from "is a 5.5 model": Claude Haiku 5.5 accepts
+# ``thinking = {"type": "disabled"}`` (verified live, us.anthropic.claude-haiku-5-5,
+# us-west-2, 2026-10-08) and so is deliberately absent, even though it shares Opus
+# 5.5's sampling-parameter surface and its effort control.
 _THINKING_ALWAYS_ON_BASE_NAMES = {
     "anthropic.claude-opus-5-5",
 }
@@ -586,6 +609,14 @@ CACHEPOINT_SUPPORTED_MODELS = [
     "us.anthropic.claude-sonnet-5",
     "us.anthropic.claude-sonnet-5:1m",
     "us.anthropic.claude-haiku-4-5-20251001-v1:0",
+    # Claude Haiku 5.5. Explicit caching confirmed live rather than inferred from
+    # the model card: a >512-token system prefix followed by a cachePoint block
+    # returned cacheWriteInputTokens=4683 on the first call and
+    # cacheReadInputTokens=4683 on the next two (us-west-2, 2026-10-08). The card
+    # publishes a 512-token minimum and 4 checkpoints — see prompt_cache.py.
+    # Note the id carries no date or ``-v1:0`` suffix and has no ``:1m`` variant:
+    # the 1M window is the default on this model, not an opt-in.
+    "us.anthropic.claude-haiku-5-5",
     "us.amazon.nova-lite-v1:0",
     "us.amazon.nova-pro-v1:0",
     "us.amazon.nova-2-lite-v1:0",
@@ -597,6 +628,7 @@ CACHEPOINT_SUPPORTED_MODELS = [
     "eu.anthropic.claude-sonnet-5",
     "eu.anthropic.claude-sonnet-5:1m",
     "eu.anthropic.claude-haiku-4-5-20251001-v1:0",
+    "eu.anthropic.claude-haiku-5-5",
     "eu.anthropic.claude-opus-4-5-20251101-v1:0",
     "eu.anthropic.claude-opus-4-6-v1",
     "eu.anthropic.claude-opus-4-6-v1:1m",
@@ -617,6 +649,7 @@ CACHEPOINT_SUPPORTED_MODELS = [
     "global.amazon.nova-2-lite-v1:0:priority",
     "global.amazon.nova-2-lite-v1:0:flex",
     "global.anthropic.claude-haiku-4-5-20251001-v1:0",
+    "global.anthropic.claude-haiku-5-5",
     "global.anthropic.claude-sonnet-4-5-20250929-v1:0",
     "global.anthropic.claude-sonnet-4-6",
     "global.anthropic.claude-sonnet-4-6:1m",

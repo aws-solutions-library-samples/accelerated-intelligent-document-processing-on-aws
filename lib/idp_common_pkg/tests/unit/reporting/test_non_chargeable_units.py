@@ -157,12 +157,21 @@ DECLARED_ENTRY_COUNT = 6
 #: How many shipped pricing entries each declaration currently shields — the
 #: number of ``<service>/...`` rows in ``config_library/pricing.yaml`` that omit
 #: that unit. Pinned because non-vacuity alone only asks for *one*: without this,
-#: pricing ``totalTokens`` on 93 of the 94 Bedrock entries would leave the
+#: pricing ``totalTokens`` on 96 of the 97 Bedrock entries would leave the
 #: shielded count at 1 with the suite green, and the declaration would be doing
 #: almost nothing while still reading as a live decision.
+#:
+#: The two 97s moved from 94 when Claude Haiku 5.5 added ``us.``/``eu.``/``global.``
+#: Bedrock entries. Audited rather than bumped: all three price input, output and
+#: both cache dimensions and none prices ``totalTokens`` or ``requests`` — which is
+#: the correct shape, since input and output are each already billed so totalTokens
+#: would double-charge them, and on-demand Bedrock bills no per-request dimension.
+#: The ``cacheReadInputTokens`` / ``cacheWriteInputTokens`` counts deliberately stay
+#: at 11 for the same reason: the three entries carry both rates, so they are not
+#: shielded by those declarations.
 EXPECTED_SHIELDED_SITES = {
-    ("bedrock", "totalTokens"): 94,
-    ("bedrock", "requests"): 94,
+    ("bedrock", "totalTokens"): 97,
+    ("bedrock", "requests"): 97,
     ("bedrock", "cacheReadInputTokens"): 11,
     ("bedrock", "cacheWriteInputTokens"): 11,
     ("lambda_hook", "totalTokens"): 2,

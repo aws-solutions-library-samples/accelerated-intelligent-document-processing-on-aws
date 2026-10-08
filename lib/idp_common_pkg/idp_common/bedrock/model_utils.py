@@ -103,10 +103,19 @@ LONG_CONTEXT_SUFFIX = ":1m"
 #: account-scoped inference-profile ARN is the only way to name a model there and
 #: ``resolve_model_id_from_arn`` reduces one to a ``us-gov.`` id.
 #:
-#: ``config.retired_models._REGION_PREFIX`` holds the same five as a regex and
+#: ``au`` and ``jp`` are here because Claude Haiku 5.5 is the first model this
+#: repository offers whose card advertises them: its geo inference ids are ``us.``,
+#: ``eu.``, ``au.`` and ``jp.``. Their absence had the permissive failure above for
+#: **every** 4.7-or-later Claude, not only that one — ``au.anthropic.claude-haiku-5-5``
+#: reported ``strips_sampling_params`` False, so ``top_k`` and ``top_p`` went to a
+#: model that rejects both and every request 400'd. Not reachable from the picklists,
+#: which offer ``us.``/``eu.``/``global.`` only, but reachable through a custom
+#: configuration or the CLI, where a user copies the id off the model card.
+#:
+#: ``config.retired_models._REGION_PREFIX`` holds the same seven as a regex and
 #: cannot import this module (``config`` is imported BY ``bedrock``), so the two are
 #: asserted equal by ``tests/unit/bedrock/test_region_prefix_parity.py``.
-REGION_PREFIXES = ("us", "eu", "apac", "global", "us-gov")
+REGION_PREFIXES = ("us", "eu", "apac", "au", "jp", "global", "us-gov")
 
 
 def metering_model_id(model_id: str) -> str:
@@ -516,6 +525,13 @@ _STANDARD_VISUAL_TOKEN_CAP = 1568
 # "claude-opus-5-5" contains "claude-opus-5" — that is the intended answer, not an
 # accident: Opus 5.5 shares the Opus 4.7+ tokenizer and vision tier.
 # Sonnet 4.6, Haiku 4.5 and the 3.x family are standard tier.
+# Haiku 5.5 is high resolution and Haiku 4.5 is not, so the tier does not follow
+# from the family name. Measured, not assumed: one 2550x3301 page costs 4,770 real
+# input tokens on us.anthropic.claude-haiku-5-5 against 1,542 on
+# us.anthropic.claude-haiku-4-5-20251001-v1:0, with Sonnet 5 at 4,768 for the same
+# image (us-west-2, 2026-10-08). Getting this wrong understates an image-heavy
+# Haiku 5.5 request by ~3x, which is the direction that reads as "plenty of
+# context left" right up to the rejection.
 # Deliberately a separate statement of the model set from
 # client._CLAUDE_4_7_BASE_NAMES, not a derivation of it: "rejects sampling
 # parameters" and "tokenizes images on the high-resolution tier" are different
@@ -523,7 +539,9 @@ _STANDARD_VISUAL_TOKEN_CAP = 1568
 # a model added to one must be considered for the other rather than silently
 # inheriting a default (#994). The pattern is a substring search so it matches
 # region prefixes (``us.``), the ``:1m`` suffix and inference-profile ARNs alike.
-_HIGH_RES_MODEL_PATTERN = re.compile(r"claude-(opus-4-[78]|opus-5|sonnet-5)", re.I)
+_HIGH_RES_MODEL_PATTERN = re.compile(
+    r"claude-(opus-4-[78]|opus-5|sonnet-5|haiku-5-5)", re.I
+)
 # Non-Claude families tokenize images differently (Nova budgets by payload size,
 # not patches), so they keep the deliberately generous legacy figure: this
 # estimate only drives a warning and a failure message, and over-stating is the
