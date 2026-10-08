@@ -3,8 +3,17 @@
 Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
 SPDX-License-Identifier: MIT-0
 
-<!-- Internal GitLab pipeline badge (visible on gitlab.aws.dev, not accessible on public GitHub mirror) -->
-[![pipeline status](https://gitlab.aws.dev/genaiic-reusable-assets/engagement-artifacts/genaiic-idp-accelerator/badges/develop/pipeline.svg)](https://gitlab.aws.dev/genaiic-reusable-assets/engagement-artifacts/genaiic-idp-accelerator/-/commits/develop)
+<!-- Internal GitLab pipeline badge (visible on gitlab.aws.dev, not accessible on public GitHub mirror)
+     `key_text=fast checks` is deliberate and load-bearing. The badge endpoint reports
+     the LATEST pipeline on the ref and takes no pipeline-source filter, and `develop`
+     now receives two different kinds: a push runs the offline gates only (~14 min),
+     while the nightly schedule additionally deploys a real stack and runs the
+     integration suite (~1h). Pushes vastly outnumber the nightly, so an unlabelled
+     badge reads "pipeline passed" while almost always reporting the cheaper of the two
+     — over-claiming in exactly the direction that matters. The nightly's own result is
+     NOT here: see Build -> Pipeline schedules, which is per-schedule and so is the one
+     view that cannot mislead. -->
+[![fast checks](https://gitlab.aws.dev/genaiic-reusable-assets/engagement-artifacts/genaiic-idp-accelerator/badges/develop/pipeline.svg?key_text=fast+checks&key_width=76)](https://gitlab.aws.dev/genaiic-reusable-assets/engagement-artifacts/genaiic-idp-accelerator/-/commits/develop)
 
 **Questions?** [![Ask DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws)
 
