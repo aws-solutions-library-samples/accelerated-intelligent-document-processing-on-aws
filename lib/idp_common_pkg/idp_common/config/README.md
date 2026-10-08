@@ -491,9 +491,10 @@ the head the save wrote. A head changed by a writer that cut no revision is
 therefore never recorded as the published revision; for example, a Lambda without
 `CONFIGURATION_BUCKET`, where history is disabled. Nor is the head an unchanged
 save wrote when it stores something the replaced head did not: `True == 1`, so
-swapping one for the other wherever the configuration model leaves a value
+replacing a `true` with `1` wherever the configuration model leaves a value
 untyped, as it does inside a class, counts as unchanged, yet the head then stores
-`"1"` where the revision held `true`.
+`"1"` where the revision held `true`. The reverse is a change, because a stored
+number reads back as a string and `"1" != True`.
 
 The first save after upgrading into revision history follows the same rule. It
 cuts the configuration it replaces as a pre-history backfill, and when it changes
