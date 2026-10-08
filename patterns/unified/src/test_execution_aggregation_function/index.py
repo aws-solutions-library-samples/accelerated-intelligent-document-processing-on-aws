@@ -176,9 +176,10 @@ def _classification_errors_for_doc(
     different fixes:
 
     * ``class`` — the wrong document class. Extraction ran the wrong schema.
-    * ``unmatched`` — a ground-truth section no predicted section reproduces:
-      its pages were split, merged or left out differently, which is a
-      splitting failure rather than a labelling one. ``predicted_sections``
+    * ``unmatched`` — a ground-truth section no recorded predicted section
+      reproduces. Unless the entry carries ``predicted_sections_incomplete``
+      (below), its pages were split, merged or left out differently, which is
+      a splitting failure rather than a labelling one. ``predicted_sections``
       carries the predicted sections that share a page with it, in page
       order, each with its class and its pages as ``[first, last]`` runs.
       For the item-size reason ``MAX_CLASSIFICATION_ERRORS`` gives, at most
@@ -751,9 +752,9 @@ def _load_comparison_results(
         ``excluded_doc_keys`` lists documents whose every section was a
         scoring no-op (class has no extractable schema); they contribute no
         weighted score and are surfaced to the UI as an "excluded" count.
-        ``doc_classification_errors`` maps doc_key → the ground-truth sections the
-        prediction did not reproduce (wrong class, no matching section, or page
-        order), which the run-level Classification errors panel reads.
+        ``doc_classification_errors`` maps doc_key → the ground-truth sections no
+        recorded predicted section reproduces (wrong class, no matching section,
+        or page order), which the run-level Classification errors panel reads.
     """
     table = dynamodb.Table(tracking_table_name)
     output_bucket = os.environ.get("OUTPUT_BUCKET")

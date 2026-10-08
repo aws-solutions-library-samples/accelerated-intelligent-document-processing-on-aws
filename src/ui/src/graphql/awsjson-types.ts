@@ -63,14 +63,15 @@ export interface PredictedSectionSummary {
   page_ranges?: number[][];
 }
 
-/** One ground-truth section the prediction did not reproduce. */
+/** One ground-truth section no predicted section the evaluation recorded reproduces. */
 export interface ClassificationError {
   doc_key?: string;
   section_id?: string | number | null;
   /**
    * `class` — wrong document class, so extraction ran the wrong schema.
-   * `unmatched` — a ground-truth section no predicted section matched (a
-   * splitting difference). `order` — right class and pages, wrong page order.
+   * `unmatched` — no recorded predicted section holds exactly the section's
+   * pages: a splitting difference, unless `predicted_sections_incomplete` is
+   * set. `order` — right class and pages, wrong page order.
    */
   kind?: 'class' | 'unmatched' | 'order';
   expected_class?: string | null;
