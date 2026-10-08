@@ -5,6 +5,10 @@ SPDX-License-Identifier: MIT-0
 
 ## [Unreleased]
 
+### Changed
+
+- **The stack-managed `realkie-fcc-verified` profile now treats each file as one invoice.** It and the RealKIE-FCC-Verified 1S-TopK reference configuration (`config_library/unified/realkie-fcc-verified/config-1s-topk-with-ocr-image.yaml`) set `classification.sectionSplitting: disabled`. Page-level classification had been splitting some multi-page invoices into several sections, which Test Studio listed as classification errors (predicted class "No Match") and scored by comparing only the first section with the whole invoice's ground truth. With its single class, the profile now makes no classification model call. ⚠️ **Action:** the stack update gives the managed `realkie-fcc-verified` profile a new revision with whole-document sections, and accuracy from runs on it before the upgrade is not directly comparable with runs after it. A profile copied from it earlier keeps its own setting: set **Section splitting** to `disabled` in it by hand. The deploy-time preset, `config_library/unified/realkie-fcc-verified/config.yaml`, is unchanged, so no stack's `default` profile changes. The [Test Set - ConfBench](docs/extensions/confbench-testset.md) extension's preset does not set section splitting, so to compare ConfBench with RealKIE-FCC-Verified, run both test sets on one configuration version. See [Test Studio](docs/test-studio.md#realkie-fcc-verified).
+
 ### Fixed
 
 - **A Test Studio run no longer stays in EVALUATING forever when one document's evaluation times out.** The evaluation step records such a document as `TIMED_OUT`, which the run-status check did not recognise, so it kept counting the document as still evaluating — and an EVALUATING run cannot be aborted. It now counts as a failed file, like `FAILED`, so the run finishes `PARTIAL_COMPLETE` with metrics over the documents that were scored, and a run already stuck finishes on its next status check after upgrading. Aborting a run no longer waits on such a document either. See [A failed evaluation no longer discards the document](docs/evaluation.md#a-failed-evaluation-no-longer-discards-the-document).
