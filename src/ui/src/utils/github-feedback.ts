@@ -4,21 +4,42 @@
 /**
  * Builds GitHub "new issue" URLs for the in-app feedback affordances.
  *
- * Mechanism: these app-generated links use the `?title=&body=&labels=` query
- * params, which pre-fill the issue *body* directly with an environment summary
- * plus any provided context (agent findings / chat answer). This works
- * immediately and always carries the content.
+ * Mechanism: these links select one of the issue *forms* in
+ * `.github/ISSUE_TEMPLATE/` with `?template=<file>.yml` and pre-fill its
+ * individual fields by element id (`?region=us-west-2&mode=...`). The report
+ * therefore arrives in the same shape, with the same headings and the same
+ * labels, as one filed from GitHub's own "New issue" chooser.
  *
- * Note: `?body=` and issue *forms* (`?template=*.yml`) are mutually exclusive —
- * GitHub ignores `body=` when a template is selected. We intentionally use
- * `body=` here so the content is embedded regardless of whether the `.yml`
- * forms exist yet on the repo's default branch. The `.yml` forms still apply
- * when a user clicks "New issue" directly on GitHub.
+ * ⚠️ `?body=` and `?template=` are MUTUALLY EXCLUSIVE — GitHub ignores `body=`
+ * once a template is selected, and conversely a `body=` link bypasses the form
+ * and opens the blank editor. So the field ids below are the only way to carry
+ * content into a form, and a field id that does not exist in the form is
+ * dropped silently: there is no error and no warning, the value simply does not
+ * appear. `FORM_FIELDS` is asserted against the YAML in this util's tests for
+ * that reason.
+ *
+ * The forms are read from the repository's DEFAULT branch, not from the branch
+ * a deployment was built from, so a field added on `develop` is not addressable
+ * until it reaches `main`.
  *
  * Nothing is submitted automatically — GitHub always shows the pre-filled form
  * for the user to review (and redact) before submitting.
  */
 import { GITHUB_NEW_ISSUE_URL } from '../constants/github';
+
+/** Issue-form files in `.github/ISSUE_TEMPLATE/`. */
+export const BUG_REPORT_TEMPLATE = 'bug_report.yml';
+export const FEATURE_REQUEST_TEMPLATE = 'feature_request.yml';
+
+/**
+ * The form field ids this util writes to, per template. Exported so the tests
+ * can check them against the YAML rather than trusting this list: a typo here
+ * costs the field silently.
+ */
+export const FORM_FIELDS = {
+  [BUG_REPORT_TEMPLATE]: ['version', 'region', 'mode', 'troubleshoot'],
+  [FEATURE_REQUEST_TEMPLATE]: ['version', 'additional-context'],
+} as const;
 
 export interface DeploymentContext {
   /** settings.Version (e.g. "0.6.0.dev25"). */
@@ -59,8 +80,12 @@ const toProcessingMode = (pattern?: string): string => {
 };
 
 /**
- * Human-readable environment block included at the top of every issue body,
- * rendered as a Markdown bullet list.
+ * Human-readable environment block, rendered as a Markdown bullet list.
+ *
+ * This is what goes into the forms' `version` field, whose own placeholder asks
+ * for Version / Build / Stack. Region and processing mode have dedicated fields
+ * on the bug form but not on the feature form, so they stay in this block too —
+ * dropping them would lose them from every feature request.
  */
 export const buildEnvironmentSummary = (ctx: DeploymentContext): string => {
   const lines: string[] = [];
@@ -90,51 +115,64 @@ const buildTroubleshootSection = (doc: DocumentContext): string => {
   return parts.join('\n\n');
 };
 
-// GitHub rejects/truncates extremely long URLs. Keep the whole URL well under
-// the ~8 KB practical ceiling by capping the body.
-const MAX_BODY_CHARS = 6500;
+// GitHub rejects/truncates extremely long URLs. The cap is on the ONE field
+// that can carry unbounded content (agent findings, a chat answer); the others
+// are a version string, a region and a mode. Capping the whole query string
+// instead would make which field loses content depend on map ordering.
+const MAX_FIELD_CHARS = 6500;
 const TRUNCATION_NOTE = '\n\n…(truncated — use "Copy full details" in the app and paste the rest here)';
 
-const capBody = (value: string): string =>
-  value.length > MAX_BODY_CHARS ? value.slice(0, MAX_BODY_CHARS - TRUNCATION_NOTE.length) + TRUNCATION_NOTE : value;
+const capField = (value: string): string =>
+  value.length > MAX_FIELD_CHARS ? value.slice(0, MAX_FIELD_CHARS - TRUNCATION_NOTE.length) + TRUNCATION_NOTE : value;
 
-const buildUrl = (title: string, body: string, labels: string): string => {
+/**
+ * Assemble a form URL. Empty values are omitted rather than sent blank, so an
+ * unfilled field shows the form's own description and placeholder instead of
+ * looking like an answered question.
+ */
+const buildUrl = (template: string, title: string, fields: Record<string, string | undefined>): string => {
   const usp = new URLSearchParams();
+  usp.append('template', template);
   usp.append('title', title);
-  usp.append('body', capBody(body));
-  if (labels) usp.append('labels', labels);
+  Object.entries(fields).forEach(([id, value]) => {
+    const trimmed = value?.trim();
+    if (trimmed) usp.append(id, capField(trimmed));
+  });
   return `${GITHUB_NEW_ISSUE_URL}?${usp.toString()}`;
 };
 
 /**
- * Bug-report URL. Body carries the environment summary, any document/findings
- * context, and a redaction reminder, plus a "Describe the bug" prompt.
+ * Bug-report URL. The form supplies the "Describe the bug" prompt, the labels
+ * and its own redaction warning, so only the environment and any
+ * document/findings context are carried in.
  */
 export const buildBugReportUrl = (ctx: DeploymentContext, doc?: DocumentContext): string => {
   const title = doc?.objectKey ? `[Bug]: Issue processing ${doc.objectKey}` : '[Bug]: ';
-  const sections = [`## Environment\n${buildEnvironmentSummary(ctx)}`, REDACTION_NOTE, '## Describe the bug\n<!-- What went wrong? -->'];
-  if (doc) {
-    const ts = buildTroubleshootSection(doc);
-    if (ts) sections.push(ts);
-  }
-  return buildUrl(title, sections.join('\n\n'), 'bug');
+  // The troubleshoot field is the one that can carry document data, so the
+  // redaction reminder rides with it. The form's header carries the general
+  // warning for everything else.
+  const troubleshoot = doc ? buildTroubleshootSection(doc) : '';
+  return buildUrl(BUG_REPORT_TEMPLATE, title, {
+    version: buildEnvironmentSummary(ctx),
+    region: ctx.region,
+    mode: toProcessingMode(ctx.pattern),
+    troubleshoot: troubleshoot ? `${REDACTION_NOTE}\n\n${troubleshoot}` : '',
+  });
 };
 
 /**
- * Feature-request URL. Body carries the environment summary and prompts, plus
- * any provided context (e.g. the chat answer that motivated the request).
+ * Feature-request URL. The form supplies the problem/solution prompts and the
+ * `enhancement` label. Unlike the bug form it carries no redaction warning of
+ * its own, so one is attached to any app-supplied context (e.g. the chat answer
+ * that motivated the request), which is the only part that can hold document
+ * data.
  */
 export const buildFeatureRequestUrl = (ctx: DeploymentContext, context?: string): string => {
-  const sections = [
-    '## Is your feature request related to a problem?\n<!-- A clear description of the problem. -->',
-    "## Describe the solution you'd like\n<!-- What you want to happen. -->",
-    `## Environment\n${buildEnvironmentSummary(ctx)}`,
-  ];
-  if (context && context.trim()) {
-    sections.push(`## Context\n${context.trim()}`);
-    sections.push(REDACTION_NOTE);
-  }
-  return buildUrl('[Feature]: ', sections.join('\n\n'), 'enhancement');
+  const trimmed = context?.trim();
+  return buildUrl(FEATURE_REQUEST_TEMPLATE, '[Feature]: ', {
+    version: buildEnvironmentSummary(ctx),
+    'additional-context': trimmed ? `${REDACTION_NOTE}\n\n${trimmed}` : '',
+  });
 };
 
 /**
