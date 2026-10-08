@@ -29,8 +29,24 @@ phases:
         # errexit, because this whole block is ONE CodeBuild command and its exit
         # status is the last loop iteration's. Without it a failed build leaves the
         # phase -- and so the build -- reporting success with an image missing from
-        # ECR. See the same note in buildspec.yml.
+        # ECR. Retry first, so a transient registry error does not fail a deploy.
+        # See the fuller note in buildspec.yml (#1310).
         set -e
+
+        build_with_retry() {
+          local label="$1"; shift
+          local attempt=1 max_attempts=3
+          until docker buildx build "$@"; do
+            if [ "$attempt" -ge "$max_attempts" ]; then
+              echo "ERROR: failed to build/push ${label} after ${max_attempts} attempts"
+              return 1
+            fi
+            echo "WARNING: build of ${label} failed (attempt ${attempt}/${max_attempts}); retrying in $((attempt * 15))s"
+            sleep $((attempt * 15))
+            attempt=$((attempt + 1))
+          done
+        }
+
         for func_var in FUNCTION_ocr FUNCTION_classification FUNCTION_extraction FUNCTION_assessment FUNCTION_processresults FUNCTION_summarization FUNCTION_evaluation FUNCTION_rule_validation FUNCTION_rule_validation_orchestration; do
           func_path="${!func_var}"
           func_name=$(basename "$func_path" | sed 's/_/-/g')
@@ -43,7 +59,7 @@ phases:
           if [ "$LAMBDA_ARCHITECTURE" = "x86_64" ]; then
             DOCKER_PLATFORM="linux/amd64"
           fi
-          docker buildx build \
+          build_with_retry "${func_name}" \
             --platform "$DOCKER_PLATFORM" \
             -f Dockerfile.optimized \
             --build-arg FUNCTION_PATH="${func_path}" \
@@ -56,5 +72,12 @@ phases:
         done
   post_build:
     commands:
-      - echo "Pipeline Docker images built and pushed successfully"
-      - echo "Images tagged with version ${IMAGE_VERSION}"
+      # post_build runs after a FAILED build phase too, so this is guarded rather
+      # than unconditional. See the note in buildspec.yml (#1310).
+      - |
+        if [ "${CODEBUILD_BUILD_SUCCEEDING:-1}" = "1" ]; then
+          echo "Pipeline Docker images built and pushed successfully"
+          echo "Images tagged with version ${IMAGE_VERSION}"
+        else
+          echo "BUILD FAILED — one or more images were not pushed. The actionable error is above, in this log."
+        fi

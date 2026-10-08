@@ -335,11 +335,20 @@ check-retired-services: ## Fail if documentation presents a retired service (App
 	@$(PYTHON) scripts/sdlc/check_retired_services.py || \
 		(echo -e "$(RED)ERROR: Retired-service documentation check failed!$(NC)" && exit 1)
 
-# Discovered from `git ls-files` rather than listed, because the previous
-# `patterns/*/buildspec.yml` glob read ONE of the four buildspecs in the tree and
-# the three it skipped carried the same defect (#1310). Fails outright on an empty
-# set, so a discovery that stops working is a red gate rather than a green one --
-# the same contract `check-arn-partitions` and `cfn-lint` have.
+# Discovered from `git ls-files` rather than listed. The previous
+# `patterns/*/buildspec.yml` glob read ONE of the four buildspec files in the tree,
+# and of the three it skipped, two (`buildspec-bda.yml`, `buildspec-pipeline.yml`)
+# carried the #1310 defect while `feature-platform/idp-data-generator/buildspec.yml`
+# has no loop at all. Note the glob DID read the file #1310 was filed against, so
+# widening discovery is not the diagnosis for #1310 -- the absence of a rule was.
+# What it buys is that the next buildspec is covered without being listed.
+#
+# Discovery is by FILENAME, not by content: `check-arn-partitions` and `cfn-lint`
+# share a content-based discovery (anything declaring `AWSTemplateFormatVersion`)
+# and there is no equivalent marker in a buildspec, so a CodeBuild `BuildSpec`
+# pointed at some other filename would not be read. What is shared with those two
+# is the empty-set contract below: a discovery that stops working is a red gate
+# rather than a green one.
 BUILDSPEC_FILES = $(shell git ls-files | grep -E '(^|/)buildspec[^/]*\.ya?ml$$')
 
 validate-buildspec: ## Validate AWS CodeBuild buildspec files (all of them, discovered)
