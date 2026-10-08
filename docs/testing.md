@@ -337,11 +337,13 @@ so none of them reports on every PR and requiring one would leave a check pendin
 forever and block every merge.
 
 Three details are worth knowing about what it reads. Eight of the ten shared gates
-are *steps* inside one job, so those eight collapse to a single requireable context
-and share a single red mark — a required-check failure does not say which of them
-failed. The remaining two, the SRT scan and the dependency audit, are jobs of their
-own, one context each. It reads **both** enforcement mechanisms, classic branch
-protection and
+live in `developer-tests.yml` and the other two — the SRT scan and the dependency
+audit — in `security-checks.yml`; because a context is a *job*, and those two
+workflows hold four and two jobs respectively, the ten gates produce six
+requireable contexts. ⚠️ **Requiring only the lint context is therefore weaker than
+it looks**: the test suites are their own contexts, so all six have to be required
+for a red test run to block a merge. It reads **both** enforcement mechanisms,
+classic branch protection and
 rulesets, because a branch can be fully governed by a ruleset while the classic
 endpoint reports nothing. And it distinguishes "not protected" from "cannot see":
 the classic endpoint needs repository **admin** and answers 404 without it, so the

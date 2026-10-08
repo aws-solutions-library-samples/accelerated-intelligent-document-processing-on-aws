@@ -15,19 +15,43 @@ on:
 permissions:
   contents: read
 
-# Global timeout for all jobs
-# Note: GitHub Actions uses minutes, GitLab uses duration strings
+# ⚠️ WHY THIS IS FOUR JOBS. It was one `developer_tests` job running lint,
+# typecheck and every pytest suite in sequence, and it took 34-46 minutes of which
+# 88% was pytest (`test-packages-cicd` 942s, `test-cicd -C lib/idp_common_pkg`
+# 783s, UI 94s, against 106s of lint and 50s of typecheck). Splitting it is worth
+# MORE here than on the GitLab side, and for a different reason: GitLab ran one
+# 16-vCPU runner, so splitting only stopped the lint half waiting on the test half,
+# whereas `ubuntu-latest` is 4 vCPU and **each job gets its own runner** — so four
+# jobs multiply the available CPU rather than merely overlapping the work.
+#
+# The jobs are deliberately independent (no `needs:`), so the workflow costs its
+# slowest member rather than the sum. Nothing is shared between them except the
+# checkout, which each does for itself.
+#
+# ⚠️ Splitting changed how many requireable status-check CONTEXTS the shared gates
+# produce — it was one job holding eight of them, and is now four. That number is
+# derived and asserted by scripts/tests/test_documented_counts.py, which fails any
+# document stating a stale figure, and the branch-protection checker in
+# scripts/sdlc/ reads the job names out of this file to build its expected
+# required-check list. Adding or renaming a job here moves both; it is not a local
+# edit.
+#
+# Four parallel jobs on a free-for-public-repos runner pool cost nothing extra
+# here, which is the one way this is cheaper than the GitLab equivalent.
 jobs:
+  # Lint, format, types, and the static scans. Everything that reads the tree
+  # without running a test suite.
+  #
+  # Keeps the name `developer_tests` even though it no longer runs the suites: it
+  # is the name on every historical run, in CONTRIBUTING.md's workflow table, and
+  # in the required-check list anyone enabling branch protection would start from.
   developer_tests:
-    name: Lint, Type Check, and Test
+    name: Lint, Type Check, and Static Scans
     runs-on: ubuntu-latest
-    timeout-minutes: 120 # 2 hours
-    
+    timeout-minutes: 60
+
     permissions:
       contents: read
-      issues: read
-      checks: write
-      # pull-requests: write - Not needed: PR comments are disabled (see line 115)
 
     # Use Python 3.13 to match GitLab configuration
     container:
@@ -39,70 +63,22 @@ jobs:
         with:
           # Full clone. No gate below diffs against the base ref any more, but a
           # shallow clone is a trap for any that later does, and the cost here is
-          # negligible.
+          # negligible. scripts/tests/test_no_skip_ci_markers.py also relies on
+          # full history.
           fetch-depth: 0
 
       - name: Set up Git safe directory
-        run: |
-          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+        run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
 
       # No step fetches or interpolates `github.base_ref`. If one is ever added,
       # note that it is attacker-controllable — a fork can name its branch
       # anything — so it must be passed through `env:` and quoted, never
       # interpolated straight into `run:` where the shell would evaluate it.
-
-      - name: Set up environment
-        run: |
-          python --version
-          apt-get update -y
-          apt-get install make curl -y
-
-      # Use the first-party pinned action rather than
-      # `curl -LsSf https://astral.sh/uv/install.sh | sh`: piping a remote
-      # script into a shell executes whatever the endpoint serves, and the
-      # pipeline also hid failures (it exited with sh's status, not curl's).
-      # The action also puts uv on PATH itself — the old step appended a
-      # `$HOME/.cargo/bin` that recent uv installers no longer use.
-      - name: Install uv
-        uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5.3.1
-
-      - name: Create virtual environment
-        run: |
-          uv venv .venv
-          echo "$GITHUB_WORKSPACE/.venv/bin" >> $GITHUB_PATH
-
-      # Node 22 is needed for the UI unit tests and for basedpyright. Use the
-      # first-party setup-node action (as build-docs.yml already does) rather
-      # than piping NodeSource's installer into bash: that pipeline swallowed a
-      # failed download (`curl ... | bash -` exits with bash's status, not
-      # curl's), so a NodeSource 403 silently left the repo unregistered, the
-      # following apt-get installed Debian's own nodejs 18 — which ships no npm
-      # — and the job failed several steps later with a bare `npm: not found`.
-      - name: Install Node.js
-        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020  # v4.4.0
+      - name: Set up the Python environment
+        uses: ./.github/actions/python-env
         with:
-          node-version: 22
-
-      - name: Install basedpyright
-        run: npm install -g basedpyright
-
-      - name: Install Python dependencies
-        run: |
-          uv pip install 'ruff==0.15.13'
-          # Pinned: cfn-lint gates templates via `make lint-cicd`, and an
-          # unpinned linter can red-line develop with no code change when a
-          # new release promotes a check to ERROR class. Keep in step with
-          # CFN_LINT_VERSION in the Makefile.
-          uv pip install 'cfn-lint==1.51.0'
-          uv pip install typer rich boto3
-          # ALL first-party packages in a single pip pass. They depend on each
-          # other by bare name and those names are squatted on public PyPI, so a
-          # split install would resolve a sibling from PyPI — see the
-          # FIRST_PARTY_EDITABLES note in the Makefile. The target also runs
-          # scripts/check_first_party_deps.py, which fails if any of them did.
-          # Previously CI installed only idp_common_pkg, so the package/Lambda
-          # suites could not even import idp_sdk.
-          make install-first-party PIP="uv pip"
+          node: "true"       # basedpyright, for `make typecheck`
+          cfn-lint: "true"   # `make lint-cicd` gates templates
 
       - name: Run linting checks
         run: make lint-cicd
@@ -137,43 +113,51 @@ jobs:
       - name: Run type checking
         run: make typecheck
 
+  # The idp_common_pkg suite — the largest in the repo, and the critical path of
+  # this workflow.
+  #
+  # ⚠️ Its runtime is not a parallelism problem, so do not reach for more workers:
+  # profiled over the whole suite the slowest single test is 2.2s and the top 20
+  # together are ~35s of a 10-minute run, so the cost is ~10,000 x per-test fixture
+  # setup spread flat. It already runs `-n auto` via PYTEST_PARALLEL.
+  #
+  # The coverage ratchet, the artifact upload and the Test Results check all live
+  # here because they read the report this job writes. Splitting them into a
+  # dependent job would mean passing that report between jobs as an artifact for no
+  # gain.
+  unit_tests:
+    name: Unit Tests (idp_common)
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+
+    permissions:
+      contents: read
+      issues: read
+      checks: write
+      # pull-requests: write - Not needed: PR comments are disabled (see below)
+
+    container:
+      image: python:3.13-bookworm
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4.3.1
+        with:
+          fetch-depth: 0
+
+      - name: Set up Git safe directory
+        run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
+
+      # No Node: nothing in this job needs it.
+      - name: Set up the Python environment
+        uses: ./.github/actions/python-env
+
       - name: Run tests
         id: run-tests
         run: make test-cicd -C lib/idp_common_pkg
 
       - name: Coverage ratchet (per-file, reads the report the step above writes)
         run: make check-coverage-debt
-        continue-on-error: false
-
-      # `make test-cicd -C lib/idp_common_pkg` above covers only idp_common_pkg.
-      # This target covers the package/Lambda suites it does not: idp_cli, idp_sdk,
-      # idp_feature_sdk, the feature-platform resolvers, the seller entitlement
-      # service (including its template-security assertions and payload-robustness
-      # fuzz corpus), and the SDLC harness suite (deployment-variant probes, the
-      # API security cases, and the IAM trust-policy partition guards that keep a
-      # GovCloud-only principal out of a commercial trust policy — see issue #632).
-      # All offline — no AWS, no credentials.
-      # These were previously ungated: ~400 tests, including ones that have caught
-      # real security bugs, ran only on developers' machines.
-      - name: Run package and Lambda test suites
-        id: run-package-tests
-        run: make test-packages-cicd
-        continue-on-error: false
-
-      - name: Run UI unit tests
-        id: run-ui-tests
-        # Vitest + jsdom (no browser). Node 22 comes from setup-node above.
-        #
-        # `--silent` for the reason spelled out beside the GitLab copy of this step:
-        # the suites console.log from component code and React emits a full component
-        # stack per act(...) warning, which is enough output to bury whatever follows
-        # it. GitHub does not truncate the log the way GitLab does, so here it is
-        # legibility rather than lost diagnostics — but the two steps are compared by
-        # scripts/tests/test_ci_gate_parity.py and should not drift on a flag.
-        #
-        # The `npm ci` stays on this side: unlike the GitLab job, nothing earlier in
-        # this workflow installs the UI dependencies unconditionally.
-        run: cd src/ui && npm ci --prefer-offline --no-audit && npx vitest run --silent
         continue-on-error: false
 
       - name: Upload coverage reports
@@ -228,3 +212,86 @@ jobs:
       # 1. Workflow artifacts (test-reports)
       # 2. Job summary (automatically generated by CodeCoverageSummary)
       # 3. GitHub checks tab
+
+  # The package / Lambda suites `test-cicd -C lib/idp_common_pkg` does not cover:
+  # idp_cli, idp_sdk, idp_feature_sdk, the feature-platform resolvers, the seller
+  # entitlement service (including its template-security assertions and
+  # payload-robustness fuzz corpus), and the repo's own gate suites under
+  # `scripts/` (deployment-variant probes, the API security cases, and the IAM
+  # trust-policy partition guards that keep a GovCloud-only principal out of a
+  # commercial trust policy — see issue #632). All offline — no AWS, no credentials.
+  package_tests:
+    name: Package and Lambda Test Suites
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+
+    permissions:
+      contents: read
+
+    container:
+      image: python:3.13-bookworm
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4.3.1
+        with:
+          # Full history: `scripts/tests` includes test_no_skip_ci_markers.py,
+          # which scans the commits after a pinned start point.
+          fetch-depth: 0
+
+      - name: Set up Git safe directory
+        run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
+
+      # ⚠️ `node: true` is load-bearing here and is NOT obvious from the step
+      # below. `scripts/tests` is one of the suites this target runs, and
+      # test_pyright_config.py RUNS basedpyright — a live probe confirming that
+      # pyrightconfig.json's `extraPaths` really resolve the first-party packages
+      # rather than merely looking right. Omitting it on the GitLab side cost a red
+      # job plus four tests that SKIPPED green, which is the worse half. The answer
+      # is to give the job the tool, not to let the probe skip when it is absent.
+      - name: Set up the Python environment
+        uses: ./.github/actions/python-env
+        with:
+          node: "true"
+
+      - name: Run package and Lambda test suites
+        id: run-package-tests
+        run: make test-packages-cicd
+        continue-on-error: false
+
+  # UI unit tests (Vitest + jsdom, no browser).
+  #
+  # Its own job because it is the one member of this workflow that needs Node and
+  # NOT the Python packages, so pairing it with anything else would mean installing
+  # a whole toolchain for nothing. No container: the default runner image already
+  # has what setup-node needs, and skipping the container pull is most of why this
+  # job is the fastest of the four.
+  ui_tests:
+    name: UI Unit Tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4.3.1
+
+      - name: Install Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020  # v4.4.0
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: src/ui/package-lock.json
+
+      # `--silent` for the reason spelled out beside the GitLab copy of this step:
+      # the suites console.log from component code and React emits a full component
+      # stack per act(...) warning, which is enough output to bury whatever follows
+      # it. GitHub does not truncate the log the way GitLab does, so here it is
+      # legibility rather than lost diagnostics — but the two steps are compared by
+      # scripts/tests/test_ci_gate_parity.py and should not drift on a flag.
+      - name: Run UI unit tests
+        id: run-ui-tests
+        run: cd src/ui && npm ci --prefer-offline --no-audit && npx vitest run --silent
+        continue-on-error: false

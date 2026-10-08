@@ -1,0 +1,86 @@
+# Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
+# SPDX-License-Identifier: MIT-0
+
+# The Python toolchain plus every first-party package, for the jobs in
+# developer-tests.yml that run Python gates.
+#
+# This exists because that workflow is four parallel jobs sharing most of one
+# environment, and GitHub Actions does NOT support YAML anchors — so without a
+# composite action the setup would be copy-pasted four times and would drift. The
+# GitLab side solves the same problem with `&python_setup`; this is the equivalent.
+name: Set up the Python environment
+description: uv, a virtualenv on PATH, and all first-party packages from source
+
+inputs:
+  node:
+    description: >-
+      Also install Node 22 and basedpyright. Needed by any job whose gates shell
+      out to basedpyright — which is not only the type gate: `scripts/tests`
+      contains a LIVE basedpyright probe, so the package suites need it too.
+    required: false
+    default: "false"
+  cfn-lint:
+    description: Also install the pinned cfn-lint (only `make lint-cicd` needs it).
+    required: false
+    default: "false"
+
+runs:
+  using: composite
+  steps:
+    - name: Set up environment
+      shell: bash
+      run: |
+        python --version
+        apt-get update -y
+        apt-get install make curl -y
+
+    # Use the first-party pinned action rather than
+    # `curl -LsSf https://astral.sh/uv/install.sh | sh`: piping a remote script
+    # into a shell executes whatever the endpoint serves, and the pipeline also
+    # hid failures (it exited with sh's status, not curl's). The action also puts
+    # uv on PATH itself.
+    - name: Install uv
+      uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5.3.1
+
+    - name: Create virtual environment
+      shell: bash
+      run: |
+        uv venv .venv
+        echo "$GITHUB_WORKSPACE/.venv/bin" >> $GITHUB_PATH
+
+    # Node 22 via the first-party action rather than piping NodeSource's installer
+    # into bash: that pipeline swallowed a failed download (`curl ... | bash -`
+    # exits with bash's status, not curl's), so a NodeSource 403 silently left the
+    # repo unregistered, the following apt-get installed Debian's own nodejs 18 —
+    # which ships no npm — and the job failed later with a bare `npm: not found`.
+    - name: Install Node.js
+      if: inputs.node == 'true'
+      uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+      with:
+        node-version: 22
+
+    - name: Install basedpyright
+      if: inputs.node == 'true'
+      shell: bash
+      run: npm install -g basedpyright
+
+    - name: Install Python dependencies
+      shell: bash
+      env:
+        WANT_CFN_LINT: ${{ inputs.cfn-lint }}
+      run: |
+        uv pip install 'ruff==0.15.13'
+        if [ "$WANT_CFN_LINT" = "true" ]; then
+          # Pinned: cfn-lint gates templates via `make lint-cicd`, and an unpinned
+          # linter can red-line develop with no code change when a new release
+          # promotes a check to ERROR class. Keep in step with CFN_LINT_VERSION in
+          # the Makefile.
+          uv pip install 'cfn-lint==1.51.0'
+        fi
+        uv pip install typer rich boto3
+        # ALL first-party packages in a single pip pass. They depend on each other
+        # by bare name and those names are squatted on public PyPI, so a split
+        # install would resolve a sibling from PyPI — see the FIRST_PARTY_EDITABLES
+        # note in the Makefile. The target also runs
+        # scripts/check_first_party_deps.py, which fails if any of them did.
+        make install-first-party PIP="uv pip"
