@@ -1801,7 +1801,9 @@ async def _invoke_agent_for_extraction(
                     "extraction.agentic.shard_token_budget; enable table parsing "
                     "(requires Textract TABLES so OCR emits Markdown tables); "
                     "reduce attached page images; or use a larger-context model "
-                    "(e.g. a ':1m' Claude variant). "
+                    "(a ':1m' Claude variant, or one whose default window is "
+                    "already 1M such as Claude Haiku 5.5 — which has no ':1m' id "
+                    "precisely because it needs none). "
                     f"(underlying error: {e})"
                 ) from e
             raise

@@ -38,6 +38,11 @@ SURVEY = os.path.join(
         ("us.anthropic.claude-opus-5", 512),
         ("us.anthropic.claude-opus-5:1m", 512),
         ("us.anthropic.claude-fable-5", 512),
+        # Haiku 5.5 is the smallest tier and Haiku 4.5 (below) the largest, so the
+        # two are here as a pair: a pattern widened to a shared "haiku" stem would
+        # make them agree, and only the second of the two assertions catches that.
+        ("us.anthropic.claude-haiku-5-5", 512),
+        ("global.anthropic.claude-haiku-5-5", 512),
         ("us.anthropic.claude-sonnet-5", 1024),
         ("eu.anthropic.claude-sonnet-5:1m", 1024),
         ("us.anthropic.claude-sonnet-4-6", 1024),

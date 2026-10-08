@@ -1040,15 +1040,20 @@ request. The minimum is model-dependent and **newer is not safer**:
 
 | Model | Minimum cacheable prefix |
 |---|---:|
-| Claude Opus 5, Opus 5.5, Fable 5 | 512 tokens |
+| Claude Opus 5, Opus 5.5, Fable 5, **Haiku 5.5** | 512 tokens |
 | Claude Sonnet 5, Sonnet 4.6, Sonnet 4.5, Sonnet 4, Opus 4.8, Opus 4.1, Opus 4, 3.7 Sonnet | 1,024 tokens |
 | Claude Opus 4.7 | 2,048 tokens |
 | Claude Opus 4.6, Opus 4.5, **Haiku 4.5** | **4,096 tokens** |
 | Amazon Nova | ≤ 355 tokens (below any shipped class) |
 
 Measured across the shipped presets, 25% of classes never cache on the 1,024-token
-tier and **none** do on Haiku 4.5 — someone choosing Haiku to save money on extraction
-gets no caching at all and, until now, no indication of it.
+tier and **none** do on Haiku 4.5 — choosing Haiku 4.5 to save money on extraction
+gets you no caching at all, with no indication of it in the response.
+
+Note the two Haikus sit at opposite ends of this table, so "Haiku" is not a tier.
+Haiku 5.5's minimum is 512 tokens — the lowest here, 8x below Haiku 4.5's — which
+makes it the one cheap model where caching is worth configuring rather than written
+off: a class that never cached on Haiku 4.5 may well cache on it.
 
 `idp-cli config-validate` (and the SDK validate operation) now **warns per class**
 when a Simple-mode extraction prompt prefix — system prompt plus the task prompt up

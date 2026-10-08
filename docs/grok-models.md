@@ -119,7 +119,7 @@ Grok's effort vocabulary is **not** the same as Claude's:
 | Model family | Accepted effort values | Carrier |
 |---|---|---|
 | xAI Grok | `none`, `low`, `medium`, `high`, `xhigh` | `additionalModelRequestFields.reasoning.effort` |
-| Claude (Sonnet 5 / 4.6, Opus 4.5-4.8 / 5, Fable 5) | `low`, `medium`, `high`, `xhigh`, `max` | `additionalModelRequestFields.output_config.effort` |
+| Claude (Sonnet 5 / 4.6, Opus 4.5-4.8 / 5 / 5.5, Fable 5, Haiku 5.5) | `low`, `medium`, `high`, `xhigh`, `max` | `additionalModelRequestFields.output_config.effort` |
 | OpenAI GPT-5.x | `minimal`, `low`, `medium`, `high` | Responses `reasoning.effort` |
 
 Grok **rejects `max`**, and `none` is Grok-only. The configuration picklist is a
