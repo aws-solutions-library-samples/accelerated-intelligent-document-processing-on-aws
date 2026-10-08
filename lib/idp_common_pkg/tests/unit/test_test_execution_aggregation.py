@@ -3107,6 +3107,46 @@ class TestClassificationErrorsFromTheDocSplitMatcher:
         ]
         assert "predicted_sections_incomplete" not in invoice
 
+    def test_coverage_is_read_from_every_recorded_section_not_the_listed_ones(
+        self, mock_env
+    ):
+        """Pages on a recorded section the entry does not list are covered.
+
+        An entry lists at most ``MAX_PREDICTED_SECTIONS_PER_ERROR`` predicted
+        sections. An invoice predicted page by page in more pieces than that,
+        in a document whose baseline and prediction both hold an excluded
+        section, has its last pages on pieces the entry does not list. Its
+        pages are checked against every recorded section, so it is not marked.
+        """
+        index = import_test_module()
+        pieces = index.MAX_PREDICTED_SECTIONS_PER_ERROR + 2
+        last_page_id = str(pieces + 1)
+        doc_split_metrics = self._doc_split_metrics(
+            [
+                self._section("1", "Invoice", list(range(pieces))),
+                self._excluded_section("2", "Instructions", [last_page_id]),
+            ],
+            [
+                *(self._section(str(i + 1), "Invoice", [i]) for i in range(pieces)),
+                self._excluded_section(str(pieces + 1), "Instructions", [last_page_id]),
+            ],
+        )
+        assert {
+            "section_id": str(pieces + 1),
+            "document_class": "Unknown",
+            "page_indices": [],
+        } in doc_split_metrics["predicted_sections"]
+
+        (invoice,) = index._classification_errors_for_doc("d.pdf", doc_split_metrics)
+
+        assert invoice["kind"] == "unmatched"
+        assert invoice["predicted_section_count"] == pieces
+        assert invoice["predicted_sections"] == [
+            {"class": "Invoice", "page_ranges": [[i, i]]}
+            for i in range(index.MAX_PREDICTED_SECTIONS_PER_ERROR)
+        ]
+        assert "predicted_sections_incomplete" not in invoice
+
     def test_a_section_whose_result_failed_to_load_is_not_reported_as_absent(
         self, mock_env
     ):
