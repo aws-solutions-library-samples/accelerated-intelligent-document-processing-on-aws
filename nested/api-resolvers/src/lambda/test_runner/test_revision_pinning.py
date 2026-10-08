@@ -186,8 +186,12 @@ class TestRetentionPin:
         A revision that cannot be read used to be a warning plus a fallback to
         the profile head for the RECORD — while the revision was still stamped
         onto every document, which the pipeline then refused to process. One
-        error at submit beats N failed documents minutes later (#878).
+        error at submit beats N failed documents minutes later (#878), so it
+        carries the same cause list and remedy those documents would have, and
+        says to resubmit the run pinned to the new revision once one exists.
         """
+        from idp_common.config.configuration_manager import EXPIRED_REVISION_REMEDY
+
         spec = importlib.util.spec_from_file_location(
             "test_runner_index_fallback", Path(__file__).with_name("index.py")
         )
@@ -200,16 +204,23 @@ class TestRetentionPin:
         monkeypatch.setitem(
             sys.modules,
             "idp_common.config.configuration_manager",
-            MagicMock(ConfigurationManager=MagicMock(return_value=manager)),
+            MagicMock(
+                ConfigurationManager=MagicMock(return_value=manager),
+                EXPIRED_REVISION_REMEDY=EXPIRED_REVISION_REMEDY,
+            ),
         )
         table = MagicMock()
         table.get_item.return_value = {"Item": {"Configuration": "Config#lending"}}
         module.dynamodb = MagicMock()
         module.dynamodb.Table.return_value = table
 
-        with pytest.raises(ValueError, match="r99 .* not available"):
+        with pytest.raises(ValueError, match="r99 .* not available") as refusal:
             module._capture_config("config-table", "lending", 99)
 
+        message = str(refusal.value)
+        assert "DataRetentionInDays" in message
+        assert EXPIRED_REVISION_REMEDY in message
+        assert "once a new revision exists, resubmit the run pinned to it" in message
         manager.mark_revision_pinned.assert_not_called()
 
     def test_a_revision_that_cannot_be_read_fails_with_the_cause(self, monkeypatch):

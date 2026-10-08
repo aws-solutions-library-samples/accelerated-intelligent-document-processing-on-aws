@@ -381,6 +381,21 @@ class ConfigRevisionStore:
         entries.sort(key=lambda e: e["revision"], reverse=True)
         return entries
 
+    def get_entry(self, profile: str, revision: int) -> Optional[Dict[str, Any]]:
+        """
+        One revision's index entry exactly as stored, or None if it is not retained.
+
+        Unlike `list`, which is what the revision-list API returns, this includes
+        `storedHash`, the proof that the profile head holds this revision.
+        """
+        if not self.enabled:
+            return None
+        target = int(revision)
+        for entry in self._read_index_item(profile).get("Revisions", []):
+            if coerce_int(entry.get("revision")) == target:
+                return entry
+        return None
+
     def append_index(self, profile: str, entry: Dict[str, Any]) -> None:
         """
         Append one entry using DynamoDB's native list_append.
@@ -487,9 +502,14 @@ class ConfigRevisionStore:
         notes: Optional[str] = None,
         label: Optional[str] = None,
         publish: bool = True,
+        stored_hash: Optional[str] = None,
     ) -> Optional[int]:
         """
         Record `config_dict` as the profile's next revision.
+
+        `stored_hash` is the hash of the profile head's stored content when that
+        head holds exactly this configuration; it lets the head stand in for the
+        body if the body's object later expires.
 
         Returns the revision number, or None when history is disabled.
         """
@@ -508,6 +528,8 @@ class ConfigRevisionStore:
             "confidenceFingerprint": confidence_fingerprint(config_dict),
             "pinned": False,
         }
+        if stored_hash:
+            entry["storedHash"] = stored_hash
         self.append_index(profile, entry)
         if publish:
             self.set_published(profile, revision)

@@ -555,7 +555,10 @@ def _capture_config(config_table, config_version=None, config_revision=None):
     # it cannot read, so the run was doomed: N failed documents instead of one
     # error at submit (#878).
     if config_version and config_revision is not None:
-        from idp_common.config.configuration_manager import ConfigurationManager
+        from idp_common.config.configuration_manager import (
+            EXPIRED_REVISION_REMEDY,
+            ConfigurationManager,
+        )
 
         try:
             body = ConfigurationManager(table_name=config_table).get_revision(
@@ -569,8 +572,11 @@ def _capture_config(config_table, config_version=None, config_revision=None):
         if body is None:
             raise ValueError(
                 f"Revision r{config_revision} of configuration profile "
-                f"'{config_version}' is not available (deleted, pruned, or never "
-                f"existed)"
+                f"'{config_version}' is not available (deleted, pruned, expired "
+                f"under the Configuration bucket's DataRetentionInDays lifecycle "
+                f"rule, or never existed). {EXPIRED_REVISION_REMEDY} A test run is "
+                f"pinned when it is submitted, so once a new revision exists, "
+                f"resubmit the run pinned to it."
             )
         # A revision body is JSON, so it carries Python floats (e.g.
         # temperature: 0.0). The captured config is written straight into the
