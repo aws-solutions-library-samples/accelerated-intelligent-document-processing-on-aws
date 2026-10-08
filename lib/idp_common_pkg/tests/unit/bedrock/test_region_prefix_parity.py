@@ -3,8 +3,8 @@
 
 """One region-prefix rule, shared, and it must stay shared.
 
-Bedrock cross-region inference profiles carry one of five geo prefixes — ``us.``,
-``eu.``, ``apac.``, ``global.`` and ``us-gov.`` — and every capability gate in
+Bedrock cross-region inference profiles carry one of seven geo prefixes — ``us.``,
+``eu.``, ``apac.``, ``au.``, ``jp.``, ``global.`` and ``us-gov.`` — and every capability gate in
 ``idp_common.bedrock.client`` answers by stripping that prefix and matching the base
 name against a set. Four sites used to hand-roll the strip, and three of the four
 listed only ``us``/``eu``/``global``.
@@ -27,7 +27,13 @@ inference-profile ARN is the only way to name a model there, and
 this rule's input. So the tree's most prefix-dependent deployment was the one every
 gate got wrong.
 
-There are two definitions of the five prefixes and there cannot be one: ``config``
+``au.`` and ``jp.`` were the most recent to be missing, and Claude Haiku 5.5 is what
+exposed them: it is the first model offered here whose card advertises those two, and
+``au.anthropic.claude-haiku-5-5`` reported ``strips_sampling_params`` False, so
+``top_k`` and ``top_p`` went to a model that rejects both and every request 400'd.
+Every 4.7-or-later Claude was affected the same way, not just that one.
+
+There are two definitions of the seven prefixes and there cannot be one: ``config``
 imports ``bedrock``, so ``bedrock.model_utils`` cannot import
 ``config.retired_models``. This file is the substitute for that import.
 """
@@ -47,10 +53,18 @@ from idp_common.bedrock.model_utils import REGION_PREFIXES
 from idp_common.config.retired_models import _REGION_PREFIX
 
 
-def test_the_two_definitions_name_the_same_five_prefixes():
+def test_the_two_definitions_name_the_same_prefixes():
     """``retired_models`` holds the rule as a regex and ``model_utils`` as a tuple.
     Neither can import the other, so assert they agree rather than hoping."""
-    assert set(REGION_PREFIXES) == {"us", "eu", "apac", "global", "us-gov"}
+    assert set(REGION_PREFIXES) == {
+        "us",
+        "eu",
+        "apac",
+        "au",
+        "jp",
+        "global",
+        "us-gov",
+    }
     for prefix in REGION_PREFIXES:
         assert _REGION_PREFIX.match(f"{prefix}.anthropic.claude-opus-5"), (
             f"config.retired_models._REGION_PREFIX does not recognise '{prefix}.', "
@@ -63,6 +77,24 @@ def test_us_gov_is_in_the_set_and_is_not_a_hypothetical():
     this is not defensive coverage for a case nobody hits."""
     assert "us-gov" in REGION_PREFIXES
     assert "apac" in REGION_PREFIXES
+
+
+def test_the_geo_prefixes_claude_haiku_5_5_advertises_are_all_recognised():
+    """Its model card lists four geo inference ids, and two of them were missing.
+
+    Pinned against the model rather than as a bare membership check, because the
+    reason these two prefixes matter is that a published model card tells a user to
+    type them — which is how one reaches a configuration despite the picklists
+    offering only ``us.``/``eu.``/``global.``.
+    """
+    for prefix in ("us", "eu", "au", "jp"):
+        assert prefix in REGION_PREFIXES, (
+            f"'{prefix}.' is a geo inference prefix on the Claude Haiku 5.5 model "
+            "card. Missing from this tuple it fails PERMISSIVELY: the id keeps its "
+            "prefix, matches no base name, and strips_sampling_params answers False "
+            "— so top_k and top_p go to a model that rejects both."
+        )
+        assert strips_sampling_params(f"{prefix}.anthropic.claude-haiku-5-5") is True
 
 
 #: One gate per capability, each answering about a model whose answer is NOT the

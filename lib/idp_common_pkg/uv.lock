@@ -834,7 +834,7 @@ wheels = [
 
 [[package]]
 name = "datamodel-code-generator"
-version = "0.64.0"
+version = "0.83.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "argcomplete" },
@@ -845,10 +845,11 @@ dependencies = [
     { name = "jinja2" },
     { name = "pydantic" },
     { name = "pyyaml" },
+    { name = "typing-extensions" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/9c/d2/86c94a2836ed42231653a7ddaefa0a5bc23418167a876bba7376c96b3a35/datamodel_code_generator-0.64.0.tar.gz", hash = "sha256:9c592900a00b20e416494273c22435f5a9aef6ea8c7b9190747522a60497a1cb", size = 1316440, upload-time = "2026-06-14T17:24:50.528Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/cf/ad/bd0c954c4c4671e586b340059139ead38570ba916a237086e245982ab14d/datamodel_code_generator-0.83.0.tar.gz", hash = "sha256:30d841e31b82095c4ef11f3dbfc99525f559a146250b9e685e2a2e4a196ca0a1", size = 3074761, upload-time = "2026-09-24T08:56:40.622Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/23/94/71338e2f0146ac10747a5537b3a1e45256e66b7c229869eb0ee787111b41/datamodel_code_generator-0.64.0-py3-none-any.whl", hash = "sha256:b7cd8bd41a312aa997aec6150670bad781847c5b674f17e4d70e78208a0fb990", size = 374698, upload-time = "2026-06-14T17:24:48.809Z" },
+    { url = "https://files.pythonhosted.org/packages/3a/4e/4a0231a7d3d4043cd27a746a50be87bc7637463023d7db9991610cd5fe56/datamodel_code_generator-0.83.0-py3-none-any.whl", hash = "sha256:371d80be360b2a57bc48462169553af57fa30225c0264ad85ae5f0d59b9d143a", size = 751087, upload-time = "2026-09-24T08:56:38.791Z" },
 ]
 
 [[package]]
@@ -1374,8 +1375,8 @@ requires-dist = [
     { name = "boto3", specifier = ">=1.42.86,<1.43.0" },
     { name = "build", marker = "extra == 'test'", specifier = "==1.3.0" },
     { name = "chardet", marker = "extra == 'code-intel'", specifier = ">=5.0.0" },
-    { name = "datamodel-code-generator", marker = "extra == 'agentic-extraction'", specifier = ">=0.64.0" },
-    { name = "datamodel-code-generator", marker = "extra == 'test'", specifier = ">=0.64.0" },
+    { name = "datamodel-code-generator", marker = "extra == 'agentic-extraction'", specifier = ">=0.81.0" },
+    { name = "datamodel-code-generator", marker = "extra == 'test'", specifier = ">=0.81.0" },
     { name = "deepdiff", specifier = ">=6.0.0" },
     { name = "deepdiff", marker = "extra == 'test'", specifier = ">=6.0.0" },
     { name = "email-validator", marker = "extra == 'agentic-extraction'", specifier = ">=2.3.0" },
