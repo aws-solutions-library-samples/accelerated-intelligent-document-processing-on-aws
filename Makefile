@@ -637,25 +637,30 @@ typecheck-pr: ## Fast local type check of only the files changed vs TARGET_BRANC
 # Distribute the LARGE suites in `test-packages-cicd` across cores. Same variable
 # name and same default as lib/idp_common_pkg/Makefile, for the same reason —
 # `pytest-xdist` is a declared `[test]` dependency and nothing here passed `-n`,
-# so all 27 invocations below ran serial on a 16-vCPU runner.
+# so every invocation below ran serial on a 16-vCPU runner.
 #
-# Measured in GitLab CI (`code_checks`, size:2xlarge arm64), the two suites that
-# dominate the target:
+# Measured in GitLab CI (size:2xlarge arm64), the two suites that dominate the
+# target:
 #
-#     scripts/tests      3858 tests, serial  640s
+#     scripts/tests      3858 tests, serial  640s   ->  83s parallel (7.7x)
 #     lib/idp_sdk        2663 tests, serial  441s
 #
-# and `scripts/tests` re-measured locally on 14 cores with `-n auto`: 184s, a 3.5x
-# reduction. These suites shell out to ruff, basedpyright, cfn-lint and git (196
-# subprocess call sites in scripts/tests alone), so they are near-perfectly
-# parallel and the win is close to the core count.
+# These suites shell out to ruff, basedpyright, cfn-lint and git, so they are
+# near-perfectly parallel and the win is close to the core count.
 #
-# ⚠️ Applied PER-SUITE rather than to every invocation in the target, and the
-# reason is that xdist is not free: spinning up N workers costs a second or two
-# before the first test runs, which is longer than most of these suites take. Of
-# the 27, nineteen finish in under 25s and eight in under a second — `-n auto` on
-# those is slower, not faster. $(PYTEST_XDIST) is therefore spelled out on the
-# seven that were measured above 20s in CI; leave the rest serial.
+# ⚠️ Applied PER-SUITE rather than to every invocation, because xdist is not free:
+# spinning up N workers costs a second or two before the first test runs, which is
+# longer than most of these invocations take — a majority finish in under a second.
+# The rule is **above 20s measured in CI**, which selects the nine that carry
+# $(PYTEST_XDIST) today. Re-derive it by TIMING, not by counting tests: the test
+# count is a poor proxy here, `benchmarks/tests` runs 454 tests in 5s while
+# `src/lambda/complete_section_review` takes 7x longer for 115.
+#
+# ⚠️ Count the `$(PYTEST_HERMETIC)` lines, not the `@echo` headers, if you need to
+# know how many invocations this recipe has. There are far more invocations than
+# echoes — most echoes introduce a GROUP, because suites that each define a module
+# named `index` need one invocation apiece — and a count taken off the echoes is
+# wrong by more than a factor of two.
 #
 # `PYTEST_XDIST=` restores serial execution everywhere, for a debugging run where
 # interleaved worker output breaks `-s`, `--pdb` and live logging.
@@ -727,8 +732,8 @@ test-packages-cicd: ## CI-safe: run the package/Lambda suites NOT covered by idp
 	@# the wrapper takes the region away rather than handing one over. See #988.
 	cd src/lambda/api_handler && $(PYTEST_HERMETIC) -q -p no:cacheprovider
 	cd src/lambda/batch_pre_processor && $(PYTEST_HERMETIC) -q -p no:cacheprovider
-	cd src/lambda/complete_section_review && $(PYTEST_HERMETIC) -q -p no:cacheprovider
-	cd src/lambda/external_idp_group_mapping && $(PYTEST_HERMETIC) -q -p no:cacheprovider
+	cd src/lambda/complete_section_review && $(PYTEST_HERMETIC) $(PYTEST_XDIST) -q -p no:cacheprovider
+	cd src/lambda/external_idp_group_mapping && $(PYTEST_HERMETIC) $(PYTEST_XDIST) -q -p no:cacheprovider
 	cd src/lambda/finetuning_deployment_handler && $(PYTEST_HERMETIC) -q -p no:cacheprovider
 	cd src/lambda/job_tracker && $(PYTEST_HERMETIC) -q -p no:cacheprovider
 	cd src/lambda/save_reporting_data && $(PYTEST_HERMETIC) -q -p no:cacheprovider

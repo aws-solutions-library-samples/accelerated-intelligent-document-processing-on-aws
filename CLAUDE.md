@@ -441,19 +441,31 @@ from it. A GitHub equivalent would need its own OIDC role.
 
 **On GitLab the no-AWS gates are seven parallel jobs, not one.** `code_checks` ran
 lint, typecheck and every pytest suite in sequence for 45 minutes, 80% of it
-pytest, and `make test-packages-cicd` was 25 of those minutes because all 27 of
-its suites ran serial and single-process on a 16-vCPU runner. Both halves are
-fixed independently: seven of those suites now pass `-n auto` (`PYTEST_XDIST` in
-the `Makefile`, which records why only seven — nineteen finish under 25s, where
-worker startup makes xdist *slower*), and the job is split into `code_checks`,
-`unit_tests`, `package_tests` and `ui_tests` so the lint half stops waiting on the
-test half. The stage now costs its slowest member instead of the sum, at the price
-of building the Python environment four times — more runner minutes for less
-wall-clock. `unit_tests` is the critical path, and ⚠️ **more workers will not
-shorten it**: the slowest test in that 10,500-test suite is 2.2s and the top 20
-are ~35s of a 10-minute run, so the cost is per-test fixture setup spread flat,
-at 62% CPU. Cutting it further means sharding across jobs plus a
-`coverage combine` before `make check-coverage-debt` can read a complete report.
+pytest, and `make test-packages-cicd` was 25 of those minutes because every one of
+its pytest invocations ran serial and single-process on a 16-vCPU runner. Both
+halves are fixed independently: the invocations measured above 20s in CI now pass
+`-n auto` (`PYTEST_XDIST` in the `Makefile` carries the selection rule, and says to
+re-derive it by **timing in CI rather than counting tests** — the count is a poor
+proxy, and to count the invocations at all you must count `$(PYTEST_HERMETIC)`
+lines, not the `@echo` headers, which understate them by more than half), and the
+job is split into `code_checks`, `unit_tests`, `package_tests` and `ui_tests` so
+the lint half stops waiting on the test half. A merge-request pipeline went from
+111 minutes to 14.
+
+The stage now costs its slowest member instead of the sum, at the price of building
+the Python environment four times — more runner minutes for less wall-clock. ⚠️
+**Trimming a toolchain out of one of these jobs is not the free saving it looks
+like**: `package_tests` was written without Node and went red, because
+`scripts/tests/test_pyright_config.py` runs basedpyright live. Read the *suites*, not
+the `script:` block.
+
+`unit_tests` is the critical path, and ⚠️ **more workers will not shorten it**: the
+slowest test in that 10,500-test suite is 2.2s and the top 20 are ~35s of a
+10-minute run, so the cost is per-test fixture setup spread flat, at 62% CPU.
+Sharding it across jobs is possible but measured as nearly worthless here — the
+jobs immediately behind it (the SRT scan, the advisory AI review) are close enough
+that the pipeline would barely move — and it would cost a splitter dependency plus
+a `coverage combine` before `make check-coverage-debt` can read a complete report.
 
 Historically several gates ran on GitLab only, so a change merged via a GitHub PR
 skipped them — the same class of gap as the SRT/dep-audit note below. Now on both:

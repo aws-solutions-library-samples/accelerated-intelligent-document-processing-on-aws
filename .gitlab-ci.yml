@@ -31,12 +31,13 @@ default:
 #
 # ⚠️ WHY fast_checks IS SPLIT. It used to be one `code_checks` job running lint,
 # typecheck and every pytest suite in sequence, and it took 45 minutes of which 80%
-# was pytest: `test-packages-cicd` alone was 25 min because all 27 of its suites ran
-# serial, single-process, on a 16-vCPU runner. Those suites now run with `-n auto`
-# (see PYTEST_XDIST in the Makefile) AND the job is split, because the two fixes
-# address different halves — xdist shortens each suite, the split stops the lint
-# half from waiting on the test half. Measured: 45 min of serial work becomes a
-# stage whose critical path is its slowest job.
+# was pytest: `test-packages-cicd` alone was 25 min because every one of its pytest
+# invocations ran serial, single-process, on a 16-vCPU runner. The largest of them
+# now run with `-n auto` (see PYTEST_XDIST in the Makefile) AND the job is split,
+# because the two fixes address different halves — xdist shortens each suite, the
+# split stops the lint half from waiting on the test half. Measured on this
+# repository: a 111-minute merge-request pipeline became 14 minutes, and the stage's
+# cost is now its slowest job rather than the sum.
 #
 # The cost of the split, stated plainly: the Python environment is now built in
 # four jobs instead of one, so the pipeline burns MORE runner minutes than it did
@@ -294,8 +295,9 @@ unit_tests:
 # idp_feature_sdk, feature-platform, capacity, circuit-breaker, chat,
 # config_library, and the repo's own gate suites under scripts/).
 #
-# 27 pytest invocations, of which seven now run `-n auto` — see PYTEST_XDIST in the
-# Makefile for which seven and why not all of them.
+# Many separate pytest invocations, of which the nine measured above 20s in CI run
+# `-n auto` — see PYTEST_XDIST in the Makefile for the selection rule and why it is
+# not applied to all of them.
 package_tests:
   <<: *fast_check_job
   tags:

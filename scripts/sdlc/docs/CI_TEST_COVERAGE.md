@@ -101,7 +101,26 @@ first one; the two AWS stages are **nightly plus a manual button**.
 |-------|------|------|------|
 | **fast_checks** | Seven **parallel** jobs, every one `needs: []`: `code_checks` (lint, typecheck, buildspec + CloudFormation template validation, static RBAC scan, service-role permission check, first-party dependency-confusion check), `unit_tests` (`idp_common_pkg`, ~10,500 tests, + the coverage ratchet), `package_tests` (`test-packages-cicd`), `ui_tests` (vitest), `srt_security_review`, `dep_audit` (SCA vs OSV), `ai_mr_review` (advisory) | No | critical path ≈ the slowest job |
 | **deployment_validation** | IAM service-role permission pre-check | Yes (read-only) | seconds |
-| **integration_tests** | Full stack deploy + primary suite + the five deployment-variant probes | Yes (deploys) | ~1 hour |
+| **integration_tests** | Full stack deploy + primary suite (the numbered steps) on the **primary shared stack only**. The five deployment-variant probes do **not** run here — see below. | Yes (deploys) | ~1 hour |
+
+⚠️ **The deployment-variant probes (ZAP DAST, WAF, API Gateway GLOBAL and PRIVATE
+hosting, Jobs API) do not run in this job**, and moving it to a nightly schedule
+did not change that. They are gated by `IDP_RUN_PROBES`, which
+`scripts/sdlc/codebuild_deployment.py` defaults to `false`; `IDP_TEST_ZAP` defaults
+to `true` but only filters *within* `run_variant_probes`, which is never called
+unless the outer gate is on. Reading the inner default as the answer is the easy
+mistake here. Run them with `make stacktest-*` (see
+`.claude/skills/run-stack-tests.md`), or set `IDP_RUN_PROBES=true` for a pipeline
+run.
+
+They were disabled because five concurrent extra stacks burst account-wide control
+planes (CloudWatch Logs log-group create consistency, CodeBuild role-trust
+propagation, the IAM CreatePolicy rate limit) and caused flaky failures unrelated
+to the code under test. **That reason is weaker now than when it was written**: the
+deploy no longer runs once per merge request, and a single shared `resource_group`
+means at most one deploy at a time — so turning the probes on for the scheduled run
+is the obvious way to buy back the coverage, and the thing to weigh is their
+flakiness history against a nightly nobody can attribute.
 
 ### Why fast_checks is seven jobs
 
@@ -109,12 +128,13 @@ It was one `code_checks` job that ran lint, typecheck and every pytest suite in
 sequence, and it took **45 minutes** — of which 80% was pytest. Two independent
 things were wrong and both are fixed, because neither fix subsumes the other:
 
-- **`test-packages-cicd` ran every one of its 27 suites serial, single-process, on
-  a 16-vCPU runner** — 25 minutes, with `scripts/tests` alone at 640s for 3,858
-  tests and `lib/idp_sdk` at 441s for 2,663. Seven of those suites now run
-  `-n auto` (`PYTEST_XDIST` in the `Makefile`, which documents why only seven:
-  nineteen of the 27 finish in under 25s, and xdist's worker startup makes those
-  *slower*).
+- **`test-packages-cicd` ran every one of its pytest invocations serial,
+  single-process, on a 16-vCPU runner** — 25 minutes, with `scripts/tests` alone at
+  640s for 3,858 tests and `lib/idp_sdk` at 441s for 2,663. The nine measured above
+  20s now run `-n auto`; the rest stay serial because a majority of them finish in
+  under a second, where xdist's worker startup makes a suite *slower*.
+  `PYTEST_XDIST` in the `Makefile` carries the selection rule and how to re-derive
+  it — by timing in CI, not by counting tests, which is a poor proxy here.
 - **The lint half waited on the test half** for no reason — they share no inputs.
   Splitting the job means the stage costs its slowest member rather than the sum.
 
