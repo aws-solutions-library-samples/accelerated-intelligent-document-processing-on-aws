@@ -949,7 +949,7 @@ Pattern-2 and Pattern-3 support configurable strategies for how classified pages
 
 ### Available Strategies
 
-- **`disabled`**: Treats the entire document as a single section with the first detected class. Simplest approach for single-document processing.
+- **`disabled`**: Treats the entire document as a single section. With page-level classification the section takes the class most pages were given, counting only pages given a class the configuration defines (ties go to the earliest page); with holistic classification it takes the first segment's class. Simplest approach for single-document processing.
   
 - **`page`**: Creates one section per page, preventing automatic joining of same-type documents. Useful for deterministic processing of documents containing multiple forms of the same type (e.g., multiple W-2s, multiple invoices in one packet).
   

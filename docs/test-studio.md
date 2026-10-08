@@ -93,7 +93,11 @@ During stack deployment, the system automatically:
 
 #### Corresponding Config
 
-Use with: `config_library/unified/realkie-fcc-verified/config.yaml`
+Use with: the stack-managed `realkie-fcc-verified` profile (`config_library/managed_config/realkie-fcc-verified/config.yaml`)
+
+Test Studio auto-selects the stack-managed `realkie-fcc-verified` profile for this test set. That profile sets `classification.sectionSplitting: disabled`, because every file is one invoice: all of a file's pages form one `Invoice` section, and with a single class, classification makes no model call. A run on that profile therefore scores classification and splitting at 1.0 by construction, and measures extraction. `idp-cli process --test-set` and the SDK's `batch.process(test_set=...)` run on the active profile unless you name one, so pass `--config-profile realkie-fcc-verified` (`config_profile="realkie-fcc-verified"` in the SDK) for the same result. A profile copied from `realkie-fcc-verified` is a snapshot and keeps the section splitting it was copied with; set **Section splitting** to `disabled` in its classification settings to match.
+
+The deploy-time preset, `config_library/unified/realkie-fcc-verified/config.yaml`, does not set `classification.sectionSplitting`, so it keeps the default, `llm_determined`. A stack deployed with `ConfigurationPreset=realkie-fcc-verified` rebuilds its `default` profile from the preset on every update, and `default` is usually the active profile, so the preset keeps the strategy that divides a file holding several documents. To get one section per file in a profile built from the preset, set **Section splitting** to `disabled` in it.
 
 ---
 
@@ -1496,7 +1500,8 @@ Test runs with status **QUEUED** or **RUNNING** can be aborted:
     - Split Accuracy With Order (average across documents)  
     - Total Pages, Total Splits (sums across documents)
     - Correctly Classified Pages, Correctly Split counts (sums across documents)
-  - **Classification errors**: which documents were misclassified and as what (see
+  - **Classification errors**: which documents were misclassified or split
+    differently from the ground truth, and how (see
     [Finding classification errors](#finding-classification-errors))
   - **Cost breakdown** by service and context
 - Side-by-side test comparison with all metrics including configuration versions
@@ -1573,6 +1578,25 @@ graded metrics can't drag the newer docs' scores down.
   every metric collapses to `1.0` trivially since there's nothing to
   mis-cluster. The panel still renders but adds no signal beyond the
   existing accuracy row.
+- **Classification-only runs** (no class has an extractable field): the graded
+  metrics populate as usual, and so does the
+  [Classification errors](#finding-classification-errors) panel. With no
+  extraction comparisons, every document is counted as excluded from extraction
+  scoring, and the run falls back to Athena, which for such a run supplies only
+  the split classification metrics and the cost. Overall accuracy, average
+  confidence and the average weighted score stay empty, and the weighted overall
+  score chart and table have nothing to show: Athena computes no overall
+  accuracy, such a run has no compared fields for it to average confidence over,
+  and an excluded document has no weighted score. A
+  classification-only run that completed before this shipped **must be re-run**
+  to show its graded metrics, classification errors and excluded count.
+  Re-opening its results page does not recompute them: the stale-cache guard
+  (see **Backward compatibility** below) checks only that each key is present,
+  and that run's cache already holds all three keys, as `{}` or `0`. The
+  exception is a run whose cache was last written before 0.6.7, which added the
+  `classificationErrors` key: the guard finds that key missing and re-aggregates
+  the run the first time you open its results, so it recovers without a re-run,
+  provided its documents are still within the stack's `DataRetentionInDays`.
 - **No page overlap between ground-truth and prediction** (rare — usually an
   OCR page-count mismatch): `evaluate_packet` returns nothing for that doc
   and it's absent from the map. If no doc in the run reported any graded
@@ -1612,23 +1636,60 @@ Three kinds are distinguished, because they call for different fixes:
 | Issue | Meaning | What to do |
 |---|---|---|
 | **Wrong class** | The document was assigned a different class than the ground truth. | Correct the class in the annotation queue and re-extract, then re-run. |
-| **No matching section** | The ground truth expects a section that no predicted section matched. | A *splitting* problem, not a labelling one — look at classification granularity rather than the class list. |
+| **No matching section** | No predicted section the evaluation recorded holds exactly the pages the ground truth expects: the prediction split them, merged them with other pages or left some out, or, where the row says *not recorded*, the evaluation's record of the document is incomplete. The row lists the recorded predicted sections over those pages, with their classes and pages. | A *splitting* problem, not a labelling one — look at how classification groups pages into sections ([`sectionSplitting`](./classification.md#section-splitting-strategies)) rather than at the class list. A listed section under another class also means those pages were extracted with that class's schema. A row that says *not recorded* need not be a splitting problem: see the limit on classes excluded from processing below. |
 | **Page order** | Right class and right pages, wrong order. | Extraction is unaffected. This is what "Split Accuracy With Order" penalises and "Without Order" does not. |
+
+A row is **Wrong class** only when the prediction has a section on exactly the
+expected pages under another class. A five-page invoice the prediction split into
+three invoices is **No matching section**, predicted **Invoice ×3**, with pages
+`1-5 / 1-2 | 3-4 | 5`: pages are numbered from 1, as in the document's
+evaluation report, and `|` separates the predicted sections. A **Page order** row
+lists each side's pages in the order that side has them, so a three-page section
+predicted in reverse reads `1-3 / 3, 2, 1`.
 
 Each row links into the annotation queue for that document, which is where the
 class is corrected — see
 [Correcting a misclassified document](#correcting-a-misclassified-document).
 
-**Two limits worth knowing:**
+**Four limits worth knowing:**
 
 - The list is **capped** (200 entries), because a run's whole result set is stored
   as a single record. Wrong-class errors sort first so a run full of page-order
   differences cannot crowd them out, and the panel states the true total when it
-  truncates — "Showing the first 200 of 340".
+  truncates — "Showing the first 200 of 340". For the same reason a
+  **No matching section** row lists at most 5 predicted sections, and says how
+  many there were ("first 5 of 12 predicted sections"); the document's evaluation
+  report lists them all.
+- A predicted section of a class
+  [excluded from processing](./classification.md#excluding-static-pages-eg-instructions-legal-boilerplate)
+  is recorded by the evaluation without its class or its pages, because the
+  result extraction writes for it is a stub, and a predicted section whose result
+  could not be read is not recorded at all. So the evaluation pairs neither with
+  the ground-truth section on its pages, which is **No matching section** whether
+  or not the class was right, and the row says *not recorded* for the pages no
+  recorded predicted section covers. The panel does not tell whether an
+  unreadable result was the prediction's or the baseline's, so an unreadable
+  baseline section also makes the document's **No matching section** rows say
+  *not recorded* for pages no recorded predicted section covers, and has no row
+  of its own. The document's evaluation report lists its excluded
+  sections with their classes and pages. A baseline taken while a class was
+  excluded records that class's sections the same way, so they are listed with
+  expected class *Unknown* and no pages, unless the prediction also has a section
+  of an excluded class.
+- A run aggregated by an earlier release shows each of its unmatched sections as
+  **No matching section** without the predicted sections, because its stored
+  result does not carry them. That result also cannot tell a split from a wrong
+  class on the right pages, so a wrong class shows the same way. A new run of the
+  test set tells the two apart and lists the predicted sections.
 - Runs evaluated **before this shipped** show no panel until they re-aggregate,
   which happens automatically the first time you open their results. Runs
   aggregated through the Athena fallback path have the percentages but not the
-  per-section detail.
+  per-section detail. The exception is a classification-only run, whose detail
+  the aggregation still collects and the fallback keeps. One cached before the
+  fallback kept it must be re-run to show it, unless its cache was last written
+  before 0.6.7, in which case it re-aggregates like any other run evaluated
+  before this shipped (see
+  [Graded Packet Metrics](#graded-packet-metrics-run-level)).
 
 ### Field-Level Metrics
 

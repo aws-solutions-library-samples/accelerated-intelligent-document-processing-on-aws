@@ -4,6 +4,9 @@
 # RealKIE-FCC-Verified reference config for the 1S-TopK single-stage
 # extraction + confidence method (simple / non-agentic integrated mode).
 #
+# classification.sectionSplitting is disabled because every file in this test
+# set is one invoice; use llm_determined for files that hold several documents.
+#
 # All settings not explicitly defined here are inherited from the system
 # defaults — including the 1S-TopK task prompt
 # (extraction.task_prompt_extraction_with_confidence_topk), which is selected
@@ -22,6 +25,10 @@
 use_bda: false
 
 notes: "RealKIE-FCC-Verified 1S-TopK settings (simple integrated extraction+confidence in a single LLM call). Summarization and chat disabled by default."
+
+classification:
+  # Every file in this test set is one invoice; use llm_determined for files that hold several documents.
+  sectionSplitting: disabled
 
 extraction:
   mode: simple            # non-agentic single-pass extraction
