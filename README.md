@@ -3,25 +3,6 @@
 Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
 SPDX-License-Identifier: MIT-0
 
-<!-- The live pipeline badge is a GitLab PROJECT BADGE (Settings -> General ->
-     Badges), not an image in this file, and that is the whole point: it renders on
-     the GitLab project page where the people who can reach that host are already
-     looking, and it is absent from the README that GitHub serves.
-     Do not move it back here. The badge is hosted on an internal GitLab instance,
-     and GitHub proxies every image through Camo, which fetches server-side and
-     cannot reach that host — so an image here is a broken image for every reader of
-     the public mirror, which is most of them. The two obvious substitutes do not
-     work either: a committed copy under images/ would freeze a LIVE status and go
-     on reporting "passing" after CI went red, and a GitHub Actions badge has no
-     default-branch run to report because `developer-tests.yml` is
-     `pull_request`-only, so it reads "no status".
-     The project badge carries `key_text=fast checks` for a reason worth keeping:
-     the endpoint reports the latest pipeline on the ref with no pipeline-source
-     filter, and `develop` receives both the ~14-minute offline-gate run on every
-     push and a nightly that additionally deploys a real stack — so an unlabelled
-     badge would almost always be reporting the cheaper of the two. -->
-**CI:** gated on an internal GitLab pipeline — [pipeline history](https://gitlab.aws.dev/genaiic-reusable-assets/engagement-artifacts/genaiic-idp-accelerator/-/commits/develop) (reachable on the corporate network only). The nightly stack-deploy result is separate, under *Build → Pipeline schedules*.
-
 **Questions?** [![Ask DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws)
 
 📖 **[Browse the Documentation Site](https://aws-solutions-library-samples.github.io/accelerated-intelligent-document-processing-on-aws/)** — searchable, with sidebar navigation
@@ -48,7 +29,7 @@ SPDX-License-Identifier: MIT-0
   - [Security](#security)
   - [Contributing](#contributing)
   - [Project Governance](#project-governance)
-  - [Security](#security)
+  - [Security](#security-1)
   - [License](#license)
 
 ## Introduction
