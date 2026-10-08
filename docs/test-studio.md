@@ -93,11 +93,11 @@ During stack deployment, the system automatically:
 
 #### Corresponding Config
 
-Use with: `config_library/unified/realkie-fcc-verified/config.yaml`
+Use with: the stack-managed `realkie-fcc-verified` profile (`config_library/managed_config/realkie-fcc-verified/config.yaml`)
 
 Test Studio auto-selects the stack-managed `realkie-fcc-verified` profile for this test set. That profile sets `classification.sectionSplitting: disabled`, because every file is one invoice: all of a file's pages form one `Invoice` section, and with a single class, classification makes no model call. A run on that profile therefore scores classification and splitting at 1.0 by construction, and measures extraction. `idp-cli process --test-set` and the SDK's `batch.process(test_set=...)` run on the active profile unless you name one, so pass `--config-profile realkie-fcc-verified` (`config_profile="realkie-fcc-verified"` in the SDK) for the same result. A profile copied from `realkie-fcc-verified` is a snapshot and keeps the section splitting it was copied with; set **Section splitting** to `disabled` in its classification settings to match.
 
-The preset named above does not set `classification.sectionSplitting`, so it keeps the default, `llm_determined`. A stack deployed with `ConfigurationPreset=realkie-fcc-verified` rebuilds its `default` profile from the preset on every update, and `default` is usually the active profile, so the preset keeps the strategy that divides a file holding several documents. To get one section per file in a profile built from the preset, set **Section splitting** to `disabled` in it.
+The deploy-time preset, `config_library/unified/realkie-fcc-verified/config.yaml`, does not set `classification.sectionSplitting`, so it keeps the default, `llm_determined`. A stack deployed with `ConfigurationPreset=realkie-fcc-verified` rebuilds its `default` profile from the preset on every update, and `default` is usually the active profile, so the preset keeps the strategy that divides a file holding several documents. To get one section per file in a profile built from the preset, set **Section splitting** to `disabled` in it.
 
 ---
 
