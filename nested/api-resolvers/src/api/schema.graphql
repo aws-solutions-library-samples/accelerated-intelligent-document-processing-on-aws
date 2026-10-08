@@ -825,6 +825,16 @@ type TestRun @aws_cognito_user_pools @aws_iam {
   # before Purpose was written); duplicating it client-side would give it two homes
   # and let the fallback drift.
   isDraftLabeling: Boolean
+  # True when the configuration this run captured had `evaluation.enabled`
+  # false, so no document in it was scored and there are no accuracy metrics to
+  # wait for — ever. Exposed for the same reason as isDraftLabeling: the UI's
+  # fallback message for a run with no accuracy data attributes it to a test set
+  # with no published ground truth, which is the wrong cause here (the ground
+  # truth is there; evaluation was switched off) and sends whoever reads it to
+  # the wrong screen. The server owns the rule — see
+  # _ran_with_evaluation_disabled, which reads the captured configuration the
+  # same way the pipeline reads the live one.
+  evaluationDisabled: Boolean
 }
 
 type TestRunComparison @aws_cognito_user_pools @aws_iam {

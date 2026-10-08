@@ -2,6 +2,7 @@
 # SPDX-License-Identifier: MIT-0
 
 
+import gzip
 import importlib.util
 import json
 import os
@@ -2092,3 +2093,491 @@ class TestDraftLabelingRunsAreNotAwaitingMetrics:
             index._is_draft_labeling_run({"Context": "Draft labeling run for Q3"})
             is False
         )
+
+
+# --------------------------------------------------------------------------- #
+# Evaluation that never runs, and the run status that waited for it anyway
+# (#1330)
+#
+# A document's EvaluationStatus is what tells this resolver whether a document
+# is finished. Its default for a value it does not recognise is "still
+# evaluating", and a run holding one such document cannot reach a terminal
+# status — so a status the pipeline writes but this file does not name, or one
+# the pipeline never writes at all, pins the run at EVALUATING with every
+# document showing Completed and no timeout anywhere to break the tie. Both
+# shapes existed: DISABLED was not written, and TIMED_OUT was unnamed.
+# --------------------------------------------------------------------------- #
+
+_EVALUATION_FUNCTION = os.path.join(
+    os.path.dirname(__file__),
+    "../../../../patterns/unified/src/evaluation_function/index.py",
+)
+
+
+def _pipeline_evaluation_statuses():
+    """Every ``EvaluationStatus`` value the pipeline can write, read from source.
+
+    Parsed rather than imported, because all this needs is the enum's members
+    and parsing cannot run the module's import-time code at all. Naming the path
+    as one slash-joined literal is deliberate: that spelling is what enrols the
+    module in ``test_handler_imports_are_region_free``'s census, and it belongs
+    there — it imports cleanly with no AWS environment at all.
+    """
+    import ast
+
+    tree = ast.parse(open(_EVALUATION_FUNCTION).read())
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ClassDef) and node.name == "EvaluationStatus":
+            return {
+                stmt.value.value
+                for stmt in node.body
+                if isinstance(stmt, ast.Assign)
+                and isinstance(stmt.value, ast.Constant)
+                and isinstance(stmt.value.value, str)
+            }
+    raise AssertionError("EvaluationStatus enum not found in the evaluation function")
+
+
+@pytest.mark.unit
+def test_every_evaluation_status_the_pipeline_writes_is_classified():
+    """The class-level guard, and the reason this is a test rather than a comment.
+
+    Both halves of #1330 were a status the run-status loop had no branch for.
+    Counting an unknown one as evaluating is the right default for a *reader*
+    (a status it cannot interpret may well mean work in progress) and a terrible
+    one as a steady state, because nothing ever revisits the decision. So the
+    rule enforced here is a closure: every value the enum can hold is classified
+    as settled, unsuccessful or in-flight, and in exactly one of the three.
+    Adding a member to that enum without coming here fails this test.
+    """
+    statuses = _pipeline_evaluation_statuses()
+    # Sanity-check the parse itself: an empty or tiny set would make the closure
+    # assertion below vacuously true.
+    assert {"COMPLETED", "FAILED", "RUNNING", "DISABLED", "TIMED_OUT"} <= statuses
+
+    partitions = {
+        "settled": index._EVAL_STATUS_SETTLED,
+        "unsuccessful": index._EVAL_STATUS_UNSUCCESSFUL,
+        "in flight": index._EVAL_STATUS_IN_FLIGHT,
+    }
+    for status in statuses:
+        holders = [name for name, values in partitions.items() if status in values]
+        assert holders, (
+            f"EvaluationStatus.{status} is classified nowhere in the run-status "
+            "loop, so every test run containing such a document will report "
+            "EVALUATING indefinitely"
+        )
+        assert len(holders) == 1, (
+            f"EvaluationStatus.{status} is in more than one partition: {holders}"
+        )
+
+    # And nothing is classified that the pipeline cannot produce — a stale entry
+    # here is a branch no document can reach, which reads as cover it is not.
+    classified = set().union(*partitions.values())
+    assert classified <= statuses, (
+        f"classified but unwritable: {sorted(classified - statuses)}"
+    )
+
+
+def _run_table(test_run_id, files, eval_status, stored_status="RUNNING", metadata=None):
+    """Mock tracking table: every file processed, each with ``eval_status``.
+
+    ``eval_status`` may be a single value applied to every file, or a list of one
+    value per file. ``None`` means the attribute is absent, which is the shape a
+    document processed with evaluation switched off had before #1330.
+    """
+    per_file = (
+        eval_status if isinstance(eval_status, list) else [eval_status] * len(files)
+    )
+    assert len(per_file) == len(files)
+    by_key = dict(zip(files, per_file))
+
+    item = {
+        "PK": f"testrun#{test_run_id}",
+        "SK": "metadata",
+        "Status": stored_status,
+        "Files": files,
+        "FilesCount": len(files),
+    }
+    item.update(metadata or {})
+
+    def get_item(Key):
+        if Key["PK"] == f"testrun#{test_run_id}":
+            return {"Item": item}
+        file_key = Key["PK"].split("/", 1)[1]
+        doc = {"ObjectStatus": "COMPLETED"}
+        if by_key[file_key] is not None:
+            doc["EvaluationStatus"] = by_key[file_key]
+        return {"Item": doc}
+
+    mock_table = Mock()
+    mock_table.get_item.side_effect = get_item
+    return mock_table
+
+
+def _status_of(test_run_id, mock_table):
+    with (
+        patch.dict(
+            os.environ,
+            {
+                "TRACKING_TABLE": "tracking",
+                "TEST_RESULT_CACHE_UPDATE_QUEUE_URL": "https://sqs.test/q",
+            },
+        ),
+        patch.object(index.dynamodb, "Table", return_value=mock_table),
+        patch.object(index, "sqs", Mock()),
+        patch.object(index, "_claim_cache_update_slot", return_value=True),
+    ):
+        return index.get_test_run_status(test_run_id)
+
+
+@pytest.mark.unit
+def test_a_run_whose_documents_skipped_evaluation_completes():
+    """The reported bug: evaluation.enabled false, every document Completed, run
+    stuck on EVALUATING."""
+    files = [f"doc{i}.pdf" for i in range(3)]
+    result = _status_of("off-run", _run_table("off-run", files, "DISABLED"))
+
+    assert result["status"] == "COMPLETE"
+    assert result["completedFiles"] == 3
+    assert result["evaluatingFiles"] == 0
+    assert result["progress"] == 100
+
+
+@pytest.mark.unit
+def test_a_timed_out_evaluation_is_a_failure_not_an_eternal_wait():
+    """TIMED_OUT is terminal. It was in no branch, so it fell to the unknown-status
+    default and held the whole run short of a terminal status — the same symptom
+    as #1330 from a different direction, and reachable since #917 made the
+    timeout path stamp it."""
+    files = ["a.pdf", "b.pdf", "c.pdf"]
+    mock_table = _run_table(
+        "timeout-run",
+        files,
+        ["COMPLETED", "TIMED_OUT", "COMPLETED"],
+        # Two documents were scored, so metrics do exist for this run; cache them
+        # so the assertion is about the counting rather than about the separate
+        # "terminal but not yet aggregated" badge rule.
+        metadata={"testRunResult": {"overallAccuracy": 0.9}},
+    )
+    result = _status_of("timeout-run", mock_table)
+
+    assert result["status"] == "PARTIAL_COMPLETE"
+    assert result["failedFiles"] == 1
+    assert result["evaluatingFiles"] == 0
+
+
+@pytest.mark.unit
+def test_an_unrecorded_status_completes_when_the_run_disabled_evaluation():
+    """The rescue for a run that predates the DISABLED stamp.
+
+    Such a run's documents carry no EvaluationStatus at all and nothing will ever
+    write one, so the only remaining evidence is the configuration the run
+    captured. Without this, deploying the fix leaves every already-stuck run
+    stuck.
+    """
+    files = ["a.pdf", "b.pdf"]
+    mock_table = _run_table(
+        "legacy-off-run",
+        files,
+        None,
+        metadata={"Config": {"evaluation": {"enabled": False}}},
+    )
+    result = _status_of("legacy-off-run", mock_table)
+
+    assert result["status"] == "COMPLETE"
+    assert result["completedFiles"] == 2
+    assert result["evaluatingFiles"] == 0
+
+
+@pytest.mark.unit
+def test_an_unrecorded_status_still_means_evaluating_when_evaluation_is_on():
+    """The case the old branch was written for, which must keep working.
+
+    A document whose evaluation genuinely has not started yet looks exactly like
+    one that will never be evaluated. Reading the configuration is what separates
+    them; reading neither, and completing the run regardless, would report
+    results before they exist.
+    """
+    files = ["a.pdf", "b.pdf"]
+    mock_table = _run_table(
+        "on-run", files, None, metadata={"Config": {"evaluation": {"enabled": True}}}
+    )
+    result = _status_of("on-run", mock_table)
+
+    assert result["status"] == "EVALUATING"
+    assert result["evaluatingFiles"] == 2
+    assert result["completedFiles"] == 0
+
+
+@pytest.mark.unit
+def test_evaluation_status_casing_does_not_decide_whether_a_run_can_finish():
+    """Writers have been inconsistent about casing, which the other two document
+    probes in this file already normalize for. Here it is not cosmetic: an
+    unexpected spelling lands in the unknown-status branch and the run never
+    finishes."""
+    files = ["a.pdf", "b.pdf"]
+    mock_table = _run_table(
+        "case-run",
+        files,
+        "completed",
+        metadata={"testRunResult": {"overallAccuracy": 0.9}},
+    )
+    result = _status_of("case-run", mock_table)
+
+    assert result["status"] == "COMPLETE"
+    assert result["completedFiles"] == 2
+
+
+@pytest.mark.unit
+def test_a_blank_status_is_read_as_unrecorded_rather_than_unrecognised():
+    """An empty string means nothing was written, which is the unrecorded case
+    (and so answerable from the configuration), not an unknown status."""
+    files = ["a.pdf"]
+    mock_table = _run_table(
+        "blank-run",
+        files,
+        "   ",
+        metadata={"Config": {"evaluation": {"enabled": False}}},
+    )
+    result = _status_of("blank-run", mock_table)
+
+    assert result["status"] == "COMPLETE"
+
+
+@pytest.mark.unit
+def test_an_unrecognised_status_keeps_the_conservative_default():
+    """Not every unknown value can be assumed finished. A status this file does
+    not know may well mean work in progress, so the default stays "evaluating" —
+    the closure test above is what stops that default becoming a run's permanent
+    state."""
+    files = ["a.pdf"]
+    result = _status_of("odd-run", _run_table("odd-run", files, "REJUVENATING"))
+
+    assert result["status"] == "EVALUATING"
+    assert result["evaluatingFiles"] == 1
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "stored",
+    [False, True, "false", "False", "FALSE", "true", "no", "off", "0", "1", 0, 1],
+)
+def test_the_disabled_reading_agrees_with_the_pipelines(stored):
+    """Both ends must read ``evaluation.enabled`` the same way.
+
+    The pipeline reads it through pydantic (``EvaluationConfig.enabled: bool``),
+    which accepts several string spellings as well as real booleans — a stored
+    ``"false"`` genuinely stops evaluation running. This resolver decides, from
+    the same value, whether to stop waiting for results. If the two disagree, one
+    of them is wrong about whether any document was scored.
+
+    Compared against the real model rather than a hand-written table of
+    expectations, because a table is exactly what would drift from pydantic's
+    coercion rules and the divergence would be invisible in review.
+    """
+    from idp_common.config.models import EvaluationConfig
+
+    pipeline_disabled = not EvaluationConfig(enabled=stored).enabled
+    item = {"Config": {"evaluation": {"enabled": stored}}}
+
+    assert index._ran_with_evaluation_disabled(item) is pipeline_disabled
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "config",
+    [
+        {},
+        {"evaluation": {}},
+        {"evaluation": {"model": "nova-pro"}},
+        {"evaluation": "enabled"},
+        # A value pydantic itself would reject. Evaluation cannot be reported as
+        # skipped on the strength of a configuration the pipeline could not even
+        # load — a wrong "disabled" verdict reports a run complete while results
+        # are still arriving.
+        {"evaluation": {"enabled": "maybe"}},
+    ],
+)
+def test_only_a_configuration_that_says_so_counts_as_disabled(config):
+    """``enabled`` defaults to true, so silence is not consent here."""
+    assert index._ran_with_evaluation_disabled({"Config": config}) is False
+
+
+@pytest.mark.unit
+def test_the_disabled_reading_works_on_the_shape_runs_are_actually_stored_in():
+    """Runs store their configuration gzipped, not inline.
+
+    The inline form the other tests use is the legacy one. A check that only
+    worked on it would pass everywhere and answer False for every run created
+    since compression landed — i.e. for every run that can hit #1330.
+    """
+    body = json.dumps({"evaluation": {"enabled": False}}).encode("utf-8")
+    item = {
+        "_config_storage": "compressed",
+        "_compressed_config": gzip.compress(body),
+    }
+
+    assert index._ran_with_evaluation_disabled(item) is True
+
+
+@pytest.mark.unit
+def test_the_badge_rule_does_not_decompress_a_configuration_it_cannot_need():
+    """Ordering, not correctness: the Executions list renders many runs at once.
+
+    ``_awaiting_metrics`` reads the captured configuration only to answer "are
+    metrics coming for a run that has none", so the cheap tests must come first.
+    A row that is still running, or that already has cached metrics, must not
+    cost a decompression per render.
+    """
+    with patch.object(index, "_captured_config_of") as captured:
+        assert index._awaiting_metrics({"Status": "RUNNING"}, "RUNNING") is False
+        assert (
+            index._awaiting_metrics(
+                {"testRunResult": {"overallAccuracy": 0.5}}, "COMPLETE"
+            )
+            is False
+        )
+        captured.assert_not_called()
+
+        # ...and is consulted for the one case that needs it.
+        captured.return_value = {"evaluation": {"enabled": False}}
+        assert index._awaiting_metrics({}, "COMPLETE") is False
+        captured.assert_called_once()
+
+
+@pytest.mark.unit
+def test_a_scan_that_found_no_scored_document_settles_the_badge_directly():
+    """``get_test_run_status`` has stronger evidence than the configuration.
+
+    It has just read every document, so if none was scored it knows there is
+    nothing to aggregate without reading anything else. Passing that through is
+    what stops the badge promising metrics; the configuration route exists for
+    the two resolvers that never look at the documents.
+    """
+    with patch.object(index, "_captured_config_of", return_value={}) as captured:
+        assert (
+            index._awaiting_metrics({}, "COMPLETE", no_metrics_expected=True) is False
+        )
+        captured.assert_not_called()
+
+        assert (
+            index._awaiting_metrics({}, "COMPLETE", no_metrics_expected=False) is True
+        )
+
+
+@pytest.mark.unit
+def test_the_completed_count_matches_what_the_status_loop_calls_completed():
+    """The aborted-run path counts documents separately, and used to count only
+    EvaluationStatus=COMPLETED — reporting 0 of 5 completed for a run whose
+    documents all finished with no ground truth or with evaluation off, while the
+    status loop counted the same documents as completed."""
+    files = ["a.pdf", "b.pdf", "c.pdf", "d.pdf", "e.pdf"]
+    statuses = ["COMPLETED", "NO_BASELINE", "DISABLED", "FAILED", "RUNNING"]
+    responses = {
+        "Responses": {
+            "tracking": [{"EvaluationStatus": {"S": status}} for status in statuses]
+        }
+    }
+    mock_client = Mock()
+    mock_client.batch_get_item.return_value = responses
+    mock_table = Mock()
+    mock_table.table_name = "tracking"
+
+    with patch.object(index.boto3, "client", return_value=mock_client):
+        counted = index._count_completed_documents(mock_table, "run", files)
+
+    # The three settled states, and neither the failure nor the one in flight.
+    assert counted == 3
+
+
+@pytest.mark.unit
+def test_the_results_page_is_told_evaluation_was_disabled():
+    """So it can say which of the two reasons for having no metrics applies.
+
+    The generic message blames a test set with no published ground truth, which
+    is the wrong cause here — the ground truth is there and evaluation was switched
+    off in the configuration profile, which is a different screen to go and fix.
+    """
+    run_id = "off-run"
+    mock_table = Mock()
+    mock_table.get_item.return_value = {
+        "Item": {
+            "PK": f"testrun#{run_id}",
+            "SK": "metadata",
+            "Status": "COMPLETE",
+            "FilesCount": 2,
+            "CompletedFiles": 2,
+            "FailedFiles": 0,
+            "Config": {"evaluation": {"enabled": False}},
+            "testRunResult": {
+                "overallAccuracy": None,
+                "weightedOverallScores": {},
+                "splitClassificationMetrics": {},
+                "confusionMatrix": {},
+                "fieldMetrics": {},
+                "gradedPacketMetrics": {},
+                "excludedDocumentCount": 0,
+                "classificationErrors": {},
+                "totalCost": 1.25,
+            },
+        }
+    }
+
+    with (
+        patch.dict(
+            os.environ,
+            {
+                "TRACKING_TABLE": "tracking",
+                "TEST_RESULT_CACHE_UPDATE_QUEUE_URL": "https://sqs.test/q",
+            },
+        ),
+        patch.object(index.dynamodb, "Table", return_value=mock_table),
+        patch.object(index, "sqs", Mock()),
+        patch.object(index, "_get_test_run_config", return_value={}),
+    ):
+        result = index.get_test_results(run_id)
+
+    assert result["evaluationDisabled"] is True
+    assert result["isDraftLabeling"] is False
+    # The cost is real money and is reported either way.
+    assert result["totalCost"] == 1.25
+
+
+@pytest.mark.unit
+def test_both_readers_of_an_evaluation_status_agree():
+    """Two Lambdas read a document's EvaluationStatus, and both have a default
+    that waits.
+
+    The run-status resolver treats an unclassified value as in-flight, which pins
+    a run at EVALUATING; the abort resolver treats one as non-terminal, which
+    makes it wait out its whole polling budget on a document that finished. The
+    same omission therefore shows up twice, with two different symptoms, which is
+    how DISABLED and TIMED_OUT came to be missing from both. So the two
+    classifications are compared directly: whatever this resolver calls settled or
+    unsuccessful, the abort resolver must call terminal.
+    """
+    abort_path = os.path.join(
+        os.path.dirname(__file__),
+        *([os.pardir] * 4),
+        "nested",
+        "api-resolvers",
+        "src",
+        "lambda",
+        "abort_test_runs",
+        "index.py",
+    )
+    with patch("boto3.resource"), patch("boto3.client"):
+        abort_spec = importlib.util.spec_from_file_location(
+            "abort_test_runs_index", abort_path
+        )
+        assert abort_spec is not None and abort_spec.loader is not None
+        abort_index = importlib.util.module_from_spec(abort_spec)
+        abort_spec.loader.exec_module(abort_index)
+
+    terminal_here = index._EVAL_STATUS_SETTLED | index._EVAL_STATUS_UNSUCCESSFUL
+    assert terminal_here == abort_index.TERMINAL_EVALUATION_STATUSES
+
+    # And neither of them calls the one in-flight status terminal.
+    assert not (index._EVAL_STATUS_IN_FLIGHT & terminal_here)
+    assert not (index._EVAL_STATUS_IN_FLIGHT & abort_index.TERMINAL_EVALUATION_STATUSES)

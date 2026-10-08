@@ -30,6 +30,26 @@ sqs_client = boto3.client('sqs')
 # Test run statuses that can be aborted (before processing completes)
 ABORTABLE_STATUSES = {'QUEUED', 'RUNNING'}
 
+# Evaluation outcomes that will not change again, for a document whose own
+# ObjectStatus is already COMPLETED. Anything outside this set is read as
+# "evaluation still in progress", so a terminal status missing from it makes the
+# abort wait below burn its whole budget before giving up on a document that was
+# finished all along. Must therefore name every terminal member of
+# EvaluationStatus in patterns/unified's evaluation function, which is a list
+# this one has twice fallen behind: TIMED_OUT was missing until a run that could
+# not be aborted exposed it, and DISABLED — evaluation switched off for the run —
+# until #1330. A set with a name is what lets the run-status resolver's own
+# classification be compared against this one, by
+# test_results_resolver.py::test_both_readers_of_an_evaluation_status_agree,
+# rather than the two drifting apart again in a literal here.
+TERMINAL_EVALUATION_STATUSES = {
+    'COMPLETED',
+    'FAILED',
+    'NO_BASELINE',
+    'TIMED_OUT',
+    'DISABLED',
+}
+
 
 def _caller_in_groups(event, allowed):
     """Defense-in-depth RBAC check against the caller's Cognito groups.
@@ -338,8 +358,9 @@ def _wait_for_documents_terminal_state(tracking_table, test_run_id, object_keys,
     Wait for all documents in the test run to reach a terminal state.
 
     Terminal states for documents:
-    - COMPLETED with a finished EvaluationStatus (COMPLETED, FAILED, TIMED_OUT
-      or NO_BASELINE)
+    - COMPLETED with a terminal EvaluationStatus (see
+      TERMINAL_EVALUATION_STATUSES — evaluation finished, failed, timed out,
+      had no baseline, or was disabled for the run)
     - ABORTED (stopped by abort workflow)
     - FAILED (processing failed)
 
@@ -381,7 +402,7 @@ def _wait_for_documents_terminal_state(tracking_table, test_run_id, object_keys,
                 # Terminal = processing done AND (evaluation done OR no evaluation needed)
                 if doc_status == 'COMPLETED':
                     # Document processing finished, check if evaluation is also done
-                    if eval_status in ('COMPLETED', 'FAILED', 'TIMED_OUT', 'NO_BASELINE'):
+                    if eval_status in TERMINAL_EVALUATION_STATUSES:
                         terminal_count += 1
                     else:
                         # Still evaluating (or evaluation not started yet)
