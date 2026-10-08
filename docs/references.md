@@ -110,6 +110,14 @@ Reference deployments showing measurable accuracy, cost, and throughput results.
   and reasons over 250+ document types — collapsing 3–9 day workflows to minutes,
   with plans to scale to 20M documents/month at 95%+ confidence.
 
+- **[How WellRithms achieved 30 times faster bill processing with AWS](https://aws.amazon.com/blogs/industries/how-wellrithms-achieved-30-times-faster-bill-processing-with-aws/)**
+  *(Oct 2026)* — WellRithms, a healthcare payment-integrity provider, adapted the
+  accelerator as a reference architecture for itemized medical bill review, using a
+  tiered OCR / LLM / vision-language strategy on Amazon Bedrock. Across a
+  2,820-page validation set it extracted 98,377 line items at 70.1 seconds per bill
+  (3.1 s/page), reducing roughly 8 hours of manual work per bill to 15–20 minutes
+  of expert review and turnaround from 5 business days to 1.
+
 ## Research Papers
 
 Published and preprint work behind the accelerator's agentic, configuration

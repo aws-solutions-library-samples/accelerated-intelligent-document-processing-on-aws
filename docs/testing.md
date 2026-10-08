@@ -31,7 +31,7 @@ record of its last run.
 | [2. Static gates](#2-static-gates-lint-types-and-hand-written-scanners) | no | ✅ both CIs | `make lint-cicd` · `make typecheck` |
 | [3. Web UI unit tests](#3-web-ui-unit-tests) | no | ✅ both CIs | `make ui-test` |
 | [4. Security scanning](#4-security-scanning-sast-and-sca) | no | ✅ both CIs | `make srt-scan` · `make dep-audit` |
-| [5. Integration smoke suite](#5-integration-smoke-suite-ci-only) | **yes** | ⚠️ GitLab only | pipeline `integration_tests` |
+| [5. Integration smoke suite](#5-integration-smoke-suite-ci-only) | **yes** | ⚠️ GitLab **nightly** + manual button — not a merge gate | pipeline `integration_tests` |
 | [6. Live-stack tiers](#6-live-stack-tiers-manual) | **yes** | ❌ manual | see the table |
 | [7. Benchmarks](#7-benchmarks) | **yes** | ❌ manual | `make benchmark-release` |
 
@@ -162,6 +162,45 @@ that exists and never runs is otherwise indistinguishable from one that passes:
 Adding an exclusion, or lifting one of these, fails that guard until this table and
 the registry agree — it is checked in both directions, so a row that outlives the
 exclusion it describes fails too.
+
+### The `integration`-marked tier runs in no CI
+
+Separate from the directory exclusions above, the tests marked
+`@pytest.mark.integration` are deselected from every suite on this page. **The
+mechanism is the runner, not a config file.** `scripts/run_all_tests.py` runs one
+`pytest -m "not integration" <root>` subprocess per root, so the filter applies to
+every root it discovers — including a new package under `lib/`, which inherits
+nothing. Only `lib/idp_common_pkg/pytest.ini` carries `addopts = -m "not
+integration"` of its own; `lib/idp_sdk` and `lib/idp_cli_pkg` have an empty
+`addopts`, and the root `pytest.ini` deliberately sets none, because an `addopts`
+there would silently change collection for every suite that resolves to it.
+
+Those tests call live AWS — real Bedrock, Textract, S3 and DynamoDB rather than
+`moto` — and within `idp_common` they are the only ones that do. (Layers 5 to 7
+below need AWS too, but none of them is a marked pytest suite.) They run with
+`make test-integration-all`, or per-package with `make test-integration`, and
+**nothing else runs them**: not `make test`, not GitHub, not GitLab. A person
+typing the target is the whole of their coverage.
+
+⚠️ **GitLab's `integration_tests` job is a different thing with a similar name.**
+It is the deploy-driven smoke suite in [layer 5](#5-integration-smoke-suite-ci-only)
+— a CodePipeline stack deployment — and it never invokes `pytest -m integration`.
+Reading the stage name as coverage of this tier is what let 14 of its 23 tests sit
+failing on tooling faults until a release validation found them
+([#1307](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/1307)):
+the tier was uncovered, and the exemption recording that it was local-only cited
+the stage as the reason it did not need to be. `test_ci_gate_parity.py`'s
+`test_the_integration_pytest_tier_runs_in_no_ci` now measures the absence instead
+of asserting the stage name, so if a CI starts running the tier, the stale
+exemption fails rather than the claim going quietly out of date.
+
+Two consequences worth keeping in mind when adding one of these tests. The marker,
+not the directory, is what makes a test part of this tier — `make test-integration`
+runs `pytest -m "integration"` over its whole *package* tree, so an
+integration-marked test
+under `tests/unit/` is in it. And because nothing gates them, a broken one stays
+broken: a test whose seams are all mocked needs no credentials and belongs in the
+default gate, where something will notice.
 
 ### A run can measure the wrong checkout, and the `make` targets pin against it
 
@@ -298,11 +337,13 @@ so none of them reports on every PR and requiring one would leave a check pendin
 forever and block every merge.
 
 Three details are worth knowing about what it reads. Eight of the ten shared gates
-are *steps* inside one job, so those eight collapse to a single requireable context
-and share a single red mark — a required-check failure does not say which of them
-failed. The remaining two, the SRT scan and the dependency audit, are jobs of their
-own, one context each. It reads **both** enforcement mechanisms, classic branch
-protection and
+live in `developer-tests.yml` and the other two — the SRT scan and the dependency
+audit — in `security-checks.yml`; because a context is a *job*, and those two
+workflows hold four and two jobs respectively, the ten gates produce six
+requireable contexts. ⚠️ **Requiring only the lint context is therefore weaker than
+it looks**: the test suites are their own contexts, so all six have to be required
+for a red test run to block a merge. It reads **both** enforcement mechanisms,
+classic branch protection and
 rulesets, because a branch can be fully governed by a ruleset while the classic
 endpoint reports nothing. And it distinguishes "not protected" from "cannot see":
 the classic endpoint needs repository **admin** and answers 404 without it, so the
@@ -377,6 +418,21 @@ batch processing, Test Studio evaluation, agentic extraction on a large table,
 single- and multi-document discovery, test comparison, API RBAC, IAM permissions
 boundary, and pipeline hooks. It needs AWS credentials, so it is **GitLab-only**: a
 change merged through a GitHub pull request has not run it.
+
+⚠️ **It runs nightly, not per-merge-request, so a green MR pipeline does not mean
+the deploy works.** It was automatic on `develop` and on non-Draft MRs, which put
+62–113 minutes onto every pipeline after a 45-minute check stage. It is now the
+nightly schedule plus a **manual play button**, available on any MR targeting
+`develop` and on a `develop` pipeline.
+
+Two things follow. **Click the button before merging anything that touches the
+deploy path** — `template.yaml`, `publish.py`, `patterns/`, `nested/`, `src/`,
+`lib/`, `config_library/`, `feature-platform/`, `iam-roles/`, `scripts/` — because
+it is the only pre-merge signal this tier has left. And because a breaking change
+can merge and surface a night later with other merges on top of it, **a nightly
+failure is triaged by bisecting the day's merges**, not by reading the pipeline's
+own commit. The trade is written out in full in
+[`scripts/sdlc/docs/CI_TEST_COVERAGE.md`](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/blob/develop/scripts/sdlc/docs/CI_TEST_COVERAGE.md).
 
 Per-step detail, what each step asserts, and how to reproduce a single step by hand
 are in [`scripts/sdlc/docs/CI_TEST_COVERAGE.md`](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/blob/develop/scripts/sdlc/docs/CI_TEST_COVERAGE.md).

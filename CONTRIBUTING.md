@@ -702,7 +702,7 @@ the `cfn-lint` pin drifts between the `Makefile` and either config.
 | `generate-dep-manifest.yml` | `generate-manifests` | `make dep-manifest` — only when the PR touches a dependency manifest input |
 
 **GitLab CI** (`.gitlab-ci.yml`) runs the same set in its `fast_checks` stage —
-`code_checks`, `srt_security_review` and `dep_audit` — plus two jobs that need
+`static_checks`, `unit_tests`, `package_tests`, `ui_tests`, `srt_security_review` and `dep_audit` — plus two jobs that need
 real AWS credentials and therefore cannot run on GitHub: `deployment_validation`
 and `integration_tests`, the latter deploying a stack and driving fourteen
 end-to-end steps through it. **A change merged through a GitHub pull request has
@@ -715,7 +715,7 @@ skipped in the past:
 - ⚠️ **GitHub's quality and security workflows are `pull_request`-only.** A
   direct push to `develop` runs no lint, type check, test, SRT or dependency
   audit on GitHub. (The two path-filtered workflows above do have `push:`
-  triggers, but neither runs any of those gates.) GitLab runs `code_checks` on
+  triggers, but neither runs any of those gates.) GitLab runs its `fast_checks` stage on
   **every push** as well as on merge requests, so the same push is not
   unchecked everywhere — it is simply unchecked on the side most contributors
   are looking at. Work through a pull request.

@@ -45,7 +45,12 @@ import re
 from typing import Any, Dict, Optional
 
 #: Region / geo prefixes used by Bedrock cross-region inference profiles.
-_REGION_PREFIX = re.compile(r"^(?:us|eu|apac|global|us-gov)\.")
+# Must name the same prefixes as bedrock.model_utils.REGION_PREFIXES, which cannot
+# be imported here (``config`` is imported BY ``bedrock``);
+# tests/unit/bedrock/test_region_prefix_parity.py asserts the two agree. ``au`` and
+# ``jp`` arrived with Claude Haiku 5.5, the first model offered here whose card
+# advertises those geo ids.
+_REGION_PREFIX = re.compile(r"^(?:us|eu|apac|au|jp|global|us-gov)\.")
 
 
 #: Model id -> facts about its retirement.

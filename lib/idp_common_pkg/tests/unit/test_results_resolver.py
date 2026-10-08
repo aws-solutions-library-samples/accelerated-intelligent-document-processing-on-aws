@@ -1183,6 +1183,229 @@ def test_stickler_metrics_survive_athena_failure():
     assert result["cost_breakdown"] == {}
 
 
+def _aggregation_lambda_returning(body):
+    payload = Mock()
+    payload.read.return_value = json.dumps(
+        {"statusCode": 200, "body": json.dumps(body)}
+    )
+    lambda_client = Mock()
+    lambda_client.invoke.return_value = {"Payload": payload}
+    return lambda_client
+
+
+@pytest.mark.unit
+def test_a_classification_only_run_keeps_what_athena_cannot_supply():
+    """A run with no extractable schema still caches what each document measured.
+
+    Every section of a classification-only run is skipped for extraction, so the
+    aggregation finds no comparisons and answers ``document_count`` 0 with the
+    graded packet metrics, the classification errors and the excluded documents
+    folded in. The Athena fallback that follows supplies none of those three,
+    and for such a run only the split metrics and the cost, as mocked here: it
+    averages confidence over attribute comparisons, and there are none.
+    """
+    test_run_id = "classify-only-run"
+    graded = {
+        "mean": {"final_score": 0.753, "v_measure": 0.756},
+        "per_document": {"classify-only-run/p1.pdf": {"final_score": 0.753}},
+        "document_count": 1,
+    }
+    errors = {
+        "errors": [
+            {
+                "doc_key": "classify-only-run/p1.pdf",
+                "section_id": "section_2",
+                "kind": "split",
+                "expected_class": "invoice",
+                "predicted_class": "invoice",
+                "expected_pages": [1, 2],
+                "predicted_pages": [1],
+            }
+        ],
+        "total": 1,
+        "documents_affected": 1,
+        "truncated": False,
+    }
+    aggregation = {
+        "overall_accuracy": None,
+        "weighted_overall_scores": {},
+        "split_classification_metrics": {},
+        "graded_packet_metrics": graded,
+        "classification_errors": errors,
+        "excluded_documents": ["classify-only-run/p1.pdf"],
+        "excluded_document_count": 1,
+        "document_count": 0,
+    }
+    athena_splits = {"total_pages": 3, "page_level_accuracy": 0.67}
+    mock_table = Mock()
+
+    with (
+        patch.dict(
+            os.environ,
+            {
+                "TRACKING_TABLE": "tracking",
+                "TEST_EXECUTION_AGGREGATION_FUNCTION_ARN": "arn:aws:lambda:::function:agg",
+            },
+        ),
+        patch.object(index.dynamodb, "Table", return_value=mock_table),
+        patch.object(
+            index, "lambda_client", _aggregation_lambda_returning(aggregation)
+        ),
+        patch.object(index, "_get_test_run_config", return_value={}),
+        patch.object(index, "_invoke_mlflow_logger"),
+        patch.object(
+            index,
+            "_get_evaluation_metrics_from_athena",
+            return_value={"split_classification_metrics": athena_splits},
+        ),
+        patch.object(
+            index,
+            "_get_cost_data_from_athena",
+            return_value={"total_cost": 4.6, "cost_breakdown": {}},
+        ),
+    ):
+        index.handle_cache_update_request(
+            {"Records": [{"body": json.dumps({"testRunId": test_run_id})}]}, None
+        )
+
+    cached = mock_table.update_item.call_args.kwargs["ExpressionAttributeValues"][
+        ":metrics"
+    ]
+    assert cached["gradedPacketMetrics"] == index.float_to_decimal(graded)
+    assert cached["classificationErrors"] == errors
+    assert cached["excludedDocumentCount"] == 1
+    assert cached["splitClassificationMetrics"] == index.float_to_decimal(athena_splits)
+    assert cached["totalCost"] == index.float_to_decimal(4.6)
+
+
+@pytest.mark.unit
+def test_an_empty_aggregation_falls_back_without_inventing_fields():
+    """An aggregation Lambda older than the carried fields adds none of them.
+
+    The current Lambda answers with every one of them, as an empty value when
+    nothing was measured, so only an older one omits them; the fallback result then
+    keeps the shape it has with no aggregation answer at all.
+    """
+    with (
+        patch.dict(
+            os.environ,
+            {
+                "TEST_EXECUTION_AGGREGATION_FUNCTION_ARN": "arn:aws:lambda:::function:agg"
+            },
+        ),
+        patch.object(
+            index, "lambda_client", _aggregation_lambda_returning({"document_count": 0})
+        ),
+        patch.object(index, "_get_test_run_config", return_value={}),
+        patch.object(index, "_invoke_mlflow_logger"),
+        patch.object(index, "_get_evaluation_metrics_from_athena", return_value={}),
+        patch.object(
+            index,
+            "_get_cost_data_from_athena",
+            return_value={"total_cost": 0, "cost_breakdown": {}},
+        ),
+    ):
+        result = index._aggregate_test_run_metrics("empty-run")
+
+    assert set(result) == {
+        "overall_accuracy",
+        "weighted_overall_scores",
+        "avg_weighted_overall_score",
+        "average_confidence",
+        "accuracy_breakdown",
+        "split_classification_metrics",
+        "total_cost",
+        "cost_breakdown",
+    }
+
+
+def _load_aggregation_module():
+    spec = importlib.util.spec_from_file_location(
+        "aggregation_index",
+        os.path.join(
+            os.path.dirname(__file__),
+            "../../../../patterns/unified/src/test_execution_aggregation_function/index.py",
+        ),
+    )
+    if spec is None or spec.loader is None:
+        raise ImportError("Could not load test_execution_aggregation_function module")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+@pytest.mark.unit
+def test_the_aggregation_lambdas_classification_only_answer_survives_the_fallback():
+    """The carried fields are the ones the aggregation Lambda actually sends.
+
+    Their keys are spelled out in that Lambda's file and again in the resolver's,
+    so here the answer comes from the Lambda's own handler rather than being
+    written by hand: a key renamed on either side fails this test instead of
+    leaving the fallback with nothing to carry. The handler's document loader is
+    mocked to return what a classification-only run's document holds: no
+    extraction comparisons and no weighted score, so it is excluded from scoring,
+    and a graded score and a classification mismatch from its own evaluation.
+    """
+    aggregation = _load_aggregation_module()
+    test_run_id = "classify-only-run"
+    doc_key = f"{test_run_id}/p1.pdf"
+    graded_scores = {"final_score": 0.753, "v_measure": 0.756}
+    mismatch = {
+        "doc_key": doc_key,
+        "section_id": "section_1",
+        "kind": "class",
+        "expected_class": "invoice",
+        "predicted_class": "receipt",
+        "expected_pages": [1],
+        "predicted_pages": [1],
+    }
+
+    with (
+        patch.dict(os.environ, {"TRACKING_TABLE": "tracking"}),
+        patch.object(
+            aggregation,
+            "_load_comparison_results",
+            return_value=(
+                [],
+                {},
+                {doc_key: graded_scores},
+                [doc_key],
+                {doc_key: [mismatch]},
+            ),
+        ),
+    ):
+        response = aggregation.handler({"test_run_id": test_run_id}, None)
+
+    assert response["statusCode"] == 200
+
+    with (
+        patch.dict(
+            os.environ,
+            {
+                "TEST_EXECUTION_AGGREGATION_FUNCTION_ARN": "arn:aws:lambda:::function:agg"
+            },
+        ),
+        patch.object(
+            index,
+            "lambda_client",
+            _aggregation_lambda_returning(json.loads(response["body"])),
+        ),
+        patch.object(index, "_get_test_run_config", return_value={}),
+        patch.object(index, "_invoke_mlflow_logger"),
+        patch.object(index, "_get_evaluation_metrics_from_athena", return_value={}),
+        patch.object(
+            index,
+            "_get_cost_data_from_athena",
+            return_value={"total_cost": 0, "cost_breakdown": {}},
+        ),
+    ):
+        result = index._aggregate_test_run_metrics(test_run_id)
+
+    assert result["graded_packet_metrics"]["per_document"] == {doc_key: graded_scores}
+    assert result["classification_errors"]["errors"] == [mismatch]
+    assert result["excluded_document_count"] == 1
+
+
 @pytest.mark.unit
 def test_classification_errors_are_cached_and_served():
     """The aggregator's per-section class detail must survive the cache round-trip.

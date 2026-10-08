@@ -498,7 +498,18 @@ operations:
     groups: [Admin, Author]
     kind: mutation
     enforced_in: nested/api-resolvers/src/lambda/discovery_upload_resolver/index.py
-    args: { documentKey: "__nope__", bucket: "__nope__" }
+    # EMPTY rather than "__nope__", and the difference decides which control the
+    # matrix measures. This op now calls s3_targets.assert_bucket_allowed, which
+    # refuses a bucket outside this deployment's allow-list for EVERY caller — so a
+    # nonexistent bucket name made all four role cells read "DENIED but allowed",
+    # reporting the allow-list working as a group-check failure. A real allow-listed
+    # bucket is no better: the key then has to exist, and reading it sends a whole
+    # PDF to Bedrock. An empty required argument is refused by the resolver's own
+    # `if not document_key or not bucket` BEFORE the allow-list assertion, so an
+    # allowed role gets a clean 400 and no work is done, while a disallowed role
+    # still gets the dispatcher's 403 — authz.enforce runs before argument
+    # validation, so the probe's shape cannot weaken the denial cells.
+    args: { documentKey: "", bucket: "" }
   startMultiDocDiscovery:
     groups: [Admin, Author]
     kind: mutation
@@ -701,7 +712,14 @@ operations:
     scope_checked: true
     scope_enforced_in: _enforce_selection_scope
     enforced_in: nested/api-resolvers/src/lambda/test_set_resolver/index.py
-    args: { testSetId: "__nope__", objectKeys: ["__nope__.pdf"] }
+    # An EMPTY selection, for the same reason autoDetectSections takes empty
+    # arguments. `_enforce_selection_scope` refuses a key with no COMPLETED
+    # tracking row, which a nonexistent key never has, so every allowed cell read
+    # "DENIED but allowed" — the selection-scope check answering in place of the
+    # group floor. Satisfying that check needs a real completed document, and then
+    # the append is real work on a real test set. `_normalize_object_keys` rejects
+    # an empty list BEFORE the scope lookup, so an allowed role gets a clean 400.
+    args: { testSetId: "__nope__", objectKeys: [] }
   addDocumentsToTestSetFromUpload:
     groups: [Admin, Author]
     kind: mutation
@@ -847,7 +865,15 @@ operations:
     kind: read
     ownership: true
     enforced_in: nested/api-resolvers/src/lambda/get_agent_chat_messages_resolver/index.py
-    args: { sessionId: "__nope__" }
+    # EMPTY, not "__nope__". The ownership check below refuses a session the caller
+    # does not own, and nobody owns a nonexistent one, so all four allowed cells read
+    # "DENIED but allowed" — ownership answering in place of the group floor. (It read
+    # as a PASS until #1060 stopped the resolver reporting its own refusal as a 500
+    # and the harness stopped scoring a 5xx as "not denied": the cell was never
+    # measuring the floor, it was measuring a crash.) An empty sessionId is refused by
+    # the resolver's own `if not session_id` before ownership is consulted, so an
+    # allowed role gets a clean 400.
+    args: { sessionId: "" }
     note: >-
       ANY_GROUP, and of every operation tightened for #1033 this is the one with the
       least to argue about, because it is the only one whose existing control fails
