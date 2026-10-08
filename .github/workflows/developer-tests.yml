@@ -249,10 +249,19 @@ jobs:
       # rather than merely looking right. Omitting it on the GitLab side cost a red
       # job plus four tests that SKIPPED green, which is the worse half. The answer
       # is to give the job the tool, not to let the probe skip when it is absent.
+      # ⚠️ `cfn-lint: true` here is about PINNING, not availability. cfn-lint
+      # arrives transitively either way — moto declares `cfn-lint>=0.40.0` under
+      # several of its extras, and the first-party install pulls moto — so the
+      # ~10 cfn-lint-gated assertions in `lib/idp_sdk/tests/unit/` do run without
+      # it. What they would run against is whatever that open range resolves to,
+      # where the single pre-split job installed the pinned version before any
+      # suite started. Asking for the pin keeps those assertions measuring the
+      # same linter `make cfn-lint` uses, rather than coinciding with it by luck.
       - name: Set up the Python environment
         uses: ./.github/actions/python-env
         with:
           node: "true"
+          cfn-lint: "true"
 
       - name: Run package and Lambda test suites
         id: run-package-tests

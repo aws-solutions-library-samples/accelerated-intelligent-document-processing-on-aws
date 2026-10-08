@@ -317,6 +317,15 @@ package_tests:
     # basedpyright ships as an npm package, hence Node.
     - *node_setup
     - npm install -g basedpyright
+    # ⚠️ This is about PINNING, not availability. cfn-lint arrives transitively
+    # either way — moto declares `cfn-lint>=0.40.0` under several of its extras and
+    # the install above pulls moto — so the ~10 cfn-lint-gated assertions in
+    # `lib/idp_sdk/tests/unit/` do run without this line. What they would run
+    # against is whatever that open range resolves to, where the single pre-split
+    # job installed the pinned version before any suite started. Pinning keeps
+    # those assertions measuring the same linter `make cfn-lint` uses rather than
+    # coinciding with it by luck. Keep in step with CFN_LINT_VERSION.
+    - pip install 'cfn-lint==1.51.0'
 
   script:
     - make test-packages-cicd
