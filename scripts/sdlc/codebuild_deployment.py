@@ -4257,6 +4257,17 @@ def cleanup_stack(result):
 # ---------------------------------------------------------------------------
 
 
+def _is_authorization_error(exc):
+    """True if `exc` is an IAM authorization refusal rather than a real failure.
+
+    Matched on the error code, not the message, because the message wording
+    differs per service. EC2 answers `UnauthorizedOperation`; CloudFormation,
+    IAM and Cognito answer `AccessDenied` / `AccessDeniedException`.
+    """
+    code = getattr(exc, "response", {}).get("Error", {}).get("Code", "")
+    return code in ("UnauthorizedOperation", "AccessDenied", "AccessDeniedException")
+
+
 def _force_delete_vpc_stack_enis(vpc_stack_name):
     """Delete detached Lambda ENIs that block a test VPC stack's teardown.
 
@@ -4267,9 +4278,21 @@ def _force_delete_vpc_stack_enis(vpc_stack_name):
     account's VPC quota and rolling back every later apigw hosting test. This
     reaps the orphaned (unattached) ENIs so the stack delete can proceed.
 
-    Returns the number of ENIs deleted. Best effort — never raises.
+    Returns (deleted, denied): how many ENIs went away, and whether any attempt
+    failed on authorization. The second value matters because the two outcomes
+    read identically in the log ("swept 0") but mean opposite things: nothing to
+    sweep is fine, while `UnauthorizedOperation` means this role cannot clear
+    the blocker no matter how many times the reaper runs. That silent
+    equivalence let a missing `ec2:DeleteNetworkInterface` keep one stack stuck
+    for eleven weeks while every run paid two 15-minute waiters for it.
+
+    `denied` means the ENI *delete* was refused, and only that. Nothing else may
+    set it — see the handlers below.
+
+    Best effort — never raises.
     """
     deleted = 0
+    denied = False
     try:
         cf = boto3.client("cloudformation")
         outputs = {
@@ -4280,7 +4303,7 @@ def _force_delete_vpc_stack_enis(vpc_stack_name):
         }
         vpc_id = outputs.get("VpcId", "")
         if not vpc_id:
-            return 0
+            return 0, False
         ec2 = boto3.client("ec2")
         enis = ec2.describe_network_interfaces(
             Filters=[{"Name": "vpc-id", "Values": [vpc_id]}]
@@ -4297,19 +4320,63 @@ def _force_delete_vpc_stack_enis(vpc_stack_name):
                 deleted += 1
                 print(f"[{vpc_stack_name}]   force-deleted orphaned ENI {eni_id}")
             except Exception as e:  # noqa: BLE001
+                # `denied` is set HERE and nowhere else, because this is the only
+                # call whose refusal means "this role cannot delete an ENI". The
+                # caller treats it as proof the blocker is still attached and
+                # skips the retry on that basis, so a refusal from anything else
+                # must not reach it: a missing DescribeStacks or
+                # DescribeNetworkInterfaces would otherwise skip the delete on
+                # every build forever, and send the reader to a grant that is
+                # already present.
+                if _is_authorization_error(e):
+                    denied = True
                 print(f"[{vpc_stack_name}]   ⚠️ could not delete ENI {eni_id}: {e}")
     except Exception as e:  # noqa: BLE001
-        print(f"[{vpc_stack_name}]   ⚠️ ENI sweep failed: {e}")
-    return deleted
+        # A sweep that could not be read tells us nothing about the blocker, so
+        # it is not a refusal to delete. The error text names the action that
+        # failed; the retry proceeds on the chance the stack deletes anyway.
+        print(f"[{vpc_stack_name}]   ⚠️ ENI sweep could not run: {e}")
+    return deleted, denied
+
+
+def _stack_status(cf, stack_name):
+    """Current stack status, or "" if it cannot be read."""
+    try:
+        return cf.describe_stacks(StackName=stack_name)["Stacks"][0]["StackStatus"]
+    except Exception:  # noqa: BLE001
+        return ""
 
 
 def delete_apigw_test_vpc(vpc_stack_name):
     """Delete the test VPC stack, recovering from ENI-blocked DELETE_FAILED.
 
-    First attempt is a plain stack delete. If it fails (almost always because
-    orphaned Lambda ENIs hold the subnets/SG), sweep the detached ENIs and
-    retry once — this stops the VPC leak that otherwise exhausts the account's
-    VPC quota. Best effort — never raises.
+    Sweeping the orphaned ENIs is the only mechanism that actually frees the
+    VPC, so the whole function is arranged around getting to the sweep cheaply
+    and saying clearly when it could not run.
+
+    A stack found already in DELETE_FAILED does not get a plain delete first:
+    re-issuing it re-attempts the same resources and fails the same way, so the
+    waiter is spent to learn nothing. The cost of getting that wrong is
+    measured — one stack sat DELETE_FAILED for eleven weeks and the
+    plain-delete-first order paid two 15-minute waiters for it at the head of
+    nearly every pipeline run, which is the integration stage's 56→77min step
+    change.
+
+    RetainResources is not an option here, and the reason is worth stating so it
+    is not retried. Retaining the resources that failed means retaining the
+    security group and the private subnets, which are children of the VPC;
+    CloudFormation then attempts the VPC and DeleteVpc fails with
+    DependencyViolation because those children still exist. Retaining the VPC as
+    well does delete the stack record, and leaves the VPC alive with no stack —
+    invisible to every reaper here, because cleanup_stale_apigw_test_vpcs finds
+    leaks by listing stacks. A DELETE_FAILED stack is ugly and discoverable,
+    which is the better of the two states.
+
+    Returns True if the stack is gone, False if it was left stuck. The caller
+    reports those separately: a reaper that prints the same summary either way
+    is the defect this function was changed to fix, one level up.
+
+    Best effort — never raises.
     """
     print(f"[{vpc_stack_name}] Deleting test VPC...")
     cf = boto3.client("cloudformation")
@@ -4320,28 +4387,93 @@ def delete_apigw_test_vpc(vpc_stack_name):
             StackName=vpc_stack_name, WaiterConfig={"MaxAttempts": 60, "Delay": 15}
         )
 
-    try:
-        _attempt()
-        print(f"[{vpc_stack_name}] ✅ Test VPC deleted")
-        return
-    except Exception as e:  # noqa: BLE001
+    already_stuck = _stack_status(cf, vpc_stack_name) == "DELETE_FAILED"
+    if already_stuck:
         print(
-            f"[{vpc_stack_name}] ⚠️ First delete failed ({e}); sweeping ENIs and retrying"
+            f"[{vpc_stack_name}] already DELETE_FAILED — skipping the plain delete "
+            f"(it would re-attempt the same resources) and sweeping ENIs first"
+        )
+    else:
+        try:
+            _attempt()
+            print(f"[{vpc_stack_name}] ✅ Test VPC deleted")
+            return True
+        except Exception as e:  # noqa: BLE001
+            print(
+                f"[{vpc_stack_name}] ⚠️ First delete failed ({e}); "
+                f"sweeping ENIs and retrying"
+            )
+        # Give the ENIs a moment to detach before sweeping.
+        time.sleep(30)
+
+    swept, denied = _force_delete_vpc_stack_enis(vpc_stack_name)
+    print(f"[{vpc_stack_name}] swept {swept} orphaned ENI(s)")
+    if swept:
+        # Deleting an ENI does not release its security-group dependency
+        # synchronously, so a delete issued immediately after the sweep can
+        # still fail on the group the sweep just freed — and that costs the full
+        # waiter, not 30 seconds. This window is the same eventual consistency
+        # case 2 below describes; settling here is what stops the stack being
+        # carried to another run.
+        time.sleep(30)
+    if denied:
+        # A permission gap, not a transient. Say so in the words that identify
+        # it, because the symptom ("swept 0") is identical to having nothing to
+        # sweep and the cause is not in this repository's code at all.
+        print(
+            f"[{vpc_stack_name}] 🔑 HARNESS PERMISSION GAP: the ENI sweep was "
+            f"refused. The CodeBuild role is missing the EC2 network-interface "
+            f"teardown grant from CodeBuildEC2VPCPolicy in "
+            f"scripts/sdlc/cfn/codepipeline-s3.yml — check that policy rather "
+            f"than the conditional one on CodeBuildRole, whose DeployInVPC "
+            f"condition is false whenever VpcId is empty. Until it is granted "
+            f"this stack cannot be cleared from here at all."
         )
 
-    # Retry path: orphaned Lambda ENIs are the usual culprit. Give them a
-    # moment to detach, sweep, then delete again.
-    time.sleep(30)
-    swept = _force_delete_vpc_stack_enis(vpc_stack_name)
-    print(f"[{vpc_stack_name}] swept {swept} orphaned ENI(s); retrying delete")
+    # Skip the retry on BOTH conjuncts below and on nothing less: the sweep was
+    # refused, AND the stack was already DELETE_FAILED when this run started.
+    # Together those mean the blocking ENIs are still attached to a stack whose
+    # delete has already been tried against them, so the attempt cannot
+    # succeed. Either one alone must still retry — a first-time DELETE_FAILED
+    # may clear on a second attempt even if the sweep was refused, and a refused
+    # sweep says nothing about a stack that was healthy a moment ago.
+    #
+    # In particular the skip must never key on the sweep having found nothing.
+    # `swept == 0` has three causes and only the first wants skipping:
+    #
+    #   1. the sweep was refused, so any blocking ENI is still attached.
+    #   2. ENIs were the blocker and an earlier run already deleted them, but
+    #      that run's own retry failed because releasing the security-group
+    #      dependency is eventually consistent. Nothing is left to sweep and the
+    #      retry is what finishes the job.
+    #   3. the stack is DELETE_FAILED for a reason that was never ENIs — a
+    #      DeleteNatGateway, ReleaseAddress or DeleteVpcEndpoints failure — where
+    #      a per-run retry eventually clears a transient.
+    #
+    # Cases 2 and 3 have nothing of this mechanism's kind to find, and skipping
+    # them would make this function a no-op on every build while the VPC stayed
+    # leaked — the outcome it exists to prevent. A per-run waiter is the right
+    # price for avoiding that.
+    if already_stuck and denied:
+        print(
+            f"[{vpc_stack_name}] ❌ the sweep was refused and the stack was "
+            f"already DELETE_FAILED, so the blocking ENIs are still there and a "
+            f"retry would re-attempt the same resources. Not spending the "
+            f"waiter; the stack stays discoverable for the next run."
+        )
+        return False
+
     try:
         _attempt()
         print(f"[{vpc_stack_name}] ✅ Test VPC deleted (after ENI sweep)")
+        return True
     except Exception as e:  # noqa: BLE001
         print(
-            f"[{vpc_stack_name}] ❌ Test VPC still failed to delete after ENI sweep: {e}. "
-            f"Startup reaper will retry on the next run."
+            f"[{vpc_stack_name}] ❌ Test VPC still failed to delete after ENI "
+            f"sweep: {e}. The stack stays DELETE_FAILED and discoverable; the "
+            f"startup reaper will retry on the next run."
         )
+        return False
 
 
 # Only reap *-apigw-vpc stacks older than this. A manual/local PRIVATE-VPC
@@ -4405,10 +4537,23 @@ def cleanup_stale_apigw_test_vpcs():
             )
             return
 
+        # Count the two outcomes apart. Printing "Reaped N" for everything this
+        # reaper merely *attempted* is how a stack that cannot be deleted reads
+        # as a stack that was: the summary line is the only part of this a human
+        # looks at, and it said success on every one of the eleven weeks the
+        # leak survived.
+        reaped, stuck = [], []
         for name in stale:
             print(f"[{name}] reaping stale test VPC stack...")
-            delete_apigw_test_vpc(name)
-        print(f"✅ Reaped {len(stale)} stale apigw test VPC stack(s)")
+            (reaped if delete_apigw_test_vpc(name) else stuck).append(name)
+        if reaped:
+            print(f"✅ Reaped {len(reaped)} stale apigw test VPC stack(s)")
+        if stuck:
+            print(
+                f"❌ {len(stuck)} stale apigw test VPC stack(s) left stuck: "
+                f"{', '.join(stuck)}. Each still holds a VPC against the "
+                f"account's limit of 5 and needs a human."
+            )
     except Exception as e:  # noqa: BLE001
         print(f"⚠️ Stale apigw VPC cleanup failed: {e}")
 
