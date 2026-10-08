@@ -461,9 +461,11 @@ the head. It does so only when all of these hold:
 - the requested revision equals both `PublishedRevision` and `LatestRevision`;
 - its index entry still exists;
 - the head is proven to hold it, by either:
-  - its `storedHash` — a hash of the head's stored content, excluding metadata,
-    that `_write_record()` returns and every revision a save publishes records —
-    matching the head now; or
+  - its `storedHash` matching the head now. Every revision a save publishes
+    records one: a hash of its configuration as the head stores it, excluding
+    metadata. For a revision cut from what the save wrote, that is the hash
+    `_write_record()` returns; for the pre-history backfill an unchanged first
+    save publishes, it is derived from the backfill's own body (below); or
   - for revisions cut before `storedHash` existed, the head's `UpdatedAt` being no
     later than the revision's `createdAt`.
 
@@ -492,6 +494,14 @@ save wrote when it stores something the replaced head did not: `True == 1`, so
 swapping one for the other inside a class counts as unchanged, yet the head then
 stores `"1"` where the revision held `true`.
 
+The first save after upgrading into revision history follows the same rule. It
+cuts the configuration it replaces as a pre-history backfill, and when it changes
+nothing it publishes that backfill instead of cutting a second revision. The
+backfill's `storedHash` is derived from the backfill's own body
+(`_stored_hash_of_body()`), not taken from the head the save wrote. Where that save
+stored the configuration differently, a pinned read of the backfill therefore
+raises once its body expires, instead of being served from the head.
+
 So once a body has expired, an unchanged save keeps the revision servable when the
 head it replaces was proven, including across a release that stores the same
 configuration differently, but it cannot prove a head that was not. A revision cut
@@ -511,6 +521,16 @@ cannot save either: `default` can still be changed with Save as default or
 stack update that changes it, with an editable copy to process its documents under
 until then. The test runner's refusal at submit carries the same remedy, followed
 by an instruction to resubmit the run pinned to the new revision once one exists.
+
+The legacy rule can also accept a head it should not, for one kind of revision. It
+accepts the head the revision's own save wrote, and a pre-history backfill that an
+earlier release published on an unchanged save is the one revision whose own save
+can have written a different configuration, as with the `True` and `1` above. Any
+save while the backfill's body still exists closes this: one that changes the
+configuration cuts a new revision, and an unchanged one records the backfill's own
+hash, so that head is refused once the body expires. Once the body has expired with
+neither, nothing can tell the head from the backfill, and a pinned read of the
+backfill is served from the head.
 
 The rebuild writes nothing back. Pipeline roles can only read `config_revisions/`,
 so each pinned read of an expired published body is rebuilt again and logged at
