@@ -31,7 +31,7 @@ record of its last run.
 | [2. Static gates](#2-static-gates-lint-types-and-hand-written-scanners) | no | ✅ both CIs | `make lint-cicd` · `make typecheck` |
 | [3. Web UI unit tests](#3-web-ui-unit-tests) | no | ✅ both CIs | `make ui-test` |
 | [4. Security scanning](#4-security-scanning-sast-and-sca) | no | ✅ both CIs | `make srt-scan` · `make dep-audit` |
-| [5. Integration smoke suite](#5-integration-smoke-suite-ci-only) | **yes** | ⚠️ GitLab only | pipeline `integration_tests` |
+| [5. Integration smoke suite](#5-integration-smoke-suite-ci-only) | **yes** | ⚠️ GitLab **nightly** + manual button — not a merge gate | pipeline `integration_tests` |
 | [6. Live-stack tiers](#6-live-stack-tiers-manual) | **yes** | ❌ manual | see the table |
 | [7. Benchmarks](#7-benchmarks) | **yes** | ❌ manual | `make benchmark-release` |
 
@@ -416,6 +416,21 @@ batch processing, Test Studio evaluation, agentic extraction on a large table,
 single- and multi-document discovery, test comparison, API RBAC, IAM permissions
 boundary, and pipeline hooks. It needs AWS credentials, so it is **GitLab-only**: a
 change merged through a GitHub pull request has not run it.
+
+⚠️ **It runs nightly, not per-merge-request, so a green MR pipeline does not mean
+the deploy works.** It was automatic on `develop` and on non-Draft MRs, which put
+62–113 minutes onto every pipeline after a 45-minute check stage. It is now the
+nightly schedule plus a **manual play button**, available on any MR targeting
+`develop` and on a `develop` pipeline.
+
+Two things follow. **Click the button before merging anything that touches the
+deploy path** — `template.yaml`, `publish.py`, `patterns/`, `nested/`, `src/`,
+`lib/`, `config_library/`, `feature-platform/`, `iam-roles/`, `scripts/` — because
+it is the only pre-merge signal this tier has left. And because a breaking change
+can merge and surface a night later with other merges on top of it, **a nightly
+failure is triaged by bisecting the day's merges**, not by reading the pipeline's
+own commit. The trade is written out in full in
+[`scripts/sdlc/docs/CI_TEST_COVERAGE.md`](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/blob/develop/scripts/sdlc/docs/CI_TEST_COVERAGE.md).
 
 Per-step detail, what each step asserts, and how to reproduce a single step by hand
 are in [`scripts/sdlc/docs/CI_TEST_COVERAGE.md`](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/blob/develop/scripts/sdlc/docs/CI_TEST_COVERAGE.md).

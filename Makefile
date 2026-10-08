@@ -633,6 +633,39 @@ typecheck-pr: ## Fast local type check of only the files changed vs TARGET_BRANC
 # `test-cicd -C lib/idp_common_pkg`, and registering a root above buys nothing on
 # a pull request until it is named in one of those two. That is what
 # scripts/tests/test_src_lambda_tests_in_ci.py enforces, over the whole tree.
+
+# Distribute the LARGE suites in `test-packages-cicd` across cores. Same variable
+# name and same default as lib/idp_common_pkg/Makefile, for the same reason —
+# `pytest-xdist` is a declared `[test]` dependency and nothing here passed `-n`,
+# so every invocation below ran serial on a 16-vCPU runner.
+#
+# Measured in GitLab CI (size:2xlarge arm64), the two suites that dominate the
+# target:
+#
+#     scripts/tests      3858 tests, serial  640s   ->  83s parallel (7.7x)
+#     lib/idp_sdk        2663 tests, serial  441s
+#
+# These suites shell out to ruff, basedpyright, cfn-lint and git, so they are
+# near-perfectly parallel and the win is close to the core count.
+#
+# ⚠️ Applied PER-SUITE rather than to every invocation, because xdist is not free:
+# spinning up N workers costs a second or two before the first test runs, which is
+# longer than most of these invocations take — a majority finish in under a second.
+# The rule is **above 20s measured in CI**, which selects the nine that carry
+# $(PYTEST_XDIST) today. Re-derive it by TIMING, not by counting tests: the test
+# count is a poor proxy here, `benchmarks/tests` runs 454 tests in 5s while
+# `src/lambda/complete_section_review` takes 7x longer for 115.
+#
+# ⚠️ Count the `$(PYTEST_HERMETIC)` lines, not the `@echo` headers, if you need to
+# know how many invocations this recipe has. There are far more invocations than
+# echoes — most echoes introduce a GROUP, because suites that each define a module
+# named `index` need one invocation apiece — and a count taken off the echoes is
+# wrong by more than a factor of two.
+#
+# `PYTEST_XDIST=` restores serial execution everywhere, for a debugging run where
+# interleaved worker output breaks `-s`, `--pdb` and live logging.
+PYTEST_XDIST ?= -n auto
+
 test: ## Run every non-integration test suite (auto-discovered; see scripts/run_all_tests.py)
 	$(PYTHON) scripts/run_all_tests.py
 
@@ -644,13 +677,13 @@ test-list: ## List the discovered test roots (run vs quarantined) without runnin
 
 test-packages-cicd: ## CI-safe: run the package/Lambda suites NOT covered by idp_common_pkg test-cicd (all green headless, no AWS)
 	@echo "Running idp_cli_pkg tests..."
-	cd lib/idp_cli_pkg && $(PYTEST_HERMETIC) -q -p no:cacheprovider
+	cd lib/idp_cli_pkg && $(PYTEST_HERMETIC) $(PYTEST_XDIST) -q -p no:cacheprovider
 	@echo "Running idp_sdk tests (not integration)..."
-	cd lib/idp_sdk && $(PYTEST_HERMETIC) -m "not integration" -q -p no:cacheprovider
+	cd lib/idp_sdk && $(PYTEST_HERMETIC) $(PYTEST_XDIST) -m "not integration" -q -p no:cacheprovider
 	@echo "Running idp_feature_sdk tests..."
-	cd lib/idp_feature_sdk && $(PYTEST_HERMETIC) -q -p no:cacheprovider
+	cd lib/idp_feature_sdk && $(PYTEST_HERMETIC) $(PYTEST_XDIST) -q -p no:cacheprovider
 	@echo "Running feature platform tests..."
-	cd feature-platform/main-stack-extensions && $(PYTEST_HERMETIC) -q -p no:cacheprovider
+	cd feature-platform/main-stack-extensions && $(PYTEST_HERMETIC) $(PYTEST_XDIST) -q -p no:cacheprovider
 	cd feature-platform/feature-template/feature-api && $(PYTEST_HERMETIC) -q -p no:cacheprovider
 	@echo "Running pii-anonymizer tests (feature API RBAC + hook re-entrancy/halt + UI deployer)..."
 	@# These three ran in NO CI gate until #974. `make test` picked them up via
@@ -663,7 +696,7 @@ test-packages-cicd: ## CI-safe: run the package/Lambda suites NOT covered by idp
 	@echo "Running seller entitlement service tests (incl. template-security + payload fuzz)..."
 	cd feature-platform/seller-entitlement-service && $(PYTEST_HERMETIC) tests -q -p no:cacheprovider
 	@echo "Running capacity planning Lambda tests..."
-	cd src/lambda/calculate_capacity && $(PYTEST_HERMETIC) -q -p no:cacheprovider
+	cd src/lambda/calculate_capacity && $(PYTEST_HERMETIC) $(PYTEST_XDIST) -q -p no:cacheprovider
 	@echo "Running circuit breaker + queue processor + workflow tracker Lambda tests (slot ownership, counter reconcile + negative repair, decrement floor/idempotency #915 #916, config pin, idempotent start #904)..."
 	$(PYTEST_HERMETIC) -q -p no:cacheprovider \
 	    src/lambda/circuit_breaker_manager \
@@ -699,8 +732,8 @@ test-packages-cicd: ## CI-safe: run the package/Lambda suites NOT covered by idp
 	@# the wrapper takes the region away rather than handing one over. See #988.
 	cd src/lambda/api_handler && $(PYTEST_HERMETIC) -q -p no:cacheprovider
 	cd src/lambda/batch_pre_processor && $(PYTEST_HERMETIC) -q -p no:cacheprovider
-	cd src/lambda/complete_section_review && $(PYTEST_HERMETIC) -q -p no:cacheprovider
-	cd src/lambda/external_idp_group_mapping && $(PYTEST_HERMETIC) -q -p no:cacheprovider
+	cd src/lambda/complete_section_review && $(PYTEST_HERMETIC) $(PYTEST_XDIST) -q -p no:cacheprovider
+	cd src/lambda/external_idp_group_mapping && $(PYTEST_HERMETIC) $(PYTEST_XDIST) -q -p no:cacheprovider
 	cd src/lambda/finetuning_deployment_handler && $(PYTEST_HERMETIC) -q -p no:cacheprovider
 	cd src/lambda/job_tracker && $(PYTEST_HERMETIC) -q -p no:cacheprovider
 	cd src/lambda/save_reporting_data && $(PYTEST_HERMETIC) -q -p no:cacheprovider
@@ -797,9 +830,9 @@ test-packages-cicd: ## CI-safe: run the package/Lambda suites NOT covered by idp
 	@echo "Validating config library files..."
 	$(PYTEST_HERMETIC) config_library/test_config_library.py -q -p no:cacheprovider
 	@echo "Running SDLC harness tests (incl. IAM trust-policy partition guards)..."
-	$(PYTEST_HERMETIC) scripts/sdlc/tests -q -p no:cacheprovider
+	$(PYTEST_HERMETIC) $(PYTEST_XDIST) scripts/sdlc/tests -q -p no:cacheprovider
 	@echo "Running repo-script tests (Python ARN-partition gate)..."
-	$(PYTEST_HERMETIC) scripts/tests -q -p no:cacheprovider
+	$(PYTEST_HERMETIC) $(PYTEST_XDIST) scripts/tests -q -p no:cacheprovider
 	@echo "Running SRT gate tests (CI-visibility split + suppression baseline hygiene)..."
 	$(PYTEST_HERMETIC) scripts/srt/tests -q -p no:cacheprovider
 	@echo "Running dependency-audit gate tests (OSV allowlist + .ash.yaml hygiene)..."
