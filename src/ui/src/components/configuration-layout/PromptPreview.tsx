@@ -507,6 +507,12 @@ export const simpleIntegratedDowngraded = (
 //   * Opus 5.5    — takes a toolConfig and answers `toolChoice: auto` normally, but
 //                   rejects `any`/`tool` with a 400. The only one of the three that
 //                   fails on FORCING rather than on tool use.
+//
+// Claude Haiku 5.5 is deliberately NOT a fourth exclusion. It shares Opus 5.5's
+// sampling-parameter surface and its effort control, so "another 5.5 model" is the
+// natural guess — but it accepts both forcing modes and emits the toolUse block
+// (verified live on Converse, us.anthropic.claude-haiku-5-5, us-west-2,
+// 2026-10-08). Mirrors FORCED_TOOL_CHOICE_UNSUPPORTED in idp_common/bedrock/client.py.
 const modelCanBeForced = (modelId: unknown): boolean => {
   if (typeof modelId !== 'string' || !modelId) {
     // Unknown model: assume the common case rather than hiding a tab the user

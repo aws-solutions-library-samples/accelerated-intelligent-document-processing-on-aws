@@ -516,6 +516,13 @@ _STANDARD_VISUAL_TOKEN_CAP = 1568
 # "claude-opus-5-5" contains "claude-opus-5" — that is the intended answer, not an
 # accident: Opus 5.5 shares the Opus 4.7+ tokenizer and vision tier.
 # Sonnet 4.6, Haiku 4.5 and the 3.x family are standard tier.
+# Haiku 5.5 is high resolution and Haiku 4.5 is not, so the tier does not follow
+# from the family name. Measured, not assumed: one 2550x3301 page costs 4,770 real
+# input tokens on us.anthropic.claude-haiku-5-5 against 1,542 on
+# us.anthropic.claude-haiku-4-5-20251001-v1:0, with Sonnet 5 at 4,768 for the same
+# image (us-west-2, 2026-10-08). Getting this wrong understates an image-heavy
+# Haiku 5.5 request by ~3x, which is the direction that reads as "plenty of
+# context left" right up to the rejection.
 # Deliberately a separate statement of the model set from
 # client._CLAUDE_4_7_BASE_NAMES, not a derivation of it: "rejects sampling
 # parameters" and "tokenizes images on the high-resolution tier" are different
@@ -523,7 +530,9 @@ _STANDARD_VISUAL_TOKEN_CAP = 1568
 # a model added to one must be considered for the other rather than silently
 # inheriting a default (#994). The pattern is a substring search so it matches
 # region prefixes (``us.``), the ``:1m`` suffix and inference-profile ARNs alike.
-_HIGH_RES_MODEL_PATTERN = re.compile(r"claude-(opus-4-[78]|opus-5|sonnet-5)", re.I)
+_HIGH_RES_MODEL_PATTERN = re.compile(
+    r"claude-(opus-4-[78]|opus-5|sonnet-5|haiku-5-5)", re.I
+)
 # Non-Claude families tokenize images differently (Nova budgets by payload size,
 # not patches), so they keep the deliberately generous legacy figure: this
 # estimate only drives a warning and a failure message, and over-stating is the

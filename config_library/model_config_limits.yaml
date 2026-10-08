@@ -109,6 +109,33 @@ model_limits:
     reference: "https://docs.anthropic.com/claude/docs/models-overview#model-comparison"
 
   # ---------------------------------------------------------------------------
+  # Anthropic Claude Haiku 5.5 (extended output, 128K) — needs its own entry
+  # ---------------------------------------------------------------------------
+  # It cannot inherit from the Claude 4.x entry below: that one caps output at
+  # 64,000 and Haiku 5.5's is 128,000, so falling through would halve the output
+  # budget. It also does not collide with any pattern above, because every one of
+  # those requires a literal '-4' or names opus/sonnet.
+  #
+  # ⚠️ max_input_tokens is 200,000 while the model's real context window is
+  # 1,000,000, and unlike every other Claude here there is no ':1m' id to opt into
+  # — the 1M window is this model's default. The cap is deliberate and it is a
+  # COST decision, not a capability one: the AWS price list carries a separate
+  # 'long_ctx' band for Haiku 5.5 at 5x the standard rate on every token type
+  # ($0.55/MTok input against $0.11), config_library/pricing.yaml carries one flat
+  # rate per model, and this value is what auto-sizing derives shard budgets from.
+  # Sizing to 1M would therefore build shards that bill at 5x and report at 1x.
+  # The threshold at which the band applies is not published in the model card or
+  # in the price list SKU, so it is unverified here; 200,000 is the figure every
+  # other Claude entry in this file uses and is below any plausible threshold.
+  # Raising it needs that threshold confirmed AND a long-context rate in
+  # pricing.yaml first.
+  - pattern: "claude-haiku-5-5"
+    max_output_tokens: 128000
+    max_input_tokens: 200000
+    description: "Claude Haiku 5.5 with 128K max output tokens (1M context, sized to 200K — see note)"
+    reference: "https://docs.aws.amazon.com/bedrock/latest/userguide/model-card-anthropic-claude-haiku-5-5.html"
+
+  # ---------------------------------------------------------------------------
   # Anthropic Claude Sonnet 4.6 / Opus 4.6 (extended output, 128K)
   # ---------------------------------------------------------------------------
   - pattern: "claude-sonnet-4-6"

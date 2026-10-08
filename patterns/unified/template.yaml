@@ -492,6 +492,7 @@ Resources:
                   - "global.amazon.nova-2-lite-v1:0:priority"
                   - "global.amazon.nova-2-lite-v1:0:flex"
                   - "us.anthropic.claude-haiku-4-5-20251001-v1:0"
+                  - "us.anthropic.claude-haiku-5-5"
                   - "us.anthropic.claude-sonnet-4-5-20250929-v1:0"
                   - "us.anthropic.claude-sonnet-4-6"
                   - "us.anthropic.claude-sonnet-4-6:1m"
@@ -519,6 +520,7 @@ Resources:
                   - "eu.amazon.nova-2-lite-v1:0:priority"
                   - "eu.amazon.nova-2-lite-v1:0:flex"
                   - "eu.anthropic.claude-haiku-4-5-20251001-v1:0"
+                  - "eu.anthropic.claude-haiku-5-5"
                   - "eu.anthropic.claude-sonnet-4-5-20250929-v1:0"
                   - "eu.anthropic.claude-sonnet-4-6"
                   - "eu.anthropic.claude-sonnet-4-6:1m"
@@ -544,6 +546,7 @@ Resources:
                   - "nvidia.nemotron-nano-12b-v2"
                   - "global.amazon.nova-2-lite-v1:0"
                   - "global.anthropic.claude-haiku-4-5-20251001-v1:0"
+                  - "global.anthropic.claude-haiku-5-5"
                   - "global.anthropic.claude-sonnet-4-5-20250929-v1:0"
                   - "global.anthropic.claude-sonnet-4-6:1m"
                   - "global.anthropic.claude-sonnet-5"
@@ -710,6 +713,7 @@ Resources:
                     - "us.amazon.nova-pro-v1:0"
                     - "us.amazon.nova-2-lite-v1:0"
                     - "us.anthropic.claude-haiku-4-5-20251001-v1:0"
+                    - "us.anthropic.claude-haiku-5-5"
                     - "us.anthropic.claude-sonnet-4-5-20250929-v1:0"
                     - "us.anthropic.claude-sonnet-4-6"
                     - "us.anthropic.claude-sonnet-4-6:1m"
@@ -737,6 +741,7 @@ Resources:
                     - "eu.amazon.nova-pro-v1:0"
                     - "eu.amazon.nova-2-lite-v1:0"
                     - "eu.anthropic.claude-haiku-4-5-20251001-v1:0"
+                    - "eu.anthropic.claude-haiku-5-5"
                     - "eu.anthropic.claude-sonnet-4-5-20250929-v1:0"
                     - "eu.anthropic.claude-sonnet-4-6"
                     - "eu.anthropic.claude-sonnet-4-6:1m"
@@ -755,6 +760,7 @@ Resources:
                     - "eu.anthropic.claude-opus-5-5:1m"
                     - "global.amazon.nova-2-lite-v1:0"
                     - "global.anthropic.claude-haiku-4-5-20251001-v1:0"
+                    - "global.anthropic.claude-haiku-5-5"
                     - "global.anthropic.claude-sonnet-4-5-20250929-v1:0"
                     - "global.anthropic.claude-sonnet-4-6"
                     - "global.anthropic.claude-sonnet-4-6:1m"
@@ -1033,6 +1039,7 @@ Resources:
                   - "global.amazon.nova-2-lite-v1:0:priority"
                   - "global.amazon.nova-2-lite-v1:0:flex"
                   - "us.anthropic.claude-haiku-4-5-20251001-v1:0"
+                  - "us.anthropic.claude-haiku-5-5"
                   - "us.anthropic.claude-sonnet-4-5-20250929-v1:0"
                   - "us.anthropic.claude-sonnet-4-6"
                   - "us.anthropic.claude-sonnet-4-6:1m"
@@ -1060,6 +1067,7 @@ Resources:
                   - "eu.amazon.nova-2-lite-v1:0:priority"
                   - "eu.amazon.nova-2-lite-v1:0:flex"
                   - "eu.anthropic.claude-haiku-4-5-20251001-v1:0"
+                  - "eu.anthropic.claude-haiku-5-5"
                   - "eu.anthropic.claude-sonnet-4-5-20250929-v1:0"
                   - "eu.anthropic.claude-sonnet-4-6"
                   - "eu.anthropic.claude-sonnet-4-6:1m"
@@ -1085,6 +1093,7 @@ Resources:
                   - "nvidia.nemotron-nano-12b-v2"
                   - "global.amazon.nova-2-lite-v1:0"
                   - "global.anthropic.claude-haiku-4-5-20251001-v1:0"
+                  - "global.anthropic.claude-haiku-5-5"
                   - "global.anthropic.claude-sonnet-4-5-20250929-v1:0"
                   - "global.anthropic.claude-sonnet-4-6"
                   - "global.anthropic.claude-sonnet-4-6:1m"
@@ -1527,6 +1536,7 @@ Resources:
                       - "global.amazon.nova-2-lite-v1:0:priority"
                       - "global.amazon.nova-2-lite-v1:0:flex"
                       - "us.anthropic.claude-haiku-4-5-20251001-v1:0"
+                      - "us.anthropic.claude-haiku-5-5"
                       - "us.anthropic.claude-sonnet-4-5-20250929-v1:0"
                       - "us.anthropic.claude-sonnet-4-6"
                       - "us.anthropic.claude-sonnet-4-6:1m"
@@ -1554,6 +1564,7 @@ Resources:
                       - "eu.amazon.nova-2-lite-v1:0:priority"
                       - "eu.amazon.nova-2-lite-v1:0:flex"
                       - "eu.anthropic.claude-haiku-4-5-20251001-v1:0"
+                      - "eu.anthropic.claude-haiku-5-5"
                       - "eu.anthropic.claude-sonnet-4-5-20250929-v1:0"
                       - "eu.anthropic.claude-sonnet-4-6"
                       - "eu.anthropic.claude-sonnet-4-6:1m"
@@ -1578,6 +1589,7 @@ Resources:
                       - "google.gemma-3-27b-it"
                       - "nvidia.nemotron-nano-12b-v2"
                       - "global.anthropic.claude-haiku-4-5-20251001-v1:0"
+                      - "global.anthropic.claude-haiku-5-5"
                       - "global.anthropic.claude-sonnet-4-5-20250929-v1:0"
                       - "global.anthropic.claude-sonnet-4-6"
                       - "global.anthropic.claude-sonnet-4-6:1m"
@@ -1668,6 +1680,7 @@ Resources:
                   - "global.amazon.nova-2-lite-v1:0:priority"
                   - "global.amazon.nova-2-lite-v1:0:flex"
                   - "us.anthropic.claude-haiku-4-5-20251001-v1:0"
+                  - "us.anthropic.claude-haiku-5-5"
                   - "us.anthropic.claude-sonnet-4-5-20250929-v1:0"
                   - "us.anthropic.claude-sonnet-4-6"
                   - "us.anthropic.claude-sonnet-4-6:1m"
@@ -1695,6 +1708,7 @@ Resources:
                   - "eu.amazon.nova-2-lite-v1:0:priority"
                   - "eu.amazon.nova-2-lite-v1:0:flex"
                   - "eu.anthropic.claude-haiku-4-5-20251001-v1:0"
+                  - "eu.anthropic.claude-haiku-5-5"
                   - "eu.anthropic.claude-sonnet-4-5-20250929-v1:0"
                   - "eu.anthropic.claude-sonnet-4-6"
                   - "eu.anthropic.claude-sonnet-4-6:1m"
@@ -1720,6 +1734,7 @@ Resources:
                   - "nvidia.nemotron-nano-12b-v2"
                   - "global.amazon.nova-2-lite-v1:0"
                   - "global.anthropic.claude-haiku-4-5-20251001-v1:0"
+                  - "global.anthropic.claude-haiku-5-5"
                   - "global.anthropic.claude-sonnet-4-5-20250929-v1:0"
                   - "global.anthropic.claude-sonnet-4-6"
                   - "global.anthropic.claude-sonnet-4-6:1m"
@@ -1872,6 +1887,7 @@ Resources:
                         "us.amazon.nova-pro-v1:0",
                         "us.amazon.nova-2-lite-v1:0", "us.amazon.nova-2-lite-v1:0:priority", "us.amazon.nova-2-lite-v1:0:flex", "global.amazon.nova-2-lite-v1:0", "global.amazon.nova-2-lite-v1:0:priority", "global.amazon.nova-2-lite-v1:0:flex",
                         "us.anthropic.claude-haiku-4-5-20251001-v1:0",
+                        "us.anthropic.claude-haiku-5-5",
                         "us.anthropic.claude-sonnet-4-5-20250929-v1:0",
                         "us.anthropic.claude-sonnet-4-6",
                         "us.anthropic.claude-sonnet-4-6:1m",
@@ -1897,6 +1913,7 @@ Resources:
                         "eu.amazon.nova-pro-v1:0",
                         "eu.amazon.nova-2-lite-v1:0", "eu.amazon.nova-2-lite-v1:0:priority", "eu.amazon.nova-2-lite-v1:0:flex",
                         "eu.anthropic.claude-haiku-4-5-20251001-v1:0",
+                        "eu.anthropic.claude-haiku-5-5",
                         "eu.anthropic.claude-sonnet-4-5-20250929-v1:0",
                         "eu.anthropic.claude-sonnet-4-6",
                         "eu.anthropic.claude-sonnet-4-6:1m",
@@ -1922,6 +1939,7 @@ Resources:
                         "nvidia.nemotron-nano-12b-v2",
                         "global.amazon.nova-2-lite-v1:0",
                         "global.anthropic.claude-haiku-4-5-20251001-v1:0",
+                        "global.anthropic.claude-haiku-5-5",
                         "global.anthropic.claude-sonnet-4-5-20250929-v1:0",
                         "global.anthropic.claude-sonnet-4-6",
                         "global.anthropic.claude-sonnet-4-6:1m",
@@ -2135,6 +2153,7 @@ Resources:
                     "us.amazon.nova-pro-v1:0",
                     "us.amazon.nova-2-lite-v1:0", "us.amazon.nova-2-lite-v1:0:priority", "us.amazon.nova-2-lite-v1:0:flex", "global.amazon.nova-2-lite-v1:0", "global.amazon.nova-2-lite-v1:0:priority", "global.amazon.nova-2-lite-v1:0:flex",
                     "us.anthropic.claude-haiku-4-5-20251001-v1:0",
+                    "us.anthropic.claude-haiku-5-5",
                     "us.anthropic.claude-sonnet-4-5-20250929-v1:0",
                     "us.anthropic.claude-sonnet-4-6",
                     "us.anthropic.claude-sonnet-4-6:1m",
@@ -2160,6 +2179,7 @@ Resources:
                     "eu.amazon.nova-pro-v1:0",
                     "eu.amazon.nova-2-lite-v1:0", "eu.amazon.nova-2-lite-v1:0:priority", "eu.amazon.nova-2-lite-v1:0:flex",
                     "eu.anthropic.claude-haiku-4-5-20251001-v1:0",
+                    "eu.anthropic.claude-haiku-5-5",
                     "eu.anthropic.claude-sonnet-4-5-20250929-v1:0",
                     "eu.anthropic.claude-sonnet-4-6",
                     "eu.anthropic.claude-sonnet-4-6:1m",
@@ -2185,6 +2205,7 @@ Resources:
                     "nvidia.nemotron-nano-12b-v2",
                     "global.amazon.nova-2-lite-v1:0",
                     "global.anthropic.claude-haiku-4-5-20251001-v1:0",
+                    "global.anthropic.claude-haiku-5-5",
                     "global.anthropic.claude-sonnet-4-5-20250929-v1:0",
                     "global.anthropic.claude-sonnet-4-6",
                     "global.anthropic.claude-sonnet-4-6:1m",
@@ -2356,6 +2377,7 @@ Resources:
                         "us.amazon.nova-pro-v1:0",
                         "us.amazon.nova-2-lite-v1:0", "us.amazon.nova-2-lite-v1:0:priority", "us.amazon.nova-2-lite-v1:0:flex", "global.amazon.nova-2-lite-v1:0", "global.amazon.nova-2-lite-v1:0:priority", "global.amazon.nova-2-lite-v1:0:flex",
                         "us.anthropic.claude-haiku-4-5-20251001-v1:0",
+                        "us.anthropic.claude-haiku-5-5",
                         "us.anthropic.claude-sonnet-4-5-20250929-v1:0",
                         "us.anthropic.claude-sonnet-4-6",
                         "us.anthropic.claude-sonnet-4-6:1m",
@@ -2381,6 +2403,7 @@ Resources:
                         "eu.amazon.nova-pro-v1:0",
                         "eu.amazon.nova-2-lite-v1:0", "eu.amazon.nova-2-lite-v1:0:priority", "eu.amazon.nova-2-lite-v1:0:flex",
                         "eu.anthropic.claude-haiku-4-5-20251001-v1:0",
+                        "eu.anthropic.claude-haiku-5-5",
                         "eu.anthropic.claude-sonnet-4-5-20250929-v1:0",
                         "eu.anthropic.claude-sonnet-4-6",
                         "eu.anthropic.claude-sonnet-4-6:1m",
@@ -2406,6 +2429,7 @@ Resources:
                         "nvidia.nemotron-nano-12b-v2",
                         "global.amazon.nova-2-lite-v1:0",
                         "global.anthropic.claude-haiku-4-5-20251001-v1:0",
+                        "global.anthropic.claude-haiku-5-5",
                         "global.anthropic.claude-sonnet-4-5-20250929-v1:0",
                         "global.anthropic.claude-sonnet-4-6",
                         "global.anthropic.claude-sonnet-4-6:1m",
@@ -2575,6 +2599,7 @@ Resources:
                         "us.amazon.nova-pro-v1:0",
                         "us.amazon.nova-2-lite-v1:0", "us.amazon.nova-2-lite-v1:0:priority", "us.amazon.nova-2-lite-v1:0:flex", "global.amazon.nova-2-lite-v1:0", "global.amazon.nova-2-lite-v1:0:priority", "global.amazon.nova-2-lite-v1:0:flex",
                         "us.anthropic.claude-haiku-4-5-20251001-v1:0",
+                        "us.anthropic.claude-haiku-5-5",
                         "us.anthropic.claude-sonnet-4-5-20250929-v1:0",
                         "us.anthropic.claude-sonnet-4-6",
                         "us.anthropic.claude-sonnet-4-6:1m",
@@ -2595,6 +2620,7 @@ Resources:
                         "eu.amazon.nova-pro-v1:0",
                         "eu.amazon.nova-2-lite-v1:0", "eu.amazon.nova-2-lite-v1:0:priority", "eu.amazon.nova-2-lite-v1:0:flex",
                         "eu.anthropic.claude-haiku-4-5-20251001-v1:0",
+                        "eu.anthropic.claude-haiku-5-5",
                         "eu.anthropic.claude-sonnet-4-5-20250929-v1:0",
                         "eu.anthropic.claude-sonnet-4-6",
                         "eu.anthropic.claude-sonnet-4-6:1m",
@@ -2618,6 +2644,7 @@ Resources:
                         "nvidia.nemotron-nano-12b-v2",
                         "global.amazon.nova-2-lite-v1:0",
                         "global.anthropic.claude-haiku-4-5-20251001-v1:0",
+                        "global.anthropic.claude-haiku-5-5",
                         "global.anthropic.claude-sonnet-4-5-20250929-v1:0",
                         "global.anthropic.claude-sonnet-4-6",
                         "global.anthropic.claude-sonnet-4-6:1m",
@@ -2682,6 +2709,7 @@ Resources:
                         "us.amazon.nova-pro-v1:0",
                         "us.amazon.nova-2-lite-v1:0", "us.amazon.nova-2-lite-v1:0:priority", "us.amazon.nova-2-lite-v1:0:flex", "global.amazon.nova-2-lite-v1:0", "global.amazon.nova-2-lite-v1:0:priority", "global.amazon.nova-2-lite-v1:0:flex",
                         "us.anthropic.claude-haiku-4-5-20251001-v1:0",
+                        "us.anthropic.claude-haiku-5-5",
                         "us.anthropic.claude-sonnet-4-5-20250929-v1:0",
                         "us.anthropic.claude-sonnet-4-6",
                         "us.anthropic.claude-sonnet-4-6:1m",
@@ -2702,6 +2730,7 @@ Resources:
                         "eu.amazon.nova-pro-v1:0",
                         "eu.amazon.nova-2-lite-v1:0", "eu.amazon.nova-2-lite-v1:0:priority", "eu.amazon.nova-2-lite-v1:0:flex",
                         "eu.anthropic.claude-haiku-4-5-20251001-v1:0",
+                        "eu.anthropic.claude-haiku-5-5",
                         "eu.anthropic.claude-sonnet-4-5-20250929-v1:0",
                         "eu.anthropic.claude-sonnet-4-6",
                         "eu.anthropic.claude-sonnet-4-6:1m",
@@ -2725,6 +2754,7 @@ Resources:
                         "nvidia.nemotron-nano-12b-v2",
                         "global.amazon.nova-2-lite-v1:0",
                         "global.anthropic.claude-haiku-4-5-20251001-v1:0",
+                        "global.anthropic.claude-haiku-5-5",
                         "global.anthropic.claude-sonnet-4-5-20250929-v1:0",
                         "global.anthropic.claude-sonnet-4-6",
                         "global.anthropic.claude-sonnet-4-6:1m",
@@ -2789,6 +2819,7 @@ Resources:
                         "us.amazon.nova-pro-v1:0",
                         "us.amazon.nova-2-lite-v1:0", "us.amazon.nova-2-lite-v1:0:priority", "us.amazon.nova-2-lite-v1:0:flex", "global.amazon.nova-2-lite-v1:0", "global.amazon.nova-2-lite-v1:0:priority", "global.amazon.nova-2-lite-v1:0:flex",
                         "us.anthropic.claude-haiku-4-5-20251001-v1:0",
+                        "us.anthropic.claude-haiku-5-5",
                         "us.anthropic.claude-sonnet-4-5-20250929-v1:0",
                         "us.anthropic.claude-sonnet-4-6",
                         "us.anthropic.claude-sonnet-4-6:1m",
@@ -2809,6 +2840,7 @@ Resources:
                         "eu.amazon.nova-pro-v1:0",
                         "eu.amazon.nova-2-lite-v1:0", "eu.amazon.nova-2-lite-v1:0:priority", "eu.amazon.nova-2-lite-v1:0:flex",
                         "eu.anthropic.claude-haiku-4-5-20251001-v1:0",
+                        "eu.anthropic.claude-haiku-5-5",
                         "eu.anthropic.claude-sonnet-4-5-20250929-v1:0",
                         "eu.anthropic.claude-sonnet-4-6",
                         "eu.anthropic.claude-sonnet-4-6:1m",
@@ -2832,6 +2864,7 @@ Resources:
                         "nvidia.nemotron-nano-12b-v2",
                         "global.amazon.nova-2-lite-v1:0",
                         "global.anthropic.claude-haiku-4-5-20251001-v1:0",
+                        "global.anthropic.claude-haiku-5-5",
                         "global.anthropic.claude-sonnet-4-5-20250929-v1:0",
                         "global.anthropic.claude-sonnet-4-6",
                         "global.anthropic.claude-sonnet-4-6:1m",
@@ -3102,6 +3135,7 @@ Resources:
                       - "global.amazon.nova-2-lite-v1:0:priority"
                       - "global.amazon.nova-2-lite-v1:0:flex"
                       - "us.anthropic.claude-haiku-4-5-20251001-v1:0"
+                      - "us.anthropic.claude-haiku-5-5"
                       - "us.anthropic.claude-sonnet-4-5-20250929-v1:0"
                       - "us.anthropic.claude-sonnet-4-6"
                       - "us.anthropic.claude-sonnet-4-6:1m"
@@ -3119,6 +3153,7 @@ Resources:
                       - "us.anthropic.claude-opus-5-5"
                       - "us.anthropic.claude-opus-5-5:1m"
                       - "global.anthropic.claude-haiku-4-5-20251001-v1:0"
+                      - "global.anthropic.claude-haiku-5-5"
                       - "global.anthropic.claude-sonnet-4-5-20250929-v1:0"
                       - "global.anthropic.claude-sonnet-4-6"
                       - "global.anthropic.claude-sonnet-4-6:1m"
@@ -3143,6 +3178,7 @@ Resources:
                       - "eu.amazon.nova-2-lite-v1:0:priority"
                       - "eu.amazon.nova-2-lite-v1:0:flex"
                       - "eu.anthropic.claude-haiku-4-5-20251001-v1:0"
+                      - "eu.anthropic.claude-haiku-5-5"
                       - "eu.anthropic.claude-sonnet-4-5-20250929-v1:0"
                       - "eu.anthropic.claude-sonnet-4-6"
                       - "eu.anthropic.claude-sonnet-4-6:1m"
@@ -3272,6 +3308,7 @@ Resources:
                     "us.amazon.nova-pro-v1:0",
                     "us.amazon.nova-2-lite-v1:0", "us.amazon.nova-2-lite-v1:0:priority", "us.amazon.nova-2-lite-v1:0:flex", "global.amazon.nova-2-lite-v1:0", "global.amazon.nova-2-lite-v1:0:priority", "global.amazon.nova-2-lite-v1:0:flex",
                     "us.anthropic.claude-haiku-4-5-20251001-v1:0",
+                    "us.anthropic.claude-haiku-5-5",
                     "us.anthropic.claude-sonnet-4-5-20250929-v1:0",
                     "us.anthropic.claude-sonnet-4-6",
                     "us.anthropic.claude-sonnet-4-6:1m",
@@ -3299,6 +3336,7 @@ Resources:
                     "eu.amazon.nova-pro-v1:0",
                     "eu.amazon.nova-2-lite-v1:0", "eu.amazon.nova-2-lite-v1:0:priority", "eu.amazon.nova-2-lite-v1:0:flex",
                     "eu.anthropic.claude-haiku-4-5-20251001-v1:0",
+                    "eu.anthropic.claude-haiku-5-5",
                     "eu.anthropic.claude-sonnet-4-5-20250929-v1:0",
                     "eu.anthropic.claude-sonnet-4-6",
                     "eu.anthropic.claude-sonnet-4-6:1m",
@@ -3316,6 +3354,7 @@ Resources:
                     "eu.anthropic.claude-opus-5-5",
                     "eu.anthropic.claude-opus-5-5:1m",
                     "global.anthropic.claude-haiku-4-5-20251001-v1:0",
+                    "global.anthropic.claude-haiku-5-5",
                     "global.anthropic.claude-sonnet-4-5-20250929-v1:0",
                     "global.anthropic.claude-sonnet-4-6",
                     "global.anthropic.claude-sonnet-4-6:1m",
@@ -3450,6 +3489,7 @@ Resources:
                         "us.amazon.nova-pro-v1:0",
                         "us.amazon.nova-2-lite-v1:0", "us.amazon.nova-2-lite-v1:0:priority", "us.amazon.nova-2-lite-v1:0:flex", "global.amazon.nova-2-lite-v1:0", "global.amazon.nova-2-lite-v1:0:priority", "global.amazon.nova-2-lite-v1:0:flex",
                         "us.anthropic.claude-haiku-4-5-20251001-v1:0",
+                        "us.anthropic.claude-haiku-5-5",
                         "us.anthropic.claude-sonnet-4-5-20250929-v1:0",
                         "us.anthropic.claude-sonnet-4-6",
                         "us.anthropic.claude-sonnet-4-6:1m",
@@ -3470,6 +3510,7 @@ Resources:
                         "eu.amazon.nova-pro-v1:0",
                         "eu.amazon.nova-2-lite-v1:0", "eu.amazon.nova-2-lite-v1:0:priority", "eu.amazon.nova-2-lite-v1:0:flex",
                         "eu.anthropic.claude-haiku-4-5-20251001-v1:0",
+                        "eu.anthropic.claude-haiku-5-5",
                         "eu.anthropic.claude-sonnet-4-5-20250929-v1:0",
                         "eu.anthropic.claude-sonnet-4-6",
                         "eu.anthropic.claude-sonnet-4-6:1m",
@@ -3495,6 +3536,7 @@ Resources:
                         "nvidia.nemotron-nano-12b-v2",
                         "global.amazon.nova-2-lite-v1:0",
                         "global.anthropic.claude-haiku-4-5-20251001-v1:0",
+                        "global.anthropic.claude-haiku-5-5",
                         "global.anthropic.claude-sonnet-4-5-20250929-v1:0",
                         "global.anthropic.claude-sonnet-4-6",
                         "global.anthropic.claude-sonnet-4-6:1m",
@@ -3564,6 +3606,7 @@ Resources:
                         "us.amazon.nova-pro-v1:0",
                         "us.amazon.nova-2-lite-v1:0", "us.amazon.nova-2-lite-v1:0:priority", "us.amazon.nova-2-lite-v1:0:flex", "global.amazon.nova-2-lite-v1:0", "global.amazon.nova-2-lite-v1:0:priority", "global.amazon.nova-2-lite-v1:0:flex",
                         "us.anthropic.claude-haiku-4-5-20251001-v1:0",
+                        "us.anthropic.claude-haiku-5-5",
                         "us.anthropic.claude-sonnet-4-5-20250929-v1:0",
                         "us.anthropic.claude-sonnet-4-6",
                         "us.anthropic.claude-sonnet-4-6:1m",
@@ -3584,6 +3627,7 @@ Resources:
                         "eu.amazon.nova-pro-v1:0",
                         "eu.amazon.nova-2-lite-v1:0", "eu.amazon.nova-2-lite-v1:0:priority", "eu.amazon.nova-2-lite-v1:0:flex",
                         "eu.anthropic.claude-haiku-4-5-20251001-v1:0",
+                        "eu.anthropic.claude-haiku-5-5",
                         "eu.anthropic.claude-sonnet-4-5-20250929-v1:0",
                         "eu.anthropic.claude-sonnet-4-6",
                         "eu.anthropic.claude-sonnet-4-6:1m",
@@ -3609,6 +3653,7 @@ Resources:
                         "nvidia.nemotron-nano-12b-v2",
                         "global.amazon.nova-2-lite-v1:0",
                         "global.anthropic.claude-haiku-4-5-20251001-v1:0",
+                        "global.anthropic.claude-haiku-5-5",
                         "global.anthropic.claude-sonnet-4-5-20250929-v1:0",
                         "global.anthropic.claude-sonnet-4-6",
                         "global.anthropic.claude-sonnet-4-6:1m",

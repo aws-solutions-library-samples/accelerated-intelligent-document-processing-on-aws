@@ -20,6 +20,7 @@ The following table shows all US to EU model mappings currently configured in th
 | `us.amazon.nova-2-lite-v1:0` | `eu.amazon.nova-2-lite-v1:0` | Direct mapping |
 | `us.anthropic.claude-3-haiku-20240307-v1:0` | `eu.anthropic.claude-haiku-4-5-20251001-v1:0` | **Fallback mapping.** Claude 3 Haiku is end-of-life in both regions, so the row exists to move a configuration stored before its removal onto the current Haiku-class model |
 | `us.anthropic.claude-haiku-4-5-20251001-v1:0` | `eu.anthropic.claude-haiku-4-5-20251001-v1:0` | Direct mapping |
+| `us.anthropic.claude-haiku-5-5` | `eu.anthropic.claude-haiku-5-5` | Direct mapping. No `:1m` pair, because 1M is this model's default context window rather than an opt-in |
 | `us.anthropic.claude-3-5-sonnet-20241022-v2:0` | `eu.anthropic.claude-sonnet-4-5-20250929-v1:0` | **Fallback mapping.** Claude 3.5 Sonnet is end-of-life; the EU twin was no better than the US original |
 | `us.anthropic.claude-3-7-sonnet-20250219-v1:0` | `eu.anthropic.claude-sonnet-4-5-20250929-v1:0` | **Fallback mapping.** Claude 3.7 Sonnet is end-of-life; same reason |
 | `us.anthropic.claude-sonnet-4-20250514-v1:0` | `eu.anthropic.claude-sonnet-4-20250514-v1:0` | Direct mapping |
@@ -112,6 +113,7 @@ Based on the mappings above, the following EU models are supported:
 
 #### Anthropic Claude Models
 - `eu.anthropic.claude-haiku-4-5-20251001-v1:0`
+- `eu.anthropic.claude-haiku-5-5`
 - `eu.anthropic.claude-sonnet-4-20250514-v1:0`
 - `eu.anthropic.claude-sonnet-4-5-20250929-v1:0`
 

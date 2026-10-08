@@ -187,11 +187,33 @@ model only appears there if it has been swept, and the table records when:
 | **OpenAI GPT-6 Astra** | ✅ | **2026-09-19, v0.6.9** (133 runs + `astravalue` 100 + `astracap` 12) | the only model at recall 1.000 **and** scalar accuracy 1.000 on all 19 v0.6.9 grid cells (documents ≤400 rows), at 2.6× Sonnet 5's cost and marginally behind on per-row cell accuracy (0.977 vs 0.999); in simple mode returns an empty response on the 17-page document (13 of 13 draws) and rewrites descriptions on the 26-page one — [guide §5.2](./config-guidance.md#52-is-a-premium-model-worth-it-astravalue-astracap-opus55value) |
 | `global.openai.gpt-6-astra` | ❌ deliberately; measured in `astravalue` only | 2026-09-12 (20 runs) | same weights ~10% cheaper (measured $0.94 vs $1.10 on the 9-page document); same simple-mode failure shape |
 | Claude Haiku 4.5 (classification only) | ✅ `classification_model` axis | 2026-09-12, **v0.6.8** (133 runs) — not re-measured on v0.6.9 | see the guide §5.3 |
+| **Claude Haiku 5.5** | ✅ (`extraction_model` **and** `classification_model` sweeps) | ❌ **not yet measured** — added to the matrix on 2026-10-08, no run behind it | The cheap end of the axis, and the first one that is a Claude: $0.11/$0.55 per 1M in/out, 10x below Haiku 4.5 and 30x below Sonnet 5 on input. The open question is not whether it wins but **how much completeness and accuracy the floor costs**, so quote no accuracy figure for it until the sweep has run. Four things a run will show that cannot be carried over from the Haiku 4.5 row: it accepts `reasoning_effort` (the first Haiku that does — 4.5 rejects it with a 400 — default `medium` per the model card, so an effort-unset cell is not comparable to a 4.5 cell); a forced `toolChoice` **is** accepted, unlike Opus 5.5, so a `forcing` A/B is valid; its prompt-cache minimum is 512 tokens against 4.5's 4,096, so classes that never cached may cache here; and images cost high-resolution tokens (~4,770 for a 2550x3301 page vs ~1,542 on 4.5), so an image-bearing cell is ~3x the input tokens and "10x cheaper per token" is not "10x cheaper per page". ⚠️ Cost is **under-reported above ~200K input tokens** — the price list carries a long-context band at 5x the standard rate on every token type, `pricing.yaml` carries one flat rate, and the threshold is unpublished; `model_config_limits.yaml` caps its sizing budget at 200K to keep ordinary cells inside the standard band |
 | xAI Grok 4.6 | ❌ | — | not yet measured — see `docs/grok-models.md` for its documented capabilities |
 
-The classification-model axis (Nova 2 Lite default · Sonnet 5 · Haiku 4.5) and the
-confidence-model axis (Nova Lite default · Nova 2 Lite · Sonnet 5) were each swept on the
-full grid for v0.6.8; the guide's §5.3 and §5.4 report them.
+The classification-model axis (Nova 2 Lite default · Sonnet 5 · Haiku 4.5 · Haiku 5.5)
+and the confidence-model axis (Nova Lite default · Nova 2 Lite · Sonnet 5) were each
+swept on the full grid for v0.6.8; the guide's §5.3 and §5.4 report them. Haiku 5.5 is
+the one value on either axis with no run behind it yet.
+
+Two numbers the `classification_model` sweep does **not** produce, and which the
+guidance for that axis needs: per-page **classification accuracy** and
+**confidence calibration separation** (`mean(conf | right) − mean(conf | wrong)`,
+[#673](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/673)).
+Those come from a separate driver, `benchmarks/harness/run_classification_bench.py`,
+which runs a real multi-class corpus with per-page ground truth instead of the
+synthetic single-class documents `run_matrix.py` launches — so a model added to the
+axis above must also be added to that script's own `MODELS` map. Haiku 5.5 is in both.
+Run the Haiku pair as one measurement:
+
+```bash
+AWS_PROFILE=default python3 benchmarks/harness/run_classification_bench.py \
+    --stack <STACK> --testset docsplit --n 20 --models haiku45,haiku55 --mode topk
+```
+
+The separation is the number to read first on a model this cheap: high
+`class_accuracy` with a confidence that does not separate right answers from wrong
+ones is worse for a user than lower accuracy with an honest confidence, because the
+escalation path acts on the number.
 
 The premium cells below live in their own `model_premium_cells` registry, **not** in
 `core_cells`, because `core_cells` feeds `core` / `coresynth` / `corefast` / `full`:

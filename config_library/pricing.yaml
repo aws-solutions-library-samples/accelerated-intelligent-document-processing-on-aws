@@ -35,11 +35,22 @@
 #   * Every price dimension in that file and in the "AmazonBedrock" offer file
 #     spans StartingRange 0 to EndingRange Inf. There is not one token-volume
 #     band on any model, so there is no threshold at which a rate changes.
-#   * No Anthropic SKU names a long context anywhere in either file.
+#   * No Anthropic SKU in THAT file names a long context (see the next paragraph
+#     for what changed when Haiku 5.5 launched).
 # A long-context band IS expressible in the Bedrock price list — it appears as a
-# distinct "-long-ctx" usage type (tokenType "input-tokens-long-ctx" and friends)
-# — and today exactly two models have one: openai.gpt-5.6-luna-mantle and
-# openai.gpt-5.6-terra-mantle. No Claude model does.
+# distinct "-long-ctx" usage type (tokenType "input-tokens-long-ctx" and friends).
+# openai.gpt-5.6-luna-mantle and openai.gpt-5.6-terra-mantle have one, and so does
+# ONE Claude model: Claude Haiku 5.5, as of offer file version 20261007183733
+# (published 2026-10-07, retrieved 2026-10-08). Its long-context rates are 5x the
+# standard ones on every token type — $0.55/MTok input against $0.11, $2.75
+# against $0.55 output, regional — and the threshold at which they start is
+# published in neither the model card nor the SKU, so it is unverified. The Haiku
+# 5.5 entries below carry the STANDARD band only. What keeps that from silently
+# under-reporting is in model_config_limits.yaml: Haiku 5.5's sizing budget is
+# capped at 200,000 input tokens rather than its real 1M window, which keeps
+# requests inside the standard band. Read the two files together before raising
+# either number. The ":1m" discussion above does not apply to this model — it has
+# no ":1m" id, because 1M is its default window.
 #
 # Anthropic says the same first-hand: "Claude 4.6 and later models ... include
 # the full 1M token context window at standard pricing. (A 900k-token request is
@@ -245,7 +256,30 @@ pricing:
         price: "1.1E-7"
       - name: cacheWriteInputTokens
         price: "1.4E-6"
-  
+
+  # Claude Haiku 5.5 — exactly 10x cheaper per token than Haiku 4.5 above, which is
+  # worth stating because the launch announcement says "around 75% less ... for most
+  # tasks". Both are right and they measure different things: the per-token rate is
+  # 90% lower, and the ~75% figure is a per-task estimate that absorbs this model's
+  # reasoning tokens (it is the first Haiku with effort controls, default "medium").
+  # Rates are the US regional / geo-CRIS band, matching every other "us." entry in
+  # this file, read from the AWS price list offer file for
+  # AmazonBedrockFoundationModels version 20261007183733 (retrieved 2026-10-08).
+  # The 5m cache-write rate is 1.25x input exactly ($0.1375), not rounded as the
+  # Haiku 4.5 entry above is. A 1-hour-TTL cache write is a separate, higher rate
+  # ($0.22/MTok) that this file has no unit for on any model; IDP writes 5-minute
+  # cache points only.
+  - name: bedrock/us.anthropic.claude-haiku-5-5
+    units:
+      - name: inputTokens
+        price: "1.1E-7"
+      - name: outputTokens
+        price: "5.5E-7"
+      - name: cacheReadInputTokens
+        price: "1.1E-8"
+      - name: cacheWriteInputTokens
+        price: "1.375E-7"
+
   # Claude 3.5 Sonnet v1. Selected by the shipped ocr-benchmark and docsplit
   # presets in config_library/, but it had no pricing entry, so the whole model
   # costed as $0.00 (no pricing key is a substring of this ID, so even the old
@@ -820,7 +854,23 @@ pricing:
         price: "1.1E-7"
       - name: cacheWriteInputTokens
         price: "1.4E-6"
-  
+
+  # Claude Haiku 5.5, EU geo. Identical to the "us." band: the price list carries
+  # the same $0.11 / $0.55 regional rate in every commercial region that sells this
+  # model (checked across Frankfurt, Ireland and US East). GovCloud is the one
+  # exception at $0.12 / $0.60, and this file has no "us-gov." entries for any
+  # model, so that band is unrepresented here as well.
+  - name: bedrock/eu.anthropic.claude-haiku-5-5
+    units:
+      - name: inputTokens
+        price: "1.1E-7"
+      - name: outputTokens
+        price: "5.5E-7"
+      - name: cacheReadInputTokens
+        price: "1.1E-8"
+      - name: cacheWriteInputTokens
+        price: "1.375E-7"
+
   - name: bedrock/eu.anthropic.claude-3-5-sonnet-20241022-v2:0
     units:
       - name: inputTokens
@@ -1120,7 +1170,21 @@ pricing:
         price: "1.0E-7"
       - name: cacheWriteInputTokens
         price: "1.25E-6"
-  
+
+  # Claude Haiku 5.5, global cross-region. The global band is ~9% below the
+  # regional one (the regional rate carries the usual 10% premium), the same
+  # relationship the Haiku 4.5 pair above has.
+  - name: bedrock/global.anthropic.claude-haiku-5-5
+    units:
+      - name: inputTokens
+        price: "1.0E-7"
+      - name: outputTokens
+        price: "5.0E-7"
+      - name: cacheReadInputTokens
+        price: "1.0E-8"
+      - name: cacheWriteInputTokens
+        price: "1.25E-7"
+
   - name: bedrock/global.anthropic.claude-sonnet-4-5-20250929-v1:0
     units:
       - name: inputTokens
