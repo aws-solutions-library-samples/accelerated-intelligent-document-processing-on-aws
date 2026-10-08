@@ -775,7 +775,10 @@ Resources:
       cfn_nag:
         rules_to_suppress:
           - id: W12
-            reason: "EC2 networking create/delete actions cannot be resource-scoped (resources are created by this policy); the test VPC is a throwaway stack torn down in the same build"
+            # One reason per member, because the first clause is false for the
+            # last action: ec2:DeleteNetworkInterface targets ENIs this policy
+            # never created.
+            reason: "EC2 networking create/delete actions cannot be resource-scoped (resources are created by this policy); the test VPC is a throwaway stack torn down in the same build; ec2:DeleteNetworkInterface is the exception to the first clause -- it targets orphaned ENIs that Lambda's VPC attachment created, in a throwaway VPC whose id is not known at template time, so neither the ENI nor its VPC can be named here"
     Properties:
       PolicyName: CodeBuildEC2VPCTest
       Roles:
@@ -817,6 +820,22 @@ Resources:
               - 'ec2:CreateTags'
               - 'ec2:DeleteTags'
               - 'ec2:Describe*'
+              # Sweeps the orphaned Lambda ENIs that hold the test VPC's subnets
+              # and security group (_force_delete_vpc_stack_enis in
+              # codebuild_deployment.py). Lambda reclaims its own ENIs using the
+              # function's execution role, so once the IDP stack and its -iam
+              # stack are gone nothing else can: the ENIs stay 'available'
+              # indefinitely, CloudFormation cannot delete the security group
+              # that depends on them, and the VPC stack stays DELETE_FAILED
+              # against a limit of five VPCs.
+              #
+              # The sweep that exists to break that was refused for eleven weeks
+              # because this action was granted only inside the
+              # !If [DeployInVPC] policy on CodeBuildRole above — a condition
+              # this account does not meet (VpcId is empty), so the grant was
+              # never created while reading as present in the template. It
+              # belongs here, where the policy is unconditional.
+              - 'ec2:DeleteNetworkInterface'
             Resource: '*'
 
   IdkInstallCodeBuild:
