@@ -612,7 +612,11 @@ class ConfigurationManager:
         On the first save after upgrading to a release with revision history, the
         configuration that was there *before* this save is cut as a revision
         first, so the pre-history state is not lost by the very change that
-        introduced history.
+        introduced history. When that save changes nothing, the backfill is
+        published, with the stored-content hash its own body implies rather than
+        the hash of the head the save wrote: `True == 1`, so a save that swaps one
+        for the other inside a class counts as unchanged although the head it
+        writes stores the configuration differently from the backfill.
 
         A save that does not change the configuration records nothing. Every
         stack deployment re-saves `default` and each managed profile whether or
@@ -648,7 +652,9 @@ class ConfigurationManager:
                     created_by="system",
                     notes="Configuration as it stood before revision history was enabled",
                     publish=unchanged,
-                    stored_hash=stored_hash if unchanged else None,
+                    stored_hash=self._stored_hash_of_body(profile, previous_dict)
+                    if unchanged
+                    else None,
                 )
             except Exception as e:  # noqa: BLE001
                 logger.warning(
@@ -656,8 +662,8 @@ class ConfigurationManager:
                 )
             else:
                 if unchanged:
-                    # The backfill already records exactly this configuration —
-                    # publishing it there avoids an identical second revision.
+                    # The save changed nothing `==` can see, so the backfill is
+                    # published instead of a second, equal revision.
                     logger.info(
                         f"Profile '{profile}' is unchanged by this save; its pre-history "
                         f"snapshot r{backfilled} is the current revision"
@@ -781,7 +787,11 @@ class ConfigurationManager:
 
         Proven by the stored-content hash the revision recorded, or, for revisions
         cut before that hash existed, by the head not having been written since the
-        revision was cut.
+        revision was cut. The second rule accepts the head the revision's own save
+        wrote, so it accepts it for a pre-history backfill an earlier release
+        published on an unchanged save too, although that save may have stored the
+        configuration differently from the backfill (`True` swapped for `1` in a
+        class).
         """
         recorded = entry.get("storedHash")
         if recorded:

@@ -379,6 +379,21 @@ def _classes_config(note):
     )
 
 
+def _flagged(value):
+    """A full config holding `value` in an untyped class attribute."""
+    return IDPConfig(
+        notes="live",
+        classes=[
+            {
+                "$id": "Invoice",
+                "x-aws-idp-document-type": "Invoice",
+                "type": "object",
+                "x-example-flag": value,
+            }
+        ],
+    )
+
+
 def _expire_body(profile, revision):
     """What the Configuration bucket's lifecycle rule does after DataRetentionInDays."""
     boto3.client("s3", region_name="us-east-1").delete_object(
@@ -398,7 +413,9 @@ class TestExpiredPublishedBody:
     Revision bodies expire under the Configuration bucket's lifecycle rule, and every
     new document is pinned to its profile's published revision. A profile that is
     not saved within the retention window must keep processing, and a revision
-    number must never be put on a configuration it did not record.
+    number must never be put on a configuration it did not record. A revision cut
+    before stored hashes existed is held to that only as far as the legacy rule
+    can see, and `_head_is_revision` names the case it cannot.
     """
 
     def test_an_expired_published_body_is_served_from_the_head(self, monkeypatch):
@@ -630,26 +647,12 @@ class TestExpiredPublishedBody:
         revision held `true`. The hash comes from the configuration of the head the
         save replaced, so the head it wrote is not passed off as the revision.
         """
-
-        def flagged(value):
-            return IDPConfig(
-                notes="live",
-                classes=[
-                    {
-                        "$id": "Invoice",
-                        "x-aws-idp-document-type": "Invoice",
-                        "type": "object",
-                        "x-example-flag": value,
-                    }
-                ],
-            )
-
         _make_table()
         manager = _manager(monkeypatch)
-        manager.save_configuration(CONFIG_TYPE_CONFIG, flagged(True), version="p")
+        manager.save_configuration(CONFIG_TYPE_CONFIG, _flagged(True), version="p")
         _expire_body("p", 1)
 
-        manager.save_configuration(CONFIG_TYPE_CONFIG, flagged(1), version="p")
+        manager.save_configuration(CONFIG_TYPE_CONFIG, _flagged(1), version="p")
 
         assert [r["revision"] for r in manager.list_revisions("p")] == [1]
         with pytest.raises(ValueError, match="not available"):
@@ -691,6 +694,61 @@ class TestExpiredPublishedBody:
         assert entry["storedHash"] == manager._stored_hash_of_body(
             "p", manager.get_revision("p", 1)
         )
+
+    def test_an_unchanged_first_save_publishes_the_backfill_with_the_heads_hash(
+        self, monkeypatch
+    ):
+        """
+        The first save after upgrading into revision history publishes the
+        pre-history backfill when it changes nothing, so the backfill is the
+        revision that has to outlive its body.
+        """
+        from idp_common.config.configuration_manager import _stored_content_hash
+
+        _make_table()
+        _manager(monkeypatch, with_bucket=False).save_configuration(
+            CONFIG_TYPE_CONFIG, _flagged(True), version="p"
+        )
+        manager = _manager(monkeypatch)
+        manager.save_configuration(CONFIG_TYPE_CONFIG, _flagged(True), version="p")
+
+        assert [r["revision"] for r in manager.list_revisions("p")] == [1]
+        stored_hash = manager.revisions.get_entry("p", 1)["storedHash"]
+        assert stored_hash == _stored_content_hash(_head_item(manager, "p"))
+        _expire_body("p", 1)
+        served = manager.get_merged_configuration("p", revision=1)
+        assert served.classes[0]["x-example-flag"] is True
+
+    def test_an_unchanged_first_save_never_vouches_for_the_head_it_wrote(
+        self, monkeypatch
+    ):
+        """
+        The backfill holds the configuration from before the save, and `True == 1`
+        lets a save that swaps one for the other count as unchanged while the head
+        it writes stores `"1"` where the backfill holds `true`. The backfill records
+        the hash its own body implies, so that head is not served as the backfill
+        once the body expires.
+        """
+        from idp_common.config.configuration_manager import _stored_content_hash
+
+        _make_table()
+        _manager(monkeypatch, with_bucket=False).save_configuration(
+            CONFIG_TYPE_CONFIG, _flagged(True), version="p"
+        )
+        manager = _manager(monkeypatch)
+        manager.save_configuration(CONFIG_TYPE_CONFIG, _flagged(1), version="p")
+
+        revisions = manager.list_revisions("p")
+        assert [(r["revision"], r["published"]) for r in revisions] == [(1, True)]
+        stored_hash = manager.revisions.get_entry("p", 1)["storedHash"]
+        assert stored_hash == manager._stored_hash_of_body(
+            "p", manager.get_revision("p", 1)
+        )
+        assert stored_hash != _stored_content_hash(_head_item(manager, "p"))
+        _expire_body("p", 1)
+
+        with pytest.raises(ValueError, match="not available"):
+            manager.get_merged_configuration("p", revision=1)
 
     def test_the_stored_hash_of_a_given_head_never_changes(self):
         """
@@ -938,6 +996,40 @@ class TestLibraryProfileStoredHash:
         )
         published = manager.resolve_published_revision("p")
 
+        stored_hash = manager.revisions.get_entry("p", published)["storedHash"]
+        assert stored_hash == _stored_content_hash(_head_item(manager, "p"))
+        _expire_body("p", published)
+        served = manager.get_merged_configuration("p", revision=published)
+        head = manager.get_merged_configuration("p")
+        assert served is not None and head is not None
+        assert served.model_dump() == head.model_dump()
+
+    @pytest.mark.parametrize("path", _LIBRARY_PROFILES, ids=_profile_id)
+    def test_a_profile_upgraded_into_history_is_served_once_its_body_expires(
+        self, monkeypatch, path
+    ):
+        """
+        A shipped profile saved before revision history existed, then re-saved by
+        the deployment that upgrades the stack into it. Where that save changes
+        nothing it publishes the pre-history backfill, with the hash the backfill's
+        own body implies, which must be the hash of the head the save wrote; where
+        it does not, it cuts a revision of its own. Either way the current revision
+        must outlive its body, as exactly the configuration the head serves.
+        """
+        from idp_common.config.configuration_manager import _stored_content_hash
+
+        _make_table()
+        config = _library_profile(path)
+        _manager(monkeypatch, with_bucket=False).save_configuration(
+            CONFIG_TYPE_CONFIG, copy.deepcopy(config), version="p"
+        )
+        manager = _manager(monkeypatch)
+        manager.save_configuration(
+            CONFIG_TYPE_CONFIG, copy.deepcopy(config), version="p"
+        )
+        published = manager.resolve_published_revision("p")
+
+        assert [r["revision"] for r in manager.list_revisions("p")] in ([1], [2, 1])
         stored_hash = manager.revisions.get_entry("p", published)["storedHash"]
         assert stored_hash == _stored_content_hash(_head_item(manager, "p"))
         _expire_body("p", published)
