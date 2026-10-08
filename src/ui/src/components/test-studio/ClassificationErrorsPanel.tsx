@@ -14,6 +14,7 @@
  */
 
 import React from 'react';
+import { useCollection } from '@cloudscape-design/collection-hooks';
 import { Alert, Badge, Box, Container, Header, Link, Table } from '@cloudscape-design/components';
 
 import type { ClassificationError, ClassificationErrors, PredictedSectionSummary } from '../../graphql/awsjson-types';
@@ -105,6 +106,14 @@ const ClassificationErrorsPanel = ({ classificationErrors, testSetId }: Classifi
   const total = classificationErrors?.total ?? errors.length;
   const truncated = Boolean(classificationErrors?.truncated);
 
+  // No default sorting state: the server orders wrong-class errors first, and
+  // that is the order to open in. The hook supplies the state the sortable
+  // headers need, which they previously rendered without — so the chevrons
+  // offered a sort nothing carried out.
+  //
+  // Called before the empty return below, as hooks must be.
+  const { items, collectionProps } = useCollection(errors, { sorting: {} });
+
   // Nothing to say when a run classified everything correctly. Rendering an
   // empty table would read as "no data" rather than "no problems".
   if (total === 0) return null;
@@ -139,7 +148,10 @@ const ClassificationErrorsPanel = ({ classificationErrors, testSetId }: Classifi
         resizableColumns
         variant="embedded"
         contentDensity="compact"
-        items={errors}
+        items={items}
+        sortingColumn={collectionProps.sortingColumn}
+        sortingDescending={collectionProps.sortingDescending}
+        onSortingChange={collectionProps.onSortingChange}
         columnDefinitions={[
           {
             id: 'kind',
