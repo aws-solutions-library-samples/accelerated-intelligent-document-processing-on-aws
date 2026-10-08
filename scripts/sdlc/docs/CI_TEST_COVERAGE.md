@@ -129,9 +129,19 @@ here, since the measured gain over the current shape is ~5 minutes.
 
 The split's cost, stated plainly: the Python environment is built in four jobs
 instead of one, so the pipeline **burns more runner minutes to finish in less
-wall-clock time**. Each job installs only what it needs — the two pytest jobs skip
-Node entirely, `ui_tests` skips the Python packages — which is most of what keeps
-that bill down, but it is a real trade.
+wall-clock time**. Each job installs only what it needs — only `unit_tests` gets
+away without Node, and `ui_tests` skips the Python packages — which keeps that bill
+down, but it is a real trade.
+
+⚠️ **Trimming a toolchain out of a job is not the free saving it looks like, and
+the way to check is to read the suites rather than the `script:` line.**
+`package_tests` was first written without Node, on the reasoning that pytest does
+not need it, and went red: `scripts/tests/test_pyright_config.py` runs basedpyright
+**live** — the probe that confirms `pyrightconfig.json`'s five `extraPaths` really
+resolve the first-party packages instead of merely looking right — so a suite whose
+name says nothing about types reaches an npm package. The fix is to give the job
+the tool, not to let the probe skip when it is missing, which is the whole reason
+that check is a live probe.
 
 ### The GitHub side runs the same two security gates
 

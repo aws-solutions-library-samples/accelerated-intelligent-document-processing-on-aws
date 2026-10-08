@@ -40,9 +40,15 @@ default:
 #
 # The cost of the split, stated plainly: the Python environment is now built in
 # four jobs instead of one, so the pipeline burns MORE runner minutes than it did
-# to finish in less wall-clock time. Each job installs only what it needs (the
-# test jobs skip Node entirely; the UI job skips the Python packages) to keep that
-# bill down, but it is a real trade, not a free win.
+# to finish in less wall-clock time. Each job installs only what it needs — only
+# `unit_tests` gets away without Node, and `ui_tests` skips the Python packages —
+# which keeps that bill down, but it is a real trade, not a free win.
+#
+# ⚠️ Trimming a toolchain out of a job is NOT the free saving it looks like, and
+# the way to find out is to read the SUITES rather than the `script:` block.
+# `package_tests` was written without Node on the reasoning that pytest does not
+# need it, and went red: `scripts/tests/test_pyright_config.py` runs basedpyright
+# live, so a suite whose name says nothing about types reaches an npm package.
 stages:
   - fast_checks
   - deployment_validation
@@ -297,8 +303,18 @@ package_tests:
     - arch:arm64
 
   before_script:
-    # No Node: nothing in this job needs it.
     - *python_setup
+    # ⚠️ Node and basedpyright ARE needed here, which is not obvious from the
+    # script below and cost this job a red run when they were left out.
+    # `scripts/tests` is one of the suites `test-packages-cicd` runs, and
+    # `test_pyright_config.py` RUNS basedpyright — a live 0.5s probe confirming
+    # that pyrightconfig.json's five `extraPaths` really resolve the first-party
+    # packages, rather than trusting that the config looks right. That is the whole
+    # point of the check (see the typecheck notes in CLAUDE.md), so the answer is to
+    # give this job the tool, not to let the probe skip when it is absent.
+    # basedpyright ships as an npm package, hence Node.
+    - *node_setup
+    - npm install -g basedpyright
 
   script:
     - make test-packages-cicd
