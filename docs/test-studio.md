@@ -1577,6 +1577,25 @@ graded metrics can't drag the newer docs' scores down.
   every metric collapses to `1.0` trivially since there's nothing to
   mis-cluster. The panel still renders but adds no signal beyond the
   existing accuracy row.
+- **Classification-only runs** (no class has an extractable field): the graded
+  metrics populate as usual, and so does the
+  [Classification errors](#finding-classification-errors) panel. With no
+  extraction comparisons, every document is counted as excluded from extraction
+  scoring, and the run falls back to Athena, which for such a run supplies only
+  the split classification metrics and the cost. Overall accuracy, average
+  confidence and the average weighted score stay empty, and the weighted overall
+  score chart and table have nothing to show: Athena computes no overall
+  accuracy, such a run has no compared fields for it to average confidence over,
+  and an excluded document has no weighted score. A
+  classification-only run that completed before this shipped **must be re-run**
+  to show its graded metrics, classification errors and excluded count.
+  Re-opening its results page does not recompute them: the stale-cache guard
+  (see **Backward compatibility** below) checks only that each key is present,
+  and that run's cache already holds all three keys, as `{}` or `0`. The
+  exception is a run whose cache was last written before 0.6.7, which added the
+  `classificationErrors` key: the guard finds that key missing and re-aggregates
+  the run the first time you open its results, so it recovers without a re-run,
+  provided its documents are still within the stack's `DataRetentionInDays`.
 - **No page overlap between ground-truth and prediction** (rare — usually an
   OCR page-count mismatch): `evaluate_packet` returns nothing for that doc
   and it's absent from the map. If no doc in the run reported any graded
@@ -1632,7 +1651,12 @@ class is corrected — see
 - Runs evaluated **before this shipped** show no panel until they re-aggregate,
   which happens automatically the first time you open their results. Runs
   aggregated through the Athena fallback path have the percentages but not the
-  per-section detail.
+  per-section detail. The exception is a classification-only run, whose detail
+  the aggregation still collects and the fallback keeps. One cached before the
+  fallback kept it must be re-run to show it, unless its cache was last written
+  before 0.6.7, in which case it re-aggregates like any other run evaluated
+  before this shipped (see
+  [Graded Packet Metrics](#graded-packet-metrics-run-level)).
 
 ### Field-Level Metrics
 

@@ -1142,8 +1142,9 @@ const TestResults = ({ testRunId, setSelectedTestRunId }: TestResultsProps): Rea
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const fieldMetrics: any = results.fieldMetrics ? parseFieldMetrics(results.fieldMetrics as string) : null;
   // Per-section classification mismatches. Absent on runs aggregated before this
-  // shipped and on the Athena fallback path, both of which parse to {} — the
-  // panel renders nothing rather than an empty table in that case.
+  // shipped and on the Athena fallback path when the aggregation Lambda supplied
+  // none, both of which parse to {} — the panel renders nothing rather than an
+  // empty table in that case.
   const classificationErrors = results.classificationErrors ? parseClassificationErrors(results.classificationErrors as string) : null;
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const _confusionMatrix: any = results.confusionMatrix ? parseConfusionMatrix(results.confusionMatrix as string) : null;

@@ -77,8 +77,9 @@ export interface ClassificationError {
  *
  * `errors` is capped by the aggregation Lambda because the whole run result is
  * one DynamoDB attribute; `total` is the uncapped count, so a truncated list can
- * still say how much it is not showing. `{}` on runs aggregated via the Athena
- * fallback, which has the percentages but not the per-section detail.
+ * still say how much it is not showing. `{}` when the aggregation Lambda supplied
+ * none (it is not configured, failed or predates this field); a
+ * classification-only run keeps its detail on the Athena fallback.
  */
 export interface ClassificationErrors {
   errors?: ClassificationError[];
