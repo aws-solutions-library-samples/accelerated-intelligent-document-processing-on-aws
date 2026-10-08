@@ -74,6 +74,8 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 GITLAB = REPO_ROOT / ".gitlab-ci.yml"
 GITHUB_TESTS = REPO_ROOT / ".github/workflows/developer-tests.yml"
 GITHUB_SECURITY = REPO_ROOT / ".github/workflows/security-checks.yml"
+#: Composite actions are part of the CI configuration — see :func:`_github_ci_text`.
+GITHUB_ACTIONS_DIR = REPO_ROOT / ".github/actions"
 MAKEFILE = REPO_ROOT / "Makefile"
 
 # Gates that MUST run in both CIs. Each is a static, no-AWS check.
@@ -341,7 +343,35 @@ CHECK_ONLY_EQUIVALENTS = {
 
 
 def _github_ci_text() -> str:
-    return GITHUB_TESTS.read_text() + GITHUB_SECURITY.read_text()
+    """Everything that makes up GitHub's CI configuration, as one blob.
+
+    The **composite actions** are part of it, not a detail of it. GitHub Actions
+    does not support YAML anchors, so when ``developer-tests.yml`` became four
+    parallel jobs the shared setup had to move into
+    ``.github/actions/*/action.yml`` — and that setup is where the ``ruff`` and
+    ``cfn-lint`` pins now live. Reading only the workflow files reported both pins
+    as missing from GitHub while they were present and working, which is the
+    false-alarm direction: a parity guard that cries wolf gets muted.
+
+    Globbed rather than listed so a second composite action is covered the day it
+    is added.
+    """
+    parts = [GITHUB_TESTS.read_text(), GITHUB_SECURITY.read_text()]
+    parts += [p.read_text() for p in sorted(GITHUB_ACTIONS_DIR.glob("*/action.yml"))]
+    return "".join(parts)
+
+
+def _pinned_tool_sources() -> list[tuple[str, str]]:
+    """``(label, text)`` for each side's config, for the tool-pin assertions.
+
+    The GitHub side is a BLOB rather than a single file for the reason
+    :func:`_github_ci_text` gives: the pins live in a composite action now, so a
+    per-file assertion reports a present, working pin as missing.
+    """
+    return [
+        (GITLAB.name, GITLAB.read_text()),
+        (".github/ (workflows + composite actions)", _github_ci_text()),
+    ]
 
 
 def _uncommented(text: str) -> str:
@@ -934,10 +964,9 @@ def test_cfn_lint_is_pinned_consistently() -> None:
     assert marker in makefile, "CFN_LINT_VERSION is no longer declared in the Makefile"
     version = makefile.split(marker, 1)[1].split("\n", 1)[0].strip()
 
-    for path in (GITLAB, GITHUB_TESTS):
-        text = path.read_text()
+    for label, text in _pinned_tool_sources():
         assert f"cfn-lint=={version}" in text, (
-            f"{path.name} does not pin cfn-lint=={version} (the Makefile's "
+            f"{label} does not pin cfn-lint=={version} (the Makefile's "
             f"CFN_LINT_VERSION). CI would then run a different linter than "
             f"`make cfn-lint` does locally."
         )
@@ -956,11 +985,11 @@ def test_ruff_is_pinned_consistently() -> None:
     running different linters by construction.
     """
     pins = {}
-    for path in (GITLAB, GITHUB_TESTS):
-        found = re.findall(r"ruff==([0-9][0-9A-Za-z.\-]*)", path.read_text())
-        assert found, f"{path.name} no longer pins a ruff version"
-        assert len(set(found)) == 1, f"{path.name} pins several ruff versions: {found}"
-        pins[path.name] = found[0]
+    for label, text in _pinned_tool_sources():
+        found = re.findall(r"ruff==([0-9][0-9A-Za-z.\-]*)", text)
+        assert found, f"{label} no longer pins a ruff version"
+        assert len(set(found)) == 1, f"{label} pins several ruff versions: {found}"
+        pins[label] = found[0]
 
     assert len(set(pins.values())) == 1, (
         f"the two CI configs pin different ruff versions: {pins}. `ruff check` and "

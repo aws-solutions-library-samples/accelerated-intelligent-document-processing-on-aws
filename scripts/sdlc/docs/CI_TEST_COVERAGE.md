@@ -187,20 +187,30 @@ contexts and compares them with the live required-check list, reporting anything
 required-but-never-reported (a renamed job) or reported-but-not-required (a new
 gate).
 
-Three contexts cover every gate on this page. `test_ci_gate_parity.py`'s
-`SHARED_GATES` names ten shared gates, and eight of the ten are *steps* inside a
-**single** job, `developer_tests`; GitHub can only require job-level contexts, never
-individual steps, so those eight collapse to exactly **one** requireable context
-rather than one per gate. That has a practical consequence worth knowing before you
-read a red check: because the eight share one context, they also share one red mark,
-so a required-check failure does not say which of them failed. The remaining two
-shared gates — the SRT scan and the dependency audit — are jobs of their own in
-`security-checks.yml`, one context each, which is how ten gates produce three
-requireable contexts.
+GitHub can only require job-level contexts — never individual steps — so the
+mapping from gates to contexts is decided by how the jobs are arranged. Eight of
+the ten shared gates live in `developer-tests.yml` (four jobs) and the other two in
+`security-checks.yml` (two jobs), which is how ten gates produce
+six requireable contexts.
+
+Splitting `developer-tests.yml` into four parallel jobs **improved** this. It used
+to be one job holding eight of the ten shared gates, which collapsed those eight
+into a single requireable context: they shared one red mark, so a required-check
+failure did not say which of them had failed. They are now four contexts, so a red
+mark names the half of the work that broke.
+
+⚠️ **One consequence to act on if branch protection is ever enabled:** requiring
+only the lint context is now strictly weaker than requiring the old single job was,
+because the test suites are no longer inside it. All six contexts below have to be
+required. `scripts/tests/test_check_branch_protection.py`'s `MUST_BE_REQUIRED`
+names all six for that reason.
 
 | Check context | Workflow / job | Covers |
 |---|---|---|
-| `Lint, Type Check, and Test` | `developer-tests.yml` / `developer_tests` | eight of the ten shared gates: `lint-cicd`, `typecheck`, `api-test-static`, `test-cicd`, `test-packages-cicd`, vitest, first-party dep check, service-role permissions |
+| `Lint, Type Check, and Static Scans` | `developer-tests.yml` / `developer_tests` | `lint-cicd`, `typecheck`, `api-test-static`, first-party dep check, service-role permissions |
+| `Unit Tests (idp_common)` | `developer-tests.yml` / `unit_tests` | `test-cicd -C lib/idp_common_pkg`, `check-coverage-debt` |
+| `Package and Lambda Test Suites` | `developer-tests.yml` / `package_tests` | `test-packages-cicd` |
+| `UI Unit Tests` | `developer-tests.yml` / `ui_tests` | `npx vitest run` |
 | `SRT Security Review` | `security-checks.yml` / `srt_security_review` | `srt-setup`, `srt-scan` |
 | `Dependency Audit (SCA)` | `security-checks.yml` / `dep_audit` | `scripts/security/dep_audit.py` |
 
