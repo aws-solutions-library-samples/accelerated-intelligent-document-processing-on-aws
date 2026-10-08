@@ -42,11 +42,12 @@ jobs:
   # Lint, format, types, and the static scans. Everything that reads the tree
   # without running a test suite.
   #
-  # Keeps the name `developer_tests` even though it no longer runs the suites: it
-  # is the name on every historical run, in CONTRIBUTING.md's workflow table, and
-  # in the required-check list anyone enabling branch protection would start from.
-  developer_tests:
-    name: Lint, Type Check, and Static Scans
+  # ⚠️ Named for what it runs. It was `developer_tests`, which after the split ran
+  # no tests at all - the most misleading name in either CI - and the display name
+  # is what becomes the requireable status-check context, so both move together.
+  # Not named after a Makefile target: `make lint-cicd` is one of five steps here.
+  static_checks:
+    name: Static Checks (lint, types, scans)
     runs-on: ubuntu-latest
     timeout-minutes: 60
 
@@ -83,7 +84,7 @@ jobs:
       - name: Run linting checks
         run: make lint-cicd
 
-      # Parity with GitLab's code_checks. `api-test-static` and
+      # Parity with GitLab's static_checks. `api-test-static` and
       # `validate_service_role_permissions.py` ran only on GitLab, so a change
       # merged via a GitHub PR skipped them entirely — the same class of gap the
       # SRT/dep-audit note in CLAUDE.md describes. Both are pure static checks:

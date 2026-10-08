@@ -29,7 +29,7 @@ default:
 #     MR or a push to develop. See the note on integration_tests for what that
 #     trades away.
 #
-# ⚠️ WHY fast_checks IS SPLIT. It used to be one `code_checks` job running lint,
+# ⚠️ WHY fast_checks IS SPLIT. It used to be one `static_checks` job running lint,
 # typecheck and every pytest suite in sequence, and it took 45 minutes of which 80%
 # was pytest: `test-packages-cicd` alone was 25 min because every one of its pytest
 # invocations ran serial, single-process, on a 16-vCPU runner. The largest of them
@@ -175,10 +175,19 @@ workflow:
 # Lint, format, type check, and the static API RBAC scan. Everything that reads the
 # tree without running a test suite.
 #
-# Keeps the job name `code_checks` even though it no longer runs the test suites,
-# because that is the name on every historical pipeline, in the GitLab email
-# templates and in scripts/sdlc/docs/CI_TEST_COVERAGE.md.
-code_checks:
+# ⚠️ Named for what it runs, which is the whole point of the name. It was
+# `code_checks` while it ran lint, typecheck AND every pytest suite; once the
+# suites moved out, "code checks" was vague enough that a green mark read as "the
+# code is fine" when the tests had not been consulted — and on one merge this job
+# went green five minutes before `unit_tests` finished. `static_checks` says what
+# is true: everything here is static analysis.
+#
+# It is deliberately NOT named after a Makefile target, because no single target
+# covers it — `make lint-cicd` is one of five steps, alongside `make typecheck`,
+# `make api-test-static` and the two scans. A target-shaped name would trade
+# today's over-claiming for under-claiming, leaving a reader to wonder whether
+# types were checked at all.
+static_checks:
   <<: *fast_check_job
   # Larger runner (16 vCPU / 64 GB, size:2xlarge): the Vite production build
   # tsc/eslint are CPU-bound and ran ~6 min on the default small runner vs
@@ -371,7 +380,7 @@ deployment_validation:
   # for a deploy that is not about to happen.
   #
   # ⚠️ This job going nightly does NOT take the check off merge requests. The same
-  # script runs as the last step of `code_checks` above, where it costs seconds and
+  # script runs as the last step of `static_checks` above, where it costs seconds and
   # needs no credentials. What is nightly-only is this job's AWS-CLI-installing
   # form, kept because the nightly deploy path should validate the role in the
   # environment that is about to use it rather than trusting the offline read.
@@ -721,7 +730,7 @@ srt_security_review:
   # Cold prerequisite install (checkov+semgrep+jupyter+syft+bandit into SRT's
   # managed venv, no pip cache) can take 10-15 min; setup.py retries once, then
   # the scan itself runs 5-15 min. 50m leaves headroom for the worst case.
-  # It's not "fast", but it needs no AWS and runs in PARALLEL with code_checks
+  # It's not "fast", but it needs no AWS and runs in PARALLEL with static_checks
   # (needs: []), so it adds no wall-clock to the fast gate while still gating the
   # expensive deploy.
   timeout: 50m
@@ -731,14 +740,14 @@ srt_security_review:
   tags:
     - size:large
 
-  # Run on EVERY push and every MR (same as code_checks) — no AWS needed, and
+  # Run on EVERY push and every MR (same as static_checks) — no AWS needed, and
   # this surfaces security regressions early on any branch (GitLab emails the
   # committer on failure).
   rules:
     - if: $CI_PIPELINE_SOURCE == "merge_request_event"
     - if: $CI_COMMIT_BRANCH
 
-  # Start immediately, in parallel with code_checks — SRT needs no artifacts.
+  # Start immediately, in parallel with static_checks — SRT needs no artifacts.
   needs: []
 
   before_script:
@@ -894,7 +903,7 @@ ai_mr_review:
     - when: never
 
   # Nothing to wait for: it reads the MR, not another job's artifacts. In
-  # particular it does NOT wait for code_checks — a lint failure is exactly when
+  # particular it does NOT wait for static_checks — a lint failure is exactly when
   # a review is most useful, and gating the review on the gates would mean the
   # MRs most in need of one never get it.
   needs: []

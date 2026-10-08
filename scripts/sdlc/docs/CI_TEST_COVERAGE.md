@@ -99,7 +99,7 @@ first one; the two AWS stages are **nightly plus a manual button**.
 
 | Stage | Jobs | AWS? | Cost |
 |-------|------|------|------|
-| **fast_checks** | Seven **parallel** jobs, every one `needs: []`: `code_checks` (lint, typecheck, buildspec + CloudFormation template validation, static RBAC scan, service-role permission check, first-party dependency-confusion check), `unit_tests` (`idp_common_pkg`, ~10,500 tests, + the coverage ratchet), `package_tests` (`test-packages-cicd`), `ui_tests` (vitest), `srt_security_review`, `dep_audit` (SCA vs OSV), `ai_mr_review` (advisory) | No | critical path ≈ the slowest job |
+| **fast_checks** | Seven **parallel** jobs, every one `needs: []`: `static_checks` (lint, typecheck, buildspec + CloudFormation template validation, static RBAC scan, service-role permission check, first-party dependency-confusion check), `unit_tests` (`idp_common_pkg`, ~10,500 tests, + the coverage ratchet), `package_tests` (`test-packages-cicd`), `ui_tests` (vitest), `srt_security_review`, `dep_audit` (SCA vs OSV), `ai_mr_review` (advisory) | No | critical path ≈ the slowest job |
 | **deployment_validation** | IAM service-role permission pre-check | Yes (read-only) | seconds |
 | **integration_tests** | Full stack deploy + primary suite (the numbered steps) on the **primary shared stack only**. The five deployment-variant probes do **not** run here — see below. | Yes (deploys) | ~1 hour |
 
@@ -124,7 +124,7 @@ flakiness history against a nightly nobody can attribute.
 
 ### Why fast_checks is seven jobs
 
-It was one `code_checks` job that ran lint, typecheck and every pytest suite in
+It was one `static_checks` job that ran lint, typecheck and every pytest suite in
 sequence, and it took **45 minutes** — of which 80% was pytest. Two independent
 things were wrong and both are fixed, because neither fix subsumes the other:
 
@@ -318,7 +318,7 @@ catches it.
 ² **`ai_mr_review` is advisory, is not a gate, and does not run on its own.** It
 runs Claude Code (via Bedrock) over the MR diff with
 `.claude/skills/pr-review.md` and posts the review as an MR note; it is
-`allow_failure: true`, has `needs: []` so it does not wait for `code_checks`, and
+`allow_failure: true`, has `needs: []` so it does not wait for `static_checks`, and
 it is deliberately absent from `test_ci_gate_parity.py`'s `SHARED_GATES` — a
 model's opinion must not decide whether code merges, and a Bedrock throttle must
 not red-line an MR. It is **GitLab-only** because the AWS credentials are here; a
@@ -380,7 +380,7 @@ Notes:
 - **The service-role permission check still runs on every MR**, even though the
   `deployment_validation` *job* is nightly-only: the same
   `scripts/sdlc/validate_service_role_permissions.py` is the last step of
-  `code_checks`, where it costs seconds and needs no credentials. The nightly job
+  `static_checks`, where it costs seconds and needs no credentials. The nightly job
   is the AWS-CLI-installing form, kept so the nightly deploy path validates the
   role in the environment about to use it rather than trusting the offline read.
 - A `workflow:` rule prevents **duplicate** branch+MR pipelines (a branch with an

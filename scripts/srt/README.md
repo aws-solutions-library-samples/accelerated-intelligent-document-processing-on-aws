@@ -143,7 +143,7 @@ srt_security_review:
 
 ### Why on every push, not just MRs to `develop`?
 
-The job needs no AWS and runs in **parallel** with `code_checks` (`needs: []`), so
+The job needs no AWS and runs in **parallel** with `static_checks` (`needs: []`), so
 it adds no wall-clock to the fast gate while still gating the expensive deploy
 stages. Running it on every push surfaces security regressions early on any
 branch, and GitLab emails the committer on failure.

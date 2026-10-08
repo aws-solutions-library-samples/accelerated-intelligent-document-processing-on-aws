@@ -43,7 +43,7 @@ def _skip_when_sam_absent(monkeypatch):
 
     FeaturePublisher.publish shells out to the SAM CLI to rewrite local CodeUri
     paths; PackPublisher delegates to the same method. Those tests are
-    integration-level, but the suite runs in the offline `code_checks` fast gate
+    integration-level, but the suite runs in the offline `package_tests` fast gate
     (via `make test-packages-cicd`), which doesn't install SAM. Rather than
     hard-fail there, replace the sam step with a `pytest.skip` when the CLI is
     absent — so only tests that ACTUALLY invoke sam skip, while non-publishing
