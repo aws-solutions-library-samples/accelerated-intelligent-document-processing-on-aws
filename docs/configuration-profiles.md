@@ -333,7 +333,7 @@ Revision bodies are stored in the Configuration bucket under
 pinned revision is readable for that long and no longer; the current revision keeps
 working past it, as described above. To keep a revision's configuration for longer,
 download it before then with
-`idp-cli config-download --config-profile <profile> --config-revision <n>`. Keeping
+`idp-cli config-download --stack-name <stack> --config-profile <profile> --config-revision <n>`. Keeping
 the bodies out of the table is deliberate: listing profiles scans that table, and
 DynamoDB bills a scan on full item size, so storing revision bodies there would make
 the profile list more expensive with every save.

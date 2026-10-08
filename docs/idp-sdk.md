@@ -1589,8 +1589,9 @@ Download configuration from a deployed stack.
 
 **Raises:** `IDPResourceNotFoundError` if the named profile does not exist, if the
 requested revision is no longer retained, or if its body has expired under
-`DataRetentionInDays` and it is not the profile's current revision
-([Retention](configuration-profiles.md#retention)). None of these falls back to anything: handing back
+`DataRetentionInDays`, unless it is the profile's current published revision and the
+profile still provably holds that configuration, in which case it is rebuilt from the
+profile ([Retention](configuration-profiles.md#retention)). None of these falls back to anything: handing back
 a *different* configuration under the name you asked for would look like a success, and
 for a missing profile the answer on offer was the **YAML null document** — `config` came
 back `{}` and `yaml_content` was `"null\n...\n"`, so `output` was written with `null`
@@ -1647,7 +1648,8 @@ in use. See [configuration-profiles.md](configuration-profiles.md#revision-histo
 A returned revision is not necessarily one `download(config_revision=...)` can still
 fetch. A label or a test-run pin keeps a revision in this list, but every revision's
 body expires `DataRetentionInDays` after it was cut, and after that only the
-profile's current revision can still be downloaded
+profile's current published revision can still be downloaded, and only while the
+profile provably still holds that configuration
 ([Retention](configuration-profiles.md#retention)).
 
 **Parameters:**
