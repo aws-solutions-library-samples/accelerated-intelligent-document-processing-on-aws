@@ -3,7 +3,9 @@
 Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
 SPDX-License-Identifier: MIT-0
 
-**Questions?** [![Ask DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws)
+[![Ask DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws)
+
+
 
 📖 **[Browse the Documentation Site](https://aws-solutions-library-samples.github.io/accelerated-intelligent-document-processing-on-aws/)** — searchable, with sidebar navigation
 
