@@ -1644,8 +1644,12 @@ class is corrected — see
   could not be read is not recorded at all. So the evaluation pairs neither with
   the ground-truth section on its pages, which is **No matching section** whether
   or not the class was right, and the row says *not recorded* for the pages no
-  recorded predicted section covers. The document's evaluation report lists its
-  excluded sections with their classes and pages. A baseline taken while a class was
+  recorded predicted section covers. The panel does not tell whether an
+  unreadable result was the prediction's or the baseline's, so an unreadable
+  baseline section also makes the document's **No matching section** rows say
+  *not recorded* for pages no recorded predicted section covers, and has no row
+  of its own. The document's evaluation report lists its excluded
+  sections with their classes and pages. A baseline taken while a class was
   excluded records that class's sections the same way, so they are listed with
   expected class *Unknown* and no pages, unless the prediction also has a section
   of an excluded class.
