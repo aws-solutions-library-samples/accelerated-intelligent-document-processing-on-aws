@@ -20,6 +20,11 @@ phases:
       - export FUNCTION_bda_completion="patterns/unified/src/bda_completion_function"
       - export FUNCTION_bda_processresults="patterns/unified/src/bda_processresults_function"
       - |
+        # errexit, because this whole block is ONE CodeBuild command and its exit
+        # status is the last loop iteration's. Without it a failed build leaves the
+        # phase -- and so the build -- reporting success with an image missing from
+        # ECR. See the same note in buildspec.yml.
+        set -e
         for func_var in FUNCTION_bda_invoke FUNCTION_bda_completion FUNCTION_bda_processresults; do
           func_path="${!func_var}"
           func_name=$(basename "$func_path" | sed 's/_/-/g')

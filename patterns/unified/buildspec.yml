@@ -32,6 +32,15 @@ phases:
       - export FUNCTION_mlflow_logger="patterns/unified/src/mlflow_logger_function"
       - export FUNCTION_rule_validation_policy_classification="patterns/unified/src/rule-validation-policy-classification-function"
       - |
+        # errexit, and it is load-bearing rather than hygiene. This whole block is
+        # ONE CodeBuild command, so the phase sees only the exit status of the LAST
+        # loop iteration: without `set -e` a `docker buildx build` that fails for
+        # any image but the last one is skipped over, the phase succeeds, CodeBuild
+        # reports SUCCEEDED, and the DockerBuildRun custom resource then waits out
+        # its full 1-hour timeout looking for a tag that was never pushed. Note
+        # `-u` is deliberately NOT set: $LAMBDA_ARCHITECTURE is read bare below and
+        # is legitimately unset in the default arm64 case. See issue #1310.
+        set -e
         for func_var in FUNCTION_bda_invoke FUNCTION_bda_completion FUNCTION_bda_processresults FUNCTION_ocr FUNCTION_classification FUNCTION_extraction FUNCTION_assessment FUNCTION_processresults FUNCTION_summarization FUNCTION_evaluation FUNCTION_test_execution_aggregation FUNCTION_rule_validation FUNCTION_rule_validation_orchestration FUNCTION_mlflow_logger FUNCTION_rule_validation_policy_classification; do
           func_path="${!func_var}"
           func_name=$(basename "$func_path" | sed 's/_/-/g')

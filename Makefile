@@ -335,9 +335,20 @@ check-retired-services: ## Fail if documentation presents a retired service (App
 	@$(PYTHON) scripts/sdlc/check_retired_services.py || \
 		(echo -e "$(RED)ERROR: Retired-service documentation check failed!$(NC)" && exit 1)
 
-validate-buildspec: ## Validate AWS CodeBuild buildspec files
+# Discovered from `git ls-files` rather than listed, because the previous
+# `patterns/*/buildspec.yml` glob read ONE of the four buildspecs in the tree and
+# the three it skipped carried the same defect (#1310). Fails outright on an empty
+# set, so a discovery that stops working is a red gate rather than a green one --
+# the same contract `check-arn-partitions` and `cfn-lint` have.
+BUILDSPEC_FILES = $(shell git ls-files | grep -E '(^|/)buildspec[^/]*\.ya?ml$$')
+
+validate-buildspec: ## Validate AWS CodeBuild buildspec files (all of them, discovered)
 	@echo "Validating buildspec files..."
-	@$(PYTHON) scripts/sdlc/validate_buildspec.py patterns/*/buildspec.yml || \
+	@if [ -z "$(BUILDSPEC_FILES)" ]; then \
+		echo -e "$(RED)ERROR: buildspec discovery found no files — the gate would pass vacuously$(NC)"; \
+		exit 1; \
+	fi
+	@$(PYTHON) scripts/sdlc/validate_buildspec.py $(BUILDSPEC_FILES) || \
 		(echo -e "$(RED)ERROR: Buildspec validation failed!$(NC)" && exit 1)
 	@echo -e "$(GREEN)✅ All buildspec files are valid!$(NC)"
 

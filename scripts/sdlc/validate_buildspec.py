@@ -21,6 +21,7 @@ Exit codes:
 """
 
 import glob
+import re
 import sys
 from pathlib import Path
 from typing import Any, Dict, List
@@ -45,6 +46,18 @@ class BuildspecValidator:
         "post_build",
     ]
     PHASE_FIELDS = ["commands", "runtime-versions", "finally"]
+
+    # A loop opening a statement, i.e. at the start of a line or straight after a
+    # `;`/`&&`/`||`/`then`/`do`. `for` inside a string or a comment does not count.
+    _LOOP = re.compile(
+        r"(?:^|;|&&|\|\||\bthen\b|\bdo\b)\s*(for|while|until)\s", re.MULTILINE
+    )
+    # `set -e`, `set -eu`, `set -euo pipefail`, `set -o errexit`. A bare `-o
+    # pipefail` is NOT errexit, so `-e` must appear as its own short flag or the
+    # long option must be spelled out.
+    _ERREXIT = re.compile(
+        r"^\s*set\s+(?:-[a-zA-Z]*e[a-zA-Z]*\b|-o\s+errexit\b)", re.MULTILINE
+    )
 
     def __init__(self, filepath: str):
         self.filepath = Path(filepath)
@@ -128,11 +141,55 @@ class BuildspecValidator:
                             f"Phase '{phase_name}', command #{idx} must be a string, got {type(cmd).__name__}"
                         )
 
+        # Check that any loop runs under errexit
+        self._validate_loops_fail_fast(phase_name, phase_content)
+
         # Check for unknown fields
         unknown_fields = set(phase_content.keys()) - set(self.PHASE_FIELDS)
         if unknown_fields:
             self.warnings.append(
                 f"Phase '{phase_name}' has unknown fields: {', '.join(unknown_fields)}"
+            )
+
+    def _validate_loops_fail_fast(self, phase_name: str, phase_content: Dict):
+        """A command containing a loop must enable errexit.
+
+        CodeBuild aborts a phase when a command exits non-zero, but a multi-line
+        command is ONE command and its exit status is that of the last statement
+        it runs -- the last loop iteration. So a loop that builds and pushes N
+        images reports only the Nth result, and a failure in any of the other N-1
+        is skipped over silently: the phase succeeds, the build reports SUCCEEDED,
+        and a consumer that expects all N artifacts to exist waits for one that was
+        never produced. That is issue #1310, where the consumer is the
+        ``DockerBuildRun`` custom resource and the wait is its 1-hour timeout.
+
+        The rule is deliberately coarse -- a loop whose every statement is already
+        ``||``-guarded does not need errexit and is flagged anyway -- because the
+        remedy is one line and the failure mode it prevents is a silent one. What
+        it does not and cannot cover is a buildspec held inline in a
+        CloudFormation ``BuildSpec`` property rather than in a file, since this
+        validator is given files.
+        """
+        commands = phase_content.get("commands")
+        if not isinstance(commands, list):
+            return
+
+        for idx, cmd in enumerate(commands, 1):
+            if not isinstance(cmd, str) or "\n" not in cmd:
+                # A single-line command is judged by CodeBuild on its own exit
+                # status, so the phase already aborts on it.
+                continue
+            loop = self._LOOP.search(cmd)
+            if not loop:
+                continue
+            errexit = self._ERREXIT.search(cmd)
+            if errexit and errexit.start() < loop.start():
+                continue
+            self.errors.append(
+                f"Phase '{phase_name}', command #{idx}: a multi-line command with a "
+                f"'{loop.group(1)}' loop does not enable errexit, so the command's exit "
+                "status is only the last iteration's and a failure in any earlier one is "
+                "silently skipped (issue #1310). Add 'set -e' before the loop."
             )
 
     def _validate_env(self):
