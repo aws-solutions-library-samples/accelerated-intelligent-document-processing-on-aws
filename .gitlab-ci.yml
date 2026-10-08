@@ -618,12 +618,25 @@ integration_tests:
     # person who clicked it and does not need to interrupt a channel.
     #
     # SLACK_WEBHOOK_URL is a MASKED CI variable, never a committed value — this
-    # repository is public, and an incoming webhook URL is a bearer credential that
-    # lets anyone post to the channel. Absent, the block prints one line and exits 0,
-    # the same contract GITLAB_REVIEW_TOKEN has in ai_mr_review.
+    # repository is public, and a webhook URL is a bearer credential that lets anyone
+    # post to the channel. Absent, the block prints one line and exits 0, the same
+    # contract GITLAB_REVIEW_TOKEN has in ai_mr_review.
     #
-    # The channel is fixed by the webhook at creation time, so a `channel` field in
-    # the payload would be ignored by modern Slack apps and is not sent.
+    # ⚠️ The variable must be MASKED and **NOT PROTECTED**. This project has no
+    # protected branches, so a protected variable is absent from every pipeline
+    # including the scheduled one — the block would log "not set" forever and look
+    # like it was working.
+    #
+    # ⚠️ PAYLOAD SHAPE: this targets a Slack **Workflow Builder** webhook, not an
+    # incoming webhook, because installing a Slack *app* needs workspace-admin
+    # approval that a workflow does not. The two take different bodies and the
+    # difference is silent — an incoming webhook wants `{"text":…,"blocks":[…]}`,
+    # while a Workflow Builder trigger wants a FLAT object whose keys are the
+    # variables declared on the trigger, and ignores anything it does not recognise.
+    # So the keys below are a contract with the workflow: `status`, `commit`,
+    # `job_url` and `summary` must be declared there, as Text, under exactly these
+    # names. Renaming one here without renaming it there posts a message with a
+    # blank variable rather than failing.
     - |
       if [ -z "$SLACK_WEBHOOK_URL" ]; then
         echo "ℹ️ SLACK_WEBHOOK_URL not set — skipping the Slack post"
@@ -633,37 +646,34 @@ integration_tests:
         # Build the payload in python rather than by string-concatenating shell:
         # the summary is multi-line model output that reliably contains quotes,
         # backslashes and newlines, and a hand-built JSON body breaks on all three.
-        python3 - "$CI_JOB_STATUS" "$CI_JOB_URL" "$CI_PROJECT_URL" "$CI_COMMIT_SHA" > slack-payload.json <<'PY'
-      import json, os, pathlib, sys
+        python3 - "$CI_JOB_STATUS" "$CI_JOB_URL" "$CI_COMMIT_SHA" > slack-payload.json <<'PY'
+      import json, pathlib, sys
 
-      status, job_url, project_url, sha = sys.argv[1:5]
-      ok = status == "success"
+      job_status, job_url, sha = sys.argv[1:4]
+      ok = job_status == "success"
 
       summary = ""
       p = pathlib.Path("deployment_summary.txt")
       if p.is_file():
           summary = p.read_text(errors="replace").strip()
-      # Slack hard-limits a section block to 3000 characters and rejects the whole
-      # message if one exceeds it, so truncate rather than lose the post entirely.
-      if len(summary) > 2600:
-          summary = summary[:2600] + "\n… (truncated — full summary in the job artifacts)"
-
-      header = ("✅ Nightly IDP integration deploy PASSED" if ok
-                else "❌ Nightly IDP integration deploy FAILED")
-
-      lines = [f"*<{job_url}|{header}>*",
-               f"Commit `{sha[:8]}` on `develop` · <{project_url}/-/pipeline_schedules|schedules>"]
+      # A Slack message caps at 4000 characters and the whole post is rejected past
+      # it, so truncate rather than lose the notification. The rest is in the job
+      # artifacts, which the message links to.
+      if len(summary) > 2000:
+          summary = summary[:2000] + "\n… (truncated — full summary in the job artifacts)"
+      if not summary:
+          summary = "(no deployment summary was produced — see the job log)"
       if not ok:
-          lines.append("Triage by bisecting the day's merges — the pipeline's own "
-                       "commit is not necessarily the cause.")
+          summary += ("\n\nTriage by bisecting the day's merges: the pipeline's own "
+                      "commit is not necessarily the cause.")
 
-      blocks = [{"type": "section",
-                 "text": {"type": "mrkdwn", "text": "\n".join(lines)}}]
-      if summary:
-          blocks.append({"type": "section",
-                         "text": {"type": "mrkdwn", "text": f"```{summary}```"}})
-
-      json.dump({"text": header, "blocks": blocks}, sys.stdout)
+      # Flat, all-string values: a Workflow Builder Text variable takes nothing else.
+      json.dump({
+          "status": "✅ PASSED" if ok else "❌ FAILED",
+          "commit": sha[:8],
+          "job_url": job_url,
+          "summary": summary,
+      }, sys.stdout)
       PY
         # --fail so a 4xx from Slack is visible rather than silently discarded, but
         # `|| true` so a notification problem never changes the job's verdict: the
