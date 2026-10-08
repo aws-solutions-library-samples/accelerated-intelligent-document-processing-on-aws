@@ -103,24 +103,39 @@ first one; the two AWS stages are **nightly plus a manual button**.
 | **deployment_validation** | IAM service-role permission pre-check | Yes (read-only) | seconds |
 | **integration_tests** | Full stack deploy + primary suite (the numbered steps) on the **primary shared stack only**. The five deployment-variant probes do **not** run here — see below. | Yes (deploys) | ~1 hour |
 
-⚠️ **The deployment-variant probes (ZAP DAST, WAF, API Gateway GLOBAL and PRIVATE
-hosting, Jobs API) do not run in this job**, and moving it to a nightly schedule
-did not change that. They are gated by `IDP_RUN_PROBES`, which
-`scripts/sdlc/codebuild_deployment.py` defaults to `false`; `IDP_TEST_ZAP` defaults
-to `true` but only filters *within* `run_variant_probes`, which is never called
-unless the outer gate is on. Reading the inner default as the answer is the easy
-mistake here. Run them with `make stacktest-*` (see
-`.claude/skills/run-stack-tests.md`), or set `IDP_RUN_PROBES=true` for a pipeline
-run.
+**The deployment-variant probes (ZAP DAST, WAF, API Gateway GLOBAL and PRIVATE
+hosting, Jobs API) run on the NIGHTLY schedule only** — not on a manually clicked
+deploy, and not on a merge request.
 
-They were disabled because five concurrent extra stacks burst account-wide control
-planes (CloudWatch Logs log-group create consistency, CodeBuild role-trust
-propagation, the IAM CreatePolicy rate limit) and caused flaky failures unrelated
-to the code under test. **That reason is weaker now than when it was written**: the
-deploy no longer runs once per merge request, and a single shared `resource_group`
-means at most one deploy at a time — so turning the probes on for the scheduled run
-is the obvious way to buy back the coverage, and the thing to weigh is their
-flakiness history against a nightly nobody can attribute.
+They are gated by `IDP_RUN_PROBES`, which `scripts/sdlc/codebuild_deployment.py`
+defaults to `false`. ⚠️ `IDP_TEST_ZAP` defaults to `true` but only filters *within*
+`run_variant_probes`, which is never called unless the outer gate is on — reading
+that inner default as the answer is the easy mistake, and it is the one that put a
+false claim in three documents. The outer gate is the one to read.
+
+The flag reaches the build on **S3 object metadata** (`idp-run-probes`), the same
+channel the admin email uses: `integration_test_deployment.py` sets it when
+`CI_PIPELINE_SOURCE == "schedule"`, and the buildspec reads it back. That is why it
+is scoped to the nightly rather than set in the CodeBuild project's environment —
+the project serves the manual button too, and a deploy somebody clicked to check a
+merge request wants an answer in about an hour, not five extra stacks.
+
+⚠️ **Reading the metadata needs the `None` normalisation the buildspec does.**
+`aws s3api head-object --query … --output text` prints the literal string `None`
+for an absent key rather than an empty string, and `|| echo` cannot catch it
+because the command *succeeded* — so a bare read hands the deploy script the string
+`"None"`.
+
+Why this is safe now when it was not before: five concurrent extra stacks burst
+account-wide control planes (CloudWatch Logs log-group create consistency,
+CodeBuild role-trust propagation, the IAM `CreatePolicy` rate limit) and caused
+flaky failures unrelated to the code under test. That was measured when the deploy
+ran **once per merge request**, so several could overlap. The deploy is now a
+nightly schedule behind a single shared `resource_group`, so at most one runs at a
+time — the burst condition is removed rather than merely hoped against.
+
+Run them outside the nightly with `make stacktest-*` (see
+`.claude/skills/run-stack-tests.md`).
 
 ### Why fast_checks is seven jobs
 

@@ -918,6 +918,17 @@ Resources:
                 - npm install -g npm@11 || echo "npm upgrade skipped, using bundled $(npm --version)"
                 - pip install uv || { echo "uv installation failed"; exit 1; }
                 - export IDP_ADMIN_EMAIL=$(aws s3api head-object --bucket ${SOURCE_BUCKET} --key deploy/code.zip --query 'Metadata."gitlab-user-email"' --output text 2>/dev/null || echo "")
+                # Deployment-variant probes, carried on the same S3 metadata channel
+                # as the admin email above and set only by the NIGHTLY run (see
+                # scripts/sdlc/integration_test_deployment.py for why it is scoped
+                # there rather than set on this project's environment). Note the
+                # `None` normalisation: `--output text` prints the literal string
+                # `None` for an absent key rather than an empty string, and `|| echo`
+                # cannot catch it because the command SUCCEEDED -- so a bare read
+                # would hand codebuild_deployment.py the string "None".
+                - export IDP_RUN_PROBES=$(aws s3api head-object --bucket ${SOURCE_BUCKET} --key deploy/code.zip --query 'Metadata."idp-run-probes"' --output text 2>/dev/null || echo "false")
+                - '[ "$IDP_RUN_PROBES" = "true" ] || export IDP_RUN_PROBES=false'
+                - echo "Deployment-variant probes: $IDP_RUN_PROBES"
                 - make setup || { echo "IDP Common and IDP CLI installation failed"; exit 1; }
                 - pip install rich scikit-learn || echo "Additional package installation failed, using fallbacks"
                 - export PATH="$PWD/.venv/bin:$PATH"

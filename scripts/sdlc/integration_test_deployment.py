@@ -90,6 +90,27 @@ def upload_to_s3(bucket_name):
             metadata["gitlab-user-email"] = gitlab_user_email
             print(f"Adding GitLab user email to metadata: {gitlab_user_email}")
 
+        # Run the five deployment-variant probes (ZAP DAST, WAF, APIGW GLOBAL and
+        # PRIVATE hosting, Jobs API) on the NIGHTLY run only.
+        #
+        # They are disabled by default in codebuild_deployment.py because five extra
+        # stacks deploying at once burst account-wide control planes (CloudWatch Logs
+        # log-group create consistency, CodeBuild role-trust propagation, the IAM
+        # CreatePolicy rate limit) and caused flaky failures unrelated to the code
+        # under test. That was measured when the deploy ran once per MERGE REQUEST, so
+        # several could overlap; the deploy is now a nightly schedule behind a single
+        # shared resource_group, which means at most one at a time and removes the
+        # burst condition rather than merely hoping it does not recur.
+        #
+        # Scoped to the schedule rather than set in the CodeBuild project's own
+        # environment, because the project serves the manual button too: a deploy
+        # somebody clicks to check an MR wants an answer in ~1h, not five extra stacks.
+        # S3 object metadata is the existing channel for exactly this (it is how the
+        # admin email reaches the build), so this rides it instead of inventing one.
+        if os.environ.get("CI_PIPELINE_SOURCE", "") == "schedule":
+            metadata["idp-run-probes"] = "true"
+            print("Scheduled run — enabling the deployment-variant probes")
+
         response = s3_client.put_object(
             Bucket=bucket_name,
             Key="deploy/code.zip",
