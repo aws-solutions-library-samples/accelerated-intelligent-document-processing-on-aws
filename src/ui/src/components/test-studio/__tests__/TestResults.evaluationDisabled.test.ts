@@ -36,6 +36,15 @@ describe('TestResults evaluation-disabled messaging', () => {
     expect(SOURCE).toMatch(/results\.status === 'COMPLETE' && !results\.isDraftLabeling && results\.evaluationDisabled/);
   });
 
+  it('withholds it from a run that does have accuracy data', () => {
+    // The conjunct the two gating assertions above do not cover. Dropping it
+    // renders this alert alongside the success alert, which the regex for the
+    // rest of the condition still matches — measured, so it is asserted
+    // separately rather than folded into the patterns above.
+    const alerts = SOURCE.match(/\{!hasAccuracyData && results\.status === 'COMPLETE'/g);
+    expect(alerts, 'each no-accuracy alert must require !hasAccuracyData').toHaveLength(3);
+  });
+
   it('suppresses the ground-truth message for such a run, so only one alert shows', () => {
     // Without the negation both alerts render, and the one that is wrong about
     // the cause is the one a reader acts on first.

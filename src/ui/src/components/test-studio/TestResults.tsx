@@ -1413,7 +1413,7 @@ const TestResults = ({ testRunId, setSelectedTestRunId }: TestResultsProps): Rea
           <Alert type="info" header="No accuracy metrics — evaluation is turned off in this configuration">
             This run was processed with <Box variant="code">evaluation.enabled</Box> set to false, so its documents were never scored
             against the test set&apos;s ground truth. Turn evaluation on in the configuration profile and run the test set again to get
-            accuracy metrics. Cost and timing figures for this run are unaffected.
+            accuracy metrics.
           </Alert>
         )}
 

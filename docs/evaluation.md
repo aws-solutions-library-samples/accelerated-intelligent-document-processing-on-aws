@@ -214,7 +214,8 @@ The evaluation service stores confidence scores from extraction results alongsid
      document that was deliberately not scored is distinguishable from one whose
      evaluation has not finished. A Test Studio run of such documents completes and
      reports its cost and timing, with no accuracy figures and an explanation on the
-     results page in place of them
+     results page in place of them. Note the status is written over by promoting a
+     document to an evaluation baseline, which uses the same attribute
    - Generates detailed markdown reports using AI analysis
 
 3. **Evaluation Reports**

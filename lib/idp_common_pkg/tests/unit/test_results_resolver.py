@@ -6,6 +6,7 @@ import gzip
 import importlib.util
 import json
 import os
+import re
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from unittest.mock import Mock, patch
@@ -2114,6 +2115,34 @@ _EVALUATION_FUNCTION = os.path.join(
 )
 
 
+# The attribute's other two writers. Promoting a document to an evaluation
+# baseline overwrites EvaluationStatus with one of these, so a test-run document
+# promoted from the document list arrives in the run-status loop carrying one —
+# a value the pipeline's enum does not contain and which the loop therefore has
+# to classify anyway. Read from source for the same reason as the enum.
+_BASELINE_STATUS_WRITERS = (
+    os.path.join(
+        os.path.dirname(__file__),
+        *([os.pardir] * 4),
+        "nested",
+        "api-resolvers",
+        "src",
+        "lambda",
+        "copy_to_baseline_resolver",
+        "index.py",
+    ),
+    os.path.join(
+        os.path.dirname(__file__),
+        *([os.pardir] * 4),
+        "lib",
+        "idp_sdk",
+        "idp_sdk",
+        "_core",
+        "evaluation_processor.py",
+    ),
+)
+
+
 def _pipeline_evaluation_statuses():
     """Every ``EvaluationStatus`` value the pipeline can write, read from source.
 
@@ -2138,22 +2167,53 @@ def _pipeline_evaluation_statuses():
     raise AssertionError("EvaluationStatus enum not found in the evaluation function")
 
 
+def _baseline_copy_statuses():
+    """The ``BASELINE_*`` values the two copy-to-baseline writers can set.
+
+    Collected by scanning their source for the literals rather than listing them
+    here, so a fourth outcome added to either writer widens the universe the
+    closure test below is checked against instead of silently falling outside it.
+
+    The lookarounds matter: without them the pattern also matches the tail of
+    ``EVALUATION_BASELINE_BUCKET``, and an environment-variable name would be
+    demanded of the run-status classification as though it were a status.
+    """
+    found = set()
+    for path in _BASELINE_STATUS_WRITERS:
+        found |= set(
+            re.findall(r"(?<![A-Z_])BASELINE_[A-Z_]+(?![A-Z_])", open(path).read())
+        )
+    return found
+
+
 @pytest.mark.unit
-def test_every_evaluation_status_the_pipeline_writes_is_classified():
+def test_every_evaluation_status_any_writer_can_set_is_classified():
     """The class-level guard, and the reason this is a test rather than a comment.
 
     Both halves of #1330 were a status the run-status loop had no branch for.
     Counting an unknown one as evaluating is the right default for a *reader*
     (a status it cannot interpret may well mean work in progress) and a terrible
     one as a steady state, because nothing ever revisits the decision. So the
-    rule enforced here is a closure: every value the enum can hold is classified
-    as settled, unsuccessful or in-flight, and in exactly one of the three.
-    Adding a member to that enum without coming here fails this test.
+    rule enforced here is a closure: every value ANY writer of the attribute can
+    set is classified as settled, unsuccessful or in-flight, and in exactly one
+    of the three. Adding a status to any of those writers without coming here
+    fails this test.
+
+    The universe is every writer, not the pipeline's enum alone, because the
+    enum is only one of three and the other two were the easiest thing to miss:
+    they describe a different activity (promoting a document to a baseline) and
+    write over whatever evaluation left in the attribute. A closure asserted
+    over one writer would have read as cover for all of them.
     """
-    statuses = _pipeline_evaluation_statuses()
-    # Sanity-check the parse itself: an empty or tiny set would make the closure
+    statuses = _pipeline_evaluation_statuses() | _baseline_copy_statuses()
+    # Sanity-check both parses: an empty or tiny set would make the closure
     # assertion below vacuously true.
     assert {"COMPLETED", "FAILED", "RUNNING", "DISABLED", "TIMED_OUT"} <= statuses
+    assert {
+        "BASELINE_COPYING",
+        "BASELINE_AVAILABLE",
+        "BASELINE_ERROR",
+    } <= statuses
 
     partitions = {
         "settled": index._EVAL_STATUS_SETTLED,
@@ -2163,16 +2223,16 @@ def test_every_evaluation_status_the_pipeline_writes_is_classified():
     for status in statuses:
         holders = [name for name, values in partitions.items() if status in values]
         assert holders, (
-            f"EvaluationStatus.{status} is classified nowhere in the run-status "
+            f"EvaluationStatus {status} is classified nowhere in the run-status "
             "loop, so every test run containing such a document will report "
             "EVALUATING indefinitely"
         )
         assert len(holders) == 1, (
-            f"EvaluationStatus.{status} is in more than one partition: {holders}"
+            f"EvaluationStatus {status} is in more than one partition: {holders}"
         )
 
-    # And nothing is classified that the pipeline cannot produce — a stale entry
-    # here is a branch no document can reach, which reads as cover it is not.
+    # And nothing is classified that no writer can produce — a stale entry here
+    # is a branch no document can reach, which reads as cover it is not.
     classified = set().union(*partitions.values())
     assert classified <= statuses, (
         f"classified but unwritable: {sorted(classified - statuses)}"
@@ -2210,12 +2270,23 @@ def _run_table(test_run_id, files, eval_status, stored_status="RUNNING", metadat
             doc["EvaluationStatus"] = by_key[file_key]
         return {"Item": doc}
 
+    def update_item(Key, UpdateExpression=None, ExpressionAttributeValues=None, **kw):
+        # Applied for real, so a reader called after the status transition sees
+        # what the transition stored. The Executions list reads the stored
+        # Status, which is the asymmetry the cross-reader test below is about.
+        if ":status" in (ExpressionAttributeValues or {}):
+            item["Status"] = ExpressionAttributeValues[":status"]
+        return {}
+
     mock_table = Mock()
     mock_table.get_item.side_effect = get_item
+    mock_table.update_item.side_effect = update_item
+    # The run record itself, for a reader that takes the item rather than an id.
+    mock_table.metadata = item
     return mock_table
 
 
-def _status_of(test_run_id, mock_table):
+def _status_of(test_run_id, mock_table, sqs=None):
     with (
         patch.dict(
             os.environ,
@@ -2225,23 +2296,56 @@ def _status_of(test_run_id, mock_table):
             },
         ),
         patch.object(index.dynamodb, "Table", return_value=mock_table),
-        patch.object(index, "sqs", Mock()),
+        patch.object(index, "sqs", sqs or Mock()),
         patch.object(index, "_claim_cache_update_slot", return_value=True),
     ):
         return index.get_test_run_status(test_run_id)
 
 
 @pytest.mark.unit
-def test_a_run_whose_documents_skipped_evaluation_completes():
+def test_a_run_whose_documents_skipped_evaluation_reaches_a_terminal_status():
     """The reported bug: evaluation.enabled false, every document Completed, run
-    stuck on EVALUATING."""
-    files = [f"doc{i}.pdf" for i in range(3)]
-    result = _status_of("off-run", _run_table("off-run", files, "DISABLED"))
+    stuck on EVALUATING.
 
-    assert result["status"] == "COMPLETE"
+    The run now settles as COMPLETE and an aggregation is enqueued, which is
+    what clears the badge one pass later (and is where the run's cost comes
+    from). Both halves matter: a terminal status with nothing enqueued is how
+    the first version of this fix left a run with no ground truth stuck in a
+    different way — see the cross-reader test below.
+    """
+    files = [f"doc{i}.pdf" for i in range(3)]
+    table = _run_table("off-run", files, "DISABLED")
+    sqs = Mock()
+    result = _status_of("off-run", table, sqs=sqs)
+
+    assert table.metadata["Status"] == "COMPLETE"
     assert result["completedFiles"] == 3
     assert result["evaluatingFiles"] == 0
     assert result["progress"] == 100
+    sqs.send_message.assert_called_once()
+
+
+@pytest.mark.unit
+def test_a_run_that_skipped_evaluation_reports_complete_once_aggregated():
+    """And converges, rather than reporting EVALUATING for good.
+
+    One pass of the cache update is enough however little the aggregation found,
+    which is the convergence the badge rule relies on.
+    """
+    files = [f"doc{i}.pdf" for i in range(3)]
+    table = _run_table(
+        "off-run-cached",
+        files,
+        "DISABLED",
+        stored_status="COMPLETE",
+        metadata={"testRunResult": {"overallAccuracy": None, "totalCost": 1.25}},
+    )
+    sqs = Mock()
+    result = _status_of("off-run-cached", table, sqs=sqs)
+
+    assert result["status"] == "COMPLETE"
+    assert result["completedFiles"] == 3
+    sqs.send_message.assert_not_called()
 
 
 @pytest.mark.unit
@@ -2277,15 +2381,15 @@ def test_an_unrecorded_status_completes_when_the_run_disabled_evaluation():
     stuck.
     """
     files = ["a.pdf", "b.pdf"]
-    mock_table = _run_table(
+    table = _run_table(
         "legacy-off-run",
         files,
         None,
         metadata={"Config": {"evaluation": {"enabled": False}}},
     )
-    result = _status_of("legacy-off-run", mock_table)
+    result = _status_of("legacy-off-run", table)
 
-    assert result["status"] == "COMPLETE"
+    assert table.metadata["Status"] == "COMPLETE"
     assert result["completedFiles"] == 2
     assert result["evaluatingFiles"] == 0
 
@@ -2334,15 +2438,15 @@ def test_a_blank_status_is_read_as_unrecorded_rather_than_unrecognised():
     """An empty string means nothing was written, which is the unrecorded case
     (and so answerable from the configuration), not an unknown status."""
     files = ["a.pdf"]
-    mock_table = _run_table(
+    table = _run_table(
         "blank-run",
         files,
         "   ",
         metadata={"Config": {"evaluation": {"enabled": False}}},
     )
-    result = _status_of("blank-run", mock_table)
+    _status_of("blank-run", table)
 
-    assert result["status"] == "COMPLETE"
+    assert table.metadata["Status"] == "COMPLETE"
 
 
 @pytest.mark.unit
@@ -2361,7 +2465,29 @@ def test_an_unrecognised_status_keeps_the_conservative_default():
 @pytest.mark.unit
 @pytest.mark.parametrize(
     "stored",
-    [False, True, "false", "False", "FALSE", "true", "no", "off", "0", "1", 0, 1],
+    [
+        False,
+        True,
+        "false",
+        "False",
+        "FALSE",
+        "true",
+        "no",
+        "off",
+        "0",
+        "1",
+        0,
+        1,
+        # Decimal is the type both storage shapes actually produce for a number:
+        # the compressed path parses with parse_float=Decimal and DynamoDB hands
+        # back Decimal on the legacy-inline path. A sweep of ints alone would not
+        # have covered either.
+        Decimal(0),
+        Decimal("0.0"),
+        Decimal(1),
+        0.0,
+        1.0,
+    ],
 )
 def test_the_disabled_reading_agrees_with_the_pipelines(stored):
     """Both ends must read ``evaluation.enabled`` the same way.
@@ -2422,48 +2548,70 @@ def test_the_disabled_reading_works_on_the_shape_runs_are_actually_stored_in():
 
 
 @pytest.mark.unit
-def test_the_badge_rule_does_not_decompress_a_configuration_it_cannot_need():
-    """Ordering, not correctness: the Executions list renders many runs at once.
+@pytest.mark.parametrize(
+    "eval_status,config",
+    [
+        # Evaluation switched off: nothing will ever be scored.
+        ("DISABLED", {"evaluation": {"enabled": False}}),
+        # No published ground truth: also never scored, but evaluation was ON —
+        # the shape the first version of this fix broke, because the per-row poll
+        # could see "nothing was scored" from the documents and the Executions
+        # list could not see it at all.
+        ("NO_BASELINE", {"evaluation": {"enabled": True}}),
+        # Ordinary scored run, as a control.
+        ("COMPLETED", {"evaluation": {"enabled": True}}),
+    ],
+)
+def test_the_badge_rule_gives_every_reader_the_same_answer(eval_status, config):
+    """Three resolvers surface the badge and they do not see the same things.
 
-    ``_awaiting_metrics`` reads the captured configuration only to answer "are
-    metrics coming for a run that has none", so the cheap tests must come first.
-    A row that is still running, or that already has cached metrics, must not
-    cost a decompression per render.
+    Only ``get_test_run_status`` reads a run's documents; ``_build_test_run_list``
+    and ``get_test_results`` read the run record. So any input to the badge rule
+    that is not on the record splits the badge in two — and because the two then
+    disagree about whether an aggregation is outstanding, *neither* enqueues one,
+    so the split is permanent. Measured, before this assertion existed: a run
+    with no published ground truth reported COMPLETE on the poll and EVALUATING
+    in the list, with no aggregation ever queued.
+    """
+    files = ["a.pdf", "b.pdf"]
+    table = _run_table("agree-run", files, eval_status, metadata={"Config": config})
+    table.metadata["TestRunId"] = "agree-run"
+
+    polled = _status_of("agree-run", table)
+    listed = index._build_test_run_list([table.metadata])[0]["status"]
+
+    assert polled["status"] == listed, (
+        f"the per-row poll says {polled['status']} and the Executions list says "
+        f"{listed} for the same run"
+    )
+
+
+@pytest.mark.unit
+def test_the_badge_rule_reads_nothing_but_the_run_record():
+    """The property behind the test above, asserted directly.
+
+    ``_captured_config_of`` is the only thing in this file that reaches past the
+    run record for an answer about a run, so a call to it from here is the
+    mechanism by which the two readers could diverge again. It is used for the
+    API's ``evaluationDisabled`` field and for a document carrying no status at
+    all — never for the badge.
     """
     with patch.object(index, "_captured_config_of") as captured:
         assert index._awaiting_metrics({"Status": "RUNNING"}, "RUNNING") is False
+        assert index._awaiting_metrics({}, "COMPLETE") is True
         assert (
             index._awaiting_metrics(
                 {"testRunResult": {"overallAccuracy": 0.5}}, "COMPLETE"
             )
             is False
         )
-        captured.assert_not_called()
-
-        # ...and is consulted for the one case that needs it.
-        captured.return_value = {"evaluation": {"enabled": False}}
-        assert index._awaiting_metrics({}, "COMPLETE") is False
-        captured.assert_called_once()
-
-
-@pytest.mark.unit
-def test_a_scan_that_found_no_scored_document_settles_the_badge_directly():
-    """``get_test_run_status`` has stronger evidence than the configuration.
-
-    It has just read every document, so if none was scored it knows there is
-    nothing to aggregate without reading anything else. Passing that through is
-    what stops the badge promising metrics; the configuration route exists for
-    the two resolvers that never look at the documents.
-    """
-    with patch.object(index, "_captured_config_of", return_value={}) as captured:
         assert (
-            index._awaiting_metrics({}, "COMPLETE", no_metrics_expected=True) is False
+            index._awaiting_metrics(
+                {"Config": {"evaluation": {"enabled": False}}}, "COMPLETE"
+            )
+            is True
         )
         captured.assert_not_called()
-
-        assert (
-            index._awaiting_metrics({}, "COMPLETE", no_metrics_expected=False) is True
-        )
 
 
 @pytest.mark.unit

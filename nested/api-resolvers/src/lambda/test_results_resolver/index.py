@@ -308,24 +308,46 @@ _METRICS_ELIGIBLE_STATUSES = ("COMPLETE", "PARTIAL_COMPLETE")
 
 
 # A document's ``EvaluationStatus``, partitioned into the three answers the run
-# status needs. Every member of ``EvaluationStatus`` in
-# ``patterns/unified/src/evaluation_function/index.py`` must appear in exactly
-# one of these: a value in none of them is counted as in-flight (see the branch
-# that logs it), and a run holding one such document never reaches a terminal
-# status. That is the whole of #1330 — ``DISABLED`` was not written at all, and
-# ``TIMED_OUT`` was written but named nowhere here, so either one pinned a run
-# at EVALUATING with every document showing Completed.
+# status needs. Every value ANY writer can put in that attribute must appear in
+# exactly one of these, because a value in none of them is counted as in-flight
+# (see the branch that logs it) and a run holding one such document never
+# reaches a terminal status. That is the whole of #1330 — ``DISABLED`` was not
+# written at all, and ``TIMED_OUT`` was written but named nowhere here, so
+# either one pinned a run at EVALUATING with every document showing Completed.
+#
+# ⚠️ The attribute has THREE writers, not one, and the two beyond the pipeline
+# are easy to miss because they describe a different activity: promoting a
+# document to an evaluation baseline writes ``BASELINE_COPYING`` /
+# ``BASELINE_AVAILABLE`` / ``BASELINE_ERROR`` over whatever evaluation left
+# there (``copy_to_baseline_resolver``, and ``idp_sdk``'s evaluation processor
+# for the programmatic route). A test-run document promoted from the document
+# list therefore reaches this loop carrying one of those, which is why they are
+# classified here rather than left to the catch-all.
+# ``test_results_resolver.py::test_every_evaluation_status_any_writer_can_set_is_classified``
+# derives the universe from all three writers and fails on a value missing here.
 #
 # Terminal and not a failure: the document is as finished as it will ever be.
 # ``NO_BASELINE`` and ``DISABLED`` produce no metrics by construction (no ground
 # truth to score against; no evaluation asked for), which is a legitimate
-# outcome rather than an error.
-_EVAL_STATUS_SETTLED = frozenset({"COMPLETED", "NO_BASELINE", "DISABLED"})
+# outcome rather than an error. The two settled ``BASELINE_*`` values say
+# nothing about the document's own processing, which completed either way — the
+# copy is a separate action on an already-finished document, so neither counts
+# as a failed file in the run that produced it.
+_EVAL_STATUS_SETTLED = frozenset(
+    {
+        "COMPLETED",
+        "NO_BASELINE",
+        "DISABLED",
+        "BASELINE_AVAILABLE",
+        "BASELINE_ERROR",
+    }
+)
 # Terminal and a failure. ``TIMED_OUT`` is the status the single-attempt timeout
 # policy stamps (#917); it means the same thing to a run as ``FAILED``.
 _EVAL_STATUS_UNSUCCESSFUL = frozenset({"FAILED", "TIMED_OUT"})
-# Genuinely still working.
-_EVAL_STATUS_IN_FLIGHT = frozenset({"RUNNING"})
+# Genuinely still working. ``BASELINE_COPYING`` resolves in seconds, so waiting
+# on it is correct and bounded.
+_EVAL_STATUS_IN_FLIGHT = frozenset({"RUNNING", "BASELINE_COPYING"})
 
 
 def _normalized_eval_status(doc_item):
@@ -355,7 +377,9 @@ def _ran_with_evaluation_disabled(item):
     records it best-effort, since nothing has actually failed in this case).
 
     Decompresses the captured config, so call it only when the cheap signals are
-    exhausted.
+    exhausted — and deliberately **not** from ``_awaiting_metrics``, whose
+    answer has to be the same for three callers and so must come off the run
+    record; see the warning there.
 
     The reading must agree with the pipeline's, and the pipeline's goes through
     pydantic's ``EvaluationConfig.enabled: bool``, which accepts the string
@@ -377,12 +401,17 @@ def _ran_with_evaluation_disabled(item):
         return not enabled
     if isinstance(enabled, str):
         return enabled.strip().lower() in {"0", "off", "f", "false", "n", "no"}
-    if isinstance(enabled, (int, Decimal)):
+    if isinstance(enabled, (int, float, Decimal)):
+        # ``float`` is unreachable through either storage shape today — the
+        # compressed path parses with ``parse_float=Decimal`` and DynamoDB hands
+        # back ``Decimal`` on the inline one — and is listed because pydantic
+        # reads 0.0 as false, so omitting it would be a disagreement waiting for
+        # a third storage shape.
         return enabled == 0
     return False
 
 
-def _awaiting_metrics(item, status, no_metrics_expected=False):
+def _awaiting_metrics(item, status):
     """Is this run finished but still missing its cached aggregate metrics?
 
     The single definition of the condition behind the ``EVALUATING`` badge. Three
@@ -394,28 +423,28 @@ def _awaiting_metrics(item, status, no_metrics_expected=False):
     was evaluating, because "terminal but no metrics" and "actually evaluating"
     render identically. Keep the rule here so the three sites cannot drift.
 
-    The two "no metrics are coming" cases are excluded. A draft-labeling run has
-    no baseline by construction; a run whose configuration disabled evaluation
-    scored nothing by instruction. Both would otherwise show the badge
-    indefinitely — the condition is unfalsifiable for them, since the
-    aggregation they are waiting for has nothing to aggregate.
+    ⚠️ **Everything this answer depends on must be readable from the run record
+    alone**, because the three callers do not see the same things: only
+    ``get_test_run_status`` reads the run's documents. An exclusion one of them
+    can evaluate and the others cannot splits the badge in two — a run reporting
+    COMPLETE on the per-row poll and EVALUATING in the Executions list at the
+    same time — and because the two disagree about whether an aggregation is
+    outstanding, neither enqueues one, so the split never resolves. That was
+    measured on a run with no published ground truth, and it is the shape of
+    #619 reintroduced. The draft-labeling exclusion is safe for precisely this
+    reason: ``Purpose`` is on the record.
 
-    ``no_metrics_expected`` is for a caller that has just scanned the run's
-    documents and found that none of them was scored, which is the same verdict
-    reached from stronger evidence — ``get_test_run_status`` passes it. The two
-    routes exist because the other two call sites read only the run record.
-
-    The config-reading exclusion is last on purpose: the cheap tests in front of
-    it mean it is only reached for a run that is terminal and has no cached
-    metrics, so the Executions list does not decompress a configuration per row.
+    A run that will never have metrics is therefore NOT excluded here. It does
+    not need to be: the aggregation is enqueued, ``handle_cache_update_request``
+    writes every key of ``metrics_to_cache`` whatever the aggregation found, and
+    the badge clears on that one pass (see the convergence note in
+    ``get_test_results``) — with the run's cost, which is in the cached result
+    and nowhere else. One EVALUATING interval while that happens is what every
+    other terminal run shows.
     """
     if _is_draft_labeling_run(item):
         return False
-    if status not in _METRICS_ELIGIBLE_STATUSES or item.get("testRunResult"):
-        return False
-    if no_metrics_expected:
-        return False
-    return not _ran_with_evaluation_disabled(item)
+    return status in _METRICS_ELIGIBLE_STATUSES and not item.get("testRunResult")
 
 
 def _is_draft_labeling_run(item):
@@ -442,7 +471,7 @@ def _is_draft_labeling_run(item):
     return item.get("Context") == "Draft labeling run"
 
 
-def _display_status(item, status, no_metrics_expected=False):
+def _display_status(item, status):
     """Map a true run status to the status reported to the UI.
 
     A finished run with no cached metrics reports ``EVALUATING``, because the
@@ -452,13 +481,8 @@ def _display_status(item, status, no_metrics_expected=False):
     ``_queue_cache_update``; ``_build_test_run_list`` deliberately does not (see
     its own comment), since it renders many runs at once.
 
-    ``no_metrics_expected`` is passed through to ``_awaiting_metrics``; see there.
     """
-    return (
-        "EVALUATING"
-        if _awaiting_metrics(item, status, no_metrics_expected)
-        else status
-    )
+    return "EVALUATING" if _awaiting_metrics(item, status) else status
 
 
 # How long one enqueued cache update suppresses further enqueues for the same
@@ -1206,6 +1230,12 @@ def _count_completed_documents(table, test_run_id, files):
     answer 0 for a run with no ground truth or with evaluation switched off,
     both of which that function counts as completed.
 
+    Not an exact mirror of that function: it also requires ``ObjectStatus`` to be
+    COMPLETED, and this reads the evaluation attribute alone (it always has). A
+    document stamped ABORTED over an earlier settled evaluation status is
+    therefore counted here and not there — which is the pre-existing behaviour,
+    confined to the "N of M" figure an aborted run reports.
+
     Args:
         table: DynamoDB table resource
         test_run_id: Test run identifier
@@ -1774,12 +1804,6 @@ def get_test_run_status(test_run_id):
         processing_failed_files = 0  # Only count processing failures found during scan
         evaluating_files = 0
         queued_files = 0
-        # Documents that were actually scored, i.e. that contributed something for
-        # the aggregation to aggregate. Distinct from completed_files, which also
-        # counts the settled-but-unscored outcomes (no ground truth, evaluation
-        # switched off).
-        evaluated_files = 0
-
         # Resolved at most once per invocation, and only if some document turns
         # out to carry no evaluation status at all — it decompresses the run's
         # captured configuration, which is not worth doing on a poll where
@@ -1802,8 +1826,6 @@ def get_test_run_status(test_run_id):
                     # Check if evaluation is also complete
                     if eval_status in _EVAL_STATUS_SETTLED:
                         completed_files += 1
-                        if eval_status == "COMPLETED":
-                            evaluated_files += 1
                         logger.info(
                             f"File {file_key}: counted as completed ({eval_status})"
                         )
@@ -1879,19 +1901,8 @@ def get_test_run_status(test_run_id):
         )  # Recalculated each call
 
         logger.info(
-            f"Test run {test_run_id} counts: completed={completed_files}, evaluated={evaluated_files}, processing_failed={processing_failed_files}, baseline_failed={baseline_failed_files}, total_failed={total_failed_files}, evaluating={evaluating_files}, queued={queued_files}, total={files_count}"
+            f"Test run {test_run_id} counts: completed={completed_files}, processing_failed={processing_failed_files}, baseline_failed={baseline_failed_files}, total_failed={total_failed_files}, evaluating={evaluating_files}, queued={queued_files}, total={files_count}"
         )
-
-        # Did the scan above find anything for an aggregation to aggregate? If
-        # documents finished and none of them was scored, no metrics are coming,
-        # and the badge must not promise them: the EVALUATING it displayed was
-        # waiting on an aggregation that could never produce anything (#1330).
-        # True for a run with evaluation switched off, and equally for one whose
-        # test set has no ground truth — the two reasons differ but the answer to
-        # "are metrics coming" does not. Derived from the documents rather than
-        # from the configuration because this resolver has just read them, which
-        # is the stronger evidence of the two.
-        no_metrics_expected = completed_files > 0 and evaluated_files == 0
 
         # Determine overall test run status based on document and evaluation states
         if (
@@ -1953,7 +1964,7 @@ def get_test_run_status(test_run_id):
                 )
 
                 # Queue metric calculation for completed test runs
-                if _awaiting_metrics(item, overall_status, no_metrics_expected):
+                if _awaiting_metrics(item, overall_status):
                     _queue_cache_update(test_run_id)
 
             except Exception as e:
@@ -1962,8 +1973,8 @@ def get_test_run_status(test_run_id):
                 )
 
         # Report EVALUATING to caller until cached metrics are available
-        display_status = _display_status(item, overall_status, no_metrics_expected)
-        if _awaiting_metrics(item, overall_status, no_metrics_expected):
+        display_status = _display_status(item, overall_status)
+        if _awaiting_metrics(item, overall_status):
             # Self-heal when the status did NOT change on this call — i.e. the
             # transition enqueue above didn't fire, because the run reached its
             # terminal status on an earlier call whose aggregation then failed.

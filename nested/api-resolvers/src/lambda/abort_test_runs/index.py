@@ -34,12 +34,16 @@ ABORTABLE_STATUSES = {'QUEUED', 'RUNNING'}
 # ObjectStatus is already COMPLETED. Anything outside this set is read as
 # "evaluation still in progress", so a terminal status missing from it makes the
 # abort wait below burn its whole budget before giving up on a document that was
-# finished all along. Must therefore name every terminal member of
-# EvaluationStatus in patterns/unified's evaluation function, which is a list
-# this one has twice fallen behind: TIMED_OUT was missing until a run that could
-# not be aborted exposed it, and DISABLED — evaluation switched off for the run —
-# until #1330. A set with a name is what lets the run-status resolver's own
-# classification be compared against this one, by
+# finished all along. Must therefore name every terminal value ANY writer of
+# that attribute can set, which is a list this one has twice fallen behind:
+# TIMED_OUT was missing until a run that could not be aborted exposed it, and
+# DISABLED — evaluation switched off for the run — until #1330. Beyond the
+# pipeline's own statuses it includes the outcomes of promoting a document to an
+# evaluation baseline, which overwrite the attribute (copy_to_baseline_resolver,
+# and idp_sdk's evaluation processor): BASELINE_AVAILABLE and BASELINE_ERROR are
+# settled, while BASELINE_COPYING is deliberately absent because that one really
+# is still in progress. A set with a name is what lets the run-status resolver's
+# own classification be compared against this one, by
 # test_results_resolver.py::test_both_readers_of_an_evaluation_status_agree,
 # rather than the two drifting apart again in a literal here.
 TERMINAL_EVALUATION_STATUSES = {
@@ -48,6 +52,8 @@ TERMINAL_EVALUATION_STATUSES = {
     'NO_BASELINE',
     'TIMED_OUT',
     'DISABLED',
+    'BASELINE_AVAILABLE',
+    'BASELINE_ERROR',
 }
 
 
