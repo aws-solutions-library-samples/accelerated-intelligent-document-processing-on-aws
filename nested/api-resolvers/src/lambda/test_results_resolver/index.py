@@ -349,6 +349,13 @@ _METRICS_ELIGIBLE_STATUSES = ("COMPLETE", "PARTIAL_COMPLETE")
 # it would be a wait for an action taken on the document *after* the run
 # finished, which tells the run nothing. Holding a completed run at EVALUATING
 # for that is the #1330 symptom on a new route.
+#
+# A third consequence, older than any of this and listed because it is in the
+# same family: the aggregation selects documents by ``EvaluationStatus ==
+# "COMPLETED"``, so a promoted document drops out of a run's metrics on any
+# *re*-aggregation even when its evaluation had succeeded — and a release that
+# adds a metrics key re-aggregates every historical run once. The cause is the
+# overwrite rather than anything here.
 _EVAL_STATUS_SETTLED = frozenset(
     {
         "COMPLETED",
@@ -438,9 +445,10 @@ def _awaiting_metrics(item, status):
 
     The single definition of the condition behind the ``EVALUATING`` badge. Two
     resolvers surface that badge — ``_build_test_run_list`` (the Executions
-    list) and ``get_test_run_status`` (the per-row poll); ``get_test_results``
-    reports the stored status and uses this rule only to decide whether to
-    enqueue the missing aggregation. All three previously spelled it out inline.
+    list) and ``get_test_run_status`` (the per-row poll), which are also this
+    rule's only callers. ``get_test_results`` reports the stored status and
+    decides its own enqueue from the cache's own shape. All three previously
+    spelled a version of this out inline.
     Issue #619 was diagnosed through the resulting confusion: the badge said
     EVALUATING while the file counts said every document was processed and none
     was evaluating, because "terminal but no metrics" and "actually evaluating"

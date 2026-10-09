@@ -2125,15 +2125,23 @@ _EVALUATION_FUNCTION = os.path.join(
 # the writers as of #1330, established by grepping the tree for somewhere a
 # status *originates* rather than is copied along —
 #
-#     git ls-files '*.py' | xargs grep -n 'evaluation_status *=[^=]'
+#     git ls-files '*.py' | xargs grep -nE \
+#         'evaluation_status *=[^=]|_set_evaluation_status\(|EvaluationStatus\.[A-Z]'
 #
-# which today finds these three plus six sites that propagate an existing value
-# as a keyword argument. A fourth writer added later fails nothing here, and no
-# cheap derivation separates a status literal from the environment-variable
-# names that share the prefix (EVALUATION_BASELINE_BUCKET and friends appear in
-# twenty tracked files). So this is a declared residual, not a closure: the
-# closure below is over the values these three writers can set, and the two
-# sanity assertions in the test are what stop a writer going quietly inert.
+# and all three alternatives are load-bearing: the first finds the pipeline's
+# attribute assignment, the second is the only way the SDK writer appears (it
+# goes through a helper, so a pattern matching assignments alone reports that
+# file clean — which is this probe's own version of the mistake the residual
+# exists to flag), and the third catches an enum member used at a new call site.
+# No counts are quoted, because the thing worth knowing is which files come back,
+# not how many lines do.
+#
+# A fourth writer added later fails nothing here, and no cheap derivation
+# separates a status literal from the environment-variable names that share the
+# prefix (EVALUATION_BASELINE_BUCKET and friends appear in twenty tracked
+# files). So this is a declared residual, not a closure: the closure below is
+# over the values these three writers can set, and the two sanity assertions in
+# the test are what stop a writer going quietly inert.
 _BASELINE_STATUS_WRITERS = (
     os.path.join(
         os.path.dirname(__file__),
@@ -2538,6 +2546,14 @@ def test_the_disabled_reading_agrees_with_the_pipelines(stored):
         # load — a wrong "disabled" verdict reports a run complete while results
         # are still arriving.
         {"evaluation": {"enabled": "maybe"}},
+        # Padded spellings are in the same category and are the easy mistake,
+        # because they are one `.strip()` away from reading as disabled and look
+        # harmless. Pydantic rejects every one of them, so a configuration
+        # spelled this way fails to load in every pipeline step and no document
+        # in that run was ever scored *or* deliberately skipped.
+        {"evaluation": {"enabled": " false"}},
+        {"evaluation": {"enabled": "false "}},
+        {"evaluation": {"enabled": "\tfalse"}},
     ],
 )
 def test_only_a_configuration_that_says_so_counts_as_disabled(config):
