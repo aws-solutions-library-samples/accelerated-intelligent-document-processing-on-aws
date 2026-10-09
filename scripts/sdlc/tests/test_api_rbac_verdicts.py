@@ -253,13 +253,46 @@ class TestClassifyNeverPassesAnInconclusiveCell:
         assert "LEAK" in verdict.detail
 
     def test_a_5xx_is_registered_against_a_named_gap(self):
-        """So the ~50 resolvers that raise a bare Exception for a validation
-        refusal surface as visible warnings rather than red-lining the gate for a
+        """So a resolver that raises a bare Exception for a validation refusal
+        surfaces as a visible warning rather than red-lining the gate for a
         backlog — while a timeout, which is nobody's known condition, does not."""
         assert h.classify("Admin", ALLOWED, 500, None, None).gap == (
             h.GAP_INCONCLUSIVE_5XX
         )
         assert h.classify("Admin", ALLOWED, 0, None, None).gap is None
+
+
+# ---------------------------------------------------------------------------
+# Which 404 means "skip this operation" and which means "the object is gone"
+# ---------------------------------------------------------------------------
+class TestFeatureAbsent404:
+    """``_is_feature_absent_404`` decides whether a 404 skips a whole row.
+
+    The dispatcher answers 404 for two unrelated conditions and only one of them
+    means "this deployment lacks the feature". Getting this backwards is silent
+    and expensive in one direction: a genuine not-found read as "feature absent"
+    turns that operation's authorization assertions into SKIPs, and a SKIP is not
+    a pass but is also not a failure, so nothing goes red and the row simply
+    stops being measured.
+
+    Covered offline because the function is otherwise only reached by
+    ``make api-test``, which needs a live stack — so an inverted comparison here
+    would ship.
+    """
+
+    def test_a_resolver_sourced_404_is_not_a_missing_feature(self):
+        assert h._is_feature_absent_404(404, "ResourceNotFound") is False
+
+    def test_an_unroutable_operation_404_is_a_missing_feature(self):
+        assert h._is_feature_absent_404(404, "NotFound") is True
+
+    def test_an_untyped_404_keeps_the_pre_existing_skip_behaviour(self):
+        """A 404 with no errorType predates the distinction and still skips."""
+        assert h._is_feature_absent_404(404, None) is True
+
+    def test_no_other_status_is_a_missing_feature(self):
+        for status in (200, 400, 403, 500):
+            assert h._is_feature_absent_404(status, "NotFound") is False, status
 
 
 # ---------------------------------------------------------------------------

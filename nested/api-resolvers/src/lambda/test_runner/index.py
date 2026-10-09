@@ -12,6 +12,7 @@ from decimal import Decimal
 import boto3
 from botocore.exceptions import ClientError
 
+from idp_common.api_adapter import ResourceNotFound  # type: ignore
 from idp_common.utils.log_sanitizer import sanitize_event_for_logging
 
 logger = logging.getLogger()
@@ -78,7 +79,7 @@ def handler(event, context):
 
         # Validate context length
         if test_context and len(test_context) > 500:
-            raise Exception("Context cannot exceed 500 characters")
+            raise ValueError("Context cannot exceed 500 characters")
 
         number_of_files = input_data.get("numberOfFiles")
         # Names exactly which documents to process, where numberOfFiles takes the
@@ -100,7 +101,7 @@ def handler(event, context):
         # Get test set
         test_set = _get_test_set(tracking_table, test_set_id)
         if not test_set:
-            raise ValueError(f"Test set with ID '{test_set_id}' not found")
+            raise ResourceNotFound(f"Test set with ID '{test_set_id}' not found")
 
         # Determine actual file count to process
         test_set_file_count = test_set["fileCount"]
@@ -280,6 +281,14 @@ def handler(event, context):
             "createdAt": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ"),
         }
 
+    except ResourceNotFound as e:
+        # WARNING, not ERROR: a caller naming a test set, run or profile that does
+        # not exist is an ordinary outcome, and the same choice `api_adapter` makes
+        # for this class. Letting it fall into the catch-all below would put every
+        # 404 into the error channel — the noise-in-the-wrong-channel problem one
+        # level down from the 500-for-a-not-found this convention exists to fix.
+        logger.warning(f"Not found in test runner: {str(e)}")
+        raise
     except Exception as e:
         logger.error(f"Error in test runner: {str(e)}")
         raise
@@ -302,7 +311,7 @@ def send_test_run_to_review(args):
         "Item"
     )
     if not run:
-        raise ValueError(f"Test run '{test_run_id}' not found")
+        raise ResourceNotFound(f"Test run '{test_run_id}' not found")
 
     files = run.get("Files") or []
     queued = 0
@@ -510,14 +519,14 @@ def _published_revision(config_table, config_version):
 
 
 def _require_profile(config_table, config_version):
-    """Raise ``ValueError`` unless the configuration profile head exists."""
+    """Raise ``ResourceNotFound`` unless the configuration profile head exists."""
     table = dynamodb.Table(config_table)  # type: ignore[attr-defined]
     item = table.get_item(
         Key={"Configuration": f"Config#{config_version}"},
         ProjectionExpression="Configuration",
     ).get("Item")
     if not item:
-        raise ValueError(f"Configuration profile '{config_version}' not found")
+        raise ResourceNotFound(f"Configuration profile '{config_version}' not found")
 
 
 def _pin_revision(config_table, config_version, revision):
@@ -744,7 +753,11 @@ def _json_default(value):
         # ``"b'...'"`` which is neither valid data nor decodable.
         return _b64.b64encode(bytes(value)).decode("ascii")
     if isinstance(value, (set, frozenset)):
-        return sorted(value) if all(isinstance(v, (str, int, float)) for v in value) else list(value)
+        return (
+            sorted(value)
+            if all(isinstance(v, (str, int, float)) for v in value)
+            else list(value)
+        )
     # Genuinely-surprising types raise so the failure is loud and named
     # rather than silently coerced to a repr that corrupts the round-trip.
     # Pinned by ``test_non_decimal_non_json_types_raise_typeerror_not_silent_str``.

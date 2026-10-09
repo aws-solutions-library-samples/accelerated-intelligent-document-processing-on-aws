@@ -241,11 +241,55 @@ def test_no_groups_is_rejected(monkeypatch, mock_stack, load_lambda):
         mod.handler(event, None)
 
 
-def test_missing_catalog_entry_raises(monkeypatch, mock_stack, load_lambda):
-    # No catalog at all → OSS branch can't resolve artifactBucket/version.
+def test_no_catalog_object_at_all_still_raises(monkeypatch, mock_stack, load_lambda):
+    """No catalog OBJECT -> 500, not 404.
+
+    With nothing to read, the feature's absence cannot be established, so this
+    keeps the OSS branch's "incomplete" error rather than claiming the feature
+    does not exist. The 404 case is the next test: a catalog that WAS read and
+    lists no such feature.
+    """
     mod = _preload(monkeypatch, mock_stack, load_lambda)
     event = make_appsync_event(
         "getFeatureLaunchUrl", {"featureId": "unknown-feature"}, groups=["Admin"]
+    )
+    with pytest.raises(RuntimeError, match="incomplete"):
+        mod.handler(event, None)
+
+
+def test_a_feature_absent_from_a_readable_catalog_is_not_found(
+    monkeypatch, mock_stack, load_lambda
+):
+    """The catalog was read and lists no such feature -> ResourceNotFound (404).
+
+    This is the live-measured case: the RBAC suite probes with a bogus id against
+    a deployment whose catalog exists, and used to get a 500 reading "catalog
+    entry is incomplete ... re-publish with a current idp-cli" (#1304).
+    """
+    bucket = mock_stack["bucket"]
+    _put_catalog(bucket, [_oss_entry("docs-by-status", "1.2.3", bucket)])
+    mod = _preload(monkeypatch, mock_stack, load_lambda)
+    event = make_appsync_event(
+        "getFeatureLaunchUrl", {"featureId": "__nope__"}, groups=["Admin"]
+    )
+    with pytest.raises(mod.ResourceNotFound, match="__nope__"):
+        mod.handler(event, None)
+
+
+def test_a_listed_feature_with_an_incomplete_entry_still_raises(
+    monkeypatch, mock_stack, load_lambda
+):
+    """Listed but missing artifact coordinates -> still 500.
+
+    The companion of the test above, and why the two are not one branch: this
+    deployment IS misconfigured and "re-publish with a current idp-cli" is the
+    right remedy, so it must not be softened to a 404.
+    """
+    bucket = mock_stack["bucket"]
+    _put_catalog(bucket, [{"featureId": "half-published", "source": "oss"}])
+    mod = _preload(monkeypatch, mock_stack, load_lambda)
+    event = make_appsync_event(
+        "getFeatureLaunchUrl", {"featureId": "half-published"}, groups=["Admin"]
     )
     with pytest.raises(RuntimeError, match="incomplete"):
         mod.handler(event, None)

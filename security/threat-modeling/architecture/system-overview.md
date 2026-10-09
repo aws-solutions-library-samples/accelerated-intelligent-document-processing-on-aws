@@ -321,7 +321,7 @@ their result rows by it, and **9** verify per-object ownership.
 [`scripts/api_rbac_expectations.yaml`](../../../scripts/api_rbac_expectations.yaml)
 is the manifest of record for all of this and is asserted by
 `make api-test-static` in both CI systems and by the live matrix in
-`make api-test`. Its `known_gaps` block holds **three** entries, of which two are accepted *authorization* gaps and the third is a limitation of the live harness — `GAP-SEC-INCONCLUSIVE-5XX`, which records that a 5xx response scores a matrix cell INCONCLUSIVE rather than as a pass, and that ~50 resolver-level validation refusals raise a bare `Exception`. The two authorization gaps: **GAP-02**: the `queryKnowledgeBase`
+`make api-test`. Its `known_gaps` block holds **three** entries, of which two are accepted *authorization* gaps and the third is a limitation of the live harness — `GAP-SEC-INCONCLUSIVE-5XX`, which records that a 5xx response scores a matrix cell INCONCLUSIVE rather than as a pass, and that a resolver refusal raised as a bare `Exception` still produces one. The not-found refusals that used to produce most of them now answer 404 (`errorType: "ResourceNotFound"`); the gap entry itself enumerates what remains at 500, rather than this page quoting a count that goes stale. The two authorization gaps: **GAP-02**: the `queryKnowledgeBase`
 *resolver* performs no group check of its own, so the dispatcher's floor — which
 requires an assigned group — is the only group gate on it. **GAP-07**: the chat
 Function URL transport carries no `cognito:groups` claim, so neither chat route's
