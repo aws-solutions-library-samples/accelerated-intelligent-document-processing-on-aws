@@ -646,6 +646,30 @@ def _inconclusive_gap(status):
     return None
 
 
+# The dispatcher answers 404 for two unrelated conditions, and only one of them
+# means "this deployment does not have this operation":
+#
+#   errorType "NotFound"         the operation is declared but not routable here —
+#                               a feature-flagged-off resolver. This is what the
+#                               conditional probes below are looking for.
+#   errorType "ResourceNotFound" the operation ran and the OBJECT the arguments
+#                               named does not exist. The feature is present.
+#
+# Keying the probe on the status alone would read the second as the first and SKIP
+# the operation's whole row — turning an authorization assertion into no
+# observation at all, silently, on a deployment where the feature is enabled. That
+# is strictly worse than the 5xx it replaced: an inconclusive cell is at least
+# counted and printed. The arguments these probes send name deliberately bogus
+# ids, so the second condition is the EXPECTED answer once a resolver reports
+# not-found properly.
+#
+# An unreadable or absent errorType falls back to the status, which keeps the
+# pre-existing behaviour for anything that 404s without a typed body.
+def _is_feature_absent_404(status, error_type):
+    """True when a 404 means "this deployment lacks the feature", not "no such object"."""
+    return status == 404 and error_type != "ResourceNotFound"
+
+
 class Verdict(NamedTuple):
     """What one matrix cell established.
 
@@ -889,8 +913,8 @@ def run_group_matrix(ops, ctx, tokens, results, skip_fields=frozenset()):
                 "the feature probe would execute the op as Admin."
             )
         if cond == "circuit_breaker" and not ctx.get("circuit_breaker"):
-            st, *_ = call(ctx["api_base"], field, o["args"], tokens["Admin"])
-            if st == 404:
+            st, et, *_ = call(ctx["api_base"], field, o["args"], tokens["Admin"])
+            if _is_feature_absent_404(st, et):
                 _record(
                     results,
                     field,
@@ -903,8 +927,8 @@ def run_group_matrix(ops, ctx, tokens, results, skip_fields=frozenset()):
                 print(f"  {field:28s} SKIP (circuit breaker disabled)")
                 continue
         if cond == "feature_platform":
-            st, *_ = call(ctx["api_base"], field, o["args"], tokens["Admin"])
-            if st == 404:
+            st, et, *_ = call(ctx["api_base"], field, o["args"], tokens["Admin"])
+            if _is_feature_absent_404(st, et):
                 _record(
                     results,
                     field,

@@ -1321,8 +1321,8 @@ known_gaps:
     # reference HERE instead, and fails if this file stops mentioning the id.
     assigned_by: scripts/test_api_rbac.py
     summary: >
-      a 5xx makes a matrix cell INCONCLUSIVE, and 5xx is common because ~50
-      resolver-level validation refusals raise a bare Exception
+      a 5xx makes a matrix cell INCONCLUSIVE, and a resolver refusal that raises
+      a bare Exception can only reach the caller as one
     detail: >
       An authorization check establishes that a caller was refused. A 5xx
       establishes nothing: whether the resolver refused this caller before or
@@ -1331,14 +1331,22 @@ known_gaps:
       snapshot contains 43 cells reading "500 OK" beneath a header claiming the
       gate passed, because the positive arms asserted only "not denied".
       It is registered here rather than left as a hard failure because the cause
-      is a known backlog and not a regression: the dispatcher chooses an HTTP
-      status from the resolver exception's class name, and roughly 50 validation
-      refusals across the resolvers (test_set_resolver alone has ~40) raise a
-      bare `Exception`, which can only map to 500 `InternalError`. This harness
+      is a property of the resolvers and not a regression: the dispatcher chooses
+      an HTTP status from the resolver exception's class name, so a refusal that
+      raises a bare `Exception` can only map to 500 `InternalError`. This harness
       deliberately sends bogus arguments to prove auth ran before the argument
-      was used, so it lands on many of them.
-      Closing it means giving those refusals a `ValueError` so they become 400
-      `BadRequest`. Until then these are WARN: visible, counted separately, and
+      was used, so it lands on any such site.
+      Most of the backlog this gap was opened for is closed (issue #1304):
+      test_set_resolver's not-found refusals now raise `ResourceNotFound` -> 404
+      and its argument refusals raise `ValueError` -> 400, which is what the 15
+      operations listed in that issue were 500ing on. The gap stays open because
+      the condition it describes is a standing one, not a count — a bare
+      `Exception` anywhere in a resolver still reaches the caller as a 5xx, and
+      `test_bare_not_found_raises.py` is the offline guard that keeps new ones
+      from being added. Residual sites deliberately left at 500 are internal
+      failures rather than caller-input refusals (a downstream invoke that
+      failed, an unroutable field, a misconfigured env var).
+      While it stands, such cells are WARN: visible, counted separately, and
       never counted as passes. Everything else inconclusive — a timeout, a dead
       connection, an unreadable body — is a HARD failure, because none of those
       is a known condition of this deployment.

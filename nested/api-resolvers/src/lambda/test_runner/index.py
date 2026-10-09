@@ -78,7 +78,7 @@ def handler(event, context):
 
         # Validate context length
         if test_context and len(test_context) > 500:
-            raise Exception("Context cannot exceed 500 characters")
+            raise ValueError("Context cannot exceed 500 characters")
 
         number_of_files = input_data.get("numberOfFiles")
         # Names exactly which documents to process, where numberOfFiles takes the

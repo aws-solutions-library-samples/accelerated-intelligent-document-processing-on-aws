@@ -101,6 +101,39 @@ class CallerIdentityRefused(PermissionError):
     """
 
 
+class ResourceNotFound(Exception):
+    """A resource the caller named does not exist.
+
+    Mapped to HTTP **404** with ``errorType: "ResourceNotFound"`` by both of the
+    exception mappings at this boundary: :func:`api_resolver` below, and the
+    dispatcher in ``nested/api-resolvers/src/lambda/http_api_dispatcher/index.py``.
+
+    The dispatcher recognises it by **class name**, because a resolver reached
+    through ``lambda:Invoke`` surfaces its exception as the ``errorType`` string in
+    the invoke response and the class object never crosses that boundary. A
+    resolver Lambda that does not depend on ``idp_common`` may therefore declare
+    its own ``ResourceNotFound`` locally and get the same mapping — which is what
+    three of the feature-platform Lambdas already do for ``AuthorizationError``.
+    This class is the canonical one; prefer importing it.
+
+    ⚠️ The ``errorType`` is deliberately **not** ``"NotFound"``. The dispatcher
+    already answers 404 ``errorType: "NotFound"`` for an operation that is
+    declared but not routable in this deployment (a feature-flagged-off resolver),
+    and two consumers act on that distinction: the live RBAC harness probes a
+    conditional operation as Admin and reads a 404 as "this feature is disabled,
+    skip the row", and the UI renders the two differently. Collapsing them would
+    make a missing *object* look like a missing *deployment*, which in the
+    harness's case silently converts an authorization assertion into a skip.
+
+    Raising this for a resource the caller does not have access to leaks nothing
+    extra here: every operation that can raise it has already passed the
+    dispatcher's group check and the resolver's own scope check, so the caller is
+    entitled to know whether the id exists. Where that is not true — an object
+    whose existence is itself privileged — refuse with ``PermissionError`` before
+    the lookup, as ``get_file_contents_resolver`` does for its bucket allow-list.
+    """
+
+
 class _DecimalEncoder(json.JSONEncoder):
     """Encode DynamoDB ``Decimal`` values as int/float for JSON responses."""
 
@@ -447,6 +480,7 @@ def api_resolver(fn: Callable[[Dict[str, Any], Any], Any]) -> Callable:
       response and maps exceptions to status codes:
         * ``PermissionError``           -> 403
         * ``ValueError`` / ``KeyError`` -> 400
+        * ``ResourceNotFound``          -> 404
         * anything else                 -> 500
       The error body matches the GraphQL shape the UI already parses:
       ``{"errors": [{"message": ..., "errorType": ...}]}``.
@@ -469,6 +503,15 @@ def api_resolver(fn: Callable[[Dict[str, Any], Any], Any]) -> Callable:
             logger.warning("Authorization denied: %s", e)
             return _http_response(
                 403, {"errors": [{"message": str(e), "errorType": "Unauthorized"}]}
+            )
+        except ResourceNotFound as e:
+            # Logged at warning, not error: a caller naming an id that does not
+            # exist is an ordinary outcome, and routing it through the 500 arm is
+            # what put deliberate not-found responses into the monitored 5xx rate.
+            logger.warning("Not found: %s", e)
+            return _http_response(
+                404,
+                {"errors": [{"message": str(e), "errorType": "ResourceNotFound"}]},
             )
         except (ValueError, KeyError) as e:
             logger.warning("Bad request: %s", e)
