@@ -820,7 +820,7 @@ class BedrockClientWrapper:
         >>> wrapper = BedrockClientWrapper(bedrock_client, max_retries=3)
         >>> # Use invoke_model with automatic retries
         >>> response = wrapper.invoke_model(
-        ...     modelId="anthropic.claude-3-sonnet-20240229-v1:0",
+        ...     modelId="us.anthropic.claude-sonnet-4-6",
         ...     body=json.dumps(
         ...         {
         ...             "messages": [{"role": "user", "content": "Hello"}],
@@ -830,7 +830,7 @@ class BedrockClientWrapper:
         ... )
         >>> # Use converse API with automatic retries
         >>> response = wrapper.converse(
-        ...     modelId="anthropic.claude-3-sonnet-20240229-v1:0",
+        ...     modelId="us.anthropic.claude-sonnet-4-6",
         ...     messages=[{"role": "user", "content": [{"text": "Hello"}]}],
         ... )
     """
