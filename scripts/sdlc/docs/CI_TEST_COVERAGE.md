@@ -416,6 +416,69 @@ Notes:
 - **Fail-fast enabled**: If any test fails, remaining tests are cancelled and cleanup begins
 - **Expected runtime**: ~25-35 minutes (vs 60+ minutes sequential)
 
+### On failure: evidence is copied out, and the stack is kept
+
+A failed run's stack is **retained** rather than torn down, and its evidence is
+copied somewhere that outlives it. Both exist because teardown destroys the Step
+Functions histories, the tracking table and every log group within minutes of
+the failure, which for a nightly run is long before anyone reads it.
+
+| What | Where | Lifetime |
+|---|---|---|
+| Suite transcript (this script's own stdout/stderr, in emission order) | `s3://$SOURCE_BUCKET/ci-diagnostics/<build-id>/<stack>/suite-transcript.log` | 30 days |
+| Evidence bundle (error, workflow failures, execution inventory by status, tracking-table rows) | `s3://$SOURCE_BUCKET/ci-diagnostics/<build-id>/<stack>/evidence.json` | 30 days |
+| The stack itself | retained in the account; marker at `s3://$SOURCE_BUCKET/ci-retained/<stack>.json` | 12h, clamped to 24h |
+
+⚠️ **Do not use the CodeBuild log stream as the analysis's source.** CodeBuild
+batches stdout to CloudWatch and the parallel steps interleave, so a
+`get_log_events` walk performed while the build is still running can return a
+prefix that is missing lines already written. Measured: one nightly run's
+analysis captured 1942 lines, stopped ~50 lines short of the three that
+identified the failure, concluded "root cause not fully determined", and
+hypothesised a 3600s timeout that had not happened. The same stream read after
+the build held all of it. `failure_agent.fetch_full_build_log` therefore prefers
+the local transcript and keeps the CloudWatch walk only as a fallback, for a
+failure that happens before the tee is installed.
+
+⚠️ **The execution inventory is not the same thing as the workflow failures.**
+`get_workflow_failure_details` lists `statusFilter="FAILED"` only, so a run where
+nothing crashed yields an empty list — and an empty list cannot distinguish
+"executions ran and succeeded, so the test's own assertion is wrong" from "no
+execution exists, so the document never entered the pipeline". The second is
+what a monitor race looks like, and reading `[]` as "no product crash" then
+stopping is how issue #1338 went undiagnosed for several nights.
+`snapshot_execution_inventory` counts executions in every status, and
+`snapshot_tracking_rows` copies out the rows that say where each document got to.
+
+**Retention is bounded by IAM role headroom, not by cost.** One IDP stack carries
+~122 roles against an account quota of 5000, and role exhaustion fails *every*
+deploy in the account — the condition `cleanup_stale_idp_stacks` was written for
+after ~600 leaked roles did exactly that. Hence:
+
+- `IDP_KEEP_FAILED_STACK_HOURS` (12) is clamped to `KEEP_FAILED_STACK_MAX_HOURS`
+  (24), so an env var typo cannot hold a stack for a month.
+- `IDP_MAX_RETAINED_STACKS` (6) caps how many are held at once. On reaching it a
+  failing run tears down as it always did and logs which markers hold the slots.
+- The startup reaper takes a retained stack as soon as its marker expires,
+  **overriding the usual age gate** — so a short TTL is honoured rather than
+  ignored for three hours.
+- Protection is matched on the **run prefix**, so a retained `idp-MMDD-HHMMSS`
+  also protects its `-iam` stack. Without that the reaper would delete the
+  service role and permissions boundary out from under the stack being
+  preserved, leaving something that can no longer be deleted cleanly.
+- Every way a marker can be unreadable — absent, empty, unparseable, or a
+  `GetObject` that raises — reads as **expired**, so a bad write leaks nothing.
+- A marker whose stack is already gone is deleted, so it cannot hold a slot
+  forever and quietly switch retention off for every later run.
+
+A marker object rather than a CloudFormation stack tag, because tagging an
+existing stack means `update-stack`, which would redeploy the very stack being
+preserved for inspection.
+
+`IDP_KEEP_FAILED_STACK=0` restores unconditional teardown. To reclaim a slot
+early, delete the stack by hand and then its marker — the run's log prints both
+commands.
+
 ### Sequential Execution (Step 12)
 - **Step 12 (API RBAC + security-focused suites) runs alone after the parallel
   pool drains**
