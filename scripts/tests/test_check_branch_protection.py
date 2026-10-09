@@ -106,15 +106,6 @@ MUST_BE_REQUIRED = {
 # The mirror image: contexts this repo does produce, but not on every pull
 # request, so requiring one would leave it pending forever and block every merge.
 # Deliberately NOT asserted as required-eligible.
-# The one workflow whose trigger and job SHAPE has been decided deliberately: it
-# narrows `branches:`, narrows `types:` and carries a job-level `if:` on a named
-# job, and its context is pinned advisory in MUST_STAY_ADVISORY below with the
-# reason. Named as a single file rather than derived from that set, because the
-# set answers a different question -- "may this context be required?" -- and
-# using it here silently widened two assertions to workflows nobody had decided
-# about.
-SHAPE_DECIDED_WORKFLOW = "ai-pr-review.yml"
-
 MUST_STAY_ADVISORY = {
     "build": "build-docs.yml is paths-filtered",
     "Generate Dependency Manifests": "generate-dep-manifest.yml is paths-filtered",
@@ -128,6 +119,20 @@ MUST_STAY_ADVISORY = {
         "pass on every draft PR without a review having run."
     ),
 }
+
+# ⚠️ Declared BELOW MUST_STAY_ADVISORY, not above it. Exemption discovery attaches
+# the comment block immediately preceding a constant to that constant, and
+# MUST_STAY_ADVISORY is found by its comment's PROSE rather than by its name — so a
+# declaration inserted between the two detaches it, and
+# scripts/tests/gate_exemptions.json's entry for it then reads as vanished.
+#
+# The one workflow whose trigger and job SHAPE has been decided deliberately: it
+# narrows `branches:`, narrows `types:` and carries a job-level `if:` on a named
+# job, and its context is pinned advisory above with the reason. Named as a single
+# file rather than derived from that set, because the set answers a different
+# question — "may this context be required?" — and using it here silently widened
+# two assertions to workflows nobody had decided about.
+SHAPE_DECIDED_WORKFLOW = "ai-pr-review.yml"
 
 
 def _fully_protected(contexts: list[str] | None = None) -> Dict[str, Any]:
